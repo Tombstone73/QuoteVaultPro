@@ -19,6 +19,7 @@ import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { uploadAttachmentViaChunked, type TemporaryOrderAttachmentUpload } from "@/lib/uploads/chunkedAttachmentUpload";
 import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { Checkbox } from "@/components/ui/checkbox";
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
@@ -71,6 +72,7 @@ type LineItemAttachment = {
   // PDF multi-page support
   pageCount?: number | null;
   pages?: AttachmentPage[];
+  side?: 'front' | 'back' | 'both' | 'na' | null;
 };
 
 interface LineItemAttachmentsPanelProps {
@@ -94,6 +96,8 @@ interface LineItemAttachmentsPanelProps {
   lineItemKey?: string;
   pendingOrderAttachments?: TemporaryOrderAttachmentUpload[];
   onTemporaryOrderUpload?: (files: File[]) => Promise<void>;
+  /** Show explicit Front/Back controls for a double-sided print line. */
+  doubleSided?: boolean;
 }
 
 export function LineItemAttachmentsPanel({
@@ -108,6 +112,7 @@ export function LineItemAttachmentsPanel({
   lineItemKey,
   pendingOrderAttachments = [],
   onTemporaryOrderUpload,
+  doubleSided = false,
 }: LineItemAttachmentsPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -119,6 +124,7 @@ export function LineItemAttachmentsPanel({
   const [isCreatingQuote, setIsCreatingQuote] = useState(false);
   const [isPersistingLineItem, setIsPersistingLineItem] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
+  const [useSameArtworkBothSides, setUseSameArtworkBothSides] = useState(false);
   // Store ensured IDs to use during upload (props may not have updated yet)
   const ensuredIdsRef = useRef<{ quoteId: string | null; lineItemId: string | null }>({
     quoteId: null,
@@ -199,6 +205,7 @@ export function LineItemAttachmentsPanel({
             previewKey: a.previewKey,
             pageCount: a.pageCount,
             pages: a.pages,
+            side: a.side ?? 'na',
           })),
         ) as LineItemAttachment[];
       }
@@ -228,6 +235,44 @@ export function LineItemAttachmentsPanel({
   });
 
   const fileCount = attachments.length + pendingOrderAttachments.length;
+  const artworkAttachments = useMemo(() => attachments.filter((file) => file.source !== 'asset'), [attachments]);
+  const frontArtwork = artworkAttachments.find((file) => file.side === 'front') ?? null;
+  const backArtwork = artworkAttachments.find((file) => file.side === 'back') ?? null;
+  const sharedArtwork = artworkAttachments.find((file) => file.side === 'both') ?? null;
+
+  useEffect(() => {
+    if (!doubleSided) {
+      setUseSameArtworkBothSides(false);
+      return;
+    }
+    if (sharedArtwork) setUseSameArtworkBothSides(true);
+  }, [doubleSided, sharedArtwork?.id]);
+
+  const updateArtworkSide = async (fileId: string, side: 'front' | 'back' | 'both' | 'na') => {
+    if (!orderId) return;
+    const response = await fetch(`/api/orders/${orderId}/files/${fileId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ role: 'artwork', side }),
+      credentials: 'include',
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload?.error || 'Could not update artwork side');
+  };
+
+  const assignArtworkSide = async (fileId: string, side: 'front' | 'back' | 'both') => {
+    try {
+      const assignedSides = new Set(['front', 'back', 'both']);
+      await Promise.all(artworkAttachments
+        .filter((file) => file.id !== fileId && assignedSides.has(String(file.side ?? 'na')))
+        .map((file) => updateArtworkSide(file.id, 'na')));
+      await updateArtworkSide(fileId, side);
+      await queryClient.invalidateQueries({ queryKey: [filesApiPath] });
+      toast({ title: 'Artwork side assigned', description: side === 'both' ? 'The same artwork is assigned to Front and Back.' : `Artwork assigned to ${side}.` });
+    } catch (error: any) {
+      toast({ title: 'Artwork assignment failed', description: error?.message || 'Please try again.', variant: 'destructive' });
+    }
+  };
   const viewerAttachments = useMemo(() => toAttachmentViewerAttachments(attachments as any[]), [attachments]);
 
   // Format file size for display
@@ -743,6 +788,52 @@ export function LineItemAttachmentsPanel({
       {/* Expanded content - file list */}
       {isExpanded && fileCount > 0 && (
         <div className="px-3 pb-3 space-y-2 border-t">
+          {parentType === 'order' && doubleSided && orderId && artworkAttachments.length > 0 && (
+            <div className="mt-2 rounded-md border border-violet-400/30 bg-violet-400/5 p-2.5 space-y-2" data-testid="order-double-sided-artwork-assignment">
+              <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
+                <Checkbox
+                  checked={useSameArtworkBothSides}
+                  onCheckedChange={(checked) => {
+                    const next = checked === true;
+                    setUseSameArtworkBothSides(next);
+                    if (!next && sharedArtwork) void assignArtworkSide(sharedArtwork.id, 'front');
+                    if (next && frontArtwork) void assignArtworkSide(frontArtwork.id, 'both');
+                  }}
+                  data-testid="order-use-same-artwork-both-sides"
+                />
+                Use same artwork on both sides
+              </label>
+              <div className="grid gap-2 sm:grid-cols-2">
+                <label className="text-xs text-muted-foreground">
+                  Front artwork
+                  <select
+                    className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs text-foreground"
+                    value={(useSameArtworkBothSides ? sharedArtwork : frontArtwork)?.id ?? ''}
+                    onChange={(event) => event.target.value && void assignArtworkSide(event.target.value, useSameArtworkBothSides ? 'both' : 'front')}
+                    data-testid="order-front-artwork-select"
+                  >
+                    <option value="">Front artwork not assigned</option>
+                    {artworkAttachments.map((file) => <option key={file.id} value={file.id}>{getAttachmentDisplayName(file)}</option>)}
+                  </select>
+                </label>
+                {!useSameArtworkBothSides && (
+                  <label className="text-xs text-muted-foreground">
+                    Back artwork
+                    <select
+                      className="mt-1 h-8 w-full rounded-md border bg-background px-2 text-xs text-foreground"
+                      value={backArtwork?.id ?? ''}
+                      onChange={(event) => event.target.value && void assignArtworkSide(event.target.value, 'back')}
+                      data-testid="order-back-artwork-select"
+                    >
+                      <option value="">Back artwork not assigned</option>
+                      {artworkAttachments.map((file) => <option key={file.id} value={file.id}>{getAttachmentDisplayName(file)}</option>)}
+                    </select>
+                  </label>
+                )}
+              </div>
+              {!useSameArtworkBothSides && !backArtwork && <p className="text-xs text-amber-700">Back artwork not assigned. Choose the same artwork for both sides or assign a Back file.</p>}
+            </div>
+          )}
           {pendingOrderAttachments.length > 0 && (
             <div className="space-y-1 pt-2">
               {pendingOrderAttachments.map((file) => (

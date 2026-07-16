@@ -70,6 +70,7 @@ import {
 import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
+import { resolveProductionSides } from "@shared/productionHydration";
 import {
   buildInitialOrderLineItemDraftFromProduct,
   type InitialOrderLineItemDraftDebug,
@@ -85,6 +86,7 @@ import {
 import {
   buildProductReplacementDraft,
   buildSavedSnapshotAfterLineItemSave,
+  hydratePersistedOrderLineItemOptionSelections,
   hasOrderLineItemDraftChanges,
   reconcileLineItemListSafely,
   normalizeVariantId,
@@ -1488,34 +1490,18 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setRequiresPrepressInput(Boolean((expandedItem as any).requiresPrepress));
     setRequiresProofApprovalInput(Boolean((expandedItem as any).requiresProofApproval));
 
-    const selections: Record<string, OptionSelection> = {};
-    const savedSelectedOptions = (expandedItem.specsJson as any)?.selectedOptions;
-    if (Array.isArray(savedSelectedOptions)) {
-      savedSelectedOptions.forEach((opt: any) => {
-        if (!opt?.optionId) return;
-        selections[opt.optionId] = {
-          value: opt.value,
-          grommetsLocation: opt.grommetsLocation,
-          grommetsSpacingCount: opt.grommetsSpacingCount,
-          grommetsPerSign: opt.grommetsPerSign,
-          grommetsSpacingInches: opt.grommetsSpacingInches,
-          customPlacementNote: opt.customPlacementNote,
-          hemsType: opt.hemsType,
-          polePocket: opt.polePocket,
-        };
-      });
-    }
+    const persistedSelections = hydratePersistedOrderLineItemOptionSelections(expandedItem);
+    const selections = persistedSelections.optionSelections;
     setOptionSelections(selections);
 
-    const rawV2 = (expandedItem as any)?.optionSelectionsJson;
     const nextSelectionsV2: LineItemOptionSelectionsV2 =
-      rawV2 && typeof rawV2 === "object" && (rawV2 as any)?.schemaVersion === 2
-        ? (rawV2 as LineItemOptionSelectionsV2)
+      Object.keys(persistedSelections.optionSelectionsV2.selected).length > 0
+        ? persistedSelections.optionSelectionsV2
         : (expandedItem.specsJson as any)?.initialDraft?.optionSelectionsJson &&
             typeof (expandedItem.specsJson as any).initialDraft.optionSelectionsJson === "object" &&
             (expandedItem.specsJson as any).initialDraft.optionSelectionsJson.schemaVersion === 2
           ? ((expandedItem.specsJson as any).initialDraft.optionSelectionsJson as LineItemOptionSelectionsV2)
-        : { schemaVersion: 2, selected: {} };
+          : persistedSelections.optionSelectionsV2;
     setOptionSelectionsV2(nextSelectionsV2);
 
     // Hydrate PBV2 snapshot from line item (used to render option questions)
@@ -2811,6 +2797,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     : Boolean((item as any)?.requiresProofApproval);
                   const showArtworkControls =
                     (!fulfillmentOnly && !serviceFee) || renderedRequiresDesign || renderedRequiresPrepress === true || renderedRequiresProofApproval;
+                  const printSides = isExpanded && expandedItem?.id === item.id
+                    ? resolveProductionSides({
+                      ...(item as any),
+                      optionSelectionsJson: { schemaVersion: 2, selected: optionSelectionsV2.selected ?? {} },
+                    })
+                    : resolveProductionSides(item);
 
                   let operationalWarning: string | null = null;
                   let operationalWarningTone: "warning" | "danger" | null = null;
@@ -3559,6 +3551,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         lineItemId={item.id}
                                         productName={productName}
                                         defaultExpanded={true}
+                                        doubleSided={printSides === "Double-sided"}
                                       />
                                     </div>
 

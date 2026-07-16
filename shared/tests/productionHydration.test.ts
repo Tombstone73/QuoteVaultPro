@@ -62,6 +62,13 @@ describe("production artwork hydration", () => {
     expect(same.front?.id).toBe("front");
     expect(same.back?.id).toBe("back");
     expect(same.isSameArtwork).toBe(true);
+
+    const both = resolveProductionArtworkSides([
+      { id: "both", fileRecordId: "shared-file", side: "both" },
+    ]);
+    expect(both.front?.id).toBe("both");
+    expect(both.back?.id).toBe("both");
+    expect(both.isSameArtwork).toBe(true);
   });
 
   test("does not infer a side from an unassigned file", () => {

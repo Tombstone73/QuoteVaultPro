@@ -2,6 +2,7 @@ import { describe, expect, it } from "@jest/globals";
 import {
   buildProductReplacementDraft,
   buildSavedSnapshotAfterLineItemSave,
+  hydratePersistedOrderLineItemOptionSelections,
   hasOrderLineItemDraftChanges,
   mergeLineItemPatchSafely,
   reconcileLineItemListSafely,
@@ -27,6 +28,41 @@ const savedSnapshot: OrderLineItemSavedSnapshot = {
 };
 
 describe("order line item edit state", () => {
+  it("hydrates persisted PBV2 selections without replacing them with product defaults", () => {
+    const hydrated = hydratePersistedOrderLineItemOptionSelections({
+      optionSelectionsJson: { selected: { printSides: { value: "double", label: "Double-Sided" } } },
+      selectedOptions: [{ optionId: "printSides", optionName: "Print Sides", value: "double" }],
+    });
+
+    expect(hydrated.optionSelectionsV2.selected.printSides).toEqual({ value: "double", label: "Double-Sided" });
+    expect(hydrated.optionSelections.printSides.value).toBe("double");
+
+    const single = hydratePersistedOrderLineItemOptionSelections({
+      optionSelectionsJson: { schemaVersion: 2, selected: { printSides: { value: "single", label: "Single-Sided" } } },
+    });
+    expect(single.optionSelectionsV2.selected.printSides).toEqual({ value: "single", label: "Single-Sided" });
+  });
+
+  it("treats matching persisted V2 selections as clean and a changed side as dirty", () => {
+    const persisted = hydratePersistedOrderLineItemOptionSelections({
+      optionSelectionsJson: { selected: { printSides: { value: "double" } } },
+    });
+    const saved = { ...savedSnapshot, optionSelectionsV2: persisted.optionSelectionsV2.selected };
+    const baseDraft = {
+      ...saved,
+      optionSelections: persisted.optionSelections,
+      optionSelectionsV2: persisted.optionSelectionsV2.selected,
+      isPbv2Mode: true,
+      designBriefDraftJson: "{}",
+      savedDesignBriefJson: "{}",
+    };
+
+    expect(hasOrderLineItemDraftChanges(saved, baseDraft)).toBe(false);
+    expect(hasOrderLineItemDraftChanges(saved, {
+      ...baseDraft,
+      optionSelectionsV2: { printSides: { value: "single" } },
+    })).toBe(true);
+  });
   it("marks a product replacement dirty even when quantity and dimensions are unchanged", () => {
     expect(
       hasOrderLineItemDraftChanges(savedSnapshot, {

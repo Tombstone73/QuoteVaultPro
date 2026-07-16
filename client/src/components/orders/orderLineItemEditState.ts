@@ -75,6 +75,65 @@ export type OrderLineItemPreviewGateResult = {
 
 export type LineItemPatchKind = "attachment" | "hydration" | "product_add" | "pricing" | "generic";
 
+type PersistedOptionSelection = Record<string, unknown>;
+
+function asRecord(value: unknown): Record<string, any> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
+}
+
+function normalizeV2SelectionEntry(value: unknown): PersistedOptionSelection {
+  const record = asRecord(value);
+  return record && Object.prototype.hasOwnProperty.call(record, "value") ? record : { value };
+}
+
+/**
+ * The order line's persisted selections are authoritative. Older order rows can
+ * store the `selected` map without the V2 envelope, so never substitute product
+ * defaults merely because `schemaVersion` is absent.
+ */
+export function hydratePersistedOrderLineItemOptionSelections(lineItem: any): {
+  optionSelections: Record<string, OptionSelection>;
+  optionSelectionsV2: LineItemOptionSelectionsV2;
+} {
+  const specs = asRecord(lineItem?.specsJson) ?? {};
+  const raw = asRecord(lineItem?.optionSelectionsJson);
+  const rawSelected = asRecord(raw?.selected)
+    ?? asRecord(raw?.selections)
+    ?? (raw && !Object.prototype.hasOwnProperty.call(raw, "schemaVersion") ? raw : null);
+  const selectedOptions = Array.isArray(lineItem?.selectedOptions)
+    ? lineItem.selectedOptions
+    : Array.isArray(specs.selectedOptions)
+      ? specs.selectedOptions
+      : [];
+  const optionSelections: Record<string, OptionSelection> = {};
+
+  for (const option of selectedOptions) {
+    if (!option?.optionId) continue;
+    optionSelections[String(option.optionId)] = {
+      value: option.value,
+      grommetsLocation: option.grommetsLocation,
+      grommetsSpacingCount: option.grommetsSpacingCount,
+      grommetsPerSign: option.grommetsPerSign,
+      grommetsSpacingInches: option.grommetsSpacingInches,
+      customPlacementNote: option.customPlacementNote,
+      hemsType: option.hemsType,
+      polePocket: option.polePocket,
+    };
+  }
+
+  const selected: LineItemOptionSelectionsV2["selected"] = {};
+  if (rawSelected) {
+    for (const [key, value] of Object.entries(rawSelected)) {
+      selected[key] = normalizeV2SelectionEntry(value) as any;
+    }
+  }
+
+  return {
+    optionSelections,
+    optionSelectionsV2: { schemaVersion: 2, selected },
+  };
+}
+
 type ProductLike = Parameters<typeof buildInitialOrderLineItemDraftFromProduct>[0];
 
 const PRICE_DISPLAY_FIELDS = [
