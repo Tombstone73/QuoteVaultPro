@@ -1246,6 +1246,7 @@ export function registerProductionJobsRoutes(
         Array<{
           id: string;
           orderLineItemId: string | null;
+          fileRecordId: string | null;
           fileName: string;
           fileUrl: string | null;
           availabilityStatus?: 'available' | 'archived' | 'restoring' | 'missing';
@@ -1263,6 +1264,7 @@ export function registerProductionJobsRoutes(
         Array<{
           id: string;
           orderLineItemId: string | null;
+          fileRecordId: string | null;
           fileName: string;
           fileUrl: string | null;
           availabilityStatus?: 'available' | 'archived' | 'restoring' | 'missing';
@@ -1284,6 +1286,7 @@ export function registerProductionJobsRoutes(
         const mapped = {
           id: a.id,
           orderLineItemId: a.orderLineItemId ?? null,
+          fileRecordId: a.fileRecordId ?? null,
           fileName: a.fileName,
           fileUrl: a.originalUrl ?? null,
           availabilityStatus: a.availabilityStatus,
@@ -1323,6 +1326,7 @@ export function registerProductionJobsRoutes(
         const mapped = {
           id: link.id,
           orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
+          fileRecordId: link.fileRecordId ?? null,
           fileName: link.fileName,
           fileUrl: originalAccess.originalUrl,
           availabilityStatus: originalAccess.availabilityStatus,
@@ -1473,23 +1477,27 @@ export function registerProductionJobsRoutes(
         }
         const printerOptions = resolvePrinterOptionsForStation(config, row.stationKey);
 
-        const artworkThumbs = (artwork ?? []).slice(0, 2).map((a) => ({
+        // Explicit preview/file URLs for fast board/list thumbnail rendering
+        const frontBySide = artwork.find((a) => String(a?.side || "").toLowerCase() === "front");
+        const backBySide = artwork.find((a) => String(a?.side || "").toLowerCase() === "back");
+        const primaryArt = artwork.find((a) => !!a?.isPrimary);
+        const isDoubleSided = resolvedPrintSides === "Double-sided";
+        // For double-sided work, Front and Back can only come from explicit side
+        // assignments. Attachment/upload order is never an assignment signal.
+        const frontArt = frontBySide ?? (isDoubleSided ? null : primaryArt ?? artwork[0] ?? null);
+        const backArt = backBySide ?? null;
+        const sameArtworkBothSides = Boolean(frontArt?.fileRecordId && frontArt.fileRecordId === backArt?.fileRecordId);
+        const artworkThumbs = (artwork ?? []).slice(0, 6).map((a) => ({
           id: a.id,
           fileName: a.fileName,
-          fileUrl: a.fileUrl, // Full file URL for download/display
+          fileUrl: a.fileUrl,
           thumbnailUrl: a.thumbnailUrl,
           thumbKey: a.thumbKey,
           side: a.side,
           isPrimary: a.isPrimary,
           thumbStatus: a.thumbStatus,
+          sameAsFront: sameArtworkBothSides && a.id === backArt?.id,
         }));
-
-        // Explicit preview/file URLs for fast board/list thumbnail rendering
-        const frontBySide = artwork.find((a) => String(a?.side || "").toLowerCase() === "front");
-        const backBySide = artwork.find((a) => String(a?.side || "").toLowerCase() === "back");
-        const primaryArt = artwork.find((a) => !!a?.isPrimary);
-        const frontArt = frontBySide ?? primaryArt ?? artwork[0] ?? null;
-        const backArt = backBySide ?? artwork.find((a) => a && frontArt && a.id !== frontArt.id) ?? null;
 
         const frontFileUrl = frontArt ? normalizeObjectsUrl(frontArt.fileUrl) : undefined;
         const backFileUrl = backArt ? normalizeObjectsUrl(backArt.fileUrl) : undefined;

@@ -394,12 +394,8 @@ function pickArtworkForPreview(artwork: ProductionOrderArtworkSummary[]) {
 }
 
 /**
- * Normalize artwork based on sides logic for Production MVP
- * Deterministic rule (NO "same as front" logic):
- * - If 2+ artwork assets: front = first, back = second
- * - If 1 artwork asset: front = first, back = null (show "Back file not uploaded" placeholder)
- * - If 0 artwork assets: both null
- * - Single-sided: only front, no back slot
+ * Normalize artwork from explicit attachment-side assignments. Artwork order is
+ * never used to infer a Front or Back assignment.
  */
 function normalizeArtworkForSides(
   sides: string,
@@ -1201,7 +1197,7 @@ function PreviewPanel({
                 {backMissingReason === "not_uploaded" ? (
                   <div className="flex flex-col items-center justify-center text-muted-foreground p-8 text-center">
                     <FileText className="h-16 w-16 mb-4" />
-                    <p className="text-sm font-medium">Back file not uploaded</p>
+                    <p className="text-sm font-medium">Back artwork not assigned</p>
                   </div>
                 ) : (
                   <ProductionThumbnail
@@ -1213,7 +1209,8 @@ function PreviewPanel({
               </div>
               <div className="text-xs text-titan-text-muted text-center">
                 BACK (click to enlarge)
-                {backMissingReason === "not_uploaded" && <span className="ml-1 text-[10px] text-amber-500">(Not uploaded)</span>}
+                {back?.sameAsFront && <span className="ml-1 text-[10px] text-violet-300">(Same as front)</span>}
+                {backMissingReason === "not_uploaded" && <span className="ml-1 text-[10px] text-amber-500">(Not assigned)</span>}
               </div>
             </div>
           )}
@@ -1778,8 +1775,8 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                                     </div>
                                   </div>
                                 ) : (
-                                  // Back file not uploaded
-                                  <div className="relative inline-flex items-center justify-center w-11 h-11 rounded bg-muted border-2 border-dashed border-muted-foreground/30 hover:border-muted-foreground/50 transition-colors" title="Back file not uploaded">
+                                  // Back side has not been explicitly assigned.
+                                  <div className="relative inline-flex items-center justify-center w-11 h-11 rounded bg-muted border-2 border-dashed border-muted-foreground/30 hover:border-muted-foreground/50 transition-colors" title="Back artwork not assigned">
                                     <div className="text-[9px] font-bold text-muted-foreground">B</div>
                                   </div>
                                 )}
@@ -1852,7 +1849,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       Back
                     </Button>
                     {backMissingReason === "not_uploaded" && previewSide === "back" && (
-                      <span className="text-xs text-amber-500 ml-2">(Not uploaded)</span>
+                      <span className="text-xs text-amber-500 ml-2">(Not assigned)</span>
                     )}
                   </div>
                 )}
@@ -1861,8 +1858,8 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                 {previewSide === "back" && backMissingReason === "not_uploaded" ? (
                   <div className="flex-1 min-h-0 rounded-lg border-2 border-dashed border-titan-border-subtle flex flex-col items-center justify-center bg-muted/30 p-8 text-center">
                     <FileText className="h-16 w-16 text-muted-foreground mb-4" />
-                    <h3 className="text-lg font-semibold text-titan-text-primary mb-2">Back file not uploaded</h3>
-                    <p className="text-sm text-muted-foreground mb-4">This double-sided job only has front artwork. Upload a back file to complete the artwork set.</p>
+                    <h3 className="text-lg font-semibold text-titan-text-primary mb-2">Back artwork not assigned</h3>
+                    <p className="text-sm text-muted-foreground mb-4">Assign a Back file, or choose the same artwork for both sides, in the order line Artwork panel.</p>
                     <Button
                       size="sm"
                       variant="default"
@@ -1873,7 +1870,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       className="gap-1.5"
                     >
                       <Upload className="w-3.5 h-3.5" />
-                      Upload back file
+                      Assign back artwork
                     </Button>
                   </div>
                 ) : (

@@ -53,6 +53,7 @@ import {
   hydrateInboundPbv2Selections,
   type InboundUnsupportedRequestFinding,
 } from "@shared/inboundOrderPbv2Options";
+import { resolveProductionSides } from "@shared/productionHydration";
 import {
   inboundOrdersRepository,
   type InboundOrdersRepository,
@@ -540,6 +541,13 @@ function isActiveClassifiedArtworkLink(link: InboundOrderArtworkLink): boolean {
 
 function hasAssignedClassifiedArtwork(payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">): boolean {
   return payload.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+}
+
+function hasCompleteDoubleSidedArtwork(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): boolean {
+  if (resolveProductionSides(lineItem) !== "Double-sided") return true;
+  const artwork = lineItem.artworkLinks.filter(isActiveClassifiedArtworkLink);
+  return artwork.some((link) => link.assignmentSide === "both")
+    || (artwork.some((link) => link.assignmentSide === "front") && artwork.some((link) => link.assignmentSide === "back"));
 }
 
 function isArtworkDecision(decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">): boolean {
@@ -3961,6 +3969,7 @@ export class InboundOrderService {
       mimeType: file.mimeType ?? null,
       sizeBytes: file.sizeBytes ?? null,
       role,
+      assignmentSide: "unassigned",
       source,
       confidence,
       reason,
@@ -4821,6 +4830,9 @@ export class InboundOrderService {
       if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
         errors.push(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`);
       }
+      if (!hasCompleteDoubleSidedArtwork(lineItem)) {
+        errors.push(`${label}: assign Back artwork or choose the same artwork for both sides.`);
+      }
     }
 
     if (draftHasArtworkThatNeedsAssignment(normalizedPayload)) {
@@ -4888,7 +4900,12 @@ export class InboundOrderService {
           );
         }
 
-        const createdAttachment = await args.orderRepository.createOrderAttachment({
+        const attachmentSides = artworkLink.assignmentSide === "both"
+          ? ["front", "back"] as const
+          : artworkLink.assignmentSide === "front" || artworkLink.assignmentSide === "back"
+            ? [artworkLink.assignmentSide]
+            : ["na"] as const;
+        const createdAttachments = await Promise.all(attachmentSides.map((side) => args.orderRepository.createOrderAttachment({
           orderId: args.order.id,
           orderLineItemId: String(orderLineItem.id),
           fileRecordId: inboundFile.fileRecordId,
@@ -4898,18 +4915,18 @@ export class InboundOrderService {
           fileUrl: null,
           fileSize: inboundFile.sizeBytes ?? artworkLink.sizeBytes ?? null,
           mimeType: inboundFile.mimeType ?? artworkLink.mimeType ?? null,
-          description: `Artwork attached during inbound review conversion (${args.inboundRecordId}).`,
+          description: `Artwork attached during inbound review conversion (${args.inboundRecordId})${artworkLink.assignmentSide === "both" ? "; same artwork for both sides." : ""}`,
           originalFilename: inboundFile.sourceFilename ?? artworkLink.filename ?? null,
           role: "artwork",
-          side: "na",
-          isPrimary: false,
-        });
+          side,
+          isPrimary: side !== "na",
+        })));
 
         const updated = await args.conversionRepository.updateFile({
           organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
           fileId: inboundFile.id,
-          patch: { createdOrderAttachmentId: createdAttachment.id },
+          patch: { createdOrderAttachmentId: createdAttachments[0].id },
         });
         if (!updated) {
           throw new InboundOrderConversionValidationError(
@@ -5204,6 +5221,9 @@ export class InboundOrderService {
       }
       if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
         errors.push(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`);
+      }
+      if (!hasCompleteDoubleSidedArtwork(lineItem)) {
+        errors.push(`${label}: assign Back artwork or choose the same artwork for both sides.`);
       }
     });
 

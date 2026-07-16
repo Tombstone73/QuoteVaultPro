@@ -2587,6 +2587,110 @@ describe("InboundOrderService editable review draft", () => {
     }));
   });
 
+  test("materializes one explicitly both-sided artwork file as Front and Back", async () => {
+    const { repo } = makeRepository();
+    const orderRepo = makeOrderRepository();
+    const artwork = inboundFile({
+      id: "file_artwork_both",
+      fileRecordId: "file_record_artwork_both",
+      sourceFilename: "double-sided-sign.pdf",
+    });
+    (repo.listFiles as jest.Mock).mockResolvedValue([artwork]);
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+
+    await prepareReadyDraft(service, {
+      lineItem: {
+        optionSelectionsJson: {
+          ...completePbv2Selections(),
+          selected: { ...completePbv2Selections().selected, sides: { value: "double" } },
+        },
+        pbv2TreeVersionId: "tree_pvc",
+        artworkLinks: [{
+          fileId: artwork.id,
+          fileRecordId: artwork.fileRecordId,
+          filename: artwork.sourceFilename,
+          mimeType: artwork.mimeType,
+          sizeBytes: artwork.sizeBytes,
+          role: "artwork",
+          assignmentSide: "both",
+          source: "staff_selected",
+          confidence: 100,
+          reason: "Staff selected the same artwork for front and back.",
+        }],
+      },
+    });
+
+    await service.convertInboundReviewDraftToOrder({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(orderRepo.createOrderAttachment).toHaveBeenCalledTimes(2);
+    expect(orderRepo.createOrderAttachment).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      fileRecordId: "file_record_artwork_both",
+      role: "artwork",
+      side: "front",
+    }));
+    expect(orderRepo.createOrderAttachment).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      fileRecordId: "file_record_artwork_both",
+      role: "artwork",
+      side: "back",
+    }));
+  });
+
+  test("blocks a double-sided review line when Back artwork is not explicitly assigned", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any, makeOrderRepository() as any, mockPriceLineItem);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: [{
+          ...initialized.reviewedLineItemsJson[0],
+          optionSelectionsJson: {
+            ...completePbv2Selections(),
+            selected: { ...completePbv2Selections().selected, sides: { value: "double" } },
+          },
+          pbv2TreeVersionId: "tree_pvc",
+          artworkLinks: [{
+            fileId: "file_artwork_front",
+            fileRecordId: "file_record_artwork_front",
+            filename: "front.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 12345,
+            role: "artwork",
+            assignmentSide: "front",
+            source: "staff_selected",
+            confidence: 100,
+            reason: "Staff assigned Front artwork.",
+          }],
+        }],
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "supplied" },
+        missingDecisionsJson: initialized.missingDecisionsJson.map((decision) => ({ ...decision, status: "acknowledged", resolutionNote: "Artwork reviewed" })),
+        warningsJson: initialized.warningsJson,
+        reviewNotes: null,
+      },
+    });
+
+    await expect(service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toMatchObject({
+      errors: expect.arrayContaining(["PVC: assign Back artwork or choose the same artwork for both sides."]),
+    });
+  });
+
   test("uses transaction-scoped repositories for draft order conversion when available", async () => {
     const { repo } = makeRepository();
     const baseOrderRepo = makeOrderRepository();

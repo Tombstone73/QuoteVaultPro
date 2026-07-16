@@ -61,6 +61,7 @@ type BridgedOriginalFile = {
   mimeType: string | null;
   sizeBytes: number | null;
   role: string;
+  side: "front" | "back" | "na";
   createdAt: string;
   source: "order_attachment";
   downloadUrl: string;
@@ -86,6 +87,7 @@ type VisibleFileRecord = AttachmentData & {
   tagLabel: string;
   downloadUrl: string;
   sizeBytesValue: number | null;
+  sideLabel?: "front" | "back" | null;
 };
 
 type PendingViewerRequest = {
@@ -821,6 +823,7 @@ export default function PrepressProductionPageV2() {
     displayName: file.computedDisplayFilename || file.displayFilename || file.originalFilename,
     uploadedByLabel: file.uploadedBy || "—",
     tagLabel: "order",
+    sideLabel: file.side === "front" || file.side === "back" ? file.side : null,
     downloadUrl: file.downloadUrl,
     sizeBytesValue: file.sizeBytes,
   });
@@ -1731,7 +1734,14 @@ export default function PrepressProductionPageV2() {
                               <td className="px-4 py-3">{file.createdAt ? formatDistanceToNow(new Date(file.createdAt), { addSuffix: true }) : "—"}</td>
                               <td className="px-4 py-3">{file.uploadedByLabel}</td>
                               <td className="px-4 py-3">
-                                <span className="bg-amber-900/50 text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">{file.tagLabel}</span>
+                                <div className="flex flex-wrap gap-1">
+                                  <span className="bg-amber-900/50 text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">{file.tagLabel}</span>
+                                  {file.sideLabel && (
+                                    <span className="bg-violet-900/50 text-violet-200 border border-violet-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">
+                                      {file.sideLabel}
+                                    </span>
+                                  )}
+                                </div>
                               </td>
                               <td className="px-4 py-3 text-right">
                                 <button

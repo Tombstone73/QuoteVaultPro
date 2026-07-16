@@ -161,7 +161,7 @@ function isProductionJobDone(status: unknown): boolean {
  * Normalize artwork based on sides logic
  * Rules:
  * - Single: Only front, no back slot
- * - Double: Front + back (if back missing, defaults to front)
+ * - Double: Front and Back come only from explicit side assignments
  */
 function normalizeArtworkForSides(
   sides: string,
@@ -189,7 +189,12 @@ function normalizeArtworkForSides(
 
   if (isDouble) {
     // Do not infer Front/Back from attachment order. Those files must be assigned at the order line.
-    return { front: frontArt, back: backArt, showBackSlot: true, isSameArtwork: false };
+    return {
+      front: frontArt,
+      back: backArt,
+      showBackSlot: true,
+      isSameArtwork: Boolean(backArt?.sameAsFront || (frontArt?.fileRecordId && frontArt.fileRecordId === backArt?.fileRecordId)),
+    };
   } else {
     // Single-sided: no back slot
     return { front: frontArt, back: null, showBackSlot: false, isSameArtwork: false };
@@ -601,24 +606,21 @@ export default function ProductionJobDetailPage() {
                   </button>
 
                   {artwork.showBackSlot && (
-                    <button
-                      type="button"
-                      className="w-20 h-20 rounded-md border bg-muted overflow-hidden hover:opacity-90 transition-opacity"
-                      onClick={() => artwork.back && setPreviewArtwork(artwork.back)}
-                      title="Back"
-                    >
-                      {artwork.isSameArtwork ? (
-                        <div className="w-full h-full flex items-center justify-center p-2 text-center text-[10px] text-muted-foreground">
-                          Same as front
-                        </div>
-                      ) : (
+                    <div className="space-y-1">
+                      <button
+                        type="button"
+                        className="w-20 h-20 rounded-md border bg-muted overflow-hidden hover:opacity-90 transition-opacity"
+                        onClick={() => artwork.back && setPreviewArtwork(artwork.back)}
+                        title={artwork.isSameArtwork ? "Back (same as front)" : "Back"}
+                      >
                         <ProductionThumbnail
                           artwork={artwork.back}
                           alt="Back artwork"
                           className="w-full h-full object-contain"
                         />
-                      )}
-                    </button>
+                      </button>
+                      {artwork.isSameArtwork && <div className="text-center text-[10px] text-muted-foreground">Same as front</div>}
+                    </div>
                   )}
 
                   <div className="ml-auto flex flex-col gap-2">

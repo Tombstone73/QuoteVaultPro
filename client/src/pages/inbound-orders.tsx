@@ -2363,6 +2363,7 @@ function artworkLinkFromInboundFile(file: ClientInboundOrderFile, source: Inboun
     mimeType: file.mimeType ?? null,
     sizeBytes: file.sizeBytes ?? null,
     role: attachmentRoleForClassification(classification.classification ?? inboundAttachmentRoleToClassification(file.role)),
+    assignmentSide: "unassigned",
     source,
     confidence: source === "staff_selected" ? 100 : null,
     reason: source === "staff_selected" ? "Staff selected artwork attachment for this line item." : null,
@@ -2385,6 +2386,20 @@ function classificationForLink(link: InboundOrderArtworkLink): InboundAttachment
 
 function isActiveClassifiedArtworkLink(link: InboundOrderArtworkLink): boolean {
   return link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK";
+}
+
+function isDoubleSidedReviewLineItem(lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number]): boolean {
+  return Object.entries(ensurePbv2Selections(lineItem.optionSelectionsJson).selected ?? {}).some(([key, entry]) => (
+    /side|sides|print[_\s-]*side/i.test(key)
+    && /double|two|2[_\s-]*sided|\bds\b/i.test(String(entry?.value ?? ""))
+  ));
+}
+
+function artworkAssignmentSideLabel(link: InboundOrderArtworkLink): string {
+  if (link.assignmentSide === "both") return "Front & back";
+  if (link.assignmentSide === "front") return "Front";
+  if (link.assignmentSide === "back") return "Back";
+  return "Unassigned side";
 }
 
 function isArtworkDecision(decision: ReviewDraftFormState["missingDecisionsJson"][number]): boolean {
@@ -5298,7 +5313,17 @@ function CleanLineItemCard({
     if (needsProductSelection) setProductSelectorOpen(true);
   }, [needsProductSelection]);
   const activeArtworkLinks = lineItem.artworkLinks.filter(isActiveClassifiedArtworkLink);
+  const isDoubleSided = isDoubleSidedReviewLineItem(lineItem);
+  const frontArtwork = activeArtworkLinks.find((link) => link.assignmentSide === "both" || link.assignmentSide === "front") ?? null;
+  const backArtwork = activeArtworkLinks.find((link) => link.assignmentSide === "both" || link.assignmentSide === "back") ?? null;
+  const usesSameArtworkBothSides = activeArtworkLinks.some((link) => link.assignmentSide === "both");
+  const doubleSidedArtworkComplete = !isDoubleSided || Boolean(frontArtwork && backArtwork);
   const [selectedArtworkKeys, setSelectedArtworkKeys] = useState<Set<string>>(() => new Set());
+  const [sameArtworkModeRequested, setSameArtworkModeRequested] = useState(usesSameArtworkBothSides);
+  useEffect(() => {
+    setSameArtworkModeRequested(usesSameArtworkBothSides);
+  }, [usesSameArtworkBothSides]);
+  const useSameArtworkBothSides = usesSameArtworkBothSides || sameArtworkModeRequested;
   const sizeDisplay = lineItem.width && lineItem.height
     ? `${lineItem.width} x ${lineItem.height} ${lineItem.dimensionsUnit === "ft" ? "feet" : "inches"}`
     : "Size needed";
@@ -5314,7 +5339,7 @@ function CleanLineItemCard({
     ? selectedOptions.join(", ")
     : hasSelectedProduct ? "Review product options" : "Select product first";
   const productOptionsComplete = Boolean(lineItem.optionSelectionsJson && Object.keys(ensurePbv2Selections(lineItem.optionSelectionsJson).selected ?? {}).length > 0);
-  const workflowComplete = Boolean(requiredComplete && activeArtworkLinks.length > 0 && productOptionsComplete);
+  const workflowComplete = Boolean(requiredComplete && activeArtworkLinks.length > 0 && doubleSidedArtworkComplete && productOptionsComplete);
   const artworkCountMismatch = lineItem.artworkQuantityMode === "one_each_per_file"
     && activeArtworkLinks.length > 0
     && lineItem.quantity !== activeArtworkLinks.length;
@@ -5339,7 +5364,7 @@ function CleanLineItemCard({
     { label: "Product", complete: Boolean(hasSelectedProduct && !lineItem.productUnresolved) },
     { label: "Quantity", complete: Boolean(lineItem.quantity) },
     { label: "Size", complete: Boolean(lineItem.width && lineItem.height) },
-    { label: "Artwork", complete: activeArtworkLinks.length > 0 },
+    { label: "Artwork", complete: activeArtworkLinks.length > 0 && doubleSidedArtworkComplete },
     { label: "Product Options", complete: productOptionsComplete },
   ];
   const availableArtworkOptions = attachmentLinkOptions.filter((link) => (
@@ -5363,6 +5388,30 @@ function CleanLineItemCard({
       quantitySource: lineItem.artworkQuantityMode === "one_each_per_file" ? "staff_selected" : lineItem.quantitySource,
     });
     setSelectedArtworkKeys(new Set());
+  };
+  const assignArtworkSide = (link: InboundOrderArtworkLink, assignmentSide: "front" | "back" | "both") => {
+    const key = artworkLinkKey(link);
+    const exists = activeArtworkLinks.some((candidate) => artworkLinkKey(candidate) === key);
+    const artworkLinks = exists
+      ? lineItem.artworkLinks.map((candidate) => artworkLinkKey(candidate) === key
+        ? { ...candidate, assignmentSide, source: "staff_selected" as const, confidence: 100, reason: `Staff assigned artwork to ${assignmentSide === "both" ? "front and back" : assignmentSide}.` }
+        : candidate)
+      : [...lineItem.artworkLinks, {
+        ...link,
+        assignmentSide,
+        source: "staff_selected" as const,
+        confidence: 100,
+        reason: `Staff assigned artwork to ${assignmentSide === "both" ? "front and back" : assignmentSide}.`,
+      }];
+    onChange({ artworkLinks });
+  };
+  const setUseSameArtworkBothSides = (checked: boolean) => {
+    setSameArtworkModeRequested(checked);
+    if (checked) {
+      if (frontArtwork) assignArtworkSide(frontArtwork, "both");
+      return;
+    }
+    if (frontArtwork?.assignmentSide === "both") assignArtworkSide(frontArtwork, "front");
   };
   const removeArtworkLink = (link: InboundOrderArtworkLink) => {
     const key = artworkLinkKey(link);
@@ -5624,6 +5673,58 @@ function CleanLineItemCard({
                 ))}
               </select>
             </OrderEntryField>
+            {isDoubleSided && (
+              <div className="mt-3 rounded border border-violet-400/30 bg-violet-400/10 p-2" data-testid="clean-double-sided-artwork-assignment">
+                <label className="flex items-center gap-2 text-xs font-semibold text-violet-100">
+                  <input
+                    type="checkbox"
+                    checked={useSameArtworkBothSides}
+                    onChange={(event) => setUseSameArtworkBothSides(event.target.checked)}
+                    data-testid="clean-use-same-artwork-both-sides"
+                  />
+                  Use same artwork on both sides
+                </label>
+                {!frontArtwork && (
+                  <p className="mt-1 text-[11px] text-amber-100">Assign Front artwork, then choose whether it is also used on the back.</p>
+                )}
+                <div className="mt-2 grid gap-2 sm:grid-cols-2">
+                  <OrderEntryField label="Front artwork">
+                    <select
+                      className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                      value={frontArtwork ? artworkLinkKey(frontArtwork) : ""}
+                      onChange={(event) => {
+                        const link = attachmentLinkOptions.find((candidate) => artworkLinkKey(candidate) === event.target.value);
+                        if (link) assignArtworkSide(link, useSameArtworkBothSides ? "both" : "front");
+                      }}
+                      data-testid="clean-front-artwork-select"
+                    >
+                      <option value="">Front artwork not assigned</option>
+                      {attachmentLinkOptions.map((link) => <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>)}
+                    </select>
+                  </OrderEntryField>
+                  {!useSameArtworkBothSides && (
+                    <OrderEntryField label="Back artwork">
+                      <select
+                        className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                        value={backArtwork ? artworkLinkKey(backArtwork) : ""}
+                        onChange={(event) => {
+                          const link = attachmentLinkOptions.find((candidate) => artworkLinkKey(candidate) === event.target.value);
+                          if (link) assignArtworkSide(link, "back");
+                        }}
+                        data-testid="clean-back-artwork-select"
+                      >
+                        <option value="">Back artwork not assigned</option>
+                        {attachmentLinkOptions.map((link) => <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>)}
+                      </select>
+                    </OrderEntryField>
+                  )}
+                </div>
+                {!doubleSidedArtworkComplete && (
+                  <p className="mt-2 text-xs text-amber-100">{frontArtwork ? "Back artwork not assigned. Choose same artwork for both sides or assign a Back file." : "Front artwork not assigned."}</p>
+                )}
+                {useSameArtworkBothSides && frontArtwork && <p className="mt-2 text-[11px] text-violet-100">Back resolves from the same file as Front.</p>}
+              </div>
+            )}
             <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
               <OrderEntryField label="Artwork quantity">
                 <select
@@ -5696,7 +5797,7 @@ function CleanLineItemCard({
               <div className="mt-2 grid gap-1 text-xs text-slate-300">
                 {activeArtworkLinks.map((link) => (
                   <div key={artworkLinkKey(link)} className="flex min-w-0 items-center justify-between gap-2 rounded border border-slate-700 px-2 py-1">
-                    <span className="truncate">{link.filename || link.fileId}</span>
+                    <span className="truncate">{link.filename || link.fileId}{isDoubleSided ? ` · ${artworkAssignmentSideLabel(link)}` : ""}</span>
                     <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5 text-[11px] text-red-200" onClick={() => removeArtworkLink(link)}>Remove</Button>
                   </div>
                 ))}
