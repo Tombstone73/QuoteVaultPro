@@ -2410,6 +2410,15 @@ function isQuantityDecision(decision: ReviewDraftFormState["missingDecisionsJson
   return /quantity/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
 }
 
+function isDimensionsDecision(decision: ReviewDraftFormState["missingDecisionsJson"][number]): boolean {
+  const field = String(decision.field ?? "");
+  if (/lineitems\.\d+\.(?:dimensions?|size|width|height)/i.test(field)) return true;
+
+  const text = `${decision.label} ${decision.reason}`;
+  return /what\s+(?:size|dimensions?)\b.*\bneeded\b|\b(?:size|dimensions?)\b.*\b(?:missing|required|unclear)\b/i.test(text)
+    && !/\bpole\s+pocket\b/i.test(text);
+}
+
 function artworkLineIndex(value: string | null | undefined): number | null {
   const match = String(value ?? "").match(/lineitems\.(\d+)\.artwork/i);
   return match ? Number(match[1]) : null;
@@ -2417,6 +2426,11 @@ function artworkLineIndex(value: string | null | undefined): number | null {
 
 function quantityLineIndex(value: string | null | undefined): number | null {
   const match = String(value ?? "").match(/lineitems\.(\d+)\.quantity/i);
+  return match ? Number(match[1]) : null;
+}
+
+function dimensionsLineIndex(value: string | null | undefined): number | null {
+  const match = String(value ?? "").match(/lineitems\.(\d+)\.(?:dimensions?|size|width|height)/i);
   return match ? Number(match[1]) : null;
 }
 
@@ -2491,6 +2505,17 @@ function hasValidLineItemQuantity(
     && lineItem.quantity > 0;
 }
 
+function hasValidLineItemDimensions(
+  lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number] | undefined,
+): boolean {
+  return typeof lineItem?.width === "number"
+    && Number.isFinite(lineItem.width)
+    && lineItem.width > 0
+    && typeof lineItem.height === "number"
+    && Number.isFinite(lineItem.height)
+    && lineItem.height > 0;
+}
+
 function artworkDecisionIsResolvedByAssignment(
   reviewedLineItemsJson: ReviewDraftFormState["reviewedLineItemsJson"],
   decision: ReviewDraftFormState["missingDecisionsJson"][number],
@@ -2506,6 +2531,15 @@ function quantityDecisionIsResolvedByLineItem(
 ): boolean {
   const lineIndex = quantityLineIndex(decision.field);
   return lineIndex != null && hasValidLineItemQuantity(reviewedLineItemsJson[lineIndex]);
+}
+
+function dimensionsDecisionIsResolvedByLineItem(
+  reviewedLineItemsJson: ReviewDraftFormState["reviewedLineItemsJson"],
+  decision: ReviewDraftFormState["missingDecisionsJson"][number],
+): boolean {
+  const lineIndex = dimensionsLineIndex(decision.field);
+  if (lineIndex != null) return hasValidLineItemDimensions(reviewedLineItemsJson[lineIndex]);
+  return reviewedLineItemsJson.length > 0 && reviewedLineItemsJson.every(hasValidLineItemDimensions);
 }
 
 function isStaleMissingArtworkWarning(
@@ -2551,7 +2585,13 @@ function reconcileResolvedLineItemDecisions(
             status: "resolved",
             resolutionNote: decision.resolutionNote ?? "Resolved by staff-confirmed line item quantity.",
           }
-        : decision
+          : isDimensionsDecision(decision) && decision.status === "still_blocking" && dimensionsDecisionIsResolvedByLineItem(reviewedLineItemsJson, decision)
+            ? {
+              ...decision,
+              status: "resolved",
+              resolutionNote: decision.resolutionNote ?? "Resolved by staff-confirmed line item size.",
+            }
+            : decision
     )),
     warningsJson: artworkAssigned
       ? form.warningsJson.filter((warning) => !isStaleMissingArtworkWarning(reviewedLineItemsJson, warning))
@@ -5306,7 +5346,9 @@ function CleanLineItemCard({
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
 }) {
-  const requiredComplete = Boolean(lineItem.selectedProductId && lineItem.quantity && lineItem.width && lineItem.height);
+  const hasQuantity = hasValidLineItemQuantity(lineItem);
+  const hasDimensions = hasValidLineItemDimensions(lineItem);
+  const requiredComplete = Boolean(lineItem.selectedProductId && hasQuantity && hasDimensions);
   const needsProductSelection = !lineItem.selectedProductId || lineItem.productUnresolved;
   const [productSelectorOpen, setProductSelectorOpen] = useState(needsProductSelection);
   useEffect(() => {
@@ -5324,7 +5366,7 @@ function CleanLineItemCard({
     setSameArtworkModeRequested(usesSameArtworkBothSides);
   }, [usesSameArtworkBothSides]);
   const useSameArtworkBothSides = usesSameArtworkBothSides || sameArtworkModeRequested;
-  const sizeDisplay = lineItem.width && lineItem.height
+  const sizeDisplay = hasDimensions
     ? `${lineItem.width} x ${lineItem.height} ${lineItem.dimensionsUnit === "ft" ? "feet" : "inches"}`
     : "Size needed";
   const hasSelectedProduct = Boolean(lineItem.selectedProductId);
@@ -5352,8 +5394,8 @@ function CleanLineItemCard({
     ]
     : [
       hasSelectedProduct && !lineItem.productUnresolved ? lineItem.productName || "Product selected" : "Product unresolved",
-      lineItem.quantity ? `Qty ${lineItem.quantity}` : "Quantity needed",
-      lineItem.width && lineItem.height ? sizeDisplay : "Size needed",
+      hasQuantity ? `Qty ${lineItem.quantity}` : "Quantity needed",
+      hasDimensions ? sizeDisplay : "Size needed",
       activeArtworkLinks.length ? `Artwork linked · ${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"}` : "Artwork needed",
     ];
   const [workflowOpen, setWorkflowOpen] = useState(!workflowComplete);
@@ -5362,8 +5404,8 @@ function CleanLineItemCard({
   }, [workflowComplete]);
   const decisionSteps = [
     { label: "Product", complete: Boolean(hasSelectedProduct && !lineItem.productUnresolved) },
-    { label: "Quantity", complete: Boolean(lineItem.quantity) },
-    { label: "Size", complete: Boolean(lineItem.width && lineItem.height) },
+    { label: "Quantity", complete: hasQuantity },
+    { label: "Size", complete: hasDimensions },
     { label: "Artwork", complete: activeArtworkLinks.length > 0 && doubleSidedArtworkComplete },
     { label: "Product Options", complete: productOptionsComplete },
   ];
@@ -5596,7 +5638,7 @@ function CleanLineItemCard({
                 <div className="text-[11px] font-bold uppercase tracking-wide text-slate-500">Step 3</div>
                 <div className="text-sm font-bold text-slate-100">Size</div>
               </div>
-              <Badge variant={lineItem.width && lineItem.height ? "secondary" : "destructive"}>{lineItem.width && lineItem.height ? "Done" : "Needs decision"}</Badge>
+              <Badge variant={hasDimensions ? "secondary" : "destructive"}>{hasDimensions ? "Done" : "Needs decision"}</Badge>
             </div>
             <div
               className={cn("rounded transition-shadow", cleanHighlightClass("dimensions", activeTarget))}
@@ -6314,6 +6356,11 @@ function CleanOrderWorkstation({
   const validationErrors = rawValidationErrors.filter((error) => {
     if (validationErrorReferencesRemovedLine(error, form.reviewedLineItemsJson.length)) return false;
     if (anyArtworkAssigned && artworkValidationErrorIsResolvedByAssignment(form.reviewedLineItemsJson, error)) return false;
+    if (/\b(?:size|dimensions?|width|height)\b/i.test(error)) {
+      const lineMatch = error.match(/line\s+(\d+)/i);
+      if (lineMatch) return !hasValidLineItemDimensions(form.reviewedLineItemsJson[Number(lineMatch[1]) - 1]);
+      return !form.reviewedLineItemsJson.every(hasValidLineItemDimensions);
+    }
     if (!/quantity/i.test(error)) return true;
     const lineMatch = error.match(/line\s+(\d+)/i);
     if (lineMatch) return !hasValidLineItemQuantity(form.reviewedLineItemsJson[Number(lineMatch[1]) - 1]);
@@ -6370,6 +6417,7 @@ function CleanOrderWorkstation({
         && !isObsoleteRemovedLineDecision(decision)
         && !(anyArtworkAssigned && isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(form.reviewedLineItemsJson, decision))
         && !(isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(form.reviewedLineItemsJson, decision))
+        && !(isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(form.reviewedLineItemsJson, decision))
       ))
       .map((decision) => cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);

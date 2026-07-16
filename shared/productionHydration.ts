@@ -11,6 +11,12 @@ export type ProductionOption = {
   selectedLabel?: string;
 };
 
+export type ProductionArtworkAssignment = {
+  id?: string | null;
+  fileRecordId?: string | null;
+  side?: string | null;
+};
+
 export type SheetProductionLayout = {
   sheetWidthIn: number;
   sheetHeightIn: number;
@@ -151,7 +157,10 @@ export function resolveSheetConfiguration(input: {
 
 export function resolveProductionPreviewUrl(art: {
   thumbnailUrl?: unknown;
+  thumbUrl?: unknown;
   thumbKey?: unknown;
+  previewUrl?: unknown;
+  previewKey?: unknown;
   fileUrl?: unknown;
   fileName?: unknown;
   mimeType?: unknown;
@@ -159,10 +168,46 @@ export function resolveProductionPreviewUrl(art: {
   if (!art) return undefined;
   const thumbnail = String(art.thumbnailUrl ?? "").trim();
   if (thumbnail) return thumbnail;
+  const thumbUrl = String(art.thumbUrl ?? "").trim();
+  if (thumbUrl) return thumbUrl;
   const thumbKey = String(art.thumbKey ?? "").trim();
   if (thumbKey) return thumbKey.startsWith("/") ? thumbKey : `/objects/${thumbKey.replace(/^\/+/, "")}`;
+  // A preview derivative is an image representation (including PDF page
+  // previews). Use it only after an explicit thumbnail/thumbnail key.
+  const previewUrl = String(art.previewUrl ?? "").trim();
+  if (previewUrl) return previewUrl;
+  const previewKey = String(art.previewKey ?? "").trim();
+  if (previewKey) return previewKey.startsWith("/") ? previewKey : `/objects/${previewKey.replace(/^\/+/, "")}`;
   const fileUrl = String(art.fileUrl ?? "").trim();
   const imageByMime = String(art.mimeType ?? "").toLowerCase().startsWith("image/");
   const imageByName = /\.(avif|bmp|gif|jpe?g|png|svg|tiff?|webp)(?:\?|$)/i.test(String(art.fileName ?? fileUrl));
   return fileUrl && (imageByMime || imageByName) ? fileUrl : undefined;
+}
+
+/**
+ * Resolves Front and Back strictly from explicit side metadata. It deliberately
+ * never uses attachment order as an assignment signal. `both` supports an
+ * in-flight inbound draft before it is materialized as separate front/back
+ * order attachment mappings.
+ */
+export function resolveProductionArtworkSides<T extends ProductionArtworkAssignment>(artwork: T[] | null | undefined): {
+  front: T | null;
+  back: T | null;
+  unassigned: T[];
+  isSameArtwork: boolean;
+} {
+  const list = Array.isArray(artwork) ? artwork : [];
+  const sideOf = (item: T) => normalize(item.side);
+  const both = list.filter((item) => sideOf(item) === "both");
+  const front = list.find((item) => sideOf(item) === "front") ?? both[0] ?? null;
+  const back = list.find((item) => sideOf(item) === "back") ?? both[0] ?? null;
+  const unassigned = list.filter((item) => !["front", "back", "both"].includes(sideOf(item)));
+  const isSameArtwork = Boolean(
+    front && back && (
+      front === back ||
+      (front.fileRecordId && front.fileRecordId === back.fileRecordId) ||
+      (front.id && front.id === back.id)
+    ),
+  );
+  return { front, back, unassigned, isSameArtwork };
 }

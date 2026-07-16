@@ -55,6 +55,7 @@ import {
 } from "./flatStockNesting.shared";
 import {
   calculateSheetProductionLayout,
+  resolveProductionArtworkSides,
   resolveProductionPreviewUrl,
   resolveProductionSides,
   resolveSheetConfiguration,
@@ -1182,6 +1183,7 @@ export function registerProductionJobsRoutes(
           orderLineItemId: orderAttachments.orderLineItemId,
           fileRecordId: orderAttachments.fileRecordId,
           fileName: orderAttachments.fileName,
+          mimeType: orderAttachments.mimeType,
           fileUrl: orderAttachments.fileUrl,
           thumbKey: orderAttachments.thumbKey,
           previewKey: orderAttachments.previewKey,
@@ -1213,6 +1215,7 @@ export function registerProductionJobsRoutes(
           role: assetLinks.role,
           fileName: assets.fileName,
           fileRecordId: assets.fileRecordId,
+          mimeType: assets.mimeType,
           thumbKey: assets.thumbKey,
           previewKey: assets.previewKey,
           previewStatus: assets.previewStatus,
@@ -1248,10 +1251,13 @@ export function registerProductionJobsRoutes(
           orderLineItemId: string | null;
           fileRecordId: string | null;
           fileName: string;
+          mimeType: string | null;
           fileUrl: string | null;
           availabilityStatus?: 'available' | 'archived' | 'restoring' | 'missing';
           thumbKey: string | null;
           previewKey: string | null;
+          thumbUrl: string | null;
+          previewUrl: string | null;
           thumbnailUrl: string | null;
           side: string;
           isPrimary: boolean;
@@ -1266,10 +1272,13 @@ export function registerProductionJobsRoutes(
           orderLineItemId: string | null;
           fileRecordId: string | null;
           fileName: string;
+          mimeType: string | null;
           fileUrl: string | null;
           availabilityStatus?: 'available' | 'archived' | 'restoring' | 'missing';
           thumbKey: string | null;
           previewKey: string | null;
+          thumbUrl: string | null;
+          previewUrl: string | null;
           thumbnailUrl: string | null;
           side: string;
           isPrimary: boolean;
@@ -1288,10 +1297,13 @@ export function registerProductionJobsRoutes(
           orderLineItemId: a.orderLineItemId ?? null,
           fileRecordId: a.fileRecordId ?? null,
           fileName: a.fileName,
+          mimeType: a.mimeType ?? null,
           fileUrl: a.originalUrl ?? null,
           availabilityStatus: a.availabilityStatus,
           thumbKey: a.thumbKey ?? null,
           previewKey: a.previewKey ?? null,
+          thumbUrl: a.thumbUrl ?? null,
+          previewUrl: a.previewUrl ?? null,
           thumbnailUrl: a.thumbnailUrl ?? null,
           side: a.side ?? "unassigned",
           isPrimary: !!a.isPrimary,
@@ -1328,10 +1340,13 @@ export function registerProductionJobsRoutes(
           orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
           fileRecordId: link.fileRecordId ?? null,
           fileName: link.fileName,
+          mimeType: (link as any).mimeType ?? null,
           fileUrl: originalAccess.originalUrl,
           availabilityStatus: originalAccess.availabilityStatus,
           thumbKey: link.thumbKey ?? null,
           previewKey: link.previewKey ?? null,
+          thumbUrl: (enrichedAsset as any).thumbUrl ?? null,
+          previewUrl: (enrichedAsset as any).previewUrl ?? null,
           thumbnailUrl:
             (enrichedAsset as any).previewThumbnailUrl ??
             (enrichedAsset as any).thumbnailUrl ??
@@ -1478,21 +1493,25 @@ export function registerProductionJobsRoutes(
         const printerOptions = resolvePrinterOptionsForStation(config, row.stationKey);
 
         // Explicit preview/file URLs for fast board/list thumbnail rendering
-        const frontBySide = artwork.find((a) => String(a?.side || "").toLowerCase() === "front");
-        const backBySide = artwork.find((a) => String(a?.side || "").toLowerCase() === "back");
+        const assignedArtworkSides = resolveProductionArtworkSides(artwork);
         const primaryArt = artwork.find((a) => !!a?.isPrimary);
         const isDoubleSided = resolvedPrintSides === "Double-sided";
         // For double-sided work, Front and Back can only come from explicit side
         // assignments. Attachment/upload order is never an assignment signal.
-        const frontArt = frontBySide ?? (isDoubleSided ? null : primaryArt ?? artwork[0] ?? null);
-        const backArt = backBySide ?? null;
-        const sameArtworkBothSides = Boolean(frontArt?.fileRecordId && frontArt.fileRecordId === backArt?.fileRecordId);
+        const frontArt = assignedArtworkSides.front ?? (isDoubleSided ? null : primaryArt ?? artwork[0] ?? null);
+        const backArt = assignedArtworkSides.back;
+        const sameArtworkBothSides = assignedArtworkSides.isSameArtwork;
         const artworkThumbs = (artwork ?? []).slice(0, 6).map((a) => ({
           id: a.id,
           fileName: a.fileName,
           fileUrl: a.fileUrl,
+          fileRecordId: a.fileRecordId,
+          mimeType: a.mimeType,
           thumbnailUrl: a.thumbnailUrl,
           thumbKey: a.thumbKey,
+          previewKey: a.previewKey,
+          thumbUrl: a.thumbUrl,
+          previewUrl: a.previewUrl,
           side: a.side,
           isPrimary: a.isPrimary,
           thumbStatus: a.thumbStatus,
@@ -2013,6 +2032,7 @@ export function registerProductionJobsRoutes(
           orderLineItemId: orderAttachments.orderLineItemId,
           fileRecordId: orderAttachments.fileRecordId,
           fileName: orderAttachments.fileName,
+          mimeType: orderAttachments.mimeType,
           fileUrl: orderAttachments.fileUrl,
           thumbKey: orderAttachments.thumbKey,
           previewKey: orderAttachments.previewKey,
@@ -2046,11 +2066,15 @@ export function registerProductionJobsRoutes(
         const mapped = {
           id: a.id,
           orderLineItemId: a.orderLineItemId ?? null,
+          fileRecordId: a.fileRecordId ?? null,
           fileName: a.fileName,
+          mimeType: a.mimeType ?? null,
           fileUrl: a.originalUrl ?? null,
           availabilityStatus: a.availabilityStatus,
           thumbKey: a.thumbKey ?? null,
           previewKey: a.previewKey ?? null,
+          thumbUrl: a.thumbUrl ?? null,
+          previewUrl: a.previewUrl ?? null,
           thumbnailUrl: a.thumbnailUrl ?? null,
           side: a.side ?? "unassigned",
           isPrimary: !!a.isPrimary,
@@ -2106,11 +2130,14 @@ export function registerProductionJobsRoutes(
           const mapped = {
             id: link.id,
             orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
+            fileRecordId: link.fileRecordId ?? null,
             fileName: link.fileName,
             fileUrl: originalAccess.originalUrl,
             availabilityStatus: originalAccess.availabilityStatus,
             thumbKey: link.thumbKey ?? null,
             previewKey: link.previewKey ?? null,
+            thumbUrl: (enrichedAsset as any).thumbUrl ?? null,
+            previewUrl: (enrichedAsset as any).previewUrl ?? null,
             thumbnailUrl:
               (enrichedAsset as any).previewThumbnailUrl ??
               (enrichedAsset as any).thumbnailUrl ??

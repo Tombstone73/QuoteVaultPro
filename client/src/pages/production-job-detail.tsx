@@ -15,7 +15,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ROUTES } from "@/config/routes";
-import { resolveProductionPreviewUrl } from "@shared/productionHydration";
+import { resolveProductionArtworkSides, resolveProductionPreviewUrl } from "@shared/productionHydration";
 import {
   useAddProductionNote,
   useCompleteProductionJob,
@@ -127,7 +127,8 @@ function ProductionThumbnail({
       <div className={`flex items-center justify-center bg-muted ${className || ""}`}>
         <div className="text-center p-2">
           <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
-          <div className="mt-1 text-[10px] text-muted-foreground">No Preview</div>
+          <div className="mt-1 text-[10px] text-muted-foreground">{artwork ? "File assigned" : "No Preview"}</div>
+          {artwork && <div className="text-[10px] text-muted-foreground">Preview unavailable</div>}
           {import.meta.env.DEV && failed && src ? (
             <div className="mt-1 text-[9px] text-amber-500">thumb failed</div>
           ) : null}
@@ -173,8 +174,7 @@ function normalizeArtworkForSides(
   isSameArtwork: boolean;
 } {
   const list = [...(artwork || [])];
-  const byFront = list.filter((a) => String(a.side || "").toLowerCase() === "front");
-  const byBack = list.filter((a) => String(a.side || "").toLowerCase() === "back");
+  const assignedSides = resolveProductionArtworkSides(list);
 
   const pickBest = (items: ProductionOrderArtworkSummary[]) => {
     if (items.length === 0) return null;
@@ -184,8 +184,8 @@ function normalizeArtworkForSides(
 
   const sidesLower = String(sides || "").toLowerCase();
   const isDouble = sidesLower.includes("double") || sidesLower === "2" || sidesLower === "ds";
-  const frontArt = pickBest(byFront) ?? (isDouble ? null : pickBest(list));
-  const backArt = pickBest(byBack);
+  const frontArt = pickBest(assignedSides.front ? [assignedSides.front] : []) ?? (isDouble ? null : pickBest(list));
+  const backArt = pickBest(assignedSides.back ? [assignedSides.back] : []);
 
   if (isDouble) {
     // Do not infer Front/Back from attachment order. Those files must be assigned at the order line.
@@ -193,7 +193,7 @@ function normalizeArtworkForSides(
       front: frontArt,
       back: backArt,
       showBackSlot: true,
-      isSameArtwork: Boolean(backArt?.sameAsFront || (frontArt?.fileRecordId && frontArt.fileRecordId === backArt?.fileRecordId)),
+      isSameArtwork: Boolean(backArt?.sameAsFront || assignedSides.isSameArtwork),
     };
   } else {
     // Single-sided: no back slot

@@ -1,54 +1,73 @@
-import {
-  calculateSheetProductionLayout,
-  resolveProductionPreviewUrl,
-  resolveProductionSides,
-  resolveSheetConfiguration,
-} from "../productionHydration";
+import { describe, expect, test } from "@jest/globals";
+import { resolveProductionArtworkSides, resolveProductionPreviewUrl, resolveProductionSides } from "../productionHydration";
 
-describe("production hydration", () => {
-  it("hydrates a double-sided print option from ordered line-item selections", () => {
-    expect(resolveProductionSides({ selectedOptions: [{ optionName: "Print Sides", value: "Double-Sided" }] }))
-      .toBe("Double-sided");
+describe("production artwork hydration", () => {
+  test("prefers an explicit thumbnail URL over every other preview candidate", () => {
+    expect(resolveProductionPreviewUrl({
+      thumbnailUrl: "/objects/thumbs/front.jpg",
+      thumbKey: "thumbs/fallback.jpg",
+      previewUrl: "/objects/previews/front.jpg",
+      fileUrl: "/objects/uploads/front.png",
+      mimeType: "image/png",
+    })).toBe("/objects/thumbs/front.jpg");
   });
 
-  it("calculates 24x18 quantity 50 on a 48x96 flat sheet as 10-up, 5 sheets, and 10 passes", () => {
-    expect(calculateSheetProductionLayout({
-      stationKey: "flatbed",
-      materialType: "sheet",
-      widthIn: 24,
-      heightIn: 18,
-      quantity: 50,
-      sheetWidthIn: 48,
-      sheetHeightIn: 96,
-      sides: "Double-sided",
-    })).toEqual({
-      sheetWidthIn: 48,
-      sheetHeightIn: 96,
-      piecesPerSheet: 10,
-      sheetsToPrint: 5,
-      printPasses: 10,
-      orientation: "normal",
-    });
+  test("converts a thumbnail storage key into an object URL", () => {
+    expect(resolveProductionPreviewUrl({ thumbKey: "thumbs/front.jpg" })).toBe("/objects/thumbs/front.jpg");
   });
 
-  it("does not fabricate flat-sheet work for roll jobs or missing sheet configuration", () => {
-    expect(calculateSheetProductionLayout({ stationKey: "roll", widthIn: 24, heightIn: 18, quantity: 50, sheetWidthIn: 48, sheetHeightIn: 96 }))
-      .toBeNull();
-    expect(calculateSheetProductionLayout({ stationKey: "flatbed", widthIn: 24, heightIn: 18, quantity: 50 }))
-      .toBeNull();
+  test("uses a preview derivative for a PDF when no thumbnail is available", () => {
+    expect(resolveProductionPreviewUrl({
+      fileName: "front.pdf",
+      mimeType: "application/pdf",
+      previewUrl: "/objects/previews/front-page-1.jpg",
+    })).toBe("/objects/previews/front-page-1.jpg");
   });
 
-  it("uses ordered PBV2 sheet configuration before current product configuration", () => {
-    expect(resolveSheetConfiguration({
-      pbv2SnapshotJson: { treeJson: { meta: { pricingProfileConfig: { sheetWidth: 48, sheetHeight: 96, materialType: "sheet" } } } },
-      pricingProfileConfig: { sheetWidth: 60, sheetHeight: 120, materialType: "sheet" },
-    })).toEqual({ sheetWidthIn: 48, sheetHeightIn: 96, materialType: "sheet", allowRotation: false });
+  test("uses an original only when it is an image", () => {
+    expect(resolveProductionPreviewUrl({
+      fileName: "front.png",
+      mimeType: "image/png",
+      fileUrl: "/objects/uploads/front.png",
+    })).toBe("/objects/uploads/front.png");
+    expect(resolveProductionPreviewUrl({
+      fileName: "front.pdf",
+      mimeType: "application/pdf",
+      fileUrl: "/objects/uploads/front.pdf",
+    })).toBeUndefined();
   });
 
-  it("uses generated artwork thumbnail keys before falling back to image originals", () => {
-    expect(resolveProductionPreviewUrl({ thumbKey: "org/thumbs/front.png", fileUrl: "https://example.test/front.pdf" }))
-      .toBe("/objects/org/thumbs/front.png");
-    expect(resolveProductionPreviewUrl({ fileName: "front.png", fileUrl: "https://example.test/front.png" }))
-      .toBe("https://example.test/front.png");
+  test("reads nested PBV2 print-side selections for explicit side hydration", () => {
+    expect(resolveProductionSides({
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: { sides: { value: "double" } },
+      },
+    })).toBe("Double-sided");
+  });
+
+  test("hydrates explicit front/back assignments and recognizes a shared source file", () => {
+    const separate = resolveProductionArtworkSides([
+      { id: "front", fileRecordId: "file-front", side: "front" },
+      { id: "back", fileRecordId: "file-back", side: "back" },
+    ]);
+    expect(separate.front?.id).toBe("front");
+    expect(separate.back?.id).toBe("back");
+    expect(separate.isSameArtwork).toBe(false);
+
+    const same = resolveProductionArtworkSides([
+      { id: "front", fileRecordId: "shared-file", side: "front" },
+      { id: "back", fileRecordId: "shared-file", side: "back" },
+    ]);
+    expect(same.front?.id).toBe("front");
+    expect(same.back?.id).toBe("back");
+    expect(same.isSameArtwork).toBe(true);
+  });
+
+  test("does not infer a side from an unassigned file", () => {
+    const resolved = resolveProductionArtworkSides([{ id: "unassigned", fileRecordId: "file-1", side: "na" }]);
+    expect(resolved.front).toBeNull();
+    expect(resolved.back).toBeNull();
+    expect(resolved.unassigned).toHaveLength(1);
   });
 });

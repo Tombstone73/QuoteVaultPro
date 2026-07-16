@@ -2752,6 +2752,55 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).not.toContain("What quantity is needed?");
   });
 
+  test("clears a stale Clean View size decision when staff enters valid dimensions", async () => {
+    const baseParsed = parsedDraft();
+    const cleanParsed = parsedDraft({
+      lineItems: [{
+        ...baseParsed.lineItems[0],
+        width: null,
+        height: null,
+        dimensionsUnit: "in",
+      }],
+      missingDecisions: [{
+        field: "lineItems.0.dimensions",
+        label: "What size stickers are needed?",
+        reason: "No clear dimensions were detected for this line item.",
+        severity: "blocking",
+      }],
+      globalWarnings: [],
+    });
+    const cleanReview = reviewDraft(cleanParsed);
+    cleanReview.reviewedLineItemsJson[0].width = null;
+    cleanReview.reviewedLineItemsJson[0].height = null;
+    cleanReview.reviewedLineItemsJson[0].dimensionsSource = null;
+    setupParsedInboundReview({ parsed: cleanParsed, review: cleanReview });
+
+    renderPage();
+    await waitForText("Operational View");
+    const cleanButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+
+    await waitForText("Blocking Decisions");
+    expect(container.textContent).toContain("What size stickers are needed?");
+    const widthInput = container.querySelector("input[aria-label='Width']") as HTMLInputElement;
+    const heightInput = container.querySelector("input[aria-label='Height']") as HTMLInputElement;
+    expect(widthInput).toBeTruthy();
+    expect(heightInput).toBeTruthy();
+
+    act(() => {
+      Simulate.change(widthInput, { target: { value: "21" } } as any);
+    });
+    await waitForCondition(() => widthInput.value === "21", "Clean View width update");
+    act(() => {
+      Simulate.change(heightInput, { target: { value: "13" } } as any);
+    });
+
+    expect(container.querySelector("[data-testid='clean-size-workflow']")?.textContent).toContain("Done");
+    expect(container.textContent).not.toContain("What size stickers are needed?");
+  });
+
   test("collapses a completed Clean View line item into a compact summary", async () => {
     const baseParsed = parsedDraft();
     const cleanParsed = parsedDraft({
