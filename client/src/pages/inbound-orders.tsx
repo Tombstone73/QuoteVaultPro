@@ -2405,6 +2405,69 @@ function quantityLineIndex(value: string | null | undefined): number | null {
   return match ? Number(match[1]) : null;
 }
 
+function reviewedLineIndex(value: string | null | undefined): number | null {
+  const match = String(value ?? "").match(/lineitems\.(\d+)(?:\.|$)/i);
+  return match ? Number(match[1]) : null;
+}
+
+function reindexReviewedLinePath(value: string, removedLineIndex: number): string {
+  const lineIndex = reviewedLineIndex(value);
+  if (lineIndex == null || lineIndex <= removedLineIndex) return value;
+  return value.replace(/(lineitems\.)(\d+)/i, (_match, prefix) => `${prefix}${lineIndex - 1}`);
+}
+
+function reindexReviewedLineText(value: string, previousLineIndex: number): string {
+  const previousDisplayNumber = previousLineIndex + 1;
+  const nextDisplayNumber = previousLineIndex;
+  return value.replace(
+    new RegExp(`\\b(line(?:\\s+item)?)\\s+${previousDisplayNumber}\\b`, "gi"),
+    (_match, prefix) => `${prefix} ${nextDisplayNumber}`,
+  );
+}
+
+function isObsoleteRemovedLineDecision(decision: ReviewDraftFormState["missingDecisionsJson"][number]): boolean {
+  return decision.resolutionNote?.startsWith("Obsolete: reviewed line item was removed.") ?? false;
+}
+
+function removeReviewedLineItem(
+  form: ReviewDraftFormState,
+  removedLineIndex: number,
+): Partial<ReviewDraftFormState> {
+  const reviewedLineItemsJson = form.reviewedLineItemsJson.filter((_, index) => index !== removedLineIndex);
+  return {
+    reviewedLineItemsJson,
+    missingDecisionsJson: form.missingDecisionsJson.map((decision) => {
+      const lineIndex = reviewedLineIndex(decision.field);
+      if (lineIndex === removedLineIndex) {
+        return {
+          ...decision,
+          status: "resolved" as const,
+          resolutionNote: "Obsolete: reviewed line item was removed.",
+        };
+      }
+      return lineIndex != null && lineIndex > removedLineIndex
+        ? {
+          ...decision,
+          field: reindexReviewedLinePath(decision.field, removedLineIndex),
+          label: reindexReviewedLineText(decision.label, lineIndex),
+          reason: reindexReviewedLineText(decision.reason, lineIndex),
+        }
+        : decision;
+    }),
+    warningsJson: form.warningsJson.map((warning) => {
+      const lineIndex = reviewedLineIndex(warning.fieldPath);
+      return lineIndex != null && lineIndex > removedLineIndex
+        ? { ...warning, fieldPath: reindexReviewedLinePath(warning.fieldPath ?? "", removedLineIndex) }
+        : warning;
+    }),
+  };
+}
+
+function validationErrorReferencesRemovedLine(error: string, activeLineCount: number): boolean {
+  const lineMatch = error.match(/line\s+(\d+)/i);
+  return Boolean(lineMatch && Number(lineMatch[1]) > activeLineCount);
+}
+
 function hasValidLineItemQuantity(
   lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number] | undefined,
 ): boolean {
@@ -6125,9 +6188,7 @@ function CleanOrderWorkstation({
     });
   };
   const removeLineItem = (index: number) => {
-    updateForm({
-      reviewedLineItemsJson: form.reviewedLineItemsJson.filter((_, itemIndex) => itemIndex !== index),
-    });
+    updateForm(removeReviewedLineItem(form, index));
   };
   const productCatalogOptions = (productSearchQuery.data?.data ?? []).map(productToReviewOption);
   const customerOptions = mergeReviewOptions(
@@ -6150,6 +6211,7 @@ function CleanOrderWorkstation({
   const anyArtworkAssigned = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
   const rawValidationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
   const validationErrors = rawValidationErrors.filter((error) => {
+    if (validationErrorReferencesRemovedLine(error, form.reviewedLineItemsJson.length)) return false;
     if (anyArtworkAssigned && artworkValidationErrorIsResolvedByAssignment(form.reviewedLineItemsJson, error)) return false;
     if (!/quantity/i.test(error)) return true;
     const lineMatch = error.match(/line\s+(\d+)/i);
@@ -6203,7 +6265,8 @@ function CleanOrderWorkstation({
   const blockingDecisionItems = cleanUniqueItems([
     ...form.missingDecisionsJson
       .filter((decision) => (
-        (decision.status === "still_blocking" || decision.severity === "blocking")
+        decision.status === "still_blocking"
+        && !isObsoleteRemovedLineDecision(decision)
         && !(anyArtworkAssigned && isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(form.reviewedLineItemsJson, decision))
         && !(isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(form.reviewedLineItemsJson, decision))
       ))
@@ -6224,7 +6287,7 @@ function CleanOrderWorkstation({
   const informationItems = cleanUniqueItems([
     ...form.warningsJson.filter((warning) => !isEvidenceConflictWarning(warning)).map((warning) => cleanOperatorText(warning.message)),
     ...form.missingDecisionsJson
-      .filter((decision) => decision.status !== "still_blocking" && decision.severity !== "blocking")
+      .filter((decision) => decision.status !== "still_blocking" && decision.severity !== "blocking" && !isObsoleteRemovedLineDecision(decision))
       .map((decision) => cleanOperatorText([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
@@ -7456,9 +7519,7 @@ function DraftBuilderPanel({
     });
   };
   const removeLineItem = (index: number) => {
-    updateForm({
-      reviewedLineItemsJson: form.reviewedLineItemsJson.filter((_, itemIndex) => itemIndex !== index),
-    });
+    updateForm(removeReviewedLineItem(form, index));
   };
   const clearLineItemProduct = (index: number) => {
     updateLineItem(index, {

@@ -1588,6 +1588,72 @@ describe("InboundOrderService editable review draft", () => {
     });
   });
 
+  test("marks decisions for a removed trailing line obsolete and allows the remaining complete line to become ready", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    const completeFirstLine = {
+      ...initialized.reviewedLineItemsJson[0],
+      artworkLinks: [{
+        fileId: "file_artwork_1",
+        fileRecordId: "file_record_artwork_1",
+        filename: "line-one-artwork.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 12345,
+        role: "artwork" as const,
+        classification: "ARTWORK" as const,
+        source: "staff_selected" as const,
+        confidence: 100,
+        reason: "Staff assigned classified artwork to line one.",
+      }],
+    };
+    const deletedLineDecision = {
+      ...initialized.missingDecisionsJson[0],
+      field: "lineItems.1.artwork",
+      label: "Is artwork supplied for line item 2?",
+      severity: "blocking" as const,
+      status: "still_blocking" as const,
+    };
+
+    const saved = await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: [completeFirstLine],
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "missing" },
+        missingDecisionsJson: [...initialized.missingDecisionsJson, deletedLineDecision],
+        warningsJson: initialized.warningsJson,
+        reviewNotes: "Removed the unnecessary second line item.",
+      },
+    });
+
+    expect(saved.reviewedLineItemsJson).toHaveLength(1);
+    expect(saved.missingDecisionsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.0.artwork", status: "resolved" }),
+      expect.objectContaining({
+        field: "lineItems.1.artwork",
+        status: "resolved",
+        resolutionNote: "Obsolete: reviewed line item was removed.",
+      }),
+    ]));
+    expect(saved.validationErrors.join("\n")).not.toContain("Line 2");
+
+    const ready = await service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    expect(ready.status).toBe("ready_to_convert");
+  });
+
   test("matching PO total and system total does not create a pricing warning", async () => {
     const attempt = parseAttempt({ parsedDraft: parsedDraftWithPoPricing({ totalPriceCents: 4500, evidenceText: "Total: $45.00" }) });
     const { repo } = makeRepository(inboundRecord(), attempt);

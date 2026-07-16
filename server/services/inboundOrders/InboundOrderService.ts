@@ -560,6 +560,19 @@ function quantityLineIndex(value: string | null | undefined): number | null {
   return match ? Number(match[1]) : null;
 }
 
+function reviewedLineIndex(value: string | null | undefined): number | null {
+  const match = String(value ?? "").match(/lineitems\.(\d+)(?:\.|$)/i);
+  return match ? Number(match[1]) : null;
+}
+
+function decisionReferencesRemovedLine(
+  payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
+  decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field">,
+): boolean {
+  const lineIndex = reviewedLineIndex(decision.field);
+  return lineIndex != null && lineIndex >= payload.reviewedLineItemsJson.length;
+}
+
 function hasValidLineItemQuantity(
   lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number] | undefined,
 ): boolean {
@@ -4207,6 +4220,13 @@ export class InboundOrderService {
     const artworkAssigned = hasAssignedClassifiedArtwork(payload);
     const missingDecisionsJson = payload.missingDecisionsJson.map((decision) => {
       if (decision.status !== "still_blocking") return decision;
+      if (decisionReferencesRemovedLine(payload, decision)) {
+        return {
+          ...decision,
+          status: "resolved" as const,
+          resolutionNote: "Obsolete: reviewed line item was removed.",
+        };
+      }
       if (isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(payload, decision)) {
         return {
           ...decision,
