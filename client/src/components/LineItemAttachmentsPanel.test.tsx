@@ -19,7 +19,7 @@ jest.mock("@/components/AttachmentViewerDialog", () => ({
 (globalThis as any).TextDecoder = TextDecoder;
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
 
-function renderPanel(doubleSided: boolean) {
+function renderPanel(doubleSided: boolean, useSameArtworkBothSides?: boolean) {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(["/api/orders/order-1/line-items/line-1/files"], [
     {
@@ -42,6 +42,7 @@ function renderPanel(doubleSided: boolean) {
         lineItemId="line-1"
         defaultExpanded
         doubleSided={doubleSided}
+        useSameArtworkBothSides={useSameArtworkBothSides}
       />
     </QueryClientProvider>,
   );
@@ -57,5 +58,10 @@ describe("LineItemAttachmentsPanel double-sided artwork controls", () => {
 
     const singleSided = renderPanel(false);
     expect(singleSided).not.toContain("Use same artwork on both sides");
+
+    const sameArtwork = renderPanel(true, true);
+    expect(sameArtwork).toContain('data-testid="order-use-same-artwork-both-sides"');
+    expect(sameArtwork).toContain('data-state="checked"');
+    expect(sameArtwork).not.toContain("Back artwork not assigned");
   });
 });
