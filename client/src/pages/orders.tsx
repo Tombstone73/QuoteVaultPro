@@ -8,8 +8,8 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, FileText, Download } from "lucide-react";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Plus, Search, Calendar, DollarSign, Package, Check, X, Eye, ChevronUp, ChevronDown, Copy, Edit, Printer, Loader2, FileText, Download, RotateCcw, Ban } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrders, type OrderRow, type OrdersListResponse, orderDetailQueryKey, orderTimelineQueryKey } from "@/hooks/useOrders";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
@@ -268,6 +268,8 @@ export default function Orders() {
   const [attachmentsDialogItems, setAttachmentsDialogItems] = useState<any[]>([]);
   const [attachmentsDialogLoading, setAttachmentsDialogLoading] = useState(false);
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
+  const [pendingStateAction, setPendingStateAction] = useState<{ order: OrderRow; action: "close" | "reopen" | "cancel" } | null>(null);
+  const [stateActionNote, setStateActionNote] = useState("");
 
   const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
   const [selectedAttachmentIndex, setSelectedAttachmentIndex] = useState(0);
@@ -552,6 +554,34 @@ export default function Orders() {
     onError: () => {
       toast({ title: "Error", description: "Failed to update priority", variant: "destructive" });
     },
+  });
+
+  const orderStateMutation = useMutation({
+    mutationFn: async ({ orderId, action, note }: { orderId: string; action: "close" | "reopen" | "cancel"; note: string }) => {
+      const request = action === "close"
+        ? { url: `/api/orders/${orderId}/close`, method: "POST", body: { notes: note || undefined, confirmUnpaidInvoices: true } }
+        : action === "reopen"
+          ? { url: `/api/orders/${orderId}/reopen`, method: "POST", body: { reason: note, targetState: "open" } }
+          : { url: `/api/orders/${orderId}/cancel`, method: "POST", body: { reason: "other", internalNote: note || undefined } };
+      const response = await fetch(request.url, {
+        method: request.method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(request.body),
+        credentials: "include",
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(data.message || data.error || `Failed to ${action} order`);
+      return data;
+    },
+    onSuccess: (_data, variables) => {
+      queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(variables.orderId) });
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(variables.orderId) });
+      setPendingStateAction(null);
+      setStateActionNote("");
+      toast({ title: "Order updated", description: `Order ${variables.action === "close" ? "closed" : variables.action === "reopen" ? "reopened" : "cancelled"}.` });
+    },
+    onError: (error: Error) => toast({ title: "Status update failed", description: error.message, variant: "destructive" }),
   });
 
   // Open attachments dialog - fetch current stabilized order file rows in one call
@@ -946,7 +976,7 @@ export default function Orders() {
 
       case "actions":
         return (
-          <div className="flex gap-1">
+          <div className="flex gap-1" data-stop-row-nav="true">
             <Button
               size="sm"
               variant="ghost"
@@ -956,13 +986,32 @@ export default function Orders() {
             </Button>
             <PrintTicketButton orderId={row.id} iconOnly variant="ghost" />
             {isAdminOrOwner && (
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={() => navigate(ROUTES.orders.edit(row.id), { state: { referrer: buildReferrer(location) } })}
-              >
-                <Edit className="w-4 h-4" />
-              </Button>
+              <>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => navigate(ROUTES.orders.edit(row.id), { state: { referrer: buildReferrer(location) } })}
+                  title="Edit order"
+                >
+                  <Edit className="w-4 h-4" />
+                </Button>
+                {row.state === "closed" ? (
+                  <Button size="sm" variant="ghost" onClick={() => setPendingStateAction({ order: row, action: "reopen" })} title="Reopen order">
+                    <RotateCcw className="w-4 h-4" />
+                  </Button>
+                ) : row.state !== "canceled" ? (
+                  <>
+                    {(row.state === "production_complete" || row.productionSummary?.requiredCount === 0) && (
+                      <Button size="sm" variant="ghost" onClick={() => setPendingStateAction({ order: row, action: "close" })} title="Close order">
+                        <Check className="w-4 h-4" />
+                      </Button>
+                    )}
+                    <Button size="sm" variant="ghost" className="text-destructive hover:text-destructive" onClick={() => setPendingStateAction({ order: row, action: "cancel" })} title="Cancel order">
+                      <Ban className="w-4 h-4" />
+                    </Button>
+                  </>
+                ) : null}
+              </>
             )}
           </div>
         );
@@ -1395,6 +1444,53 @@ export default function Orders() {
           }
         }}
       />
+
+      <Dialog open={!!pendingStateAction} onOpenChange={(open) => {
+        if (!open) {
+          setPendingStateAction(null);
+          setStateActionNote("");
+        }
+      }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {pendingStateAction?.action === "close" ? "Close Order" : pendingStateAction?.action === "reopen" ? "Reopen Order" : "Cancel Order"}
+            </DialogTitle>
+            <DialogDescription>
+              {pendingStateAction?.action === "close"
+                ? "Close this order? If it has unpaid invoices, payment collection remains available after it is closed."
+                : pendingStateAction?.action === "reopen"
+                  ? "Provide an audit reason before reopening this order."
+                  : "Cancel this order? This is a destructive operational change and requires confirmation."}
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-2">
+            <Label htmlFor="order-state-action-note">
+              {pendingStateAction?.action === "reopen" ? "Reason" : "Internal note (optional)"}
+            </Label>
+            <Input
+              id="order-state-action-note"
+              value={stateActionNote}
+              onChange={(event) => setStateActionNote(event.target.value)}
+              placeholder={pendingStateAction?.action === "reopen" ? "Why is this order being reopened?" : "Optional staff note"}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setPendingStateAction(null)} disabled={orderStateMutation.isPending}>Cancel</Button>
+            <Button
+              variant={pendingStateAction?.action === "cancel" ? "destructive" : "default"}
+              disabled={orderStateMutation.isPending || (pendingStateAction?.action === "reopen" && !stateActionNote.trim())}
+              onClick={() => pendingStateAction && orderStateMutation.mutate({
+                orderId: pendingStateAction.order.id,
+                action: pendingStateAction.action,
+                note: stateActionNote.trim(),
+              })}
+            >
+              {orderStateMutation.isPending ? "Saving..." : pendingStateAction?.action === "close" ? "Close Order" : pendingStateAction?.action === "reopen" ? "Reopen Order" : "Cancel Order"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Page>
   );
 }

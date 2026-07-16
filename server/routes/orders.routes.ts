@@ -19,6 +19,7 @@ import {
     customerContacts,
     jobs,
     orderStatusPills,
+    invoices,
     orderListNotes,
     users,
     customerVisibleProducts,
@@ -122,6 +123,7 @@ import {
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
 import { cancelOrder, OrderCancellationError } from "../services/orderCancellationService";
+import { assessOrderCloseEligibility } from "../services/orderCloseEligibility";
 import { cancelOrderRequestSchema } from "@shared/orderCancellation";
 import { isCanceledOrder } from "@shared/operationalState";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
@@ -2967,6 +2969,108 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.post("/api/orders/:orderId/close", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            if (!userId) return res.status(401).json({ success: false, message: "Authentication required" });
+
+            const parsed = z.object({
+                notes: z.string().trim().max(2000).optional(),
+                confirmUnpaidInvoices: z.boolean().optional(),
+            }).parse(req.body ?? {});
+            const orderId = String(req.params.orderId);
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ success: false, message: "Order not found" });
+            if (order.state === "closed" || order.state === "canceled") {
+                return res.status(409).json({ success: false, code: "TERMINAL_STATE", message: `Cannot close an order in ${order.state} state.` });
+            }
+
+            const lineRows = await db.select({ productId: orderLineItems.productId, status: orderLineItems.status })
+                .from(orderLineItems)
+                .where(eq(orderLineItems.orderId, orderId));
+            const productIds = Array.from(new Set(lineRows.map((line) => line.productId)));
+            const productRows = productIds.length > 0
+                ? await db.select({ id: products.id, workflowIntent: products.workflowIntent }).from(products)
+                    .where(and(eq(products.organizationId, organizationId), inArray(products.id, productIds)))
+                : [];
+            const workflowIntentByProductId = new Map(productRows.map((product) => [product.id, product.workflowIntent]));
+            const invoiceRows = await db.select({ status: invoices.status }).from(invoices)
+                .where(and(eq(invoices.organizationId, organizationId), eq(invoices.orderId, orderId)));
+            const nonVoidInvoices = invoiceRows.filter((invoice) => String(invoice.status).toLowerCase() !== "void");
+            const unpaidInvoiceCount = nonVoidInvoices.filter((invoice) => String(invoice.status).toLowerCase() !== "paid").length;
+            const eligibility = assessOrderCloseEligibility({
+                state: order.state,
+                lineItems: lineRows.map((line) => ({ status: line.status, workflowIntent: workflowIntentByProductId.get(line.productId) })),
+                invoiceCount: nonVoidInvoices.length,
+                unpaidInvoiceCount,
+            });
+            if (!eligibility.ok) {
+                return res.status(409).json({ success: false, code: eligibility.code, message: eligibility.message });
+            }
+            if (eligibility.requiresUnpaidConfirmation && !parsed.confirmUnpaidInvoices) {
+                return res.status(409).json({
+                    success: false,
+                    code: "UNPAID_INVOICES_CONFIRMATION_REQUIRED",
+                    message: "This order has unpaid invoices. Close order anyway? Payment collection remains available after closing.",
+                    unpaidInvoiceCount,
+                });
+            }
+
+            const { transitionOrderState } = await import("../services/orderStateService");
+            const userName = `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email;
+            const updatedOrder = await transitionOrderState({
+                organizationId,
+                orderId,
+                nextState: "closed",
+                actorUserId: userId,
+                actorUserName: userName,
+                notes: parsed.notes,
+                metadata: { source: "manual_close", serviceFeeOnly: eligibility.serviceFeeOnly, unpaidInvoiceCount },
+            });
+            return res.json({ success: true, data: updatedOrder, message: "Order closed." });
+        } catch (error: any) {
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ success: false, code: "VALIDATION_ERROR", message: fromZodError(error).message });
+            }
+            console.error("[POST /api/orders/:orderId/close] Error:", error);
+            return res.status(500).json({ success: false, message: "Failed to close order" });
+        }
+    });
+
+    app.post("/api/orders/:orderId/reopen", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            if (!userId) return res.status(401).json({ success: false, message: "Authentication required" });
+            const parsed = z.object({
+                reason: z.string().trim().min(1).max(2000),
+                targetState: z.enum(["open", "production_complete"]).optional(),
+            }).parse(req.body ?? {});
+            const { reopenOrder } = await import("../services/orderStateService");
+            const userName = `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email;
+            const updatedOrder = await reopenOrder({
+                organizationId,
+                orderId: String(req.params.orderId),
+                actorUserId: userId,
+                actorUserName: userName,
+                reason: parsed.reason,
+                targetState: parsed.targetState,
+            });
+            return res.json({ success: true, data: updatedOrder, message: "Order reopened." });
+        } catch (error: any) {
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ success: false, code: "VALIDATION_ERROR", message: fromZodError(error).message });
+            }
+            return res.status(400).json({ success: false, message: error?.message || "Failed to reopen order" });
+        }
+    });
+
     app.patch("/api/orders/:orderId/state", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
@@ -2985,6 +3089,12 @@ export async function registerOrderRoutes(
 
             if (isTerminalState(order.state as any)) {
                 return res.status(400).json({ success: false, message: `Cannot transition from ${order.state} state.`, code: 'TERMINAL_STATE' });
+            }
+
+            const lineItems = await db.select({ id: orderLineItems.id }).from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
+            const validation = validateOrderStateTransition(order.state as any, nextState as any, { order: order as any, lineItemsCount: lineItems.length });
+            if (!validation.ok) {
+                return res.status(409).json({ success: false, code: validation.code, message: validation.message });
             }
 
             const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
@@ -5922,6 +6032,7 @@ export async function registerOrderRoutes(
             if (!Number.isFinite(pricingDimensions.widthIn) || pricingDimensions.widthIn <= 0 || !Number.isFinite(pricingDimensions.heightIn) || pricingDimensions.heightIn <= 0) {
                 return res.status(400).json({ message: "width and height must be positive for this product" });
             }
+
             // Quantity-only pricing uses neutral geometry internally, but a line item
             // must not persist that implementation detail as a fictional 1 x 1 size.
             lineItemData.width = nonDimensionalProduct ? 0 : pricingDimensions.widthIn;

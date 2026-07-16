@@ -17,6 +17,11 @@ jest.mock("@/hooks/useOrderStatusPills", () => ({
   useAssignOrderStatusPill: () => ({ mutate: jest.fn(), isPending: false }),
 }));
 
+jest.mock("@/components/StateTransitionButtons", () => ({
+  CompleteProductionButton: () => <span>Complete Production</span>,
+  CloseOrderButton: () => <span>Close Order</span>,
+}));
+
 const noop = () => undefined;
 
 describe("Order detail action layout", () => {
@@ -26,6 +31,7 @@ describe("Order detail action layout", () => {
         canEditOrder
         canMarkCompleted={false}
         canCompleteProduction={false}
+        canCloseOrder={false}
         orderId="order-1"
         isDirty
         isSavingOrder={false}
@@ -62,6 +68,29 @@ describe("Order detail action layout", () => {
 
     expect(html).toContain("Cancel Order");
     expect(html).toContain("Bypass Proof");
+  });
+
+  it("uses Close Order rather than Complete Production for billing-only orders", () => {
+    const html = renderToStaticMarkup(
+      <OrderDetailPrimaryActions
+        canEditOrder={false}
+        canMarkCompleted={false}
+        canCompleteProduction={false}
+        canCloseOrder
+        orderId="order-1"
+        isDirty={false}
+        isSavingOrder={false}
+        isUpdatingOrder={false}
+        isTransitioningStatus={false}
+        hasDirtyLineItem={false}
+        onSaveOrder={noop}
+        onDiscardChanges={noop}
+        onMarkCompleted={noop}
+      />,
+    );
+
+    expect(html).toContain("Close Order");
+    expect(html).not.toContain("Complete Production");
   });
 
   it("does not show the status-pill empty fallback text in normal UI", () => {
