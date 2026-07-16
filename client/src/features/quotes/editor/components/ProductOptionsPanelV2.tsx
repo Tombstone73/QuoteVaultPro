@@ -25,6 +25,7 @@ type ProductOptionsPanelV2Props = {
   onValidityChange?: (isValid: boolean) => void;
   onRenderStatsChange?: (stats: ProductOptionsPanelV2RenderStats) => void;
   className?: string;
+  compact?: boolean;
 };
 
 export type ProductOptionsPanelV2RenderStats = {
@@ -278,6 +279,7 @@ export function ProductOptionsPanelV2({
   onValidityChange,
   onRenderStatsChange,
   className,
+  compact = false,
 }: ProductOptionsPanelV2Props) {
   const tree = useMemo(
     () => normalizePbv2Tree(rawTree) ?? { schemaVersion: 2 as const, rootNodeIds: [], nodes: {} },
@@ -689,7 +691,7 @@ export function ProductOptionsPanelV2({
       {renderedNodeIds.length === 0 ? (
         <div className="text-xs text-muted-foreground">No options.</div>
       ) : (
-        <div className="space-y-3">
+        <div className={cn(compact ? "grid gap-x-5 gap-y-1 md:grid-cols-2" : "space-y-3")}>
           {renderedNodeIds.map((nodeId) => {
             const node = tree.nodes[nodeId];
             if (!node) return null;
@@ -723,7 +725,12 @@ export function ProductOptionsPanelV2({
               disabledOptionGroupSet.has(node.id) ||
               disabledOptionGroupSet.has((node as any).key);
 
-            const commonHeader = (
+            const helperText = [node.description, helpText].filter(Boolean).join(" ");
+            const commonHeader = compact ? (
+              <Label className="min-w-0 text-xs" title={helperText || undefined}>
+                {node.label}{node.input.required || isRuleRequired ? " *" : ""}
+              </Label>
+            ) : (
               <div className="flex items-start justify-between gap-2">
                 <div className="min-w-0">
                   <Label className="text-xs">{node.label}{node.input.required || isRuleRequired ? " *" : ""}</Label>
@@ -735,18 +742,21 @@ export function ProductOptionsPanelV2({
               </div>
             );
 
+            const compactRowClass = "grid grid-cols-[minmax(0,1fr)_minmax(140px,1.25fr)] items-center gap-3 py-1.5";
+            const fieldClass = (defaultClass: string) => cn(compact ? compactRowClass : defaultClass, isDisabled && "opacity-70");
+
             if (inputType === "boolean" || inputType === "checkbox") {
+              const toggle = (
+                <Switch
+                  checked={currentValue === true}
+                  onCheckedChange={(checked) => setNodeValue(node, checked)}
+                  disabled={isDisabled}
+                />
+              );
               return (
-                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2", isDisabled && "opacity-70")}>
-                  <div className="flex items-center justify-between gap-3">
-                    <div className="min-w-0">{commonHeader}</div>
-                    <Switch
-                      checked={currentValue === true}
-                      onCheckedChange={(checked) => setNodeValue(node, checked)}
-                      disabled={isDisabled}
-                    />
-                  </div>
-                  {error ? <div className="mt-1 text-xs text-destructive">{error}</div> : null}
+                <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2")}>
+                  {compact ? <><div className="min-w-0">{commonHeader}</div>{toggle}</> : <div className="flex items-center justify-between gap-3"><div className="min-w-0">{commonHeader}</div>{toggle}</div>}
+                  {error ? <div className={cn("text-xs text-destructive", compact && "col-span-2")}>{error}</div> : null}
                 </div>
               );
             }
@@ -758,7 +768,7 @@ export function ProductOptionsPanelV2({
               const emptyLabel = node.input.constraints?.select?.emptyLabel ?? "(None)";
 
               return (
-                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
+                <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2 space-y-2")}>
                   {commonHeader}
                   <Select
                     value={String(currentValue ?? "")}
@@ -781,7 +791,7 @@ export function ProductOptionsPanelV2({
                       ))}
                     </SelectContent>
                   </Select>
-                  {error ? <div className="text-xs text-destructive">{error}</div> : null}
+                  {error ? <div className={cn("text-xs text-destructive", compact && "col-span-2")}>{error}</div> : null}
                 </div>
               );
             }
@@ -790,7 +800,7 @@ export function ProductOptionsPanelV2({
               const choices = getRuntimeChoices(node, runtimeVisibility?.visibleChoiceIds ?? null);
 
               return (
-                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
+                <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2 space-y-2")}>
                   {commonHeader}
                   <RadioGroup
                     value={typeof currentValue === "string" ? currentValue : ""}
@@ -812,13 +822,13 @@ export function ProductOptionsPanelV2({
                           <RadioGroupItem value={choice.value} id={choiceId} disabled={isDisabled} />
                           <span className="min-w-0">
                             <span className="block truncate">{choice.label}</span>
-                            {choice.description ? <span className="block text-[11px] text-muted-foreground">{choice.description}</span> : null}
+                            {!compact && choice.description ? <span className="block text-[11px] text-muted-foreground">{choice.description}</span> : null}
                           </span>
                         </Label>
                       );
                     })}
                   </RadioGroup>
-                  {error ? <div className="text-xs text-destructive">{error}</div> : null}
+                  {error ? <div className={cn("text-xs text-destructive", compact && "col-span-2")}>{error}</div> : null}
                 </div>
               );
             }
@@ -828,7 +838,7 @@ export function ProductOptionsPanelV2({
               const selectedValues = Array.isArray(currentValue) ? currentValue.map(String) : [];
 
               return (
-                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
+                <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2 space-y-2")}>
                   {commonHeader}
                   <div className="grid gap-2 sm:grid-cols-2">
                     {choices.map((choice) => {
@@ -856,13 +866,13 @@ export function ProductOptionsPanelV2({
                           />
                           <span className="min-w-0">
                             <span className="block truncate">{choice.label}</span>
-                            {choice.description ? <span className="block text-[11px] text-muted-foreground">{choice.description}</span> : null}
+                            {!compact && choice.description ? <span className="block text-[11px] text-muted-foreground">{choice.description}</span> : null}
                           </span>
                         </Label>
                       );
                     })}
                   </div>
-                  {error ? <div className="text-xs text-destructive">{error}</div> : null}
+                  {error ? <div className={cn("text-xs text-destructive", compact && "col-span-2")}>{error}</div> : null}
                 </div>
               );
             }
@@ -874,7 +884,7 @@ export function ProductOptionsPanelV2({
               const max = constraints?.max;
 
               return (
-                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
+                <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2 space-y-2")}>
                   {commonHeader}
                   <Input
                     type="number"
@@ -890,14 +900,14 @@ export function ProductOptionsPanelV2({
                       else setNodeValue(node, constraints?.integerOnly ? Math.trunc(n) : n);
                     }}
                   />
-                  {error ? <div className="text-xs text-destructive">{error}</div> : null}
+                  {error ? <div className={cn("text-xs text-destructive", compact && "col-span-2")}>{error}</div> : null}
                 </div>
               );
             }
 
             if (inputType === "text") {
               return (
-                <div key={nodeId} className={cn("rounded-md border border-border/50 p-2 space-y-2", isDisabled && "opacity-70")}>
+                <div key={nodeId} className={fieldClass("rounded-md border border-border/50 p-2 space-y-2")}>
                   {commonHeader}
                   <Input
                     className="h-9"
@@ -905,7 +915,7 @@ export function ProductOptionsPanelV2({
                     disabled={isDisabled}
                     onChange={(e) => setNodeValue(node, e.target.value)}
                   />
-                  {error ? <div className="text-xs text-destructive">{error}</div> : null}
+                  {error ? <div className={cn("text-xs text-destructive", compact && "col-span-2")}>{error}</div> : null}
                 </div>
               );
             }

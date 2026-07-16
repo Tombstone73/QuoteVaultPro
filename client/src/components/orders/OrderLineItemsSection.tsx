@@ -12,6 +12,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import {
   ChevronDown,
   Download,
@@ -60,6 +61,7 @@ import { getLineItemProofBadgeClass } from "@/lib/orderProofUi";
 
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
+import { getOrderLineItemActiveWorkWarning, getOrderLineItemEditorUiPolicy } from "@/components/orders/orderLineItemEditorUi";
 import {
   buildPbv2DefaultsHydrationKey,
   hasPbv2Selections,
@@ -1143,6 +1145,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [designBriefSavedAt, setDesignBriefSavedAt] = useState<string | null>(null);
   const designBriefSnapshotRef = useRef<Record<string, LineItemDesignBriefDraft>>({});
   const [lineItemInternalNoteDraft, setLineItemInternalNoteDraft] = useState("");
+  const [internalNotesOpenByLineItemId, setInternalNotesOpenByLineItemId] = useState<Record<string, boolean>>({});
 
   const designBriefQuery = useQuery<LineItemDesignBriefDetail>({
     queryKey: ["orders", "lineItemDesignBrief", orderId, expandedItem?.id],
@@ -2709,13 +2712,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     approvedProofVersionId: (item as any).approvedProofVersionId ?? null,
                   }) || Boolean(lineItemProofSummary?.openProofingAvailable);
                   const hasActiveOwner = Boolean((item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || (item as any).activeOwnerJobId);
-                  const showActiveWorkEditWarning =
-                    !readOnly &&
-                    isExpanded &&
-                    (
-                      hasActiveOwner ||
-                      ["ready_for_prepress", "in_prepress", "ready_for_production", "in_production", "awaiting_proof_approval", "in_design", "on_hold"].includes(workflowState)
-                    );
+                  const activeWorkWarning = !readOnly && isExpanded
+                    ? getOrderLineItemActiveWorkWarning({ fulfillmentOnly, workflowState, hasActiveOwner })
+                    : null;
                   const ownerLabel = (item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || null;
                   const policy =
                     productArtworkPolicy === "required" || productArtworkPolicy === "not_required"
@@ -2764,6 +2763,15 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const renderedRequiresProofApproval = isExpanded && expandedItem && expandedItem.id === item.id
                     ? requiresProofApprovalInput
                     : Boolean((item as any)?.requiresProofApproval);
+                  const editorUiPolicy = getOrderLineItemEditorUiPolicy({
+                    fulfillmentOnly,
+                    internalNoteCount: (lineItemInternalNotesQuery.data ?? []).length,
+                    requiresDesign: renderedRequiresDesign,
+                    requiresPrepress: renderedRequiresPrepress,
+                    requiresProofApproval: renderedRequiresProofApproval,
+                  });
+                  const showArtworkControls =
+                    !fulfillmentOnly || renderedRequiresDesign || renderedRequiresPrepress === true || renderedRequiresProofApproval;
 
                   let operationalWarning: string | null = null;
                   let operationalWarningTone: "warning" | "danger" | null = null;
@@ -2880,6 +2888,23 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                   disabled: reorderDisabled,
                                 }}
                                 showDragHandle={!readOnly}
+                                primaryControlSlot={
+                                  !readOnly && isExpanded && expandedItem?.id === item.id ? (
+                                    <div>
+                                      <div className="mb-1 text-xs text-muted-foreground">Product</div>
+                                      <select
+                                        aria-label="Product"
+                                        value={currentDraftProductId}
+                                        onChange={(event) => handleProductReplacement(event.target.value)}
+                                        className="h-8 w-full rounded-md border border-input bg-background px-2 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                      >
+                                        {products.map((product) => (
+                                          <option key={product.id} value={product.id}>{product.name}</option>
+                                        ))}
+                                      </select>
+                                    </div>
+                                  ) : undefined
+                                }
                                 width={widthText}
                                 height={heightText}
                                 quantity={qty}
@@ -3114,12 +3139,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 }
                                 optionsSlot={
                                   <>
-                                    {showActiveWorkEditWarning && (
+                                    {activeWorkWarning && (
                                       <div className="mb-3 rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-sm text-amber-900">
-                                        <div className="font-medium">Active work warning</div>
-                                        <div className="mt-1">
-                                          This line item is already in production/prepress. Changes may require rework, updated files, or operator review.
-                                        </div>
+                                        <div className="font-medium">{activeWorkWarning.title}</div>
+                                        <div className="mt-1">{activeWorkWarning.description}</div>
                                       </div>
                                     )}
 
@@ -3163,30 +3186,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                             Base unit {formatMoney(baseCalculatedTotal / Math.max(1, Number(item.quantity) || 1))} · Qty {item.quantity || 0}
                                           </div>
                                         </div>
-                                      </div>
-                                    )}
-
-                                    {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
-                                      <div className="mb-3 rounded-md border border-border/40 bg-background/70 p-3">
-                                        <div className="mb-1.5 flex items-center justify-between gap-2">
-                                          <div>
-                                            <div className="text-sm font-medium">Product</div>
-                                            <div className="text-xs text-muted-foreground">
-                                              Changing product resets product-specific options and reprices this line item.
-                                            </div>
-                                          </div>
-                                        </div>
-                                        <select
-                                          value={currentDraftProductId}
-                                          onChange={(event) => handleProductReplacement(event.target.value)}
-                                          className="h-9 w-full rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                                        >
-                                          {products.map((product) => (
-                                            <option key={product.id} value={product.id}>
-                                              {product.name}
-                                            </option>
-                                          ))}
-                                        </select>
                                       </div>
                                     )}
 
@@ -3309,6 +3308,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                           }}
                                           onValidityChange={setOptionsV2Valid}
                                           onRenderStatsChange={setPbv2PanelRenderStats}
+                                          compact
                                         />
                                       </div>
                                     )}
@@ -3324,6 +3324,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                             markUserEditedOptions(expandedItem?.id);
                                             setOptionSelections(next);
                                           }}
+                                          compact
                                         />
                                       </div>
                                     )}
@@ -3425,18 +3426,24 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       </div>
                                     )}
 
-                                    <div className="mb-3 rounded-md border border-border/40 bg-muted/20 p-3">
-                                      <div className="flex items-center justify-between gap-2">
-                                        <div>
-                                          <div className="text-sm font-medium">Line Item Internal Notes</div>
-                                          <div className="text-xs text-muted-foreground">
-                                            Structured staff notes for this line item. Legacy production notes remain below for compatibility.
+                                    <Collapsible
+                                      open={internalNotesOpenByLineItemId[String(item.id)] ?? editorUiPolicy.internalNotesInitiallyOpen}
+                                      onOpenChange={(open) => setInternalNotesOpenByLineItemId((prev) => ({ ...prev, [String(item.id)]: open }))}
+                                      className="mb-3 rounded-md border border-border/40 bg-muted/20 p-3"
+                                    >
+                                      <CollapsibleTrigger asChild>
+                                        <button type="button" className="flex w-full items-center justify-between gap-2 text-left">
+                                          <div>
+                                            <div className="text-sm font-medium">Line Item Internal Notes</div>
+                                            <div className="text-xs text-muted-foreground">
+                                              Structured staff notes. {fulfillmentOnly ? "Use Fulfillment Notes for pick/pack instructions." : "Use Production Notes for operator instructions."}
+                                            </div>
                                           </div>
-                                        </div>
-                                        {lineItemInternalNotesQuery.isFetching && <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />}
-                                      </div>
+                                          {lineItemInternalNotesQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                                        </button>
+                                      </CollapsibleTrigger>
 
-                                      <div className="mt-3 space-y-2">
+                                      <CollapsibleContent className="mt-3 space-y-2">
                                         {(lineItemInternalNotesQuery.data ?? []).length === 0 ? (
                                           <div className="rounded-md border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
                                             No structured line item internal notes yet.
@@ -3473,12 +3480,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                             </div>
                                           </div>
                                         )}
-                                      </div>
-                                    </div>
+                                      </CollapsibleContent>
+                                    </Collapsible>
                                   </>
                                 }
                                 artworkSlot={
-                                  !fulfillmentOnly || Boolean((item as any).requiresDesign || (item as any).requiresPrepress || (item as any).requiresProofApproval) ? <>
+                                  showArtworkControls ? <>
                                     <div className={cn("rounded-md border border-border/40 p-3", !readOnly && "bg-muted/20")}>
                                       <div className="flex items-center justify-between mb-2">
                                         <div className="text-sm font-medium">Artwork</div>
@@ -3663,6 +3670,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 detailsSide="right"
                                 collapseSecondaryDetails={false}
                                 compactExpandedLayout={true}
+                                fulfillmentOnly={fulfillmentOnly}
                                 isDirty={isExpanded && expandedItem && expandedItem.id === item.id ? isDirty : false}
                                 isSaving={savingItemId === item.id}
                                 isSaved={!isDirty && (savedItemId === item.id || designBriefSavedAt === item.id)}

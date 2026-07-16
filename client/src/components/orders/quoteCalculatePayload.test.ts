@@ -64,4 +64,22 @@ describe("buildQuoteCalculatePayload", () => {
     });
     expect(payload.optionSelectionsJson).toEqual({});
   });
+
+  it("sends the edited quantity with neutral dimensions for a quantity-only item", () => {
+    expect(buildQuoteCalculatePayload({
+      productId: "yard-sign-stakes",
+      widthNum: 1,
+      heightNum: 1,
+      qtyNum: 50,
+      isPbv2Mode: true,
+      optionSelectionsV2Selected: {},
+      optionSelectionsV1: {},
+    })).toMatchObject({
+      productId: "yard-sign-stakes",
+      width: 1,
+      height: 1,
+      quantity: 50,
+      optionSelectionsJson: {},
+    });
+  });
 });
