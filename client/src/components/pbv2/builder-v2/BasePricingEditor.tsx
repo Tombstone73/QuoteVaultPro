@@ -59,6 +59,7 @@ export function BasePricingEditor({
   const tierBasis = pricingV2?.tierBasis || 'line_item_quantity';
   const base = pricingV2?.base || {};
   const quantityOnly = pricingProfileKey === "qty_only";
+  const feeService = pricingProfileKey === "fee";
   const qtyTiers = pricingV2?.qtyTiers || [];
   const sqftTiers = pricingV2?.sqftTiers || [];
 
@@ -84,6 +85,17 @@ export function BasePricingEditor({
       minimumChargeCents: currencyInputToCents(baseMinCharge),
     });
   };
+
+  if (feeService) {
+    return (
+      <div className="rounded-lg border border-slate-700 bg-[#1e293b] p-4">
+        <h4 className="text-sm font-medium text-slate-300">Fee / Service Pricing</h4>
+        <p className="mt-1 text-xs leading-relaxed text-slate-400">
+          Fee / Service products use the Flat Fee Amount configured in the pricing profile. The fee is charged once per line item; square-foot, per-piece, minimum-charge, and tier rates do not apply.
+        </p>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4 space-y-4">

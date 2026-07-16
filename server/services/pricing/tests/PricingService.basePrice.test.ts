@@ -287,4 +287,42 @@ describe("PBV2 Base Pricing - Minimum Charge Semantics", () => {
     expect(() => assertQuantityOnlyPriceConfigured({ measurementMode: "quantity_only", allowZeroPrice: true }, 0))
       .not.toThrow();
   });
+
+  test("fee/service pricing uses Flat Fee Amount once per line and ignores geometry and base rates", () => {
+    const treeJson = {
+      schemaVersion: 2,
+      rootNodeIds: ["root"],
+      nodes: { root: { id: "root", kind: "group", label: "Service options" } },
+      edges: [],
+      meta: {
+        pricingProfileKey: "fee",
+        pricingFormula: "ceil(total_sqft) * base_price",
+        pricingV2: { base: { perSqftCents: 999, perPieceCents: 1000, minimumChargeCents: 500 } },
+      },
+    };
+
+    const result = evaluatePricingPreviewFromTree({
+      treeJson,
+      widthIn: 48,
+      heightIn: 96,
+      quantity: 6,
+      pricingProfileKey: "fee",
+      pricingProfileConfig: { formulaVariables: { flatFee: 25 } },
+      debug: true,
+    });
+
+    expect(result.unitPrice).toBe(25);
+    expect(result.totalPrice).toBe(25);
+    expect(result.formulaUsed).toBe("flatFee");
+    expect(result.derived).toEqual({});
+    expect(result.debug?.variables).toEqual(expect.objectContaining({ flatFee: 25, q: 6 }));
+    expect(result.debug?.variables).not.toHaveProperty("sqft");
+  });
+
+  test("zero-priced fee/service products are blocked unless explicitly allowed", () => {
+    expect(() => assertQuantityOnlyPriceConfigured({ pricingProfileKey: "fee", allowZeroPrice: false }, 0))
+      .toThrow("Price not configured");
+    expect(() => assertQuantityOnlyPriceConfigured({ pricingProfileKey: "fee", allowZeroPrice: true }, 0))
+      .not.toThrow();
+  });
 });

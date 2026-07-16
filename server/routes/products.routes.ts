@@ -171,6 +171,20 @@ function formulaVariablesFromProductConfig(config: unknown): Record<string, numb
   return numericFormulaVariables((config as Record<string, unknown>).formulaVariables);
 }
 
+/** Service/Fee is a billing-only workflow intent, never a production default. */
+function applyProductWorkflowIntentDefaults(productData: Record<string, any>, existingWorkflowIntent?: string | null) {
+  const workflowIntent = String(productData.workflowIntent ?? existingWorkflowIntent ?? "standard_production");
+  if (workflowIntent !== "service_fee") return productData;
+
+  return {
+    ...productData,
+    workflowIntent: "service_fee",
+    measurementMode: "quantity_only",
+    requiresProductionJob: false,
+    requiresProofApproval: false,
+  };
+}
+
 function resolveFormulaMetaForActiveTree(product: any, draftTree: any): {
   pricingProfileKey: string;
   pricingFormula: string;
@@ -2240,7 +2254,7 @@ export function registerProductRoutes(
 
       console.log("[POST /api/products] Parsed & cleaned data:", JSON.stringify(productData, null, 2));
 
-      const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(productData);
+      const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(applyProductWorkflowIntentDefaults(productData));
       const product = await storage.createProduct(organizationId, sanitizedProductData as InsertProduct);
       res.json(product);
     } catch (error) {
@@ -2375,7 +2389,10 @@ export function registerProductRoutes(
         }
       }
 
-      const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(productData, existingProduct);
+      const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(
+        applyProductWorkflowIntentDefaults(productData, existingProduct.workflowIntent),
+        existingProduct,
+      );
       const product = await storage.updateProduct(organizationId, productId, sanitizedProductData as UpdateProduct);
       if (!product) {
         return res.status(404).json({ success: false, message: "Product not found" });

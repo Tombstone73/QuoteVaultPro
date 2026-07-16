@@ -155,14 +155,15 @@ export type PBV2RuntimePricingSnapshot = {
   resolvedWeightDebug?: PBV2ResolvedWeightSnapshotDebug;
 };
 
-/** Quantity-only products must opt in before a zero-price line can be created. */
+/** Non-dimensional products must opt in before a zero-price line can be created. */
 export function assertQuantityOnlyPriceConfigured(
-  product: { measurementMode?: string | null; allowZeroPrice?: boolean | null },
+  product: { measurementMode?: string | null; pricingProfileKey?: string | null; allowZeroPrice?: boolean | null },
   lineTotalCents: number,
 ): void {
-  if (product.measurementMode === "quantity_only" && lineTotalCents === 0 && product.allowZeroPrice !== true) {
+  const isNonDimensionalPrice = product.measurementMode === "quantity_only" || product.pricingProfileKey === "fee";
+  if (isNonDimensionalPrice && lineTotalCents === 0 && product.allowZeroPrice !== true) {
     throw Object.assign(
-      new Error("Price not configured: set a per-item PBV2 base price or explicitly allow a $0.00 price for this product."),
+      new Error("Price not configured: set the applicable non-dimensional price or explicitly allow a $0.00 price for this product."),
       { code: "PRODUCT_PRICE_NOT_CONFIGURED" },
     );
   }
@@ -475,7 +476,10 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
     }
 
     const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
-    if (product.measurementMode === "quantity_only") {
+    if (product.pricingProfileKey === "fee") {
+      widthIn = 1;
+      heightIn = 1;
+    } else if (product.measurementMode === "quantity_only") {
       ({ widthIn, heightIn } = dimensionsForProductPricing(product, widthIn, heightIn));
     } else {
       ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
@@ -595,7 +599,10 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
 
   // Step 3: Load tree version
   const treeVersion = await loadTreeVersion(organizationId, treeVersionId);
-  if (product.measurementMode === "quantity_only") {
+  if (product.pricingProfileKey === "fee") {
+    widthIn = 1;
+    heightIn = 1;
+  } else if (product.measurementMode === "quantity_only") {
     ({ widthIn, heightIn } = dimensionsForProductPricing(product, widthIn, heightIn));
   } else {
     ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
@@ -872,28 +879,30 @@ export function evaluatePricingPreviewFromTree(input: {
   materialRecords?: Pbv2WeightMaterialRecord[];
   debug?: boolean;
 }): PricingPreviewEvaluationResult {
-  const runtimeDimensions = resolvePbv2RuntimeDimensions({
-    treeJson: input.treeJson,
-    widthIn: input.widthIn,
-    heightIn: input.heightIn,
-  });
+  const pricingProfile = getProfile(
+    input.pricingProfileKey ?? input.treeJson?.meta?.pricingProfileKey,
+  );
+  const quantityOnlyPricing = !pricingProfile.requiresDimensions;
+  const runtimeDimensions = quantityOnlyPricing
+    ? { widthIn: 0, heightIn: 0 }
+    : resolvePbv2RuntimeDimensions({
+      treeJson: input.treeJson,
+      widthIn: input.widthIn,
+      heightIn: input.heightIn,
+    });
   const widthIn = Number(runtimeDimensions.widthIn);
   const heightIn = Number(runtimeDimensions.heightIn);
   const quantity = Number(input.quantity);
 
-  if (!Number.isFinite(widthIn) || widthIn <= 0) {
+  if (!quantityOnlyPricing && (!Number.isFinite(widthIn) || widthIn <= 0)) {
     throw new Error("width must be a positive number");
   }
-  if (!Number.isFinite(heightIn) || heightIn <= 0) {
+  if (!quantityOnlyPricing && (!Number.isFinite(heightIn) || heightIn <= 0)) {
     throw new Error("height must be a positive number");
   }
   if (!Number.isFinite(quantity) || quantity <= 0) {
     throw new Error("quantity must be a positive number");
   }
-
-  const quantityOnlyPricing = getProfile(
-    input.pricingProfileKey ?? input.treeJson?.meta?.pricingProfileKey,
-  ).key === "qty_only";
 
   const pbv2ExplicitSelections = input.pbv2ExplicitSelections ?? {};
   if (!pbv2ExplicitSelections || typeof pbv2ExplicitSelections !== "object" || Array.isArray(pbv2ExplicitSelections)) {
@@ -1093,7 +1102,8 @@ export function evaluatePricingPreviewFromTree(input: {
   if (formulaDebugMismatch) throw formulaDebugMismatch;
 
   return {
-    unitPrice: quantity > 0 ? totalCents / 100 / quantity : 0,
+    // A Flat Fee Amount is a line-level charge, not an implied per-piece rate.
+    unitPrice: pricingProfile.key === "fee" ? totalCents / 100 : (quantity > 0 ? totalCents / 100 / quantity : 0),
     totalPrice: totalCents / 100,
     formulaUsed: formulaToUse || undefined,
     breakdown: {
@@ -2518,7 +2528,12 @@ function calculateBasePriceDetails(
     : null;
   const hasMatrixBasePrice = matrixBasePriceRaw !== null && matrixBasePriceRaw > 0;
   const base = pricingV2.base && typeof pricingV2.base === 'object' ? pricingV2.base : {};
-  if (Object.keys(base).length === 0 && !hasMatrixBasePrice && !hasMatrixRowQtyTiers) {
+  const requestedPricingProfileKey = String(
+    pricingContext?.pricingProfileKey
+    ?? (meta as any)?.pricingProfileKey
+    ?? "default",
+  );
+  if (Object.keys(base).length === 0 && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee") {
     throw new Error(
       'PBV2 tree base pricing (meta.pricingV2.base) not configured. Set at least one of: $/sqft, $/piece, or minimum charge.'
     );
@@ -2893,6 +2908,57 @@ function calculateBasePriceDetails(
     }
   }
 
+  if (activePricingProfileKey === "fee") {
+    const profileFormulaVariables = activeProfileConfig && typeof activeProfileConfig === "object"
+      ? (activeProfileConfig as any).formulaVariables
+      : null;
+    const treeFormulaVariables = (meta as any)?.formulaVariables ?? (meta as any)?.pricingFormulaVariables;
+    const rawFlatFee = pricingContext?.formulaVariables?.flatFee
+      ?? profileFormulaVariables?.flatFee
+      ?? treeFormulaVariables?.flatFee;
+    const flatFeeDollars = Number(rawFlatFee);
+
+    if (!Number.isFinite(flatFeeDollars) || flatFeeDollars < 0) {
+      throw Object.assign(
+        new Error("Price not configured: Fee / Service products require a Flat Fee Amount."),
+        { code: "PRODUCT_PRICE_NOT_CONFIGURED" },
+      );
+    }
+
+    const flatFeeCents = Math.round(flatFeeDollars * 100);
+    const totalSqft = sqftPerItem * quantity;
+    const linearFeet = orderedWidthIn > 0 ? orderedWidthIn / 12 : 0;
+    return {
+      // A Fee / Service amount is one charge per line item. It is deliberately
+      // independent of quantity, dimensions, base rates, and pricing matrices.
+      totalCents: flatFeeCents,
+      perSqftCents: 0,
+      perPieceCents: 0,
+      minimumChargeCents: 0,
+      pricingProfileKey: activePricingProfileKey,
+      orderedWidthIn,
+      orderedHeightIn,
+      trimAllowanceX,
+      trimAllowanceY,
+      finishedWidthIn,
+      finishedHeightIn,
+      sqftPerItem,
+      totalSqft,
+      linearFeet,
+      preMinimumCents: flatFeeCents,
+      minimumApplied: false,
+      basePriceSource: "pricingProfileConfig.formulaVariables.flatFee",
+      rateUsedSource: "pricingProfileConfig.formulaVariables.flatFee",
+      tierResolution: {
+        ...tierResolution,
+        basePriceFinal: flatFeeDollars,
+        finalBaseRateUsed: flatFeeDollars,
+        basePriceSource: "pricingProfileConfig.formulaVariables.flatFee",
+      },
+      sheetYieldMetrics,
+    };
+  }
+
   if (activePricingProfileKey === "qty_only" && perSqftCents !== 0) {
     // Quantity-only products have no area-pricing semantics. Never let a stale
     // $/sqft field (including a matrix base_price) become their unit price.
@@ -3089,6 +3155,7 @@ type FormulaVariableResolution = {
 };
 
 const QUANTITY_ONLY_PROFILE_FORMULA = "q * unitPrice";
+const FEE_SERVICE_PROFILE_FORMULA = "flatFee";
 
 const SHEET_CONSUMPTION_SAFE_DEFAULTS: Record<string, number> = {
   sheet_width: 48,
@@ -3437,6 +3504,75 @@ function calculateFormulaAwareBasePrice(input: {
   const baseDetails = input.baseDetails;
   const activeProfile = getProfile(baseDetails.pricingProfileKey);
   const profileUsesFormula = Boolean(activeProfile.usesFormula);
+
+  if (activeProfile.key === "fee") {
+    const flatFee = baseDetails.totalCents / 100;
+    const staleFormulaPresent = Boolean(
+      input.pricingFormulaOverride?.trim()
+      || input.manualFormulaText?.trim()
+      || input.pricingFormulaLibrary?.expression?.trim()
+      || (typeof input.treeJson?.meta?.pricingFormula === "string" && input.treeJson.meta.pricingFormula.trim())
+      || (typeof input.product?.pricingFormula === "string" && input.product.pricingFormula.trim()),
+    );
+    const formulaDebug: NonNullable<PricingPreviewEvaluationResult["debug"]> = {
+      pricingSystem: "pbv2",
+      formulaRaw: FEE_SERVICE_PROFILE_FORMULA,
+      formulaResolved: FEE_SERVICE_PROFILE_FORMULA,
+      variables: { flatFee, q: input.quantity, quantity: input.quantity },
+      variableSources: {
+        flatFee: "pricingProfileConfig.formulaVariables.flatFee",
+        q: "runtime.quantity (ignored by flat fee)",
+        quantity: "runtime.quantity (ignored by flat fee)",
+      },
+      resultValue: flatFee,
+      appliedAs: "totalPrice",
+      steps: [
+        { label: "flatFee (one charge per line)", value: flatFee },
+      ],
+      errors: staleFormulaPresent ? [{
+        code: "PBV2_FEE_IGNORED_NON_FEE_FORMULA",
+        message: "Fee / Service pricing ignored a formula source and used Flat Fee Amount.",
+      }] : [],
+      likelyMisconfiguredFormula: false,
+      preCeilSqftTotal: null,
+      postCeilSqftTotal: null,
+      baseRateUsed: null,
+      formulaOutputMeaning: "final_price",
+      formulaOutputMeaningSource: "fee.profile",
+      formulaOutputMeaningRaw: "final_price",
+      normalizedFormulaOutputMeaning: "final_price",
+      formulaResultType: "final_dollars",
+      quantityBasisUsed: "quantity",
+      selectedRate: flatFee,
+      finalFormulaTotal: flatFee,
+      formulaSourceMode: "profile",
+      resolvedFormulaSource: "profile",
+      resolvedFormulaId: null,
+      resolvedFormulaName: null,
+      resolvedFormulaExpression: FEE_SERVICE_PROFILE_FORMULA,
+      manualFormulaPresent: staleFormulaPresent,
+      manualFormulaIgnored: staleFormulaPresent,
+    };
+
+    return {
+      basePriceCents: baseDetails.totalCents,
+      formulaToUse: FEE_SERVICE_PROFILE_FORMULA,
+      formulaDebug,
+      formulaApplied: true,
+      formulaEvaluatedTotalCents: baseDetails.totalCents,
+      formulaEvaluatedTotalRaw: flatFee,
+      formulaEvaluatedTotalRounded: flatFee,
+      rawBasePrice: flatFee,
+      roundingAppliedAt: "final_currency_total",
+      pbv2BaseTotalCents: baseDetails.totalCents,
+      finalTotalSource: "formula",
+      finalTotalCents: baseDetails.totalCents,
+      minimumApplied: false,
+      preMinimumCents: baseDetails.totalCents,
+      tierResolution: baseDetails.tierResolution,
+      resolvedFormulaSource: "profile",
+    };
+  }
 
   if (activeProfile.key === "qty_only") {
     // Quantity-only pricing is deliberately not a generic formula mode. Its

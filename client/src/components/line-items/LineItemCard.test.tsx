@@ -264,6 +264,26 @@ describe("LineItemCard operational sections", () => {
     await cleanup();
   });
 
+  it("keeps a service/fee editor compact and labels its staff note correctly", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true,
+      serviceFee: true,
+      dimsRequired: false,
+      priceLabel: "Flat fee",
+      unitPriceLabel: "$25.00",
+      primaryControlSlot: <select aria-label="Product"><option>Shipping</option></select>,
+    });
+
+    expect(container.textContent).not.toContain("Width");
+    expect(container.textContent).not.toContain("Height");
+    expect(container.textContent).not.toContain("Artwork Assets");
+    expect(container.textContent).toContain("Flat fee $25.00");
+    expect(container.textContent).toContain("Notes");
+    expect(container.textContent).not.toContain("Service Notes");
+
+    await cleanup();
+  });
+
   it("keeps pricing details hidden until staff opens the compact disclosure", async () => {
     const { container, cleanup } = await renderInteractiveLineItemCard({
       isExpanded: true,

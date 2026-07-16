@@ -501,7 +501,7 @@ export function registerQuoteRoutes(
       const treeVersionIdForDimensions = pbv2TreeVersionIdOverride || product.pbv2ActiveTreeVersionId;
       let runtimeWidth = dimensionsForProductPricing(product, width, height).widthIn;
       let runtimeHeight = dimensionsForProductPricing(product, width, height).heightIn;
-      if (product.measurementMode !== "quantity_only" && treeVersionIdForDimensions) {
+      if (product.measurementMode !== "quantity_only" && product.pricingProfileKey !== "fee" && treeVersionIdForDimensions) {
         const [treeVersionForDimensions] = await db
           .select({ treeJson: pbv2TreeVersions.treeJson })
           .from(pbv2TreeVersions)
@@ -2084,8 +2084,8 @@ export function registerQuoteRoutes(
         status: incomingStatus,
         // The PBV2 evaluator receives neutral 1 x 1 geometry for quantity-only
         // products; quote data does not persist that fictional finished size.
-        width: productForMeasurement.measurementMode === "quantity_only" ? 0 : widthIn,
-        height: productForMeasurement.measurementMode === "quantity_only" ? 0 : heightIn,
+        width: productForMeasurement.measurementMode === "quantity_only" || productForMeasurement.pricingProfileKey === "fee" ? 0 : widthIn,
+        height: productForMeasurement.measurementMode === "quantity_only" || productForMeasurement.pricingProfileKey === "fee" ? 0 : heightIn,
         quantity: parseInt(lineItem.quantity),
         specsJson: lineItem.specsJson || null,
         optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
@@ -2204,8 +2204,8 @@ export function registerQuoteRoutes(
         variantId: variantId || null,
         variantName: variantName || null,
         productType: productType || "wide_roll",
-        width: productForMeasurement.measurementMode === "quantity_only" ? 0 : widthNum,
-        height: productForMeasurement.measurementMode === "quantity_only" ? 0 : heightNum,
+        width: productForMeasurement.measurementMode === "quantity_only" || productForMeasurement.pricingProfileKey === "fee" ? 0 : widthNum,
+        height: productForMeasurement.measurementMode === "quantity_only" || productForMeasurement.pricingProfileKey === "fee" ? 0 : heightNum,
         quantity: quantityNum,
         specsJson: specsJson || null,
         optionSelectionsJson: optionSelectionsJson ?? null,
@@ -2358,7 +2358,7 @@ export function registerQuoteRoutes(
         updateData.overridePriceCents = null;
         updateData.overrideAt = null;
         updateData.overrideByUserId = null;
-        if (pricingProduct.measurementMode === "quantity_only") {
+        if (pricingProduct.measurementMode === "quantity_only" || pricingProduct.pricingProfileKey === "fee") {
           updateData.width = 0;
           updateData.height = 0;
         }
@@ -2371,8 +2371,8 @@ export function registerQuoteRoutes(
       if (lineItem.variantName !== undefined) updateData.variantName = lineItem.variantName;
       if (lineItem.productType !== undefined) updateData.productType = lineItem.productType;
       if (lineItem.status !== undefined && allowedStatus.includes(lineItem.status)) updateData.status = lineItem.status;
-      if (lineItem.width !== undefined && pricingProduct?.measurementMode !== "quantity_only") updateData.width = parseFloat(lineItem.width);
-      if (lineItem.height !== undefined && pricingProduct?.measurementMode !== "quantity_only") updateData.height = parseFloat(lineItem.height);
+      if (lineItem.width !== undefined && pricingProduct?.measurementMode !== "quantity_only" && pricingProduct?.pricingProfileKey !== "fee") updateData.width = parseFloat(lineItem.width);
+      if (lineItem.height !== undefined && pricingProduct?.measurementMode !== "quantity_only" && pricingProduct?.pricingProfileKey !== "fee") updateData.height = parseFloat(lineItem.height);
       if (lineItem.quantity !== undefined) updateData.quantity = parseInt(lineItem.quantity);
       if (lineItem.optionSelectionsJson !== undefined) updateData.optionSelectionsJson = lineItem.optionSelectionsJson;
       if (lineItem.displayOrder !== undefined) updateData.displayOrder = lineItem.displayOrder;

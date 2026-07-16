@@ -19,6 +19,7 @@ type SchedulingCandidateLineItem = {
   lineItemRequiresPrepressSnapshot: boolean | null;
   approvedProofVersionId: string | null;
   requiresProductionJob: boolean;
+  workflowIntent: string | null;
 };
 
 type ScheduledItem = {
@@ -192,6 +193,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
         lineItemRequiresPrepressSnapshot: orderLineItems.requiresPrepress,
         approvedProofVersionId: orderLineItems.approvedProofVersionId,
         requiresProductionJob: products.requiresProductionJob,
+        workflowIntent: products.workflowIntent,
       })
       .from(orderLineItems)
       .innerJoin(products, eq(orderLineItems.productId, products.id))
@@ -236,7 +238,9 @@ export async function scheduleOrderLineItemsForProduction(args: {
     };
   }
 
-  const productionRequiredItems = loaded.lineItemRecords.filter((item) => item.requiresProductionJob === true);
+  const productionRequiredItems = loaded.lineItemRecords.filter(
+    (item) => item.requiresProductionJob === true && item.workflowIntent !== "service_fee",
+  );
   const skippedCount = loaded.lineItemRecords.length - productionRequiredItems.length;
 
   if (productionRequiredItems.length === 0) {
