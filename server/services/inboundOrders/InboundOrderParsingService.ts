@@ -65,6 +65,17 @@ function numberValue(value: unknown): number | null {
   return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
 }
 
+function combinedInboundEvidence(record: InboundOrderRecord): Array<Record<string, unknown>> {
+  const normalized = record.normalizedPayloadJson && typeof record.normalizedPayloadJson === "object" && !Array.isArray(record.normalizedPayloadJson)
+    ? record.normalizedPayloadJson as Record<string, unknown>
+    : {};
+  const sources = normalized.combinedSources;
+  if (!Array.isArray(sources)) return [];
+  return sources.filter((source): source is Record<string, unknown> => (
+    Boolean(source) && typeof source === "object" && !Array.isArray(source)
+  ));
+}
+
 const QUANTITY_WORD_VALUES: Record<string, number> = {
   one: 1,
   two: 2,
@@ -481,22 +492,30 @@ export class InboundOrderParsingService {
   ): Promise<Map<string, ManualAttachmentClassificationEvidence>> {
     const listReviewSnapshots = (this.repository as Partial<InboundOrdersRepository>).listReviewSnapshots;
     if (typeof listReviewSnapshots !== "function") return new Map();
-    const snapshots = await listReviewSnapshots.call(this.repository, organizationId, inboundRecordId);
-    const snapshot = snapshots.find((candidate) => {
-      const payload = candidate.payloadJson && typeof candidate.payloadJson === "object" && !Array.isArray(candidate.payloadJson)
-        ? candidate.payloadJson as Record<string, unknown>
-        : null;
-      const metadata = payload?.metadata && typeof payload.metadata === "object" && !Array.isArray(payload.metadata)
-        ? payload.metadata as Record<string, unknown>
-        : null;
-      return stringValue(metadata?.snapshotKind) === EDITABLE_REVIEW_DRAFT_KIND;
-    });
-    const parsed = snapshot ? inboundOrderReviewDraftPayloadSchema.safeParse(snapshot.payloadJson) : null;
-    if (!parsed?.success) return new Map();
-    const links = [
-      ...parsed.data.reviewedArtworkJson.unassignedAttachments,
-      ...parsed.data.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
-    ];
+    const listChildren = (this.repository as Partial<InboundOrdersRepository>).listCombinedChildRecords;
+    const childRecords = typeof listChildren === "function"
+      ? await listChildren.call(this.repository, organizationId, inboundRecordId)
+      : [];
+    const snapshots = (await Promise.all([inboundRecordId, ...childRecords.map((record) => record.id)].map((recordId) => (
+      listReviewSnapshots.call(this.repository, organizationId, recordId)
+    )))).flat();
+    const parsedDrafts = snapshots
+      .filter((candidate) => {
+        const payload = candidate.payloadJson && typeof candidate.payloadJson === "object" && !Array.isArray(candidate.payloadJson)
+          ? candidate.payloadJson as Record<string, unknown>
+          : null;
+        const metadata = payload?.metadata && typeof payload.metadata === "object" && !Array.isArray(payload.metadata)
+          ? payload.metadata as Record<string, unknown>
+          : null;
+        return stringValue(metadata?.snapshotKind) === EDITABLE_REVIEW_DRAFT_KIND;
+      })
+      .map((snapshot) => inboundOrderReviewDraftPayloadSchema.safeParse(snapshot.payloadJson))
+      .filter((parsed): parsed is { success: true; data: import("@shared/inboundOrdersApi").InboundOrderReviewDraftPayload } => parsed.success)
+      .map((parsed) => parsed.data);
+    const links = parsedDrafts.flatMap((draft) => [
+      ...draft.reviewedArtworkJson.unassignedAttachments,
+      ...draft.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
+    ]);
     const manual = links.filter((link) => link.manualOverride || link.classificationSource === "manual_override");
     const map = new Map<string, ManualAttachmentClassificationEvidence>();
     for (const link of manual) {
@@ -543,6 +562,20 @@ export class InboundOrderParsingService {
       subject: evidence.subject,
       bodyText: evidence.bodyText,
       notes: evidence.notes,
+      combinedMessages: combinedInboundEvidence(record).map((source) => {
+        const sourceEvidence = source.evidence && typeof source.evidence === "object" && !Array.isArray(source.evidence)
+          ? source.evidence as Record<string, unknown>
+          : {};
+        return {
+          recordId: stringValue(source.recordId),
+          receivedAt: stringValue(source.receivedAt),
+          senderName: stringValue(sourceEvidence.senderName),
+          senderEmail: stringValue(sourceEvidence.senderEmail),
+          subject: stringValue(sourceEvidence.subject),
+          bodyText: stringValue(sourceEvidence.bodyText),
+          notes: stringValue(sourceEvidence.notes),
+        };
+      }),
       evidenceItems: bundle.items.map((item) => ({
         type: item.type,
         label: item.label,
@@ -872,6 +905,13 @@ export class InboundOrderParsingService {
       const row = attachment as Record<string, unknown>;
       return [row.fileName, row.filename, row.name, row.sourceFilename].filter((value): value is string => typeof value === "string").join(" ");
     }).filter(Boolean);
+    const combinedMessageText = combinedInboundEvidence(record).flatMap((source) => {
+      const sourceEvidence = source.evidence && typeof source.evidence === "object" && !Array.isArray(source.evidence)
+        ? source.evidence as Record<string, unknown>
+        : {};
+      return [sourceEvidence.subject, sourceEvidence.bodyText, sourceEvidence.notes, sourceEvidence.reference]
+        .filter((value): value is string => typeof value === "string" && Boolean(value.trim()));
+    });
 
     return [
       manual.subject,
@@ -888,6 +928,7 @@ export class InboundOrderParsingService {
         item.documentType,
       ]).filter(Boolean) ?? []),
       ...rawAttachmentText,
+      ...combinedMessageText,
     ].filter(Boolean).join("\n");
   }
 
@@ -1728,12 +1769,29 @@ export class InboundOrderParsingService {
     reviewRequiredReason: string | null;
   }): Promise<InboundOrderParseAttempt> {
     const attempt = await this.repository.createParseAttempt(args.attempt);
+    const currentRecord = args.attempt.parsedDraft
+      ? await this.repository.getRecord(args.organizationId, args.inboundRecordId)
+      : null;
+    const currentNormalizedPayload = currentRecord?.normalizedPayloadJson
+      && typeof currentRecord.normalizedPayloadJson === "object"
+      && !Array.isArray(currentRecord.normalizedPayloadJson)
+      ? currentRecord.normalizedPayloadJson as Record<string, unknown>
+      : null;
     await this.repository.updateRecordWithEvent({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
       patch: {
         status: args.finalStatus,
         ...(args.attempt.parsedDraft ? { parsedAt: new Date() } : {}),
+        ...(currentNormalizedPayload?.reparseRecommended
+          ? {
+            normalizedPayloadJson: {
+              ...currentNormalizedPayload,
+              reparseRecommended: false,
+              reparsedAt: new Date().toISOString(),
+            },
+          }
+          : {}),
         requiresHumanDecision: args.finalStatus !== "ready",
         reviewRequiredReason: args.reviewRequiredReason,
       },

@@ -36,6 +36,7 @@ import {
   type InboundOrderProductOptionsResponse,
   type InboundOrderLinePricingReview,
   type ManualInboundOrderCreateRequest,
+  getManualInboundEvidence,
 } from "@shared/inboundOrdersApi";
 import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
 import {
@@ -244,6 +245,21 @@ export type InboundOrderBulkActionResult = {
   emailsProcessed: number;
   emailsSkipped: number;
   actualErrors: Array<{ id: string; message: string }>;
+};
+
+export type InboundOrderCombineInput = {
+  organizationId: string;
+  recordIds: string[];
+  primaryRecordId: string;
+  actorUserId: string;
+  confirmCustomerMismatch?: boolean;
+  confirmMultipleDrafts?: boolean;
+};
+
+export type InboundOrderCombineResult = {
+  detail: InboundOrderDetail;
+  combinedSourceCount: number;
+  reparseRecommended: true;
 };
 
 export type InboundOrderStatusUpdateInput = {
@@ -2765,6 +2781,102 @@ export class InboundOrderService {
       emailsSkipped: actualErrors.length,
       actualErrors,
     };
+  }
+
+  async combineInboundRecords(args: InboundOrderCombineInput): Promise<InboundOrderCombineResult> {
+    const recordIds = Array.from(new Set(args.recordIds));
+    if (recordIds.length < 2) {
+      throw new InboundOrderTransitionError("Select at least two inbound records to combine.", 400);
+    }
+    if (!recordIds.includes(args.primaryRecordId)) {
+      throw new InboundOrderTransitionError("The primary inbound record must be one of the selected records.", 400);
+    }
+
+    const records = await Promise.all(recordIds.map((id) => this.repository.getRecord(args.organizationId, id)));
+    if (records.some((record) => !record)) {
+      throw new InboundOrderTransitionError("One or more selected inbound records were not found for this organization.", 404);
+    }
+    const selectedRecords = records as InboundOrderRecord[];
+    for (const record of selectedRecords) {
+      const normalized = record.normalizedPayloadJson && typeof record.normalizedPayloadJson === "object"
+        ? record.normalizedPayloadJson as Record<string, unknown>
+        : {};
+      if (record.createdQuoteId || record.createdOrderId || record.status === "submitted") {
+        throw new InboundOrderTransitionError("Converted inbound records cannot be combined.", 409);
+      }
+      if (record.status === "terminal" || record.status === "ignored" || normalized.combinedParentRecordId) {
+        throw new InboundOrderTransitionError("Rejected, deleted, or already merged inbound records cannot be combined.", 409);
+      }
+    }
+
+    const customerIds = new Set(selectedRecords.map((record) => record.matchedCustomerId).filter((id): id is string => Boolean(id)));
+    if (customerIds.size > 1 && !args.confirmCustomerMismatch) {
+      throw new InboundOrderTransitionError("Selected inbound records have different matched customers. Confirm the mismatch before combining.", 409);
+    }
+
+    const listSnapshots = (this.repository as Partial<InboundOrdersRepository>).listReviewSnapshots;
+    const snapshotsByRecord = await Promise.all(selectedRecords.map(async (record) => ({
+      recordId: record.id,
+      snapshots: typeof listSnapshots === "function"
+        ? await listSnapshots.call(this.repository, args.organizationId, record.id)
+        : [],
+    })));
+    const recordsWithDrafts = snapshotsByRecord.filter(({ snapshots }) => snapshots.length > 0).map(({ recordId }) => recordId);
+    if (recordsWithDrafts.length === 1 && recordsWithDrafts[0] !== args.primaryRecordId) {
+      throw new InboundOrderTransitionError("Choose the selected inbound record with the existing review draft as the primary job so its draft is preserved.", 409);
+    }
+    if (recordsWithDrafts.length > 1 && !args.confirmMultipleDrafts) {
+      throw new InboundOrderTransitionError("Multiple selected inbound records have review drafts. Choose the primary draft and confirm before combining.", 409);
+    }
+
+    const selectedSources = selectedRecords.map((record) => {
+      const evidence = getManualInboundEvidence(record);
+      return {
+        recordId: record.id,
+        sourceType: record.sourceType,
+        sourceLabel: record.sourceLabel,
+        sourceRecordId: record.sourceRecordId,
+        sourceMessageId: record.sourceMessageId,
+        externalReference: record.externalReference,
+        receivedAt: record.receivedAt.toISOString(),
+        matchedCustomerId: record.matchedCustomerId,
+        hasReviewDraft: recordsWithDrafts.includes(record.id),
+        evidence: {
+          senderName: evidence.senderName,
+          senderEmail: evidence.senderEmail,
+          subject: evidence.subject,
+          bodyText: evidence.bodyText,
+          notes: evidence.notes,
+          reference: evidence.reference,
+        },
+      };
+    });
+    const primary = selectedRecords.find((record) => record.id === args.primaryRecordId)!;
+    const existingPayload = primary.normalizedPayloadJson && typeof primary.normalizedPayloadJson === "object"
+      ? primary.normalizedPayloadJson as Record<string, unknown>
+      : {};
+    const existingSources = Array.isArray(existingPayload.combinedSources)
+      ? existingPayload.combinedSources.filter((source): source is Record<string, unknown> => (
+        Boolean(source) && typeof source === "object" && !Array.isArray(source)
+      ))
+      : [];
+    const sourcesByRecordId = new Map<string, Record<string, unknown>>();
+    for (const source of [...existingSources, ...selectedSources]) {
+      const recordId = typeof source.recordId === "string" ? source.recordId : null;
+      if (recordId) sourcesByRecordId.set(recordId, source);
+    }
+    const combinedSources = Array.from(sourcesByRecordId.values());
+    const combined = await this.repository.combineRecords({
+      organizationId: args.organizationId,
+      primaryRecordId: args.primaryRecordId,
+      childRecordIds: recordIds.filter((id) => id !== args.primaryRecordId),
+      actorUserId: args.actorUserId,
+      combinedSources,
+    });
+    if (!combined) throw new InboundOrderTransitionError("Primary inbound record was not found.", 404);
+    const detail = await this.getDetail({ organizationId: args.organizationId, inboundRecordId: combined.id });
+    if (!detail) throw new InboundOrderTransitionError("Combined inbound record could not be loaded.", 500);
+    return { detail, combinedSourceCount: combinedSources.length, reparseRecommended: true };
   }
 
   async saveReviewSnapshot(args: SaveInboundOrderReviewSnapshotInput): Promise<InboundOrderDetail> {

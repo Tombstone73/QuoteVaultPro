@@ -2874,4 +2874,99 @@ describe("InboundOrderService editable review draft", () => {
     expect(result.orderId).toBe("order_1");
     expect(orderRepo.createOrder).not.toHaveBeenCalled();
   });
+
+  test("combines attachment-only source records into the selected primary draft and requests reparse", async () => {
+    const primary = inboundRecord({
+      id: "inbound_primary",
+      rawPayloadJson: { sender: { email: "ada@example.com" }, subject: "Banner order", bodyText: "Need banners" },
+    });
+    const child = inboundRecord({
+      id: "inbound_artwork",
+      rawPayloadJson: { sender: { email: "ada@example.com" }, subject: "Artwork files", bodyText: "Artwork attached" },
+    });
+    const { repo } = makeRepository(primary);
+    (repo as any).getRecord.mockImplementation(async (_organizationId: string, recordId: string) => (
+      recordId === child.id ? child : primary
+    ));
+    (repo as any).combineRecords = jest.fn(async () => primary);
+    const service = new InboundOrderService(repo as any);
+
+    const result = await service.combineInboundRecords({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      recordIds: [primary.id, child.id],
+      primaryRecordId: primary.id,
+    });
+
+    expect(result.combinedSourceCount).toBe(2);
+    expect(result.reparseRecommended).toBe(true);
+    expect((repo as any).combineRecords).toHaveBeenCalledWith(expect.objectContaining({
+      primaryRecordId: primary.id,
+      childRecordIds: [child.id],
+      combinedSources: expect.arrayContaining([
+        expect.objectContaining({ recordId: primary.id }),
+        expect.objectContaining({ recordId: child.id }),
+      ]),
+    }));
+  });
+
+  test("does not combine converted or rejected source records", async () => {
+    const converted = inboundRecord({ id: "inbound_converted", createdQuoteId: "quote_1" });
+    const active = inboundRecord({ id: "inbound_active" });
+    const { repo } = makeRepository(active);
+    (repo as any).getRecord.mockImplementation(async (_organizationId: string, recordId: string) => (
+      recordId === converted.id ? converted : active
+    ));
+    (repo as any).combineRecords = jest.fn();
+    const service = new InboundOrderService(repo as any);
+
+    await expect(service.combineInboundRecords({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      recordIds: [active.id, converted.id],
+      primaryRecordId: active.id,
+    })).rejects.toBeInstanceOf(InboundOrderTransitionError);
+    expect((repo as any).combineRecords).not.toHaveBeenCalled();
+  });
+
+  test("requires explicit confirmation before combining records matched to different customers", async () => {
+    const primary = inboundRecord({ id: "inbound_primary", matchedCustomerId: "customer_1" });
+    const otherCustomer = inboundRecord({ id: "inbound_other", matchedCustomerId: "customer_2" });
+    const { repo } = makeRepository(primary);
+    (repo as any).getRecord.mockImplementation(async (_organizationId: string, recordId: string) => (
+      recordId === otherCustomer.id ? otherCustomer : primary
+    ));
+    (repo as any).combineRecords = jest.fn();
+    const service = new InboundOrderService(repo as any);
+
+    await expect(service.combineInboundRecords({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      recordIds: [primary.id, otherCustomer.id],
+      primaryRecordId: primary.id,
+    })).rejects.toMatchObject({ statusCode: 409 });
+    expect((repo as any).combineRecords).not.toHaveBeenCalled();
+  });
+
+  test("requires the record with the sole existing review draft to remain the parent", async () => {
+    const attachmentOnly = inboundRecord({ id: "inbound_attachment_only" });
+    const drafted = inboundRecord({ id: "inbound_drafted" });
+    const { repo } = makeRepository(attachmentOnly);
+    (repo as any).getRecord.mockImplementation(async (_organizationId: string, recordId: string) => (
+      recordId === drafted.id ? drafted : attachmentOnly
+    ));
+    (repo as any).listReviewSnapshots.mockImplementation(async (_organizationId: string, recordId: string) => (
+      recordId === drafted.id ? [{ id: "review_draft_1" }] : []
+    ));
+    (repo as any).combineRecords = jest.fn();
+    const service = new InboundOrderService(repo as any);
+
+    await expect(service.combineInboundRecords({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      recordIds: [attachmentOnly.id, drafted.id],
+      primaryRecordId: attachmentOnly.id,
+    })).rejects.toMatchObject({ statusCode: 409 });
+    expect((repo as any).combineRecords).not.toHaveBeenCalled();
+  });
 });

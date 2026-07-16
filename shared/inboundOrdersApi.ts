@@ -491,6 +491,13 @@ export const inboundOrderLinePricingReviewSchema = z.object({
   evaluatedAt: z.string().trim().max(80).nullable().default(null),
 });
 
+export const inboundOrderCombineSchema = z.object({
+  recordIds: z.array(z.string().trim().min(1)).min(2).max(20),
+  primaryRecordId: z.string().trim().min(1),
+  confirmCustomerMismatch: z.boolean().optional().default(false),
+  confirmMultipleDrafts: z.boolean().optional().default(false),
+});
+
 export const inboundOrderArtworkQuantityModeSchema = z.enum([
   "one_each_per_file",
   "same_quantity_each",
@@ -868,6 +875,7 @@ export type InboundAttachmentTrustActionRequest = z.infer<typeof inboundAttachme
 export type InboundRecordTrustActionRequest = z.infer<typeof inboundRecordTrustActionSchema>;
 export type InboundOrderIgnoreActionRequest = z.infer<typeof inboundOrderIgnoreActionSchema>;
 export type InboundOrderBulkActionRequest = z.infer<typeof inboundOrderBulkActionSchema>;
+export type InboundOrderCombineRequest = z.infer<typeof inboundOrderCombineSchema>;
 
 export type InboundMatchedCustomerSummary = {
   id: string;
