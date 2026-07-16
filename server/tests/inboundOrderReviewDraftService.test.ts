@@ -1529,6 +1529,138 @@ describe("InboundOrderService editable review draft", () => {
     expect(getRecord().status).toBe("ready");
   });
 
+  test("staff-confirmed size clears a stale parser blocker and permits mark ready", async () => {
+    const base = parsedDraft();
+    const missingSizeDraft = parsedDraft({
+      lineItems: [{ ...base.lineItems[0], width: null, height: null }],
+      missingDecisions: [{
+        field: "lineItems.0.dimensions",
+        label: "What size stickers are needed?",
+        reason: "No clear dimensions were detected for this line item.",
+        severity: "blocking",
+      }],
+    });
+    const { repo, getRecord } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: missingSizeDraft }));
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    await expect(service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toMatchObject({
+      errors: expect.arrayContaining(["PVC: width and height are required for this product type."]),
+    });
+
+    const saved = await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: [{
+          ...initialized.reviewedLineItemsJson[0],
+          width: 21,
+          height: 13,
+          dimensionsUnit: "in",
+          dimensionsSource: "staff_selected",
+        }],
+        reviewedArtworkJson: initialized.reviewedArtworkJson,
+        missingDecisionsJson: initialized.missingDecisionsJson,
+        warningsJson: initialized.warningsJson,
+        reviewNotes: "Staff confirmed the finished size.",
+      },
+    });
+
+    expect(saved.missingDecisionsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.0.dimensions", status: "resolved" }),
+    ]));
+    expect(saved.validationErrors.join("\n")).not.toContain("What size stickers are needed?");
+
+    const ready = await service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    expect(ready.status).toBe("ready_to_convert");
+    expect(getRecord().status).toBe("ready");
+  });
+
+  test("keeps size blockers for active incomplete lines and makes removed-line size decisions obsolete", async () => {
+    const base = parsedDraft();
+    const multiLineDraft = parsedDraft({
+      lineItems: [
+        { ...base.lineItems[0], width: 21, height: 13 },
+        { ...base.lineItems[0], sourceText: "Second PVC sign", width: null, height: null },
+      ],
+      missingDecisions: [
+        {
+          field: "lineItems.0.dimensions",
+          label: "What size is needed for line item 1?",
+          reason: "No clear dimensions were detected for this line item.",
+          severity: "blocking",
+        },
+        {
+          field: "lineItems.1.dimensions",
+          label: "What size is needed for line item 2?",
+          reason: "No clear dimensions were detected for this line item.",
+          severity: "blocking",
+        },
+      ],
+    });
+    const { repo } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: multiLineDraft }));
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(initialized.missingDecisionsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.0.dimensions", status: "resolved" }),
+      expect.objectContaining({ field: "lineItems.1.dimensions", status: "still_blocking" }),
+    ]));
+    await expect(service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toMatchObject({
+      errors: expect.arrayContaining(["PVC: width and height are required for this product type."]),
+    });
+
+    const saved = await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: [initialized.reviewedLineItemsJson[0]],
+        reviewedArtworkJson: initialized.reviewedArtworkJson,
+        missingDecisionsJson: initialized.missingDecisionsJson,
+        warningsJson: initialized.warningsJson,
+        reviewNotes: "Removed the incomplete second line item.",
+      },
+    });
+
+    expect(saved.missingDecisionsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.1.dimensions", status: "resolved", resolutionNote: "Obsolete: reviewed line item was removed." }),
+    ]));
+    expect(saved.validationErrors.join("\n")).not.toContain("line item 2");
+    await expect(service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).resolves.toMatchObject({ status: "ready_to_convert" });
+  });
+
   test("does not clear a different line item's artwork blocker", async () => {
     const { repo } = makeRepository();
     const service = new InboundOrderService(repo as any);

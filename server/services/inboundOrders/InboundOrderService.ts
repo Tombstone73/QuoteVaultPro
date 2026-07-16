@@ -558,6 +558,15 @@ function isQuantityDecision(decision: Pick<InboundOrderReviewDraftPayload["missi
   return /quantity/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
 }
 
+function isDimensionsDecision(decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">): boolean {
+  const field = String(decision.field ?? "");
+  if (/lineitems\.\d+\.(?:dimensions?|size|width|height)/i.test(field)) return true;
+
+  const text = `${decision.label} ${decision.reason}`;
+  return /what\s+(?:size|dimensions?)\b.*\bneeded\b|\b(?:size|dimensions?)\b.*\b(?:missing|required|unclear)\b/i.test(text)
+    && !/\bpole\s+pocket\b/i.test(text);
+}
+
 function artworkLineIndex(value: string | null | undefined): number | null {
   const match = String(value ?? "").match(/lineitems\.(\d+)\.artwork/i);
   return match ? Number(match[1]) : null;
@@ -565,6 +574,11 @@ function artworkLineIndex(value: string | null | undefined): number | null {
 
 function quantityLineIndex(value: string | null | undefined): number | null {
   const match = String(value ?? "").match(/lineitems\.(\d+)\.quantity/i);
+  return match ? Number(match[1]) : null;
+}
+
+function dimensionsLineIndex(value: string | null | undefined): number | null {
+  const match = String(value ?? "").match(/lineitems\.(\d+)\.(?:dimensions?|size|width|height)/i);
   return match ? Number(match[1]) : null;
 }
 
@@ -589,6 +603,17 @@ function hasValidLineItemQuantity(
     && lineItem.quantity > 0;
 }
 
+function hasValidLineItemDimensions(
+  lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number] | undefined,
+): boolean {
+  return typeof lineItem?.width === "number"
+    && Number.isFinite(lineItem.width)
+    && lineItem.width > 0
+    && typeof lineItem.height === "number"
+    && Number.isFinite(lineItem.height)
+    && lineItem.height > 0;
+}
+
 function artworkDecisionIsResolvedByAssignment(
   payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
   decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
@@ -604,6 +629,15 @@ function quantityDecisionIsResolvedByLineItem(
 ): boolean {
   const lineIndex = quantityLineIndex(decision.field);
   return lineIndex != null && hasValidLineItemQuantity(payload.reviewedLineItemsJson[lineIndex]);
+}
+
+function dimensionsDecisionIsResolvedByLineItem(
+  payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
+  decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
+): boolean {
+  const lineIndex = dimensionsLineIndex(decision.field);
+  if (lineIndex != null) return hasValidLineItemDimensions(payload.reviewedLineItemsJson[lineIndex]);
+  return payload.reviewedLineItemsJson.length > 0 && payload.reviewedLineItemsJson.every(hasValidLineItemDimensions);
 }
 
 function isStaleMissingArtworkWarning(
@@ -4250,6 +4284,13 @@ export class InboundOrderService {
           resolutionNote: decision.resolutionNote ?? "Resolved by staff-confirmed line item quantity.",
         };
       }
+      if (isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(payload, decision)) {
+        return {
+          ...decision,
+          status: "resolved" as const,
+          resolutionNote: decision.resolutionNote ?? "Resolved by staff-confirmed line item size.",
+        };
+      }
       return decision;
     });
     return inboundOrderReviewDraftPayloadSchema.parse({
@@ -4824,7 +4865,7 @@ export class InboundOrderService {
       if (!lineItem.quantity) {
         errors.push(`${label}: quantity is required.`);
       }
-      if (this.lineItemRequiresDimensions(lineItem) && (!lineItem.width || !lineItem.height)) {
+      if (this.lineItemRequiresDimensions(lineItem) && !hasValidLineItemDimensions(lineItem)) {
         errors.push(`${label}: width and height are required for this product type.`);
       }
       if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
@@ -4842,6 +4883,8 @@ export class InboundOrderService {
 
     normalizedPayload.missingDecisionsJson.forEach((decision) => {
       if (decision.status !== "still_blocking") return;
+      if (decisionReferencesRemovedLine(normalizedPayload, decision)) return;
+      if (isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(normalizedPayload, decision)) return;
       if (decision.severity === "blocking") {
         errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
       }
@@ -5216,7 +5259,7 @@ export class InboundOrderService {
       if (!lineItem.selectedProductId && !lineItem.productUnresolved) {
         errors.push(`${label}: select a product candidate or mark product unresolved.`);
       }
-      if (this.lineItemRequiresDimensions(lineItem) && (!lineItem.width || !lineItem.height)) {
+      if (this.lineItemRequiresDimensions(lineItem) && !hasValidLineItemDimensions(lineItem)) {
         errors.push(`${label}: width and height are required for this product type.`);
       }
       if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
@@ -5234,6 +5277,8 @@ export class InboundOrderService {
 
     draft.missingDecisionsJson.forEach((decision) => {
       if (decision.status !== "still_blocking") return;
+      if (decisionReferencesRemovedLine(draft, decision)) return;
+      if (isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(draft, decision)) return;
       if (decision.severity === "blocking") {
         errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
       } else if (isArtworkDecision(decision)) {

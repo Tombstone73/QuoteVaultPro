@@ -107,6 +107,8 @@ export type ProductionOrderArtworkSummary = {
   fileUrl: string;
   thumbKey: string | null;
   previewKey: string | null;
+  thumbUrl?: string | null;
+  previewUrl?: string | null;
   thumbnailUrl: string | null;
   side: string;
   isPrimary: boolean;

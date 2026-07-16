@@ -26,7 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
-import { resolveProductionPreviewUrl } from "@shared/productionHydration";
+import { resolveProductionArtworkSides, resolveProductionPreviewUrl } from "@shared/productionHydration";
 import {
   ProductionJobListItem,
   ProductionOrderArtworkSummary,
@@ -180,7 +180,8 @@ function ArtworkImage({
       <div className={`flex items-center justify-center bg-titan-bg-muted ${className || ""}`}>
         <div className="text-center p-2">
           <FileText className="mx-auto h-8 w-8 text-titan-text-muted" />
-          <div className="mt-1 text-[10px] text-titan-text-muted">No Preview</div>
+          <div className="mt-1 text-[10px] text-titan-text-muted">{artwork ? "File assigned" : "No Preview"}</div>
+          {artwork && <div className="text-[10px] text-titan-text-muted">Preview unavailable</div>}
           {import.meta.env.DEV && hasError && src ? (
             <div className="mt-1 text-[9px] text-amber-400">thumb failed</div>
           ) : null}
@@ -367,7 +368,21 @@ function primaryLineItem(job: ProductionJobListItem): ProductionOrderLineItemSum
 }
 
 function artworkThumbs(job: ProductionJobListItem): ProductionOrderArtworkSummary[] {
-  return job.order.artwork ?? [];
+  // Side assignments remain authoritative. The API's side-specific preview URLs
+  // only fill a missing derivative for the already assigned side.
+  return (job.order.artwork ?? []).map((artwork) => {
+    const side = normalizeSide(artwork.side);
+    const resolvedPreview = side === "front"
+      ? (job as any).frontPreviewUrl
+      : side === "back"
+        ? (job as any).backPreviewUrl
+        : null;
+    return {
+      ...artwork,
+      thumbnailUrl: artwork.thumbnailUrl ?? resolvedPreview ?? null,
+      previewUrl: artwork.previewUrl ?? resolvedPreview ?? null,
+    };
+  });
 }
 
 function normalizeSide(side: string | null | undefined): "front" | "back" | "na" {
@@ -409,9 +424,7 @@ function normalizeArtworkForSides(
 } {
   const list = [...(artwork || [])];
   const isDouble = String(sides).toLowerCase().includes("double") || sides === "2" || String(sides).toLowerCase() === "ds";
-  const byFront = list.filter((item) => normalizeSide(item.side) === "front");
-  const byBack = list.filter((item) => normalizeSide(item.side) === "back");
-  const unassigned = list.filter((item) => normalizeSide(item.side) === "na");
+  const assignedSides = resolveProductionArtworkSides(list);
   const pickBest = (items: ProductionOrderArtworkSummary[]) => items.find((item) => item.isPrimary) ?? items[0] ?? null;
 
   // DEV logging for debugging artwork mapping
@@ -426,16 +439,16 @@ function normalizeArtworkForSides(
   }
 
   if (!isDouble) {
-    return { front: pickBest(byFront) ?? pickBest(unassigned), back: null, unassigned: [], showBackSlot: false, backMissingReason: null };
+    return { front: pickBest(assignedSides.front ? [assignedSides.front] : []) ?? pickBest(assignedSides.unassigned), back: null, unassigned: [], showBackSlot: false, backMissingReason: null };
   }
 
   // For double-sided work, position is not side metadata. Keep unknown files explicit.
   return {
-    front: pickBest(byFront),
-    back: pickBest(byBack),
-    unassigned,
+    front: pickBest(assignedSides.front ? [assignedSides.front] : []),
+    back: pickBest(assignedSides.back ? [assignedSides.back] : []),
+    unassigned: assignedSides.unassigned,
     showBackSlot: true,
-    backMissingReason: byBack.length === 0 ? "not_uploaded" : null,
+    backMissingReason: assignedSides.back ? null : "not_uploaded",
   };
 }
 
@@ -1872,6 +1885,12 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       <Upload className="w-3.5 h-3.5" />
                       Assign back artwork
                     </Button>
+                  </div>
+                ) : currentArtwork && !imageSrc ? (
+                  <div className="flex-1 min-h-0 rounded-lg border-2 border-dashed border-titan-border-subtle flex flex-col items-center justify-center bg-muted/30 p-8 text-center">
+                    <FileText className="h-16 w-16 text-muted-foreground mb-4" />
+                    <h3 className="text-lg font-semibold text-titan-text-primary mb-2">File assigned</h3>
+                    <p className="text-sm text-muted-foreground">Preview unavailable for {currentArtwork.fileName}. The artwork assignment is still present.</p>
                   </div>
                 ) : (
                   <ZoomPanImageViewer
