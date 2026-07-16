@@ -232,6 +232,15 @@ type AttachmentClassificationUpdateResponse = {
   };
 };
 
+type AttachmentClassificationBulkUpdateResponse = {
+  success: true;
+  data: {
+    files: ClientInboundOrderFile[];
+    errors: Array<{ fileId: string; message: string }>;
+    warnings: Array<{ fileId: string; message: string }>;
+  };
+};
+
 type InboundContactSearchResponse = {
   success: true;
   data: Array<InboundMatchedContactSummary & {
@@ -4654,6 +4663,93 @@ function CleanInboundQueue({
   );
 }
 
+function CleanAttachmentBulkActions({
+  visibleFiles,
+  selectedFileIds,
+  isPending,
+  onToggleFile,
+  onToggleVisible,
+  onClassify,
+}: {
+  visibleFiles: ClientInboundOrderFile[];
+  selectedFileIds: Set<string>;
+  isPending: boolean;
+  onToggleFile: (fileId: string, selected: boolean) => void;
+  onToggleVisible: (fileIds: string[], selected: boolean) => void;
+  onClassify: (classification: InboundAttachmentClassification | "reset_to_ai") => void;
+}) {
+  const visibleFileIds = visibleFiles.map((file) => file.id);
+  const selectedVisibleCount = visibleFileIds.filter((fileId) => selectedFileIds.has(fileId)).length;
+  const allVisibleSelected = visibleFileIds.length > 0 && selectedVisibleCount === visibleFileIds.length;
+  const selectedFiles = visibleFiles.filter((file) => selectedFileIds.has(file.id));
+  const unsafeArtworkCount = selectedFiles.filter((file) => isQuarantinedAttachment(file) || file.status === "rejected" || String(attachmentSafetyMetadata(file).attachmentState ?? "") === "blocked_file_type").length;
+  const metadataOnlyCount = selectedFiles.filter((file) => !file.fileRecordId).length;
+
+  if (visibleFiles.length === 0) return null;
+  return (
+    <div className="mb-3 rounded border border-slate-700 bg-slate-900 p-2" data-testid="clean-bulk-attachment-actions">
+      <div className="flex flex-wrap items-center gap-2">
+        <Checkbox
+          checked={allVisibleSelected}
+          aria-label="Select all visible attachments"
+          onCheckedChange={(checked) => onToggleVisible(visibleFileIds, checked === true)}
+        />
+        <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-xs" onClick={() => onToggleVisible(visibleFileIds, !allVisibleSelected)}>
+          {allVisibleSelected ? "Clear visible" : "Select all visible"}
+        </Button>
+        <span className="text-xs text-slate-300">{selectedVisibleCount} file{selectedVisibleCount === 1 ? "" : "s"} selected</span>
+        <div className="ml-auto flex flex-wrap gap-1">
+          {([
+            ["ARTWORK", "Classify as Artwork"],
+            ["PO", "Classify as PO"],
+            ["REFERENCE", "Classify as Reference"],
+            ["IGNORE_INLINE", "Classify as Junk / Signature"],
+            ["reset_to_ai", "Reset to AI"],
+          ] as const).map(([classification, label]) => (
+            <Button
+              key={classification}
+              type="button"
+              size="sm"
+              variant={classification === "ARTWORK" ? "default" : "outline"}
+              className="h-7 px-2 text-[11px]"
+              disabled={selectedVisibleCount === 0 || isPending}
+              onClick={() => onClassify(classification)}
+            >
+              {label}
+            </Button>
+          ))}
+        </div>
+      </div>
+      {unsafeArtworkCount > 0 && <div className="mt-2 text-xs text-amber-200">{unsafeArtworkCount} selected unsafe or quarantined file{unsafeArtworkCount === 1 ? "" : "s"} will be skipped when classifying as Artwork.</div>}
+      {metadataOnlyCount > 0 && <div className="mt-1 text-xs text-slate-400">{metadataOnlyCount} metadata-only attachment{metadataOnlyCount === 1 ? "" : "s"} can be classified, but cannot be used as artwork until file content is available.</div>}
+    </div>
+  );
+}
+
+function CleanSelectableAttachment({
+  file,
+  selected,
+  onToggle,
+  children,
+}: {
+  file: ClientInboundOrderFile;
+  selected: boolean;
+  onToggle: (selected: boolean) => void;
+  children: ReactNode;
+}) {
+  return (
+    <div className={cn("flex items-start gap-2", selected && "rounded ring-1 ring-blue-300")} data-testid="clean-selectable-attachment">
+      <Checkbox
+        className="mt-2"
+        checked={selected}
+        aria-label={`Select ${file.sourceFilename || "attachment"}`}
+        onCheckedChange={(checked) => onToggle(checked === true)}
+      />
+      <div className="min-w-0 flex-1">{children}</div>
+    </div>
+  );
+}
+
 function CleanSourceDocuments({
   selectedRecord,
   detail,
@@ -4674,6 +4770,8 @@ function CleanSourceDocuments({
   onRescan,
   attachmentLinks,
   onClassifyAttachment,
+  onBulkClassifyAttachments,
+  isBulkClassifying,
   form,
   activeTarget,
   onFocusTarget,
@@ -4700,6 +4798,8 @@ function CleanSourceDocuments({
   onRescan: () => void;
   attachmentLinks: InboundOrderArtworkLink[];
   onClassifyAttachment: (link: InboundOrderArtworkLink) => void;
+  onBulkClassifyAttachments: (fileIds: string[], classification: InboundAttachmentClassification | "reset_to_ai") => void;
+  isBulkClassifying: boolean;
   form: ReviewDraftFormState | null;
   activeTarget: CleanHighlightTarget | null;
   onFocusTarget: CleanFocusTargetHandler;
@@ -4707,6 +4807,10 @@ function CleanSourceDocuments({
   onOpenAttachment: (recordId: string, file: ClientInboundOrderFile) => void;
   onCloseInlineAttachment: () => void;
 }) {
+  const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    setSelectedAttachmentIds(new Set());
+  }, [selectedRecord?.id, activeTab]);
   if (!selectedRecord) {
     return <section className="flex h-full min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Select an inbound item.</section>;
   }
@@ -4733,6 +4837,43 @@ function CleanSourceDocuments({
   const visibleInlineSelection = inlineAttachmentSelection?.recordId === record.id
     ? inlineAttachmentSelection
     : null;
+  const classifiedFiles = {
+    artwork: files.filter((file) => classificationForLink(linkForFile(file)) === "ARTWORK"),
+    reference: files.filter((file) => {
+      const classification = classificationForLink(linkForFile(file));
+      return classification === "REFERENCE" || classification === "OTHER";
+    }),
+    junk: files.filter((file) => classificationForLink(linkForFile(file)) === "IGNORE_INLINE"),
+  };
+  const visibleAttachmentFiles = activeTab === "po"
+    ? poFiles
+    : activeTab === "artwork"
+      ? [...classifiedFiles.artwork, ...classifiedFiles.reference, ...classifiedFiles.junk]
+      : [];
+  const toggleAttachmentSelected = (fileId: string, selected: boolean) => {
+    setSelectedAttachmentIds((current) => {
+      const next = new Set(current);
+      if (selected) next.add(fileId);
+      else next.delete(fileId);
+      return next;
+    });
+  };
+  const toggleVisibleAttachmentsSelected = (fileIds: string[], selected: boolean) => {
+    setSelectedAttachmentIds((current) => {
+      const next = new Set(current);
+      for (const fileId of fileIds) {
+        if (selected) next.add(fileId);
+        else next.delete(fileId);
+      }
+      return next;
+    });
+  };
+  const runBulkClassification = (classification: InboundAttachmentClassification | "reset_to_ai") => {
+    const fileIds = visibleAttachmentFiles.map((file) => file.id).filter((fileId) => selectedAttachmentIds.has(fileId));
+    if (fileIds.length === 0) return;
+    onBulkClassifyAttachments(fileIds, classification);
+    setSelectedAttachmentIds(new Set());
+  };
 
   return (
     <section className="flex h-full min-h-0 min-w-0 flex-1 flex-col overflow-hidden border-r border-slate-700 bg-slate-950 text-slate-100" data-testid="clean-source-documents">
@@ -4848,30 +4989,39 @@ function CleanSourceDocuments({
           <div className="mx-auto w-full max-w-[760px] min-w-0 rounded border border-slate-800 bg-slate-900 p-4">
             <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
             <div className="mb-3 text-sm font-bold text-slate-100">PO Documents</div>
+            <CleanAttachmentBulkActions
+              visibleFiles={visibleAttachmentFiles}
+              selectedFileIds={selectedAttachmentIds}
+              isPending={isBulkClassifying}
+              onToggleFile={toggleAttachmentSelected}
+              onToggleVisible={toggleVisibleAttachmentsSelected}
+              onClassify={runBulkClassification}
+            />
             {poFiles.length === 0 ? (
               <div className="rounded border border-dashed border-slate-700 px-3 py-10 text-center text-sm text-slate-500">No PO detected.</div>
             ) : poFiles.map((file) => (
-              <div
-                key={file.id}
-                role="button"
-                tabIndex={0}
-                className={cn("mb-2 block w-full rounded text-left", cleanHighlightClass("po", activeTarget))}
-                onClick={() => onFocusTarget("po")}
-                onMouseEnter={() => onFocusTarget("po")}
-                onKeyDown={(event) => {
-                  if (shouldIgnoreShortcutKeydown(event)) return;
-                  if (event.key === "Enter" || event.key === " ") {
-                    event.preventDefault();
-                    onFocusTarget("po");
-                  }
-                }}
-                data-clean-source-target="po"
-              >
-                <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer onOpenAttachment={onOpenAttachment} />
-                {file.role !== "po" && (
-                  <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-200">Likely PO / Reference PDF</div>
-                )}
-              </div>
+              <CleanSelectableAttachment key={file.id} file={file} selected={selectedAttachmentIds.has(file.id)} onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}>
+                <div
+                  role="button"
+                  tabIndex={0}
+                  className={cn("mb-2 block w-full rounded text-left", cleanHighlightClass("po", activeTarget))}
+                  onClick={() => onFocusTarget("po")}
+                  onMouseEnter={() => onFocusTarget("po")}
+                  onKeyDown={(event) => {
+                    if (shouldIgnoreShortcutKeydown(event)) return;
+                    if (event.key === "Enter" || event.key === " ") {
+                      event.preventDefault();
+                      onFocusTarget("po");
+                    }
+                  }}
+                  data-clean-source-target="po"
+                >
+                  <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer onOpenAttachment={onOpenAttachment} />
+                  {file.role !== "po" && (
+                    <div className="mt-1 text-[11px] font-semibold uppercase tracking-wide text-amber-200">Likely PO / Reference PDF</div>
+                  )}
+                </div>
+              </CleanSelectableAttachment>
             ))}
             {poEvidenceItems.length > 0 && (
               <div className="mt-4 rounded border border-slate-800 bg-slate-950 p-3">
@@ -4885,6 +5035,14 @@ function CleanSourceDocuments({
             <CleanInlineAttachmentViewer selection={visibleInlineSelection} onClose={onCloseInlineAttachment} />
             <div className="rounded border border-slate-800 bg-slate-900 p-3">
               <div className="mb-2 text-sm font-bold text-slate-100">Artwork Files</div>
+              <CleanAttachmentBulkActions
+                visibleFiles={visibleAttachmentFiles}
+                selectedFileIds={selectedAttachmentIds}
+                isPending={isBulkClassifying}
+                onToggleFile={toggleAttachmentSelected}
+                onToggleVisible={toggleVisibleAttachmentsSelected}
+                onClassify={runBulkClassification}
+              />
               {artworkLinks.length === 0 ? <div className="text-sm text-slate-500">No artwork detected.</div> : artworkLinks.map((link) => (
                 <div
                   key={artworkLinkKey(link)}
@@ -4893,7 +5051,9 @@ function CleanSourceDocuments({
                   {(() => {
                     const file = fileForLink(link);
                     return file ? (
-                      <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
+                      <CleanSelectableAttachment file={file} selected={selectedAttachmentIds.has(file.id)} onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}>
+                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
+                      </CleanSelectableAttachment>
                     ) : (
                       <>
                         <button
@@ -4927,7 +5087,9 @@ function CleanSourceDocuments({
                   return (
                     <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
                       {file ? (
-                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
+                        <CleanSelectableAttachment file={file} selected={selectedAttachmentIds.has(file.id)} onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}>
+                          <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
+                        </CleanSelectableAttachment>
                       ) : (
                         <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-300">
                           <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
@@ -4948,7 +5110,9 @@ function CleanSourceDocuments({
                   return (
                     <div key={artworkLinkKey(link)} className="mb-2 rounded border border-slate-800 bg-slate-950 px-2 py-1.5">
                       {file ? (
-                        <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
+                        <CleanSelectableAttachment file={file} selected={selectedAttachmentIds.has(file.id)} onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}>
+                          <InboundAttachmentCard recordId={record.id} file={file} compact minimal onClassify={() => onClassifyAttachment(link)} useInAppViewer onOpenAttachment={onOpenAttachment} />
+                        </CleanSelectableAttachment>
                       ) : (
                         <div className="flex min-w-0 items-center justify-between gap-2 text-xs text-slate-500">
                           <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
@@ -9229,6 +9393,69 @@ export default function InboundOrdersPage() {
     },
   });
 
+  const bulkClassifyAttachmentsMutation = useMutation({
+    mutationFn: ({ recordId, fileIds, classification }: {
+      recordId: string;
+      fileIds: string[];
+      classification: InboundAttachmentClassification | "reset_to_ai";
+    }) => postJson<AttachmentClassificationBulkUpdateResponse>(
+      `/api/inbound-orders/${encodeURIComponent(recordId)}/files/classification/bulk`,
+      { fileIds, classification },
+    ),
+    onSuccess: (response, variables) => {
+      queryClient.setQueryData<ClientInboundOrderDetailResponse | undefined>(["/api/inbound-orders", variables.recordId], (current) => {
+        if (!current?.data) return current;
+        const updatedById = new Map(response.data.files.map((file) => [file.id, file]));
+        return {
+          ...current,
+          data: {
+            ...current.data,
+            files: current.data.files.map((file) => updatedById.get(file.id) ?? file),
+          },
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId, "draft-preview"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", variables.recordId, "review-draft"] });
+      queryClient.invalidateQueries({ predicate: isInboundOrderListQuery });
+      setCleanForm((current) => {
+        if (!current) return current;
+        const updatedById = new Map(response.data.files.map((file) => [file.id, file]));
+        const synchronizeLink = (link: InboundOrderArtworkLink) => {
+          const updatedFile = updatedById.get(link.fileId);
+          return updatedFile ? { ...link, ...artworkLinkFromInboundFile(updatedFile, link.source) } : link;
+        };
+        return {
+          ...current,
+          reviewedLineItemsJson: current.reviewedLineItemsJson.map((lineItem) => ({
+            ...lineItem,
+            artworkLinks: lineItem.artworkLinks.map(synchronizeLink),
+          })),
+          reviewedArtworkJson: {
+            ...current.reviewedArtworkJson,
+            unassignedAttachments: current.reviewedArtworkJson.unassignedAttachments.map(synchronizeLink),
+          },
+        };
+      });
+      setSourceChangedByRecordId((current) => ({ ...current, [variables.recordId]: true }));
+      const updatedCount = response.data.files.length;
+      const actionLabel = variables.classification === "reset_to_ai"
+        ? "Reset"
+        : `Classified ${updatedCount} file${updatedCount === 1 ? "" : "s"} as ${attachmentClassificationLabel(variables.classification)}`;
+      toast({
+        title: updatedCount > 0 ? actionLabel : "No attachments were classified",
+        description: [
+          response.data.errors.length > 0 ? `${response.data.errors.length} skipped.` : null,
+          response.data.warnings.length > 0 ? `${response.data.warnings.length} need attachment availability review.` : null,
+          updatedCount > 0 ? "Reparse required to refresh draft evidence and readiness validation." : null,
+        ].filter(Boolean).join(" ") || "No attachment classifications changed.",
+        variant: response.data.errors.length > 0 ? "default" : undefined,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Bulk classification failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const convertToOrderMutation = useMutation({
     mutationFn: (recordId: string) => (
       postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/convert-to-order`, {})
@@ -9907,6 +10134,11 @@ export default function InboundOrdersPage() {
               onRescan={runSourceRescanForSelectedRecord}
               attachmentLinks={cleanAttachmentLinks}
               onClassifyAttachment={openCleanAttachmentClassificationDialog}
+              onBulkClassifyAttachments={(fileIds, classification) => {
+                if (!selectedRecord) return;
+                bulkClassifyAttachmentsMutation.mutate({ recordId: selectedRecord.id, fileIds, classification });
+              }}
+              isBulkClassifying={bulkClassifyAttachmentsMutation.isPending}
               form={cleanForm}
               activeTarget={cleanActiveTarget}
               onFocusTarget={focusCleanTarget}

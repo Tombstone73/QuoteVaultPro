@@ -39,6 +39,7 @@ import {
 } from "@shared/inboundOrdersApi";
 import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
 import {
+  classifyInboundAttachment,
   inboundAttachmentClassificationToRole,
   inboundAttachmentRoleToClassification,
   type InboundAttachmentClassification,
@@ -208,6 +209,14 @@ export type InboundAttachmentClassificationUpdateInput = {
     matchType: CreateInboundAttachmentClassificationRuleValues["matchType"];
     matchValue: string;
   } | null;
+};
+
+export type InboundAttachmentClassificationBulkInput = {
+  organizationId: string;
+  inboundRecordId: string;
+  fileIds: string[];
+  actorUserId: string;
+  classification: InboundAttachmentClassification | "reset_to_ai";
 };
 
 export type InboundOrderBulkActionInput = {
@@ -1199,6 +1208,19 @@ function getFileAttachmentState(file: InboundOrderFile): string | null {
   return stringFromUnknown(metadata?.attachmentState) ?? null;
 }
 
+function isUnsafeForArtworkClassification(file: InboundOrderFile): boolean {
+  const attachmentState = getFileAttachmentState(file);
+  return file.status === "quarantined"
+    || file.status === "rejected"
+    || attachmentState === "blocked_file_type"
+    || attachmentState === "scan_pending"
+    || attachmentState === "quarantined";
+}
+
+function isMetadataOnlyAttachment(file: InboundOrderFile): boolean {
+  return !file.fileRecordId;
+}
+
 function getAttachmentDownloadPolicy(args: {
   record: InboundOrderRecord;
   files: InboundOrderFile[];
@@ -1349,6 +1371,118 @@ export class InboundOrderService {
     });
 
     return { file: updated, rule, warning };
+  }
+
+  private async resetAttachmentClassification(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    fileId: string;
+    actorUserId: string;
+  }): Promise<{ file: InboundOrderFile; warning: string | null }> {
+    const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
+    if (!record) throw new InboundOrderTransitionError("Inbound order record not found.", 404);
+    const file = await this.repository.getFile(args.organizationId, args.inboundRecordId, args.fileId);
+    if (!file) throw new InboundOrderTransitionError("Inbound attachment not found.", 404);
+
+    const previousMetadata = (file.metadataJson ?? {}) as Record<string, unknown>;
+    const automaticClassification = classifyInboundAttachment({
+      filename: file.sourceFilename,
+      mimeType: file.mimeType,
+      sizeBytes: file.sizeBytes,
+      contentDisposition: file.contentDisposition,
+      contentId: stringFromUnknown(previousMetadata.contentId),
+      extractedText: stringFromUnknown(previousMetadata.extractedText),
+      sourceHint: stringFromUnknown(previousMetadata.sourceHint),
+    });
+    const updated = await this.repository.updateFile({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+      fileId: args.fileId,
+      patch: {
+        role: inboundOrderFileRoleForClassification(automaticClassification.classification),
+        metadataJson: {
+          ...previousMetadata,
+          attachmentClassification: automaticClassification,
+          attachmentClassificationUpdatedAt: new Date().toISOString(),
+          attachmentClassificationUpdatedByUserId: args.actorUserId,
+          manualAttachmentClassification: false,
+          poCandidate: automaticClassification.classification === "PO",
+          artworkCandidate: automaticClassification.classification === "ARTWORK",
+        },
+        reviewNotes: "Manual attachment classification reset to AI classification.",
+      },
+    });
+    if (!updated) throw new InboundOrderTransitionError("Inbound attachment classification could not be reset.", 500);
+
+    await this.repository.createEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: record.id,
+      actorUserId: args.actorUserId,
+      actorType: "user",
+      eventType: "attachment.classification.reset_to_ai",
+      fromStatus: null,
+      toStatus: null,
+      message: `Reset inbound attachment classification to AI for ${updated.sourceFilename || "attachment"}.`,
+      metadataJson: {
+        fileId: updated.id,
+        fileRecordId: updated.fileRecordId,
+        classification: automaticClassification.classification,
+        createsQuote: false,
+        createsOrder: false,
+        createsArtwork: false,
+        createsProofs: false,
+      },
+    });
+
+    return {
+      file: updated,
+      warning: isMetadataOnlyAttachment(updated)
+        ? "Metadata-only attachment was reclassified, but its file content is still unavailable for artwork use."
+        : null,
+    };
+  }
+
+  async bulkUpdateAttachmentClassification(args: InboundAttachmentClassificationBulkInput): Promise<{
+    files: InboundOrderFile[];
+    errors: Array<{ fileId: string; message: string }>;
+    warnings: Array<{ fileId: string; message: string }>;
+  }> {
+    const fileIds = Array.from(new Set(args.fileIds.map((fileId) => fileId.trim()).filter(Boolean)));
+    const files: InboundOrderFile[] = [];
+    const errors: Array<{ fileId: string; message: string }> = [];
+    const warnings: Array<{ fileId: string; message: string }> = [];
+
+    for (const fileId of fileIds) {
+      try {
+        const file = await this.repository.getFile(args.organizationId, args.inboundRecordId, fileId);
+        if (!file) {
+          errors.push({ fileId, message: "Inbound attachment not found." });
+          continue;
+        }
+        if (args.classification === "ARTWORK" && isUnsafeForArtworkClassification(file)) {
+          errors.push({ fileId, message: "Unsafe or quarantined attachments cannot be classified as usable artwork. Resolve the attachment safety state first." });
+          continue;
+        }
+        const result = args.classification === "reset_to_ai"
+          ? await this.resetAttachmentClassification({ ...args, fileId })
+          : await this.updateAttachmentClassification({
+            ...args,
+            fileId,
+            classification: args.classification,
+            rememberForCustomer: false,
+            rule: null,
+          });
+        files.push(result.file);
+        const warning = result.warning ?? (isMetadataOnlyAttachment(result.file)
+          ? "Metadata-only attachment was classified, but its file content is still unavailable for artwork use."
+          : null);
+        if (warning) warnings.push({ fileId, message: warning });
+      } catch (error) {
+        errors.push({ fileId, message: error instanceof Error ? error.message : "Attachment classification failed." });
+      }
+    }
+
+    return { files, errors, warnings };
   }
 
   private async resolveSenderTrustSummary(args: {
