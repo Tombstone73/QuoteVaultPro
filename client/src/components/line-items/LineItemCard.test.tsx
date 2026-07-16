@@ -257,9 +257,51 @@ describe("LineItemCard operational sections", () => {
     expect(container.textContent).not.toContain("Height");
     expect(container.textContent).not.toContain("Artwork Assets");
     expect(container.querySelector("hr")).toBeNull();
-    expect(container.textContent).toContain("Fulfillment Notes");
+    expect(container.textContent).toContain("Notes");
+    expect(container.textContent).not.toContain("Fulfillment Notes");
     expect(container.textContent).toContain("Advanced / Staff Controls");
 
+    await cleanup();
+  });
+
+  it("keeps pricing details hidden until staff opens the compact disclosure", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true,
+      pricingDetailsSlot: <div>Calculated sqft: 12.00</div>,
+    });
+
+    expect(container.textContent).toContain("Pricing details");
+    expect(container.textContent).not.toContain("Calculated sqft: 12.00");
+
+    const detailsButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.trim() === "Pricing details",
+    );
+    expect(detailsButton).toBeTruthy();
+    click(detailsButton!);
+
+    expect(container.textContent).toContain("Calculated sqft: 12.00");
+    await cleanup();
+  });
+
+  it("collapses notes by default while showing an existing-note indicator", async () => {
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      isExpanded: true,
+      productionNotes: "Use matte laminate",
+      internalNoteCount: 2,
+      internalNotesSlot: <div>Structured note detail</div>,
+    });
+
+    expect(container.textContent).toContain("2 internal notes");
+    expect(container.textContent).not.toContain("Use matte laminate");
+
+    const notesButton = Array.from(container.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Notes"),
+    );
+    expect(notesButton).toBeTruthy();
+    click(notesButton!);
+
+    expect(container.textContent).toContain("Use matte laminate");
+    expect(container.textContent).toContain("Structured note detail");
     await cleanup();
   });
 });

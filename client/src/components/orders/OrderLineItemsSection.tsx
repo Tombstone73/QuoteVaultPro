@@ -61,7 +61,7 @@ import { getLineItemProofBadgeClass } from "@/lib/orderProofUi";
 
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
-import { getOrderLineItemActiveWorkWarning, getOrderLineItemEditorUiPolicy } from "@/components/orders/orderLineItemEditorUi";
+import { getOrderLineItemActiveWorkWarning } from "@/components/orders/orderLineItemEditorUi";
 import {
   buildPbv2DefaultsHydrationKey,
   hasPbv2Selections,
@@ -1145,7 +1145,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [designBriefSavedAt, setDesignBriefSavedAt] = useState<string | null>(null);
   const designBriefSnapshotRef = useRef<Record<string, LineItemDesignBriefDraft>>({});
   const [lineItemInternalNoteDraft, setLineItemInternalNoteDraft] = useState("");
-  const [internalNotesOpenByLineItemId, setInternalNotesOpenByLineItemId] = useState<Record<string, boolean>>({});
 
   const designBriefQuery = useQuery<LineItemDesignBriefDetail>({
     queryKey: ["orders", "lineItemDesignBrief", orderId, expandedItem?.id],
@@ -2470,6 +2469,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   }, [activeLineItems]);
 
   return (
+    <Popover
+      open={searchOpen}
+      onOpenChange={(open) => {
+        setSearchOpen(open);
+        if (!open) setSearchQuery("");
+      }}
+    >
     <Card className="border-0 bg-transparent shadow-none">
       <CardHeader className="px-0 pt-0 pb-2">
         <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-border/50 bg-muted/15 px-3 py-2.5">
@@ -2482,9 +2488,21 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
             </div>
           </div>
           
-          {!readOnly && productionRequiredItemCount > 0 && (
-            <div className="flex items-center gap-2">
-              {selectedForProduction.size > 0 && (
+          {!readOnly && (
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <PopoverTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  aria-label="Add Product"
+                >
+                  <Plus className="mr-1.5 h-4 w-4" />
+                  Add Product
+                </Button>
+              </PopoverTrigger>
+              {productionRequiredItemCount > 0 && selectedForProduction.size > 0 && (
                 <>
                   <span className="text-xs text-muted-foreground">
                     {selectedForProduction.size} selected
@@ -2499,17 +2517,19 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   </Button>
                 </>
               )}
-              <Button
-                variant="default"
-                size="sm"
-                onClick={handleSendSelectedToProduction}
-                disabled={selectedForProduction.size === 0 || scheduleProduction.isPending}
-              >
-                <Send className="mr-2 h-4 w-4" />
-                {scheduleProduction.isPending
-                  ? "Sending..."
-                  : `Send ${selectedForProduction.size > 0 ? selectedForProduction.size : "Selected"} to Production`}
-              </Button>
+              {productionRequiredItemCount > 0 && (
+                <Button
+                  variant="default"
+                  size="sm"
+                  onClick={handleSendSelectedToProduction}
+                  disabled={selectedForProduction.size === 0 || scheduleProduction.isPending}
+                >
+                  <Send className="mr-2 h-4 w-4" />
+                  {scheduleProduction.isPending
+                    ? "Sending..."
+                    : `Send ${selectedForProduction.size > 0 ? selectedForProduction.size : "Selected"} to Production`}
+                </Button>
+              )}
             </div>
           )}
         </div>
@@ -2598,7 +2618,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const overrideLabel = getLineItemPriceOverrideLabel(persistedOverrideMode ?? selectedOverrideMode);
                   const baseCalculatedTotalCents = persistedPricing.baseCalculatedTotalCents || getLineItemBaseCalculatedTotalCents(item, total);
                   const baseCalculatedTotal = baseCalculatedTotalCents / 100;
-
                   // Live preview price for the currently-expanded item (not yet saved).
                   // Per-each is derived from the qty the preview total was priced for,
                   // never the live draft qty, so total and per-each stay consistent.
@@ -2754,6 +2773,22 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const pricingDebugSnapshot = isExpanded && expandedItem && expandedItem.id === item.id
                     ? (pbv2SnapshotJson as any)?.pbv2PricingSnapshot
                     : (item as any)?.pbv2SnapshotJson?.pbv2PricingSnapshot;
+                  const pricingDetailQuantity = isExpanded && expandedItem?.id === item.id
+                    ? qtyNum
+                    : (Number(item.quantity) > 0 ? Number(item.quantity) : 1);
+                  const pricingDetailWidth = isExpanded && expandedItem?.id === item.id ? widthNum : Number(item.width);
+                  const pricingDetailHeight = isExpanded && expandedItem?.id === item.id ? heightNum : Number(item.height);
+                  const calculatedSqft = !quantityOnly && Number.isFinite(pricingDetailWidth) && Number.isFinite(pricingDetailHeight)
+                    ? (pricingDetailWidth * pricingDetailHeight * pricingDetailQuantity) / 144
+                    : null;
+                  const formulaDebug = pricingDebugSnapshot?.formulaDebug ?? pricingDebugSnapshot?.debug ?? null;
+                  const billedSqft = typeof formulaDebug?.postCeilSqftTotal === "number"
+                    ? formulaDebug.postCeilSqftTotal
+                    : null;
+                  const ratePerSqft = typeof pricingDebugSnapshot?.baseRateUsed === "number"
+                    ? pricingDebugSnapshot.baseRateUsed
+                    : null;
+                  const displayedRatePerSqft = ratePerSqft ?? (calculatedSqft && calculatedSqft > 0 ? displayTotal / calculatedSqft : null);
                   const renderedRequiresDesign = isExpanded && expandedItem && expandedItem.id === item.id
                     ? requiresDesignInput
                     : Boolean((item as any).requiresDesign);
@@ -2769,13 +2804,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const renderedRequiresProofApproval = isExpanded && expandedItem && expandedItem.id === item.id
                     ? requiresProofApprovalInput
                     : Boolean((item as any)?.requiresProofApproval);
-                  const editorUiPolicy = getOrderLineItemEditorUiPolicy({
-                    fulfillmentOnly,
-                    internalNoteCount: (lineItemInternalNotesQuery.data ?? []).length,
-                    requiresDesign: renderedRequiresDesign,
-                    requiresPrepress: renderedRequiresPrepress,
-                    requiresProofApproval: renderedRequiresProofApproval,
-                  });
                   const showArtworkControls =
                     !fulfillmentOnly || renderedRequiresDesign || renderedRequiresPrepress === true || renderedRequiresProofApproval;
 
@@ -3055,7 +3083,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 }
                                 priceControlSlot={
                                   isExpanded && expandedItem && expandedItem.id === item.id ? (
-                                    <div className="space-y-1">
+                                    <div>
                                       <select
                                         aria-label="Price override mode"
                                         value={overrideSelectValue}
@@ -3121,12 +3149,90 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         <option value="apply_discount">Discount</option>
                                         <option value="append_value">Add value</option>
                                       </select>
-                                      <div className="ml-auto max-w-36 text-[11px] leading-tight text-muted-foreground">
+                                      <div className="hidden">
                                         Calculated {formatMoney(baseCalculatedTotal)} · Effective {formatMoney(displayTotal)}
                                       </div>
                                     </div>
                                   ) : undefined
                                 }
+                                pricingDetailsSlot={
+                                  isExpanded && expandedItem && expandedItem.id === item.id ? (
+                                    <div className="space-y-0.5" data-testid="line-item-pricing-details">
+                                      {quantityOnly ? (
+                                        <>
+                                          <div>Quantity {pricingDetailQuantity}</div>
+                                          <div>Rate per piece {formatMoney(displayPerEa)}</div>
+                                          <div>Formula: q x rate per piece = {formatMoney(displayTotal)}</div>
+                                        </>
+                                      ) : (
+                                        <>
+                                          {calculatedSqft != null ? <div>Calculated sqft: {calculatedSqft.toFixed(2)}</div> : null}
+                                          {billedSqft != null && billedSqft !== calculatedSqft ? <div>Billed sqft: {billedSqft.toFixed(2)}</div> : null}
+                                          {displayedRatePerSqft != null ? <div>Price per sqft: {formatMoney(displayedRatePerSqft)}</div> : null}
+                                          <div>Unit price: {formatMoney(displayPerEa)}</div>
+                                          <div>Quantity: {pricingDetailQuantity}</div>
+                                          <div>Formula: width x height / 144 x quantity</div>
+                                          <div>Calculated: {formatMoney(baseCalculatedTotal)}; Effective: {formatMoney(displayTotal)}</div>
+                                        </>
+                                      )}
+                                      {isOverride ? <div>Override: {overrideLabel}</div> : <div>No price override</div>}
+                                    </div>
+                                  ) : undefined
+                                }
+                                internalNoteCount={(lineItemInternalNotesQuery.data ?? []).length}
+                                internalNotesSlot={
+                                  <Collapsible defaultOpen={false} className="mt-3 rounded-md border border-border/40 bg-muted/20 p-3">
+                                    <CollapsibleTrigger asChild>
+                                      <button type="button" className="flex w-full items-center justify-between gap-2 text-left">
+                                        <div>
+                                          <div className="text-sm font-medium">Line Item Internal Notes</div>
+                                          <div className="text-xs text-muted-foreground">
+                                            Structured staff notes. {fulfillmentOnly ? "Use Fulfillment Notes for pick/pack instructions." : "Use Production Notes for operator instructions."}
+                                          </div>
+                                        </div>
+                                        {lineItemInternalNotesQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
+                                      </button>
+                                    </CollapsibleTrigger>
+                                    <CollapsibleContent className="mt-3 space-y-2">
+                                      {(lineItemInternalNotesQuery.data ?? []).length === 0 ? (
+                                        <div className="rounded-md border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
+                                          No structured line item internal notes yet.
+                                        </div>
+                                      ) : (
+                                        (lineItemInternalNotesQuery.data ?? []).map((note) => (
+                                          <div key={note.id} className="rounded-md border border-border/50 bg-background/80 p-3">
+                                            <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
+                                              <span>{note.createdByUserName || "Unknown user"}</span>
+                                              <span>{new Date(note.createdAt).toLocaleString()}</span>
+                                            </div>
+                                            <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{note.noteText}</div>
+                                          </div>
+                                        ))
+                                      )}
+                                      {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
+                                        <div className="space-y-2 pt-1">
+                                          <Textarea
+                                            value={lineItemInternalNoteDraft}
+                                            onChange={(e) => setLineItemInternalNoteDraft(e.target.value)}
+                                            placeholder="Add a structured internal note for this line item..."
+                                            className="min-h-24"
+                                          />
+                                          <div className="flex justify-end">
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              onClick={() => addLineItemInternalNote.mutate({ lineItemId: item.id, noteText: lineItemInternalNoteDraft })}
+                                              disabled={addLineItemInternalNote.isPending || lineItemInternalNoteDraft.trim().length === 0}
+                                            >
+                                              {addLineItemInternalNote.isPending ? "Adding..." : "Add Line Item Internal Note"}
+                                            </Button>
+                                          </div>
+                                        </div>
+                                      )}
+                                    </CollapsibleContent>
+                                  </Collapsible>
+                                }
+                                quantityOnly={quantityOnly}
                                 isCalculating={isCalculating}
                                 calcError={calcError}
                                 isPreviewPrice={isPreviewPrice}
@@ -3432,62 +3538,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       </div>
                                     )}
 
-                                    <Collapsible
-                                      open={internalNotesOpenByLineItemId[String(item.id)] ?? editorUiPolicy.internalNotesInitiallyOpen}
-                                      onOpenChange={(open) => setInternalNotesOpenByLineItemId((prev) => ({ ...prev, [String(item.id)]: open }))}
-                                      className="mb-3 rounded-md border border-border/40 bg-muted/20 p-3"
-                                    >
-                                      <CollapsibleTrigger asChild>
-                                        <button type="button" className="flex w-full items-center justify-between gap-2 text-left">
-                                          <div>
-                                            <div className="text-sm font-medium">Line Item Internal Notes</div>
-                                            <div className="text-xs text-muted-foreground">
-                                              Structured staff notes. {fulfillmentOnly ? "Use Fulfillment Notes for pick/pack instructions." : "Use Production Notes for operator instructions."}
-                                            </div>
-                                          </div>
-                                          {lineItemInternalNotesQuery.isFetching ? <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" /> : <ChevronDown className="h-4 w-4 text-muted-foreground" />}
-                                        </button>
-                                      </CollapsibleTrigger>
-
-                                      <CollapsibleContent className="mt-3 space-y-2">
-                                        {(lineItemInternalNotesQuery.data ?? []).length === 0 ? (
-                                          <div className="rounded-md border border-dashed border-border/60 p-3 text-sm text-muted-foreground">
-                                            No structured line item internal notes yet.
-                                          </div>
-                                        ) : (
-                                          (lineItemInternalNotesQuery.data ?? []).map((note) => (
-                                            <div key={note.id} className="rounded-md border border-border/50 bg-background/80 p-3">
-                                              <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
-                                                <span>{note.createdByUserName || "Unknown user"}</span>
-                                                <span>{new Date(note.createdAt).toLocaleString()}</span>
-                                              </div>
-                                              <div className="mt-2 whitespace-pre-wrap text-sm leading-6 text-foreground">{note.noteText}</div>
-                                            </div>
-                                          ))
-                                        )}
-
-                                        {!readOnly && isExpanded && expandedItem && expandedItem.id === item.id && (
-                                          <div className="space-y-2 pt-1">
-                                            <Textarea
-                                              value={lineItemInternalNoteDraft}
-                                              onChange={(e) => setLineItemInternalNoteDraft(e.target.value)}
-                                              placeholder="Add a structured internal note for this line item..."
-                                              className="min-h-24"
-                                            />
-                                            <div className="flex justify-end">
-                                              <Button
-                                                type="button"
-                                                size="sm"
-                                                onClick={() => addLineItemInternalNote.mutate({ lineItemId: item.id, noteText: lineItemInternalNoteDraft })}
-                                                disabled={addLineItemInternalNote.isPending || lineItemInternalNoteDraft.trim().length === 0}
-                                              >
-                                                {addLineItemInternalNote.isPending ? "Adding..." : "Add Line Item Internal Note"}
-                                              </Button>
-                                            </div>
-                                          </div>
-                                        )}
-                                      </CollapsibleContent>
-                                    </Collapsible>
                                   </>
                                 }
                                 artworkSlot={
@@ -3773,24 +3823,25 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
         {!readOnly && (
           <div className="mt-3 pt-3 border-t border-border/40">
-            <Popover
-              open={searchOpen}
-              onOpenChange={(open) => {
-                setSearchOpen(open);
-                if (!open) setSearchQuery("");
-              }}
-            >
               <PopoverTrigger asChild>
-                <Button variant="outline" role="combobox" aria-expanded={searchOpen} className="w-full justify-between h-9 font-normal">
-                  <span className="text-muted-foreground">{searchQuery ? "Searching: " + searchQuery : "Add Product"}</span>
-                  <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-50" />
+                <Button
+                  type="button"
+                  variant="outline"
+                  role="combobox"
+                  aria-label="Add Product"
+                  aria-expanded={searchOpen}
+                  className="h-10 w-full justify-center border-primary/40 bg-primary/5 font-medium text-primary hover:bg-primary/10"
+                >
+                  <Plus className="mr-2 h-4 w-4 shrink-0" />
+                  <span>{searchQuery ? "Searching: " + searchQuery : "Add Product"}</span>
+                  <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-60" />
                 </Button>
               </PopoverTrigger>
               <PopoverContent
-                className="w-[520px] p-0"
+                className="w-[min(520px,calc(100vw-2rem))] p-0"
                 align="start"
                 onCloseAutoFocus={(event) => {
-                  // Prevent Radix from restoring focus to the footer trigger when the popover
+                  // Prevent Radix from restoring focus to an Add Product trigger when the popover
                   // closes. The pendingJumpToLineItemId scroll effect moves focus to the new
                   // line-item anchor so Width / Height / Qty stay in view.
                   event.preventDefault();
@@ -3852,7 +3903,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   </CommandList>
                 </Command>
               </PopoverContent>
-            </Popover>
           </div>
         )}
       </CardContent>
@@ -3884,5 +3934,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         </DialogContent>
       </Dialog>
     </Card>
+    </Popover>
   );
 });

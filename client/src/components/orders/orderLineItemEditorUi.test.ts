@@ -34,7 +34,7 @@ describe("order line item editor UI policy", () => {
     expect(policy.operationsNotesLabel).toBe("Production Notes (internal)");
   });
 
-  it("hides fulfillment routing overrides initially but keeps existing internal notes open", () => {
+  it("hides fulfillment routing overrides initially and keeps internal notes collapsed behind their indicator", () => {
     const policy = getOrderLineItemEditorUiPolicy({
       fulfillmentOnly: true,
       internalNoteCount: 1,
@@ -44,7 +44,7 @@ describe("order line item editor UI policy", () => {
     });
 
     expect(policy.hideRoutingByDefault).toBe(true);
-    expect(policy.internalNotesInitiallyOpen).toBe(true);
+    expect(policy.internalNotesInitiallyOpen).toBe(false);
     expect(policy.operationsNotesLabel).toBe("Fulfillment Notes (internal)");
   });
 });
