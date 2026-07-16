@@ -248,9 +248,14 @@ function makeRepository(record = inboundRecord(), latestAttempt = parseAttempt()
     getSource: jest.fn(async () => null),
     listLineItems: jest.fn(async () => []),
     listFiles: jest.fn(async () => []),
+    updateFile: jest.fn(async ({ fileId, patch }: any) => ({ id: fileId, ...patch })),
     listWarnings: jest.fn(async () => []),
     listDecisionFlags: jest.fn(async () => []),
     listEvents: jest.fn(async () => []),
+    listEnabledEmailIgnoreRules: jest.fn(async () => []),
+    listEnabledEmailTrustRules: jest.fn(async () => []),
+    senderEmailMatchesCustomerContact: jest.fn(async () => false),
+    senderDomainMatchesCustomerDomain: jest.fn(async () => false),
     getLatestParseAttempt: jest.fn(async () => currentAttempt),
     setLatestParseAttempt: (attempt: any) => {
       currentAttempt = attempt;
@@ -403,6 +408,10 @@ function makeOrderRepository(overrides: Record<string, any> = {}) {
   };
   return {
     createOrder: jest.fn(async () => createdOrder),
+    createOrderAttachment: jest.fn(async (attachment: any) => ({
+      id: `order_attachment_${attachment.fileRecordId}`,
+      ...attachment,
+    })),
     getOrderById: jest.fn(async (_organizationId: string, orderId: string) => (
       orderId === createdOrder.id ? createdOrder : undefined
     )),
@@ -2130,7 +2139,21 @@ describe("InboundOrderService editable review draft", () => {
       },
     }));
     const service = new InboundOrderService(repo as any);
-    await prepareReadyDraft(service);
+    await prepareReadyDraft(service, {
+      lineItem: {
+        artworkLinks: [{
+          fileId: "file_artwork_1",
+          fileRecordId: "file_record_artwork_1",
+          filename: "pvc-sign-artwork.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 12345,
+          role: "artwork",
+          source: "staff_selected",
+          confidence: 100,
+          reason: "Staff assigned artwork to this quote line item.",
+        }],
+      },
+    });
     (repo.createQuoteDraftFromInboundReview as any).mockResolvedValue({
       quote: {
         id: "quote_1",
@@ -2158,6 +2181,7 @@ describe("InboundOrderService editable review draft", () => {
       conversionMetadata: expect.objectContaining({ inboundRecordId: "inbound_1" }),
     }));
     const conversionInput = (repo.createQuoteDraftFromInboundReview as any).mock.calls[0][1];
+    expect(conversionInput.lineItems[0].artworkFileIds).toEqual(["file_artwork_1"]);
     expect(JSON.stringify(conversionInput)).not.toContain(sourceBody);
   });
 
@@ -2354,6 +2378,15 @@ describe("InboundOrderService editable review draft", () => {
   test("creates a draft order from a ready inbound review and marks inbound converted", async () => {
     const { repo, getRecord } = makeRepository();
     const orderRepo = makeOrderRepository();
+    const artworkFiles = [
+      inboundFile({ id: "file_artwork_1", fileRecordId: "file_record_artwork_1", sourceFilename: "pvc-sign-artwork.pdf" }),
+      inboundFile({ id: "file_artwork_2", fileRecordId: "file_record_artwork_2", sourceFilename: "pvc-sign-artwork-back.pdf" }),
+    ];
+    (repo.listFiles as jest.Mock).mockResolvedValue(artworkFiles);
+    (repo.updateFile as jest.Mock).mockImplementation(async ({ fileId, patch }: any) => ({
+      ...artworkFiles.find((file) => file.id === fileId),
+      ...patch,
+    }));
     const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
     await prepareReadyDraft(service, {
       lineItem: {
@@ -2369,7 +2402,18 @@ describe("InboundOrderService editable review draft", () => {
           source: "staff_selected",
           confidence: 100,
           reason: "Staff selected artwork attachment for this line item.",
+        }, {
+          fileId: "file_artwork_2",
+          fileRecordId: "file_record_artwork_2",
+          filename: "pvc-sign-artwork-back.pdf",
+          mimeType: "application/pdf",
+          sizeBytes: 12345,
+          role: "artwork",
+          source: "staff_selected",
+          confidence: 100,
+          reason: "Staff selected second artwork attachment for this line item.",
         }],
+        artworkQuantityMode: "one_each_per_file",
       },
       order: {
         dueDate: "6/11",
@@ -2422,7 +2466,12 @@ describe("InboundOrderService editable review draft", () => {
             artworkLinks: [expect.objectContaining({
               fileId: "file_artwork_1",
               source: "staff_selected",
+            }), expect.objectContaining({
+              fileId: "file_artwork_2",
+              source: "staff_selected",
             })],
+            artworkQuantityMode: "one_each_per_file",
+            artworkFileCount: 2,
             unsupportedRequests: [expect.objectContaining({
               requestedText: "grommets in the corners",
               category: "grommets",
@@ -2454,6 +2503,21 @@ describe("InboundOrderService editable review draft", () => {
     expect(repo.markInboundOrderConvertedToOrder).toHaveBeenCalledWith(expect.objectContaining({
       orderId: "order_1",
       actorUserId: "user_1",
+    }));
+    expect(orderRepo.createOrderAttachment).toHaveBeenCalledTimes(2);
+    expect(orderRepo.createOrderAttachment).toHaveBeenNthCalledWith(1, expect.objectContaining({
+      orderId: "order_1",
+      orderLineItemId: "order_line_1",
+      fileRecordId: "file_record_artwork_1",
+      role: "artwork",
+    }));
+    expect(orderRepo.createOrderAttachment).toHaveBeenNthCalledWith(2, expect.objectContaining({
+      fileRecordId: "file_record_artwork_2",
+      role: "artwork",
+    }));
+    expect(repo.updateFile).toHaveBeenCalledWith(expect.objectContaining({
+      fileId: "file_artwork_1",
+      patch: { createdOrderAttachmentId: "order_attachment_file_record_artwork_1" },
     }));
   });
 

@@ -4840,8 +4840,10 @@ function CleanSourceDocuments({
   onCloseInlineAttachment: () => void;
 }) {
   const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<Set<string>>(() => new Set());
+  const [showAllEmailAttachments, setShowAllEmailAttachments] = useState(false);
   useEffect(() => {
     setSelectedAttachmentIds(new Set());
+    setShowAllEmailAttachments(false);
   }, [selectedRecord?.id, activeTab]);
   if (!selectedRecord) {
     return <section className="flex h-full min-h-0 flex-1 items-center justify-center bg-slate-950 text-slate-500">Select an inbound item.</section>;
@@ -4850,6 +4852,10 @@ function CleanSourceDocuments({
   const evidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : getManualInboundEvidence(record);
   const emailEvidence = record.sourceType === "email" ? getInboundEmailEvidence(record) : null;
   const files = dedupeAttachmentFiles(detail?.files ?? []);
+  const emailAttachmentFiles = files.filter((file) => !isLikelySignatureInlineFile(file));
+  const visibleEmailAttachmentFiles = showAllEmailAttachments
+    ? emailAttachmentFiles
+    : emailAttachmentFiles.slice(0, 5);
   const poFiles = files.filter(isLikelyPoEvidenceFile);
   const needsInitialParse = !reviewDraft;
   const parseLabel = needsInitialParse ? "Parse" : "Reparse";
@@ -4877,7 +4883,9 @@ function CleanSourceDocuments({
     }),
     junk: files.filter((file) => classificationForLink(linkForFile(file)) === "IGNORE_INLINE"),
   };
-  const visibleAttachmentFiles = activeTab === "po"
+  const visibleAttachmentFiles = activeTab === "email"
+    ? visibleEmailAttachmentFiles
+    : activeTab === "po"
     ? poFiles
     : activeTab === "artwork"
       ? [...classifiedFiles.artwork, ...classifiedFiles.reference, ...classifiedFiles.junk]
@@ -4978,34 +4986,55 @@ function CleanSourceDocuments({
                   )}
               </div>
               <div className="border-t border-slate-200 px-5 py-4">
-                <div className="mb-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">Integrated Evidence ({files.length})</div>
+                <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold uppercase tracking-wide text-slate-500">
+                  <span>Attachments / Evidence ({files.length}) · Showing {visibleEmailAttachmentFiles.length}</span>
+                  {emailAttachmentFiles.length > visibleEmailAttachmentFiles.length && (
+                    <Button type="button" size="sm" variant="ghost" className="h-7 px-2 text-[11px]" onClick={() => setShowAllEmailAttachments(true)}>
+                      Show all {emailAttachmentFiles.length}
+                    </Button>
+                  )}
+                </div>
+                <CleanAttachmentBulkActions
+                  visibleFiles={visibleAttachmentFiles}
+                  selectedFileIds={selectedAttachmentIds}
+                  isPending={isBulkClassifying}
+                  onToggleFile={toggleAttachmentSelected}
+                  onToggleVisible={toggleVisibleAttachmentsSelected}
+                  onClassify={runBulkClassification}
+                />
                 <div className="grid min-w-0 gap-2">
                   {files.length === 0 ? (
                     <div className="rounded border border-dashed border-slate-300 px-3 py-3 text-sm text-slate-500">No attachments linked.</div>
-                  ) : files.filter((file) => !isLikelySignatureInlineFile(file)).slice(0, 5).map((file) => (
-                    <div
+                  ) : visibleEmailAttachmentFiles.map((file) => (
+                    <CleanSelectableAttachment
                       key={file.id}
-                      role="button"
-                      tabIndex={0}
-                      className={cn(
-                        "block w-full min-w-0 overflow-hidden rounded text-left transition-shadow",
-                        file.role === "artwork" && cleanHighlightClass("artwork", activeTarget),
-                        file.role === "po" && cleanHighlightClass("po", activeTarget),
-                        file.role !== "po" && file.role !== "artwork" && activeTarget === "artwork" && "ring-1 ring-blue-300",
-                      )}
-                      onClick={() => onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork")}
-                      onMouseEnter={() => onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork")}
-                      onKeyDown={(event) => {
-                        if (shouldIgnoreShortcutKeydown(event)) return;
-                        if (event.key === "Enter" || event.key === " ") {
-                          event.preventDefault();
-                          onFocusTarget(file.role === "po" ? "po" : file.role === "artwork" ? "artwork" : "artwork");
-                        }
-                      }}
-                      data-clean-source-target={file.role === "po" ? "po" : "artwork"}
+                      file={file}
+                      selected={selectedAttachmentIds.has(file.id)}
+                      onToggle={(selected) => toggleAttachmentSelected(file.id, selected)}
                     >
-                      <SourceEvidenceFileCard recordId={record.id} file={file} onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer onOpenAttachment={onOpenAttachment} />
-                    </div>
+                      <div
+                        role="button"
+                        tabIndex={0}
+                        className={cn(
+                          "block w-full min-w-0 overflow-hidden rounded text-left transition-shadow",
+                          file.role === "artwork" && cleanHighlightClass("artwork", activeTarget),
+                          file.role === "po" && cleanHighlightClass("po", activeTarget),
+                          file.role !== "po" && file.role !== "artwork" && activeTarget === "artwork" && "ring-1 ring-blue-300",
+                        )}
+                        onClick={() => onFocusTarget(file.role === "po" ? "po" : "artwork")}
+                        onMouseEnter={() => onFocusTarget(file.role === "po" ? "po" : "artwork")}
+                        onKeyDown={(event) => {
+                          if (shouldIgnoreShortcutKeydown(event)) return;
+                          if (event.key === "Enter" || event.key === " ") {
+                            event.preventDefault();
+                            onFocusTarget(file.role === "po" ? "po" : "artwork");
+                          }
+                        }}
+                        data-clean-source-target={file.role === "po" ? "po" : "artwork"}
+                      >
+                        <SourceEvidenceFileCard recordId={record.id} file={file} onClassify={() => onClassifyAttachment(linkForFile(file))} useInAppViewer onOpenAttachment={onOpenAttachment} />
+                      </div>
+                    </CleanSelectableAttachment>
                   ))}
                 </div>
               </div>
@@ -5206,6 +5235,7 @@ function CleanLineItemCard({
     if (needsProductSelection) setProductSelectorOpen(true);
   }, [needsProductSelection]);
   const activeArtworkLinks = lineItem.artworkLinks.filter(isActiveClassifiedArtworkLink);
+  const [selectedArtworkKeys, setSelectedArtworkKeys] = useState<Set<string>>(() => new Set());
   const sizeDisplay = lineItem.width && lineItem.height
     ? `${lineItem.width} x ${lineItem.height} ${lineItem.dimensionsUnit === "ft" ? "feet" : "inches"}`
     : "Size needed";
@@ -5222,18 +5252,21 @@ function CleanLineItemCard({
     : hasSelectedProduct ? "Review product options" : "Select product first";
   const productOptionsComplete = Boolean(lineItem.optionSelectionsJson && Object.keys(ensurePbv2Selections(lineItem.optionSelectionsJson).selected ?? {}).length > 0);
   const workflowComplete = Boolean(requiredComplete && activeArtworkLinks.length > 0 && productOptionsComplete);
+  const artworkCountMismatch = lineItem.artworkQuantityMode === "one_each_per_file"
+    && activeArtworkLinks.length > 0
+    && lineItem.quantity !== activeArtworkLinks.length;
   const lineItemSummaryParts = workflowComplete
     ? [
       lineItem.productName || "Product",
       `Qty ${lineItem.quantity ?? "-"}`,
       sizeDisplay,
-      activeArtworkLinks.length ? "Artwork linked" : "Artwork pending",
+      activeArtworkLinks.length ? `Artwork linked · ${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"}` : "Artwork pending",
     ]
     : [
       hasSelectedProduct && !lineItem.productUnresolved ? lineItem.productName || "Product selected" : "Product unresolved",
       lineItem.quantity ? `Qty ${lineItem.quantity}` : "Quantity needed",
       lineItem.width && lineItem.height ? sizeDisplay : "Size needed",
-      activeArtworkLinks.length ? "Artwork linked" : "Artwork needed",
+      activeArtworkLinks.length ? `Artwork linked · ${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"}` : "Artwork needed",
     ];
   const [workflowOpen, setWorkflowOpen] = useState(!workflowComplete);
   useEffect(() => {
@@ -5249,6 +5282,38 @@ function CleanLineItemCard({
   const availableArtworkOptions = attachmentLinkOptions.filter((link) => (
     !activeArtworkLinks.some((activeLink) => artworkLinkKey(activeLink) === artworkLinkKey(link))
   ));
+  const assignArtworkLinks = (links: InboundOrderArtworkLink[]) => {
+    if (links.length === 0) return;
+    const nextArtworkLinks = [
+      ...lineItem.artworkLinks,
+      ...links.map((link) => ({
+        ...link,
+        source: "staff_selected" as const,
+        confidence: 100,
+        reason: "Staff assigned artwork attachment to this line item.",
+      })),
+    ];
+    const nextCount = nextArtworkLinks.filter(isActiveClassifiedArtworkLink).length;
+    onChange({
+      artworkLinks: nextArtworkLinks,
+      quantity: lineItem.artworkQuantityMode === "one_each_per_file" ? nextCount : lineItem.quantity,
+      quantitySource: lineItem.artworkQuantityMode === "one_each_per_file" ? "staff_selected" : lineItem.quantitySource,
+    });
+    setSelectedArtworkKeys(new Set());
+  };
+  const removeArtworkLink = (link: InboundOrderArtworkLink) => {
+    const key = artworkLinkKey(link);
+    const nextArtworkLinks = [
+      ...lineItem.artworkLinks.filter((candidate) => artworkLinkKey(candidate) !== key),
+      { ...link, source: "staff_removed" as const, confidence: 100, reason: "Staff removed artwork attachment from this line item." },
+    ];
+    const nextCount = nextArtworkLinks.filter(isActiveClassifiedArtworkLink).length;
+    onChange({
+      artworkLinks: nextArtworkLinks,
+      quantity: lineItem.artworkQuantityMode === "one_each_per_file" ? nextCount || null : lineItem.quantity,
+      quantitySource: lineItem.artworkQuantityMode === "one_each_per_file" ? "staff_selected" : lineItem.quantitySource,
+    });
+  };
   const selectedArtworkKey = activeArtworkLinks[0] ? artworkLinkKey(activeArtworkLinks[0]) : "";
   const handleProductSelection = (value: string) => {
     const productId = trimToNull(value);
@@ -5472,7 +5537,7 @@ function CleanLineItemCard({
               </div>
               <div className="min-w-0 flex-1">
                 <div className="truncate text-xs font-semibold text-slate-200">{activeArtworkLinks[0]?.filename || "No artwork linked"}</div>
-                <div className="text-[11px] uppercase tracking-wide text-slate-500">Preflight {activeArtworkLinks.length ? "attached" : "pending"}</div>
+                <div className="text-[11px] uppercase tracking-wide text-slate-500">Preflight {activeArtworkLinks.length ? `${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"} attached` : "pending"}</div>
               </div>
             </button>
             <OrderEntryField label="Artwork assignment">
@@ -5483,17 +5548,7 @@ function CleanLineItemCard({
                   const key = trimToNull(event.target.value);
                   const selectedLink = attachmentLinkOptions.find((link) => artworkLinkKey(link) === key);
                   if (!selectedLink) return;
-                  onChange({
-                    artworkLinks: [
-                      ...lineItem.artworkLinks.filter((link) => artworkLinkKey(link) !== key),
-                      {
-                        ...selectedLink,
-                        source: "staff_selected",
-                        confidence: 100,
-                        reason: "Staff selected artwork attachment for this line item.",
-                      },
-                    ],
-                  });
+                  assignArtworkLinks([selectedLink]);
                 }}
                 data-testid="clean-inline-artwork-select"
               >
@@ -5506,14 +5561,82 @@ function CleanLineItemCard({
                 ))}
               </select>
             </OrderEntryField>
+            <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+              <OrderEntryField label="Artwork quantity">
+                <select
+                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                  value={lineItem.artworkQuantityMode}
+                  onChange={(event) => {
+                    const artworkQuantityMode = event.target.value as "one_each_per_file" | "same_quantity_each";
+                    onChange({
+                      artworkQuantityMode,
+                      quantity: artworkQuantityMode === "one_each_per_file" && activeArtworkLinks.length > 0 ? activeArtworkLinks.length : lineItem.quantity,
+                      quantitySource: artworkQuantityMode === "one_each_per_file" && activeArtworkLinks.length > 0 ? "staff_selected" : lineItem.quantitySource,
+                    });
+                  }}
+                  aria-label={`Artwork quantity mode for line item ${index + 1}`}
+                >
+                  <option value="one_each_per_file">1 each per file</option>
+                  <option value="same_quantity_each">Same quantity for each file</option>
+                </select>
+              </OrderEntryField>
+              <span className="pb-2 text-[11px] text-slate-500">{activeArtworkLinks.length} linked file{activeArtworkLinks.length === 1 ? "" : "s"}</span>
+            </div>
+            {artworkCountMismatch && (
+              <div className="mt-2 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-1.5 text-xs text-amber-100">
+                1 each per file is selected, but quantity {lineItem.quantity ?? 0} does not match {activeArtworkLinks.length} artwork files. Review quantity or switch the artwork quantity mode.
+              </div>
+            )}
+            {availableArtworkOptions.length > 1 && (
+              <details className="mt-2 rounded border border-slate-700 bg-slate-900 p-2" data-testid="clean-multi-artwork-assignment">
+                <summary className="cursor-pointer text-xs font-semibold text-slate-200">Assign multiple artwork files ({availableArtworkOptions.length} available)</summary>
+                <p className="mt-1 text-[11px] text-slate-400">Assign files only when they share this line&apos;s product, size, material, and options. Split different specifications into separate line items.</p>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setSelectedArtworkKeys(new Set(availableArtworkOptions.map(artworkLinkKey)))}>
+                    Select all available
+                  </Button>
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => setSelectedArtworkKeys(new Set())}>
+                    Clear
+                  </Button>
+                  <Button type="button" variant="outline" size="sm" className="h-7 px-2 text-xs" disabled={selectedArtworkKeys.size === 0} onClick={() => assignArtworkLinks(availableArtworkOptions.filter((link) => selectedArtworkKeys.has(artworkLinkKey(link))))}>
+                    Assign selected ({selectedArtworkKeys.size})
+                  </Button>
+                </div>
+                <div className="mt-2 grid max-h-40 gap-1 overflow-y-auto">
+                  {availableArtworkOptions.map((link) => {
+                    const key = artworkLinkKey(link);
+                    return (
+                      <label key={key} className="flex min-w-0 items-center gap-2 rounded px-1 py-1 text-xs text-slate-300 hover:bg-slate-800">
+                        <input
+                          type="checkbox"
+                          checked={selectedArtworkKeys.has(key)}
+                          onChange={(event) => setSelectedArtworkKeys((current) => {
+                            const next = new Set(current);
+                            if (event.target.checked) next.add(key);
+                            else next.delete(key);
+                            return next;
+                          })}
+                        />
+                        <span className="truncate">{link.filename || link.fileId}</span>
+                      </label>
+                    );
+                  })}
+                </div>
+              </details>
+            )}
             {!activeArtworkLinks.length && availableArtworkOptions.length > 0 && (
               <div className="mt-2 text-xs text-amber-200">
                 Assign {availableArtworkOptions[0].filename || "the classified artwork"} to Line Item {index + 1} before marking this draft ready.
               </div>
             )}
             {activeArtworkLinks.length > 0 && (
-              <div className="mt-2 flex flex-wrap gap-1 text-xs text-slate-300">
-                {activeArtworkLinks.map((link) => <Badge key={artworkLinkKey(link)} variant="outline">{link.filename || link.fileId}</Badge>)}
+              <div className="mt-2 grid gap-1 text-xs text-slate-300">
+                {activeArtworkLinks.map((link) => (
+                  <div key={artworkLinkKey(link)} className="flex min-w-0 items-center justify-between gap-2 rounded border border-slate-700 px-2 py-1">
+                    <span className="truncate">{link.filename || link.fileId}</span>
+                    <Button type="button" variant="ghost" size="sm" className="h-6 px-1.5 text-[11px] text-red-200" onClick={() => removeArtworkLink(link)}>Remove</Button>
+                  </div>
+                ))}
               </div>
             )}
           </section>
@@ -6679,6 +6802,7 @@ function createBlankReviewLineItem(index: number): ReviewDraftFormState["reviewe
     pbv2OptionSuggestions: [],
     pricingReviewJson: null,
     artworkLinks: [],
+    artworkQuantityMode: "same_quantity_each",
     notes: null,
   };
 }

@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, or, sql } from "drizzle-orm";
 
 import { db } from "../db";
 import {
@@ -25,6 +25,7 @@ import {
   productVariants,
   products,
   quoteLineItems,
+  quoteAttachments,
   quoteListNotes,
   quotes,
   type InboundOrderDecisionFlag,
@@ -161,6 +162,7 @@ export type InboundQuoteDraftLineInput = {
   height: number;
   quantity: number;
   notes?: string | null;
+  artworkFileIds?: string[];
   snapshotJson: Record<string, unknown>;
 };
 
@@ -2597,6 +2599,70 @@ export class InboundOrdersRepository {
       const createdLineItems = lineItemRows.length
         ? await tx.insert(quoteLineItems).values(lineItemRows).returning()
         : [];
+
+      // Reviewed inbound artwork is stored as a file record. Materialize every
+      // requested file as a quote line-item attachment so the normal
+      // quote-to-order attachment transfer can preserve it for production.
+      for (let index = 0; index < input.lineItems.length; index += 1) {
+        const artworkFileIds = Array.from(new Set(input.lineItems[index].artworkFileIds ?? []));
+        const quoteLineItem = createdLineItems[index];
+        if (artworkFileIds.length === 0) continue;
+        if (!quoteLineItem) {
+          throw new Error(`Converted quote is missing line item ${index + 1} for inbound artwork attachment.`);
+        }
+
+        const artworkFiles = await tx
+          .select()
+          .from(inboundOrderFiles)
+          .where(and(
+            eq(inboundOrderFiles.organizationId, organizationId),
+            eq(inboundOrderFiles.inboundRecordId, input.inboundRecordId),
+            inArray(inboundOrderFiles.id, artworkFileIds),
+          ));
+        const filesById = new Map(artworkFiles.map((file) => [file.id, file]));
+
+        for (const fileId of artworkFileIds) {
+          const file = filesById.get(fileId);
+          const attachmentState = (file?.metadataJson as Record<string, unknown> | null)?.attachmentState;
+          const unsafe = file?.status === "quarantined"
+            || file?.status === "rejected"
+            || attachmentState === "blocked_file_type"
+            || attachmentState === "scan_pending"
+            || attachmentState === "quarantined";
+          if (!file?.fileRecordId || unsafe) {
+            throw new Error(`Inbound artwork ${file?.sourceFilename ?? fileId} is unavailable or unsafe and cannot be attached to the quote.`);
+          }
+
+          const [createdAttachment] = await tx
+            .insert(quoteAttachments)
+            .values({
+              quoteId: quote.id,
+              quoteLineItemId: quoteLineItem.id,
+              organizationId,
+              fileRecordId: file.fileRecordId,
+              uploadedByUserId: input.actorUserId,
+              uploadedByName: null,
+              fileName: file.sourceFilename ?? "Inbound artwork",
+              fileUrl: null,
+              fileSize: file.sizeBytes ?? null,
+              mimeType: file.mimeType ?? null,
+              description: `Artwork attached during inbound review conversion (${input.inboundRecordId}).`,
+              originalFilename: file.sourceFilename ?? null,
+              sizeBytes: file.sizeBytes ?? null,
+            })
+            .returning({ id: quoteAttachments.id });
+          if (!createdAttachment) throw new Error(`Failed to create quote artwork attachment for ${file.sourceFilename ?? fileId}.`);
+
+          await tx
+            .update(inboundOrderFiles)
+            .set({ createdQuoteAttachmentId: createdAttachment.id, updatedAt: now })
+            .where(and(
+              eq(inboundOrderFiles.organizationId, organizationId),
+              eq(inboundOrderFiles.inboundRecordId, input.inboundRecordId),
+              eq(inboundOrderFiles.id, file.id),
+            ));
+        }
+      }
 
       for (const createdLineItem of createdLineItems) {
         const sourceLineItemId = (createdLineItem.specsJson as any)?.sourceLineItemId;
