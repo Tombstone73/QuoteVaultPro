@@ -2969,4 +2969,65 @@ describe("InboundOrderService editable review draft", () => {
     })).rejects.toMatchObject({ statusCode: 409 });
     expect((repo as any).combineRecords).not.toHaveBeenCalled();
   });
+
+  test("attaches inbound artwork, PO, and reference files to an existing order without creating a duplicate", async () => {
+    const record = inboundRecord({
+      id: "inbound_attach",
+      rawPayloadJson: { sender: { email: "ada@example.com" }, subject: "Revised art and PO", bodyText: "Please use the attached revised artwork." },
+    });
+    const { repo, getRecord } = makeRepository(record);
+    (repo as any).listFiles.mockResolvedValue([
+      { id: "file_art", inboundRecordId: record.id, fileRecordId: "canonical_art", sourceFilename: "revised-art.pdf", role: "artwork", mimeType: "application/pdf", sizeBytes: 120, checksum: "art", status: "available", metadataJson: {} },
+      { id: "file_po", inboundRecordId: record.id, fileRecordId: "canonical_po", sourceFilename: "po.pdf", role: "po", mimeType: "application/pdf", sizeBytes: 80, checksum: "po", status: "available", metadataJson: {} },
+      { id: "file_ref", inboundRecordId: record.id, fileRecordId: "canonical_ref", sourceFilename: "instructions.txt", role: "reference", mimeType: "text/plain", sizeBytes: 20, checksum: "ref", status: "available", metadataJson: {} },
+      { id: "file_junk", inboundRecordId: record.id, fileRecordId: "canonical_junk", sourceFilename: "signature.png", role: "other", mimeType: "image/png", sizeBytes: 12, checksum: "junk", status: "available", metadataJson: { attachmentClassification: { classification: "IGNORE_INLINE", confidence: 100, reasons: [], source: "manual_override", breakdown: {} } } },
+    ]);
+    const orderRepo = makeOrderRepository();
+    (orderRepo as any).listAllOrderAttachments = jest.fn(async () => []);
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+
+    const result = await service.attachInboundRecordToOrder({
+      organizationId: "org_1",
+      inboundRecordId: record.id,
+      orderId: "order_1",
+      actorUserId: "user_1",
+      includeMessageHistory: true,
+      includeAttachments: true,
+      includeParsedNotes: true,
+      includeJunkAttachments: false,
+      confirmCustomerMismatch: false,
+      artworkAssignments: [{ fileId: "file_art", orderLineItemId: "order_line_1", side: "front" }],
+    });
+
+    expect(result.createdAttachmentIds).toHaveLength(3);
+    expect(result.skippedAttachments).toEqual(expect.arrayContaining([{ fileId: "file_junk", reason: expect.stringContaining("Junk") }]));
+    expect(orderRepo.createOrderAttachment).toHaveBeenCalledWith(expect.objectContaining({ fileRecordId: "canonical_art", orderLineItemId: "order_line_1", role: "artwork", side: "front", isPrimary: false }));
+    expect(orderRepo.createOrderAttachment).toHaveBeenCalledWith(expect.objectContaining({ fileRecordId: "canonical_po", role: "customer_po" }));
+    expect(orderRepo.createOrderAttachment).toHaveBeenCalledWith(expect.objectContaining({ fileRecordId: "canonical_ref", role: "reference" }));
+    expect(orderRepo.createOrderAuditLog).toHaveBeenCalledWith(expect.objectContaining({ actionType: "inbound_record_attached", metadata: expect.objectContaining({ inboundRecordId: record.id }) }));
+    expect((repo as any).updateRecordWithEvent).toHaveBeenCalledWith(expect.objectContaining({ patch: expect.objectContaining({ reviewOutcome: "attached_to_order", status: "ignored" }) }));
+    expect(getRecord().createdOrderId).toBeNull();
+  });
+
+  test("requires confirmation before attaching an inbound record to an order with a different customer", async () => {
+    const record = inboundRecord({ id: "inbound_customer_mismatch", matchedCustomerId: "customer_inbound" });
+    const { repo } = makeRepository(record);
+    const orderRepo = makeOrderRepository({ order: { customerId: "customer_order" } });
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+
+    await expect(service.attachInboundRecordToOrder({
+      organizationId: "org_1",
+      inboundRecordId: record.id,
+      orderId: "order_1",
+      actorUserId: "user_1",
+      includeMessageHistory: true,
+      includeAttachments: true,
+      includeParsedNotes: false,
+      includeJunkAttachments: false,
+      confirmCustomerMismatch: false,
+      artworkAssignments: [],
+    })).rejects.toMatchObject({ statusCode: 409 });
+    expect(orderRepo.createOrderAttachment).not.toHaveBeenCalled();
+    expect(orderRepo.createOrderAuditLog).not.toHaveBeenCalled();
+  });
 });

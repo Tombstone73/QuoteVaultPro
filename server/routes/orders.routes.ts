@@ -4903,8 +4903,12 @@ export async function registerOrderRoutes(
     });
 
     // Order-specific Audit & Files
-    app.get('/api/orders/:id/audit', isAuthenticated, async (req: any, res) => {
+    app.get('/api/orders/:id/audit', isAuthenticated, tenantContext, async (req: any, res) => {
         try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+            const order = await storage.getOrderById(organizationId, req.params.id);
+            if (!order) return res.status(404).json({ message: "Order not found" });
             const auditEntries = await storage.getOrderAuditLog(req.params.id);
             res.json({ success: true, data: auditEntries });
         } catch (error) {

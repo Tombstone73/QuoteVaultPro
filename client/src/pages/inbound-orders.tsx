@@ -140,6 +140,28 @@ type InboundOrderCombineResponse = {
   };
 };
 
+type InboundOrderAttachToOrderResponse = {
+  success: true;
+  data: {
+    orderId: string;
+    orderNumber: string | null;
+    inboundRecordId: string;
+    createdAttachmentIds: string[];
+    skippedAttachments: Array<{ fileId: string; reason: string }>;
+  };
+};
+
+type ExistingOrderSearchResult = {
+  id: string;
+  orderNumber: string | null;
+  customerId: string | null;
+  customer?: { companyName?: string | null } | null;
+  contact?: { email?: string | null; firstName?: string | null; lastName?: string | null } | null;
+  label?: string | null;
+  poNumber?: string | null;
+  status?: string | null;
+};
+
 type CleanInlineAttachmentSelection = {
   recordId: string;
   file: ClientInboundOrderFile;
@@ -4670,6 +4692,7 @@ function CleanInboundQueue({
   onToggleVisibleSelected,
   onBulkAction,
   onCombineSelected,
+  onAttachToExistingOrder,
 }: {
   records: ClientInboundOrderRecord[];
   selectedId: string | null;
@@ -4686,6 +4709,7 @@ function CleanInboundQueue({
   onToggleVisibleSelected: (ids: string[], selected: boolean) => void;
   onBulkAction: (action: InboundQueueCleanupAction) => void;
   onCombineSelected: () => void;
+  onAttachToExistingOrder: (recordId: string) => void;
 }) {
   const [quickFilters, setQuickFilters] = useState({
     trusted: false,
@@ -4787,6 +4811,18 @@ function CleanInboundQueue({
               <ChevronDown className="h-3.5 w-3.5" />
             </summary>
             <div className="grid grid-cols-2 gap-1 border-t border-slate-800 p-1.5">
+              {selectedRecordIds.size === 1 && (
+                <Button
+                  type="button"
+                  size="sm"
+                  variant="default"
+                  className="col-span-2 h-7 justify-start px-2 text-[10px]"
+                  disabled={isBulkActionPending}
+                  onClick={() => onAttachToExistingOrder(Array.from(selectedRecordIds)[0])}
+                >
+                  Attach to Existing Order
+                </Button>
+              )}
               {selectedRecordIds.size >= 2 && (
                 <Button
                   type="button"
@@ -5005,6 +5041,7 @@ function CleanSourceDocuments({
   inlineAttachmentSelection,
   onOpenAttachment,
   onCloseInlineAttachment,
+  onAttachToExistingOrder,
 }: {
   selectedRecord: ClientInboundOrderRecord | null;
   detail: ClientInboundOrderDetailResponse["data"] | undefined;
@@ -5033,6 +5070,7 @@ function CleanSourceDocuments({
   inlineAttachmentSelection: CleanInlineAttachmentSelection;
   onOpenAttachment: (recordId: string, file: ClientInboundOrderFile) => void;
   onCloseInlineAttachment: () => void;
+  onAttachToExistingOrder: (recordId: string) => void;
 }) {
   const [selectedAttachmentIds, setSelectedAttachmentIds] = useState<Set<string>>(() => new Set());
   const [showAllEmailAttachments, setShowAllEmailAttachments] = useState(false);
@@ -5130,6 +5168,9 @@ function CleanSourceDocuments({
           )}
         </div>
         <div className="flex shrink-0 items-center gap-2">
+          <Button type="button" size="sm" variant="outline" className="h-8 px-3 text-xs font-bold" onClick={() => onAttachToExistingOrder(record.id)}>
+            Attach to Order
+          </Button>
           <Button type="button" size="sm" className="h-8 bg-blue-300 px-3 text-xs font-bold text-slate-950 hover:bg-blue-200" onClick={onParse} disabled={parseDisabled}>
             {isParsing ? <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" /> : <Sparkles className="mr-1.5 h-3.5 w-3.5" />}
             {parseLabel}
@@ -9302,6 +9343,15 @@ export default function InboundOrdersPage() {
   const [combinePrimaryRecordId, setCombinePrimaryRecordId] = useState<string | null>(null);
   const [combineCustomerMismatchConfirmed, setCombineCustomerMismatchConfirmed] = useState(false);
   const [combineMultipleDraftsConfirmed, setCombineMultipleDraftsConfirmed] = useState(false);
+  const [attachInboundRecordId, setAttachInboundRecordId] = useState<string | null>(null);
+  const [attachOrderSearch, setAttachOrderSearch] = useState("");
+  const [attachOrderId, setAttachOrderId] = useState<string | null>(null);
+  const [attachIncludeMessageHistory, setAttachIncludeMessageHistory] = useState(true);
+  const [attachIncludeAttachments, setAttachIncludeAttachments] = useState(true);
+  const [attachIncludeParsedNotes, setAttachIncludeParsedNotes] = useState(true);
+  const [attachIncludeJunkAttachments, setAttachIncludeJunkAttachments] = useState(false);
+  const [attachCustomerMismatchConfirmed, setAttachCustomerMismatchConfirmed] = useState(false);
+  const [attachArtworkAssignments, setAttachArtworkAssignments] = useState<Record<string, { orderLineItemId: string | null; side: "front" | "back" | "na" }>>({});
   const [queueFilters, setQueueFilters] = useState<QueueFilters>(() => linkedRecordId
     ? { ...defaultQueueFilters, statusGroup: "converted", unconvertedOnly: false, search: linkedRecordId }
     : defaultQueueFilters);
@@ -9487,6 +9537,18 @@ export default function InboundOrdersPage() {
   });
 
   const selectedRecord = selectedListRecord ?? detailQuery.data?.data.record ?? null;
+
+  const attachOrderSearchQuery = useQuery<{ success: true; data: ExistingOrderSearchResult[] }>({
+    queryKey: ["/api/inbound-orders", "order-search", attachOrderSearch],
+    queryFn: () => readJson<{ success: true; data: ExistingOrderSearchResult[] }>(`/api/inbound-orders/order-search?search=${encodeURIComponent(attachOrderSearch.trim())}`),
+    enabled: Boolean(attachInboundRecordId),
+    staleTime: 15_000,
+  });
+  const attachSelectedOrderQuery = useQuery<any>({
+    queryKey: ["/api/orders", "inbound-attach-order", attachOrderId],
+    queryFn: () => readJson<any>(`/api/orders/${encodeURIComponent(attachOrderId ?? "")}`),
+    enabled: Boolean(attachOrderId && attachInboundRecordId),
+  });
 
   const draftPreviewQuery = useQuery({
     queryKey: ["/api/inbound-orders", selectedId, "draft-preview"],
@@ -9769,6 +9831,38 @@ export default function InboundOrdersPage() {
         title: "Inbound emails combined",
         description: `Combined from ${response.data.combinedSourceCount} emails. Reparse recommended before conversion.`,
       });
+    },
+  });
+
+  const attachInboundToOrderMutation = useMutation({
+    mutationFn: (input: {
+      inboundRecordId: string;
+      orderId: string;
+      includeMessageHistory: boolean;
+      includeAttachments: boolean;
+      includeParsedNotes: boolean;
+      includeJunkAttachments: boolean;
+      confirmCustomerMismatch: boolean;
+      artworkAssignments: Array<{ fileId: string; orderLineItemId: string | null; side: "front" | "back" | "na" }>;
+    }) => postJson<InboundOrderAttachToOrderResponse>(`/api/inbound-orders/${encodeURIComponent(input.inboundRecordId)}/attach-to-order`, {
+      orderId: input.orderId,
+      includeMessageHistory: input.includeMessageHistory,
+      includeAttachments: input.includeAttachments,
+      includeParsedNotes: input.includeParsedNotes,
+      includeJunkAttachments: input.includeJunkAttachments,
+      confirmCustomerMismatch: input.confirmCustomerMismatch,
+      artworkAssignments: input.artworkAssignments,
+    }),
+    onSuccess: async (response) => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
+      await queryClient.invalidateQueries({ queryKey: ["/api/orders", response.data.orderId] });
+      setSelectedQueueRecordIds(new Set());
+      setAttachInboundRecordId(null);
+      toast({
+        title: "Inbound record attached to order",
+        description: `Attached to ${response.data.orderNumber ?? response.data.orderId}.`,
+      });
+      window.location.assign(`/orders/${response.data.orderId}`);
     },
   });
 
@@ -10354,6 +10448,31 @@ export default function InboundOrdersPage() {
       confirmMultipleDrafts: combineMultipleDraftsConfirmed,
     });
   };
+  const openAttachToExistingOrder = (recordId: string) => {
+    setSelectedId(recordId);
+    setAttachInboundRecordId(recordId);
+    setAttachOrderSearch("");
+    setAttachOrderId(null);
+    setAttachIncludeMessageHistory(true);
+    setAttachIncludeAttachments(true);
+    setAttachIncludeParsedNotes(true);
+    setAttachIncludeJunkAttachments(false);
+    setAttachCustomerMismatchConfirmed(false);
+    setAttachArtworkAssignments({});
+  };
+  const submitAttachToExistingOrder = () => {
+    if (!attachInboundRecordId || !attachOrderId) return;
+    attachInboundToOrderMutation.mutate({
+      inboundRecordId: attachInboundRecordId,
+      orderId: attachOrderId,
+      includeMessageHistory: attachIncludeMessageHistory,
+      includeAttachments: attachIncludeAttachments,
+      includeParsedNotes: attachIncludeParsedNotes,
+      includeJunkAttachments: attachIncludeJunkAttachments,
+      confirmCustomerMismatch: attachCustomerMismatchConfirmed,
+      artworkAssignments: Object.entries(attachArtworkAssignments).map(([fileId, assignment]) => ({ fileId, ...assignment })),
+    });
+  };
   const convertSelectedRecordToOrder = async () => {
     if (!selectedId || convertToOrderMutation.isPending) return;
     const confirmed = window.confirm("Create a draft order from this reviewed inbound record? This will create a real order but will not release production, create proofs, invoices, fulfillment, or payments.");
@@ -10464,6 +10583,24 @@ export default function InboundOrdersPage() {
       });
     }
   };
+  const attachInboundRecord = attachInboundRecordId === selectedRecord?.id ? selectedRecord : null;
+  const attachInboundFiles = dedupeAttachmentFiles(
+    attachInboundRecordId === selectedRecord?.id ? detailQuery.data?.data.files ?? [] : [],
+  );
+  const attachArtworkFiles = attachInboundFiles.filter((file) => (
+    classificationForLink(artworkLinkFromInboundFile(file, "unresolved")) === "ARTWORK"
+  ));
+  const attachAttachmentCounts = attachInboundFiles.reduce<Record<string, number>>((counts, file) => {
+    const classification = classificationForLink(artworkLinkFromInboundFile(file, "unresolved"));
+    counts[classification] = (counts[classification] ?? 0) + 1;
+    return counts;
+  }, {});
+  const attachSelectedOrder = attachSelectedOrderQuery.data;
+  const attachCustomerMismatch = Boolean(
+    attachInboundRecord?.matchedCustomerId
+      && attachSelectedOrder?.customerId
+      && attachInboundRecord.matchedCustomerId !== attachSelectedOrder.customerId,
+  );
 
   return (
     <div className="flex h-full min-h-0 flex-col overflow-hidden bg-background">
@@ -10637,6 +10774,7 @@ export default function InboundOrdersPage() {
               onToggleVisibleSelected={toggleQueueRecordIdsSelected}
               onBulkAction={runBulkQueueAction}
               onCombineSelected={openCombineDialog}
+              onAttachToExistingOrder={openAttachToExistingOrder}
             />
             <button
               type="button"
@@ -10686,6 +10824,7 @@ export default function InboundOrdersPage() {
                 setCleanInlineAttachmentSelection({ recordId, file });
               }}
               onCloseInlineAttachment={() => setCleanInlineAttachmentSelection(null)}
+              onAttachToExistingOrder={openAttachToExistingOrder}
             />
             <button
               type="button"
@@ -10919,6 +11058,16 @@ export default function InboundOrdersPage() {
                   <div className="border-b border-border bg-muted/30 p-3">
                     <div className="flex flex-wrap items-center gap-2">
                       <Badge variant="secondary">{selectedQueueRecordIds.size} selected</Badge>
+                      {selectedQueueRecordIds.size === 1 && (
+                        <Button
+                          type="button"
+                          size="sm"
+                          disabled={attachInboundToOrderMutation.isPending}
+                          onClick={() => openAttachToExistingOrder(Array.from(selectedQueueRecordIds)[0])}
+                        >
+                          Attach to Existing Order
+                        </Button>
+                      )}
                       {selectedQueueRecordIds.size >= 2 && (
                         <Button
                           type="button"
@@ -11257,6 +11406,92 @@ export default function InboundOrdersPage() {
         onClose={() => setManualDialogOpen(false)}
         onCreate={(payload) => createManualMutation.mutateAsync(payload).then(() => undefined)}
       />
+      <Dialog open={Boolean(attachInboundRecordId)} onOpenChange={(open) => { if (!open) setAttachInboundRecordId(null); }}>
+        <DialogContent className="max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Attach inbound job to existing order</DialogTitle>
+            <DialogDescription>
+              This links the source record and selected files to an existing order. It does not create a quote or a new order.
+            </DialogDescription>
+          </DialogHeader>
+          {!attachInboundRecord ? (
+            <div className="py-6 text-sm text-muted-foreground">Loading inbound record details…</div>
+          ) : (
+            <div className="max-h-[65vh] space-y-4 overflow-y-auto py-2 pr-1">
+              <div className="rounded-md border bg-muted/30 p-3 text-sm">
+                <div className="font-medium">{getManualInboundEvidence(attachInboundRecord).subject || getRecordTitle(attachInboundRecord)}</div>
+                <div className="mt-1 text-muted-foreground">{getManualInboundEvidence(attachInboundRecord).senderEmail || "Unknown sender"} · {formatRelative(attachInboundRecord.receivedAt)}</div>
+              </div>
+              <label className="grid gap-1.5 text-sm font-medium">
+                Search active order
+                <Input value={attachOrderSearch} onChange={(event) => setAttachOrderSearch(event.target.value)} placeholder="Order number, customer, contact, job label, or PO number" />
+              </label>
+              <div className="max-h-44 space-y-1 overflow-y-auto rounded-md border p-2">
+                {attachOrderSearchQuery.isLoading ? <div className="p-2 text-sm text-muted-foreground">Searching orders…</div> : (attachOrderSearchQuery.data?.data ?? [])
+                  .filter((order) => order.status !== "cancelled")
+                  .map((order) => (
+                    <label key={order.id} className="flex cursor-pointer items-start gap-2 rounded p-2 hover:bg-muted">
+                      <input type="radio" name="attach-order" checked={attachOrderId === order.id} onChange={() => setAttachOrderId(order.id)} />
+                      <span className="min-w-0 text-sm">
+                        <span className="font-medium">{order.orderNumber || order.id}</span>
+                        <span className="ml-2 text-muted-foreground">{order.customer?.companyName || "No customer"}{order.label ? ` · ${order.label}` : ""}{order.poNumber ? ` · PO ${order.poNumber}` : ""}</span>
+                      </span>
+                    </label>
+                  ))}
+                {!attachOrderSearchQuery.isLoading && (attachOrderSearchQuery.data?.data ?? []).length === 0 && <div className="p-2 text-sm text-muted-foreground">No matching active orders.</div>}
+              </div>
+              {attachCustomerMismatch && (
+                <label className="flex items-start gap-2 rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
+                  <Checkbox checked={attachCustomerMismatchConfirmed} onCheckedChange={(checked) => setAttachCustomerMismatchConfirmed(checked === true)} />
+                  <span>The inbound record customer differs from the selected order customer. I confirmed this is the intended order.</span>
+                </label>
+              )}
+              <div className="rounded-md border p-3">
+                <div className="text-sm font-medium">Include</div>
+                <div className="mt-2 grid gap-2 text-sm sm:grid-cols-2">
+                  <label className="flex items-center gap-2"><Checkbox checked={attachIncludeMessageHistory} onCheckedChange={(checked) => setAttachIncludeMessageHistory(checked === true)} />Email/message history</label>
+                  <label className="flex items-center gap-2"><Checkbox checked={attachIncludeAttachments} onCheckedChange={(checked) => setAttachIncludeAttachments(checked === true)} />Attachments ({attachInboundFiles.length})</label>
+                  <label className="flex items-center gap-2"><Checkbox checked={attachIncludeParsedNotes} onCheckedChange={(checked) => setAttachIncludeParsedNotes(checked === true)} />Parsed notes</label>
+                  <label className="flex items-center gap-2"><Checkbox checked={attachIncludeJunkAttachments} onCheckedChange={(checked) => setAttachIncludeJunkAttachments(checked === true)} />Include junk/signature files</label>
+                </div>
+                <div className="mt-2 text-xs text-muted-foreground">
+                  Artwork {attachAttachmentCounts.ARTWORK ?? 0} · PO {attachAttachmentCounts.PO ?? 0} · Reference {attachAttachmentCounts.REFERENCE ?? 0} · Other {(attachAttachmentCounts.OTHER ?? 0) + (attachAttachmentCounts.IGNORE_INLINE ?? 0)}
+                </div>
+              </div>
+              {attachIncludeAttachments && attachArtworkFiles.length > 0 && (
+                <div className="rounded-md border p-3">
+                  <div className="text-sm font-medium">Artwork line item assignment</div>
+                  <div className="mt-1 text-xs text-muted-foreground">Optional. Unassigned artwork remains attached to the order without replacing any existing artwork.</div>
+                  <div className="mt-3 space-y-2">
+                    {attachArtworkFiles.map((file) => {
+                      const assignment = attachArtworkAssignments[file.id] ?? { orderLineItemId: null, side: "na" as const };
+                      return (
+                        <div key={file.id} className="grid gap-2 rounded border bg-muted/20 p-2 sm:grid-cols-[minmax(0,1fr)_minmax(160px,0.8fr)_100px]">
+                          <div className="truncate text-sm font-medium">{file.sourceFilename || "Artwork file"}</div>
+                          <select className="h-8 rounded-md border bg-background px-2 text-xs" value={assignment.orderLineItemId ?? ""} onChange={(event) => setAttachArtworkAssignments((current) => ({ ...current, [file.id]: { ...assignment, orderLineItemId: event.target.value || null } }))}>
+                            <option value="">Leave unassigned</option>
+                            {(attachSelectedOrder?.lineItems ?? []).map((lineItem: any) => <option key={lineItem.id} value={lineItem.id}>{lineItem.description || lineItem.product?.name || `Line item ${lineItem.id}`}</option>)}
+                          </select>
+                          <select className="h-8 rounded-md border bg-background px-2 text-xs" value={assignment.side} onChange={(event) => setAttachArtworkAssignments((current) => ({ ...current, [file.id]: { ...assignment, side: event.target.value as "front" | "back" | "na" } }))}>
+                            <option value="na">Unassigned side</option><option value="front">Front</option><option value="back">Back</option>
+                          </select>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
+              {attachInboundToOrderMutation.error && <Alert variant="destructive"><AlertDescription>{(attachInboundToOrderMutation.error as Error).message}</AlertDescription></Alert>}
+            </div>
+          )}
+          <DialogFooter>
+            <Button type="button" variant="outline" onClick={() => setAttachInboundRecordId(null)} disabled={attachInboundToOrderMutation.isPending}>Cancel</Button>
+            <Button type="button" onClick={submitAttachToExistingOrder} disabled={!attachInboundRecord || !attachOrderId || attachInboundToOrderMutation.isPending || (attachCustomerMismatch && !attachCustomerMismatchConfirmed)}>
+              {attachInboundToOrderMutation.isPending ? "Attaching…" : "Attach to selected order"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <Dialog open={combineDialogOpen} onOpenChange={setCombineDialogOpen}>
         <DialogContent>
           <DialogHeader>
