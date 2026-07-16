@@ -116,7 +116,8 @@ export type Pbv2TierResolutionWarning = {
     | "PBV2_TIER_FALLBACK_LINE_ITEM_QUANTITY"
     | "PBV2_TIER_MATRIX_ROW_BASIS_OVERRIDES_PRODUCT"
     | "PBV2_TIER_FORMULA_REFERENCE_WITHOUT_TIER_SYSTEM"
-    | "PBV2_QTY_ONLY_IGNORED_PER_SQFT_RATE";
+    | "PBV2_QTY_ONLY_IGNORED_PER_SQFT_RATE"
+    | "PBV2_QTY_ONLY_IGNORED_MINIMUM_CHARGE";
   message: string;
   severity: "warning" | "error";
   detail?: Record<string, unknown>;

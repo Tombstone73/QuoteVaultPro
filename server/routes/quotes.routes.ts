@@ -474,6 +474,7 @@ export function registerQuoteRoutes(
           name: products.name,
           pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
           measurementMode: products.measurementMode,
+          pricingProfileKey: products.pricingProfileKey,
         })
         .from(products)
         .where(
