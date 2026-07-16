@@ -2056,6 +2056,9 @@ describe("InboundOrdersPage", () => {
       Simulate.change(artworkSelect, { target: { value: zipOption.value } } as any);
     });
     await waitForText("Artwork linked");
+    expect(artworkSelect.value).toBe(zipOption.value);
+    expect(Array.from(artworkSelect.options).find((option) => option.value === zipOption.value)?.textContent).toContain("assigned");
+    expect(artworkSelect.options[0]?.textContent).not.toContain("No artwork files available");
 
     const saveDraftButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
     await act(async () => {

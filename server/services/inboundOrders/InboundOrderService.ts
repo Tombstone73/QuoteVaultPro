@@ -523,6 +523,51 @@ function artworkLinkKey(link: Pick<InboundOrderArtworkLink, "fileId" | "fileReco
   return link.fileRecordId ? `record:${link.fileRecordId}` : `file:${link.fileId}`;
 }
 
+function isActiveClassifiedArtworkLink(link: InboundOrderArtworkLink): boolean {
+  return link.source !== "staff_removed"
+    && (link.classification ?? inboundAttachmentRoleToClassification(link.role)) === "ARTWORK";
+}
+
+function hasAssignedClassifiedArtwork(payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">): boolean {
+  return payload.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+}
+
+function isArtworkDecision(decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">): boolean {
+  return /artwork/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
+}
+
+function artworkLineIndex(value: string | null | undefined): number | null {
+  const match = String(value ?? "").match(/lineitems\.(\d+)\.artwork/i);
+  return match ? Number(match[1]) : null;
+}
+
+function artworkDecisionIsResolvedByAssignment(
+  payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
+  decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
+): boolean {
+  const lineIndex = artworkLineIndex(decision.field);
+  if (lineIndex == null) return hasAssignedClassifiedArtwork(payload);
+  return payload.reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
+}
+
+function isStaleMissingArtworkWarning(
+  payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
+  warning: Pick<InboundOrderReviewDraftPayload["warningsJson"][number], "code" | "message" | "fieldPath">,
+): boolean {
+  const text = `${warning.code ?? ""} ${warning.message ?? ""} ${warning.fieldPath ?? ""}`.toLowerCase();
+  if (!text.includes("artwork") || !/(missing|not linked|not attached|unassigned)/.test(text)) return false;
+  const lineIndex = artworkLineIndex(warning.fieldPath);
+  if (lineIndex == null) return hasAssignedClassifiedArtwork(payload);
+  return payload.reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
+}
+
+function draftHasArtworkThatNeedsAssignment(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
+  if (hasAssignedClassifiedArtwork(payload)) return false;
+  if (payload.reviewedArtworkJson.unassignedAttachments.some(isActiveClassifiedArtworkLink)) return true;
+  if (payload.reviewedArtworkJson.refs.some((reference) => reference.purpose === "artwork")) return true;
+  return payload.reviewedArtworkJson.status === "supplied";
+}
+
 function centsFromUnknown(value: unknown): number | null {
   if (typeof value === "number" && Number.isFinite(value) && value >= 0) return Math.round(value);
   if (typeof value !== "string") return null;
@@ -2638,11 +2683,12 @@ export class InboundOrderService {
       ...args.draft,
       status: "draft",
     }));
-    const payload = await this.enrichReviewDraftPricingReview({
+    const enrichedPayload = await this.enrichReviewDraftPricingReview({
       organizationId: args.organizationId,
       parsedDraft: this.parsedDraftFromAttempt(latestAttempt),
       payload: normalizedPayload,
     });
+    const payload = this.normalizeReviewDraftPayload(record, enrichedPayload);
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
@@ -2676,7 +2722,8 @@ export class InboundOrderService {
       parsedDraft: this.parsedDraftFromAttempt(latestAttempt),
       payload: baseDto,
     });
-    const errors = await this.validateReviewDraftReadyForMarkReady(args.organizationId, pricedBaseDto);
+    const normalizedPricedBaseDto = this.normalizeReviewDraftPayload(record, pricedBaseDto);
+    const errors = await this.validateReviewDraftReadyForMarkReady(args.organizationId, normalizedPricedBaseDto);
     if (errors.length > 0) {
       throw new InboundOrderReviewDraftValidationError("Review draft is not ready to convert.", errors);
     }
@@ -2684,15 +2731,15 @@ export class InboundOrderService {
     const sourceAttempt = await this.resolveReviewDraftSourceAttempt(args.organizationId, args.inboundRecordId, existingSnapshot, latestAttempt);
     const payload = this.normalizeReviewDraftPayload(record, inboundOrderReviewDraftPayloadSchema.parse({
       status: "ready_to_convert",
-      reviewedCustomerJson: pricedBaseDto.reviewedCustomerJson,
-      reviewedOrderJson: pricedBaseDto.reviewedOrderJson,
-      reviewedLineItemsJson: pricedBaseDto.reviewedLineItemsJson,
-      reviewedArtworkJson: pricedBaseDto.reviewedArtworkJson,
-      missingDecisionsJson: pricedBaseDto.missingDecisionsJson,
-      warningsJson: pricedBaseDto.warningsJson,
-      unsupportedRequestsJson: pricedBaseDto.unsupportedRequestsJson,
-      customerIntelligenceJson: pricedBaseDto.customerIntelligenceJson,
-      reviewNotes: pricedBaseDto.reviewNotes,
+      reviewedCustomerJson: normalizedPricedBaseDto.reviewedCustomerJson,
+      reviewedOrderJson: normalizedPricedBaseDto.reviewedOrderJson,
+      reviewedLineItemsJson: normalizedPricedBaseDto.reviewedLineItemsJson,
+      reviewedArtworkJson: normalizedPricedBaseDto.reviewedArtworkJson,
+      missingDecisionsJson: normalizedPricedBaseDto.missingDecisionsJson,
+      warningsJson: normalizedPricedBaseDto.warningsJson,
+      unsupportedRequestsJson: normalizedPricedBaseDto.unsupportedRequestsJson,
+      customerIntelligenceJson: normalizedPricedBaseDto.customerIntelligenceJson,
+      reviewNotes: normalizedPricedBaseDto.reviewNotes,
     }));
     const snapshot = await this.persistEditableReviewDraftSnapshot({
       organizationId: args.organizationId,
@@ -3148,13 +3195,14 @@ export class InboundOrderService {
     const latestSnapshot = await this.getLatestEditableReviewDraftSnapshot(args.organizationId, args.inboundRecordId);
     const latestParseAttempt = await this.repository.getLatestParseAttempt(args.organizationId, args.inboundRecordId);
     const rawPayload = latestSnapshot ? this.reviewDraftPayloadFromSnapshot(latestSnapshot) : null;
-    const payload = rawPayload
+    const enrichedPayload = rawPayload
       ? await this.enrichReviewDraftPricingReview({
         organizationId: args.organizationId,
         parsedDraft: this.parsedDraftFromAttempt(latestParseAttempt),
         payload: rawPayload,
       })
       : null;
+    const payload = enrichedPayload ? this.normalizeReviewDraftPayload(detail.record, enrichedPayload) : null;
     const validationErrors = await this.validateInboundOrderConversion(detail, payload);
 
     if (validationErrors.length > 0 || !payload || !latestSnapshot) {
@@ -3983,12 +4031,30 @@ export class InboundOrderService {
     record: InboundOrderRecord,
     payload: InboundOrderReviewDraftPayload,
   ): InboundOrderReviewDraftPayload {
+    const artworkAssigned = hasAssignedClassifiedArtwork(payload);
     return inboundOrderReviewDraftPayloadSchema.parse({
       ...payload,
       reviewedOrderJson: {
         ...payload.reviewedOrderJson,
         dueDate: normalizeInboundReviewedDueDate(payload.reviewedOrderJson.dueDate, record.receivedAt),
       },
+      reviewedArtworkJson: artworkAssigned
+        ? { ...payload.reviewedArtworkJson, status: "supplied" }
+        : payload.reviewedArtworkJson,
+      missingDecisionsJson: artworkAssigned
+        ? payload.missingDecisionsJson.map((decision) => (
+          isArtworkDecision(decision) && decision.status === "still_blocking" && artworkDecisionIsResolvedByAssignment(payload, decision)
+            ? {
+              ...decision,
+              status: "resolved",
+              resolutionNote: decision.resolutionNote ?? "Resolved by artwork assigned to a reviewed line item.",
+            }
+            : decision
+        ))
+        : payload.missingDecisionsJson,
+      warningsJson: artworkAssigned
+        ? payload.warningsJson.filter((warning) => !isStaleMissingArtworkWarning(payload, warning))
+        : payload.warningsJson,
     });
   }
 
@@ -4502,19 +4568,20 @@ export class InboundOrderService {
   ): Promise<string[]> {
     const errors: string[] = [];
     const { record } = detail;
+    const normalizedPayload = payload ? this.normalizeReviewDraftPayload(record, payload) : null;
 
     if (record.createdOrderId) return errors;
     if (record.createdQuoteId) errors.push("Inbound record has already been converted to a quote draft.");
     if (record.status !== reviewedStatus) errors.push("Inbound record must be ready before order conversion.");
-    if (!payload) {
+    if (!normalizedPayload) {
       errors.push("Reviewed draft is missing.");
       return Array.from(new Set(errors));
     }
-    if (payload.status !== "ready_to_convert") {
+    if (normalizedPayload.status !== "ready_to_convert") {
       errors.push("Reviewed draft must be marked ready to convert.");
     }
 
-    const selectedCustomerId = payload.reviewedCustomerJson.selectedCustomerId;
+    const selectedCustomerId = normalizedPayload.reviewedCustomerJson.selectedCustomerId;
     if (!selectedCustomerId) {
       errors.push("Select an existing customer before creating a draft order.");
     } else {
@@ -4522,18 +4589,18 @@ export class InboundOrderService {
       if (!customer) errors.push("Selected customer was not found for this organization.");
     }
 
-    const selectedContactId = payload.reviewedCustomerJson.selectedContactId;
+    const selectedContactId = normalizedPayload.reviewedCustomerJson.selectedContactId;
     if (selectedCustomerId && selectedContactId) {
       const contact = await this.repository.getContactForCustomer(record.organizationId, selectedCustomerId, selectedContactId);
       if (!contact) errors.push("Selected contact does not belong to the selected customer.");
     }
 
-    if (payload.reviewedLineItemsJson.length === 0) {
+    if (normalizedPayload.reviewedLineItemsJson.length === 0) {
       errors.push("At least one reviewed line item is required.");
     }
 
-    for (let index = 0; index < payload.reviewedLineItemsJson.length; index += 1) {
-      const lineItem = payload.reviewedLineItemsJson[index];
+    for (let index = 0; index < normalizedPayload.reviewedLineItemsJson.length; index += 1) {
+      const lineItem = normalizedPayload.reviewedLineItemsJson[index];
       const label = lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`;
       if (!lineItem.selectedProductId) {
         errors.push(`${label}: select an existing product before order conversion.`);
@@ -4552,14 +4619,19 @@ export class InboundOrderService {
       }
     }
 
-    payload.missingDecisionsJson.forEach((decision) => {
+    if (draftHasArtworkThatNeedsAssignment(normalizedPayload)) {
+      const targetLineIndex = normalizedPayload.reviewedLineItemsJson.findIndex((lineItem) => !lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+      errors.push(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`);
+    }
+
+    normalizedPayload.missingDecisionsJson.forEach((decision) => {
       if (decision.status !== "still_blocking") return;
       if (decision.severity === "blocking") {
         errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
       }
     });
 
-    errors.push(...await this.validateRequiredPbv2Selections(record.organizationId, payload));
+    errors.push(...await this.validateRequiredPbv2Selections(record.organizationId, normalizedPayload));
 
     return Array.from(new Set(errors));
   }
@@ -4848,12 +4920,17 @@ export class InboundOrderService {
       }
     });
 
+    if (draftHasArtworkThatNeedsAssignment(draft)) {
+      const targetLineIndex = draft.reviewedLineItemsJson.findIndex((lineItem) => !lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+      errors.push(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`);
+    }
+
     draft.missingDecisionsJson.forEach((decision) => {
       if (decision.status !== "still_blocking") return;
       if (decision.severity === "blocking") {
         errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
-      } else if (/artwork/i.test(decision.field) || /artwork/i.test(decision.label)) {
-        errors.push(`${decision.label}: acknowledge artwork status before marking ready.`);
+      } else if (isArtworkDecision(decision)) {
+        errors.push(`Line ${(artworkLineIndex(decision.field) ?? 0) + 1} needs artwork assignment or an explicit artwork-status decision.`);
       }
     });
 
