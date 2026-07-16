@@ -1,13 +1,77 @@
 import { describe, expect, test } from "@jest/globals";
-import { getOrderTakePaymentLabel, resolveInvoiceAutoPaymentAction } from "@/lib/paymentResolutionUi";
+import { getOrderBillingActionState, resolveInvoiceAutoPaymentAction } from "@/lib/paymentResolutionUi";
 
 describe("payment resolution UI helpers", () => {
-  test("labels the order payment action from resolution state", () => {
-    expect(getOrderTakePaymentLabel({ isLoading: true, isPreparing: false })).toBe("Resolving Payment…");
-    expect(getOrderTakePaymentLabel({ isLoading: false, isPreparing: true })).toBe("Preparing…");
-    expect(getOrderTakePaymentLabel({ isLoading: false, isPreparing: false, resolutionStatus: "NO_INVOICE" })).toBe("Invoice & Take Payment");
-    expect(getOrderTakePaymentLabel({ isLoading: false, isPreparing: false, resolutionStatus: "ALREADY_PAID" })).toBe("View Payment");
-    expect(getOrderTakePaymentLabel({ isLoading: false, isPreparing: false, resolutionStatus: "SINGLE_PAYABLE_INVOICE" })).toBe("Take Payment");
+  test("keeps Create Invoice separate from Take Payment when no invoice exists", () => {
+    const actions = getOrderBillingActionState({
+      billingReady: true,
+      hasExistingInvoice: false,
+      orderCanceled: false,
+      isLoading: false,
+      isPreparing: false,
+      resolutionStatus: "NO_INVOICE",
+    });
+
+    expect(actions).toMatchObject({
+      canCreateInvoice: true,
+      canTakePayment: false,
+      canInvoiceAndTakePayment: true,
+      takePaymentHelp: "Create an invoice first",
+    });
+
+    expect(getOrderBillingActionState({
+      billingReady: false,
+      hasExistingInvoice: false,
+      orderCanceled: false,
+      isLoading: false,
+      isPreparing: false,
+      resolutionStatus: "NO_INVOICE",
+    })).toMatchObject({ canCreateInvoice: false, canInvoiceAndTakePayment: false, canTakePayment: false });
+
+    expect(getOrderBillingActionState({
+      billingReady: true,
+      hasExistingInvoice: true,
+      orderCanceled: false,
+      isLoading: false,
+      isPreparing: false,
+      resolutionStatus: "NO_INVOICE",
+    })).toMatchObject({ canCreateInvoice: false, canInvoiceAndTakePayment: false });
+  });
+
+  test("enables direct payment only for an existing payable invoice and preserves multi-invoice selection", () => {
+    expect(getOrderBillingActionState({
+      billingReady: true,
+      hasExistingInvoice: true,
+      orderCanceled: false,
+      isLoading: false,
+      isPreparing: false,
+      resolutionStatus: "SINGLE_PAYABLE_INVOICE",
+    })).toMatchObject({ canTakePayment: true, canInvoiceAndTakePayment: true, takePaymentLabel: "Take Payment" });
+
+    expect(getOrderBillingActionState({
+      billingReady: true,
+      hasExistingInvoice: true,
+      orderCanceled: false,
+      isLoading: false,
+      isPreparing: false,
+      resolutionStatus: "MULTIPLE_PAYABLE_INVOICES",
+    })).toMatchObject({ canTakePayment: true, canInvoiceAndTakePayment: true });
+  });
+
+  test("opens an already paid invoice without launching payment", () => {
+    expect(getOrderBillingActionState({
+      billingReady: true,
+      hasExistingInvoice: true,
+      orderCanceled: false,
+      isLoading: false,
+      isPreparing: false,
+      resolutionStatus: "ALREADY_PAID",
+    })).toMatchObject({
+      canTakePayment: true,
+      canInvoiceAndTakePayment: false,
+      takePaymentLabel: "View Invoice",
+      takePaymentHelp: "Invoice already paid",
+    });
   });
 
   test("waits while invoice or provider state is still loading", () => {

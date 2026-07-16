@@ -88,7 +88,7 @@ import { downloadAuthenticatedPdf, openAuthenticatedPdfForPrint, openAuthenticat
 import { apiFetch } from "@/lib/queryClient";
 import { useOrderPaymentResolution } from "@/hooks/usePaymentOrchestrator";
 import type { PaymentInvoiceCandidate } from "@shared/paymentOrchestration";
-import { getOrderTakePaymentLabel } from "@/lib/paymentResolutionUi";
+import { getOrderBillingActionState } from "@/lib/paymentResolutionUi";
 import { OrderRecipientFallbackDialog } from "@/features/orders/components/OrderRecipientFallbackDialog";
 import {
   resolveAttachOrderPdfDefault,
@@ -615,7 +615,6 @@ export default function OrderDetail() {
   const orderPaymentResolution = useOrderPaymentResolution(orderId);
   const [billingOverrideDialogOpen, setBillingOverrideDialogOpen] = useState(false);
   const [billingOverrideNote, setBillingOverrideNote] = useState('');
-  const [invoiceRequiredDialogOpen, setInvoiceRequiredDialogOpen] = useState(false);
   const [paymentInvoiceSelectorOpen, setPaymentInvoiceSelectorOpen] = useState(false);
   const [paymentBlockedDialogOpen, setPaymentBlockedDialogOpen] = useState(false);
 
@@ -1758,15 +1757,40 @@ export default function OrderDetail() {
       : billingStatus === 'billed'
         ? 'Billed'
         : 'Not Ready';
-  const canCreateInvoice = isAdminOrOwner && billingStatus !== 'billed' && (billingStatus === 'ready' || billingOverrideActive);
   const paymentResolution = orderPaymentResolution.data;
   const isPreparingInvoicePayment = createOrderInvoice.isPending || billInvoice.isPending;
-  const takePaymentLabel = getOrderTakePaymentLabel({
-    isLoading: orderPaymentResolution.isLoading,
+  const billingActions = getOrderBillingActionState({
+    billingReady: billingStatus === 'ready' || billingOverrideActive,
+    hasExistingInvoice: orderInvoices.length > 0,
+    orderCanceled: orderIsCanceled,
+    isLoading: orderPaymentResolution.isLoading || isInvoicesLoading,
     isPreparing: isPreparingInvoicePayment,
     resolutionStatus: paymentResolution?.resolutionStatus,
+    blockedReason: paymentResolution?.blockedReason,
   });
   const payableInvoiceCandidates = paymentResolution?.invoiceCandidates.filter((invoice) => invoice.payable) ?? [];
+  const billingLineItems = order.lineItems ?? [];
+  const unpricedServiceFeeCount = billingLineItems.filter((lineItem: any) => {
+    const product = lineItem.product as any;
+    if (product?.workflowIntent !== 'service_fee') return false;
+    const total = Number(lineItem.totalPrice ?? 0);
+    return !Number.isFinite(total) || (total <= 0 && product?.allowZeroPrice !== true);
+  }).length;
+  const incompleteProductionCount = billingLineItems.filter((lineItem: any) => {
+    const workflowIntent = lineItem.product?.workflowIntent;
+    if (workflowIntent === 'service_fee') return false;
+    const status = String(lineItem.status ?? '').toLowerCase();
+    return status !== 'done' && status !== 'canceled';
+  }).length;
+  const billingNotReadyExplanation = billingStatus === 'ready' || billingStatus === 'billed' || billingOverrideActive
+    ? null
+    : billingLineItems.length === 0
+      ? 'No billable lines.'
+      : unpricedServiceFeeCount > 0
+        ? `${unpricedServiceFeeCount} service/fee line${unpricedServiceFeeCount === 1 ? '' : 's'} missing a configured price.`
+        : incompleteProductionCount > 0
+          ? `${incompleteProductionCount} production line${incompleteProductionCount === 1 ? '' : 's'} not complete.`
+          : 'Billing readiness is being recalculated from the current order lines.';
 
   const handleCreateInvoice = async () => {
     if (!orderId) return;
@@ -1789,7 +1813,7 @@ export default function OrderDetail() {
     navigate(`/invoices/${invoiceId}${takePayment ? '?takePayment=1' : ''}`);
   };
 
-  const handleGenerateInvoiceAndTakePayment = async () => {
+  const handleCreateInvoiceAndTakePayment = async () => {
     if (!orderId) return;
     try {
       const result = await createOrderInvoice.mutateAsync({ orderId, terms: 'due_on_receipt' });
@@ -1800,7 +1824,6 @@ export default function OrderDetail() {
 
       await billInvoice.mutateAsync(String(created.id));
       toast({ title: 'Invoice ready', description: 'Invoice generated and finalized for payment.' });
-      setInvoiceRequiredDialogOpen(false);
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', { orderId }] });
       queryClient.invalidateQueries({ queryKey: ['orders', orderId, 'payment-resolution'] });
@@ -1829,7 +1852,7 @@ export default function OrderDetail() {
     }
 
     if (resolution.resolutionStatus === 'NO_INVOICE') {
-      setInvoiceRequiredDialogOpen(true);
+      toast({ title: 'Create an invoice first', description: 'Take Payment requires an existing invoice target.', variant: 'destructive' });
       return;
     }
 
@@ -1849,6 +1872,22 @@ export default function OrderDetail() {
     }
 
     setPaymentBlockedDialogOpen(true);
+  };
+
+  const handleInvoiceAndTakePayment = async () => {
+    if (!orderId) return;
+    let resolution = orderPaymentResolution.data;
+    if (!resolution) {
+      const refreshed = await orderPaymentResolution.refetch();
+      resolution = refreshed.data;
+    }
+
+    if (resolution?.resolutionStatus === 'NO_INVOICE' || (!resolution && orderInvoices.length === 0)) {
+      await handleCreateInvoiceAndTakePayment();
+      return;
+    }
+
+    await handleTakePaymentFromOrder();
   };
 
   const handleSelectPayableInvoice = (candidate: PaymentInvoiceCandidate) => {
@@ -3355,23 +3394,44 @@ export default function OrderDetail() {
                   </div>
                 )}
 
-                <div className="flex flex-wrap gap-2">
-                  {isAdminOrOwner ? (
-                    <Button
-                      onClick={() => void handleTakePaymentFromOrder()}
-                      disabled={orderPaymentResolution.isFetching || isPreparingInvoicePayment || orderIsCanceled}
-                    >
-                      <DollarSign className="mr-2 h-4 w-4" />
-                      {takePaymentLabel}
-                    </Button>
-                  ) : null}
+                {billingNotReadyExplanation && (
+                  <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
+                    {billingNotReadyExplanation}
+                  </div>
+                )}
 
-                  {orderInvoices.length === 0 ? (
-                    <Button onClick={handleCreateInvoice} disabled={!canCreateInvoice || createOrderInvoice.isPending}>
+                <div className="flex flex-wrap gap-2">
+                  {isAdminOrOwner && (
+                    <span title={billingActions.takePaymentHelp ?? undefined}>
+                      <Button
+                        variant="outline"
+                        onClick={() => void handleTakePaymentFromOrder()}
+                        disabled={!billingActions.canTakePayment}
+                      >
+                        <DollarSign className="mr-2 h-4 w-4" />
+                        {billingActions.takePaymentLabel}
+                      </Button>
+                    </span>
+                  )}
+
+                  {isAdminOrOwner && (
+                    <Button onClick={handleCreateInvoice} disabled={!billingActions.canCreateInvoice}>
                       <FileText className="mr-2 h-4 w-4" />
                       {createOrderInvoice.isPending ? 'Creating…' : 'Create Invoice'}
                     </Button>
-                  ) : null}
+                  )}
+
+                  {isAdminOrOwner && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => void handleInvoiceAndTakePayment()}
+                      disabled={!billingActions.canInvoiceAndTakePayment}
+                      title={billingActions.canInvoiceAndTakePayment ? undefined : billingActions.takePaymentHelp ?? undefined}
+                    >
+                      <DollarSign className="mr-2 h-4 w-4" />
+                      {isPreparingInvoicePayment ? 'Preparing...' : billingActions.invoiceAndTakePaymentLabel}
+                    </Button>
+                  )}
 
                   {isAdminOrOwner && !billingOverrideActive && billingStatus !== 'billed' && (
                     <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(true)}>
@@ -3518,23 +3578,6 @@ export default function OrderDetail() {
                     </Table>
                   )}
                 </div>
-
-                <AlertDialog open={invoiceRequiredDialogOpen} onOpenChange={setInvoiceRequiredDialogOpen}>
-                  <AlertDialogContent>
-                    <AlertDialogHeader>
-                      <AlertDialogTitle>Invoice Required</AlertDialogTitle>
-                      <AlertDialogDescription>
-                        This order must be invoiced before payment can be collected.
-                      </AlertDialogDescription>
-                    </AlertDialogHeader>
-                    <AlertDialogFooter>
-                      <AlertDialogCancel disabled={isPreparingInvoicePayment}>Cancel</AlertDialogCancel>
-                      <Button onClick={() => void handleGenerateInvoiceAndTakePayment()} disabled={isPreparingInvoicePayment}>
-                        {isPreparingInvoicePayment ? 'Preparing…' : 'Generate Invoice & Take Payment'}
-                      </Button>
-                    </AlertDialogFooter>
-                  </AlertDialogContent>
-                </AlertDialog>
 
                 <Dialog open={paymentInvoiceSelectorOpen} onOpenChange={setPaymentInvoiceSelectorOpen}>
                   <DialogContent className="max-w-3xl">
