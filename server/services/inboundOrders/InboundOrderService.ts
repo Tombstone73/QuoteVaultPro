@@ -262,6 +262,27 @@ export type InboundOrderCombineResult = {
   reparseRecommended: true;
 };
 
+export type InboundOrderAttachToOrderInput = {
+  organizationId: string;
+  inboundRecordId: string;
+  orderId: string;
+  actorUserId: string;
+  includeMessageHistory: boolean;
+  includeAttachments: boolean;
+  includeParsedNotes: boolean;
+  includeJunkAttachments: boolean;
+  confirmCustomerMismatch: boolean;
+  artworkAssignments: Array<{ fileId: string; orderLineItemId: string | null; side: "front" | "back" | "na" }>;
+};
+
+export type InboundOrderAttachToOrderResult = {
+  orderId: string;
+  orderNumber: string | null;
+  inboundRecordId: string;
+  createdAttachmentIds: string[];
+  skippedAttachments: Array<{ fileId: string; reason: string }>;
+};
+
 export type InboundOrderStatusUpdateInput = {
   organizationId: string;
   inboundRecordId: string;
@@ -2877,6 +2898,197 @@ export class InboundOrderService {
     const detail = await this.getDetail({ organizationId: args.organizationId, inboundRecordId: combined.id });
     if (!detail) throw new InboundOrderTransitionError("Combined inbound record could not be loaded.", 500);
     return { detail, combinedSourceCount: combinedSources.length, reparseRecommended: true };
+  }
+
+  async attachInboundRecordToOrder(args: InboundOrderAttachToOrderInput): Promise<InboundOrderAttachToOrderResult> {
+    const detail = await this.getDetail({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+    });
+    if (!detail) throw new InboundOrderTransitionError("Inbound order record not found.", 404);
+    const { record } = detail;
+    const normalized = record.normalizedPayloadJson && typeof record.normalizedPayloadJson === "object"
+      ? record.normalizedPayloadJson as Record<string, unknown>
+      : {};
+    if (record.createdQuoteId || record.createdOrderId || record.status === "submitted") {
+      throw new InboundOrderTransitionError("Converted inbound records cannot be attached to another order.", 409);
+    }
+    if (record.status === "terminal" || record.status === "ignored" || normalized.attachedOrderId) {
+      throw new InboundOrderTransitionError("Rejected, deleted, merged, or already attached inbound records cannot be attached to an order.", 409);
+    }
+
+    const order = await this.orderRepository.getOrderById(args.organizationId, args.orderId);
+    if (!order) throw new InboundOrderTransitionError("Selected order was not found for this organization.", 404);
+    if (record.matchedCustomerId && order.customerId && record.matchedCustomerId !== order.customerId && !args.confirmCustomerMismatch) {
+      throw new InboundOrderTransitionError("The inbound record and selected order have different customers. Confirm the mismatch before attaching.", 409);
+    }
+
+    const orderLineItemIds = new Set((order.lineItems ?? []).map((lineItem: any) => String(lineItem.id)));
+    const assignments = new Map(args.artworkAssignments.map((assignment) => [assignment.fileId, assignment]));
+    for (const assignment of args.artworkAssignments) {
+      if (assignment.orderLineItemId && !orderLineItemIds.has(assignment.orderLineItemId)) {
+        throw new InboundOrderTransitionError("Selected artwork line item does not belong to the target order.", 400);
+      }
+    }
+
+    const existingAttachments = typeof (this.orderRepository as any).listAllOrderAttachments === "function"
+      ? await (this.orderRepository as any).listAllOrderAttachments(args.orderId)
+      : [];
+    const existingFileRecordIds = new Set(existingAttachments.map((attachment: any) => attachment.fileRecordId).filter(Boolean));
+    const createdAttachmentIds: string[] = [];
+    const skippedAttachments: Array<{ fileId: string; reason: string }> = [];
+
+    if (args.includeAttachments) {
+      for (const file of detail.files) {
+        const classification = attachmentClassificationFromInboundFile(file).classification;
+        const isJunk = classification === "IGNORE_INLINE";
+        if (isJunk && !args.includeJunkAttachments) {
+          skippedAttachments.push({ fileId: file.id, reason: "Junk/signature attachment was not included." });
+          continue;
+        }
+        if (!file.fileRecordId) {
+          skippedAttachments.push({ fileId: file.id, reason: "Metadata-only attachment has no usable stored file." });
+          continue;
+        }
+        if (file.status === "rejected" || file.status === "quarantined") {
+          skippedAttachments.push({ fileId: file.id, reason: "Unsafe attachment was not added to the order." });
+          continue;
+        }
+        if (existingFileRecordIds.has(file.fileRecordId)) {
+          skippedAttachments.push({ fileId: file.id, reason: "This stored file is already attached to the order." });
+          continue;
+        }
+        const assignment = assignments.get(file.id);
+        if (assignment && classification !== "ARTWORK") {
+          throw new InboundOrderTransitionError("Only artwork-classified inbound files can be assigned to an order line item.", 400);
+        }
+        const role = classification === "ARTWORK"
+          ? "artwork" as const
+          : classification === "PO"
+            ? "customer_po" as const
+            : classification === "REFERENCE"
+              ? "reference" as const
+              : "other" as const;
+        const attachment = await this.orderRepository.createOrderAttachment({
+          orderId: args.orderId,
+          orderLineItemId: assignment?.orderLineItemId ?? null,
+          fileRecordId: file.fileRecordId,
+          uploadedByUserId: args.actorUserId,
+          uploadedByName: "Inbound order attachment",
+          fileName: file.sourceFilename || "Inbound attachment",
+          fileUrl: null,
+          fileSize: file.sizeBytes ?? null,
+          mimeType: file.mimeType ?? null,
+          description: `Attached from inbound record ${record.id}${args.includeMessageHistory ? `: ${getManualInboundEvidence(record).subject ?? "inbound message"}` : ""}.`,
+          originalFilename: file.sourceFilename ?? null,
+          sizeBytes: file.sizeBytes ?? null,
+          checksum: file.checksum ?? null,
+          role,
+          side: assignment?.side ?? "na",
+          isPrimary: false,
+          customerVisible: false,
+        });
+        existingFileRecordIds.add(file.fileRecordId);
+        createdAttachmentIds.push(attachment.id);
+        await this.repository.updateFile({
+          organizationId: args.organizationId,
+          inboundRecordId: record.id,
+          fileId: file.id,
+          patch: { createdOrderAttachmentId: attachment.id },
+        });
+      }
+    }
+
+    const evidence = getManualInboundEvidence(record);
+    const combinedSourceRecordIds = Array.isArray(normalized.combinedSources)
+      ? normalized.combinedSources
+        .map((source) => source && typeof source === "object" && !Array.isArray(source) && typeof (source as Record<string, unknown>).recordId === "string"
+          ? (source as Record<string, unknown>).recordId as string
+          : null)
+        .filter((recordId): recordId is string => Boolean(recordId))
+      : [record.id];
+    const parsedNotes = args.includeParsedNotes
+      ? detail.latestReviewSnapshot?.payloadJson ?? null
+      : null;
+    await this.orderRepository.createOrderAuditLog({
+      orderId: args.orderId,
+      orderLineItemId: null,
+      userId: args.actorUserId,
+      userName: null,
+      actionType: "inbound_record_attached",
+      fromStatus: null,
+      toStatus: null,
+      note: args.includeMessageHistory
+        ? `Inbound message attached: ${evidence.subject ?? record.externalReference ?? record.id}.`
+        : `Inbound attachments linked from record ${record.id}.`,
+      metadata: {
+        inboundRecordId: record.id,
+        combinedSourceRecordIds,
+        sourceType: record.sourceType,
+        senderName: evidence.senderName,
+        senderEmail: evidence.senderEmail,
+        subject: evidence.subject,
+        receivedAt: record.receivedAt.toISOString(),
+        included: {
+          messageHistory: args.includeMessageHistory,
+          attachments: args.includeAttachments,
+          parsedNotes: args.includeParsedNotes,
+          junkAttachments: args.includeJunkAttachments,
+        },
+        createdAttachmentIds,
+        skippedAttachments,
+        parsedNotes,
+      },
+    });
+
+    const now = new Date();
+    const updated = await this.repository.updateRecordWithEvent({
+      organizationId: args.organizationId,
+      inboundRecordId: record.id,
+      patch: {
+        status: "ignored",
+        reviewOutcome: "attached_to_order",
+        archivedAt: now,
+        requiresHumanDecision: false,
+        reviewRequiredReason: null,
+        normalizedPayloadJson: {
+          ...normalized,
+          attachedOrderId: args.orderId,
+          attachedOrderNumber: (order as any).orderNumber ?? null,
+          attachedAt: now.toISOString(),
+          attachedByUserId: args.actorUserId,
+          attachedAttachmentIds: createdAttachmentIds,
+        },
+      },
+      event: {
+        actorUserId: args.actorUserId,
+        actorType: "user",
+        eventType: "order.attached",
+        fromStatus: record.status,
+        toStatus: "ignored",
+        message: `Attached to existing order ${(order as any).orderNumber ?? args.orderId}.`,
+        metadataJson: { orderId: args.orderId, createdAttachmentIds, skippedAttachments },
+      },
+    });
+    if (!updated) throw new InboundOrderTransitionError("Inbound record could not be marked attached to the order.", 500);
+
+    return {
+      orderId: args.orderId,
+      orderNumber: (order as any).orderNumber ?? null,
+      inboundRecordId: record.id,
+      createdAttachmentIds,
+      skippedAttachments,
+    };
+  }
+
+  async searchActiveOrdersForInboundAttachment(args: {
+    organizationId: string;
+    search: string | null;
+    limit?: number;
+  }) {
+    const searchOrders = (this.orderRepository as any).searchActiveOrdersForInboundAttachment;
+    if (typeof searchOrders !== "function") return [];
+    return searchOrders.call(this.orderRepository, args.organizationId, args.search, args.limit ?? 20);
   }
 
   async saveReviewSnapshot(args: SaveInboundOrderReviewSnapshotInput): Promise<InboundOrderDetail> {

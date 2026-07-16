@@ -1019,6 +1019,56 @@ export class OrdersRepository {
         return enrichedOrders;
     }
 
+    async searchActiveOrdersForInboundAttachment(organizationId: string, search: string | null, limit = 20): Promise<Array<{
+        id: string;
+        orderNumber: string | null;
+        customerId: string | null;
+        label: string | null;
+        poNumber: string | null;
+        status: string | null;
+        customerName: string | null;
+        contactEmail: string | null;
+        contactName: string | null;
+    }>> {
+        const normalizedLimit = Math.max(1, Math.min(50, Math.round(limit)));
+        const term = search?.trim() ?? "";
+        const conditions = [
+            eq(orders.organizationId, organizationId),
+            sql`coalesce(${orders.status}, '') not in ('cancelled', 'canceled', 'completed', 'closed')`,
+        ];
+        if (term) {
+            const pattern = `%${term}%`;
+            conditions.push(or(
+                ilike(orders.orderNumber, pattern),
+                ilike(orders.poNumber, pattern),
+                ilike(orders.label, pattern),
+                ilike(orders.notesInternal, pattern),
+                ilike(customers.companyName, pattern),
+                ilike(customerContacts.email, pattern),
+                ilike(customerContacts.firstName, pattern),
+                ilike(customerContacts.lastName, pattern),
+            ) as any);
+        }
+        return await this.dbInstance
+            .select({
+                id: orders.id,
+                orderNumber: orders.orderNumber,
+                customerId: orders.customerId,
+                label: orders.label,
+                poNumber: orders.poNumber,
+                status: orders.status,
+                customerName: customers.companyName,
+                contactEmail: customerContacts.email,
+                contactName: sql<string | null>`nullif(trim(concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName})), '')`,
+            })
+            .from(orders)
+            .leftJoin(customers, eq(customers.id, orders.customerId))
+            .leftJoin(customerContacts, eq(customerContacts.id, orders.contactId))
+            .where(and(...conditions))
+            .orderBy(desc(orders.updatedAt))
+            .limit(normalizedLimit);
+    }
+
     async getOrderById(organizationId: string, id: string): Promise<OrderWithRelations | undefined> {
         const [order] = await this.dbInstance.select().from(orders).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId)));
         if (!order) return undefined;
@@ -2242,6 +2292,15 @@ export class OrdersRepository {
             .where(and(eq(orderAttachments.orderId, orderId), isNull(orderAttachments.orderLineItemId)))
             .orderBy(desc(orderAttachments.createdAt));
 
+        return rows as any;
+    }
+
+    async listAllOrderAttachments(orderId: string): Promise<OrderAttachment[]> {
+        const rows = await this.dbInstance
+            .select(ORDER_ATTACHMENT_SAFE_SELECT)
+            .from(orderAttachments)
+            .where(eq(orderAttachments.orderId, orderId))
+            .orderBy(desc(orderAttachments.createdAt));
         return rows as any;
     }
 

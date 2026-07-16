@@ -159,6 +159,19 @@ type OrderInternalNoteRow = {
   createdAt: string;
 };
 
+type OrderInboundAttachmentAudit = {
+  id: string;
+  actionType: string;
+  note: string | null;
+  metadata: {
+    inboundRecordId?: string;
+    senderEmail?: string | null;
+    subject?: string | null;
+    receivedAt?: string | null;
+  } | null;
+  createdAt: string;
+};
+
 type OrderDesignBillingVisibilityItem = {
   lineItemId: string;
   orderId: string;
@@ -326,6 +339,19 @@ export default function OrderDetail() {
 
   const orderId = params.id;
   const { data: orderRaw, isLoading } = useOrder(orderId);
+  const { data: inboundAttachmentAudit = [] } = useQuery<OrderInboundAttachmentAudit[]>({
+    queryKey: ["/api/orders", orderId, "inbound-attachments"],
+    queryFn: async () => {
+      const response = await apiFetch(`/api/orders/${encodeURIComponent(orderId ?? "")}/audit`);
+      if (!response.ok) throw new Error("Failed to load order attachment history");
+      const payload = await response.json();
+      return Array.isArray(payload?.data)
+        ? payload.data.filter((entry: OrderInboundAttachmentAudit) => entry.actionType === "inbound_record_attached")
+        : [];
+    },
+    enabled: Boolean(orderId),
+    staleTime: 30_000,
+  });
   const [draftLineItemTotalsCents, setDraftLineItemTotalsCents] = useState<Record<string, number>>({});
   const [lineItemsEditorResetKey, setLineItemsEditorResetKey] = useState(0);
   let order = orderRaw as OrderDetailOrder | undefined;
@@ -3711,6 +3737,22 @@ export default function OrderDetail() {
               </CardHeader>
               <CardContent>
                 <OrderAttachmentsPanel orderId={order.id} locked={false} />
+                {inboundAttachmentAudit.length > 0 && (
+                  <div className="mt-4 border-t pt-4" data-testid="order-inbound-attachment-history">
+                    <div className="text-sm font-medium">Attached inbound messages</div>
+                    <div className="mt-2 space-y-2">
+                      {inboundAttachmentAudit.map((entry) => (
+                        <div key={entry.id} className="rounded-md border bg-muted/20 px-3 py-2 text-sm">
+                          <div className="font-medium">{entry.metadata?.subject || entry.note || "Inbound record attached"}</div>
+                          <div className="mt-0.5 text-xs text-muted-foreground">
+                            {entry.metadata?.senderEmail || "Unknown sender"}
+                            {entry.metadata?.receivedAt ? ` · Received ${format(new Date(entry.metadata.receivedAt), "PPp")}` : ""}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 

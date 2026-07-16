@@ -465,6 +465,7 @@ describe("inbound order routes", () => {
     convertInboundReviewDraftToOrder: jest.fn<(...args: any[]) => Promise<any>>(),
     applyBulkQueueAction: jest.fn<(...args: any[]) => Promise<any>>(),
     combineInboundRecords: jest.fn<(...args: any[]) => Promise<any>>(),
+    attachInboundRecordToOrder: jest.fn<(...args: any[]) => Promise<any>>(),
     createQuoteDraftFromInbound: jest.fn(),
     getReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
     saveReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -1550,6 +1551,40 @@ describe("inbound order routes", () => {
       confirmCustomerMismatch: false,
       confirmMultipleDrafts: true,
     });
+  });
+
+  test("attaches an inbound record to an existing order without creating a quote or order", async () => {
+    service.attachInboundRecordToOrder.mockResolvedValue({
+      orderId: "order_1",
+      orderNumber: "ORD-1001",
+      inboundRecordId: "inbound_1",
+      createdAttachmentIds: ["order_attachment_1"],
+      skippedAttachments: [],
+    });
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/attach-to-order")
+      .send({
+        orderId: "order_1",
+        includeMessageHistory: true,
+        includeAttachments: true,
+        includeParsedNotes: true,
+        includeJunkAttachments: false,
+        confirmCustomerMismatch: false,
+        artworkAssignments: [{ fileId: "file_art", orderLineItemId: "line_1", side: "front" }],
+      });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.orderId).toBe("order_1");
+    expect(service.attachInboundRecordToOrder).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      orderId: "order_1",
+      artworkAssignments: [{ fileId: "file_art", orderLineItemId: "line_1", side: "front" }],
+    }));
+    expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+    expect(service.convertInboundReviewDraftToOrder).not.toHaveBeenCalled();
   });
 
   test("searches customers and all contacts for review selectors", async () => {

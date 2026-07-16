@@ -20,6 +20,7 @@ import {
   inboundEmailTrustRuleCreateSchema,
   inboundEmailTrustRuleUpdateSchema,
   inboundAttachmentTrustActionSchema,
+  inboundOrderAttachToOrderSchema,
   inboundOrderCombineSchema,
   inboundRecordTrustActionSchema,
   inboundOrderBulkActionSchema,
@@ -1034,6 +1035,29 @@ export function registerInboundOrderRoutes(
     }
   });
 
+  app.get("/api/inbound-orders/order-search", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const search = typeof req.query.search === "string" ? req.query.search : null;
+      const rows = await service.searchActiveOrdersForInboundAttachment({ organizationId, search, limit: 20 });
+      res.json({ success: true, data: rows.map((row: any) => ({
+        id: row.id,
+        orderNumber: row.orderNumber,
+        customerId: row.customerId,
+        label: row.label,
+        poNumber: row.poNumber,
+        status: row.status,
+        customer: row.customerName ? { companyName: row.customerName } : null,
+        contact: row.contactEmail || row.contactName ? { email: row.contactEmail, name: row.contactName } : null,
+      })) });
+    } catch (error) {
+      console.error("Error searching orders for inbound attachment:", error);
+      res.status(500).json({ message: "Failed to search active orders" });
+    }
+  });
+
   app.get("/api/inbound-orders/:id", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -1817,6 +1841,34 @@ export function registerInboundOrderRoutes(
       }
       console.error("Error combining inbound order records:", error);
       res.status(500).json({ message: "Failed to combine selected inbound records" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/attach-to-order", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const input = inboundOrderAttachToOrderSchema.parse(req.body ?? {});
+      const result = await service.attachInboundRecordToOrder({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+        ...input,
+      });
+      res.json({ success: true, data: result });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+      console.error("Error attaching inbound record to existing order:", error);
+      res.status(500).json({ message: "Failed to attach inbound record to the selected order" });
     }
   });
 
