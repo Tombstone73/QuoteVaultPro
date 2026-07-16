@@ -545,9 +545,26 @@ function isArtworkDecision(decision: Pick<InboundOrderReviewDraftPayload["missin
   return /artwork/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
 }
 
+function isQuantityDecision(decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">): boolean {
+  return /quantity/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
+}
+
 function artworkLineIndex(value: string | null | undefined): number | null {
   const match = String(value ?? "").match(/lineitems\.(\d+)\.artwork/i);
   return match ? Number(match[1]) : null;
+}
+
+function quantityLineIndex(value: string | null | undefined): number | null {
+  const match = String(value ?? "").match(/lineitems\.(\d+)\.quantity/i);
+  return match ? Number(match[1]) : null;
+}
+
+function hasValidLineItemQuantity(
+  lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number] | undefined,
+): boolean {
+  return typeof lineItem?.quantity === "number"
+    && Number.isFinite(lineItem.quantity)
+    && lineItem.quantity > 0;
 }
 
 function artworkDecisionIsResolvedByAssignment(
@@ -557,6 +574,14 @@ function artworkDecisionIsResolvedByAssignment(
   const lineIndex = artworkLineIndex(decision.field);
   if (lineIndex == null) return hasAssignedClassifiedArtwork(payload);
   return payload.reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
+}
+
+function quantityDecisionIsResolvedByLineItem(
+  payload: Pick<InboundOrderReviewDraftPayload, "reviewedLineItemsJson">,
+  decision: Pick<InboundOrderReviewDraftPayload["missingDecisionsJson"][number], "field" | "label" | "reason">,
+): boolean {
+  const lineIndex = quantityLineIndex(decision.field);
+  return lineIndex != null && hasValidLineItemQuantity(payload.reviewedLineItemsJson[lineIndex]);
 }
 
 function isStaleMissingArtworkWarning(
@@ -4166,6 +4191,24 @@ export class InboundOrderService {
     payload: InboundOrderReviewDraftPayload,
   ): InboundOrderReviewDraftPayload {
     const artworkAssigned = hasAssignedClassifiedArtwork(payload);
+    const missingDecisionsJson = payload.missingDecisionsJson.map((decision) => {
+      if (decision.status !== "still_blocking") return decision;
+      if (isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(payload, decision)) {
+        return {
+          ...decision,
+          status: "resolved" as const,
+          resolutionNote: decision.resolutionNote ?? "Resolved by artwork assigned to a reviewed line item.",
+        };
+      }
+      if (isQuantityDecision(decision) && quantityDecisionIsResolvedByLineItem(payload, decision)) {
+        return {
+          ...decision,
+          status: "resolved" as const,
+          resolutionNote: decision.resolutionNote ?? "Resolved by staff-confirmed line item quantity.",
+        };
+      }
+      return decision;
+    });
     return inboundOrderReviewDraftPayloadSchema.parse({
       ...payload,
       reviewedOrderJson: {
@@ -4175,17 +4218,7 @@ export class InboundOrderService {
       reviewedArtworkJson: artworkAssigned
         ? { ...payload.reviewedArtworkJson, status: "supplied" }
         : payload.reviewedArtworkJson,
-      missingDecisionsJson: artworkAssigned
-        ? payload.missingDecisionsJson.map((decision) => (
-          isArtworkDecision(decision) && decision.status === "still_blocking" && artworkDecisionIsResolvedByAssignment(payload, decision)
-            ? {
-              ...decision,
-              status: "resolved",
-              resolutionNote: decision.resolutionNote ?? "Resolved by artwork assigned to a reviewed line item.",
-            }
-            : decision
-        ))
-        : payload.missingDecisionsJson,
+      missingDecisionsJson,
       warningsJson: artworkAssigned
         ? payload.warningsJson.filter((warning) => !isStaleMissingArtworkWarning(payload, warning))
         : payload.warningsJson,
@@ -4563,10 +4596,13 @@ export class InboundOrderService {
     latestAttempt: InboundOrderParseAttempt | null,
     initializedFromParse: boolean,
   ): InboundOrderReviewDraftDto {
-    const payload = this.reviewDraftPayloadFromSnapshot(snapshot);
-    if (!payload) {
+    const snapshotPayload = this.reviewDraftPayloadFromSnapshot(snapshot);
+    if (!snapshotPayload) {
       throw new InboundOrderTransitionError("Editable review draft snapshot is invalid.", 500);
     }
+    // Parse-time decisions remain auditable in the snapshot, but readiness is
+    // derived from the current reviewed line-item values.
+    const payload = this.normalizeReviewDraftPayload(record, snapshotPayload);
     const sourceParseAttemptId = stringFromUnknown(getPathValue(snapshot.payloadJson, "metadata.sourceParseAttemptId"));
     const sourceParseAttemptCreatedAt = stringFromUnknown(getPathValue(snapshot.payloadJson, "metadata.sourceParseAttemptCreatedAt"));
     const latestParseAttemptCreatedAt = formatInboundDate(latestAttempt?.createdAt);

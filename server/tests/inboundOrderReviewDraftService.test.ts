@@ -1393,6 +1393,133 @@ describe("InboundOrderService editable review draft", () => {
     expect(getRecord().status).toBe("ready");
   });
 
+  test("resolves only the edited line item's stale parser quantity blocker", async () => {
+    const base = parsedDraft();
+    const missingQuantityDraft = parsedDraft({
+      lineItems: [
+        { ...base.lineItems[0], quantity: null },
+        { ...base.lineItems[0], sourceText: "Second PVC sign", quantity: null },
+      ],
+      missingDecisions: [
+        {
+          field: "lineItems.0.quantity",
+          label: "What quantity is needed?",
+          reason: "No clear quantity was detected for this line item.",
+          severity: "blocking",
+        },
+        {
+          field: "lineItems.1.quantity",
+          label: "What quantity is needed?",
+          reason: "No clear quantity was detected for this line item.",
+          severity: "blocking",
+        },
+      ],
+    });
+    const { repo } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: missingQuantityDraft }));
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    const saved = await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: initialized.reviewedLineItemsJson.map((lineItem, index) => (
+          index === 0 ? { ...lineItem, quantity: 1, quantitySource: "staff_selected" } : lineItem
+        )),
+        reviewedArtworkJson: initialized.reviewedArtworkJson,
+        missingDecisionsJson: initialized.missingDecisionsJson,
+        warningsJson: initialized.warningsJson,
+        reviewNotes: "Staff confirmed the first line quantity.",
+      },
+    });
+
+    expect(saved.missingDecisionsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.0.quantity", status: "resolved" }),
+      expect.objectContaining({ field: "lineItems.1.quantity", status: "still_blocking" }),
+    ]));
+    await expect(service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toMatchObject({
+      errors: expect.arrayContaining([
+        "PVC: quantity is required.",
+        "What quantity is needed?: resolve or acknowledge this blocking decision.",
+      ]),
+    });
+  });
+
+  test("staff-confirmed quantity clears a stale parser blocker and permits mark ready", async () => {
+    const base = parsedDraft();
+    const missingQuantityDraft = parsedDraft({
+      lineItems: [{ ...base.lineItems[0], quantity: null }],
+      missingDecisions: [{
+        field: "lineItems.0.quantity",
+        label: "What quantity is needed?",
+        reason: "No clear quantity was detected for this line item.",
+        severity: "blocking",
+      }],
+    });
+    const { repo, getRecord } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: missingQuantityDraft }));
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    await expect(service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toMatchObject({
+      errors: expect.arrayContaining(["PVC: quantity is required."]),
+    });
+
+    const saved = await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: [{
+          ...initialized.reviewedLineItemsJson[0],
+          quantity: 1,
+          quantitySource: "staff_selected",
+        }],
+        reviewedArtworkJson: initialized.reviewedArtworkJson,
+        missingDecisionsJson: initialized.missingDecisionsJson,
+        warningsJson: initialized.warningsJson,
+        reviewNotes: "Staff confirmed quantity from follow-up.",
+      },
+    });
+
+    expect(saved.missingDecisionsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.0.quantity", status: "resolved" }),
+    ]));
+    expect(saved.validationErrors).not.toEqual(expect.arrayContaining([
+      expect.stringContaining("What quantity is needed?"),
+    ]));
+
+    const ready = await service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    expect(ready.status).toBe("ready_to_convert");
+    expect(getRecord().status).toBe("ready");
+  });
+
   test("does not clear a different line item's artwork blocker", async () => {
     const { repo } = makeRepository();
     const service = new InboundOrderService(repo as any);
