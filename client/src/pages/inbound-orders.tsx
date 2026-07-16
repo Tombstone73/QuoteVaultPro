@@ -1742,8 +1742,7 @@ function cleanCompletionChecklist(
   const hasCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId || form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || form.reviewedCustomerJson.unresolvedCustomer);
   const hasProduct = Boolean(firstLine?.selectedProductId || (firstLine?.productName && !firstLine.productUnresolved));
   const hasQuantity = Boolean(firstLine?.quantity);
-  const artworkLinked = form.reviewedArtworkJson.status === "supplied"
-    || form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some((link) => link.source !== "staff_removed"));
+  const artworkLinked = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
   const dueDate = Boolean(form.reviewedOrderJson.dueDate);
   const pricingReviewed = form.reviewedLineItemsJson.every((lineItem) => (
     !lineItem.pricingReviewJson
@@ -2373,6 +2372,72 @@ function describeArtworkLink(link: InboundOrderArtworkLink): string {
 
 function classificationForLink(link: InboundOrderArtworkLink): InboundAttachmentClassification {
   return link.classification ?? inboundAttachmentRoleToClassification(link.role);
+}
+
+function isActiveClassifiedArtworkLink(link: InboundOrderArtworkLink): boolean {
+  return link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK";
+}
+
+function isArtworkDecision(decision: ReviewDraftFormState["missingDecisionsJson"][number]): boolean {
+  return /artwork/i.test(`${decision.field} ${decision.label} ${decision.reason}`);
+}
+
+function artworkLineIndex(value: string | null | undefined): number | null {
+  const match = String(value ?? "").match(/lineitems\.(\d+)\.artwork/i);
+  return match ? Number(match[1]) : null;
+}
+
+function artworkDecisionIsResolvedByAssignment(
+  reviewedLineItemsJson: ReviewDraftFormState["reviewedLineItemsJson"],
+  decision: ReviewDraftFormState["missingDecisionsJson"][number],
+): boolean {
+  const lineIndex = artworkLineIndex(decision.field);
+  if (lineIndex == null) return reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+  return reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
+}
+
+function isStaleMissingArtworkWarning(
+  reviewedLineItemsJson: ReviewDraftFormState["reviewedLineItemsJson"],
+  warning: ReviewDraftFormState["warningsJson"][number],
+): boolean {
+  const text = `${warning.code ?? ""} ${warning.message ?? ""} ${warning.fieldPath ?? ""}`.toLowerCase();
+  if (!text.includes("artwork") || !/(missing|not linked|not attached|unassigned)/.test(text)) return false;
+  const lineIndex = artworkLineIndex(warning.fieldPath);
+  if (lineIndex == null) return reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+  return reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
+}
+
+function artworkValidationErrorIsResolvedByAssignment(
+  reviewedLineItemsJson: ReviewDraftFormState["reviewedLineItemsJson"],
+  error: string,
+): boolean {
+  if (!/artwork/i.test(error)) return false;
+  const lineMatch = error.match(/line\s+(\d+)/i);
+  if (!lineMatch) return reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+  const lineIndex = Number(lineMatch[1]) - 1;
+  return reviewedLineItemsJson[lineIndex]?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
+}
+
+function reconcileAssignedArtwork(
+  form: ReviewDraftFormState,
+  reviewedLineItemsJson: ReviewDraftFormState["reviewedLineItemsJson"],
+): Partial<ReviewDraftFormState> {
+  const artworkAssigned = reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+  if (!artworkAssigned) return { reviewedLineItemsJson };
+  return {
+    reviewedLineItemsJson,
+    reviewedArtworkJson: { ...form.reviewedArtworkJson, status: "supplied" },
+    missingDecisionsJson: form.missingDecisionsJson.map((decision) => (
+      isArtworkDecision(decision) && decision.status === "still_blocking" && artworkDecisionIsResolvedByAssignment(reviewedLineItemsJson, decision)
+        ? {
+          ...decision,
+          status: "resolved",
+          resolutionNote: decision.resolutionNote ?? "Resolved by artwork assigned to a reviewed line item.",
+        }
+        : decision
+    )),
+    warningsJson: form.warningsJson.filter((warning) => !isStaleMissingArtworkWarning(reviewedLineItemsJson, warning)),
+  };
 }
 
 function classificationConfidenceForLink(link: InboundOrderArtworkLink): number | null {
@@ -4944,7 +5009,7 @@ function CleanLineItemCard({
   useEffect(() => {
     if (needsProductSelection) setProductSelectorOpen(true);
   }, [needsProductSelection]);
-  const activeArtworkLinks = lineItem.artworkLinks.filter((link) => link.source !== "staff_removed");
+  const activeArtworkLinks = lineItem.artworkLinks.filter(isActiveClassifiedArtworkLink);
   const sizeDisplay = lineItem.width && lineItem.height
     ? `${lineItem.width} x ${lineItem.height} ${lineItem.dimensionsUnit === "ft" ? "feet" : "inches"}`
     : "Size needed";
@@ -4988,6 +5053,7 @@ function CleanLineItemCard({
   const availableArtworkOptions = attachmentLinkOptions.filter((link) => (
     !activeArtworkLinks.some((activeLink) => artworkLinkKey(activeLink) === artworkLinkKey(link))
   ));
+  const selectedArtworkKey = activeArtworkLinks[0] ? artworkLinkKey(activeArtworkLinks[0]) : "";
   const handleProductSelection = (value: string) => {
     const productId = trimToNull(value);
     const selectedOption = productOptions.find((option) => option.id === productId);
@@ -5216,7 +5282,7 @@ function CleanLineItemCard({
             <OrderEntryField label="Artwork assignment">
               <select
                 className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
-                value=""
+              value={selectedArtworkKey}
                 onChange={(event) => {
                   const key = trimToNull(event.target.value);
                   const selectedLink = attachmentLinkOptions.find((link) => artworkLinkKey(link) === key);
@@ -5235,12 +5301,20 @@ function CleanLineItemCard({
                 }}
                 data-testid="clean-inline-artwork-select"
               >
-                <option value="">{availableArtworkOptions.length > 0 ? "Attach artwork file..." : "No artwork files available"}</option>
+                <option value="">{availableArtworkOptions.length > 0 ? `Assign ${availableArtworkOptions[0].filename || "classified artwork"} to Line Item ${index + 1}` : "No classified artwork files available"}</option>
+                {activeArtworkLinks.map((link) => (
+                  <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{`${link.filename || link.fileId} — assigned`}</option>
+                ))}
                 {availableArtworkOptions.map((link) => (
                   <option key={artworkLinkKey(link)} value={artworkLinkKey(link)}>{link.filename || link.fileId}</option>
                 ))}
               </select>
             </OrderEntryField>
+            {!activeArtworkLinks.length && availableArtworkOptions.length > 0 && (
+              <div className="mt-2 text-xs text-amber-200">
+                Assign {availableArtworkOptions[0].filename || "the classified artwork"} to Line Item {index + 1} before marking this draft ready.
+              </div>
+            )}
             {activeArtworkLinks.length > 0 && (
               <div className="mt-2 flex flex-wrap gap-1 text-xs text-slate-300">
                 {activeArtworkLinks.map((link) => <Badge key={artworkLinkKey(link)} variant="outline">{link.filename || link.fileId}</Badge>)}
@@ -5330,8 +5404,9 @@ function cleanOperatorIssueLabel(issue: string): string {
   if (lower.includes("customer")) return "Customer not matched";
   if (lower.includes("contact")) return "Contact not selected";
   if (lower.includes("product")) return "Product not selected";
-  if (lower.includes("quantity") || lower.includes("enter quantity")) return "Quantity missing";
-  if (lower.includes("artwork")) return "Artwork not linked";
+  if (lower.includes("quantity") || lower.includes("enter quantity")) return cleanOperatorText(issue) || "Quantity missing";
+  if (lower.includes("artwork")) return cleanOperatorText(issue) || "Line item needs artwork assignment";
+  if (lower.includes("pole pocket")) return "Confirm pole pocket size and location";
   if (lower.includes("duedate") || lower.includes("due date") || lower.includes("requesteddue")) return "Due date missing";
   if (lower.includes("price") || lower.includes("pricing")) return "Pricing needs review";
   if (lower.includes("material")) return "Product options need review";
@@ -5686,9 +5761,8 @@ function CleanOrderWorkstation({
     updateForm({ reviewedCustomerJson: { ...form.reviewedCustomerJson, ...patch } });
   };
   const updateLineItem = (index: number, patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => {
-    updateForm({
-      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item),
-    });
+    const reviewedLineItemsJson = form.reviewedLineItemsJson.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item);
+    updateForm(reconcileAssignedArtwork(form, reviewedLineItemsJson));
   };
   const addLineItem = () => {
     updateForm({
@@ -5754,7 +5828,16 @@ function CleanOrderWorkstation({
     ...form.reviewedArtworkJson.unassignedAttachments,
     ...form.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
   ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK");
-  const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
+  const anyArtworkAssigned = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+  const rawValidationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
+  const validationErrors = anyArtworkAssigned
+    ? rawValidationErrors.filter((error) => !artworkValidationErrorIsResolvedByAssignment(form.reviewedLineItemsJson, error))
+    : rawValidationErrors;
+  const artworkNeedsAssignment = !anyArtworkAssigned && (
+    attachmentLinkOptions.length > 0
+    || form.reviewedArtworkJson.status === "supplied"
+    || form.reviewedArtworkJson.refs.some((reference) => reference.purpose === "artwork")
+  );
   const conversionErrors = convertError?.errors ?? [];
   const quoteErrors = quoteError?.errors ?? [];
   const unresolvedPricingIssues = form.reviewedLineItemsJson.flatMap((lineItem, index) => (
@@ -5765,6 +5848,7 @@ function CleanOrderWorkstation({
   const minimumConversionIssues = [
     !form.reviewedCustomerJson.selectedCustomerId && !form.reviewedCustomerJson.unresolvedCustomer ? "Select a customer or mark customer unresolved." : null,
     form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
+    artworkNeedsAssignment ? "Line 1 needs artwork assignment." : null,
     ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
       !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
       !lineItem.selectedProductId && !lineItem.productUnresolved ? `Line ${index + 1}: select a product or mark unresolved.` : null,
@@ -5783,8 +5867,8 @@ function CleanOrderWorkstation({
     ]),
   ].filter(Boolean) as string[];
   const quoteWarnings = [
-    form.reviewedArtworkJson.status === "missing" ? "Artwork missing: this will be carried as a quote warning." : null,
-    form.reviewedArtworkJson.status === "to_follow" ? "Artwork to follow: this will be carried as a quote warning." : null,
+    !anyArtworkAssigned && form.reviewedArtworkJson.status === "missing" ? "Artwork missing: this will be carried as a quote warning." : null,
+    !anyArtworkAssigned && form.reviewedArtworkJson.status === "to_follow" ? "Artwork to follow: this will be carried as a quote warning." : null,
   ].filter(Boolean) as string[];
   const canCreateDraftQuote = quoteBlockers.length === 0 && !isConverting;
   const actionPending = isSaving || isMarkingReady || isReopening || isConverting;
@@ -5795,7 +5879,10 @@ function CleanOrderWorkstation({
   ]);
   const blockingDecisionItems = cleanUniqueItems([
     ...form.missingDecisionsJson
-      .filter((decision) => decision.status === "still_blocking" || decision.severity === "blocking")
+      .filter((decision) => (
+        (decision.status === "still_blocking" || decision.severity === "blocking")
+        && !(anyArtworkAssigned && isArtworkDecision(decision) && artworkDecisionIsResolvedByAssignment(form.reviewedLineItemsJson, decision))
+      ))
       .map((decision) => cleanOperatorIssueLabel([decision.label, decision.reason].filter(Boolean).join(": "))),
   ]);
   const aiSuggestionItems = cleanUniqueItems([
@@ -5818,7 +5905,7 @@ function CleanOrderWorkstation({
   ]);
   const firstLine = form.reviewedLineItemsJson[0] ?? null;
   const firstLineSize = firstLine?.width && firstLine?.height ? `${firstLine.width} x ${firstLine.height}${firstLine.dimensionsUnit ? ` ${firstLine.dimensionsUnit}` : ""}` : null;
-  const firstLineArtworkLinked = firstLine?.artworkLinks.some((link) => link.source !== "staff_removed") || form.reviewedArtworkJson.status === "supplied";
+  const firstLineArtworkLinked = firstLine?.artworkLinks.some(isActiveClassifiedArtworkLink) ?? false;
   const assignedCustomer = Boolean(form.reviewedCustomerJson.selectedCustomerId);
   const suggestedCustomer = form.reviewedCustomerJson.companyName || form.reviewedCustomerJson.sourceName || null;
   const assignedCustomerLabel = assignedCustomer
@@ -6068,7 +6155,7 @@ function CleanOrderWorkstation({
                 onDuplicate={() => duplicateLineItem(index)}
                 onRemove={() => removeLineItem(index)}
                 onSplit={() => splitLineItem(index)}
-                segmentationReason={cleanDraft.lineItems[index]?.warnings.find((item) => item.code === "line_item_segmented_from_source")?.message ?? null}
+                segmentationReason={(cleanDraft.lineItems[index]?.warnings ?? []).find((item) => item.code === "line_item_segmented_from_source")?.message ?? null}
                 activeTarget={activeTarget}
                 onFocusTarget={onFocusTarget}
               />
@@ -6153,7 +6240,7 @@ function CleanOrderWorkstation({
             {conversionBlockerCount === 0 ? (
               <div className="text-xs text-emerald-200">Ready validation has no blocking issues.</div>
             ) : (
-              <div className="text-xs text-amber-200">Resolve the missing conversion items before converting this draft.</div>
+              <div className="text-xs text-amber-200">Resolve required review items before conversion.</div>
             )}
           </div>
         </CleanSupportDetails>

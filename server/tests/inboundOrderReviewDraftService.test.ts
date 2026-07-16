@@ -1292,7 +1292,128 @@ describe("InboundOrderService editable review draft", () => {
       actorUserId: "user_1",
     })).rejects.toMatchObject({
       name: "InboundOrderReviewDraftValidationError",
-      errors: expect.arrayContaining(["Is artwork supplied for this item?: acknowledge artwork status before marking ready."]),
+      errors: expect.arrayContaining(["Line 1 needs artwork assignment or an explicit artwork-status decision."]),
+    });
+  });
+
+  test("treats classified artwork assigned to a line item as the readiness source of truth", async () => {
+    const { repo, getRecord } = makeRepository();
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    const saved = await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: [{
+          ...initialized.reviewedLineItemsJson[0],
+          artworkLinks: [{
+            fileId: "file_artwork_1",
+            fileRecordId: "file_record_artwork_1",
+            filename: "pvc-sign-artwork.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 12345,
+            role: "artwork",
+            classification: "ARTWORK",
+            source: "staff_selected",
+            confidence: 100,
+            reason: "Staff assigned classified artwork to this line item.",
+          }],
+        }],
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "missing" },
+        missingDecisionsJson: initialized.missingDecisionsJson,
+        warningsJson: [{
+          code: "ARTWORK_MISSING",
+          message: "Artwork missing for line item.",
+          severity: "warning",
+          fieldPath: "lineItems.0.artwork",
+          acknowledged: false,
+        }],
+        reviewNotes: null,
+      },
+    });
+
+    expect(saved.reviewedArtworkJson.status).toBe("supplied");
+    expect(saved.missingDecisionsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.0.artwork", status: "resolved" }),
+    ]));
+    expect(saved.warningsJson).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "ARTWORK_MISSING" }),
+    ]));
+
+    const ready = await service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    expect(ready.status).toBe("ready_to_convert");
+    expect(getRecord().status).toBe("ready");
+  });
+
+  test("does not clear a different line item's artwork blocker", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    const firstLine = {
+      ...initialized.reviewedLineItemsJson[0],
+      artworkLinks: [{
+        fileId: "file_artwork_1",
+        fileRecordId: "file_record_artwork_1",
+        filename: "line-one-artwork.pdf",
+        mimeType: "application/pdf",
+        sizeBytes: 12345,
+        role: "artwork" as const,
+        classification: "ARTWORK" as const,
+        source: "staff_selected" as const,
+        confidence: 100,
+        reason: "Staff assigned classified artwork to line one.",
+      }],
+    };
+    const secondLine = { ...initialized.reviewedLineItemsJson[0], sourceText: "Second PVC sign", artworkLinks: [] };
+    const secondLineArtworkDecision = {
+      ...initialized.missingDecisionsJson[0],
+      field: "lineItems.1.artwork",
+      label: "Is artwork supplied for line item 2?",
+    };
+
+    const saved = await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        status: "draft",
+        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedOrderJson: initialized.reviewedOrderJson,
+        reviewedLineItemsJson: [firstLine, secondLine],
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "missing" },
+        missingDecisionsJson: [...initialized.missingDecisionsJson, secondLineArtworkDecision],
+        warningsJson: initialized.warningsJson,
+        reviewNotes: null,
+      },
+    });
+
+    expect(saved.missingDecisionsJson).toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.0.artwork", status: "resolved" }),
+      expect.objectContaining({ field: "lineItems.1.artwork", status: "still_blocking" }),
+    ]));
+    await expect(service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toMatchObject({
+      errors: expect.arrayContaining(["Line 2 needs artwork assignment or an explicit artwork-status decision."]),
     });
   });
 
