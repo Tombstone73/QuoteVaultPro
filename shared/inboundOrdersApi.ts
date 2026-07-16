@@ -487,6 +487,11 @@ export const inboundOrderLinePricingReviewSchema = z.object({
   evaluatedAt: z.string().trim().max(80).nullable().default(null),
 });
 
+export const inboundOrderArtworkQuantityModeSchema = z.enum([
+  "one_each_per_file",
+  "same_quantity_each",
+]);
+
 export const inboundOrderReviewedLineItemSchema = z.object({
   sourceLineItemId: z.string().trim().min(1).nullable().default(null),
   sourceText: z.string().trim().max(5000).nullable().default(null),
@@ -538,6 +543,10 @@ export const inboundOrderReviewedLineItemSchema = z.object({
   })).default([]),
   pricingReviewJson: inboundOrderLinePricingReviewSchema.nullable().default(null),
   artworkLinks: z.array(inboundOrderArtworkLinkSchema).default([]),
+  // Existing line items represent one specification shared by every linked
+  // artwork file, so retain that behavior unless staff explicitly chooses
+  // one finished item per artwork file.
+  artworkQuantityMode: inboundOrderArtworkQuantityModeSchema.default("same_quantity_each"),
   notes: nullableTextSchema.default(null),
 });
 

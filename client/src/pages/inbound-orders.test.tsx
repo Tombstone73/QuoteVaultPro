@@ -2103,7 +2103,7 @@ describe("InboundOrdersPage", () => {
     });
   });
 
-  test("selects visible source attachments and bulk classifies them with unsafe files skipped", async () => {
+  test("shows Email attachment counts and bulk classifies visible attachments with unsafe files skipped", async () => {
     const files = [
       {
         id: "file_reference_1", inboundRecordId: "inbound_1", fileRecordId: "record_reference_1", sourceFilename: "sign-front.pdf", role: "reference", mimeType: "application/pdf", sizeBytes: 1200, status: "available", metadataJson: {}, createdAt: "2026-06-09T12:02:00.000Z", updatedAt: "2026-06-09T12:02:00.000Z",
@@ -2122,11 +2122,17 @@ describe("InboundOrdersPage", () => {
     act(() => {
       Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement);
     });
-    const artworkTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Artwork") as HTMLButtonElement;
+    await waitForText("Source Documents");
+    await waitForCondition(() => Boolean(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Email")), "Email source tab rendered");
+    const emailTab = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Email") as HTMLButtonElement;
     act(() => {
-      Simulate.click(artworkTab);
+      Simulate.click(emailTab);
     });
-    await waitForText("Reference");
+    await waitForText("Attachments / Evidence (3) · Showing 3");
+    const firstAttachmentCard = container.querySelector("[data-testid='source-evidence-file-card']") as HTMLElement;
+    expect(firstAttachmentCard.textContent).toContain("Open");
+    expect(firstAttachmentCard.textContent).toContain("Download");
+    expect(firstAttachmentCard.textContent).toContain("Classify");
     const selectAll = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Select all visible") as HTMLButtonElement;
     expect(selectAll).toBeTruthy();
     act(() => {
@@ -2147,6 +2153,26 @@ describe("InboundOrdersPage", () => {
       title: "Classified 2 files as Artwork",
       description: expect.stringContaining("Reparse required"),
     }));
+
+    const artworkQuantityMode = container.querySelector("select[aria-label='Artwork quantity mode for line item 1']") as HTMLSelectElement;
+    act(() => {
+      Simulate.change(artworkQuantityMode, { target: { value: "one_each_per_file" } } as any);
+    });
+    const multiAssignment = container.querySelector("[data-testid='clean-multi-artwork-assignment']") as HTMLElement;
+    expect(multiAssignment).toBeTruthy();
+    act(() => {
+      Simulate.click(multiAssignment.querySelector("summary") as HTMLElement);
+    });
+    const selectAllArtwork = Array.from(multiAssignment.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Select all available") as HTMLButtonElement;
+    act(() => {
+      Simulate.click(selectAllArtwork);
+    });
+    const assignSelectedArtwork = Array.from(multiAssignment.querySelectorAll("button")).find((button) => button.textContent?.includes("Assign selected (2)")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(assignSelectedArtwork);
+    });
+    await waitForText("Artwork linked · 2 files");
+    expect((container.querySelector("[data-testid='clean-inline-quantity-input']") as HTMLInputElement).value).toBe("2");
   });
 
   test("shows a Clean View PDF render error instead of a blank viewer", async () => {

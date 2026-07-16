@@ -55,6 +55,7 @@ import {
 } from "@shared/inboundOrderPbv2Options";
 import {
   inboundOrdersRepository,
+  type InboundOrdersRepository,
   type CreateInboundOrderEventValues,
   type InboundContactSearchResult,
   type InboundCustomerSearchResult,
@@ -3392,6 +3393,17 @@ export class InboundOrderService {
         });
         const order = await orderRepository.createOrder(args.organizationId, orderInput);
 
+        await this.materializeInboundArtworkForOrder({
+          organizationId: args.organizationId,
+          inboundRecordId: args.inboundRecordId,
+          actorUserId: args.actorUserId,
+          payload,
+          files: detail.files,
+          order,
+          conversionRepository,
+          orderRepository,
+        });
+
         const lineItemLinks = (order.lineItems ?? []).map((lineItem: any, index: number) => ({
           inboundLineItemId: stringFromUnknown(getPathValue(lineItem.specsJson, "inbound.sourceLineItemId"))
             ?? payload.reviewedLineItemsJson[index]?.sourceLineItemId
@@ -3750,6 +3762,7 @@ export class InboundOrderService {
           pbv2OptionSuggestions: [],
           pricingReviewJson: null,
           artworkLinks: [],
+          artworkQuantityMode: "same_quantity_each",
           notes: null,
         });
         if (treeJson) {
@@ -3794,6 +3807,7 @@ export class InboundOrderService {
         pbv2OptionSuggestions,
         pricingReviewJson: null,
         artworkLinks: [],
+        artworkQuantityMode: "same_quantity_each",
         notes: null,
       });
     }
@@ -4806,6 +4820,87 @@ export class InboundOrderService {
     return Array.from(new Set(errors));
   }
 
+  /**
+   * Materialize reviewed artwork as real, line-item-scoped order attachments.
+   * The reviewed draft keeps provenance in specsJson, but production and
+   * prepress consume order_attachments. Keeping both representations aligned
+   * lets one reviewed line carry many artwork files without leaving those files
+   * stranded in inbound metadata after conversion.
+   */
+  private async materializeInboundArtworkForOrder(args: {
+    organizationId: string;
+    inboundRecordId: string;
+    actorUserId: string;
+    payload: InboundOrderReviewDraftPayload;
+    files: InboundOrderFile[];
+    order: OrderWithRelations;
+    conversionRepository: InboundOrdersRepository;
+    orderRepository: OrdersRepository;
+  }): Promise<void> {
+    const filesById = new Map(args.files.map((file) => [file.id, file]));
+
+    for (let index = 0; index < args.payload.reviewedLineItemsJson.length; index += 1) {
+      const reviewedLineItem = args.payload.reviewedLineItemsJson[index];
+      const orderLineItem = args.order.lineItems?.[index];
+      const description = reviewedLineItem.productName || reviewedLineItem.sourceText || `Line ${index + 1}`;
+      const activeArtworkLinks = reviewedLineItem.artworkLinks.filter(isActiveClassifiedArtworkLink);
+
+      if (activeArtworkLinks.length === 0) continue;
+
+      if (!orderLineItem) {
+        throw new InboundOrderConversionValidationError(
+          "Inbound review draft is not ready for order conversion.",
+          [`${description}: the converted order is missing its line item, so artwork could not be attached.`],
+        );
+      }
+
+      const materializedArtworkKeys = new Set<string>();
+      for (const artworkLink of activeArtworkLinks) {
+        const key = artworkLinkKey(artworkLink);
+        if (materializedArtworkKeys.has(key)) continue;
+        materializedArtworkKeys.add(key);
+
+        const inboundFile = filesById.get(artworkLink.fileId);
+        if (!inboundFile?.fileRecordId || isUnsafeForArtworkClassification(inboundFile)) {
+          throw new InboundOrderConversionValidationError(
+            "Inbound review draft is not ready for order conversion.",
+            [`${description}: assigned artwork ${artworkLink.filename ?? "attachment"} is unavailable or unsafe. Resolve its attachment state before conversion.`],
+          );
+        }
+
+        const createdAttachment = await args.orderRepository.createOrderAttachment({
+          orderId: args.order.id,
+          orderLineItemId: String(orderLineItem.id),
+          fileRecordId: inboundFile.fileRecordId,
+          uploadedByUserId: args.actorUserId,
+          uploadedByName: null,
+          fileName: inboundFile.sourceFilename ?? artworkLink.filename ?? "Inbound artwork",
+          fileUrl: null,
+          fileSize: inboundFile.sizeBytes ?? artworkLink.sizeBytes ?? null,
+          mimeType: inboundFile.mimeType ?? artworkLink.mimeType ?? null,
+          description: `Artwork attached during inbound review conversion (${args.inboundRecordId}).`,
+          originalFilename: inboundFile.sourceFilename ?? artworkLink.filename ?? null,
+          role: "artwork",
+          side: "na",
+          isPrimary: false,
+        });
+
+        const updated = await args.conversionRepository.updateFile({
+          organizationId: args.organizationId,
+          inboundRecordId: args.inboundRecordId,
+          fileId: inboundFile.id,
+          patch: { createdOrderAttachmentId: createdAttachment.id },
+        });
+        if (!updated) {
+          throw new InboundOrderConversionValidationError(
+            "Inbound review draft is not ready for order conversion.",
+            [`${description}: artwork ${artworkLink.filename ?? "attachment"} could not be linked to the converted order.`],
+          );
+        }
+      }
+    }
+  }
+
   private async buildOrderCreateInputFromInboundReview(args: {
     detail: InboundOrderDetail;
     snapshotId: string;
@@ -4906,6 +5001,8 @@ export class InboundOrderService {
             artworkStatus: artwork.status,
             artworkReferences: artwork.refs,
             artworkLinks: lineItem.artworkLinks,
+            artworkQuantityMode: lineItem.artworkQuantityMode,
+            artworkFileCount: lineItem.artworkLinks.filter(isActiveClassifiedArtworkLink).length,
             unassignedArtworkAttachments: artwork.unassignedAttachments,
             unsupportedRequests: payload.unsupportedRequestsJson,
           },
@@ -5269,6 +5366,9 @@ export class InboundOrderService {
         height,
         quantity,
         notes: stringFromUnknown(draft.notes),
+        artworkFileIds: reviewedPayload?.reviewedLineItemsJson[index]?.artworkLinks
+          .filter(isActiveClassifiedArtworkLink)
+          .map((link) => link.fileId) ?? [],
         snapshotJson: draft,
       });
     }
