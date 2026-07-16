@@ -9,6 +9,7 @@ const organizationId = `org_pbv2_snapshot_${suffix}`;
 const productId = `prod_pbv2_snapshot_${suffix}`;
 const treeVersionId = `tree_pbv2_snapshot_${suffix}`;
 const pricingFormulaId = `formula_pbv2_snapshot_${suffix}`;
+const quantityOnlyFormulaId = `formula_qty_only_snapshot_${suffix}`;
 const COROPLAST_4X8_FORMULA = "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price";
 const COROPLAST_4X8_FORMULA_CONFIG = {
   variables: {
@@ -111,6 +112,25 @@ function makeMagnetBillableTree() {
   return tree;
 }
 
+function makeQuantityOnlyTree() {
+  return {
+    schemaVersion: 2,
+    rootNodeIds: ["root"],
+    nodes: {
+      root: { id: "root", kind: "group", label: "Fulfillment item" },
+    },
+    edges: [],
+    meta: {
+      pricingProfileKey: "qty_only",
+      // Deliberately stale geometry formula: the profile must ignore it.
+      pricingFormula: "ceil((((w + 0.25) * (h + 0.25)) / 144) * q)",
+      pricingV2: {
+        base: { perSqftCents: 999, perPieceCents: 100, minimumChargeCents: 5000 },
+      },
+    },
+  };
+}
+
 beforeAll(async () => {
   await db.execute(sql`
     insert into organizations (id, name, slug)
@@ -163,6 +183,58 @@ beforeEach(async () => {
 });
 
 describe("PricingService PBV2 pricing snapshot persistence payload", () => {
+  test("quantity-only order pricing matches preview and ignores a stale geometry formula", async () => {
+    const staleFormula = "ceil((((w + 0.25) * (h + 0.25)) / 144) * q)";
+    await db.execute(sql`
+      insert into pricing_formulas (
+        id, organization_id, name, code, description, pricing_profile_key, expression, is_active
+      ) values (
+        ${quantityOnlyFormulaId}, ${organizationId}, ${"Stale geometry formula"}, ${"stale_geometry"},
+        ${"Regression fixture"}, ${"default"}, ${staleFormula}, true
+      )
+      on conflict (id) do update
+      set expression = excluded.expression,
+          pricing_profile_key = excluded.pricing_profile_key
+    `);
+    await db.execute(sql`
+      update products
+      set pricing_formula_id = ${quantityOnlyFormulaId},
+          pricing_engine = ${"formulaLibrary"},
+          pricing_profile_key = ${"qty_only"}
+      where id = ${productId}
+    `);
+    await db.execute(sql`
+      update pbv2_tree_versions
+      set tree_json = ${JSON.stringify(makeQuantityOnlyTree())}::jsonb
+      where id = ${treeVersionId}
+    `);
+
+    const preview = evaluatePricingPreviewFromTree({
+      treeJson: makeQuantityOnlyTree(),
+      widthIn: 24,
+      heightIn: 36,
+      quantity: 6,
+      pricingProfileKey: "qty_only",
+      formulaSourceMode: "library",
+      pricingFormulaLibrary: { id: quantityOnlyFormulaId, expression: staleFormula },
+    });
+    const orderPrice = await priceLineItem({
+      organizationId,
+      productId,
+      widthIn: 24,
+      heightIn: 36,
+      quantity: 6,
+      pbv2ExplicitSelections: {},
+    });
+
+    expect(preview.unitPrice).toBe(1);
+    expect(preview.totalPrice).toBe(6);
+    expect(orderPrice.lineTotalCents).toBe(600);
+    expect(orderPrice.lineTotalCents / 100).toBe(preview.totalPrice);
+    expect(orderPrice.pbv2SnapshotJson.pbv2PricingSnapshot?.formula).toBe("q * unitPrice");
+    expect(orderPrice.pbv2SnapshotJson.pbv2PricingSnapshot?.resolvedFormulaExpression).toBe("q * unitPrice");
+  });
+
   test("saved line item pricing honors formula library billable output meaning", async () => {
     const magnetFormula = "sheet_consumption_sqft(w,h,q,24,96,12,12,2)";
     await db.execute(sql`
@@ -189,7 +261,10 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
         true
       )
       on conflict (id) do update
-      set expression = excluded.expression,
+      set name = excluded.name,
+          code = excluded.code,
+          description = excluded.description,
+          expression = excluded.expression,
           pricing_profile_key = excluded.pricing_profile_key,
           config = excluded.config
     `);
@@ -257,7 +332,10 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
         true
       )
       on conflict (id) do update
-      set expression = excluded.expression,
+      set name = excluded.name,
+          code = excluded.code,
+          description = excluded.description,
+          expression = excluded.expression,
           pricing_profile_key = excluded.pricing_profile_key,
           config = excluded.config
     `);

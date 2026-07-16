@@ -52,6 +52,7 @@ export function getOrderLineItemEditorUiPolicy(input: {
       ? "Internal pick, pack, or fulfillment instructions (not shown to customers)..."
       : "Internal production notes (not shown to customers)...",
     hideRoutingByDefault: input.fulfillmentOnly && !routingOverrideEnabled,
-    internalNotesInitiallyOpen: input.internalNoteCount > 0,
+    // Notes remain a compact disclosure even when records exist; the caller shows a count.
+    internalNotesInitiallyOpen: false,
   };
 }

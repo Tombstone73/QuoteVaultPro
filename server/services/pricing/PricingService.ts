@@ -891,6 +891,10 @@ export function evaluatePricingPreviewFromTree(input: {
     throw new Error("quantity must be a positive number");
   }
 
+  const quantityOnlyPricing = getProfile(
+    input.pricingProfileKey ?? input.treeJson?.meta?.pricingProfileKey,
+  ).key === "qty_only";
+
   const pbv2ExplicitSelections = input.pbv2ExplicitSelections ?? {};
   if (!pbv2ExplicitSelections || typeof pbv2ExplicitSelections !== "object" || Array.isArray(pbv2ExplicitSelections)) {
     throw new Error("optionSelectionsJson must be an object mapping optionId -> selection");
@@ -919,7 +923,9 @@ export function evaluatePricingPreviewFromTree(input: {
     Boolean(input.pricingFormulaLibrary?.expression),
     typeof input.pricingFormulaOverride === "string" && input.pricingFormulaOverride.trim().length > 0,
   );
-  const pricingFormulaExpressionForSheetYield = previewFormulaSourceMode === "library"
+  const pricingFormulaExpressionForSheetYield = quantityOnlyPricing
+    ? null
+    : previewFormulaSourceMode === "library"
     ? (input.pricingFormulaLibrary?.expression || treeFormulaForPricing || null)
     : previewFormulaSourceMode === "manual"
       ? ((typeof input.pricingFormulaOverride === "string" ? input.pricingFormulaOverride.trim() : "") || treeFormulaForPricing || null)
@@ -929,6 +935,7 @@ export function evaluatePricingPreviewFromTree(input: {
     pricingProfileConfig: input.pricingProfileConfig,
     pricingFormulaLibrary: input.pricingFormulaLibrary,
     pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
+    ignoreGeometry: quantityOnlyPricing,
     explicitFormulaVariables: input.formulaVariables,
     selectionFormulaVariables,
   });
@@ -945,16 +952,16 @@ export function evaluatePricingPreviewFromTree(input: {
     input.treeJson as any,
     ruleValidatedSelections.selected,
     {
-      widthIn,
-      heightIn,
+      widthIn: quantityOnlyPricing ? 0 : widthIn,
+      heightIn: quantityOnlyPricing ? 0 : heightIn,
       quantity,
-      sqft: widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0,
+      sqft: quantityOnlyPricing ? 0 : (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0),
     },
   );
 
   const baseDetails = calculateBasePriceDetails(input.treeJson, {
-    widthIn,
-    heightIn,
+    widthIn: quantityOnlyPricing ? 0 : widthIn,
+    heightIn: quantityOnlyPricing ? 0 : heightIn,
     quantity,
   }, {
     explicitSelections: ruleValidatedSelections.selected,
@@ -968,6 +975,7 @@ export function evaluatePricingPreviewFromTree(input: {
     allowRotation: allowRotationResolution.value,
     allowRotationSource: allowRotationResolution.source,
     pricingFormulaExpression: pricingFormulaExpressionForSheetYield,
+    ignoreGeometry: quantityOnlyPricing,
   });
   const pricingMethod = String(baseDetails.pricingProfileKey || "default");
   const weightDebug = buildPricingPreviewWeightDebug({
@@ -979,8 +987,8 @@ export function evaluatePricingPreviewFromTree(input: {
     runtimeSelectionContext,
     productPrimaryMaterialId: input.productPrimaryMaterialId,
     materialRecords: input.materialRecords,
-    widthIn,
-    heightIn,
+    widthIn: quantityOnlyPricing ? 0 : widthIn,
+    heightIn: quantityOnlyPricing ? 0 : heightIn,
     quantity,
   });
   let formulaBasePrice: FormulaAwareBasePriceResult;
@@ -1022,8 +1030,8 @@ export function evaluatePricingPreviewFromTree(input: {
       schemaVersion: 2,
       selected: ruleValidatedSelections.selected,
     },
-    width: widthIn,
-    height: heightIn,
+    width: quantityOnlyPricing ? 0 : widthIn,
+    height: quantityOnlyPricing ? 0 : heightIn,
     quantity,
     basePrice: basePriceCents / 100,
     formulaVariables: formulaVariablesForPricing,
@@ -1095,7 +1103,7 @@ export function evaluatePricingPreviewFromTree(input: {
       nestingDetails: baseDetails.nestingDetails,
       pricingMethod,
     },
-    derived: {
+    derived: quantityOnlyPricing ? {} : {
       sqft: Number.isFinite(sqft) ? sqft : undefined,
       totalSqft: Number.isFinite(totalSqft) ? totalSqft : undefined,
       linearFeet: Number.isFinite(linearFeet) ? linearFeet : undefined,
@@ -1119,8 +1127,8 @@ export function evaluatePricingPreviewFromTree(input: {
       likelyMisconfiguredFormula: formulaDebug.likelyMisconfiguredFormula,
       preCeilSqftTotal: formulaDebug.preCeilSqftTotal,
       postCeilSqftTotal: formulaDebug.postCeilSqftTotal,
-      rawSqftPerItem: widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0,
-      rawTotalSqft: (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0) * quantity,
+      rawSqftPerItem: quantityOnlyPricing ? undefined : (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0),
+      rawTotalSqft: quantityOnlyPricing ? undefined : (widthIn > 0 && heightIn > 0 ? (widthIn * heightIn) / 144 : 0) * quantity,
       baseRateUsed: formulaDebug.baseRateUsed,
       formulaOutputMeaning: formulaDebug.formulaOutputMeaning,
       formulaOutputMeaningSource: formulaDebug.formulaOutputMeaningSource,
@@ -2533,8 +2541,10 @@ function calculateBasePriceDetails(
   const { trimAllowanceX, trimAllowanceY } = pricingContext?.ignoreGeometry
     ? { trimAllowanceX: 0, trimAllowanceY: 0 }
     : getTrimAllowancesInches(tree);
-  const orderedWidthIn = widthIn > 0 ? widthIn : 0;
-  const orderedHeightIn = heightIn > 0 ? heightIn : 0;
+  // Quantity-only callers may carry neutral dimensions at the transport
+  // boundary. They must never become pricing geometry.
+  const orderedWidthIn = pricingContext?.ignoreGeometry ? 0 : (widthIn > 0 ? widthIn : 0);
+  const orderedHeightIn = pricingContext?.ignoreGeometry ? 0 : (heightIn > 0 ? heightIn : 0);
   const finishedWidthIn = orderedWidthIn + trimAllowanceX;
   const finishedHeightIn = orderedHeightIn + trimAllowanceY;
   const sqftPerItem = finishedWidthIn > 0 && finishedHeightIn > 0 ? (finishedWidthIn * finishedHeightIn) / 144 : 0;
@@ -2902,6 +2912,23 @@ function calculateBasePriceDetails(
     };
   }
 
+  if (activePricingProfileKey === "qty_only" && minimumChargeCents !== 0) {
+    // Quantity-only is exactly quantity × Rate per piece. A line-level
+    // minimum is a different pricing model and cannot silently modify it.
+    minimumChargeCents = 0;
+    tierResolution = {
+      ...tierResolution,
+      warnings: [
+        ...tierResolution.warnings,
+        {
+          code: "PBV2_QTY_ONLY_IGNORED_MINIMUM_CHARGE",
+          severity: "warning",
+          message: "Quantity-only pricing ignored a minimum charge; Rate per piece is the sole base-price source.",
+        },
+      ],
+    };
+  }
+
   if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && activePricingProfileKey !== "qty_only") {
     throw new Error(
       'This product needs base pricing configured before it can be quoted. Please edit the product and set at least one base price ($/sqft, $/piece, or minimum charge) in the Base Pricing section.'
@@ -3060,6 +3087,8 @@ type FormulaVariableResolution = {
   variables: Record<string, number>;
   sources: Record<string, string>;
 };
+
+const QUANTITY_ONLY_PROFILE_FORMULA = "q * unitPrice";
 
 const SHEET_CONSUMPTION_SAFE_DEFAULTS: Record<string, number> = {
   sheet_width: 48,
@@ -3408,6 +3437,82 @@ function calculateFormulaAwareBasePrice(input: {
   const baseDetails = input.baseDetails;
   const activeProfile = getProfile(baseDetails.pricingProfileKey);
   const profileUsesFormula = Boolean(activeProfile.usesFormula);
+
+  if (activeProfile.key === "qty_only") {
+    // Quantity-only pricing is deliberately not a generic formula mode. Its
+    // configured Rate per piece is an atomic unit price, and stale formula
+    // library/manual/tree expressions must not reinterpret it as a line total.
+    const unitPrice = baseDetails.perPieceCents / 100;
+    const finalTotal = baseDetails.totalCents / 100;
+    const staleFormulaPresent = Boolean(
+      input.pricingFormulaOverride?.trim()
+      || input.manualFormulaText?.trim()
+      || input.pricingFormulaLibrary?.expression?.trim()
+      || (typeof input.treeJson?.meta?.pricingFormula === "string" && input.treeJson.meta.pricingFormula.trim())
+      || (typeof input.product?.pricingFormula === "string" && input.product.pricingFormula.trim()),
+    );
+    const formulaDebug: NonNullable<PricingPreviewEvaluationResult["debug"]> = {
+      pricingSystem: "pbv2",
+      formulaRaw: QUANTITY_ONLY_PROFILE_FORMULA,
+      formulaResolved: QUANTITY_ONLY_PROFILE_FORMULA,
+      variables: { q: input.quantity, quantity: input.quantity, unitPrice },
+      variableSources: {
+        q: "runtime.quantity",
+        quantity: "runtime.quantity",
+        unitPrice: "pricingV2.base.perPieceCents",
+      },
+      resultValue: finalTotal,
+      appliedAs: "totalPrice",
+      steps: [
+        { label: "quantity", value: input.quantity },
+        { label: "unitPrice (Rate per piece)", value: unitPrice },
+        { label: "q * unitPrice", value: finalTotal },
+      ],
+      errors: staleFormulaPresent ? [{
+        code: "PBV2_QTY_ONLY_IGNORED_NON_QUANTITY_FORMULA",
+        message: "Quantity-only pricing ignored a non-quantity formula source and used Rate per piece.",
+      }] : [],
+      likelyMisconfiguredFormula: false,
+      preCeilSqftTotal: null,
+      postCeilSqftTotal: null,
+      baseRateUsed: null,
+      formulaOutputMeaning: "final_price",
+      formulaOutputMeaningSource: "qty_only.profile",
+      formulaOutputMeaningRaw: "final_price",
+      normalizedFormulaOutputMeaning: "final_price",
+      formulaResultType: "final_dollars",
+      quantityBasisUsed: "quantity",
+      selectedRate: unitPrice,
+      finalFormulaTotal: finalTotal,
+      formulaSourceMode: "profile",
+      resolvedFormulaSource: "profile",
+      resolvedFormulaId: null,
+      resolvedFormulaName: null,
+      resolvedFormulaExpression: QUANTITY_ONLY_PROFILE_FORMULA,
+      manualFormulaPresent: staleFormulaPresent,
+      manualFormulaIgnored: staleFormulaPresent,
+    };
+
+    return {
+      basePriceCents: baseDetails.totalCents,
+      formulaToUse: QUANTITY_ONLY_PROFILE_FORMULA,
+      formulaDebug,
+      formulaApplied: true,
+      formulaEvaluatedTotalCents: baseDetails.totalCents,
+      formulaEvaluatedTotalRaw: finalTotal,
+      formulaEvaluatedTotalRounded: finalTotal,
+      rawBasePrice: unitPrice,
+      roundingAppliedAt: "final_currency_total",
+      pbv2BaseTotalCents: baseDetails.totalCents,
+      finalTotalSource: "formula",
+      finalTotalCents: baseDetails.totalCents,
+      minimumApplied: false,
+      preMinimumCents: baseDetails.totalCents,
+      tierResolution: baseDetails.tierResolution,
+      resolvedFormulaSource: "profile",
+    };
+  }
+
   const formulaFromTree = typeof input?.treeJson?.meta?.pricingFormula === "string"
     ? input.treeJson.meta.pricingFormula.trim()
     : "";

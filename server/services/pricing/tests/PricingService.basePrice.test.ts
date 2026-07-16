@@ -231,10 +231,29 @@ describe("PBV2 Base Pricing - Minimum Charge Semantics", () => {
       pricingProfileKey: "qty_only",
       debug: true,
     });
+    const sixWithStaleGeometryFormula = evaluatePricingPreviewFromTree({
+      treeJson,
+      widthIn: 24,
+      heightIn: 36,
+      quantity: 6,
+      pricingProfileKey: "qty_only",
+      formulaSourceMode: "library",
+      pricingFormulaLibrary: {
+        id: "stale-sqft-formula",
+        expression: "ceil((((w + 0.25) * (h + 0.25)) / 144) * q)",
+      },
+      debug: true,
+    });
 
     expect(one.totalPrice).toBe(1);
     expect(one.unitPrice).toBe(1);
     expect(one.debug?.variables.unitPrice).toBe(1);
+    expect(sixWithStaleGeometryFormula.totalPrice).toBe(6);
+    expect(sixWithStaleGeometryFormula.unitPrice).toBe(1);
+    expect(sixWithStaleGeometryFormula.formulaUsed).toBe("q * unitPrice");
+    expect(sixWithStaleGeometryFormula.debug?.resolvedFormulaExpression).toBe("q * unitPrice");
+    expect(sixWithStaleGeometryFormula.debug?.variables).not.toHaveProperty("sqft");
+    expect(sixWithStaleGeometryFormula.debug?.variables).not.toHaveProperty("base_price");
     expect(fifty.totalPrice).toBe(50);
     expect(fifty.unitPrice).toBe(1);
   });

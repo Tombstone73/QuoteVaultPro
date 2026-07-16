@@ -98,6 +98,7 @@ export type LineItemCardProps = {
   onPriceKeyDown?: (e: React.KeyboardEvent<HTMLInputElement>) => void;
   onUndoOverride?: () => void;
   priceControlSlot?: ReactNode;
+  pricingDetailsSlot?: ReactNode;
   primaryControlSlot?: ReactNode;
 
   // Calculating state
@@ -127,10 +128,13 @@ export type LineItemCardProps = {
 
   // Expanded view - Artwork slot (right column, above notes)
   artworkSlot?: ReactNode;
+  internalNotesSlot?: ReactNode;
+  internalNoteCount?: number;
   detailsSide?: "left" | "right";
   collapseSecondaryDetails?: boolean;
   compactExpandedLayout?: boolean;
   fulfillmentOnly?: boolean;
+  quantityOnly?: boolean;
 
   // Actions
   isDirty?: boolean;
@@ -254,6 +258,7 @@ export function LineItemCard({
   onPriceKeyDown,
   onUndoOverride,
   priceControlSlot,
+  pricingDetailsSlot,
   primaryControlSlot,
   isCalculating = false,
   calcError = null,
@@ -273,10 +278,13 @@ export function LineItemCard({
   widthInputRef,
   optionsSlot,
   artworkSlot,
+  internalNotesSlot,
+  internalNoteCount = 0,
   detailsSide = "left",
   collapseSecondaryDetails = false,
   compactExpandedLayout = false,
   fulfillmentOnly = false,
+  quantityOnly = false,
   isDirty = false,
   isSaving = false,
   isSaved = false,
@@ -350,11 +358,12 @@ export function LineItemCard({
     if (artworkSlot) parts.push("Artwork");
     if (description.trim()) parts.push("Description");
     if (hasProductionNotes) parts.push("Notes");
+    if (internalNoteCount > 0) parts.push(`${internalNoteCount} internal`);
     if (!readOnly || requiresDesign || requiresPrepress !== null || requiresProofApproval) parts.push("Setup");
     return parts.length > 0 ? parts.join(" · ") : "Artwork, notes, and setup";
-  }, [artworkSlot, description, hasProductionNotes, readOnly, requiresDesign, requiresPrepress, requiresProofApproval]);
+  }, [artworkSlot, description, hasProductionNotes, internalNoteCount, readOnly, requiresDesign, requiresPrepress, requiresProofApproval]);
 
-  const detailsFields = (
+  const notesFields = (
     <>
       <Collapsible defaultOpen={Boolean(description.trim())} className="mt-3">
         <CollapsibleTrigger asChild>
@@ -393,7 +402,12 @@ export function LineItemCard({
         />
       </div>
 
-      <Collapsible defaultOpen={requiresDesign || requiresPrepress === true || requiresProofApproval} className="mt-3 rounded-md border border-border/40 p-2.5">
+      {internalNotesSlot}
+    </>
+  );
+
+  const advancedControls = (
+      <Collapsible defaultOpen={requiresDesign || requiresPrepress === true || requiresProofApproval} className="rounded-md border border-border/40 bg-background/40 p-2.5">
         <CollapsibleTrigger asChild>
           <button type="button" className="flex w-full items-center justify-between text-left">
             <span className="text-sm font-medium">Advanced / Staff Controls</span>
@@ -443,7 +457,6 @@ export function LineItemCard({
       </div>
         </CollapsibleContent>
       </Collapsible>
-    </>
   );
 
   const actionsRow = (
@@ -515,10 +528,25 @@ export function LineItemCard({
           {artworkSlot}
         </section>
       ) : null}
-      <section className="rounded-md border border-border/40 bg-background/40 p-3">
-        <div className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</div>
-        {detailsFields}
-      </section>
+      <Collapsible defaultOpen={false} className="rounded-md border border-border/40 bg-background/40">
+        <CollapsibleTrigger asChild>
+          <button type="button" className="flex w-full items-center justify-between gap-3 p-3 text-left">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold uppercase tracking-wide text-muted-foreground">Notes</span>
+              {(Boolean(description.trim()) || hasProductionNotes || internalNoteCount > 0) ? (
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">
+                  {internalNoteCount > 0 ? `${internalNoteCount} internal${internalNoteCount === 1 ? " note" : " notes"}` : "Has notes"}
+                </span>
+              ) : null}
+            </div>
+            <ChevronRight className="h-4 w-4 shrink-0 text-muted-foreground" />
+          </button>
+        </CollapsibleTrigger>
+        <CollapsibleContent className="border-t border-border/40 px-3 pb-3">
+          {notesFields}
+        </CollapsibleContent>
+      </Collapsible>
+      {advancedControls}
     </div>
   );
 
@@ -810,7 +838,7 @@ export function LineItemCard({
               </div>
               </section>
 
-              <div className={cn("min-h-[60px] w-[220px]", fulfillmentOnly ? "text-left" : "ml-auto text-right")}>
+              <div className={cn("w-[220px] self-end", fulfillmentOnly ? "text-left" : "ml-auto text-right")}>
                 <div className="text-xs text-muted-foreground">Total</div>
                 <div className={cn("flex items-center gap-2", fulfillmentOnly ? "justify-start" : "justify-end")}>
                   {editingPrice ? (
@@ -862,6 +890,25 @@ export function LineItemCard({
                   <div className="mt-1">{priceControlSlot}</div>
                 ) : null}
                 <div className="text-[11px] text-muted-foreground">Unit price {unitPriceLabel}</div>
+                {pricingDetailsSlot ? (
+                  <Collapsible defaultOpen={false} className="mt-1">
+                    <CollapsibleTrigger asChild>
+                      <button
+                        type="button"
+                        data-quantity-only={quantityOnly ? "true" : "false"}
+                        className={cn(
+                          "text-[11px] font-medium text-muted-foreground hover:text-foreground",
+                          fulfillmentOnly ? "text-left" : "ml-auto block"
+                        )}
+                      >
+                        Pricing details
+                      </button>
+                    </CollapsibleTrigger>
+                    <CollapsibleContent className={cn("pt-1 text-[11px] text-muted-foreground", fulfillmentOnly ? "text-left" : "text-right")}>
+                      {pricingDetailsSlot}
+                    </CollapsibleContent>
+                  </Collapsible>
+                ) : null}
                 <div className={cn("h-5 flex items-center", fulfillmentOnly ? "justify-start" : "justify-end")}>
                   {isCalculating && <div className="text-[11px] text-muted-foreground">Calculating…</div>}
                   {!!calcError && calcError === "PBV2_SCHEMA_MISMATCH" && (

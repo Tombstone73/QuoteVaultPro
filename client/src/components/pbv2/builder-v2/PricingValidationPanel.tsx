@@ -1306,6 +1306,11 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                     </button>
                     {openFormulaDebug ? (
                       <div id="pbv2-formula-debug-content" className="space-y-2 pb-4 pt-0 text-xs text-slate-300 min-w-0 max-w-full overflow-hidden break-words [overflow-wrap:anywhere]">
+                      {quantityOnly ? (
+                        <div className="rounded border border-sky-500/30 bg-sky-500/10 px-2 py-1.5 text-sky-100">
+                          Quantity-only pricing ignores width, height, square footage, sheet yield, and base-price formulas. The only base rate is Rate per piece.
+                        </div>
+                      ) : null}
                       <div className="min-w-0"><span className="text-slate-400">Formula used:</span> <span className="font-mono break-all">{formulaDebug.formulaRaw || "—"}</span></div>
                       <div><span className="text-slate-400">Formula source mode:</span> <span className="font-mono">{formulaDebug.formulaSourceMode ?? "—"}</span></div>
                       <div><span className="text-slate-400">Resolved formula source:</span> <span className="font-mono">{formulaDebug.resolvedFormulaSource ?? "—"}</span></div>
@@ -1314,14 +1319,14 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div className="min-w-0"><span className="text-slate-400">Resolved formula expression:</span> <span className="font-mono break-all">{formulaDebug.resolvedFormulaExpression ?? "—"}</span></div>
                       <div><span className="text-slate-400">Manual formula present:</span> <span className="font-mono">{formulaDebug.manualFormulaPresent ? "true" : "false"}</span></div>
                       <div><span className="text-slate-400">Manual formula ignored:</span> <span className="font-mono">{formulaDebug.manualFormulaIgnored ? "true" : "false"}</span></div>
-                      {["sheet_width", "sheet_length", "usable_drop_min", "billable_length_increment", "minimum_billable_sqft"].map((key) => (
+                      {!quantityOnly ? ["sheet_width", "sheet_length", "usable_drop_min", "billable_length_increment", "minimum_billable_sqft"].map((key) => (
                         <div key={key}>
                           <span className="text-slate-400">{key}:</span>{" "}
                           <span className="font-mono">{String(formulaDebug.variables?.[key] ?? "—")}</span>
                           <span className="text-slate-500"> via </span>
                           <span className="font-mono">{formulaDebug.variableSources?.[key] ?? "—"}</span>
                         </div>
-                      ))}
+                      )) : null}
                       {formulaDebug.formulaResolved ? (
                         <div className="min-w-0"><span className="text-slate-400">Formula resolved:</span> <span className="font-mono break-all">{formulaDebug.formulaResolved}</span></div>
                       ) : null}
