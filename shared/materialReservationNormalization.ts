@@ -1,4 +1,4 @@
-import { calculateSheetYield } from "./pbv2/formulaHelpers";
+import { calculateSheetYield, parseFormulaBoolean } from "./pbv2/formulaHelpers";
 import { normalizeMaterialUnit, roundMaterialQuantity } from "./materialUnits";
 import {
   convertReservationInputToBaseQty,
@@ -181,7 +181,7 @@ export function normalizeMaterialReservation(args: {
       0,
       1,
       0,
-      args.flatSheet?.allowRotation ?? false,
+      parseFormulaBoolean(args.flatSheet?.allowRotation) ?? false,
       "material reservation",
     );
     return {
