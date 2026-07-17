@@ -119,6 +119,23 @@ export type ProductionOrderArtworkSummary = {
   sameAsFront?: boolean;
 };
 
+export type ProductionFileSummary = {
+  id: string;
+  lineItemId: string;
+  fileRecordId: string | null;
+  fileName: string;
+  role: "final";
+  tag: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  thumbnailUrl: string | null;
+  previewUrl: string | null;
+  downloadUrl: string;
+  openUrl: string;
+  previewAvailabilityStatus?: string | null;
+  createdAt: string;
+};
+
 export type ProductionJobListItem = {
   id: string;
   view: string;
@@ -187,6 +204,8 @@ export type ProductionJobListItem = {
   backFileUrl?: string;
   // Artwork at job level (for Production Overview)
   artwork?: ProductionOrderArtworkSummary[];
+  // Canonical final prepress output for the selected production line item.
+  productionFiles?: ProductionFileSummary[];
   notes?: Array<{ id: string; text: string; createdAt: string; actorUserId?: string | null; edited?: boolean }>;
   // Production ticket fields (top-level, populated by job detail endpoint)
   contactName?: string | null;
@@ -218,6 +237,7 @@ export type ProductionJobListItem = {
       items: ProductionOrderLineItemSummary[];
     };
     artwork?: ProductionOrderArtworkSummary[];
+    productionFiles?: ProductionFileSummary[];
     sides?: number | null; // Legacy: artwork-based count
   };
   createdAt: string;

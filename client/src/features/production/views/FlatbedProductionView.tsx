@@ -29,6 +29,7 @@ import { ROUTES } from "@/config/routes";
 import { resolveProductionArtworkSides, resolveProductionPreviewUrl } from "@shared/productionHydration";
 import {
   ProductionJobListItem,
+  ProductionFileSummary,
   ProductionOrderArtworkSummary,
   ProductionOrderLineItemSummary,
   useAddProductionNote,
@@ -60,6 +61,10 @@ import {
 } from "lucide-react";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
+import {
+  ProductionFilePreviewPanel,
+  resolveProductionFilePreviewImage,
+} from "@/components/production/ProductionFilePreviewPanel";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
 import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
@@ -1126,6 +1131,7 @@ function PreviewPanel({
   timerIsRunning,
   notes,
   onPreviewArtwork,
+  onPreviewProductionFile,
   documentNumberDisplayMode,
 }: {
   job: ProductionJobListItem;
@@ -1133,6 +1139,7 @@ function PreviewPanel({
   timerIsRunning: boolean;
   notes: Array<{ id: string; text: string; createdAt: string; actorUserId?: string | null; edited?: boolean }>;
   onPreviewArtwork: (side: "front" | "back") => void;
+  onPreviewProductionFile: (file: ProductionFileSummary) => void;
   documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
 }) {
   const li = primaryLineItem(job);
@@ -1184,7 +1191,8 @@ function PreviewPanel({
   return (
     <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
       <div className="grid grid-cols-1 xl:grid-cols-[700px_1fr_360px] gap-4">
-        <div className="flex gap-4">
+        <div className="space-y-3">
+          <div className="flex gap-4">
           {/* FRONT preview - always shown */}
           <div className="space-y-1">
             <div
@@ -1197,7 +1205,7 @@ function PreviewPanel({
                 className="w-full h-full object-contain"
               />
             </div>
-            <div className="text-xs text-titan-text-muted text-center">FRONT (click to enlarge)</div>
+            <div className="text-xs text-titan-text-muted text-center">FRONT ARTWORK (click to enlarge)</div>
           </div>
 
           {/* BACK preview - only shown for double-sided */}
@@ -1221,7 +1229,7 @@ function PreviewPanel({
                 )}
               </div>
               <div className="text-xs text-titan-text-muted text-center">
-                BACK (click to enlarge)
+                BACK ARTWORK (click to enlarge)
                 {back?.sameAsFront && <span className="ml-1 text-[10px] text-violet-300">(Same as front)</span>}
                 {backMissingReason === "not_uploaded" && <span className="ml-1 text-[10px] text-amber-500">(Not assigned)</span>}
               </div>
@@ -1237,6 +1245,11 @@ function PreviewPanel({
               </div>
             </div>
           )}
+          </div>
+          <ProductionFilePreviewPanel
+            files={job.productionFiles ?? job.order.productionFiles}
+            onPreview={onPreviewProductionFile}
+          />
         </div>
 
         <div className="space-y-3 min-w-0 overflow-hidden">
@@ -1370,7 +1383,7 @@ function PreviewPanel({
               <div className="mt-1 text-xs text-titan-text-primary">
                 {(job as any).productionLayout.piecesPerSheet} up on {(job as any).productionLayout.sheetWidthIn} × {(job as any).productionLayout.sheetHeightIn}; {(job as any).productionLayout.sheetsToPrint} sheets / {(job as any).productionLayout.printPasses} print passes.
               </div>
-              <div className="mt-1 text-[11px] text-titan-text-muted">Imposed sheet preview will appear when prepress output is available.</div>
+              <div className="mt-1 text-[11px] text-titan-text-muted">The final production-file preview is shown beside the artwork when available.</div>
             </div>
           ) : null}
         </div>
@@ -1402,6 +1415,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
+  const [productionPreviewFile, setProductionPreviewFile] = useState<ProductionFileSummary | null>(null);
   const [printerFilter, setPrinterFilter] = useState("all");
 
   const tabJobs = useMemo(
@@ -1443,6 +1457,19 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   );
 
   const { data: selectedDetail } = useProductionJob(selectedJob?.id ?? undefined);
+  const selectedDisplayJob = useMemo<ProductionJobListItem | null>(() => {
+    if (!selectedJob) return null;
+    if (!selectedDetail) return selectedJob;
+    return {
+      ...selectedJob,
+      ...selectedDetail,
+      view: selectedJob.view,
+      order: {
+        ...selectedJob.order,
+        ...selectedDetail.order,
+      },
+    };
+  }, [selectedDetail, selectedJob]);
 
   const recentNotes = useMemo(() => {
     const events = selectedDetail?.events ?? [];
@@ -1583,9 +1610,9 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
       </div>
 
       <div className="space-y-4">
-        {selectedJob ? (
+        {selectedDisplayJob ? (
           <PreviewPanel
-            job={selectedJob}
+            job={selectedDisplayJob}
             timerSeconds={liveTimerSeconds}
             timerIsRunning={derivedTimer.isRunning}
             notes={recentNotes}
@@ -1593,6 +1620,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
               setPreviewSide(side);
               setPreviewModalOpen(true);
             }}
+            onPreviewProductionFile={setProductionPreviewFile}
             documentNumberDisplayMode={productionNumberDisplayMode}
           />
         ) : null}
@@ -1830,14 +1858,14 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
         <DialogContent className="max-w-[90vw] w-[90vw] max-h-[90vh] h-[90vh] flex flex-col">
           <DialogHeader className="shrink-0">
             <DialogTitle>
-              {selectedJob
-                ? `${selectedJob.order.customerName} - Order ${getProductionOrderNumber(selectedJob, productionNumberDisplayMode) || ((selectedJob as any).orderNumber ?? selectedJob.order.orderNumber)} - Job ${String((selectedJob as any).productionJobId ?? selectedJob.id).slice(-6)}`
+              {selectedDisplayJob
+                ? `${selectedDisplayJob.order.customerName} - Order ${getProductionOrderNumber(selectedDisplayJob, productionNumberDisplayMode) || ((selectedDisplayJob as any).orderNumber ?? selectedDisplayJob.order.orderNumber)} - Job ${String((selectedDisplayJob as any).productionJobId ?? selectedDisplayJob.id).slice(-6)}`
                 : "Artwork Preview"}
             </DialogTitle>
           </DialogHeader>
-          {selectedJob && (() => {
-            const sidesValue = (selectedJob as any).sides ?? "—";
-            const thumbs = artworkThumbs(selectedJob);
+          {selectedDisplayJob && (() => {
+            const sidesValue = (selectedDisplayJob as any).sides ?? "—";
+            const thumbs = artworkThumbs(selectedDisplayJob);
             const { front, back, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesValue, thumbs);
             const currentArtwork = previewSide === "front" ? front : back;
             const imageSrc = getBestArtworkImage(currentArtwork);
@@ -1877,7 +1905,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       size="sm"
                       variant="default"
                       onClick={() => {
-                        const orderId = (selectedJob as any).orderId || selectedJob.order?.id;
+                        const orderId = (selectedDisplayJob as any).orderId || selectedDisplayJob.order?.id;
                         if (orderId) window.location.href = `/orders/${orderId}`;
                       }}
                       className="gap-1.5"
@@ -1946,6 +1974,53 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
               </div>
             );
           })()}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!productionPreviewFile} onOpenChange={(open) => !open && setProductionPreviewFile(null)}>
+        <DialogContent className="flex h-[90vh] max-h-[90vh] w-[90vw] max-w-[90vw] flex-col">
+          <DialogHeader className="shrink-0">
+            <DialogTitle>Production file / sheet layout</DialogTitle>
+          </DialogHeader>
+          {productionPreviewFile ? (() => {
+            const imageSrc = resolveProductionFilePreviewImage(productionPreviewFile);
+            return (
+              <div className="flex min-h-0 flex-1 flex-col gap-4">
+                {imageSrc ? (
+                  <ZoomPanImageViewer
+                    src={imageSrc}
+                    alt={`Production file / sheet layout: ${productionPreviewFile.fileName}`}
+                    className="min-h-0 flex-1 rounded-lg border-2 border-titan-border-subtle"
+                  />
+                ) : (
+                  <div className="flex min-h-0 flex-1 flex-col items-center justify-center rounded-lg border-2 border-dashed border-titan-border-subtle bg-muted/30 p-8 text-center">
+                    <FileText className="mb-4 h-16 w-16 text-muted-foreground" />
+                    <h3 className="mb-2 text-lg font-semibold text-titan-text-primary">Production file preview unavailable</h3>
+                    <p className="text-sm text-muted-foreground">The final file is assigned and remains available to open or download.</p>
+                  </div>
+                )}
+                <div className="flex shrink-0 flex-wrap items-center justify-between gap-4 rounded-lg border border-titan-border-subtle bg-titan-bg-card p-3 text-sm">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-medium">{productionPreviewFile.fileName}</div>
+                    <div className="mt-1 flex items-center gap-3 text-xs text-titan-text-muted">
+                      <span>{getFileTypeLabel(productionPreviewFile.mimeType, productionPreviewFile.fileName)}</span>
+                      {productionPreviewFile.sizeBytes ? <span>{formatFileSize(productionPreviewFile.sizeBytes)}</span> : null}
+                    </div>
+                  </div>
+                  <div className="flex shrink-0 gap-2">
+                    <Button asChild size="sm" variant="outline" className="gap-1.5">
+                      <a href={productionPreviewFile.openUrl} target="_blank" rel="noreferrer">Open</a>
+                    </Button>
+                    <Button asChild size="sm" className="gap-1.5">
+                      <a href={productionPreviewFile.downloadUrl}>
+                        <Download className="h-3.5 w-3.5" /> Download
+                      </a>
+                    </Button>
+                  </div>
+                </div>
+              </div>
+            );
+          })() : null}
         </DialogContent>
       </Dialog>
     </div>

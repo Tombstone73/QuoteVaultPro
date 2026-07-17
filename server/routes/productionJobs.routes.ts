@@ -9,6 +9,7 @@ import {
   auditLogs,
   customerContacts,
   customers,
+  lineItemFiles,
   materials,
   orderAttachments,
   orderLineItems,
@@ -36,6 +37,7 @@ import { stationResolver } from "../services/stations/stationResolver";
 import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
+  resolveDerivativeFileAccess,
   resolveOriginalFileAccess,
 } from "../lib/supabaseObjectHelpers";
 import {
@@ -60,6 +62,7 @@ import {
   resolveProductionSides,
   resolveSheetConfiguration,
 } from "@shared/productionHydration";
+import { sortFinalProductionFiles } from "@shared/productionFileHydration";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -2173,6 +2176,58 @@ export function registerProductionJobsRoutes(
       }
 
       const artwork = byLineItem.get(lineItemId) ?? byOrder;
+      const finalFileRows = await db
+        .select({
+          id: lineItemFiles.id,
+          lineItemId: lineItemFiles.lineItemId,
+          fileRecordId: lineItemFiles.fileRecordId,
+          role: lineItemFiles.role,
+          status: lineItemFiles.status,
+          tag: lineItemFiles.tag,
+          originalFilename: lineItemFiles.originalFilename,
+          mimeType: lineItemFiles.mimeType,
+          sizeBytes: lineItemFiles.sizeBytes,
+          createdAt: lineItemFiles.createdAt,
+        })
+        .from(lineItemFiles)
+        .where(
+          and(
+            eq(lineItemFiles.organizationId, organizationId),
+            eq(lineItemFiles.lineItemId, lineItemId),
+            eq(lineItemFiles.role, "final"),
+            eq(lineItemFiles.status, "active"),
+          ),
+        )
+        .orderBy(desc(lineItemFiles.createdAt));
+
+      const productionFileLogOnce = createRequestLogOnce();
+      const productionFiles = await Promise.all(
+        sortFinalProductionFiles(finalFileRows).map(async (file) => {
+          const [thumbnailAccess, previewAccess] = file.fileRecordId
+            ? await Promise.all([
+                resolveDerivativeFileAccess(file, "thumbnail", { logOnce: productionFileLogOnce }),
+                resolveDerivativeFileAccess(file, "preview", { logOnce: productionFileLogOnce }),
+              ])
+            : [{ url: null, availabilityStatus: "missing" }, { url: null, availabilityStatus: "missing" }];
+
+          return {
+            id: file.id,
+            lineItemId: file.lineItemId,
+            fileRecordId: file.fileRecordId ?? null,
+            fileName: file.originalFilename,
+            role: "final" as const,
+            tag: file.tag ?? null,
+            mimeType: file.mimeType,
+            sizeBytes: file.sizeBytes,
+            thumbnailUrl: thumbnailAccess.url ?? null,
+            previewUrl: previewAccess.url ?? null,
+            downloadUrl: `/api/prepress/files/${file.id}/download`,
+            openUrl: `/api/prepress/files/${file.id}/download?inline=1`,
+            previewAvailabilityStatus: previewAccess.availabilityStatus,
+            createdAt: file.createdAt,
+          };
+        }),
+      );
       const sidesSet = new Set<string>();
       for (const a of artwork) {
         const s = (a.side || "").toLowerCase();
@@ -2397,6 +2452,7 @@ export function registerProductionJobsRoutes(
           fulfillment: mapFulfillmentLabel(order.shippingMethod),
           // Convenience top-level artwork (same list used in order.artwork)
           artwork,
+          productionFiles,
           order: {
             id: orderId,
             orderNumber: order.orderNumber,
@@ -2418,6 +2474,7 @@ export function registerProductionJobsRoutes(
               items: lineItems.slice(0, 20),
             },
             artwork,
+            productionFiles,
             sides: artworkBasedSides,
           },
           otherJobsInOrder,
@@ -2436,6 +2493,7 @@ export function registerProductionJobsRoutes(
             jobId,
             organizationId,
             artworkCount: Array.isArray(artwork) ? artwork.length : 0,
+            productionFileCount: productionFiles.length,
             otherJobsInOrderCount: Array.isArray(otherJobsInOrder) ? otherJobsInOrder.length : 0,
           });
         }
