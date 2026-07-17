@@ -240,6 +240,81 @@ export class AssetPreviewGenerator {
   }
 
   /**
+   * Generate canonical derivatives for a file that is not represented by an asset row.
+   * Prepress final files use this path so Production can resolve previews from file_records.
+   */
+  async generateCanonicalFilePreviews(args: {
+    organizationId: string;
+    fileRecordId: string;
+    fileName: string;
+    mimeType?: string | null;
+  }): Promise<"ready" | "unsupported" | "failed"> {
+    const mimeType = String(args.mimeType || "").toLowerCase();
+    const isPdf = mimeType === "application/pdf";
+    const isImage = mimeType.startsWith("image/") && !mimeType.includes("svg");
+
+    if (!isPdf && !isImage) return "unsupported";
+
+    try {
+      const source = await canonicalFileReadResolver.resolveOriginal(args.fileRecordId);
+      if (source.status !== "available" || (!source.objectKey && !source.localPathRef)) {
+        throw new AssetSourceNotReadyError("Canonical production file is not readable yet");
+      }
+
+      const sourceBytes = await this.readSourceBytes({
+        assetId: args.fileRecordId,
+        organizationId: args.organizationId,
+        fileRecordId: args.fileRecordId,
+        objectKey: source.objectKey,
+        localPathRef: source.localPathRef,
+      });
+      const imageBuffer = isPdf ? await this.renderPdfFirstPageFromBuffer(sourceBytes) : sourceBytes;
+      const baseKey = normalizeTenantObjectKey(`thumbs/${args.organizationId}/file/${args.fileRecordId}`);
+      const thumbKey = `${baseKey}/thumb.jpg`;
+      const previewKey = `${baseKey}/preview.jpg`;
+      const [thumbBuffer, previewBuffer] = await Promise.all([
+        sharp(imageBuffer)
+          .resize(this.THUMB_SIZE, this.THUMB_SIZE, { fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: this.JPEG_QUALITY })
+          .toBuffer(),
+        sharp(imageBuffer)
+          .resize(this.PREVIEW_SIZE, this.PREVIEW_SIZE, { fit: "inside", withoutEnlargement: true })
+          .jpeg({ quality: this.JPEG_QUALITY })
+          .toBuffer(),
+      ]);
+
+      await Promise.all([
+        this.uploadBuffer(thumbKey, thumbBuffer, "image/jpeg"),
+        this.uploadBuffer(previewKey, previewBuffer, "image/jpeg"),
+      ]);
+      await Promise.all([
+        persistReadyFileDerivative({
+          fileRecordId: args.fileRecordId,
+          derivativeType: "thumbnail",
+          objectKey: thumbKey,
+          mimeType: "image/jpeg",
+          sizeBytes: thumbBuffer.length,
+        }),
+        persistReadyFileDerivative({
+          fileRecordId: args.fileRecordId,
+          derivativeType: "preview",
+          objectKey: previewKey,
+          mimeType: "image/jpeg",
+          sizeBytes: previewBuffer.length,
+        }),
+      ]);
+      return "ready";
+    } catch (error) {
+      console.error("[AssetPreviewGenerator] Failed to generate canonical production-file preview", {
+        fileRecordId: args.fileRecordId,
+        fileName: args.fileName,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return "failed";
+    }
+  }
+
+  /**
    * Normalize asset file key into canonical object key format (relative to /objects/*)
    */
   private normalizeAssetFileKey(raw: string | null | undefined): string {

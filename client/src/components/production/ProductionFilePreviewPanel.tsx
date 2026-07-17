@@ -2,7 +2,9 @@ import { useEffect, useMemo, useState } from "react";
 import { Download, ExternalLink, FileText } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import { downloadAuthenticatedFile, openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
+import { apiFetch } from "@/lib/queryClient";
 import type { ProductionFileSummary } from "@/hooks/useProduction";
 import { resolveProductionPreviewUrl } from "@shared/productionHydration";
 
@@ -25,10 +27,57 @@ export function ProductionFilePreviewPanel({
   onPreview: (file: ProductionFileSummary) => void;
 }) {
   const primaryFile = files?.[0] ?? null;
-  const previewImage = useMemo(() => resolveProductionFilePreviewImage(primaryFile), [primaryFile]);
+  const [preparedFile, setPreparedFile] = useState<ProductionFileSummary | null>(null);
+  const [previewRepairAttemptedFor, setPreviewRepairAttemptedFor] = useState<string | null>(null);
+  const effectiveFile = preparedFile?.id === primaryFile?.id ? preparedFile : primaryFile;
+  const previewImage = useMemo(() => resolveProductionFilePreviewImage(effectiveFile), [effectiveFile]);
   const [previewFailed, setPreviewFailed] = useState(false);
+  const [accessError, setAccessError] = useState<string | null>(null);
+  const [accessPending, setAccessPending] = useState<"open" | "download" | null>(null);
 
-  useEffect(() => setPreviewFailed(false), [primaryFile?.id, previewImage]);
+  useEffect(() => setPreviewFailed(false), [effectiveFile?.id, previewImage]);
+
+  useEffect(() => {
+    if (!primaryFile || previewImage || previewRepairAttemptedFor === primaryFile.id) return;
+    setPreviewRepairAttemptedFor(primaryFile.id);
+    setPreparedFile({ ...primaryFile, previewAvailabilityStatus: "pending" });
+    void apiFetch(`/api/prepress/files/${primaryFile.id}/ensure-preview`, {
+      method: "POST",
+      credentials: "include",
+    })
+      .then(async (response) => {
+        if (!response.ok) throw new Error(`Preview preparation failed (${response.status})`);
+        const payload = await response.json() as {
+          data?: { thumbnailUrl?: string | null; previewUrl?: string | null; previewStatus?: string | null };
+        };
+        setPreparedFile({
+          ...primaryFile,
+          thumbnailUrl: payload.data?.thumbnailUrl ?? null,
+          previewUrl: payload.data?.previewUrl ?? null,
+          previewAvailabilityStatus: payload.data?.previewStatus === "ready" ? "available" : "missing",
+        });
+      })
+      .catch(() => {
+        setPreparedFile({ ...primaryFile, previewAvailabilityStatus: "missing" });
+      });
+  }, [previewImage, previewRepairAttemptedFor, primaryFile]);
+
+  const accessFile = async (action: "open" | "download") => {
+    if (!effectiveFile) return;
+    setAccessError(null);
+    setAccessPending(action);
+    try {
+      if (action === "open") {
+        await openAuthenticatedFile(effectiveFile.openUrl);
+      } else {
+        await downloadAuthenticatedFile(effectiveFile.downloadUrl, effectiveFile.fileName);
+      }
+    } catch (error) {
+      setAccessError(error instanceof Error ? error.message : "File access failed.");
+    } finally {
+      setAccessPending(null);
+    }
+  };
 
   return (
     <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-subtle p-3">
@@ -49,14 +98,14 @@ export function ProductionFilePreviewPanel({
       <button
         type="button"
         className="relative flex h-56 w-full items-center justify-center overflow-hidden rounded-md border border-titan-border-subtle bg-titan-bg-card text-left transition-colors hover:border-blue-500 disabled:cursor-default"
-        onClick={() => primaryFile && onPreview(primaryFile)}
+        onClick={() => effectiveFile && onPreview(effectiveFile)}
         disabled={!primaryFile}
         aria-label={primaryFile ? `Enlarge production file ${primaryFile.fileName}` : "No production file available"}
       >
-        {primaryFile && previewImage && !previewFailed ? (
+        {effectiveFile && previewImage && !previewFailed ? (
           <img
             src={previewImage}
-            alt={`Production file / sheet layout: ${primaryFile.fileName}`}
+            alt={`Production file / sheet layout: ${effectiveFile.fileName}`}
             className="h-full w-full object-contain"
             onError={() => setPreviewFailed(true)}
           />
@@ -64,10 +113,18 @@ export function ProductionFilePreviewPanel({
           <div className="p-6 text-center text-titan-text-muted">
             <FileText className="mx-auto h-12 w-12" />
             <div className="mt-2 text-sm font-medium text-titan-text-primary">
-              {primaryFile ? "Production file preview unavailable" : "No final production file"}
+              {primaryFile
+                ? effectiveFile?.previewAvailabilityStatus === "pending"
+                  ? "Production file preview processing"
+                  : "Production file preview unavailable"
+                : "No final production file"}
             </div>
             <div className="mt-1 text-xs">
-              {primaryFile ? "The final file is available to open or download." : "Upload final output in Prepress before production release."}
+              {primaryFile
+                ? effectiveFile?.previewAvailabilityStatus === "pending"
+                  ? "Production file preview processing. Open or download remains available."
+                  : "The final file is available to open or download."
+                : "Upload final output in Prepress before production release."}
             </div>
           </div>
         )}
@@ -83,19 +140,30 @@ export function ProductionFilePreviewPanel({
             </div>
           </div>
           <div className="flex shrink-0 gap-2">
-            <Button asChild size="sm" variant="outline" className="gap-1.5">
-              <a href={primaryFile.openUrl} target="_blank" rel="noreferrer">
-                <ExternalLink className="h-3.5 w-3.5" /> Open
-              </a>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              disabled={accessPending !== null}
+              onClick={() => void accessFile("open")}
+            >
+              <ExternalLink className="h-3.5 w-3.5" /> {accessPending === "open" ? "Opening..." : "Open"}
             </Button>
-            <Button asChild size="sm" variant="outline" className="gap-1.5">
-              <a href={primaryFile.downloadUrl}>
-                <Download className="h-3.5 w-3.5" /> Download
-              </a>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="gap-1.5"
+              disabled={accessPending !== null}
+              onClick={() => void accessFile("download")}
+            >
+              <Download className="h-3.5 w-3.5" /> {accessPending === "download" ? "Downloading..." : "Download"}
             </Button>
           </div>
         </div>
       ) : null}
+      {accessError ? <div role="alert" className="mt-2 text-xs text-red-600">{accessError}</div> : null}
     </div>
   );
 }

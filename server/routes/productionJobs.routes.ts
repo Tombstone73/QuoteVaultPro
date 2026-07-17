@@ -2209,6 +2209,11 @@ export function registerProductionJobsRoutes(
                 resolveDerivativeFileAccess(file, "preview", { logOnce: productionFileLogOnce }),
               ])
             : [{ url: null, availabilityStatus: "missing" }, { url: null, availabilityStatus: "missing" }];
+          const previewAvailabilityStatus = thumbnailAccess.url || previewAccess.url
+            ? "available"
+            : thumbnailAccess.availabilityStatus === "pending" || previewAccess.availabilityStatus === "pending"
+              ? "pending"
+              : "missing";
 
           return {
             id: file.id,
@@ -2223,7 +2228,7 @@ export function registerProductionJobsRoutes(
             previewUrl: previewAccess.url ?? null,
             downloadUrl: `/api/prepress/files/${file.id}/download`,
             openUrl: `/api/prepress/files/${file.id}/download?inline=1`,
-            previewAvailabilityStatus: previewAccess.availabilityStatus,
+            previewAvailabilityStatus,
             createdAt: file.createdAt,
           };
         }),
