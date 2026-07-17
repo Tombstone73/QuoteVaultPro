@@ -235,6 +235,50 @@ describe("production display data", () => {
     ]));
   });
 
+  test("prepress displays the choice label when the saved value is a choice ID", () => {
+    const rows = buildPrepressOptionRows({
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: {
+          thickness: { value: "choice_2" },
+          grommet_placement: { value: "choice_2" },
+        },
+      },
+    }, {
+      schemaVersion: 2,
+      rootNodeIds: ["thickness", "grommets"],
+      nodes: {
+        thickness: {
+          id: "thickness",
+          kind: "question",
+          label: "Thickness",
+          input: { type: "select", selectionKey: "thickness", defaultValue: "4mm" },
+          choices: [
+            { id: "choice_1", value: "4mm", label: "4mm" },
+            { id: "choice_2", value: "10mm", label: "10mm" },
+          ],
+        },
+        grommets: {
+          id: "grommets",
+          kind: "question",
+          label: "Grommet Placement",
+          input: { type: "select", selectionKey: "grommet_placement", defaultValue: "none" },
+          choices: [
+            { id: "choice_1", value: "none", label: "None" },
+            { id: "choice_2", value: "every_2_feet", label: "Every 2 Feet" },
+          ],
+        },
+      },
+      edges: [],
+    });
+
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ optionLabel: "Thickness", selectedLabel: "10mm" }),
+      expect.objectContaining({ optionLabel: "Grommet Placement", selectedLabel: "Every 2 Feet" }),
+    ]));
+    expect(rows.map((row) => row.selectedLabel).join(" ")).not.toContain("choice_2");
+  });
+
   test("resolves generated PBV2 option ids and choice_1 through the saved option tree", () => {
     const optionId = "dfa265fa-f1fc-4fdd-afde-a12274db2aec";
     const importedSelectionKey = "Dfa265fa F1fc 4fdd Afde A12274db2aec";

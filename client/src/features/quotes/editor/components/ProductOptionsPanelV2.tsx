@@ -88,8 +88,12 @@ function normalizeChoiceValue(node: OptionNodeV2, value: unknown): unknown {
       choice.value,
       choice.label,
       (choice as any).id,
+      (choice as any).choiceId,
       (choice as any).key,
       (choice as any).name,
+      (choice as any).slug,
+      (choice as any).internalValue,
+      (choice as any).displayLabel,
     ];
     return aliases.some((alias) => normalizeComparableValue(alias) === normalizedValue);
   });

@@ -1,5 +1,9 @@
 import { describe, expect, it } from "@jest/globals";
-import { resolveSavedLineItemOptionSelections } from "../lineItemOptionSelections";
+import {
+  buildLineItemOptionSummaryChips,
+  resolveSavedLineItemOptionSelections,
+  resolveSavedLineItemOptions,
+} from "../lineItemOptionSelections";
 
 const activeTree = {
   schemaVersion: 2,
@@ -50,7 +54,97 @@ const activeTree = {
   edges: [],
 } as any;
 
+const idBackedTree = {
+  schemaVersion: 2,
+  rootNodeIds: ["thickness-node", "sides-node", "grommet-node", "contour-node"],
+  nodes: {
+    "thickness-node": {
+      id: "thickness-node",
+      kind: "question",
+      label: "Thickness",
+      input: { type: "select", selectionKey: "thickness", defaultValue: "4mm" },
+      choices: [
+        { id: "choice_1", value: "4mm", label: "4mm" },
+        { id: "choice_2", value: "10mm", label: "10mm" },
+      ],
+    },
+    "sides-node": {
+      id: "sides-node",
+      kind: "question",
+      label: "Print Sides",
+      input: { type: "select", selectionKey: "print_sides", defaultValue: "single_sided" },
+      choices: [
+        { id: "sides-choice-1", value: "single_sided", label: "Single-Sided" },
+        { id: "sides-choice-2", value: "double_sided", label: "Double-Sided" },
+      ],
+    },
+    "grommet-node": {
+      id: "grommet-node",
+      kind: "question",
+      label: "Grommet Placement",
+      input: { type: "select", selectionKey: "grommet_placement", defaultValue: "none" },
+      choices: [
+        { id: "choice_1", value: "none", label: "None" },
+        { id: "choice_2", value: "every_2_feet", label: "Every 2 Feet" },
+      ],
+    },
+    "contour-node": {
+      id: "contour-node",
+      kind: "question",
+      label: "Contour Cutting",
+      input: { type: "select", selectionKey: "contour_cutting", defaultValue: "no" },
+      choices: [
+        { id: "choice_1", value: "no", label: "No" },
+        { id: "choice_2", value: "yes", label: "Yes" },
+      ],
+    },
+  },
+  edges: [],
+} as any;
+
 describe("saved line item option resolution", () => {
+  it("maps saved choice IDs and semantic slugs to dropdown values and labels", () => {
+    const lineItem = {
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: {
+          thickness: { value: "choice_2" },
+          print_sides: { value: "single_sided" },
+          grommet_placement: { value: "choice_2" },
+          contour_cutting: { value: "yes" },
+        },
+      },
+    };
+    const options = resolveSavedLineItemOptions(lineItem, idBackedTree, { includeDefaults: true });
+    const byKey = Object.fromEntries(options.map((option) => [option.optionKey, option]));
+
+    expect(byKey.thickness).toMatchObject({ savedValue: "choice_2", dropdownValue: "10mm", selectedLabel: "10mm" });
+    expect(byKey.print_sides).toMatchObject({ dropdownValue: "single_sided", selectedLabel: "Single-Sided" });
+    expect(byKey.grommet_placement).toMatchObject({ dropdownValue: "every_2_feet", selectedLabel: "Every 2 Feet" });
+    expect(byKey.contour_cutting).toMatchObject({ dropdownValue: "yes", selectedLabel: "Yes" });
+
+    const selections = resolveSavedLineItemOptionSelections(lineItem, idBackedTree, { includeDefaults: true });
+    expect(selections.selected.thickness.value).toBe("10mm");
+    expect(selections.selected.grommet_placement.value).toBe("every_2_feet");
+  });
+
+  it("builds summary chips from choice labels instead of raw saved IDs", () => {
+    const summary = buildLineItemOptionSummaryChips({
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: {
+          thickness: { value: "choice_2" },
+          print_sides: { value: "double_sided" },
+          grommet_placement: { value: "choice_2" },
+          contour_cutting: { value: "yes" },
+        },
+      },
+    }, idBackedTree, 4);
+
+    expect(summary.chips).toEqual(["10mm", "Double-Sided", "Every 2 Feet", "Contour Cutting: Yes"]);
+    expect(summary.chips.join(" ")).not.toMatch(/choice_[12]/);
+  });
+
   it("hydrates every dropdown from saved canonical selections", () => {
     const resolved = resolveSavedLineItemOptionSelections({
       optionSelectionsJson: {

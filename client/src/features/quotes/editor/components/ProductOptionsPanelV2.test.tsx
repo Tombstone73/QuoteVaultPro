@@ -115,6 +115,37 @@ describe("ProductOptionsPanelV2", () => {
     expect(controls[1].value).toBe("single");
   });
 
+  test("maps a saved choice ID to the dropdown choice value", () => {
+    const tree = {
+      schemaVersion: 2,
+      rootNodeIds: ["thickness_node"],
+      nodes: {
+        thickness_node: {
+          id: "thickness_node",
+          kind: "question",
+          label: "Thickness",
+          input: { type: "select", selectionKey: "thickness", defaultValue: "4mm" },
+          choices: [
+            { id: "choice_1", value: "4mm", label: "4mm" },
+            { id: "choice_2", value: "10mm", label: "10mm" },
+          ],
+        },
+      },
+    } as any;
+
+    act(() => {
+      root.render(
+        <ProductOptionsPanelV2
+          tree={tree}
+          selections={{ schemaVersion: 2, selected: { thickness: { value: "choice_2" } } }}
+          onSelectionsChange={jest.fn()}
+        />,
+      );
+    });
+
+    expect((container.querySelector("select") as HTMLSelectElement).value).toBe("10mm");
+  });
+
   test("normalizes draft selections stored as choice labels before rendering controls", () => {
     const tree: OptionTreeV2 = {
       schemaVersion: 2,

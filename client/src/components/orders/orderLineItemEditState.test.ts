@@ -122,6 +122,57 @@ describe("order line item edit state", () => {
     expect(hydrated.optionSelections.grommet_placement.value).toBe("none");
   });
 
+  it("converts saved PBV2 choice IDs into the values expected by editor dropdowns", () => {
+    const tree = {
+      schemaVersion: 2,
+      rootNodeIds: ["thickness", "sides", "contour"],
+      nodes: {
+        thickness: {
+          id: "thickness",
+          kind: "question",
+          label: "Thickness",
+          input: { type: "select", selectionKey: "thickness", defaultValue: "4mm" },
+          choices: [
+            { id: "choice_1", value: "4mm", label: "4mm" },
+            { id: "choice_2", value: "10mm", label: "10mm" },
+          ],
+        },
+        sides: {
+          id: "sides",
+          kind: "question",
+          label: "Print Sides",
+          input: { type: "select", selectionKey: "print_sides", defaultValue: "single_sided" },
+          choices: [
+            { value: "single_sided", label: "Single-Sided" },
+            { value: "double_sided", label: "Double-Sided" },
+          ],
+        },
+        contour: {
+          id: "contour",
+          kind: "question",
+          label: "Contour Cutting",
+          input: { type: "select", selectionKey: "contour_cutting", defaultValue: "no" },
+          choices: [{ value: "no", label: "No" }, { value: "yes", label: "Yes" }],
+        },
+      },
+      edges: [],
+    } as any;
+    const hydrated = hydratePersistedOrderLineItemOptionSelections({
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: {
+          thickness: { value: "choice_2" },
+          print_sides: { value: "single_sided" },
+          contour_cutting: { value: "yes" },
+        },
+      },
+    }, tree);
+
+    expect(hydrated.optionSelectionsV2.selected.thickness).toMatchObject({ value: "10mm", label: "10mm" });
+    expect(hydrated.optionSelectionsV2.selected.print_sides).toMatchObject({ value: "single_sided", label: "Single-Sided" });
+    expect(hydrated.optionSelectionsV2.selected.contour_cutting).toMatchObject({ value: "yes", label: "Yes" });
+  });
+
   it("treats matching persisted V2 selections as clean and a changed side as dirty", () => {
     const persisted = hydratePersistedOrderLineItemOptionSelections({
       optionSelectionsJson: { selected: { printSides: { value: "double" } } },
