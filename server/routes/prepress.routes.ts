@@ -75,7 +75,7 @@ import {
   resolveDerivativeFileAccess,
 } from "../lib/supabaseObjectHelpers";
 import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
-import { convertReservationInputToBaseQty } from "@shared/uomConversions";
+import { buildNormalizedMaterialReservationPlan } from "@shared/materialReservationNormalization";
 import {
   getProductionStationLabel,
   normalizeProductionStationKey,
@@ -86,6 +86,7 @@ import {
   resolveArtworkSideIntent,
   resolveProductionArtworkSideReadiness,
   resolveProductionSides,
+  resolveSheetConfiguration,
 } from "@shared/productionHydration";
 import { GENERATED_PROOF_DESCRIPTION_MARKER } from "@shared/prepressFileClassification";
 
@@ -243,6 +244,7 @@ const getPrepressMaterialContext = async (organizationId: string, lineItemId: st
       height: orderLineItems.height,
       specsJson: orderLineItems.specsJson,
       optionSelectionsJson: orderLineItems.optionSelectionsJson,
+      pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
       pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
     })
     .from(orderLineItems)
@@ -273,6 +275,18 @@ const getPrepressMaterialContext = async (organizationId: string, lineItemId: st
   return {
     lineItem,
     treeJson: (treeVersion?.treeJson as any) ?? null,
+  };
+};
+
+const resolveFlatSheetReservationContext = (lineItem: any, treeJson: any) => {
+  const sheetConfig = resolveSheetConfiguration({
+    pbv2SnapshotJson: lineItem?.pbv2SnapshotJson,
+    pricingProfileConfig: treeJson?.meta?.pricingProfileConfig,
+  });
+  return {
+    pieceWidthIn: lineItem?.width,
+    pieceHeightIn: lineItem?.height,
+    allowRotation: sheetConfig.allowRotation,
   };
 };
 
@@ -567,6 +581,11 @@ const syncReservedMaterialsForLineItem = async (
     lineItemId: string;
     createdByUserId: string | null;
     effectiveMaterials: Array<{ materialId: string; uom: "sqft" | "ft" | "each"; qty: number }>;
+    flatSheet?: {
+      pieceWidthIn?: string | number | null;
+      pieceHeightIn?: string | number | null;
+      allowRotation?: unknown;
+    };
   }
 ) => {
   const now = new Date();
@@ -583,18 +602,21 @@ const syncReservedMaterialsForLineItem = async (
 
   const materialIds = Array.from(new Set((args.effectiveMaterials || []).map((item) => String(item.materialId || "").trim()).filter(Boolean)));
   const materialRows = materialIds.length > 0
-    ? await tx.select({ id: materials.id, materialForm: materials.materialForm, inventoryUnit: materials.inventoryUnit, consumptionUnit: materials.consumptionUnit, width: materials.width, rollLengthFt: materials.rollLengthFt, edgeWasteInPerSide: materials.edgeWasteInPerSide, leadWasteFt: materials.leadWasteFt, tailWasteFt: materials.tailWasteFt }).from(materials).where(and(eq(materials.organizationId, args.organizationId), inArray(materials.id, materialIds)))
+    ? await tx.select({ id: materials.id, name: materials.name, materialForm: materials.materialForm, inventoryUnit: materials.inventoryUnit, consumptionUnit: materials.consumptionUnit, width: materials.width, height: materials.height, rollLengthFt: materials.rollLengthFt, edgeWasteInPerSide: materials.edgeWasteInPerSide, leadWasteFt: materials.leadWasteFt, tailWasteFt: materials.tailWasteFt }).from(materials).where(and(eq(materials.organizationId, args.organizationId), inArray(materials.id, materialIds)))
     : [];
-  const materialById = new Map(materialRows.map((row: any) => [row.id, row]));
   const desiredByKey = new Map<string, { materialId: string; uom: string; qty: string }>();
-  for (const item of args.effectiveMaterials || []) {
-    const materialId = String(item.materialId || "").trim();
-    if (!materialId || !item.uom || !Number.isFinite(item.qty) || item.qty <= 0) continue;
-    const material = materialById.get(materialId);
-    const conversion = convertReservationInputToBaseQty({ material: material ?? {}, inputUom: item.uom, inputQuantity: item.qty });
-    if (!conversion.ok) throw new Error(`Material ${materialId} cannot be reserved: ${conversion.message}`);
-    const qty = normalizeQty2dp(conversion.convertedQty);
-    desiredByKey.set(`${materialId}::${conversion.baseUom}`, { materialId, uom: conversion.baseUom, qty });
+  const reservationPlan = buildNormalizedMaterialReservationPlan({
+    requests: args.effectiveMaterials,
+    materials: materialRows,
+    flatSheet: args.flatSheet,
+  });
+  if (!reservationPlan.ok) throw new Error(reservationPlan.error.message);
+  for (const desired of reservationPlan.reservations) {
+    desiredByKey.set(`${desired.materialId}::${desired.uom}`, {
+      materialId: desired.materialId,
+      uom: desired.uom,
+      qty: normalizeQty2dp(desired.qty),
+    });
   }
 
   let insertedCount = 0;
@@ -692,7 +714,10 @@ const wasMaterialsLifecycleEventProcessed = async (
     return (
       payload &&
       payload.eventType === args.eventType &&
-      String(payload.materialFingerprint || "") === args.fingerprint
+      (
+        String(payload.requestedMaterialFingerprint || "") === args.fingerprint
+        || String(payload.materialFingerprint || "") === args.fingerprint
+      )
     );
   });
 };
@@ -1705,6 +1730,7 @@ export function registerPrepressQueueRoutes(
             lineItemId,
             createdByUserId: userId ?? null,
             effectiveMaterials: effectiveForAudit.effectiveMaterials,
+            flatSheet: resolveFlatSheetReservationContext(context.lineItem, context.treeJson),
           });
 
           await tx.insert(productionEvents).values({
@@ -2836,6 +2862,7 @@ export function registerPrepressQueueRoutes(
               lineItemId,
               createdByUserId: userId ?? null,
               effectiveMaterials,
+              flatSheet: resolveFlatSheetReservationContext(materialContext.lineItem, materialContext.treeJson),
             });
 
             await tx.insert(productionEvents).values({
@@ -2850,6 +2877,7 @@ export function registerPrepressQueueRoutes(
                 lineItemId,
                 orderId: materialContext.lineItem.orderId,
                 previousFingerprint: reserveSync.previousFingerprint,
+                requestedMaterialFingerprint: effectiveFingerprint,
                 materialFingerprint: reserveSync.nextFingerprint,
                 changed: reserveSync.changed,
                 reservationCount: reserveSync.nextCount,
