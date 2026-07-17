@@ -191,6 +191,50 @@ describe("production display data", () => {
     ]));
   });
 
+  test("prepress resolves historic saved option IDs against the active option tree", () => {
+    const rows = buildPrepressOptionRows({
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: { old_sides: { value: "old_double" } },
+      },
+      pbv2SnapshotJson: {
+        treeJson: {
+          schemaVersion: 2,
+          rootNodeIds: ["old_sides"],
+          nodes: {
+            old_sides: {
+              id: "old_sides",
+              kind: "question",
+              label: "Print Sides",
+              input: { type: "select", selectionKey: "old_sides" },
+              choices: [{ value: "old_double", label: "Double-Sided" }],
+            },
+          },
+        },
+      },
+    }, {
+      schemaVersion: 2,
+      rootNodeIds: ["active_sides"],
+      nodes: {
+        active_sides: {
+          id: "active_sides",
+          kind: "question",
+          label: "Print Sides",
+          input: { type: "select", selectionKey: "print_sides", defaultValue: "single" },
+          choices: [
+            { value: "single", label: "Single-Sided" },
+            { value: "double", label: "Double-Sided" },
+          ],
+        },
+      },
+      edges: [],
+    });
+
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ optionLabel: "Print Sides", selectedLabel: "Double-Sided", isDefault: false }),
+    ]));
+  });
+
   test("resolves generated PBV2 option ids and choice_1 through the saved option tree", () => {
     const optionId = "dfa265fa-f1fc-4fdd-afde-a12274db2aec";
     const importedSelectionKey = "Dfa265fa F1fc 4fdd Afde A12274db2aec";

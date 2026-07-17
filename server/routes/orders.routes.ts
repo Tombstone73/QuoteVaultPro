@@ -6116,6 +6116,17 @@ export async function registerOrderRoutes(
             // Create line item with server-computed pricing
             const created = await storage.createOrderLineItem({
                 ...lineItemData,
+                ...(pricingResult.pbv2TreeVersionId
+                    ? {
+                        optionSelectionsJson: {
+                            schemaVersion: 2,
+                            selected: pricingResult.pbv2SnapshotJson.selections || {},
+                            resolved: {
+                                visibleNodeIds: pricingResult.pbv2SnapshotJson.visibleNodeIds || [],
+                            },
+                        },
+                    }
+                    : {}),
                 selectedOptions: pricingResult.pbv2SnapshotJson.selectedOptions || [],
                 status: "new",
                 workflowState: routing.workflowState,
@@ -6425,6 +6436,15 @@ export async function registerOrderRoutes(
                 // Set server-authoritative PBV2 fields
                 updateData.pbv2TreeVersionId = pricingResult.pbv2TreeVersionId;
                 updateData.pbv2SnapshotJson = pricingResult.pbv2SnapshotJson as any;
+                if (pricingResult.pbv2TreeVersionId) {
+                    updateData.optionSelectionsJson = {
+                        schemaVersion: 2,
+                        selected: pricingResult.pbv2SnapshotJson.selections || {},
+                        resolved: {
+                            visibleNodeIds: pricingResult.pbv2SnapshotJson.visibleNodeIds || [],
+                        },
+                    };
+                }
                 updateData.selectedOptions = pricingResult.pbv2SnapshotJson.selectedOptions || [];
                 updateData.pricedAt = new Date();
                 latestBaseCalculatedTotalCents = pricingResult.lineTotalCents;

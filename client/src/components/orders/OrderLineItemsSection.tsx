@@ -1461,6 +1461,30 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setUserEditedOptionsByLineItemId((prev) => ({ ...prev, [lineItemId]: true }));
   }, []);
 
+  const expandedItemHydrationFingerprint = useMemo(() => {
+    if (!expandedItem) return null;
+    const activeTreeNodes = effectivePbv2Tree
+      ? Object.values(effectivePbv2Tree.nodes ?? {}).map((node: any) => ({
+          id: node?.id,
+          key: node?.key,
+          label: node?.label,
+          selectionKey: node?.input?.selectionKey,
+          defaultValue: node?.input?.defaultValue,
+          choices: Array.isArray(node?.choices)
+            ? node.choices.map((choice: any) => ({ id: choice?.id, key: choice?.key, value: choice?.value, label: choice?.label }))
+            : [],
+        }))
+      : null;
+    return stableStringify({
+      id: expandedItem.id,
+      optionSelectionsJson: (expandedItem as any).optionSelectionsJson ?? null,
+      selectedOptions: (expandedItem as any).selectedOptions ?? null,
+      snapshotSelections: (expandedItem as any).pbv2SnapshotJson?.selections ?? null,
+      snapshotEffectiveSelections: (expandedItem as any).pbv2SnapshotJson?.pbv2PricingSnapshot?.effectiveSelections ?? null,
+      tree: activeTreeNodes,
+    });
+  }, [effectivePbv2Tree, expandedItem]);
+
   // Initialize local editor state when expanded item changes
   useEffect(() => {
     if (!expandedItem) {
@@ -1468,8 +1492,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       return;
     }
     const itemId = expandedItem.id;
-    if (initializedExpandedLineItemRef.current === itemId) return;
-    initializedExpandedLineItemRef.current = itemId;
+    if (initializedExpandedLineItemRef.current === expandedItemHydrationFingerprint) return;
+    initializedExpandedLineItemRef.current = expandedItemHydrationFingerprint;
 
     setDraftProductId(String(expandedItem.productId || ""));
     setDraftProductVariantId(normalizeVariantId(expandedItem.productVariantId));
@@ -1493,7 +1517,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setRequiresPrepressInput(Boolean((expandedItem as any).requiresPrepress));
     setRequiresProofApprovalInput(Boolean((expandedItem as any).requiresProofApproval));
 
-    const persistedSelections = hydratePersistedOrderLineItemOptionSelections(expandedItem);
+    const persistedSelections = hydratePersistedOrderLineItemOptionSelections(expandedItem, effectivePbv2Tree);
     const persistedArtworkSideIntent = hydratePersistedArtworkSideIntent(expandedItem);
     const selections = persistedSelections.optionSelections;
     setOptionSelections(selections);
@@ -1563,7 +1587,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       useSameArtworkBothSides: persistedArtworkSideIntent.useSameArtworkBothSides,
       totalPrice: currentTotal,
     };
-  }, [expandedItem?.id, effectivePbv2Tree, onDraftLineItemPricingChange, resetPricingDirtyByUser]);
+  }, [expandedItemHydrationFingerprint, effectivePbv2Tree, onDraftLineItemPricingChange, resetPricingDirtyByUser]);
 
   // Hydrate PBV2 defaults from the product tree when a line item is first expanded
   // with no saved selections. resolveRuntimeVisibility computes effective defaults from
@@ -2570,7 +2594,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const itemSpecsJson: any =
                     item.specsJson && typeof item.specsJson === "object" ? (item.specsJson as any) : {};
 
-                  const selectedOptionsForChips = (itemSpecsJson as any)?.selectedOptions || [];
+                  const selectedOptionsForChips = Array.isArray((item as any).selectedOptions) && (item as any).selectedOptions.length > 0
+                    ? (item as any).selectedOptions
+                    : ((itemSpecsJson as any)?.selectedOptions || []);
                   const { chips: optionChips, overflowCount } = extractOptionChips(selectedOptionsForChips, 3);
 
                   const persistedDescription = typeof item.description === "string" ? item.description.trim() : "";
