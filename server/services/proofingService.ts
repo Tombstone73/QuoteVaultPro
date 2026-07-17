@@ -15,6 +15,7 @@ import type {
   ProofingQueueRow,
   ProofingReadModel,
 } from "@shared/proofing";
+import { GENERATED_PROOF_DESCRIPTION_MARKER } from "@shared/prepressFileClassification";
 
 import {
   assetLinks,
@@ -54,7 +55,6 @@ type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected
 type ProofSyncReason = "order_saved" | "line_item_saved" | "artwork_saved" | "artwork_deleted" | "design_completed";
 type ProofSendMode = "generated" | "uploaded";
 
-const GENERATED_PROOF_DESCRIPTION_MARKER = "[proof-artifact:generated-basic]";
 const GENERATED_PROOF_PREVIEW_READY_MARKER = "[proof-preview:ready]";
 const GENERATED_PROOF_MISSING_PREVIEW_MARKER = "[proof-preview:missing-preview]";
 const GENERATED_PROOF_GENERATION_FAILED_MARKER = "[proof-preview:generation-failed]";

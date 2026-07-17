@@ -44,6 +44,10 @@ import {
   getCanonicalOriginalFileIdentity,
   withOrderOriginalArtworkDisplayFilename,
 } from "./services/originalArtworkFiles";
+import {
+  classifyPrepressFileForDisplay,
+  type PrepressFileDisplayCategory,
+} from "@shared/prepressFileClassification";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
@@ -54,9 +58,8 @@ function buildPrepressDownloadEtag(fileId: string, sizeBytes: number | null | un
 
 /**
  * Normalized shape for order-level attachments surfaced in the prepress file panel.
- * These originate from the `order_attachments` table (uploaded on the order/quote page)
- * and are bridged read-only into the prepress workspace so operators can see customer
- * artwork that was submitted before the order entered the prepress queue.
+ * These originate from the `order_attachments` table and are bridged read-only
+ * into the appropriate customer-original or proof collection.
  */
 export type BridgedOriginal = {
   id: string;
@@ -67,6 +70,9 @@ export type BridgedOriginal = {
   side: "front" | "back" | "both" | "na";
   createdAt: Date;
   source: 'order_attachment';
+  prepressCategory: PrepressFileDisplayCategory;
+  systemGenerated: boolean;
+  tagLabel: string;
   downloadUrl: string;
   thumbnailUrl: string | null;
   uploadedBy: string | null;
@@ -606,6 +612,7 @@ export async function getLineItemFiles(
   finals: PrepressLineItemFile[];
   references: PrepressLineItemFile[];
   bridgedOriginals: BridgedOriginal[];
+  proofs: BridgedOriginal[];
 }> {
   const allFiles = await db
     .select()
@@ -632,6 +639,7 @@ export async function getLineItemFiles(
       sizeBytes: orderAttachments.sizeBytes,
       fileSize: orderAttachments.fileSize,
       role: orderAttachments.role,
+      description: orderAttachments.description,
       side: orderAttachments.side,
       fileRecordId: orderAttachments.fileRecordId,
       fileUrl: orderAttachments.fileUrl,
@@ -653,9 +661,25 @@ export async function getLineItemFiles(
   // Preserve that explicit mapping in prepress while still deduplicating accidental
   // duplicate rows for the same file and same side.
   const knownOriginalIdentities = new Set(originalIdentities.filter((identity): identity is string => Boolean(identity)));
-  const filesWithArtworkSides = mergeArtworkSidesIntoPrepressFiles(allFiles, legacyRows);
+  const classifiedLegacyRows = legacyRows.map((row) => ({
+    row,
+    classification: classifyPrepressFileForDisplay({
+      source: "order_attachment",
+      role: row.role,
+      description: row.description,
+      originalFilename: row.originalFilename,
+      fileName: row.fileName,
+    }),
+  }));
+  const proofRows = classifiedLegacyRows
+    .filter(({ classification }) => classification.category === "proof")
+    .map(({ row }) => row);
+  const nonProofRows = classifiedLegacyRows
+    .filter(({ classification }) => classification.category !== "proof")
+    .map(({ row }) => row);
+  const filesWithArtworkSides = mergeArtworkSidesIntoPrepressFiles(allFiles, nonProofRows);
   const seenLegacyArtworkSides = new Set<string>();
-  const dedupedLegacyRows = legacyRows.filter((row) => {
+  const dedupedLegacyRows = nonProofRows.filter((row) => {
     const identity = getCanonicalOriginalFileIdentity(row);
     if (identity && knownOriginalIdentities.has(identity)) return false;
     const side = row.side === "front" || row.side === "back" || row.side === "both" ? row.side : "na";
@@ -665,7 +689,14 @@ export async function getLineItemFiles(
     return true;
   });
 
-  const bridgedOriginals: BridgedOriginal[] = await Promise.all(dedupedLegacyRows.map(async (row) => {
+  const buildBridgedFile = async (row: typeof legacyRows[number]): Promise<BridgedOriginal> => {
+    const classification = classifyPrepressFileForDisplay({
+      source: "order_attachment",
+      role: row.role,
+      description: row.description,
+      originalFilename: row.originalFilename,
+      fileName: row.fileName,
+    });
     const displayRow = withOrderOriginalArtworkDisplayFilename(row, {
       orderNumber: row.orderNumber,
       namingPolicy,
@@ -684,19 +715,27 @@ export async function getLineItemFiles(
       side: row.side === "front" || row.side === "back" || row.side === "both" ? row.side : "na",
       createdAt: row.createdAt,
       source: "order_attachment" as const,
+      prepressCategory: classification.category,
+      systemGenerated: classification.systemGenerated,
+      tagLabel: classification.tagLabel,
       downloadUrl: originalAccess.downloadUrl ?? originalAccess.originalUrl ?? "",
       thumbnailUrl: thumbAccess.url,
-      uploadedBy: row.uploadedByName ?? null,
+      uploadedBy: classification.systemGenerated ? "System generated" : row.uploadedByName ?? null,
       displayFilename: displayRow.displayFilename,
       computedDisplayFilename: displayRow.computedDisplayFilename,
     };
-  }));
+  };
+  const [bridgedOriginals, proofs] = await Promise.all([
+    Promise.all(dedupedLegacyRows.map(buildBridgedFile)),
+    Promise.all(proofRows.map(buildBridgedFile)),
+  ]);
 
   return {
     originals: filesWithArtworkSides.filter((f) => f.role === "original"),
     finals: filesWithArtworkSides.filter((f) => f.role === "final"),
     references: filesWithArtworkSides.filter((f) => f.role === "reference"),
     bridgedOriginals,
+    proofs,
   };
 }
 
