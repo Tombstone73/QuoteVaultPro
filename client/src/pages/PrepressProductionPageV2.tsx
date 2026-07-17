@@ -1618,18 +1618,6 @@ export default function PrepressProductionPageV2() {
                           {rows.map((row: NonNullable<PrepressQueueItem["optionsRows"]>[number], index: number) => (
                             <li key={`${groupLabel}-${row.optionLabel}-${row.selectedLabel}-${index}`} className="min-w-0 break-words [overflow-wrap:anywhere]">
                               <span>{row.optionLabel}: {row.selectedLabel}</span>
-                              {typeof row.isDefault === "boolean" ? (
-                                <span
-                                  className={cn(
-                                    "ml-2 inline-flex text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border align-middle",
-                                    row.isDefault
-                                      ? "border-slate-500 text-slate-300 bg-slate-700/40"
-                                      : "border-amber-500 text-amber-300 bg-amber-900/20"
-                                  )}
-                                >
-                                  {row.isDefault ? "Default" : "Changed"}
-                                </span>
-                              ) : null}
                             </li>
                           ))}
                         </ul>
@@ -1637,7 +1625,7 @@ export default function PrepressProductionPageV2() {
                     ))}
                   </div>
                 ) : (
-                  <p className="text-sm font-medium text-slate-400">No options selected</p>
+                  <p className="text-sm font-medium text-slate-400">—</p>
                 )}
               </div>
               <div className="xl:col-start-5">
