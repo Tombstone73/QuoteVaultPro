@@ -14,9 +14,11 @@ function createConsumptionTx() {
           sourceKey: "mat-1",
           uom: "sqft",
           qty: "12.5",
-          materialType: "roll",
-          materialUnitOfMeasure: "sqft",
-          materialInventoryUnit: null,
+          materialForm: "roll",
+          materialInventoryUnit: "square_foot",
+          materialConsumptionUnit: "square_foot",
+          materialWidth: "54.00",
+          materialRollLengthFt: "150.00",
         }]
         : [];
 
