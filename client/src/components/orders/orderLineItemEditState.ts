@@ -4,7 +4,10 @@ import {
   buildInitialOrderLineItemDraftFromProduct,
   type InitialOrderLineItemDraftDebug,
 } from "@shared/orderLineItemInitialization";
-import { resolveSavedLineItemOptionSelections } from "@shared/lineItemOptionSelections";
+import {
+  resolvePersistedLineItemSelectionEntries,
+  resolveSavedLineItemOptionSelections,
+} from "@shared/lineItemOptionSelections";
 
 export type OrderLineItemSavedSnapshot = {
   productId: string;
@@ -175,6 +178,24 @@ export function hydratePersistedOrderLineItemOptionSelections(
   return {
     optionSelections,
     optionSelectionsV2: resolvedSelections,
+  };
+}
+
+/**
+ * Builds the controlled option state used when an existing line item is
+ * expanded. `hasPersistedSelections` is intentionally derived from saved line
+ * data rather than React's local state so a product-default effect cannot race
+ * and overwrite saved selections during the same render commit.
+ */
+export function hydrateExpandedOrderLineItemOptionState(
+  lineItem: any,
+  tree?: OptionTreeV2 | null,
+): ReturnType<typeof hydratePersistedOrderLineItemOptionSelections> & {
+  hasPersistedSelections: boolean;
+} {
+  return {
+    ...hydratePersistedOrderLineItemOptionSelections(lineItem, tree),
+    hasPersistedSelections: Object.keys(resolvePersistedLineItemSelectionEntries(lineItem)).length > 0,
   };
 }
 

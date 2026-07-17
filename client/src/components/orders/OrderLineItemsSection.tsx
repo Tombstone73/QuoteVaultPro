@@ -87,7 +87,7 @@ import {
 import {
   buildProductReplacementDraft,
   buildSavedSnapshotAfterLineItemSave,
-  hydratePersistedOrderLineItemOptionSelections,
+  hydrateExpandedOrderLineItemOptionState,
   hydratePersistedArtworkSideIntent,
   mergeArtworkSideIntentIntoSpecs,
   hasOrderLineItemDraftChanges,
@@ -1415,6 +1415,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       : null;
     return stableStringify({
       id: expandedItem.id,
+      productId: expandedItem.productId ?? null,
+      productVariantId: expandedItem.productVariantId ?? null,
+      pbv2TreeVersionId: (expandedItem as any).pbv2TreeVersionId ?? null,
       optionSelectionsJson: (expandedItem as any).optionSelectionsJson ?? null,
       selectedOptions: (expandedItem as any).selectedOptions ?? null,
       snapshotSelections: (expandedItem as any).pbv2SnapshotJson?.selections ?? null,
@@ -1422,6 +1425,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       tree: activeTreeNodes,
     });
   }, [effectivePbv2Tree, expandedItem]);
+
+  const expandedItemOptionHydration = useMemo(
+    () => expandedItem
+      ? hydrateExpandedOrderLineItemOptionState(expandedItem, effectivePbv2Tree)
+      : null,
+    [expandedItemHydrationFingerprint, effectivePbv2Tree],
+  );
 
   // Initialize local editor state when expanded item changes
   useEffect(() => {
@@ -1455,7 +1465,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setRequiresPrepressInput(Boolean((expandedItem as any).requiresPrepress));
     setRequiresProofApprovalInput(Boolean((expandedItem as any).requiresProofApproval));
 
-    const persistedSelections = hydratePersistedOrderLineItemOptionSelections(expandedItem, effectivePbv2Tree);
+    const persistedSelections = expandedItemOptionHydration
+      ?? hydrateExpandedOrderLineItemOptionState(expandedItem, effectivePbv2Tree);
     const persistedArtworkSideIntent = hydratePersistedArtworkSideIntent(expandedItem);
     const selections = persistedSelections.optionSelections;
     setOptionSelections(selections);
@@ -1525,7 +1536,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       useSameArtworkBothSides: persistedArtworkSideIntent.useSameArtworkBothSides,
       totalPrice: currentTotal,
     };
-  }, [expandedItemHydrationFingerprint, effectivePbv2Tree, onDraftLineItemPricingChange, resetPricingDirtyByUser]);
+  }, [expandedItemHydrationFingerprint, expandedItemOptionHydration, effectivePbv2Tree, onDraftLineItemPricingChange, resetPricingDirtyByUser]);
 
   // Hydrate PBV2 defaults from the product tree when a line item is first expanded
   // with no saved selections. resolveRuntimeVisibility computes effective defaults from
@@ -1542,6 +1553,15 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     });
     if (!lineItemId) return;
     if (!hydrationKey) return;
+
+    // The saved-selection hydration effect above and this defaults effect run
+    // from the same render. Local state can therefore still look empty here
+    // even though the saved values have just been queued. Check the persisted
+    // source directly so defaults never win that same-commit race.
+    if (expandedItemOptionHydration?.hasPersistedSelections) {
+      pbv2DefaultsHydratedRef.current.add(hydrationKey);
+      return;
+    }
 
     if (hasPbv2Selections(optionSelectionsV2)) {
       pbv2DefaultsHydratedRef.current.add(hydrationKey);
@@ -1585,6 +1605,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     expandedProductPbv2Runtime?.pbv2ActiveTreeVersionId,
     expandedProduct?.id,
     effectivePbv2Tree,
+    expandedItemOptionHydration,
     optionSelectionsV2,
     userEditedOptionsByLineItemId,
     orderId,

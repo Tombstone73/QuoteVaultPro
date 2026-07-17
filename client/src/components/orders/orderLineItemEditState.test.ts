@@ -1,7 +1,9 @@
 import { describe, expect, it } from "@jest/globals";
+import { buildLineItemOptionSummaryChips } from "@shared/lineItemOptionSelections";
 import {
   buildProductReplacementDraft,
   buildSavedSnapshotAfterLineItemSave,
+  hydrateExpandedOrderLineItemOptionState,
   hydratePersistedOrderLineItemOptionSelections,
   hydratePersistedArtworkSideIntent,
   mergeArtworkSideIntentIntoSpecs,
@@ -171,6 +173,89 @@ describe("order line item edit state", () => {
     expect(hydrated.optionSelectionsV2.selected.thickness).toMatchObject({ value: "10mm", label: "10mm" });
     expect(hydrated.optionSelectionsV2.selected.print_sides).toMatchObject({ value: "single_sided", label: "Single-Sided" });
     expect(hydrated.optionSelectionsV2.selected.contour_cutting).toMatchObject({ value: "yes", label: "Yes" });
+  });
+
+  it("seeds expanded controls from the same saved selections as summary chips", () => {
+    const tree = {
+      schemaVersion: 2,
+      rootNodeIds: ["thickness", "sides", "grommets", "contour"],
+      nodes: {
+        thickness: {
+          id: "thickness",
+          kind: "question",
+          label: "Thickness",
+          input: { type: "select", selectionKey: "thickness", defaultValue: "4mm" },
+          choices: [
+            { id: "choice_1", value: "4mm", label: "4mm" },
+            { id: "choice_2", value: "10mm", label: "10mm" },
+          ],
+        },
+        sides: {
+          id: "sides",
+          kind: "question",
+          label: "Print Sides",
+          input: { type: "select", selectionKey: "print_sides", defaultValue: "double_sided" },
+          choices: [
+            { value: "single_sided", label: "Single-Sided" },
+            { value: "double_sided", label: "Double-Sided" },
+          ],
+        },
+        grommets: {
+          id: "grommets",
+          kind: "question",
+          label: "Grommet Placement",
+          input: { type: "select", selectionKey: "grommet_placement", defaultValue: "none" },
+          choices: [
+            { id: "choice_1", value: "none", label: "None" },
+            { id: "choice_2", value: "every_2_feet", label: "Every 2 Feet" },
+          ],
+        },
+        contour: {
+          id: "contour",
+          kind: "question",
+          label: "Contour Cutting",
+          input: { type: "select", selectionKey: "contour_cutting", defaultValue: "no" },
+          choices: [
+            { value: "no", label: "No" },
+            { value: "yes", label: "Yes" },
+          ],
+        },
+      },
+      edges: [],
+    } as any;
+    const lineItem = {
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: {
+          thickness: { value: "choice_2" },
+          print_sides: { value: "single_sided" },
+          grommet_placement: { value: "choice_2" },
+          contour_cutting: { value: "yes" },
+        },
+      },
+    };
+
+    const summary = buildLineItemOptionSummaryChips(lineItem, tree, 4);
+    const editor = hydrateExpandedOrderLineItemOptionState(lineItem, tree);
+
+    expect(summary.chips).toEqual([
+      "10mm",
+      "Single-Sided",
+      "Every 2 Feet",
+      "Contour Cutting: Yes",
+    ]);
+    expect(Object.fromEntries(
+      Object.entries(editor.optionSelectionsV2.selected).map(([key, entry]) => [key, entry.value]),
+    )).toEqual({
+      thickness: "10mm",
+      print_sides: "single_sided",
+      grommet_placement: "every_2_feet",
+      contour_cutting: "yes",
+    });
+    expect(editor.hasPersistedSelections).toBe(true);
+    expect(editor.optionSelectionsV2.selected.thickness.value).not.toBe("4mm");
+    expect(editor.optionSelectionsV2.selected.grommet_placement.value).not.toBe("none");
+    expect(editor.optionSelectionsV2.selected.contour_cutting.value).not.toBe("no");
   });
 
   it("treats matching persisted V2 selections as clean and a changed side as dirty", () => {
