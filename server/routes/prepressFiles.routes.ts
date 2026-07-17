@@ -284,6 +284,39 @@ export function registerPrepressFileRoutes(
     }
   });
 
+  // POST /api/prepress/files/:fileId/ensure-preview - Generate/repair private preview derivatives.
+  app.post("/api/prepress/files/:fileId/ensure-preview", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const result = await prepressFileService.ensureLineItemFilePreview({
+        fileId: req.params.fileId,
+        organizationId,
+        actorUserId: req.user.id,
+      });
+      const [thumbnail, preview] = await Promise.all([
+        resolveDerivativeFileAccess({ id: req.params.fileId, fileRecordId: result.fileRecordId }, "thumbnail"),
+        resolveDerivativeFileAccess({ id: req.params.fileId, fileRecordId: result.fileRecordId }, "preview"),
+      ]);
+
+      return res.json({
+        success: true,
+        data: {
+          previewStatus: result.previewStatus,
+          thumbnailUrl: thumbnail.url ?? null,
+          previewUrl: preview.url ?? null,
+        },
+      });
+    } catch (error: any) {
+      const message = error?.message || "Failed to prepare file preview";
+      if (message === "File not found") return res.status(404).json({ error: message });
+      console.error("[Prepress] Ensure preview error:", error);
+      return res.status(500).json({ error: message });
+    }
+  });
+
   // GET /api/prepress/line-item/:lineItemId/download-originals-zip - Download all originals as ZIP
   app.get("/api/prepress/line-item/:lineItemId/download-originals-zip", isAuthenticated, tenantContext, async (req: any, res) => {
     try {

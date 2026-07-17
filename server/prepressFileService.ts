@@ -17,14 +17,6 @@ import archiver from "archiver";
 import type { LineItemFile } from "../shared/schema";
 import { isSupabaseConfigured, SupabaseStorageService } from "./supabaseStorage";
 import {
-  processUploadedFile,
-  generateStoredFilename,
-  generateRelativePath,
-} from "./utils/fileStorage";
-import { decideStorageTarget } from "./services/storageTarget";
-import { storagePolicyResolver } from "./services/storage/StoragePolicyResolver";
-import { normalizeObjectKeyForDb } from "./lib/supabaseObjectHelpers";
-import {
   createRequestLogOnce,
   resolveDerivativeFileAccess,
   resolveOriginalFileAccess,
@@ -48,6 +40,8 @@ import {
   classifyPrepressFileForDisplay,
   type PrepressFileDisplayCategory,
 } from "@shared/prepressFileClassification";
+import { storageApplicationService } from "./services/storage/StorageApplicationService";
+import { assetPreviewGenerator } from "./services/assets/AssetPreviewGenerator";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
@@ -240,74 +234,120 @@ export async function uploadLineItemFile(params: {
     throw new Error(`File size exceeds maximum allowed size of ${MAX_FILE_SIZE_MB}MB`);
   }
 
-  const storagePolicy = await storagePolicyResolver.resolve(organizationId);
-  const canonicalProviderConfig = storagePolicyResolver.resolveCanonicalStorageBehavior(storagePolicy);
-
-  const target = decideStorageTarget({
-    fileName: originalFilename,
-    fileSizeBytes: buffer.length,
+  const stored = await storageApplicationService.finalizeUpload({
     organizationId,
-    context: "prepress.uploadLineItemFile",
-    providerConfigJson: canonicalProviderConfig.configJson,
+    createdByUserId,
+    resource: {
+      organizationId,
+      resourceType: "order",
+      resourceId: orderId,
+      lineItemId,
+    },
+    source: {
+      kind: "buffer",
+      buffer,
+      originalFilename,
+      mimeType: mimeType || "application/octet-stream",
+    },
+    persistLink: async (tx, result) => {
+      const storagePath = result.legacyRelativePath ?? result.legacyFileUrl;
+      const [inserted] = await tx.insert(lineItemFiles).values({
+        organizationId,
+        orderId,
+        lineItemId,
+        prepressSessionId: prepressSessionId || null,
+        fileRecordId: result.fileRecord.id,
+        role,
+        status: "active",
+        tag: tag || null,
+        storageBucket: result.storedObject.bucket,
+        storagePath,
+        storageKey: result.storedObject.objectKey ?? result.storedObject.localPathRef,
+        originalFilename,
+        mimeType: result.storedObject.mimeType,
+        sizeBytes: result.storedObject.sizeBytes,
+        supersedesFileId: null,
+        createdByUserId,
+      }).returning();
+      return inserted;
+    },
   });
 
-  let storagePath = "";
-  let storageKey: string | null = null;
-  let storageBucket: string | null = null;
-
-  if (target === "supabase" && isSupabaseConfigured()) {
-    const storedFilename = generateStoredFilename(originalFilename);
-    const relativePath = generateRelativePath({
+  if (role === "final") {
+    await assetPreviewGenerator.generateCanonicalFilePreviews({
       organizationId,
-      orderNumber: undefined,
-      lineItemId,
-      storedFilename,
-      resourceType: "order",
-      resourceId: orderId,
-    });
-
-    const supabase = new SupabaseStorageService();
-    const uploaded = await supabase.uploadFile(relativePath, buffer, mimeType || "application/octet-stream");
-    const fileKey = normalizeObjectKeyForDb(uploaded.path);
-
-    storagePath = fileKey;
-    storageKey = fileKey;
-    storageBucket = null;
-  } else {
-    const fileMetadata = await processUploadedFile({
-      originalFilename,
-      buffer,
+      fileRecordId: stored.fileRecord.id,
+      fileName: originalFilename,
       mimeType,
-      organizationId,
-      lineItemId,
-      resourceType: "order",
-      resourceId: orderId,
     });
-
-    storagePath = fileMetadata.relativePath;
-    storageKey = fileMetadata.relativePath;
-    storageBucket = null;
   }
 
-  // Insert database record
-  const [insertedFile] = await db.insert(lineItemFiles).values({
+  return stored.linkedRecord;
+}
+
+/** Canonicalize a legacy line-item file when necessary and generate its preview derivatives. */
+export async function ensureLineItemFilePreview(params: {
+  fileId: string;
+  organizationId: string;
+  actorUserId: string;
+}): Promise<{ fileRecordId: string; previewStatus: "ready" | "unsupported" | "failed" }> {
+  const { fileId, organizationId, actorUserId } = params;
+  const [existing] = await db
+    .select()
+    .from(lineItemFiles)
+    .where(and(
+      eq(lineItemFiles.id, fileId),
+      eq(lineItemFiles.organizationId, organizationId),
+      eq(lineItemFiles.status, "active"),
+    ))
+    .limit(1);
+
+  if (!existing) throw new Error("File not found");
+
+  let fileRecordId = existing.fileRecordId;
+  if (!fileRecordId) {
+    const legacyKey = existing.storageKey || existing.storagePath;
+    if (!legacyKey) throw new Error("File storage location is missing");
+
+    const canonicalized = await storageApplicationService.finalizeUpload({
+      organizationId,
+      createdByUserId: actorUserId,
+      resource: {
+        organizationId,
+        resourceType: "order",
+        resourceId: existing.orderId,
+        lineItemId: existing.lineItemId,
+      },
+      source: {
+        kind: "existing-key",
+        fileUrl: legacyKey,
+        originalFilename: existing.originalFilename,
+        mimeType: existing.mimeType,
+        fileSize: existing.sizeBytes,
+      },
+      persistLink: async (tx, result) => {
+        const [updated] = await tx
+          .update(lineItemFiles)
+          .set({ fileRecordId: result.fileRecord.id })
+          .where(and(
+            eq(lineItemFiles.id, fileId),
+            eq(lineItemFiles.organizationId, organizationId),
+          ))
+          .returning();
+        return updated;
+      },
+    });
+    fileRecordId = canonicalized.fileRecord.id;
+  }
+
+  const previewStatus = await assetPreviewGenerator.generateCanonicalFilePreviews({
     organizationId,
-    orderId,
-    lineItemId,
-    prepressSessionId: prepressSessionId || null,
-    role,
-    status: "active",
-    tag: tag || null,
-    storageBucket,
-    storagePath,
-    storageKey,
-    originalFilename,
-    mimeType,
-    sizeBytes: buffer.length,
-    supersedesFileId: null,
-    createdByUserId,
-  }).returning();
-  return insertedFile;
+    fileRecordId,
+    fileName: existing.originalFilename,
+    mimeType: existing.mimeType,
+  });
+
+  return { fileRecordId, previewStatus };
 }
 
 /**

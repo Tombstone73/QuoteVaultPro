@@ -60,6 +60,7 @@ import {
   Upload,
 } from "lucide-react";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
+import { downloadAuthenticatedFile, openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import {
   ProductionFilePreviewPanel,
@@ -69,6 +70,7 @@ import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
 import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
 import { ProductionNotesSection } from "@/components/production/ProductionNotesSection";
+import { ProductionPreviewArea, type ProductionPreviewSize } from "@/components/production/ProductionPreviewArea";
 import { RecentlyCompletedProductionJobs } from "@/components/production/RecentlyCompletedProductionJobs";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
@@ -1132,6 +1134,10 @@ function PreviewPanel({
   notes,
   onPreviewArtwork,
   onPreviewProductionFile,
+  previewsCollapsed,
+  previewSize,
+  onTogglePreviews,
+  onPreviewSizeChange,
   documentNumberDisplayMode,
 }: {
   job: ProductionJobListItem;
@@ -1140,6 +1146,10 @@ function PreviewPanel({
   notes: Array<{ id: string; text: string; createdAt: string; actorUserId?: string | null; edited?: boolean }>;
   onPreviewArtwork: (side: "front" | "back") => void;
   onPreviewProductionFile: (file: ProductionFileSummary) => void;
+  previewsCollapsed: boolean;
+  previewSize: ProductionPreviewSize;
+  onTogglePreviews: () => void;
+  onPreviewSizeChange: (size: ProductionPreviewSize) => void;
   documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
 }) {
   const li = primaryLineItem(job);
@@ -1171,6 +1181,16 @@ function PreviewPanel({
       ? job.order.fulfillmentStatus
       : "—";
 
+  const productionFiles = job.productionFiles ?? job.order.productionFiles ?? [];
+  const primaryProductionFile = productionFiles[0] ?? null;
+  const previewColumnClass = previewsCollapsed
+    ? "xl:grid-cols-[300px_minmax(260px,1fr)_minmax(280px,360px)]"
+    : previewSize === "compact"
+      ? "xl:grid-cols-[minmax(320px,0.75fr)_minmax(260px,1.25fr)_minmax(280px,340px)]"
+      : previewSize === "large"
+        ? "xl:grid-cols-[minmax(520px,1.5fr)_minmax(240px,0.75fr)_minmax(280px,340px)]"
+        : "xl:grid-cols-[minmax(420px,1fr)_minmax(260px,1fr)_minmax(280px,360px)]";
+
   const laminationLabel = sanitizeDisplayText((job as any).lamination?.label ?? "None");
   const finishingRequirements = Array.isArray((job as any).finishingRequirements)
     ? (job as any).finishingRequirements.filter((entry: unknown) => String(entry || "").trim())
@@ -1190,13 +1210,22 @@ function PreviewPanel({
 
   return (
     <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
-      <div className="grid grid-cols-1 xl:grid-cols-[700px_1fr_360px] gap-4">
-        <div className="space-y-3">
-          <div className="flex gap-4">
+      <div className={`grid grid-cols-1 gap-4 ${previewColumnClass}`}>
+        <ProductionPreviewArea
+          collapsed={previewsCollapsed}
+          size={previewSize}
+          artworkCount={thumbs.length}
+          productionFileName={primaryProductionFile?.fileName}
+          productionFileStatus={primaryProductionFile?.previewAvailabilityStatus}
+          onToggle={onTogglePreviews}
+          onSizeChange={onPreviewSizeChange}
+        >
+          <div className="space-y-3">
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {/* FRONT preview - always shown */}
-          <div className="space-y-1">
+          <div className="min-w-0 space-y-1">
             <div
-              className="relative aspect-square w-[280px] md:w-[320px] lg:w-[340px] h-[280px] md:h-[320px] lg:h-[340px] overflow-hidden rounded-lg border-2 border-titan-border-subtle bg-titan-bg-card flex items-center justify-center hover:border-blue-500 transition-colors cursor-pointer"
+              className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-lg border-2 border-titan-border-subtle bg-titan-bg-card transition-colors hover:border-blue-500 cursor-pointer"
               onClick={() => onPreviewArtwork("front")}
             >
               <ProductionThumbnail
@@ -1210,9 +1239,9 @@ function PreviewPanel({
 
           {/* BACK preview - only shown for double-sided */}
           {showBackSlot && (
-            <div className="space-y-1">
+            <div className="min-w-0 space-y-1">
               <div
-                className={`relative aspect-square w-[280px] md:w-[320px] lg:w-[340px] h-[280px] md:h-[320px] lg:h-[340px] overflow-hidden rounded-lg ${backMissingReason === "not_uploaded" ? "border-2 border-dashed border-muted-foreground/30" : "border-2 border-titan-border-subtle"} bg-titan-bg-card flex items-center justify-center hover:border-blue-500 transition-colors cursor-pointer`}
+                className={`relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-lg ${backMissingReason === "not_uploaded" ? "border-2 border-dashed border-muted-foreground/30" : "border-2 border-titan-border-subtle"} bg-titan-bg-card transition-colors hover:border-blue-500 cursor-pointer`}
                 onClick={() => onPreviewArtwork("back")}
               >
                 {backMissingReason === "not_uploaded" ? (
@@ -1236,21 +1265,22 @@ function PreviewPanel({
             </div>
           )}
           {showBackSlot && unassigned.length > 0 && (
-            <div className="space-y-1">
-              <div className="relative aspect-square w-[180px] h-[180px] overflow-hidden rounded-lg border-2 border-dashed border-amber-500/60 bg-titan-bg-card flex items-center justify-center">
+            <div className="min-w-0 space-y-1">
+              <div className="relative flex aspect-square w-full items-center justify-center overflow-hidden rounded-lg border-2 border-dashed border-amber-500/60 bg-titan-bg-card">
                 <ProductionThumbnail artwork={unassigned[0]} alt="Unassigned artwork" className="h-full w-full object-contain" />
               </div>
-              <div className="max-w-[180px] text-center text-xs text-amber-600">
+              <div className="text-center text-xs text-amber-600">
                 Unassigned artwork — assign Front or Back in the order line Artwork panel.
               </div>
             </div>
           )}
           </div>
           <ProductionFilePreviewPanel
-            files={job.productionFiles ?? job.order.productionFiles}
+            files={productionFiles}
             onPreview={onPreviewProductionFile}
           />
-        </div>
+          </div>
+        </ProductionPreviewArea>
 
         <div className="space-y-3 min-w-0 overflow-hidden">
           <div className="flex items-start justify-between gap-3">
@@ -1416,7 +1446,24 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
   const [productionPreviewFile, setProductionPreviewFile] = useState<ProductionFileSummary | null>(null);
+  const [productionFileAccessError, setProductionFileAccessError] = useState<string | null>(null);
+  const [previewsCollapsed, setPreviewsCollapsed] = useState(
+    () => typeof window !== "undefined" && window.localStorage.getItem("titan.production.flatbed.previewsCollapsed") === "true",
+  );
+  const [previewSize, setPreviewSize] = useState<ProductionPreviewSize>(() => {
+    if (typeof window === "undefined") return "normal";
+    const saved = window.localStorage.getItem("titan.production.flatbed.previewSize");
+    return saved === "compact" || saved === "large" ? saved : "normal";
+  });
   const [printerFilter, setPrinterFilter] = useState("all");
+
+  useEffect(() => {
+    window.localStorage.setItem("titan.production.flatbed.previewsCollapsed", String(previewsCollapsed));
+  }, [previewsCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem("titan.production.flatbed.previewSize", previewSize);
+  }, [previewSize]);
 
   const tabJobs = useMemo(
     () => filterProductionJobsForTab(props.jobs ?? data ?? [], props.status),
@@ -1621,6 +1668,10 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
               setPreviewModalOpen(true);
             }}
             onPreviewProductionFile={setProductionPreviewFile}
+            previewsCollapsed={previewsCollapsed}
+            previewSize={previewSize}
+            onTogglePreviews={() => setPreviewsCollapsed((current) => !current)}
+            onPreviewSizeChange={setPreviewSize}
             documentNumberDisplayMode={productionNumberDisplayMode}
           />
         ) : null}
@@ -2008,16 +2059,36 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                     </div>
                   </div>
                   <div className="flex shrink-0 gap-2">
-                    <Button asChild size="sm" variant="outline" className="gap-1.5">
-                      <a href={productionPreviewFile.openUrl} target="_blank" rel="noreferrer">Open</a>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="gap-1.5"
+                      onClick={() => {
+                        setProductionFileAccessError(null);
+                        void openAuthenticatedFile(productionPreviewFile.openUrl).catch((error) => {
+                          setProductionFileAccessError(error instanceof Error ? error.message : "File access failed.");
+                        });
+                      }}
+                    >
+                      Open
                     </Button>
-                    <Button asChild size="sm" className="gap-1.5">
-                      <a href={productionPreviewFile.downloadUrl}>
-                        <Download className="h-3.5 w-3.5" /> Download
-                      </a>
+                    <Button
+                      type="button"
+                      size="sm"
+                      className="gap-1.5"
+                      onClick={() => {
+                        setProductionFileAccessError(null);
+                        void downloadAuthenticatedFile(productionPreviewFile.downloadUrl, productionPreviewFile.fileName).catch((error) => {
+                          setProductionFileAccessError(error instanceof Error ? error.message : "File download failed.");
+                        });
+                      }}
+                    >
+                      <Download className="h-3.5 w-3.5" /> Download
                     </Button>
                   </div>
                 </div>
+                {productionFileAccessError ? <div role="alert" className="text-sm text-red-600">{productionFileAccessError}</div> : null}
               </div>
             );
           })() : null}
