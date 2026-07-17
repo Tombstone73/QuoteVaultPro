@@ -166,6 +166,31 @@ describe("production display data", () => {
     ]);
   });
 
+  test("prepress option rows prefer current saved Print Sides over stale snapshot labels", () => {
+    const rows = buildPrepressOptionRows({
+      id: "li-print-sides",
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: { printSides: { value: "double", label: "Double-Sided" } },
+      },
+      selectedOptions: [{ optionId: "printSides", optionName: "Print Sides", value: "single" }],
+      pbv2SnapshotJson: {
+        runtimeSelectionContext: {
+          resolvedChoices: {
+            printSides: { optionLabel: "Print Sides", choiceLabel: "Single-Sided" },
+          },
+        },
+      },
+    });
+
+    expect(rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ optionLabel: "Print Sides", selectedLabel: "Double-Sided" }),
+    ]));
+    expect(rows).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ optionLabel: "Print Sides", selectedLabel: "Single-Sided" }),
+    ]));
+  });
+
   test("resolves generated PBV2 option ids and choice_1 through the saved option tree", () => {
     const optionId = "dfa265fa-f1fc-4fdd-afde-a12274db2aec";
     const importedSelectionKey = "Dfa265fa F1fc 4fdd Afde A12274db2aec";

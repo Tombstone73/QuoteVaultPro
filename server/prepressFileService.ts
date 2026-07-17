@@ -64,7 +64,7 @@ export type BridgedOriginal = {
   mimeType: string | null;
   sizeBytes: number | null;
   role: string;
-  side: "front" | "back" | "na";
+  side: "front" | "back" | "both" | "na";
   createdAt: Date;
   source: 'order_attachment';
   downloadUrl: string;
@@ -73,6 +73,56 @@ export type BridgedOriginal = {
   displayFilename: string;
   computedDisplayFilename: string;
 };
+
+export type PrepressLineItemFile = LineItemFile & {
+  artworkSide: "front" | "back" | "both" | "na";
+  orderAttachmentId?: string | null;
+};
+
+type ArtworkSideSource = {
+  id: string;
+  fileRecordId?: string | null;
+  fileName?: string | null;
+  originalFilename?: string | null;
+  fileSize?: number | null;
+  sizeBytes?: number | null;
+  side?: string | null;
+};
+
+/** Merge order-attachment side metadata onto canonical prepress originals. */
+export function mergeArtworkSidesIntoPrepressFiles<T extends Record<string, any>>(
+  files: T[],
+  attachments: ArtworkSideSource[],
+): Array<T & { artworkSide: "front" | "back" | "both" | "na"; orderAttachmentId?: string | null }> {
+  const attachmentsByIdentity = new Map<string, ArtworkSideSource[]>();
+  for (const attachment of attachments) {
+    const identity = getCanonicalOriginalFileIdentity(attachment);
+    if (!identity) continue;
+    const existing = attachmentsByIdentity.get(identity) ?? [];
+    existing.push(attachment);
+    attachmentsByIdentity.set(identity, existing);
+  }
+
+  return files.map((file) => {
+    const identity = getCanonicalOriginalFileIdentity(file);
+    const matches = identity ? attachmentsByIdentity.get(identity) ?? [] : [];
+    const sides = new Set(matches.map((match) => String(match.side ?? "na").toLowerCase()));
+    const artworkSide = sides.has("both") || (sides.has("front") && sides.has("back"))
+      ? "both"
+      : sides.has("front")
+        ? "front"
+        : sides.has("back")
+          ? "back"
+          : "na";
+    const matchingAttachment = matches.find((match) => String(match.side ?? "na").toLowerCase() === artworkSide)
+      ?? matches[0];
+    return {
+      ...file,
+      artworkSide,
+      orderAttachmentId: matchingAttachment?.id ?? null,
+    };
+  });
+}
 
 export type EnsuredFinalArtworkResult = {
   file: LineItemFile;
@@ -552,9 +602,9 @@ export async function getLineItemFiles(
   lineItemId: string,
   organizationId: string
 ): Promise<{
-  originals: LineItemFile[];
-  finals: LineItemFile[];
-  references: LineItemFile[];
+  originals: PrepressLineItemFile[];
+  finals: PrepressLineItemFile[];
+  references: PrepressLineItemFile[];
   bridgedOriginals: BridgedOriginal[];
 }> {
   const allFiles = await db
@@ -603,11 +653,12 @@ export async function getLineItemFiles(
   // Preserve that explicit mapping in prepress while still deduplicating accidental
   // duplicate rows for the same file and same side.
   const knownOriginalIdentities = new Set(originalIdentities.filter((identity): identity is string => Boolean(identity)));
+  const filesWithArtworkSides = mergeArtworkSidesIntoPrepressFiles(allFiles, legacyRows);
   const seenLegacyArtworkSides = new Set<string>();
   const dedupedLegacyRows = legacyRows.filter((row) => {
     const identity = getCanonicalOriginalFileIdentity(row);
     if (identity && knownOriginalIdentities.has(identity)) return false;
-    const side = row.side === "front" || row.side === "back" ? row.side : "na";
+    const side = row.side === "front" || row.side === "back" || row.side === "both" ? row.side : "na";
     const dedupeKey = `${identity ?? `attachment:${row.id}`}:${side}`;
     if (seenLegacyArtworkSides.has(dedupeKey)) return false;
     seenLegacyArtworkSides.add(dedupeKey);
@@ -630,7 +681,7 @@ export async function getLineItemFiles(
       mimeType: row.mimeType ?? null,
       sizeBytes: row.sizeBytes ?? row.fileSize ?? null,
       role: row.role ?? "other",
-      side: row.side === "front" || row.side === "back" ? row.side : "na",
+      side: row.side === "front" || row.side === "back" || row.side === "both" ? row.side : "na",
       createdAt: row.createdAt,
       source: "order_attachment" as const,
       downloadUrl: originalAccess.downloadUrl ?? originalAccess.originalUrl ?? "",
@@ -642,9 +693,9 @@ export async function getLineItemFiles(
   }));
 
   return {
-    originals: allFiles.filter((f) => f.role === "original"),
-    finals: allFiles.filter((f) => f.role === "final"),
-    references: allFiles.filter((f) => f.role === "reference"),
+    originals: filesWithArtworkSides.filter((f) => f.role === "original"),
+    finals: filesWithArtworkSides.filter((f) => f.role === "final"),
+    references: filesWithArtworkSides.filter((f) => f.role === "reference"),
     bridgedOriginals,
   };
 }

@@ -266,6 +266,9 @@ export type PrepressQueueItem = {
     selectedLabel: string;
     isDefault?: boolean;
   }>;
+  printSides?: "Single-sided" | "Double-sided" | "Unknown";
+  useSameArtworkBothSides?: boolean;
+  sameArtworkFileId?: string | null;
 };
 
 export type OrderWithRelations = Order & {

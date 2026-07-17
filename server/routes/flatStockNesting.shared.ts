@@ -15,6 +15,7 @@
  */
 
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
+import { resolvePersistedLineItemSelectionEntries } from "@shared/lineItemOptionSelections";
 
 export type ProductionDisplayOptionRow = {
   groupLabel?: string | null;
@@ -518,21 +519,7 @@ export const buildPrepressOptionRows = (
     rows.push({ ...row, optionLabel, selectedLabel });
   };
 
-  const optionSelections = lineItem?.optionSelectionsJson as any;
-  const selectedRecordRaw =
-    optionSelections &&
-    typeof optionSelections === "object" &&
-    optionSelections.selected &&
-    typeof optionSelections.selected === "object"
-      ? optionSelections.selected
-      : optionSelections && typeof optionSelections === "object"
-        ? optionSelections
-        : snapshot && isRecord(snapshot.selections)
-          ? snapshot.selections
-          : null;
-
-  const selectedRecord: Record<string, unknown> =
-    selectedRecordRaw && typeof selectedRecordRaw === "object" ? selectedRecordRaw : {};
+  const selectedRecord = resolvePersistedLineItemSelectionEntries(lineItem);
 
   const normalizedNodes: any[] = [];
   const seenNodeObjects = new Set<any>();
@@ -593,22 +580,6 @@ export const buildPrepressOptionRows = (
     }
   }
 
-  const runtimeResolvedChoices = isRecord(snapshot?.runtimeSelectionContext?.resolvedChoices)
-    ? snapshot.runtimeSelectionContext.resolvedChoices
-    : null;
-  if (runtimeResolvedChoices) {
-    for (const [selectionKey, resolved] of Object.entries(runtimeResolvedChoices)) {
-      const optionLabel = getDisplayLabelFromRecord(resolved, ["optionLabel", "label", "name"]);
-      const selectedLabel = getDisplayLabelFromRecord(resolved, ["choiceLabel", "selectedLabel", "valueLabel", "label", "name"]);
-      if (!optionLabel || !selectedLabel) continue;
-      pushRow(selectionKey, {
-        groupLabel: null,
-        optionLabel,
-        selectedLabel,
-      });
-    }
-  }
-
   for (const [selectionKey, rawSelection] of Object.entries(selectedRecord)) {
     if (isInternalDisplayKey(selectionKey)) continue;
     if (rowKeys.has(selectionKey)) continue;
@@ -628,6 +599,8 @@ export const buildPrepressOptionRows = (
     const choiceList = getChoiceList(node);
 
     const toDisplayLabel = (value: unknown): string => {
+      const persistedLabel = getDisplayLabelFromRecord(rawSelection, ["choiceLabel", "selectedLabel", "valueLabel", "label", "name"]);
+      if (persistedLabel) return persistedLabel;
       if (Array.isArray(value)) {
         return value
           .map((entry) => {
@@ -682,7 +655,25 @@ export const buildPrepressOptionRows = (
       row.isDefault = valuesEqualForDefault(selectedValue, defaultValue);
     }
 
-    pushRow(selectionKey, row);
+    pushRow(cleanString(node?.id) || selectionKey, row);
+  }
+
+  // Snapshot runtime labels are useful enrichment, but they are lower priority
+  // than the current saved line-item selection map. They only fill missing rows.
+  const runtimeResolvedChoices = isRecord(snapshot?.runtimeSelectionContext?.resolvedChoices)
+    ? snapshot.runtimeSelectionContext.resolvedChoices
+    : null;
+  if (runtimeResolvedChoices) {
+    for (const [selectionKey, resolved] of Object.entries(runtimeResolvedChoices)) {
+      const optionLabel = getDisplayLabelFromRecord(resolved, ["optionLabel", "label", "name"]);
+      const selectedLabel = getDisplayLabelFromRecord(resolved, ["choiceLabel", "selectedLabel", "valueLabel", "label", "name"]);
+      if (!optionLabel || !selectedLabel) continue;
+      pushRow(selectionKey, {
+        groupLabel: null,
+        optionLabel,
+        selectedLabel,
+      });
+    }
   }
 
   if (rows.length === 0) {

@@ -17,6 +17,7 @@ import { formatDistanceToNow } from "date-fns";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
+import { PrepressArtworkSideBadge } from "@/components/prepress/PrepressArtworkSideBadge";
 import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
 import {
   type ProductionAlertSeverity,
@@ -38,6 +39,7 @@ import {
   type PrepressStatusFilter,
 } from "@/lib/prepressListPreferences";
 import type { FileUploadNamingPolicy } from "@shared/fileUploadNaming";
+import { resolveProductionArtworkSideReadiness } from "@shared/productionHydration";
 
 type LineItemFile = {
   id: string;
@@ -53,6 +55,7 @@ type LineItemFile = {
   downloadUrl?: string | null;
   thumbnailUrl?: string | null;
   mimeType?: string;
+  artworkSide?: "front" | "back" | "both" | "na";
 };
 
 type BridgedOriginalFile = {
@@ -61,7 +64,7 @@ type BridgedOriginalFile = {
   mimeType: string | null;
   sizeBytes: number | null;
   role: string;
-  side: "front" | "back" | "na";
+  side: "front" | "back" | "both" | "na";
   createdAt: string;
   source: "order_attachment";
   downloadUrl: string;
@@ -87,7 +90,7 @@ type VisibleFileRecord = AttachmentData & {
   tagLabel: string;
   downloadUrl: string;
   sizeBytesValue: number | null;
-  sideLabel?: "front" | "back" | null;
+  sideLabel: "front" | "back" | "both" | "na";
 };
 
 type PendingViewerRequest = {
@@ -181,6 +184,9 @@ type SpecSheetData = {
   originals: LineItemFile[];
   finals: LineItemFile[];
   references: LineItemFile[];
+  printSides?: "Single-sided" | "Double-sided" | "Unknown";
+  useSameArtworkBothSides?: boolean;
+  sameArtworkFileId?: string | null;
 };
 
 type UploadProgress = {
@@ -808,6 +814,7 @@ export default function PrepressProductionPageV2() {
     tagLabel: formatPrepressTagLabel(file.tag, defaultTag),
     downloadUrl: file.downloadUrl ?? `/api/prepress/files/${file.id}/download`,
     sizeBytesValue: file.sizeBytes,
+    sideLabel: file.artworkSide ?? "na",
   });
   const toVisibleBridgedFile = (file: BridgedOriginalFile): VisibleFileRecord => ({
     id: file.id,
@@ -823,7 +830,7 @@ export default function PrepressProductionPageV2() {
     displayName: file.computedDisplayFilename || file.displayFilename || file.originalFilename,
     uploadedByLabel: file.uploadedBy || "—",
     tagLabel: "order",
-    sideLabel: file.side === "front" || file.side === "back" ? file.side : null,
+    sideLabel: file.side === "front" || file.side === "back" || file.side === "both" ? file.side : "na",
     downloadUrl: file.downloadUrl,
     sizeBytesValue: file.sizeBytes,
   });
@@ -857,6 +864,17 @@ export default function PrepressProductionPageV2() {
     originalFiles.length > 0 ||
     bridgedOriginalFiles.some((file) => file.role === "artwork" || file.role === "proof" || file.role === "reference");
   const canCompleteWithExistingArtwork = !hasFinalFiles && hasUsableExistingArtwork;
+  const artworkSideReadiness = resolveProductionArtworkSideReadiness({
+    sides: selectedItem?.printSides ?? "Unknown",
+    artwork: [
+      ...originalFiles.map((file) => ({ ...file, side: file.artworkSide ?? "na" })),
+      ...bridgedOriginalFiles,
+    ],
+    useSameArtworkBothSides: selectedItem?.useSameArtworkBothSides === true,
+    sameArtworkFileId: selectedItem?.sameArtworkFileId ?? null,
+  });
+  const artworkFilename = (file: any): string =>
+    file?.computedDisplayFilename || file?.displayFilename || file?.originalFilename || "Not assigned";
   const materialsPayload = materialsEffectiveData?.data;
   const plannedMaterials = materialsPayload?.plannedMaterials || [];
   const effectiveMaterials = materialsPayload?.effectiveMaterials || [];
@@ -881,6 +899,7 @@ export default function PrepressProductionPageV2() {
     isOwnedByPrepress &&
     selectedWorkflowState === "in_prepress" &&
     (hasFinalFiles || hasUsableExistingArtwork) &&
+    artworkSideReadiness.complete &&
     !!selectedItem?.sessionId;
   const canSendToPrint =
     isOwnedByPrepress &&
@@ -889,6 +908,7 @@ export default function PrepressProductionPageV2() {
     !selectedItem?.sessionId &&
     !selectedItem?.hasDownstreamActiveJob &&
     hasFinalFiles &&
+    artworkSideReadiness.complete &&
     !selectedItem?.productionReleaseBlockedReason;
   const hasProofReleaseBlock = Boolean(selectedItem?.productionReleaseBlockedReason);
   const activeSessionStartedAt = selectedItem?.sessionStartedAt ? new Date(selectedItem.sessionStartedAt) : null;
@@ -1572,7 +1592,13 @@ export default function PrepressProductionPageV2() {
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Bleed</p>
                 <p className="text-sm font-medium">{selectedItem?.bleed || "—"}</p>
               </div>
-              <div className="sm:col-span-2 xl:col-start-2 xl:col-span-2 min-w-0 overflow-hidden">
+              <div className="xl:col-start-2">
+                <p className="text-[10px] text-slate-500 uppercase font-bold">Print Sides</p>
+                <p className="text-sm font-medium" data-testid="prepress-print-sides">
+                  {selectedItem?.printSides || "Unknown"}
+                </p>
+              </div>
+              <div className="sm:col-span-2 xl:col-start-3 xl:col-span-2 min-w-0 overflow-hidden">
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Options</p>
                 {(selectedItem?.optionsRows?.length || 0) > 0 ? (
                   <div className="space-y-1.5 min-w-0 max-w-full">
@@ -1614,19 +1640,49 @@ export default function PrepressProductionPageV2() {
                   <p className="text-sm font-medium text-slate-400">No options selected</p>
                 )}
               </div>
-              <div className="xl:col-start-4">
+              <div className="xl:col-start-5">
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Priority</p>
                 <p className={cn("text-sm font-bold", selectedItem?.rush ? "text-[#e53e3e]" : "text-slate-400")}>
                   {selectedItem?.rush ? "RUSH" : selectedItem?.priorityLabel || "Normal"}
                 </p>
               </div>
-              <div className="sm:col-span-2 xl:col-start-5 xl:col-span-2 min-w-0 overflow-hidden">
+              <div className="sm:col-span-2 xl:col-start-6 xl:col-span-1 min-w-0 overflow-hidden">
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Line Item Notes</p>
                 <p className="text-sm font-medium text-slate-300 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
                   {selectedItem?.lineItemNotes || "No line item notes"}
                 </p>
               </div>
             </div>
+
+            {selectedItem?.printSides === "Double-sided" && (
+              <div
+                className={cn(
+                  "mt-3 rounded-lg border p-4",
+                  artworkSideReadiness.complete
+                    ? "border-emerald-700/40 bg-emerald-950/15"
+                    : "border-amber-600/50 bg-amber-950/20",
+                )}
+                data-testid="prepress-artwork-side-summary"
+              >
+                <div className="flex items-center gap-2 text-sm font-semibold">
+                  {artworkSideReadiness.complete
+                    ? <CheckCircle className="h-4 w-4 text-emerald-400" />
+                    : <AlertCircle className="h-4 w-4 text-amber-400" />}
+                  Double-sided artwork assignment
+                </div>
+                <div className="mt-2 grid gap-2 text-xs sm:grid-cols-2 xl:grid-cols-4">
+                  <div><span className="text-slate-500">Same artwork both sides:</span> {selectedItem.useSameArtworkBothSides ? "Yes" : "No"}</div>
+                  <div><span className="text-slate-500">Front artwork:</span> {artworkFilename(artworkSideReadiness.front)}</div>
+                  <div><span className="text-slate-500">Back artwork:</span> {artworkFilename(artworkSideReadiness.back)}</div>
+                  <div><span className="text-slate-500">Both sides artwork:</span> {artworkSideReadiness.both ? artworkFilename(artworkSideReadiness.both) : "Not assigned"}</div>
+                </div>
+                {artworkSideReadiness.warning && (
+                  <p className="mt-2 text-xs font-medium text-amber-300" role="alert">
+                    {artworkSideReadiness.warning} Complete the assignment on the order line before releasing this job.
+                  </p>
+                )}
+              </div>
+            )}
 
           </section>
 
@@ -1668,13 +1724,14 @@ export default function PrepressProductionPageV2() {
                     <th className="px-4 py-3 font-semibold">Upload Date</th>
                     <th className="px-4 py-3 font-semibold">Uploaded By</th>
                     <th className="px-4 py-3 font-semibold">Tag</th>
+                    <th className="px-4 py-3 font-semibold">Artwork Side</th>
                     <th className="px-4 py-3 font-semibold text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#2d3748]">
                   {visibleOriginalFiles.length === 0 && visibleBridgedOriginalFiles.length === 0 ? (
                     <tr>
-                      <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                      <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
                         {selectedLineItemId ? "No original files uploaded" : "Select a line item to view files"}
                       </td>
                     </tr>
@@ -1697,6 +1754,9 @@ export default function PrepressProductionPageV2() {
                           <td className="px-4 py-3">
                             <span className="bg-slate-700 px-2 py-0.5 rounded">{file.tagLabel}</span>
                           </td>
+                          <td className="px-4 py-3">
+                            <PrepressArtworkSideBadge side={file.sideLabel} />
+                          </td>
                           <td className="px-4 py-3 text-right">
                             <button 
                               onClick={(event) => {
@@ -1714,7 +1774,7 @@ export default function PrepressProductionPageV2() {
                       {visibleBridgedOriginalFiles.length > 0 && (
                         <>
                           <tr className="bg-amber-950/20">
-                            <td colSpan={7} className="px-4 py-1.5">
+                            <td colSpan={8} className="px-4 py-1.5">
                               <span className="text-[10px] font-bold uppercase tracking-widest text-amber-400/80">
                                 Pre-submitted by customer (from order)
                               </span>
@@ -1736,12 +1796,10 @@ export default function PrepressProductionPageV2() {
                               <td className="px-4 py-3">
                                 <div className="flex flex-wrap gap-1">
                                   <span className="bg-amber-900/50 text-amber-300 border border-amber-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">{file.tagLabel}</span>
-                                  {file.sideLabel && (
-                                    <span className="bg-violet-900/50 text-violet-200 border border-violet-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">
-                                      {file.sideLabel}
-                                    </span>
-                                  )}
                                 </div>
+                              </td>
+                              <td className="px-4 py-3">
+                                <PrepressArtworkSideBadge side={file.sideLabel} />
                               </td>
                               <td className="px-4 py-3 text-right">
                                 <button
@@ -2175,6 +2233,12 @@ export default function PrepressProductionPageV2() {
         {/* Sticky Footer */}
         <div className="sticky bottom-0 z-20 shrink-0 border-t border-[#2d3748] bg-[#1a232e] p-4 flex items-center justify-between">
           <div className="flex items-center gap-4">
+            {artworkSideReadiness.warning ? (
+              <div className="flex items-center gap-2 text-amber-400" role="alert">
+                <AlertCircle className="w-4 h-4" />
+                <span className="text-xs font-medium">{artworkSideReadiness.warning}</span>
+              </div>
+            ) : null}
             {selectedItem?.proofBypassed ? (
               <div className="flex items-center gap-2 text-green-500">
                 <CheckCircle className="w-4 h-4" />
@@ -2529,6 +2593,10 @@ export default function PrepressProductionPageV2() {
                 <div><span className="text-slate-500">Sq Ft:</span> {specSheetData.sqFootage != null ? `${specSheetData.sqFootage.toFixed(1)} sq ft` : "—"}</div>
                 <div><span className="text-slate-500">Media:</span> {specSheetData.media || "Not specified"}</div>
                 <div><span className="text-slate-500">Production Destination:</span> {specSheetData.productionDestination || "—"}</div>
+                <div><span className="text-slate-500">Print Sides:</span> {specSheetData.printSides || "Unknown"}</div>
+                {specSheetData.printSides === "Double-sided" && (
+                  <div><span className="text-slate-500">Same artwork both sides:</span> {specSheetData.useSameArtworkBothSides ? "Yes" : "No"}</div>
+                )}
                 <div><span className="text-slate-500">Line Item Notes:</span> {specSheetData.lineItemNotes || "No line item notes"}</div>
               </div>
 
