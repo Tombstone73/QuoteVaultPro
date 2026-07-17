@@ -71,6 +71,7 @@ import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
 import { resolveProductionSides } from "@shared/productionHydration";
+import { buildLineItemOptionSummaryChips } from "@shared/lineItemOptionSelections";
 import {
   buildInitialOrderLineItemDraftFromProduct,
   type InitialOrderLineItemDraftDebug,
@@ -136,69 +137,6 @@ function SortableOrderLineItemWrapper({
 
 function requiresDimensions(product: Product | null, treeJson?: OptionTreeV2 | null): boolean {
   return productRequiresEnteredDimensions(product, treeJson);
-}
-
-/**
- * Generic option chip extractor for collapsed line item display.
- * Works with any product's option structure without hardcoded keys.
- */
-function extractOptionChips(
-  selectedOptions: any[] | undefined | null,
-  maxChips: number = 3
-): { chips: string[]; overflowCount: number } {
-  if (!Array.isArray(selectedOptions) || selectedOptions.length === 0) {
-    return { chips: [], overflowCount: 0 };
-  }
-
-  const chips: string[] = [];
-  
-  for (const opt of selectedOptions) {
-    if (!opt || typeof opt !== 'object') continue;
-    
-    // Extract name from common fields
-    const name = opt.optionName || opt.label || opt.name || '';
-    
-    // Extract value from common fields, handle booleans
-    let value = opt.displayValue ?? opt.value;
-    if (typeof value === 'boolean') {
-      value = value ? 'Yes' : 'No';
-    }
-    
-    // Convert to string and trim
-    const nameStr = String(name).trim();
-    const valueStr = value != null ? String(value).trim() : '';
-    
-    // Skip empty/meaningless values
-    if (!nameStr) continue;
-    if (!valueStr || valueStr.toLowerCase() === 'none' || valueStr.toLowerCase() === 'n/a' || valueStr === 'false' || valueStr === 'No') continue;
-    
-    // Build chip string: prefer short value-only when possible
-    let chipText: string;
-    
-    if (valueStr && valueStr !== 'true' && valueStr !== 'Yes') {
-      if (valueStr.length <= 12) {
-        // Short value → use value only
-        chipText = valueStr;
-      } else if (nameStr.length <= 12) {
-        // Long value, short name → use name only
-        chipText = nameStr;
-      } else {
-        // Both long → use name with ellipsis
-        chipText = nameStr.substring(0, 9) + '...';
-      }
-    } else {
-      // Boolean yes or empty → use name only
-      chipText = nameStr.length <= 12 ? nameStr : nameStr.substring(0, 9) + '...';
-    }
-    
-    chips.push(chipText);
-  }
-  
-  const totalCount = chips.length;
-  const displayChips = chips.slice(0, maxChips);
-  const overflowCount = Math.max(0, totalCount - maxChips);
-  
-  return { chips: displayChips, overflowCount };
 }
 
 function getPbv2SnapshotFromLineItem(lineItem: any): any | null {
@@ -2594,10 +2532,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const itemSpecsJson: any =
                     item.specsJson && typeof item.specsJson === "object" ? (item.specsJson as any) : {};
 
-                  const selectedOptionsForChips = Array.isArray((item as any).selectedOptions) && (item as any).selectedOptions.length > 0
-                    ? (item as any).selectedOptions
-                    : ((itemSpecsJson as any)?.selectedOptions || []);
-                  const { chips: optionChips, overflowCount } = extractOptionChips(selectedOptionsForChips, 3);
+                  const summaryProduct = products.find((product) => product.id === item.productId) ?? null;
+                  const summaryTree = normalizePbv2Tree(
+                    (item as any).pbv2SnapshotJson?.treeJson ?? getPbv2Tree(summaryProduct),
+                  );
+                  const { chips: optionChips, overflowCount } = buildLineItemOptionSummaryChips(item, summaryTree, 3);
 
                   const persistedDescription = typeof item.description === "string" ? item.description.trim() : "";
 

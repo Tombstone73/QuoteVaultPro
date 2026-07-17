@@ -2,6 +2,18 @@ import type { LineItemOptionSelectionsV2, OptionNodeV2, OptionTreeV2 } from "./o
 
 export type PersistedLineItemSelectionEntry = Record<string, unknown> & { value: unknown };
 
+export type ResolvedSavedLineItemOption = {
+  optionKey: string;
+  optionId: string;
+  optionLabel: string;
+  savedValue: unknown;
+  selectedOptionId: string | null;
+  dropdownValue: unknown;
+  selectedLabel: string;
+  isDefault: boolean;
+  source: "saved" | "product_default";
+};
+
 type SelectionCandidate = {
   key: string;
   entry: PersistedLineItemSelectionEntry;
@@ -47,6 +59,12 @@ function comparable(value: unknown): string {
     .trim();
 }
 
+function humanize(value: unknown): string {
+  const raw = String(value ?? "").trim().replace(/[_-]+/g, " ").replace(/\s+/g, " ");
+  if (!raw) return "";
+  return raw.charAt(0).toUpperCase() + raw.slice(1);
+}
+
 function treeNodes(tree: unknown): OptionNodeV2[] {
   const record = asRecord(tree);
   const nodes = record?.nodes;
@@ -74,6 +92,36 @@ function findNodeForCandidate(nodes: OptionNodeV2[], candidate: SelectionCandida
   return nodes.find((node) => comparable(node.label) === normalizedLabel) ?? null;
 }
 
+function choiceAliases(choice: any): unknown[] {
+  return [
+    choice?.value,
+    choice?.id,
+    choice?.choiceId,
+    choice?.key,
+    choice?.slug,
+    choice?.internalValue,
+    choice?.label,
+    choice?.name,
+    choice?.displayLabel,
+  ];
+}
+
+function unwrapSavedChoiceValue(value: unknown): unknown {
+  const record = asRecord(value);
+  if (!record) return value;
+  return record.choiceValue ?? record.selectedValue ?? record.choiceId ?? record.id ?? record.key ?? record.slug ?? record.value ?? value;
+}
+
+function findChoiceForSavedValue(node: OptionNodeV2, value: unknown, choiceLabel?: string): any | null {
+  const choices = Array.isArray(node.choices) ? node.choices : [];
+  const unwrapped = unwrapSavedChoiceValue(value);
+  const exact = choices.find((choice: any) => choiceAliases(choice)
+    .some((alias) => alias !== undefined && String(alias) === String(unwrapped)));
+  if (exact) return exact;
+  const desired = comparable(choiceLabel ?? unwrapped);
+  return choices.find((choice: any) => choiceAliases(choice).some((alias) => comparable(alias) === desired)) ?? null;
+}
+
 function normalizeValueForNode(node: OptionNodeV2, candidate: SelectionCandidate): unknown {
   if (Array.isArray(candidate.entry.value)) {
     return candidate.entry.value.map((value) => normalizeValueForNode(node, {
@@ -82,22 +130,14 @@ function normalizeValueForNode(node: OptionNodeV2, candidate: SelectionCandidate
     }));
   }
 
-  const choices = Array.isArray(node.choices) ? node.choices : [];
-  if (choices.length === 0) return candidate.entry.value;
-  const exact = choices.find((choice: any) => [choice.value, choice.id, choice.key]
-    .some((alias) => alias !== undefined && String(alias) === String(candidate.entry.value)));
-  if (exact) return exact.value;
-
-  const desired = comparable(candidate.choiceLabel ?? candidate.entry.value);
-  const matched = choices.find((choice: any) => [choice.value, choice.id, choice.key, choice.label, choice.name]
-    .some((alias) => comparable(alias) === desired));
-  return matched?.value ?? candidate.entry.value;
+  const matched = findChoiceForSavedValue(node, candidate.entry.value, candidate.choiceLabel);
+  return matched?.value ?? unwrapSavedChoiceValue(candidate.entry.value);
 }
 
 function choiceLabelForNodeValue(node: OptionNodeV2 | null, value: unknown): string | undefined {
   if (!node || !Array.isArray(node.choices)) return undefined;
   const wanted = comparable(value);
-  const choice = node.choices.find((candidate: any) => [candidate.value, candidate.id, candidate.key]
+  const choice = node.choices.find((candidate: any) => choiceAliases(candidate)
     .some((alias) => comparable(alias) === wanted));
   const label = (choice as any)?.label ?? (choice as any)?.name;
   return typeof label === "string" && label.trim() ? label : undefined;
@@ -184,21 +224,38 @@ export function resolvePersistedLineItemSelectionEntries(lineItem: any): Record<
 }
 
 /**
- * Resolves a saved order line against the tree currently rendering controls.
- * Stable keys/IDs win, while normalized labels are only a compatibility path
- * for historic tree versions. Defaults are applied per option, never as an
- * all-or-nothing replacement for the saved map.
+ * Resolves every saved option into the exact value expected by the PBV2
+ * control and the human-readable label used by summaries and production.
  */
-export function resolveSavedLineItemOptionSelections(
+export function resolveSavedLineItemOptions(
   lineItem: any,
   tree: OptionTreeV2 | null | undefined,
   options: { includeDefaults?: boolean } = {},
-): LineItemOptionSelectionsV2 {
+): ResolvedSavedLineItemOption[] {
   if (!tree) {
-    return {
-      schemaVersion: 2,
-      selected: resolvePersistedLineItemSelectionEntries(lineItem) as LineItemOptionSelectionsV2["selected"],
-    };
+    const candidates = collectSelectionCandidates(lineItem);
+    const seen = new Set<string>();
+    return candidates.flatMap((candidate) => {
+      if (seen.has(candidate.key)) return [];
+      seen.add(candidate.key);
+      const enrichment = candidates.find((other) => (
+        other.key === candidate.key && (other.optionLabel || other.choiceLabel || typeof other.entry.label === "string")
+      ));
+      const dropdownValue = unwrapSavedChoiceValue(candidate.entry.value);
+      return [{
+        optionKey: candidate.key,
+        optionId: candidate.key,
+        optionLabel: enrichment?.optionLabel ?? candidate.optionLabel ?? humanize(candidate.key),
+        savedValue: candidate.entry.value,
+        selectedOptionId: null,
+        dropdownValue,
+        selectedLabel: enrichment?.choiceLabel
+          ?? (typeof enrichment?.entry.label === "string" ? enrichment.entry.label : undefined)
+          ?? (typeof candidate.entry.label === "string" ? candidate.entry.label : humanize(dropdownValue)),
+        isDefault: false,
+        source: "saved" as const,
+      }];
+    });
   }
 
   const targetNodes = treeNodes(tree).filter((node) => (
@@ -206,8 +263,8 @@ export function resolveSavedLineItemOptionSelections(
   ));
   const sourceNodes = treeNodes(asRecord(lineItem?.pbv2SnapshotJson)?.treeJson);
   const candidates = collectSelectionCandidates(lineItem);
-  const selected: LineItemOptionSelectionsV2["selected"] = {};
   const usedCandidates = new Set<number>();
+  const resolved: ResolvedSavedLineItemOption[] = [];
 
   for (const targetNode of targetNodes) {
     const targetAliases = new Set(nodeAliases(targetNode));
@@ -229,26 +286,110 @@ export function resolveSavedLineItemOptionSelections(
       });
     }
 
-    const key = selectionKey(targetNode);
-    if (matchedIndex >= 0) {
-      usedCandidates.add(matchedIndex);
-      const candidate = candidates[matchedIndex];
-      const sourceNode = findNodeForCandidate(sourceNodes, candidate);
-      const candidateWithResolvedLabel = {
-        ...candidate,
-        choiceLabel: candidate.choiceLabel ?? choiceLabelForNodeValue(sourceNode, candidate.entry.value),
-      };
-      selected[key] = {
-        ...candidate.entry,
-        value: normalizeValueForNode(targetNode, candidateWithResolvedLabel),
-      } as any;
+    const optionKey = selectionKey(targetNode);
+    const defaultValue = (targetNode.input as any)?.defaultValue;
+    const candidate = matchedIndex >= 0 ? candidates[matchedIndex] : null;
+    if (!candidate && (!options.includeDefaults || defaultValue === undefined || defaultValue === null || defaultValue === "")) {
       continue;
     }
+    if (matchedIndex >= 0) usedCandidates.add(matchedIndex);
 
-    const defaultValue = (targetNode.input as any)?.defaultValue;
-    if (options.includeDefaults && defaultValue !== undefined && defaultValue !== null && defaultValue !== "") {
-      selected[key] = { value: defaultValue };
-    }
+    const sourceNode = candidate ? findNodeForCandidate(sourceNodes, candidate) : null;
+    const sourceChoiceLabel = candidate
+      ? candidate.choiceLabel ?? choiceLabelForNodeValue(sourceNode, candidate.entry.value)
+      : undefined;
+    const savedValue = candidate?.entry.value ?? defaultValue;
+    const normalizedCandidate: SelectionCandidate = candidate
+      ? { ...candidate, choiceLabel: sourceChoiceLabel }
+      : { key: optionKey, entry: { value: defaultValue } };
+    const dropdownValue = normalizeValueForNode(targetNode, normalizedCandidate);
+    const matchedChoice = Array.isArray(dropdownValue)
+      ? null
+      : findChoiceForSavedValue(targetNode, dropdownValue, sourceChoiceLabel);
+    const selectedLabel = Array.isArray(dropdownValue)
+      ? dropdownValue.map((value) => {
+          const choice = findChoiceForSavedValue(targetNode, value);
+          return String(choice?.label ?? choice?.name ?? choice?.displayLabel ?? humanize(value));
+        }).join(", ")
+      : String(
+          matchedChoice?.label
+          ?? matchedChoice?.name
+          ?? matchedChoice?.displayLabel
+          ?? sourceChoiceLabel
+          ?? (candidate && typeof candidate.entry.label === "string" ? candidate.entry.label : "")
+          ?? humanize(dropdownValue),
+        ) || humanize(dropdownValue);
+    const normalizedDefault = defaultValue === undefined
+      ? undefined
+      : normalizeValueForNode(targetNode, { key: optionKey, entry: { value: defaultValue } });
+
+    resolved.push({
+      optionKey,
+      optionId: String(targetNode.id ?? optionKey),
+      optionLabel: String(targetNode.label ?? humanize(optionKey)),
+      savedValue,
+      selectedOptionId: matchedChoice
+        ? String(matchedChoice.id ?? matchedChoice.choiceId ?? matchedChoice.key ?? matchedChoice.value)
+        : null,
+      dropdownValue,
+      selectedLabel,
+      isDefault: normalizedDefault !== undefined && comparable(normalizedDefault) === comparable(dropdownValue),
+      source: candidate ? "saved" : "product_default",
+    });
+  }
+
+  return resolved;
+}
+
+export function buildLineItemOptionSummaryChips(
+  lineItem: any,
+  tree: OptionTreeV2 | null | undefined,
+  maxChips = 3,
+): { chips: string[]; overflowCount: number; options: ResolvedSavedLineItemOption[] } {
+  const options = resolveSavedLineItemOptions(lineItem, tree, { includeDefaults: false });
+  const labels = options
+    .map((option) => {
+      const label = option.selectedLabel.trim();
+      if (!label) return "";
+      return /^(yes|no|true|false)$/i.test(label)
+        ? `${option.optionLabel}: ${label}`
+        : label;
+    })
+    .filter(Boolean);
+  return {
+    chips: labels.slice(0, maxChips),
+    overflowCount: Math.max(0, labels.length - maxChips),
+    options,
+  };
+}
+
+/**
+ * Resolves a saved order line against the tree currently rendering controls.
+ * Stable keys/IDs win, while normalized labels are only a compatibility path
+ * for historic tree versions. Defaults are applied per option, never as an
+ * all-or-nothing replacement for the saved map.
+ */
+export function resolveSavedLineItemOptionSelections(
+  lineItem: any,
+  tree: OptionTreeV2 | null | undefined,
+  options: { includeDefaults?: boolean } = {},
+): LineItemOptionSelectionsV2 {
+  if (!tree) {
+    return {
+      schemaVersion: 2,
+      selected: resolvePersistedLineItemSelectionEntries(lineItem) as LineItemOptionSelectionsV2["selected"],
+    };
+  }
+
+  const selected: LineItemOptionSelectionsV2["selected"] = {};
+  for (const option of resolveSavedLineItemOptions(lineItem, tree, options)) {
+    selected[option.optionKey] = {
+      value: option.dropdownValue,
+      label: option.selectedLabel,
+      optionId: option.optionId,
+      selectedOptionId: option.selectedOptionId,
+      origin: option.source,
+    } as any;
   }
 
   return { schemaVersion: 2, selected };
