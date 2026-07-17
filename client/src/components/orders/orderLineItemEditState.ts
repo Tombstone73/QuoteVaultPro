@@ -4,7 +4,7 @@ import {
   buildInitialOrderLineItemDraftFromProduct,
   type InitialOrderLineItemDraftDebug,
 } from "@shared/orderLineItemInitialization";
-import { resolvePersistedLineItemSelectionEntries } from "@shared/lineItemOptionSelections";
+import { resolveSavedLineItemOptionSelections } from "@shared/lineItemOptionSelections";
 
 export type OrderLineItemSavedSnapshot = {
   productId: string;
@@ -87,7 +87,10 @@ function asRecord(value: unknown): Record<string, any> | null {
  * store the `selected` map without the V2 envelope, so never substitute product
  * defaults merely because `schemaVersion` is absent.
  */
-export function hydratePersistedOrderLineItemOptionSelections(lineItem: any): {
+export function hydratePersistedOrderLineItemOptionSelections(
+  lineItem: any,
+  tree?: OptionTreeV2 | null,
+): {
   optionSelections: Record<string, OptionSelection>;
   optionSelectionsV2: LineItemOptionSelectionsV2;
 } {
@@ -115,7 +118,10 @@ export function hydratePersistedOrderLineItemOptionSelections(lineItem: any): {
     };
   }
 
-  const selected = resolvePersistedLineItemSelectionEntries(lineItem) as LineItemOptionSelectionsV2["selected"];
+  const resolvedSelections = resolveSavedLineItemOptionSelections(lineItem, tree, {
+    includeDefaults: Boolean(tree),
+  });
+  const selected = resolvedSelections.selected;
   const persistedMapKeys = new Set<string>();
   for (const container of [lineItem?.optionSelectionsJson, pricingSnapshot?.selections]) {
     const record = asRecord(container);
@@ -125,8 +131,11 @@ export function hydratePersistedOrderLineItemOptionSelections(lineItem: any): {
     if (map) Object.keys(map).forEach((key) => persistedMapKeys.add(key));
   }
   const treeNodes = (() => {
-    const tree = asRecord(pricingSnapshot?.treeJson);
-    return Array.isArray(tree?.nodes) ? tree.nodes : Object.values(asRecord(tree?.nodes) ?? {});
+    const activeTree = asRecord(tree);
+    const snapshotTree = asRecord(pricingSnapshot?.treeJson);
+    const activeNodes = Array.isArray(activeTree?.nodes) ? activeTree.nodes : Object.values(asRecord(activeTree?.nodes) ?? {});
+    const snapshotNodes = Array.isArray(snapshotTree?.nodes) ? snapshotTree.nodes : Object.values(asRecord(snapshotTree?.nodes) ?? {});
+    return [...activeNodes, ...snapshotNodes];
   })();
   const normalizeAlias = (value: unknown) => String(value ?? "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
 
@@ -155,7 +164,7 @@ export function hydratePersistedOrderLineItemOptionSelections(lineItem: any): {
     const shadowedByPersistedAlias = !persistedMapKeys.has(key)
       && Array.from(aliases).some((alias) => persistedMapKeys.has(alias));
     if (shadowedByPersistedAlias) continue;
-    for (const alias of aliases) {
+    for (const alias of Array.from(aliases)) {
       optionSelections[alias] = {
         ...(optionSelections[alias] ?? {}),
         value: entry.value,
@@ -165,7 +174,7 @@ export function hydratePersistedOrderLineItemOptionSelections(lineItem: any): {
 
   return {
     optionSelections,
-    optionSelectionsV2: { schemaVersion: 2, selected },
+    optionSelectionsV2: resolvedSelections,
   };
 }
 

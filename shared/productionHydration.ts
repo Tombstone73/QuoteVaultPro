@@ -1,5 +1,5 @@
 import { calculateSheetYield, parseFormulaBoolean, type SheetYieldOrientation } from "./pbv2/formulaHelpers";
-import { resolvePersistedLineItemSelectionEntries } from "./lineItemOptionSelections";
+import { resolveSavedLineItemOptionSelections } from "./lineItemOptionSelections";
 
 export type ProductionSides = "Single-sided" | "Double-sided" | "Unknown";
 
@@ -72,7 +72,10 @@ const choiceLabelForValue = (node: any, value: unknown): string | undefined => {
 
 const readOptionCandidates = (lineItem: any): ProductionOption[] => {
   const selected: ProductionOption[] = [];
-  const selections = resolvePersistedLineItemSelectionEntries(lineItem);
+  const snapshot = asRecord(lineItem?.pbv2SnapshotJson);
+  const selections = resolveSavedLineItemOptionSelections(lineItem, asRecord(snapshot?.treeJson) as any, {
+    includeDefaults: Boolean(snapshot?.treeJson),
+  }).selected;
 
   for (const [key, value] of Object.entries(selections)) {
     // Inbound/PBV2 selections are stored as `{ value, label }` entries. Read

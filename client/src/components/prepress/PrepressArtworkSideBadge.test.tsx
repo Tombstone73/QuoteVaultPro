@@ -13,7 +13,7 @@ describe("PrepressArtworkSideBadge", () => {
     ["back", "Back"],
     ["both", "Both"],
     ["na", "Unassigned"],
-  ] as const)("renders %s assignment metadata as %s", (side, label) => {
+  ] as const)("renders %s assignment metadata as %s", (...[side, label]) => {
     const markup = renderToStaticMarkup(<PrepressArtworkSideBadge side={side} />);
     expect(markup).toContain(`data-testid="prepress-artwork-side-${side}"`);
     expect(markup).toContain(label);

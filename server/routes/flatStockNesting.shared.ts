@@ -15,7 +15,7 @@
  */
 
 import { resolveVisibleNodes } from "@shared/optionTreeV2Runtime";
-import { resolvePersistedLineItemSelectionEntries } from "@shared/lineItemOptionSelections";
+import { resolveSavedLineItemOptionSelections } from "@shared/lineItemOptionSelections";
 
 export type ProductionDisplayOptionRow = {
   groupLabel?: string | null;
@@ -519,7 +519,9 @@ export const buildPrepressOptionRows = (
     rows.push({ ...row, optionLabel, selectedLabel });
   };
 
-  const selectedRecord = resolvePersistedLineItemSelectionEntries(lineItem);
+  const selectedRecord = resolveSavedLineItemOptionSelections(lineItem, effectiveTreeJson as any, {
+    includeDefaults: Boolean(effectiveTreeJson),
+  }).selected;
 
   const normalizedNodes: any[] = [];
   const seenNodeObjects = new Set<any>();

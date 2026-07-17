@@ -90,6 +90,38 @@ describe("order line item edit state", () => {
     expect(stableIdAlias.optionSelections["node-print-sides"]?.value).toBe("double_sided");
   });
 
+  it("hydrates saved PBV2 values against the live tree and defaults only missing keys", () => {
+    const tree = {
+      schemaVersion: 2,
+      rootNodeIds: ["sides", "grommets"],
+      nodes: {
+        sides: {
+          id: "sides",
+          kind: "question",
+          label: "Print Sides",
+          input: { type: "select", selectionKey: "print_sides", defaultValue: "single" },
+          choices: [{ value: "single", label: "Single-Sided" }, { value: "double", label: "Double-Sided" }],
+        },
+        grommets: {
+          id: "grommets",
+          kind: "question",
+          label: "Grommet Placement",
+          input: { type: "select", selectionKey: "grommet_placement", defaultValue: "none" },
+          choices: [{ value: "none", label: "None" }, { value: "corners", label: "Corners" }],
+        },
+      },
+      edges: [],
+    } as any;
+    const hydrated = hydratePersistedOrderLineItemOptionSelections({
+      optionSelectionsJson: { schemaVersion: 2, selected: { print_sides: { value: "double" } } },
+    }, tree);
+
+    expect(hydrated.optionSelectionsV2.selected.print_sides.value).toBe("double");
+    expect(hydrated.optionSelectionsV2.selected.grommet_placement.value).toBe("none");
+    expect(hydrated.optionSelections.print_sides.value).toBe("double");
+    expect(hydrated.optionSelections.grommet_placement.value).toBe("none");
+  });
+
   it("treats matching persisted V2 selections as clean and a changed side as dirty", () => {
     const persisted = hydratePersistedOrderLineItemOptionSelections({
       optionSelectionsJson: { selected: { printSides: { value: "double" } } },
