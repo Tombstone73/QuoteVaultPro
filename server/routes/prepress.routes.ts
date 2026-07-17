@@ -87,6 +87,7 @@ import {
   resolveProductionArtworkSideReadiness,
   resolveProductionSides,
 } from "@shared/productionHydration";
+import { GENERATED_PROOF_DESCRIPTION_MARKER } from "@shared/prepressFileClassification";
 
 // ---------------------------------------------------------------------------
 // Local utility (mirrors top-level helper in routes.ts)
@@ -999,7 +1000,11 @@ export function registerPrepressQueueRoutes(
                 count: sql<number>`count(*)::int`,
               })
               .from(orderAttachments)
-              .where(inArray(orderAttachments.orderLineItemId as any, lineItemIdsForQueue))
+              .where(and(
+                inArray(orderAttachments.orderLineItemId as any, lineItemIdsForQueue),
+                sql`coalesce(${orderAttachments.role}::text, 'other') <> 'proof'`,
+                sql`coalesce(${orderAttachments.description}, '') not like ${`%${GENERATED_PROOF_DESCRIPTION_MARKER}%`}`,
+              ))
               .groupBy(orderAttachments.orderLineItemId)
           : [];
 
@@ -2049,6 +2054,7 @@ export function registerPrepressQueueRoutes(
           originals: allFiles.filter((f) => f.role === "original"),
           finals: allFiles.filter((f) => f.role === "final"),
           references: allFiles.filter((f) => f.role === "reference"),
+          proofs: filesGrouped.proofs,
         },
       });
     } catch (error: any) {

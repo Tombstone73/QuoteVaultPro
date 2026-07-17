@@ -356,6 +356,7 @@ export function registerPrepressFileRoutes(
         finals,
         references,
         bridgedOriginals: files.bridgedOriginals,
+        proofs: files.proofs,
       };
 
       res.json({ success: true, data, files: [...data.originals, ...data.finals, ...data.references] });

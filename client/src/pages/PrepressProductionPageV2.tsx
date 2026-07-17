@@ -67,6 +67,9 @@ type BridgedOriginalFile = {
   side: "front" | "back" | "both" | "na";
   createdAt: string;
   source: "order_attachment";
+  prepressCategory: "original_customer" | "proof" | "final_production" | "reference";
+  systemGenerated: boolean;
+  tagLabel: string;
   downloadUrl: string;
   thumbnailUrl: string | null;
   uploadedBy: string | null;
@@ -79,9 +82,10 @@ type LineItemFilesPayload = {
   finals: LineItemFile[];
   references: LineItemFile[];
   bridgedOriginals: BridgedOriginalFile[];
+  proofs: BridgedOriginalFile[];
 };
 
-type VisibleFileCategory = "original_customer" | "bridged_original" | "final_production";
+type VisibleFileCategory = "original_customer" | "bridged_original" | "proof" | "final_production";
 
 type VisibleFileRecord = AttachmentData & {
   category: VisibleFileCategory;
@@ -184,6 +188,7 @@ type SpecSheetData = {
   originals: LineItemFile[];
   finals: LineItemFile[];
   references: LineItemFile[];
+  proofs?: BridgedOriginalFile[];
   printSides?: "Single-sided" | "Double-sided" | "Unknown";
   useSameArtworkBothSides?: boolean;
   sameArtworkFileId?: string | null;
@@ -798,6 +803,7 @@ export default function PrepressProductionPageV2() {
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
   const bridgedOriginalFiles = filesData?.bridgedOriginals || [];
+  const proofFiles = filesData?.proofs || [];
   const toVisiblePrepressFile = (file: LineItemFile, category: VisibleFileCategory, defaultTag: string): VisibleFileRecord => ({
     id: file.id,
     category,
@@ -816,37 +822,47 @@ export default function PrepressProductionPageV2() {
     sizeBytesValue: file.sizeBytes,
     sideLabel: file.artworkSide ?? "na",
   });
-  const toVisibleBridgedFile = (file: BridgedOriginalFile): VisibleFileRecord => ({
-    id: file.id,
-    category: "bridged_original",
-    fileName: file.originalFilename,
-    originalFilename: file.originalFilename,
-    fileSize: file.sizeBytes,
-    mimeType: file.mimeType,
-    createdAt: file.createdAt,
-    originalUrl: file.downloadUrl,
-    previewUrl: file.downloadUrl,
-    thumbUrl: file.thumbnailUrl,
-    displayName: file.computedDisplayFilename || file.displayFilename || file.originalFilename,
-    uploadedByLabel: file.uploadedBy || "—",
-    tagLabel: "order",
-    sideLabel: file.side === "front" || file.side === "back" || file.side === "both" ? file.side : "na",
-    downloadUrl: file.downloadUrl,
-    sizeBytesValue: file.sizeBytes,
-  });
+  const toVisibleBridgedFile = (file: BridgedOriginalFile, category: "bridged_original" | "proof"): VisibleFileRecord => {
+    // Respect the server classification even if an older/mixed response places
+    // a proof in the bridged-original collection during a rolling deployment.
+    const resolvedCategory = file.prepressCategory === "proof" ? "proof" : category;
+    return {
+      id: file.id,
+      category: resolvedCategory,
+      fileName: file.originalFilename,
+      originalFilename: file.originalFilename,
+      fileSize: file.sizeBytes,
+      mimeType: file.mimeType,
+      createdAt: file.createdAt,
+      originalUrl: file.downloadUrl,
+      previewUrl: file.downloadUrl,
+      thumbUrl: file.thumbnailUrl,
+      displayName: file.computedDisplayFilename || file.displayFilename || file.originalFilename,
+      uploadedByLabel: file.uploadedBy || (file.systemGenerated ? "System generated" : "—"),
+      tagLabel: file.tagLabel || (resolvedCategory === "proof" ? "Proof" : "Order"),
+      sideLabel: file.side === "front" || file.side === "back" || file.side === "both" ? file.side : "na",
+      downloadUrl: file.downloadUrl,
+      sizeBytesValue: file.sizeBytes,
+    };
+  };
   const normalizedVisibleFiles = useMemo<VisibleFileRecord[]>(() => {
     return [
       ...originalFiles.map((file) => toVisiblePrepressFile(file, "original_customer", "original")),
-      ...bridgedOriginalFiles.map((file) => toVisibleBridgedFile(file)),
+      ...bridgedOriginalFiles.map((file) => toVisibleBridgedFile(file, "bridged_original")),
+      ...proofFiles.map((file) => toVisibleBridgedFile(file, "proof")),
       ...finalFiles.map((file) => toVisiblePrepressFile(file, "final_production", "final")),
     ];
-  }, [originalFiles, bridgedOriginalFiles, finalFiles]);
+  }, [originalFiles, bridgedOriginalFiles, proofFiles, finalFiles]);
   const visibleOriginalFiles = useMemo(
     () => normalizedVisibleFiles.filter((file) => file.category === "original_customer"),
     [normalizedVisibleFiles]
   );
   const visibleBridgedOriginalFiles = useMemo(
     () => normalizedVisibleFiles.filter((file) => file.category === "bridged_original"),
+    [normalizedVisibleFiles]
+  );
+  const visibleProofFiles = useMemo(
+    () => normalizedVisibleFiles.filter((file) => file.category === "proof"),
     [normalizedVisibleFiles]
   );
   const visibleFinalFiles = useMemo(
@@ -1811,7 +1827,68 @@ export default function PrepressProductionPageV2() {
             </div>
           </section>
 
-          {/* Section 3: Final Production Files */}
+          {/* Section 3: Proof Files */}
+          <section>
+            <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
+              <FileText className="w-4 h-4" /> Proof Files
+            </h3>
+            <div className="border border-[#2d3748] rounded-lg overflow-hidden bg-[#1a232e]">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-[#111921] border-b border-[#2d3748] text-slate-400">
+                  <tr>
+                    <th className="px-4 py-3 font-semibold w-24">Preview</th>
+                    <th className="px-4 py-3 font-semibold">Filename</th>
+                    <th className="px-4 py-3 font-semibold">Size</th>
+                    <th className="px-4 py-3 font-semibold">Created</th>
+                    <th className="px-4 py-3 font-semibold">Uploaded / Generated By</th>
+                    <th className="px-4 py-3 font-semibold">Tag</th>
+                    <th className="px-4 py-3 font-semibold text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-[#2d3748]">
+                  {visibleProofFiles.length === 0 ? (
+                    <tr>
+                      <td colSpan={7} className="px-4 py-8 text-center text-slate-500">
+                        {selectedLineItemId ? "No proof files generated" : "Select a line item to view proof files"}
+                      </td>
+                    </tr>
+                  ) : visibleProofFiles.map((file) => (
+                    <tr key={`proof-${file.id}`} className="hover:bg-white/5 transition-colors cursor-pointer" onClick={() => handleOpenViewer(file.id)}>
+                      <td className="px-4 py-3">
+                        <FileThumbnail
+                          filename={file.originalFilename || file.fileName}
+                          mimeType={file.mimeType || undefined}
+                          thumbnailUrl={file.thumbUrl || undefined}
+                        />
+                      </td>
+                      <td className="px-4 py-3 font-medium text-slate-200">{file.displayName}</td>
+                      <td className="px-4 py-3 font-mono">{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "—"}</td>
+                      <td className="px-4 py-3">{file.createdAt ? formatDistanceToNow(new Date(file.createdAt), { addSuffix: true }) : "—"}</td>
+                      <td className="px-4 py-3">{file.uploadedByLabel}</td>
+                      <td className="px-4 py-3">
+                        <span className="bg-violet-900/40 text-violet-200 border border-violet-700/40 px-2 py-0.5 rounded text-[9px] font-bold uppercase">
+                          {file.tagLabel}
+                        </span>
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <button
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            window.open(file.downloadUrl, "_blank");
+                          }}
+                          className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-violet-900/30 hover:border-violet-600 transition-all"
+                        >
+                          Download
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </section>
+
+          {/* Section 4: Final Production Files */}
           <section>
             <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
               <CheckCircle className="w-4 h-4" /> Final Production Files
@@ -2613,7 +2690,10 @@ export default function PrepressProductionPageV2() {
                   {[...specSheetData.originals, ...specSheetData.finals].map((f) => (
                     <div key={f.id} className="text-slate-200">• {f.computedDisplayFilename || f.originalFilename}</div>
                   ))}
-                  {[...specSheetData.originals, ...specSheetData.finals].length === 0 && <div>—</div>}
+                  {(specSheetData.proofs || []).map((f) => (
+                    <div key={`proof-${f.id}`} className="text-slate-200">• Proof: {f.computedDisplayFilename || f.displayFilename || f.originalFilename}</div>
+                  ))}
+                  {[...specSheetData.originals, ...specSheetData.finals, ...(specSheetData.proofs || [])].length === 0 && <div>—</div>}
                 </div>
               </div>
             </div>
