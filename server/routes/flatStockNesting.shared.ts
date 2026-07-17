@@ -31,6 +31,11 @@ export type LineItemProductionDisplayData = {
   priorityLabel: string | null;
 };
 
+export type PrepressJobSpecificationsDisplay = {
+  productLabel: string;
+  optionRows: ProductionDisplayOptionRow[];
+};
+
 // ---------------------------------------------------------------------------
 // Dimension parsing
 // ---------------------------------------------------------------------------
@@ -513,14 +518,21 @@ export const buildPrepressOptionRows = (
     const optionLabel = cleanString(row.optionLabel);
     const selectedLabel = cleanString(row.selectedLabel);
     if (!optionLabel || !selectedLabel) return;
-    const key = dedupeKey || `${optionLabel}:${selectedLabel}`;
+    // Snapshot/runtime rows often use a node id while the saved selection uses
+    // a selection key. The operator-facing label is the stable semantic key
+    // shared by both sources, so dedupe on it before adding lower-priority rows.
+    const key = cleanString(stripTechnicalSuffix(optionLabel)).toLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+      || dedupeKey
+      || `${optionLabel}:${selectedLabel}`;
     if (rowKeys.has(key)) return;
     rowKeys.add(key);
     rows.push({ ...row, optionLabel, selectedLabel });
   };
 
   const selectedRecord = resolveSavedLineItemOptionSelections(lineItem, effectiveTreeJson as any, {
-    includeDefaults: Boolean(effectiveTreeJson),
+    // Prepress should describe persisted production intent, not synthesize a
+    // list of every product default. Missing keys are intentionally omitted.
+    includeDefaults: false,
   }).selected;
 
   const normalizedNodes: any[] = [];
@@ -714,6 +726,85 @@ export const buildPrepressOptionRows = (
 
   return rows;
 };
+
+const normalizePrepressOptionToken = (value: unknown): string => cleanString(value)
+  .toLowerCase()
+  .replace(/[’']/g, "")
+  .replace(/[^a-z0-9]+/g, " ")
+  .trim();
+
+const PREPRESS_INACTIVE_OPTION_VALUES = new Set([
+  "no",
+  "none",
+  "false",
+  "off",
+  "not applicable",
+  "n a",
+  "not selected",
+  "default",
+]);
+
+const isPrepressProductLabelEnhancer = (row: ProductionDisplayOptionRow): boolean => {
+  const label = normalizePrepressOptionToken(row.optionLabel);
+  if (/\b(thickness|gauge|caliper|material variant|substrate variant)\b/.test(label)) return true;
+
+  // Some imported catalogs use the generic label "Material" for a thickness
+  // choice. Only treat it as a product-label enhancer when the selected value
+  // is dimension-like; ordinary media/material choices remain visible.
+  return label === "material"
+    && /^\d+(?:\.\d+)?\s*(?:mm|mil|in|inch|inches)$/.test(normalizePrepressOptionToken(row.selectedLabel));
+};
+
+/**
+ * Converts resolved production options into the compact Prepress job-spec view.
+ * Saved rows arrive first from buildPrepressOptionRows, so canonical-key
+ * dedupe preserves saved intent and drops lower-priority snapshot duplicates.
+ */
+export function resolvePrepressJobSpecificationsDisplay(args: {
+  productName?: string | null;
+  optionRows?: ProductionDisplayOptionRow[] | null;
+}): PrepressJobSpecificationsDisplay {
+  const productName = cleanString(args.productName) || "—";
+  const dedupedByKey = new Map<string, ProductionDisplayOptionRow>();
+
+  for (const row of args.optionRows ?? []) {
+    const optionLabel = cleanString(row?.optionLabel);
+    const selectedLabel = cleanString(row?.selectedLabel);
+    if (!optionLabel || !selectedLabel) continue;
+    const canonicalKey = normalizePrepressOptionToken(stripTechnicalSuffix(optionLabel));
+    if (!canonicalKey || dedupedByKey.has(canonicalKey)) continue;
+    dedupedByKey.set(canonicalKey, { ...row, optionLabel, selectedLabel });
+  }
+
+  const dedupedRows = Array.from(dedupedByKey.values());
+  const labelEnhancers = dedupedRows.filter((row) => (
+    isPrepressProductLabelEnhancer(row)
+    && !PREPRESS_INACTIVE_OPTION_VALUES.has(normalizePrepressOptionToken(row.selectedLabel))
+  ));
+  const enhancingLabels = labelEnhancers
+    .map((row) => row.selectedLabel)
+    .filter((label, index, labels) => (
+      labels.findIndex((candidate) => normalizePrepressOptionToken(candidate) === normalizePrepressOptionToken(label)) === index
+      && !normalizePrepressOptionToken(productName).includes(normalizePrepressOptionToken(label))
+    ));
+  const productLabel = enhancingLabels.length > 0
+    ? `${enhancingLabels.join(" ")} ${productName}`
+    : productName;
+
+  const optionRows = dedupedRows.flatMap((row) => {
+    const canonicalKey = normalizePrepressOptionToken(row.optionLabel);
+    const selectedValue = normalizePrepressOptionToken(row.selectedLabel);
+    if (canonicalKey === "print sides" || canonicalKey === "print side" || canonicalKey === "sides") return [];
+    if (isPrepressProductLabelEnhancer(row)) return [];
+    if (PREPRESS_INACTIVE_OPTION_VALUES.has(selectedValue)) return [];
+
+    // Default/change badges are pricing/editor context, not operator guidance.
+    const { isDefault: _isDefault, ...displayRow } = row;
+    return [displayRow];
+  });
+
+  return { productLabel, optionRows };
+}
 
 export function resolveLineItemProductionDisplayData(args: {
   lineItem: any;

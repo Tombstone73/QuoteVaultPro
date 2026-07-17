@@ -67,6 +67,7 @@ import {
   parseDimensionsFromDescription,
   computeTotalSqFt,
   resolveLineItemProductionDisplayData,
+  resolvePrepressJobSpecificationsDisplay,
 } from "./flatStockNesting.shared";
 import {
   createRequestLogOnce,
@@ -1271,10 +1272,14 @@ export function registerPrepressQueueRoutes(
           materialName: item.materialName ?? null,
           primaryMaterialName: item.productPrimaryMaterialId ? productPrimaryMaterialNameById.get(item.productPrimaryMaterialId) ?? null : null,
         });
-        const finishingBullets = displayData.optionRows
+        const specificationsDisplay = resolvePrepressJobSpecificationsDisplay({
+          productName: item.description,
+          optionRows: displayData.optionRows,
+        });
+        const finishingBullets = specificationsDisplay.optionRows
           .filter((row) => /(finish|laminat|grommet|hem|trim|weld|mount|sew|pocket|tape|edge|contour|cut)/i.test(row.optionLabel))
           .map((row) => `${row.optionLabel}: ${row.selectedLabel}`);
-        const optionsRows = displayData.optionRows;
+        const optionsRows = specificationsDisplay.optionRows;
         const printSides = resolveProductionSides(item);
         const artworkSideIntent = resolveArtworkSideIntent(item);
         const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
@@ -1312,7 +1317,7 @@ export function registerPrepressQueueRoutes(
           orderId: item.orderId,
           jobNumber: item.orderNumber,
           customerName: item.customerName ?? "—",
-          productName: item.description,
+          productName: specificationsDisplay.productLabel,
           printType: item.productType ?? null,
           suggestedProductionDestination: destination.suggested,
           selectedProductionDestination: destination.selected,
@@ -1978,9 +1983,13 @@ export function registerPrepressQueueRoutes(
         materialName: row.materialName ?? null,
         primaryMaterialName: primaryMaterial?.name ?? null,
       });
+      const specificationsDisplay = resolvePrepressJobSpecificationsDisplay({
+        productName: li.description,
+        optionRows: displayData.optionRows,
+      });
       const printSides = resolveProductionSides(li);
       const artworkSideIntent = resolveArtworkSideIntent(li);
-      const finishingBullets = displayData.optionRows
+      const finishingBullets = specificationsDisplay.optionRows
         .filter((option) => /(finish|laminat|grommet|hem|trim|weld|mount|sew|pocket|tape|edge|contour|cut)/i.test(option.optionLabel))
         .map((option) => `${option.optionLabel}: ${option.selectedLabel}`);
       const filesGrouped = await prepressFileService.getLineItemFiles(lineItemId, organizationId);
@@ -2020,7 +2029,7 @@ export function registerPrepressQueueRoutes(
           lineItemId: li.id,
           jobNumber: row.orderNumber,
           customerName: row.customerName,
-          productName: li.description,
+          productName: specificationsDisplay.productLabel,
           quantity: li.quantity,
           width,
           height,
@@ -2031,7 +2040,7 @@ export function registerPrepressQueueRoutes(
           suggestedProductionDestination: getProductionStationLabel(suggestedDestination),
           bleed: null,
           finishingBullets,
-          optionsRows: displayData.optionRows,
+          optionsRows: specificationsDisplay.optionRows,
           printSides,
           useSameArtworkBothSides: artworkSideIntent.useSameArtworkBothSides,
           sameArtworkFileId: artworkSideIntent.sameArtworkFileId,

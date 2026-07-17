@@ -5,6 +5,7 @@ import {
   buildPrepressOptionRows,
   resolveLineItemMaterialDisplayLabel,
   resolveLineItemProductionDisplayData,
+  resolvePrepressJobSpecificationsDisplay,
 } from "../routes/flatStockNesting.shared";
 import { buildOrderTravelerData } from "../../shared/productionTicket";
 
@@ -183,12 +184,38 @@ describe("production display data", () => {
       },
     });
 
-    expect(rows).toEqual(expect.arrayContaining([
+    expect(rows.filter((row) => row.optionLabel === "Print Sides")).toEqual([
       expect.objectContaining({ optionLabel: "Print Sides", selectedLabel: "Double-Sided" }),
-    ]));
+    ]);
     expect(rows).not.toEqual(expect.arrayContaining([
       expect.objectContaining({ optionLabel: "Print Sides", selectedLabel: "Single-Sided" }),
     ]));
+  });
+
+  test("does not synthesize unsaved product defaults into Prepress options", () => {
+    const rows = buildPrepressOptionRows({ id: "li-defaults-only" }, {
+      schemaVersion: 2,
+      rootNodeIds: ["thickness", "contour"],
+      nodes: {
+        thickness: {
+          id: "thickness",
+          kind: "question",
+          label: "Thickness",
+          input: { type: "select", selectionKey: "thickness", defaultValue: "4mm" },
+          choices: [{ value: "4mm", label: "4mm" }],
+        },
+        contour: {
+          id: "contour",
+          kind: "question",
+          label: "Contour Cutting",
+          input: { type: "select", selectionKey: "contour_cutting", defaultValue: "no" },
+          choices: [{ value: "no", label: "No" }, { value: "yes", label: "Yes" }],
+        },
+      },
+      edges: [],
+    });
+
+    expect(rows).toEqual([]);
   });
 
   test("prepress resolves historic saved option IDs against the active option tree", () => {
@@ -370,5 +397,56 @@ describe("production display data", () => {
     } finally {
       warnSpy.mockRestore();
     }
+  });
+
+  test("builds a compact Prepress specification display from meaningful modifiers", () => {
+    const display = resolvePrepressJobSpecificationsDisplay({
+      productName: "Coroplast",
+      optionRows: [
+        { optionLabel: "Thickness", selectedLabel: "4mm", isDefault: true },
+        { optionLabel: "Contour Cutting", selectedLabel: "No", isDefault: true },
+        { optionLabel: "Grommet Placement", selectedLabel: "None", isDefault: true },
+        { optionLabel: "Print Sides", selectedLabel: "Double-Sided", isDefault: false },
+        { optionLabel: "Contour Cutting", selectedLabel: "No" },
+        { optionLabel: "Grommet Placement", selectedLabel: "None" },
+        { optionLabel: "Thickness", selectedLabel: "4mm" },
+      ],
+    });
+
+    expect(display.productLabel).toBe("4mm Coroplast");
+    expect(display.optionRows).toEqual([]);
+  });
+
+  test("shows enabled contour cutting and actual grommet placement once", () => {
+    const display = resolvePrepressJobSpecificationsDisplay({
+      productName: "Coroplast",
+      optionRows: [
+        { optionLabel: "Thickness", selectedLabel: "10mm", isDefault: false },
+        { optionLabel: "Print Sides", selectedLabel: "Single-Sided" },
+        { optionLabel: "Contour Cutting", selectedLabel: "Yes", isDefault: false },
+        { optionLabel: "Contour Cutting", selectedLabel: "No", isDefault: true },
+        { optionLabel: "Grommet Placement", selectedLabel: "Every 2 Feet", isDefault: false },
+        { optionLabel: "Grommet Placement", selectedLabel: "None", isDefault: true },
+      ],
+    });
+
+    expect(display.productLabel).toBe("10mm Coroplast");
+    expect(display.optionRows).toEqual([
+      { optionLabel: "Contour Cutting", selectedLabel: "Yes" },
+      { optionLabel: "Grommet Placement", selectedLabel: "Every 2 Feet" },
+    ]);
+  });
+
+  test("keeps the normal product name when no thickness or material variant exists", () => {
+    const display = resolvePrepressJobSpecificationsDisplay({
+      productName: "Banner",
+      optionRows: [
+        { optionLabel: "Print Sides", selectedLabel: "Single-Sided" },
+        { optionLabel: "Grommet Placement", selectedLabel: "None" },
+      ],
+    });
+
+    expect(display.productLabel).toBe("Banner");
+    expect(display.optionRows).toEqual([]);
   });
 });
