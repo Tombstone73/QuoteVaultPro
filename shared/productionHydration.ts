@@ -1,4 +1,5 @@
 import { calculateSheetYield, parseFormulaBoolean, type SheetYieldOrientation } from "./pbv2/formulaHelpers";
+import { resolvePersistedLineItemSelectionEntries } from "./lineItemOptionSelections";
 
 export type ProductionSides = "Single-sided" | "Double-sided" | "Unknown";
 
@@ -39,28 +40,54 @@ const normalize = (value: unknown): string => String(value ?? "")
   .toLowerCase()
   .replace(/[\s_-]+/g, " ");
 
-const readOptionCandidates = (lineItem: any): ProductionOption[] => {
+const treeNodes = (lineItem: any): any[] => {
   const snapshot = asRecord(lineItem?.pbv2SnapshotJson);
-  const selected = [
-    ...(Array.isArray(lineItem?.selectedOptions) ? lineItem.selectedOptions : []),
-    ...(Array.isArray(snapshot?.selectedOptions) ? snapshot.selectedOptions as ProductionOption[] : []),
-  ];
+  const tree = asRecord(snapshot?.treeJson);
+  return Array.isArray(tree?.nodes) ? tree.nodes : Object.values(asRecord(tree?.nodes) ?? {});
+};
 
-  const selections = asRecord(lineItem?.optionSelectionsJson)?.selected
-    ?? asRecord(lineItem?.optionSelectionsJson)
-    ?? asRecord(snapshot?.selections);
-  if (!selections) return selected;
+const findSelectionNode = (lineItem: any, selectionKey: string): any | null => {
+  const wanted = normalize(selectionKey);
+  return treeNodes(lineItem).find((node) => [
+    node?.input?.selectionKey,
+    node?.selectionKey,
+    node?.id,
+    node?.key,
+    node?.optionId,
+  ].some((candidate) => normalize(candidate) === wanted)) ?? null;
+};
+
+const choiceLabelForValue = (node: any, value: unknown): string | undefined => {
+  const choices = Array.isArray(node?.choices)
+    ? node.choices
+    : Array.isArray(node?.input?.choices)
+      ? node.input.choices
+      : [];
+  const wanted = normalize(value);
+  const choice = choices.find((candidate: any) => [candidate?.value, candidate?.id, candidate?.key]
+    .some((entry) => normalize(entry) === wanted));
+  const label = choice?.label ?? choice?.name ?? choice?.displayLabel;
+  return typeof label === "string" ? label : undefined;
+};
+
+const readOptionCandidates = (lineItem: any): ProductionOption[] => {
+  const selected: ProductionOption[] = [];
+  const selections = resolvePersistedLineItemSelectionEntries(lineItem);
 
   for (const [key, value] of Object.entries(selections)) {
     // Inbound/PBV2 selections are stored as `{ value, label }` entries. Read
     // their scalar value so production does not mistake the object itself for
     // an unknown option value during hydration.
     const entry = asRecord(value);
+    const node = findSelectionNode(lineItem, key);
+    const scalarValue = entry?.value ?? value;
     selected.push({
       optionId: key,
-      optionName: key,
-      value: entry?.value ?? value,
-      selectedLabel: typeof entry?.label === "string" ? entry.label : undefined,
+      optionName: String(node?.label ?? node?.name ?? key),
+      value: scalarValue,
+      selectedLabel: typeof entry?.label === "string"
+        ? entry.label
+        : choiceLabelForValue(node, scalarValue),
     });
   }
   return selected;
@@ -78,6 +105,86 @@ export function resolveProductionSides(lineItem: any): ProductionSides {
     if (/\b(single|one|1 sided|1s|ss)\b/.test(value)) return "Single-sided";
   }
   return "Unknown";
+}
+
+export function resolveArtworkSideIntent(lineItem: any): {
+  useSameArtworkBothSides: boolean;
+  sameArtworkFileId: string | null;
+} {
+  const specs = asRecord(lineItem?.specsJson);
+  const assignment = asRecord(specs?.artworkSideAssignment);
+  const rawFileId = assignment?.bothFileId ?? assignment?.sharedFileId ?? assignment?.frontFileId ?? assignment?.fileId;
+  return {
+    useSameArtworkBothSides: assignment?.useSameArtworkBothSides === true,
+    sameArtworkFileId: typeof rawFileId === "string" && rawFileId.trim() ? rawFileId.trim() : null,
+  };
+}
+
+export type ProductionArtworkSideReadiness<T extends ProductionArtworkAssignment> = {
+  complete: boolean;
+  warning: string | null;
+  useSameArtworkBothSides: boolean;
+  front: T | null;
+  back: T | null;
+  both: T | null;
+  unassigned: T[];
+};
+
+/** Fail-closed readiness for explicit double-sided artwork assignment. */
+export function resolveProductionArtworkSideReadiness<T extends ProductionArtworkAssignment>(input: {
+  sides: ProductionSides;
+  artwork: T[] | null | undefined;
+  useSameArtworkBothSides?: boolean;
+  sameArtworkFileId?: string | null;
+}): ProductionArtworkSideReadiness<T> {
+  const list = Array.isArray(input.artwork) ? input.artwork : [];
+  const sideOf = (item: T) => normalize(item.side);
+  const both = list.find((item) => sideOf(item) === "both") ?? null;
+  const explicitFront = list.find((item) => sideOf(item) === "front") ?? null;
+  const explicitBack = list.find((item) => sideOf(item) === "back") ?? null;
+  const unassigned = list.filter((item) => !["front", "back", "both"].includes(sideOf(item)));
+  const same = input.useSameArtworkBothSides === true;
+
+  if (input.sides !== "Double-sided") {
+    return {
+      complete: true,
+      warning: null,
+      useSameArtworkBothSides: same,
+      front: explicitFront ?? both,
+      back: explicitBack ?? (same ? both ?? explicitFront : both),
+      both,
+      unassigned,
+    };
+  }
+
+  if (same) {
+    const selectedFromIntent = input.sameArtworkFileId
+      ? list.find((item) => item.id === input.sameArtworkFileId || item.fileRecordId === input.sameArtworkFileId) ?? null
+      : null;
+    const shared = both ?? explicitFront ?? selectedFromIntent;
+    return {
+      complete: Boolean(shared),
+      warning: shared ? null : "Choose artwork for both sides before completing prepress.",
+      useSameArtworkBothSides: true,
+      front: shared,
+      back: shared,
+      both: shared,
+      unassigned,
+    };
+  }
+
+  const front = explicitFront ?? both;
+  const back = explicitBack ?? both;
+  const missing = [!front ? "Front" : null, !back ? "Back" : null].filter(Boolean).join(" and ");
+  return {
+    complete: Boolean(front && back),
+    warning: missing ? `${missing} artwork not assigned.` : null,
+    useSameArtworkBothSides: false,
+    front,
+    back,
+    both,
+    unassigned,
+  };
 }
 
 /**

@@ -63,6 +63,31 @@ describe("order line item edit state", () => {
       thickness: { value: "4mm" },
       printSides: { value: "double" },
     });
+
+    const staleEvaluatedSelection = hydratePersistedOrderLineItemOptionSelections({
+      optionSelectionsJson: { schemaVersion: 2, selected: { printSides: { value: "double", label: "Double-Sided" } } },
+      selectedOptions: [{ optionId: "printSides", optionName: "Print Sides", value: "single", selectedLabel: "Single-Sided" }],
+    });
+    expect(staleEvaluatedSelection.optionSelectionsV2.selected.printSides?.value).toBe("double");
+    expect(staleEvaluatedSelection.optionSelections.printSides?.value).toBe("double");
+
+    const stableIdAlias = hydratePersistedOrderLineItemOptionSelections({
+      optionSelectionsJson: { schemaVersion: 2, selected: { print_side: { value: "double_sided" } } },
+      selectedOptions: [{ optionId: "node-print-sides", optionName: "Print Sides", value: "single_sided" }],
+      pbv2SnapshotJson: {
+        treeJson: {
+          nodes: {
+            "node-print-sides": {
+              id: "node-print-sides",
+              label: "Print Sides",
+              input: { selectionKey: "print_side" },
+            },
+          },
+        },
+      },
+    });
+    expect(stableIdAlias.optionSelections.print_side?.value).toBe("double_sided");
+    expect(stableIdAlias.optionSelections["node-print-sides"]?.value).toBe("double_sided");
   });
 
   it("treats matching persisted V2 selections as clean and a changed side as dirty", () => {

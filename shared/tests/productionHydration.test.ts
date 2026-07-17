@@ -1,5 +1,10 @@
 import { describe, expect, test } from "@jest/globals";
-import { resolveProductionArtworkSides, resolveProductionPreviewUrl, resolveProductionSides } from "../productionHydration";
+import {
+  resolveProductionArtworkSideReadiness,
+  resolveProductionArtworkSides,
+  resolveProductionPreviewUrl,
+  resolveProductionSides,
+} from "../productionHydration";
 
 describe("production artwork hydration", () => {
   test("prefers an explicit thumbnail URL over every other preview candidate", () => {
@@ -46,6 +51,37 @@ describe("production artwork hydration", () => {
     })).toBe("Double-sided");
   });
 
+  test("current saved Print Sides wins over a stale evaluated option after refetch", () => {
+    expect(resolveProductionSides({
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: { printSides: { value: "double", label: "Double-Sided" } },
+      },
+      selectedOptions: [{ optionId: "printSides", optionName: "Print Sides", value: "single" }],
+    })).toBe("Double-sided");
+  });
+
+  test("uses the saved tree to resolve opaque Print Sides selection identifiers", () => {
+    expect(resolveProductionSides({
+      optionSelectionsJson: { schemaVersion: 2, selected: { option_123: { value: "choice_2" } } },
+      pbv2SnapshotJson: {
+        treeJson: {
+          nodes: {
+            node_1: {
+              id: "node_1",
+              label: "Print Sides",
+              input: { selectionKey: "option_123" },
+              choices: [
+                { value: "choice_1", label: "Single-Sided" },
+                { value: "choice_2", label: "Double-Sided" },
+              ],
+            },
+          },
+        },
+      },
+    })).toBe("Double-sided");
+  });
+
   test("hydrates explicit front/back assignments and recognizes a shared source file", () => {
     const separate = resolveProductionArtworkSides([
       { id: "front", fileRecordId: "file-front", side: "front" },
@@ -76,5 +112,35 @@ describe("production artwork hydration", () => {
     expect(resolved.front).toBeNull();
     expect(resolved.back).toBeNull();
     expect(resolved.unassigned).toHaveLength(1);
+  });
+
+  test("fails closed only for incomplete double-sided artwork assignments", () => {
+    expect(resolveProductionArtworkSideReadiness({
+      sides: "Double-sided",
+      artwork: [{ id: "front", side: "front" }],
+      useSameArtworkBothSides: false,
+    })).toMatchObject({ complete: false, warning: "Back artwork not assigned." });
+
+    const sameArtwork = resolveProductionArtworkSideReadiness({
+      sides: "Double-sided",
+      artwork: [{ id: "front", side: "front" }],
+      useSameArtworkBothSides: true,
+    });
+    expect(sameArtwork).toMatchObject({ complete: true, warning: null });
+    expect(sameArtwork.front?.id).toBe("front");
+    expect(sameArtwork.back?.id).toBe("front");
+
+    expect(resolveProductionArtworkSideReadiness({
+      sides: "Double-sided",
+      artwork: [{ id: "saved-file", side: "na" }],
+      useSameArtworkBothSides: true,
+      sameArtworkFileId: "saved-file",
+    })).toMatchObject({ complete: true, warning: null });
+
+    expect(resolveProductionArtworkSideReadiness({
+      sides: "Single-sided",
+      artwork: [{ id: "unassigned", side: "na" }],
+      useSameArtworkBothSides: false,
+    })).toMatchObject({ complete: true, warning: null });
   });
 });

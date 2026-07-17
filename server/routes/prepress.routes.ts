@@ -81,6 +81,11 @@ import {
   readPrepressProductionDestinationOverride,
   writePrepressProductionDestinationOverride,
 } from "@shared/productionStations";
+import {
+  resolveArtworkSideIntent,
+  resolveProductionArtworkSideReadiness,
+  resolveProductionSides,
+} from "@shared/productionHydration";
 
 // ---------------------------------------------------------------------------
 // Local utility (mirrors top-level helper in routes.ts)
@@ -88,6 +93,51 @@ import {
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
+}
+
+async function loadPrepressArtworkSideReadiness(executor: any, args: {
+  organizationId: string;
+  lineItemId: string;
+}) {
+  const [lineItem] = await executor
+    .select({
+      id: orderLineItems.id,
+      optionSelectionsJson: orderLineItems.optionSelectionsJson,
+      pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
+      selectedOptions: orderLineItems.selectedOptions,
+      specsJson: orderLineItems.specsJson,
+    })
+    .from(orderLineItems)
+    .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+    .where(and(eq(orderLineItems.id, args.lineItemId), eq(orders.organizationId, args.organizationId)))
+    .limit(1);
+  if (!lineItem) return null;
+
+  const artwork = await executor
+    .select({
+      id: orderAttachments.id,
+      fileRecordId: orderAttachments.fileRecordId,
+      side: orderAttachments.side,
+    })
+    .from(orderAttachments)
+    .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+    .where(and(
+      eq(orderAttachments.orderLineItemId, args.lineItemId),
+      eq(orders.organizationId, args.organizationId),
+      eq(orderAttachments.role, "artwork"),
+    ));
+
+  const sides = resolveProductionSides(lineItem);
+  const intent = resolveArtworkSideIntent(lineItem);
+  return {
+    sides,
+    ...resolveProductionArtworkSideReadiness({
+      sides,
+      artwork,
+      useSameArtworkBothSides: intent.useSameArtworkBothSides,
+      sameArtworkFileId: intent.sameArtworkFileId,
+    }),
+  };
 }
 
 const insertPrepressTimelineLog = async (args: {
@@ -1225,6 +1275,8 @@ export function registerPrepressQueueRoutes(
           .filter((row) => /(finish|laminat|grommet|hem|trim|weld|mount|sew|pocket|tape|edge|contour|cut)/i.test(row.optionLabel))
           .map((row) => `${row.optionLabel}: ${row.selectedLabel}`);
         const optionsRows = displayData.optionRows;
+        const printSides = resolveProductionSides(item);
+        const artworkSideIntent = resolveArtworkSideIntent(item);
         const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
         const activeOwnerIsPrepress = isPrepressOwnershipJob(activeOwner);
         const computedWorkflowState = String(item.workflowState || '').toLowerCase();
@@ -1308,6 +1360,9 @@ export function registerPrepressQueueRoutes(
           finishing: finishingBullets.length > 0 ? finishingBullets.join(" • ") : null,
           finishingBullets,
           optionsRows,
+          printSides,
+          useSameArtworkBothSides: artworkSideIntent.useSameArtworkBothSides,
+          sameArtworkFileId: artworkSideIntent.sameArtworkFileId,
         };
       });
 
@@ -1923,6 +1978,8 @@ export function registerPrepressQueueRoutes(
         materialName: row.materialName ?? null,
         primaryMaterialName: primaryMaterial?.name ?? null,
       });
+      const printSides = resolveProductionSides(li);
+      const artworkSideIntent = resolveArtworkSideIntent(li);
       const finishingBullets = displayData.optionRows
         .filter((option) => /(finish|laminat|grommet|hem|trim|weld|mount|sew|pocket|tape|edge|contour|cut)/i.test(option.optionLabel))
         .map((option) => `${option.optionLabel}: ${option.selectedLabel}`);
@@ -1975,6 +2032,9 @@ export function registerPrepressQueueRoutes(
           bleed: null,
           finishingBullets,
           optionsRows: displayData.optionRows,
+          printSides,
+          useSameArtworkBothSides: artworkSideIntent.useSameArtworkBothSides,
+          sameArtworkFileId: artworkSideIntent.sameArtworkFileId,
           lineItemNotes: displayData.lineItemNotes,
           priorityLabel: displayData.priorityLabel,
           originals: allFiles.filter((f) => f.role === "original"),
@@ -2466,6 +2526,18 @@ export function registerPrepressQueueRoutes(
           return { id: session.id, lineItemId: session.lineItemId, status: "complete" };
         }
 
+        completeFailureStage = "validate_artwork_sides";
+        const artworkReadiness = await loadPrepressArtworkSideReadiness(tx, {
+          organizationId: orgId,
+          lineItemId: session.lineItemId,
+        });
+        if (artworkReadiness && !artworkReadiness.complete) {
+          throw Object.assign(
+            new Error(artworkReadiness.warning || "Complete the Front/Back artwork assignment before completing prepress."),
+            { statusCode: 409, code: "ARTWORK_SIDE_ASSIGNMENT_INCOMPLETE" },
+          );
+        }
+
         completeFailureStage = "ensure_final_artwork";
         const finalArtwork = await prepressFileService.ensureFinalArtworkForLineItem({
           organizationId: orgId,
@@ -2639,6 +2711,18 @@ export function registerPrepressQueueRoutes(
 
       if (String(item.workflowState || '').toLowerCase() !== 'in_prepress') {
         return res.status(400).json({ error: "Line item must be in_prepress before send to production" });
+      }
+
+
+      const artworkReadiness = await loadPrepressArtworkSideReadiness(db, {
+        organizationId,
+        lineItemId,
+      });
+      if (artworkReadiness && !artworkReadiness.complete) {
+        return res.status(409).json({
+          error: artworkReadiness.warning || "Complete the Front/Back artwork assignment before sending to production",
+          code: "ARTWORK_SIDE_ASSIGNMENT_INCOMPLETE",
+        });
       }
 
       // 3. Verify at least one FINAL file exists

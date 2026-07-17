@@ -4,6 +4,7 @@ import {
   buildInitialOrderLineItemDraftFromProduct,
   type InitialOrderLineItemDraftDebug,
 } from "@shared/orderLineItemInitialization";
+import { resolvePersistedLineItemSelectionEntries } from "@shared/lineItemOptionSelections";
 
 export type OrderLineItemSavedSnapshot = {
   productId: string;
@@ -77,15 +78,8 @@ export type OrderLineItemPreviewGateResult = {
 
 export type LineItemPatchKind = "attachment" | "hydration" | "product_add" | "pricing" | "generic";
 
-type PersistedOptionSelection = Record<string, unknown>;
-
 function asRecord(value: unknown): Record<string, any> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
-}
-
-function normalizeV2SelectionEntry(value: unknown): PersistedOptionSelection {
-  const record = asRecord(value);
-  return record && Object.prototype.hasOwnProperty.call(record, "value") ? record : { value };
 }
 
 /**
@@ -98,14 +92,7 @@ export function hydratePersistedOrderLineItemOptionSelections(lineItem: any): {
   optionSelectionsV2: LineItemOptionSelectionsV2;
 } {
   const specs = asRecord(lineItem?.specsJson) ?? {};
-  const raw = asRecord(lineItem?.optionSelectionsJson);
   const pricingSnapshot = asRecord(lineItem?.pbv2SnapshotJson);
-  const persistedSelectionMaps = [
-    asRecord(raw?.selected),
-    asRecord(raw?.selections),
-    raw && !Object.prototype.hasOwnProperty.call(raw, "schemaVersion") ? raw : null,
-    asRecord(pricingSnapshot?.selections),
-  ];
   const selectedOptionCandidates = [
     lineItem?.selectedOptions,
     specs.selectedOptions,
@@ -128,30 +115,52 @@ export function hydratePersistedOrderLineItemOptionSelections(lineItem: any): {
     };
   }
 
-  const selected: LineItemOptionSelectionsV2["selected"] = {};
-  for (const persistedMap of persistedSelectionMaps) {
-    if (!persistedMap) continue;
-    for (const [key, value] of Object.entries(persistedMap)) {
-      // Earlier maps are more canonical. Lower-priority persisted snapshots
-      // fill missing keys but never replace a current saved selection.
-      if (selected[key] !== undefined) continue;
-      selected[key] = normalizeV2SelectionEntry(value) as any;
-    }
+  const selected = resolvePersistedLineItemSelectionEntries(lineItem) as LineItemOptionSelectionsV2["selected"];
+  const persistedMapKeys = new Set<string>();
+  for (const container of [lineItem?.optionSelectionsJson, pricingSnapshot?.selections]) {
+    const record = asRecord(container);
+    const map = asRecord(record?.selected) ?? asRecord(record?.selections) ?? (
+      record && !Object.prototype.hasOwnProperty.call(record, "schemaVersion") ? record : null
+    );
+    if (map) Object.keys(map).forEach((key) => persistedMapKeys.add(key));
   }
+  const treeNodes = (() => {
+    const tree = asRecord(pricingSnapshot?.treeJson);
+    return Array.isArray(tree?.nodes) ? tree.nodes : Object.values(asRecord(tree?.nodes) ?? {});
+  })();
+  const normalizeAlias = (value: unknown) => String(value ?? "").trim().toLowerCase().replace(/[\s_-]+/g, " ");
 
-  // Older saved rows may only have the evaluated selected-options array. It is
-  // still persisted line-item state and must win over current product defaults.
-  for (const option of selectedOptions) {
-    const key = option?.selectionKey ?? option?.optionId ?? option?.key ?? option?.id;
-    if (!key || option?.value === undefined || selected[String(key)] !== undefined) continue;
-    selected[String(key)] = {
-      value: option.value,
-      ...(typeof option.selectedLabel === "string"
-        ? { label: option.selectedLabel }
-        : typeof option.label === "string"
-          ? { label: option.label }
-          : {}),
-    } as any;
+  // The legacy/dropdown renderer must hydrate from the same canonical map as
+  // PBV2. This prevents stale evaluated selectedOptions from replacing the
+  // saved optionSelectionsJson value when a live tree is temporarily absent.
+  for (const [key, entry] of Object.entries(selected)) {
+    const normalizedKey = normalizeAlias(key);
+    const node = treeNodes.find((candidate: any) => [
+      candidate?.input?.selectionKey,
+      candidate?.selectionKey,
+      candidate?.id,
+      candidate?.key,
+      candidate?.optionId,
+    ].some((alias) => normalizeAlias(alias) === normalizedKey));
+    const aliases = new Set<string>([key]);
+    for (const alias of [node?.id, node?.key, node?.optionId, node?.input?.selectionKey]) {
+      if (alias !== undefined && alias !== null && String(alias).trim()) aliases.add(String(alias));
+    }
+    for (const option of selectedOptions) {
+      const optionMatches = [option?.selectionKey, option?.optionId, option?.key, option?.id]
+        .some((alias) => normalizeAlias(alias) === normalizedKey)
+        || (node?.label && normalizeAlias(option?.optionName) === normalizeAlias(node.label));
+      if (optionMatches && option?.optionId) aliases.add(String(option.optionId));
+    }
+    const shadowedByPersistedAlias = !persistedMapKeys.has(key)
+      && Array.from(aliases).some((alias) => persistedMapKeys.has(alias));
+    if (shadowedByPersistedAlias) continue;
+    for (const alias of aliases) {
+      optionSelections[alias] = {
+        ...(optionSelections[alias] ?? {}),
+        value: entry.value,
+      } as OptionSelection;
+    }
   }
 
   return {
