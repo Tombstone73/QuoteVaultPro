@@ -132,7 +132,7 @@ export type ProductionFileSummary = {
   previewUrl: string | null;
   downloadUrl: string;
   openUrl: string;
-  previewAvailabilityStatus?: string | null;
+  previewAvailabilityStatus?: "available" | "pending" | "missing" | "failed" | null;
   createdAt: string;
 };
 

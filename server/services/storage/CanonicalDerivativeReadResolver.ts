@@ -2,7 +2,7 @@ import type { FileDerivative } from "@shared/schema";
 import { fileDerivativeRepository } from "../../storage/fileDerivative.repo";
 import { storagePlacementRepository } from "../../storage/storagePlacement.repo";
 
-export type CanonicalDerivativeReadStatus = "available" | "pending" | "missing";
+export type CanonicalDerivativeReadStatus = "available" | "pending" | "missing" | "failed";
 
 export type CanonicalDerivativeReadResult = {
   fileRecordId: string;
@@ -35,6 +35,8 @@ export class CanonicalDerivativeReadResolver {
           ? "available"
           : derivative?.state === "pending"
             ? "pending"
+            : derivative?.state === "failed"
+              ? "failed"
             : "missing",
       bucket: derivative?.bucket ?? null,
       objectKey: derivative?.objectKey ?? null,

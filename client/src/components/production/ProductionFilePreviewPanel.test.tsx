@@ -5,6 +5,7 @@ import { TextDecoder, TextEncoder } from "util";
 import { ProductionFilePreviewPanel } from "./ProductionFilePreviewPanel";
 import type { ProductionFileSummary } from "@/hooks/useProduction";
 import { apiFetch } from "@/lib/queryClient";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 
 jest.mock("@/lib/apiConfig", () => ({
   resolveObjectsPublicUrl: (value: string) => value,
@@ -34,9 +35,18 @@ const finalFile = (overrides: Partial<ProductionFileSummary> = {}): ProductionFi
   ...overrides,
 });
 
+function renderPanel(files: ProductionFileSummary[]) {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  return renderToStaticMarkup(
+    <QueryClientProvider client={client}>
+      <ProductionFilePreviewPanel files={files} onPreview={() => undefined} />
+    </QueryClientProvider>,
+  );
+}
+
 describe("ProductionFilePreviewPanel", () => {
   test("renders the final production thumbnail without naked protected file links", () => {
-    const html = renderToStaticMarkup(<ProductionFilePreviewPanel files={[finalFile()]} onPreview={() => undefined} />);
+    const html = renderPanel([finalFile()]);
 
     expect(html).toContain("Production file / sheet layout");
     expect(html).toContain("20000-coroplast-imposed-page-1.png");
@@ -47,23 +57,13 @@ describe("ProductionFilePreviewPanel", () => {
   });
 
   test("shows processing state while a final-file derivative is pending", () => {
-    const html = renderToStaticMarkup(
-      <ProductionFilePreviewPanel
-        files={[finalFile({ thumbnailUrl: null, previewUrl: null, previewAvailabilityStatus: "pending" })]}
-        onPreview={() => undefined}
-      />,
-    );
+    const html = renderPanel([finalFile({ thumbnailUrl: null, previewUrl: null, previewAvailabilityStatus: "pending" })]);
 
     expect(html).toContain("Production file preview processing");
   });
 
   test("shows a clear placeholder while retaining open and download actions", () => {
-    const html = renderToStaticMarkup(
-      <ProductionFilePreviewPanel
-        files={[finalFile({ thumbnailUrl: null, previewUrl: null })]}
-        onPreview={() => undefined}
-      />,
-    );
+    const html = renderPanel([finalFile({ thumbnailUrl: null, previewUrl: null })]);
 
     expect(html).toContain("Production file preview unavailable");
     expect(html).toContain("The final file is available to open or download.");
@@ -72,45 +72,60 @@ describe("ProductionFilePreviewPanel", () => {
   });
 
   test("does not break jobs without a production file", () => {
-    const html = renderToStaticMarkup(<ProductionFilePreviewPanel files={[]} onPreview={() => undefined} />);
+    const html = renderPanel([]);
     expect(html).toContain("No final production file");
   });
 
-  test("requests an authenticated preview repair for an existing final file without derivatives", async () => {
+  test("polls authenticated thumbnail status until an existing final file is ready", async () => {
     const ReactClient = require("react-dom/client") as typeof import("react-dom/client");
     const { act } = require("react") as typeof import("react");
     (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
     const container = document.createElement("div");
     const root = ReactClient.createRoot(container);
-    mockedApiFetch.mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        success: true,
-        data: {
-          previewStatus: "ready",
-          thumbnailUrl: "/objects/generated-thumb.jpg",
-          previewUrl: "/objects/generated-preview.jpg",
-        },
-      }),
-    } as Response);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockedApiFetch
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          success: true,
+          data: { thumbnailStatus: "processing", thumbnailUrl: null },
+        }),
+      } as Response)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          success: true,
+          data: { thumbnailStatus: "ready", thumbnailUrl: "/objects/generated-thumb.jpg" },
+        }),
+      } as Response);
 
     await act(async () => {
       root.render(
-        <ProductionFilePreviewPanel
-          files={[finalFile({ thumbnailUrl: null, previewUrl: null })]}
-          onPreview={() => undefined}
-        />,
+        <QueryClientProvider client={queryClient}>
+          <ProductionFilePreviewPanel
+            files={[finalFile({ thumbnailUrl: null, previewUrl: null })]}
+            onPreview={() => undefined}
+          />
+        </QueryClientProvider>,
       );
-      await Promise.resolve();
-      await Promise.resolve();
+      await new Promise((resolve) => setTimeout(resolve, 20));
     });
 
-    expect(mockedApiFetch).toHaveBeenCalledWith("/api/prepress/files/final-1/ensure-preview", {
-      method: "POST",
+    expect(mockedApiFetch).toHaveBeenCalledTimes(1);
+    expect(queryClient.getQueryData(["/api/prepress/files", "final-1", "thumbnail", "production"]))
+      .toEqual({ thumbnailUrl: null, status: "processing" });
+
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 1550));
+    });
+
+    expect(mockedApiFetch).toHaveBeenCalledWith("/api/prepress/files/final-1/thumbnail", {
       credentials: "include",
     });
+    expect(mockedApiFetch).toHaveBeenCalledTimes(2);
     expect(container.innerHTML).toContain("generated-thumb.jpg");
     await act(async () => root.unmount());
+    queryClient.clear();
     delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
   });
 });

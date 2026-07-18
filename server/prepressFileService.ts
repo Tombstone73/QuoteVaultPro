@@ -372,6 +372,47 @@ export async function ensureLineItemFilePreview(params: {
   return { fileRecordId, previewStatus };
 }
 
+type PreviewRepairResult = Awaited<ReturnType<typeof ensureLineItemFilePreview>>;
+const previewRepairsInFlight = new Map<string, Promise<PreviewRepairResult>>();
+
+/**
+ * Start one background repair per tenant/file. Callers can return a processing
+ * response immediately while the canonical derivative pipeline runs.
+ */
+export function queueLineItemFilePreviewRepair(
+  params: Parameters<typeof ensureLineItemFilePreview>[0],
+  runner: typeof ensureLineItemFilePreview = ensureLineItemFilePreview,
+): { status: "processing"; completion: Promise<PreviewRepairResult> } {
+  const key = `${params.organizationId}:${params.fileId}`;
+  const existing = previewRepairsInFlight.get(key);
+  if (existing) return { status: "processing", completion: existing };
+
+  const completion = runner(params)
+    .then((result) => {
+      if (result.previewStatus === "failed") {
+        console.error("[Prepress] Final production preview repair failed", {
+          organizationId: params.organizationId,
+          fileId: params.fileId,
+        });
+      }
+      return result;
+    })
+    .catch((error) => {
+      console.error("[Prepress] Final production preview repair failed", {
+        organizationId: params.organizationId,
+        fileId: params.fileId,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return { fileRecordId: "", previewStatus: "failed" as const };
+    })
+    .finally(() => {
+      previewRepairsInFlight.delete(key);
+    });
+
+  previewRepairsInFlight.set(key, completion);
+  return { status: "processing", completion };
+}
+
 /**
  * Replace an existing file (marks old as SUPERSEDED)
  */

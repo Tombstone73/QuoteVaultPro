@@ -54,7 +54,7 @@ type LineItemFile = {
   previewUrl?: string | null;
   downloadUrl?: string | null;
   thumbnailUrl?: string | null;
-  thumbnailAvailabilityStatus?: "available" | "pending" | "missing";
+  thumbnailAvailabilityStatus?: "available" | "pending" | "missing" | "failed";
   previewAvailabilityStatus?: "available" | "pending" | "missing";
   mimeType?: string;
   artworkSide?: "front" | "back" | "both" | "na";
@@ -97,7 +97,7 @@ type VisibleFileRecord = AttachmentData & {
   downloadUrl: string;
   sizeBytesValue: number | null;
   sideLabel: "front" | "back" | "both" | "na";
-  thumbnailAvailabilityStatus?: "available" | "pending" | "missing";
+  thumbnailAvailabilityStatus?: "available" | "pending" | "missing" | "failed";
 };
 
 type PendingViewerRequest = {
