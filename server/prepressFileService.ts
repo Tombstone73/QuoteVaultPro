@@ -202,6 +202,25 @@ export function buildComputedDisplayFilename(params: {
   });
 }
 
+export async function generateFinalProductionFilePreview(
+  args: {
+    role: "original" | "final" | "reference";
+    organizationId: string;
+    fileRecordId: string;
+    fileName: string;
+    mimeType?: string | null;
+  },
+  generator: Pick<typeof assetPreviewGenerator, "generateCanonicalFilePreviews"> = assetPreviewGenerator,
+): Promise<"ready" | "unsupported" | "failed" | "not_applicable"> {
+  if (args.role !== "final") return "not_applicable";
+  return generator.generateCanonicalFilePreviews({
+    organizationId: args.organizationId,
+    fileRecordId: args.fileRecordId,
+    fileName: args.fileName,
+    mimeType: args.mimeType,
+  });
+}
+
 /**
  * Upload a file to storage and create line_item_files record
  */
@@ -274,7 +293,8 @@ export async function uploadLineItemFile(params: {
   });
 
   if (role === "final") {
-    await assetPreviewGenerator.generateCanonicalFilePreviews({
+    await generateFinalProductionFilePreview({
+      role,
       organizationId,
       fileRecordId: stored.fileRecord.id,
       fileName: originalFilename,
@@ -340,12 +360,14 @@ export async function ensureLineItemFilePreview(params: {
     fileRecordId = canonicalized.fileRecord.id;
   }
 
-  const previewStatus = await assetPreviewGenerator.generateCanonicalFilePreviews({
+  const previewResult = await generateFinalProductionFilePreview({
+    role: "final",
     organizationId,
     fileRecordId,
     fileName: existing.originalFilename,
     mimeType: existing.mimeType,
   });
+  const previewStatus = previewResult === "not_applicable" ? "failed" : previewResult;
 
   return { fileRecordId, previewStatus };
 }

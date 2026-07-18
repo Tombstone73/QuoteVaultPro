@@ -12,6 +12,14 @@ type ReplaceReadyValues = {
   sizeBytes?: InsertFileDerivative["sizeBytes"];
 };
 
+type SetStateValues = {
+  fileRecordId: NonNullable<InsertFileDerivative["fileRecordId"]>;
+  derivativeType: NonNullable<InsertFileDerivative["derivativeType"]>;
+  state: "pending" | "failed";
+  sourcePlacementId?: InsertFileDerivative["sourcePlacementId"];
+  errorText?: InsertFileDerivative["errorText"];
+};
+
 export class FileDerivativeRepository {
   constructor(private readonly dbInstance = db) {}
 
@@ -121,6 +129,47 @@ export class FileDerivativeRepository {
       throw new Error("Failed to persist file derivative");
     }
 
+    return created;
+  }
+
+  async setState(
+    values: SetStateValues,
+    executor: any = this.dbInstance,
+  ): Promise<FileDerivative> {
+    const now = new Date();
+    const existing = await this.listByFileRecordIdAndType(values.fileRecordId, values.derivativeType, executor);
+    const reusable = existing[0] ?? null;
+    const stateValues = {
+      state: values.state,
+      sourcePlacementId: values.sourcePlacementId ?? null,
+      objectKey: null,
+      bucket: null,
+      mimeType: null,
+      sizeBytes: null,
+      errorText: values.errorText ?? null,
+      updatedAt: now,
+    } as const;
+
+    if (reusable) {
+      const [updated] = await executor
+        .update(fileDerivatives)
+        .set(stateValues)
+        .where(eq(fileDerivatives.id, reusable.id))
+        .returning();
+      if (!updated) throw new Error("Failed to update file derivative state");
+      return updated;
+    }
+
+    const [created] = await executor
+      .insert(fileDerivatives)
+      .values({
+        fileRecordId: values.fileRecordId,
+        derivativeType: values.derivativeType,
+        ...stateValues,
+        createdAt: now,
+      })
+      .returning();
+    if (!created) throw new Error("Failed to create file derivative state");
     return created;
   }
 }
