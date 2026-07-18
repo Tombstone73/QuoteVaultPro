@@ -30,6 +30,14 @@ import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 // Handles both Replit auth (claims.sub) and local auth (id) formats
 const getUserId = (user: any): string | undefined => user?.claims?.sub || user?.id;
 
+type PreviewUiStatus = "missing" | "processing" | "ready" | "failed";
+const toPreviewUiStatus = (status: string): PreviewUiStatus => {
+  if (status === "available" || status === "ready") return "ready";
+  if (status === "pending" || status === "processing") return "processing";
+  if (status === "failed") return "failed";
+  return "missing";
+};
+
 // One-time dev-mode GCS auth mode log — avoids spamming on every upload
 let hasLoggedPrepressStorageAuthMode = false;
 
@@ -238,6 +246,8 @@ export function registerPrepressFileRoutes(
           storagePath: lineItemFiles.storagePath,
           storageKey: lineItemFiles.storageKey,
           mimeType: lineItemFiles.mimeType,
+          role: lineItemFiles.role,
+          originalFilename: lineItemFiles.originalFilename,
         })
         .from(lineItemFiles)
         .where(
@@ -254,11 +264,38 @@ export function registerPrepressFileRoutes(
       }
 
       res.set("X-Served-As", "thumbnail");
+      res.set("Cache-Control", "no-store");
+
+      const normalizedMimeType = String(fileRow.mimeType || "").toLowerCase();
+      const supportsPreview = normalizedMimeType === "application/pdf"
+        || fileRow.originalFilename.toLowerCase().endsWith(".pdf")
+        || (normalizedMimeType.startsWith("image/") && !normalizedMimeType.includes("svg"));
+      const canRepair = fileRow.role === "final" && supportsPreview;
 
       if (!fileRow.fileRecordId) {
+        if (canRepair) {
+          prepressFileService.queueLineItemFilePreviewRepair({
+            fileId: fileRow.id,
+            organizationId,
+            actorUserId: getUserId(req.user) || "system",
+          });
+          return res.json({
+            success: true,
+            data: {
+              thumbnailUrl: null,
+              thumbnailAvailabilityStatus: "pending",
+              thumbnailStatus: "processing",
+            },
+            message: "Thumbnail processing",
+          });
+        }
         return res.json({
           success: true,
-          data: { thumbnailUrl: null, thumbnailAvailabilityStatus: "missing" },
+          data: {
+            thumbnailUrl: null,
+            thumbnailAvailabilityStatus: "missing",
+            thumbnailStatus: "missing",
+          },
           message: "Thumbnail derivative unavailable",
         });
       }
@@ -274,7 +311,25 @@ export function registerPrepressFileRoutes(
           data: {
             thumbnailUrl: resolved.url,
             thumbnailAvailabilityStatus: resolved.availabilityStatus,
+            thumbnailStatus: "ready",
           },
+        });
+      }
+
+      if (resolved.availabilityStatus === "missing" && canRepair) {
+        prepressFileService.queueLineItemFilePreviewRepair({
+          fileId: fileRow.id,
+          organizationId,
+          actorUserId: getUserId(req.user) || "system",
+        });
+        return res.json({
+          success: true,
+          data: {
+            thumbnailUrl: null,
+            thumbnailAvailabilityStatus: "pending",
+            thumbnailStatus: "processing",
+          },
+          message: "Thumbnail processing",
         });
       }
 
@@ -283,8 +338,13 @@ export function registerPrepressFileRoutes(
         data: {
           thumbnailUrl: null,
           thumbnailAvailabilityStatus: resolved.availabilityStatus,
+          thumbnailStatus: toPreviewUiStatus(resolved.availabilityStatus),
         },
-        message: resolved.availabilityStatus === "pending" ? "Thumbnail processing" : "Thumbnail derivative unavailable",
+        message: resolved.availabilityStatus === "pending"
+          ? "Thumbnail processing"
+          : resolved.availabilityStatus === "failed"
+            ? "Preview unavailable"
+            : "Thumbnail derivative unavailable",
       });
     } catch (error: any) {
       console.error("[Prepress] Thumbnail URL error:", error);
@@ -342,6 +402,7 @@ export function registerPrepressFileRoutes(
         success: true,
         data: {
           previewStatus: result.previewStatus,
+          thumbnailStatus: toPreviewUiStatus(thumbnail.availabilityStatus),
           thumbnailUrl: thumbnail.url ?? null,
           previewUrl: preview.url ?? null,
         },
@@ -414,6 +475,7 @@ export function registerPrepressFileRoutes(
           thumbnailUrl: thumbnailAccess.url ?? null,
           previewAvailabilityStatus: previewAccess.availabilityStatus ?? "missing",
           thumbnailAvailabilityStatus: thumbnailAccess.availabilityStatus ?? "missing",
+          thumbnailStatus: toPreviewUiStatus(thumbnailAccess.availabilityStatus ?? "missing"),
         };
       };
 

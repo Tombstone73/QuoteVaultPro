@@ -2213,7 +2213,9 @@ export function registerProductionJobsRoutes(
             ? "available"
             : thumbnailAccess.availabilityStatus === "pending" || previewAccess.availabilityStatus === "pending"
               ? "pending"
-              : "missing";
+              : thumbnailAccess.availabilityStatus === "failed" || previewAccess.availabilityStatus === "failed"
+                ? "failed"
+                : "missing";
 
           return {
             id: file.id,

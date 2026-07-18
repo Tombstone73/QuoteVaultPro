@@ -69,6 +69,7 @@ export class FileDerivativeRepository {
     return (
       rows.find((row) => row.state === "ready" && !!row.objectKey) ??
       rows.find((row) => row.state === "pending") ??
+      rows.find((row) => row.state === "failed") ??
       null
     );
   }

@@ -17,7 +17,7 @@ export function PrepressFileThumbnail({
   filename: string;
   mimeType?: string;
   thumbnailUrl?: string;
-  thumbnailAvailabilityStatus?: "available" | "pending" | "missing";
+  thumbnailAvailabilityStatus?: "available" | "pending" | "missing" | "failed";
   compact?: boolean;
 }) {
   const isImage = !!mimeType?.startsWith("image/");
@@ -33,11 +33,13 @@ export function PrepressFileThumbnail({
       const json = await res.json().catch(() => ({}));
       return {
         url: (json?.data?.thumbnailUrl as string | null) || null,
-        status: (json?.data?.thumbnailAvailabilityStatus as "available" | "pending" | "missing") || "missing",
+        status: (json?.data?.thumbnailStatus as "missing" | "processing" | "ready" | "failed") || "missing",
       };
     },
-    enabled: !!fileId && (isImage || isPdf),
-    staleTime: 60_000,
+    enabled: !!fileId && !thumbnailUrl && (isImage || isPdf),
+    refetchInterval: (query) => query.state.data?.status === "processing" ? 1500 : false,
+    refetchOnMount: "always",
+    staleTime: 0,
     gcTime: 5 * 60_000,
     retry: 1,
   });
@@ -47,7 +49,12 @@ export function PrepressFileThumbnail({
     return resolveObjectsPublicUrl(value) ?? undefined;
   };
   const finalThumbnailUrl = normalizeThumbnailUrl(thumbnailUrl) || normalizeThumbnailUrl(resolvedThumbnail?.url);
-  const resolvedStatus = thumbnailAvailabilityStatus ?? resolvedThumbnail?.status ?? "missing";
+  const resolvedStatus = resolvedThumbnail?.status
+    ?? (thumbnailAvailabilityStatus === "available"
+      ? "ready"
+      : thumbnailAvailabilityStatus === "pending"
+        ? "processing"
+        : thumbnailAvailabilityStatus ?? "missing");
   const displayThumbnailUrl = thumbFailed ? undefined : finalThumbnailUrl;
   const baseClass = compact ? "h-16 w-16" : "h-20 w-20";
 
@@ -63,7 +70,7 @@ export function PrepressFileThumbnail({
           loading="lazy"
           onError={() => setThumbFailed(true)}
         />
-      ) : resolvedStatus === "pending" ? (
+      ) : resolvedStatus === "processing" ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-slate-700/60 text-white">
           <Loader2 className={cn(compact ? "h-5 w-5" : "h-7 w-7", "animate-spin")} />
           <span className="text-[9px] font-semibold uppercase">Preview processing</span>

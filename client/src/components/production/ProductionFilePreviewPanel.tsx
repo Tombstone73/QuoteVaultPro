@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { Download, ExternalLink, FileText } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -29,40 +30,47 @@ export function ProductionFilePreviewPanel({
 }) {
   const { toast } = useToast();
   const primaryFile = files?.[0] ?? null;
-  const [preparedFile, setPreparedFile] = useState<ProductionFileSummary | null>(null);
-  const [previewRepairAttemptedFor, setPreviewRepairAttemptedFor] = useState<string | null>(null);
-  const effectiveFile = preparedFile?.id === primaryFile?.id ? preparedFile : primaryFile;
+  const initialPreviewImage = useMemo(() => resolveProductionFilePreviewImage(primaryFile), [primaryFile]);
+  const { data: repairedPreview } = useQuery({
+    queryKey: ["/api/prepress/files", primaryFile?.id, "thumbnail", "production"],
+    queryFn: async () => {
+      if (!primaryFile) return null;
+      const response = await apiFetch(`/api/prepress/files/${primaryFile.id}/thumbnail`, {
+        credentials: "include",
+      });
+      if (!response.ok) throw new Error(`Preview status failed (${response.status})`);
+      const payload = await response.json() as {
+        data?: {
+          thumbnailUrl?: string | null;
+          thumbnailStatus?: "missing" | "processing" | "ready" | "failed";
+        };
+      };
+      return {
+        thumbnailUrl: payload.data?.thumbnailUrl ?? null,
+        status: payload.data?.thumbnailStatus ?? "missing",
+      };
+    },
+    enabled: !!primaryFile && !initialPreviewImage && primaryFile.previewAvailabilityStatus !== "failed",
+    refetchInterval: (query) => query.state.data?.status === "processing" ? 1500 : false,
+    refetchOnMount: "always",
+    staleTime: 0,
+    retry: 1,
+  });
+  const effectiveFile = useMemo(() => primaryFile ? {
+    ...primaryFile,
+    thumbnailUrl: primaryFile.thumbnailUrl ?? repairedPreview?.thumbnailUrl ?? null,
+    previewAvailabilityStatus: repairedPreview?.status === "ready"
+      ? "available"
+      : repairedPreview?.status === "processing"
+        ? "pending"
+        : repairedPreview?.status ?? primaryFile.previewAvailabilityStatus,
+  } : null, [primaryFile, repairedPreview]);
   const previewImage = useMemo(() => resolveProductionFilePreviewImage(effectiveFile), [effectiveFile]);
   const [previewFailed, setPreviewFailed] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
   const [accessPending, setAccessPending] = useState<"open" | "download" | null>(null);
 
   useEffect(() => setPreviewFailed(false), [effectiveFile?.id, previewImage]);
-
-  useEffect(() => {
-    if (!primaryFile || previewImage || previewRepairAttemptedFor === primaryFile.id) return;
-    setPreviewRepairAttemptedFor(primaryFile.id);
-    setPreparedFile({ ...primaryFile, previewAvailabilityStatus: "pending" });
-    void apiFetch(`/api/prepress/files/${primaryFile.id}/ensure-preview`, {
-      method: "POST",
-      credentials: "include",
-    })
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`Preview preparation failed (${response.status})`);
-        const payload = await response.json() as {
-          data?: { thumbnailUrl?: string | null; previewUrl?: string | null; previewStatus?: string | null };
-        };
-        setPreparedFile({
-          ...primaryFile,
-          thumbnailUrl: payload.data?.thumbnailUrl ?? null,
-          previewUrl: payload.data?.previewUrl ?? null,
-          previewAvailabilityStatus: payload.data?.previewStatus === "ready" ? "available" : "missing",
-        });
-      })
-      .catch(() => {
-        setPreparedFile({ ...primaryFile, previewAvailabilityStatus: "missing" });
-      });
-  }, [previewImage, previewRepairAttemptedFor, primaryFile]);
 
   const accessFile = async (action: "open" | "download") => {
     if (!effectiveFile) return;

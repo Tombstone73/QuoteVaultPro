@@ -254,7 +254,7 @@ export class AssetPreviewGenerator {
     mimeType?: string | null;
   }): Promise<"ready" | "unsupported" | "failed"> {
     const mimeType = String(args.mimeType || "").toLowerCase();
-    const isPdf = mimeType === "application/pdf";
+    const isPdf = mimeType === "application/pdf" || args.fileName.toLowerCase().endsWith(".pdf");
     const isImage = mimeType.startsWith("image/") && !mimeType.includes("svg");
 
     if (!isPdf && !isImage) return "unsupported";
@@ -271,6 +271,29 @@ export class AssetPreviewGenerator {
       || !sourcePlacement
       || !providerConfig
     ) {
+      const reason = source.status !== "available"
+        ? `canonical source is ${source.status}`
+        : !sourcePlacement
+          ? "canonical storage placement is missing"
+          : !providerConfig
+            ? "canonical storage provider configuration is missing"
+            : "canonical source location is missing";
+      console.error("[AssetPreviewGenerator] Cannot generate canonical production-file preview", {
+        fileRecordId: args.fileRecordId,
+        fileName: args.fileName,
+        reason,
+      });
+      if (sourcePlacement) {
+        await Promise.all(["thumbnail", "preview"].map((derivativeType) =>
+          fileDerivativeRepository.setState({
+            fileRecordId: args.fileRecordId,
+            derivativeType: derivativeType as "thumbnail" | "preview",
+            state: "failed",
+            sourcePlacementId: sourcePlacement.id,
+            errorText: reason,
+          })
+        )).catch(() => undefined);
+      }
       return "failed";
     }
 
