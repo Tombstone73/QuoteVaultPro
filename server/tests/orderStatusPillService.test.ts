@@ -3,6 +3,7 @@ import type { OrderStatusPill } from '@shared/schema';
 
 import {
   DEFAULT_ORDER_STATUS_PILLS,
+  CANCELED_ORDER_STATUS_PILL_KEY,
   buildStatusPillChangeEvent,
   planDefaultStatusPillSeed,
   slugifyStatusPillKey,
@@ -20,18 +21,57 @@ function pill(overrides: Partial<OrderStatusPill>): OrderStatusPill {
 
 describe('default operational order status pills', () => {
   test('an empty tenant receives the complete default set', () => {
-    const planned = planDefaultStatusPillSeed(0);
+    const planned = planDefaultStatusPillSeed([]);
     expect(planned.map((status) => status.name)).toEqual([
       'New', 'Needs Review', 'Waiting on Artwork', 'Design Needed', 'Proof Sent',
-      'Waiting on Approval', 'Approved', 'Prepress', 'In Production', 'On Hold',
-      'Problem', 'Ready for Pickup', 'Ready to Ship', 'Shipped', 'Picked Up',
-      'Complete', 'Canceled',
+      'Waiting on Approval', 'Approved', 'Prepress', 'In Production', 'Fulfillment',
+      'Ready for Pickup', 'Ready to Ship', 'Shipped', 'Picked Up', 'Invoiced',
+      'Paid', 'Complete', 'Closed', 'On Hold', 'Problem', 'Canceled',
+    ]);
+    expect(planned).toHaveLength(21);
+  });
+
+  test('seeding is idempotent when every stable default key already exists', () => {
+    const existing = DEFAULT_ORDER_STATUS_PILLS.map((status, index) => pill({
+      id: `pill-${index}`,
+      key: status.key,
+      stateScope: status.stateScope,
+      isDefault: status.isDefault,
+    }));
+    expect(planDefaultStatusPillSeed(existing)).toEqual([]);
+  });
+
+  test('an incomplete tenant receives only missing stable default keys', () => {
+    const incompleteKeys = new Set([
+      'new', 'needs_review', 'waiting_on_artwork', 'design_needed', 'proof_sent',
+      'waiting_on_approval', 'approved', 'prepress', 'in_production', 'on_hold', 'problem',
+    ]);
+    const incomplete = DEFAULT_ORDER_STATUS_PILLS.filter((status) => incompleteKeys.has(status.key)).map((status, index) => pill({
+      id: `pill-${index}`,
+      key: status.key,
+      stateScope: status.stateScope,
+      isDefault: status.isDefault,
+    }));
+    expect(planDefaultStatusPillSeed(incomplete).map((status) => status.key)).toEqual([
+      'fulfillment', 'ready_for_pickup', 'ready_to_ship', 'shipped', 'picked_up',
+      'invoiced', 'paid', 'complete', 'closed', 'canceled',
     ]);
   });
 
-  test('seeding is idempotent and does not overwrite a tenant with any existing pill', () => {
-    expect(planDefaultStatusPillSeed(DEFAULT_ORDER_STATUS_PILLS.length)).toEqual([]);
-    expect(planDefaultStatusPillSeed(1)).toEqual([]);
+  test('custom pills are preserved and do not prevent missing defaults from being planned', () => {
+    const custom = pill({ key: 'waiting_on_vendor', name: 'Waiting on Vendor', isDefault: true });
+    const planned = planDefaultStatusPillSeed([custom]);
+    expect(planned).toHaveLength(21);
+    expect(planned.some((status) => status.key === 'waiting_on_vendor')).toBe(false);
+    expect(planned.find((status) => status.key === 'new')?.isDefault).toBe(false);
+  });
+
+  test('edited and inactive records retain their stable keys and are not recreated', () => {
+    const edited = pill({ key: 'needs_review', name: 'Review Required' });
+    const inactive = pill({ id: 'pill-inactive', key: 'ready_to_ship', name: 'Do Not Restore', isActive: false });
+    const planned = planDefaultStatusPillSeed([edited, inactive]);
+    expect(planned.some((status) => status.key === 'needs_review')).toBe(false);
+    expect(planned.some((status) => status.key === 'ready_to_ship')).toBe(false);
   });
 
   test('stable keys are unique and independent from editable labels', () => {
@@ -43,8 +83,10 @@ describe('default operational order status pills', () => {
   });
 
   test('proof and production pills remain operational signals within the open lifecycle', () => {
-    expect(DEFAULT_ORDER_STATUS_PILLS.find((status) => status.key === 'proof_sent')).toMatchObject({ stateScope: 'open', category: 'proofing' });
-    expect(DEFAULT_ORDER_STATUS_PILLS.find((status) => status.key === 'in_production')).toMatchObject({ stateScope: 'open', category: 'production' });
+    expect(DEFAULT_ORDER_STATUS_PILLS.find((status) => status.key === 'proof_sent')).toMatchObject({ stateScope: 'open', lifecycleMapping: 'proof' });
+    expect(DEFAULT_ORDER_STATUS_PILLS.find((status) => status.key === 'in_production')).toMatchObject({ stateScope: 'open', lifecycleMapping: 'production' });
+    expect(CANCELED_ORDER_STATUS_PILL_KEY).toBe('canceled');
+    expect(DEFAULT_ORDER_STATUS_PILLS.find((status) => status.key === CANCELED_ORDER_STATUS_PILL_KEY)).toMatchObject({ stateScope: 'canceled', lifecycleMapping: 'canceled' });
   });
 });
 

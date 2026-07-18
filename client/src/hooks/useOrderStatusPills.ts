@@ -7,7 +7,9 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import type { OrderState } from './useOrderState';
+import type { OrderStatusPillLifecycleMapping } from '@shared/schema';
 import { orderDetailQueryKey, ordersListQueryKey, orderTimelineQueryKey } from './useOrders';
+import { buildOrderStatusPillsUrl } from '@/lib/orderStatusPills';
 
 export interface OrderStatusPill {
   id: string;
@@ -17,7 +19,7 @@ export interface OrderStatusPill {
   name: string;
   color: string;
   category?: string | null;
-  lifecycleMapping?: OrderState | null;
+  lifecycleMapping?: OrderStatusPillLifecycleMapping | OrderState | null;
   customerVisible: boolean;
   notificationTriggerEligible: boolean;
   isDefault: boolean;
@@ -28,13 +30,13 @@ export interface OrderStatusPill {
 }
 
 /**
- * Fetch status pills for a specific state scope
+ * Fetch the full active tenant catalog, or a state-scoped subset for assignment controls.
  */
-export function useOrderStatusPills(stateScope: OrderState) {
+export function useOrderStatusPills(stateScope?: OrderState) {
   return useQuery<OrderStatusPill[]>({
     queryKey: ['/api', 'orders', 'status-pills', stateScope],
     queryFn: async () => {
-      const res = await fetch(`/api/order-status-pills?state=${stateScope}`, {
+      const res = await fetch(buildOrderStatusPillsUrl(stateScope), {
         credentials: 'include',
       });
 

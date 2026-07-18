@@ -259,6 +259,16 @@ export class AssetPreviewGenerator {
 
     if (!isPdf && !isImage) return "unsupported";
 
+    const existing = await Promise.all([
+      fileDerivativeRepository.getPreferredByFileRecordIdAndType(args.fileRecordId, "thumbnail"),
+      fileDerivativeRepository.getPreferredByFileRecordIdAndType(args.fileRecordId, "preview"),
+    ]);
+    if (existing.every((derivative) => derivative?.state === "ready" && derivative.objectKey)) {
+      return "ready";
+    }
+    const needsThumbnail = !(existing[0]?.state === "ready" && existing[0].objectKey);
+    const needsPreview = !(existing[1]?.state === "ready" && existing[1].objectKey);
+
     const source = await canonicalFileReadResolver.resolveOriginal(args.fileRecordId);
     const sourcePlacement = await storagePlacementRepository.getActiveCanonicalPlacementByFileRecordId(args.fileRecordId);
     const providerConfig = source.providerConfigId
@@ -283,29 +293,29 @@ export class AssetPreviewGenerator {
         fileName: args.fileName,
         reason,
       });
-      if (sourcePlacement) {
-        await Promise.all(["thumbnail", "preview"].map((derivativeType) =>
-          fileDerivativeRepository.setState({
-            fileRecordId: args.fileRecordId,
-            derivativeType: derivativeType as "thumbnail" | "preview",
-            state: "failed",
-            sourcePlacementId: sourcePlacement.id,
-            errorText: reason,
-          })
-        )).catch(() => undefined);
-      }
+      await Promise.all([
+        needsThumbnail ? fileDerivativeRepository.setState({
+          fileRecordId: args.fileRecordId,
+          derivativeType: "thumbnail",
+          state: "failed",
+          sourcePlacementId: sourcePlacement?.id,
+          errorText: reason,
+        }) : Promise.resolve(),
+        needsPreview ? fileDerivativeRepository.setState({
+          fileRecordId: args.fileRecordId,
+          derivativeType: "preview",
+          state: "failed",
+          sourcePlacementId: sourcePlacement?.id,
+          errorText: reason,
+        }) : Promise.resolve(),
+      ]).catch((persistError) => {
+        console.error("[AssetPreviewGenerator] Failed to persist canonical preview failure", {
+          fileRecordId: args.fileRecordId,
+          error: persistError instanceof Error ? persistError.message : String(persistError),
+        });
+      });
       return "failed";
     }
-
-    const existing = await Promise.all([
-      fileDerivativeRepository.getPreferredByFileRecordIdAndType(args.fileRecordId, "thumbnail"),
-      fileDerivativeRepository.getPreferredByFileRecordIdAndType(args.fileRecordId, "preview"),
-    ]);
-    if (existing.every((derivative) => derivative?.state === "ready" && derivative.objectKey)) {
-      return "ready";
-    }
-    const needsThumbnail = !(existing[0]?.state === "ready" && existing[0].objectKey);
-    const needsPreview = !(existing[1]?.state === "ready" && existing[1].objectKey);
 
     await Promise.all([
       needsThumbnail ? fileDerivativeRepository.setState({

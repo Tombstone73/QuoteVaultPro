@@ -1,4 +1,11 @@
 import type { OrderStatusPill } from '@/hooks/useOrderStatusPills';
+import type { OrderState } from '@/hooks/useOrderState';
+
+export function buildOrderStatusPillsUrl(stateScope?: OrderState): string {
+  return stateScope
+    ? `/api/order-status-pills?state=${stateScope}`
+    : '/api/order-status-pills';
+}
 
 export function resolveOrderStatusPillId(
   statusPillId: string | null | undefined,

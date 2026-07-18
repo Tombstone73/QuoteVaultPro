@@ -97,7 +97,7 @@ describe("Prepress final production thumbnail", () => {
     });
 
     expect(client.getQueryData(["/api/prepress/files", "file_poll", "thumbnail"]))
-      .toEqual({ url: null, status: "processing" });
+      .toEqual({ url: null, status: "processing", processingStartedAt: null });
 
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1550));

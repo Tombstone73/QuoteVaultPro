@@ -3118,8 +3118,10 @@ export async function registerOrderRoutes(
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-            const stateScope = (req.query.stateScope ?? req.query.state) as string;
-            if (!stateScope) return res.status(400).json({ success: false, message: "state parameter is required" });
+            const stateScope = (req.query.stateScope ?? req.query.state) as string | undefined;
+            if (stateScope && !["open", "production_complete", "closed", "canceled"].includes(stateScope)) {
+                return res.status(400).json({ success: false, message: "Invalid state parameter" });
+            }
             const { listStatusPills, seedDefaultPillsForOrg } = await import('../services/orderStatusPillService');
             await seedDefaultPillsForOrg(organizationId);
             const pills = await listStatusPills(organizationId, stateScope as any, true);
