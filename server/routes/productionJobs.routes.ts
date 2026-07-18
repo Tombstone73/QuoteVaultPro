@@ -2226,8 +2226,8 @@ export function registerProductionJobsRoutes(
             sizeBytes: file.sizeBytes,
             thumbnailUrl: thumbnailAccess.url ?? null,
             previewUrl: previewAccess.url ?? null,
-            downloadUrl: `/api/prepress/files/${file.id}/download`,
-            openUrl: `/api/prepress/files/${file.id}/download?inline=1`,
+            downloadUrl: `/api/production/jobs/${jobId}/files/${file.id}/download`,
+            openUrl: `/api/production/jobs/${jobId}/files/${file.id}/download?inline=1`,
             previewAvailabilityStatus,
             createdAt: file.createdAt,
           };

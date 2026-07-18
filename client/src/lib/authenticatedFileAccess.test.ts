@@ -1,6 +1,11 @@
 import { afterEach, beforeEach, describe, expect, jest, test } from "@jest/globals";
 
-import { downloadAuthenticatedFile, openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
+import {
+  AuthenticatedFileAccessError,
+  downloadAuthenticatedFile,
+  getProductionFileAccessMessage,
+  openAuthenticatedFile,
+} from "@/lib/authenticatedFileAccess";
 import { apiFetch } from "@/lib/queryClient";
 
 jest.mock("@/lib/queryClient", () => ({ apiFetch: jest.fn() }));
@@ -43,14 +48,18 @@ describe("authenticated file access", () => {
   test("opens a protected production file from an authenticated Blob, not the naked API URL", async () => {
     mockedApiFetch.mockResolvedValue(response({ body: new Blob(["%PDF-1.4"], { type: "application/pdf" }) }));
 
-    await openAuthenticatedFile("/api/prepress/files/final-1/download?inline=1");
+    await openAuthenticatedFile("/api/production/jobs/job-1/files/final-1/download?inline=1");
 
-    expect(mockedApiFetch).toHaveBeenCalledWith("/api/prepress/files/final-1/download?inline=1", {
+    expect(mockedApiFetch).toHaveBeenCalledWith("/api/production/jobs/job-1/files/final-1/download?inline=1", {
       method: "GET",
       credentials: "include",
+      headers: {
+        Accept: "*/*",
+        "X-Requested-With": "XMLHttpRequest",
+      },
     });
     expect(window.open).toHaveBeenCalledWith("blob:production-file", "_blank", "noopener,noreferrer");
-    expect(window.open).not.toHaveBeenCalledWith("/api/prepress/files/final-1/download?inline=1", expect.anything(), expect.anything());
+    expect(window.open).not.toHaveBeenCalledWith("/api/production/jobs/job-1/files/final-1/download?inline=1", expect.anything(), expect.anything());
   });
 
   test("downloads a protected production file through the authenticated request path", async () => {
@@ -64,11 +73,15 @@ describe("authenticated file access", () => {
     jest.spyOn(document.body, "appendChild").mockImplementation((node: Node) => node);
     mockedApiFetch.mockResolvedValue(response({}));
 
-    await downloadAuthenticatedFile("/api/prepress/files/final-1/download", "final.pdf");
+    await downloadAuthenticatedFile("/api/production/jobs/job-1/files/final-1/download", "final.pdf");
 
-    expect(mockedApiFetch).toHaveBeenCalledWith("/api/prepress/files/final-1/download", {
+    expect(mockedApiFetch).toHaveBeenCalledWith("/api/production/jobs/job-1/files/final-1/download", {
       method: "GET",
       credentials: "include",
+      headers: {
+        Accept: "*/*",
+        "X-Requested-With": "XMLHttpRequest",
+      },
     });
     expect(click).toHaveBeenCalled();
     expect(remove).toHaveBeenCalled();
@@ -77,7 +90,14 @@ describe("authenticated file access", () => {
   test("does not open a raw URL when authenticated access is rejected", async () => {
     mockedApiFetch.mockResolvedValue(response({ ok: false, status: 401, json: { message: "Unauthorized" } }));
 
-    await expect(openAuthenticatedFile("/api/prepress/files/final-1/download?inline=1")).rejects.toThrow("Unauthorized");
+    await expect(openAuthenticatedFile("/api/production/jobs/job-1/files/final-1/download?inline=1")).rejects.toThrow("Unauthorized");
     expect(window.open).not.toHaveBeenCalled();
+  });
+
+  test("maps production access failures to actionable messages", () => {
+    expect(getProductionFileAccessMessage(new AuthenticatedFileAccessError(404, "missing"), "open"))
+      .toBe("Production file not found.");
+    expect(getProductionFileAccessMessage(new AuthenticatedFileAccessError(401, "Unauthorized"), "open"))
+      .toBe("Could not open production file. Please refresh and try again.");
   });
 });

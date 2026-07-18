@@ -60,7 +60,8 @@ import {
   Upload,
 } from "lucide-react";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
-import { downloadAuthenticatedFile, openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
+import { downloadAuthenticatedFile, getProductionFileAccessMessage, openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
+import { useToast } from "@/hooks/use-toast";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import {
   ProductionFilePreviewPanel,
@@ -1431,6 +1432,7 @@ function PreviewDisabledHint() {
 }
 
 export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus; jobs?: ProductionJobListItem[] }) {
+  const { toast } = useToast();
   const { preferences } = useOrgPreferences();
   const productionNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
   const previewsDisabled = useMemo(
@@ -2067,7 +2069,9 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       onClick={() => {
                         setProductionFileAccessError(null);
                         void openAuthenticatedFile(productionPreviewFile.openUrl).catch((error) => {
-                          setProductionFileAccessError(error instanceof Error ? error.message : "File access failed.");
+                          const message = getProductionFileAccessMessage(error, "open");
+                          setProductionFileAccessError(message);
+                          toast({ variant: "destructive", title: message });
                         });
                       }}
                     >
@@ -2080,7 +2084,9 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       onClick={() => {
                         setProductionFileAccessError(null);
                         void downloadAuthenticatedFile(productionPreviewFile.downloadUrl, productionPreviewFile.fileName).catch((error) => {
-                          setProductionFileAccessError(error instanceof Error ? error.message : "File download failed.");
+                          const message = getProductionFileAccessMessage(error, "download");
+                          setProductionFileAccessError(message);
+                          toast({ variant: "destructive", title: message });
                         });
                       }}
                     >

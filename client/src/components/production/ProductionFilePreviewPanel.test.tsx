@@ -28,8 +28,8 @@ const finalFile = (overrides: Partial<ProductionFileSummary> = {}): ProductionFi
   sizeBytes: 2048,
   thumbnailUrl: "/objects/20000-coroplast-imposed-page-1.png",
   previewUrl: "/objects/20000-coroplast-imposed-preview.png",
-  downloadUrl: "/api/prepress/files/final-1/download",
-  openUrl: "/api/prepress/files/final-1/download?inline=1",
+  downloadUrl: "/api/production/jobs/job-1/files/final-1/download",
+  openUrl: "/api/production/jobs/job-1/files/final-1/download?inline=1",
   createdAt: "2026-07-17T12:00:00.000Z",
   ...overrides,
 });
@@ -40,7 +40,7 @@ describe("ProductionFilePreviewPanel", () => {
 
     expect(html).toContain("Production file / sheet layout");
     expect(html).toContain("20000-coroplast-imposed-page-1.png");
-    expect(html).not.toContain("href=\"/api/prepress/files/final-1/download");
+    expect(html).not.toContain("href=\"/api/production/jobs/job-1/files/final-1/download");
     expect(html).toContain("Open");
     expect(html).toContain("Download");
     expect(html).not.toContain("Proof");

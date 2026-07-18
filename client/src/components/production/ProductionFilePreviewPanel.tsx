@@ -2,9 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import { Download, ExternalLink, FileText } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
-import { downloadAuthenticatedFile, openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
+import { downloadAuthenticatedFile, getProductionFileAccessMessage, openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { apiFetch } from "@/lib/queryClient";
+import { useToast } from "@/hooks/use-toast";
 import type { ProductionFileSummary } from "@/hooks/useProduction";
 import { resolveProductionPreviewUrl } from "@shared/productionHydration";
 
@@ -26,6 +27,7 @@ export function ProductionFilePreviewPanel({
   files: ProductionFileSummary[] | null | undefined;
   onPreview: (file: ProductionFileSummary) => void;
 }) {
+  const { toast } = useToast();
   const primaryFile = files?.[0] ?? null;
   const [preparedFile, setPreparedFile] = useState<ProductionFileSummary | null>(null);
   const [previewRepairAttemptedFor, setPreviewRepairAttemptedFor] = useState<string | null>(null);
@@ -73,7 +75,9 @@ export function ProductionFilePreviewPanel({
         await downloadAuthenticatedFile(effectiveFile.downloadUrl, effectiveFile.fileName);
       }
     } catch (error) {
-      setAccessError(error instanceof Error ? error.message : "File access failed.");
+      const message = getProductionFileAccessMessage(error, action);
+      setAccessError(message);
+      toast({ variant: "destructive", title: message });
     } finally {
       setAccessPending(null);
     }
