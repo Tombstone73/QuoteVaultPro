@@ -4,6 +4,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { db } from "../db";
 import { authIdentities, organizations, userOrganizations, users } from "@shared/schema";
 import { slugify } from "./orgOnboardingService";
+import { seedDefaultPillsForOrg } from "./orderStatusPillService";
 
 const bootstrapAdminBodySchemaBase = z.object({
   email: z.string().email("A valid email is required").max(255),
@@ -135,6 +136,7 @@ export async function bootstrapPlatformAdmin(input: BootstrapAdminInput): Promis
       }
 
       organizationId = org.id;
+      await seedDefaultPillsForOrg(organizationId, tx);
 
       await tx
         .insert(userOrganizations)

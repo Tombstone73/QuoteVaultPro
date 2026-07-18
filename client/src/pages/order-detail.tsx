@@ -142,6 +142,7 @@ type OrderAddressSnapshotFields = {
   // TitanOS State Architecture fields
   state?: string;
   statusPillValue?: string | null;
+  statusPillId?: string | null;
   paymentStatus?: string;
   routingTarget?: string | null;
 };
@@ -2078,6 +2079,7 @@ export default function OrderDetail() {
             <OrderStatusPillSelector
               orderId={order.id}
               currentState={order.state as OrderState}
+              currentPillId={order.statusPillId}
               currentPillValue={order.statusPillValue}
               disabled={checkIfTerminalState(order.state as OrderState) && !canEditOrder}
               className="h-10 w-[260px] rounded-full text-base"

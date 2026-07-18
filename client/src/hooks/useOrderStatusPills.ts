@@ -13,8 +13,13 @@ export interface OrderStatusPill {
   id: string;
   organizationId: string;
   stateScope: OrderState;
+  key: string;
   name: string;
   color: string;
+  category?: string | null;
+  lifecycleMapping?: OrderState | null;
+  customerVisible: boolean;
+  notificationTriggerEligible: boolean;
   isDefault: boolean;
   isActive: boolean;
   sortOrder: number;
@@ -52,11 +57,11 @@ export function useAssignOrderStatusPill(orderId: string) {
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async (value: string | null) => {
+    mutationFn: async (statusPillId: string | null) => {
       const res = await fetch(`/api/orders/${orderId}/status-pill`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ value }),
+        body: JSON.stringify({ statusPillId }),
         credentials: 'include',
       });
 

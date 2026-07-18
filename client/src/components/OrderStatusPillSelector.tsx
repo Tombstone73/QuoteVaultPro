@@ -8,10 +8,12 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { useOrderStatusPills, useAssignOrderStatusPill } from '@/hooks/useOrderStatusPills';
 import type { OrderState } from '@/hooks/useOrderState';
 import { Loader2 } from 'lucide-react';
+import { resolveOrderStatusPillId } from '@/lib/orderStatusPills';
 
 interface OrderStatusPillSelectorProps {
   orderId: string;
   currentState: OrderState;
+  currentPillId?: string | null;
   currentPillValue?: string | null;
   disabled?: boolean;
   className?: string;
@@ -20,6 +22,7 @@ interface OrderStatusPillSelectorProps {
 export function OrderStatusPillSelector({
   orderId,
   currentState,
+  currentPillId,
   currentPillValue,
   disabled = false,
   className = '',
@@ -51,7 +54,7 @@ export function OrderStatusPillSelector({
 
   return (
     <Select
-      value={currentPillValue || ''}
+      value={resolveOrderStatusPillId(currentPillId, currentPillValue, pills)}
       onValueChange={(value) => assignPill.mutate(value || null)}
       disabled={disabled || assignPill.isPending}
     >
@@ -72,7 +75,7 @@ export function OrderStatusPillSelector({
       </SelectTrigger>
       <SelectContent>
         {pills.map((pill) => (
-          <SelectItem key={pill.id} value={pill.name}>
+          <SelectItem key={pill.id} value={pill.id}>
             <div className="flex items-center gap-2">
               <div className="w-3 h-3 rounded-full" style={{ backgroundColor: pill.color }} />
               {pill.name}

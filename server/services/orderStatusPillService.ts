@@ -6,10 +6,77 @@
  */
 
 import { db } from '../db';
-import { orderStatusPills, orders, orderAuditLog } from '@shared/schema';
-import { eq, and, sql } from 'drizzle-orm';
+import { orderStatusPills, orders, orderAuditLog, orderStatusEvents } from '@shared/schema';
+import { eq, and, sql, or } from 'drizzle-orm';
 import type { OrderStatusPill, InsertOrderStatusPill } from '@shared/schema';
 import type { OrderState } from './orderStateService';
+
+type DbExecutor = any;
+export type StatusChangeSource = 'user' | 'system' | 'automation';
+
+export const DEFAULT_ORDER_STATUS_PILLS: ReadonlyArray<Omit<InsertOrderStatusPill, 'organizationId'>> = [
+  { key: 'new', stateScope: 'open', name: 'New', color: '#2563EB', category: 'intake', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 10 },
+  { key: 'needs_review', stateScope: 'open', name: 'Needs Review', color: '#7C3AED', category: 'intake', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 20 },
+  { key: 'waiting_on_artwork', stateScope: 'open', name: 'Waiting on Artwork', color: '#C2410C', category: 'blocked', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 30 },
+  { key: 'design_needed', stateScope: 'open', name: 'Design Needed', color: '#9333EA', category: 'design', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 40 },
+  { key: 'proof_sent', stateScope: 'open', name: 'Proof Sent', color: '#0369A1', category: 'proofing', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 50 },
+  { key: 'waiting_on_approval', stateScope: 'open', name: 'Waiting on Approval', color: '#A16207', category: 'blocked', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 60 },
+  { key: 'approved', stateScope: 'open', name: 'Approved', color: '#047857', category: 'proofing', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 70 },
+  { key: 'prepress', stateScope: 'open', name: 'Prepress', color: '#0F766E', category: 'production', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 80 },
+  { key: 'in_production', stateScope: 'open', name: 'In Production', color: '#C2410C', category: 'production', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 90 },
+  { key: 'on_hold', stateScope: 'open', name: 'On Hold', color: '#854D0E', category: 'exception', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 100 },
+  { key: 'problem', stateScope: 'open', name: 'Problem', color: '#B91C1C', category: 'exception', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 110 },
+  { key: 'ready_for_pickup', stateScope: 'production_complete', name: 'Ready for Pickup', color: '#0369A1', category: 'fulfillment', lifecycleMapping: 'production_complete', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 120 },
+  { key: 'ready_to_ship', stateScope: 'production_complete', name: 'Ready to Ship', color: '#0F766E', category: 'fulfillment', lifecycleMapping: 'production_complete', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 130 },
+  { key: 'shipped', stateScope: 'production_complete', name: 'Shipped', color: '#475569', category: 'fulfillment', lifecycleMapping: 'production_complete', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 140 },
+  { key: 'picked_up', stateScope: 'production_complete', name: 'Picked Up', color: '#475569', category: 'fulfillment', lifecycleMapping: 'production_complete', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 150 },
+  { key: 'complete', stateScope: 'closed', name: 'Complete', color: '#166534', category: 'terminal', lifecycleMapping: 'closed', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 160 },
+  { key: 'canceled', stateScope: 'canceled', name: 'Canceled', color: '#475569', category: 'terminal', lifecycleMapping: 'canceled', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 170 },
+] as const;
+
+export function slugifyStatusPillKey(label: string): string {
+  const key = label.trim().toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+  return key || 'status';
+}
+
+export function planDefaultStatusPillSeed(existingPillCount: number) {
+  return existingPillCount === 0 ? [...DEFAULT_ORDER_STATUS_PILLS] : [];
+}
+
+export function buildStatusPillChangeEvent(args: {
+  organizationId: string;
+  orderId: string;
+  previousPill: OrderStatusPill | null;
+  previousLabel: string | null;
+  targetPill: OrderStatusPill | null;
+  actorUserId: string;
+  source: StatusChangeSource;
+  reason: string | null;
+  metadata: Record<string, unknown>;
+  stateScope: OrderState;
+}) {
+  return {
+    organizationId: args.organizationId,
+    orderId: args.orderId,
+    eventType: 'status_pill_changed' as const,
+    fromStatusPillId: args.previousPill?.id ?? null,
+    toStatusPillId: args.targetPill?.id ?? null,
+    fromStatusKey: args.previousPill?.key ?? null,
+    toStatusKey: args.targetPill?.key ?? null,
+    fromStatusLabel: args.previousPill?.name ?? args.previousLabel,
+    toStatusLabel: args.targetPill?.name ?? null,
+    changedByUserId: args.actorUserId,
+    changedAt: new Date(),
+    source: args.source,
+    reason: args.reason,
+    note: args.reason,
+    metadata: {
+      ...args.metadata,
+      stateScope: args.stateScope,
+      notificationTriggerEligible: args.targetPill?.notificationTriggerEligible ?? false,
+    },
+  };
+}
 
 function normalizePillValue(value: string) {
   return value
@@ -30,7 +97,8 @@ function isInProductionPillValue(value: string | null | undefined) {
 export async function listStatusPills(
   organizationId: string,
   stateScope?: OrderState,
-  activeOnly = true
+  activeOnly = true,
+  executor: DbExecutor = db,
 ): Promise<OrderStatusPill[]> {
   const conditions = [eq(orderStatusPills.organizationId, organizationId)];
 
@@ -42,7 +110,7 @@ export async function listStatusPills(
     conditions.push(eq(orderStatusPills.isActive, true));
   }
 
-  const pills = await db
+  const pills = await executor
     .select()
     .from(orderStatusPills)
     .where(and(...conditions))
@@ -79,8 +147,17 @@ export async function getDefaultPill(
  */
 export async function createStatusPill(
   organizationId: string,
-  data: Omit<InsertOrderStatusPill, 'organizationId'>
+  data: Omit<InsertOrderStatusPill, 'organizationId' | 'key'> & { key?: string }
 ): Promise<OrderStatusPill> {
+  const baseKey = slugifyStatusPillKey(data.key || data.name);
+  const existingKeys = await db
+    .select({ key: orderStatusPills.key })
+    .from(orderStatusPills)
+    .where(eq(orderStatusPills.organizationId, organizationId));
+  const usedKeys = new Set(existingKeys.map((row) => row.key));
+  let key = baseKey;
+  for (let suffix = 2; usedKeys.has(key); suffix += 1) key = `${baseKey}_${suffix}`;
+
   // If this pill is marked as default, unset other defaults in the same state scope
   if (data.isDefault) {
     await db
@@ -100,6 +177,7 @@ export async function createStatusPill(
     .insert(orderStatusPills)
     .values({
       ...data,
+      key,
       organizationId,
     })
     .returning();
@@ -113,8 +191,11 @@ export async function createStatusPill(
 export async function updateStatusPill(
   organizationId: string,
   pillId: string,
-  data: Partial<Omit<InsertOrderStatusPill, 'organizationId'>>
+  data: Partial<Omit<InsertOrderStatusPill, 'organizationId' | 'key'>>
 ): Promise<OrderStatusPill> {
+  if ('key' in (data as object)) {
+    throw new Error('Status pill keys are immutable. Change the label instead.');
+  }
   // Load existing pill to verify org ownership
   const [existing] = await db
     .select()
@@ -125,32 +206,50 @@ export async function updateStatusPill(
   if (!existing) {
     throw new Error('Status pill not found');
   }
-
-  // If setting this as default, unset other defaults in the same state scope
-  if (data.isDefault === true) {
-    await db
-      .update(orderStatusPills)
-      .set({ isDefault: false, updatedAt: sql`now()` })
-      .where(
-        and(
-          eq(orderStatusPills.organizationId, organizationId),
-          eq(orderStatusPills.stateScope, existing.stateScope),
-          eq(orderStatusPills.isDefault, true)
-        )
-      );
+  if (data.stateScope && data.stateScope !== existing.stateScope) {
+    throw new Error('Status pill lifecycle scope cannot be changed after creation.');
   }
+  const safeData: Partial<Omit<InsertOrderStatusPill, 'organizationId' | 'key' | 'stateScope'>> = {
+    ...(data.name !== undefined ? { name: data.name } : {}),
+    ...(data.color !== undefined ? { color: data.color } : {}),
+    ...(data.category !== undefined ? { category: data.category } : {}),
+    ...(data.lifecycleMapping !== undefined ? { lifecycleMapping: data.lifecycleMapping } : {}),
+    ...(data.customerVisible !== undefined ? { customerVisible: data.customerVisible } : {}),
+    ...(data.notificationTriggerEligible !== undefined ? { notificationTriggerEligible: data.notificationTriggerEligible } : {}),
+    ...(data.isDefault !== undefined ? { isDefault: data.isDefault } : {}),
+    ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+    ...(data.sortOrder !== undefined ? { sortOrder: data.sortOrder } : {}),
+  };
 
-  // Update the pill
-  const [updated] = await db
-    .update(orderStatusPills)
-    .set({
-      ...data,
-      updatedAt: sql`now()`,
-    })
-    .where(eq(orderStatusPills.id, pillId))
-    .returning();
+  return db.transaction(async (tx) => {
+    if (data.isDefault === true) {
+      await tx
+        .update(orderStatusPills)
+        .set({ isDefault: false, updatedAt: sql`now()` })
+        .where(
+          and(
+            eq(orderStatusPills.organizationId, organizationId),
+            eq(orderStatusPills.stateScope, existing.stateScope),
+            eq(orderStatusPills.isDefault, true)
+          )
+        );
+    }
 
-  return updated;
+    const [updated] = await tx
+      .update(orderStatusPills)
+      .set({ ...safeData, updatedAt: sql`now()` })
+      .where(and(eq(orderStatusPills.id, pillId), eq(orderStatusPills.organizationId, organizationId)))
+      .returning();
+
+    if (!updated) throw new Error('Status pill not found');
+    if (data.name && data.name !== existing.name) {
+      await tx
+        .update(orders)
+        .set({ statusPillValue: data.name, updatedAt: sql`now()` })
+        .where(and(eq(orders.organizationId, organizationId), eq(orders.statusPillId, pillId)));
+    }
+    return updated;
+  });
 }
 
 /**
@@ -180,7 +279,7 @@ export async function deleteStatusPill(organizationId: string, pillId: string): 
     .where(
       and(
         eq(orders.organizationId, organizationId),
-        eq(orders.statusPillValue, existing.name)
+        or(eq(orders.statusPillId, existing.id), eq(orders.statusPillValue, existing.name))
       )
     );
 
@@ -261,11 +360,18 @@ export async function ensureDefaultPill(organizationId: string, stateScope: Orde
 export async function assignOrderStatusPill(args: {
   organizationId: string;
   orderId: string;
-  statusPillValue: string | null;
+  statusPillId?: string | null;
+  statusPillValue?: string | null;
   actorUserId: string;
   actorUserName?: string;
-}): Promise<void> {
-  const { organizationId, orderId, statusPillValue, actorUserId, actorUserName } = args;
+  source?: StatusChangeSource;
+  reason?: string | null;
+  metadata?: Record<string, unknown>;
+}): Promise<{ eventId: string | null; statusPill: OrderStatusPill | null }> {
+  const {
+    organizationId, orderId, statusPillId, statusPillValue, actorUserId, actorUserName,
+    source = 'user', reason = null, metadata = {},
+  } = args;
 
   // Load order with org scope
   const [order] = await db
@@ -280,29 +386,74 @@ export async function assignOrderStatusPill(args: {
 
   const currentState = order.state as OrderState;
   const previousPillValue = order.statusPillValue;
-  const shouldScheduleProductionJobs =
-    currentState === 'open' &&
-    isInProductionPillValue(statusPillValue) &&
-    !isInProductionPillValue(previousPillValue);
+  const [previousPill] = order.statusPillId
+    ? await db.select().from(orderStatusPills).where(and(
+        eq(orderStatusPills.id, order.statusPillId),
+        eq(orderStatusPills.organizationId, organizationId),
+      )).limit(1)
+    : previousPillValue
+      ? await db.select().from(orderStatusPills).where(and(
+          eq(orderStatusPills.organizationId, organizationId),
+          eq(orderStatusPills.name, previousPillValue),
+        )).limit(1)
+      : [];
 
-  // If setting a pill (not clearing), validate it exists and matches state scope
-  if (statusPillValue) {
-    const pills = await listStatusPills(organizationId, currentState, true);
-    const pillExists = pills.some(p => p.name === statusPillValue);
-
-    if (!pillExists) {
-      throw new Error(`Status pill "${statusPillValue}" does not exist for state "${currentState}" in this organization`);
+  let targetPill: OrderStatusPill | null = null;
+  if (statusPillId || statusPillValue) {
+    const identifier = statusPillId || statusPillValue || '';
+    const [resolved] = await db
+      .select()
+      .from(orderStatusPills)
+      .where(and(
+        eq(orderStatusPills.organizationId, organizationId),
+        eq(orderStatusPills.stateScope, currentState),
+        eq(orderStatusPills.isActive, true),
+        statusPillId
+          ? eq(orderStatusPills.id, identifier)
+          : or(eq(orderStatusPills.key, identifier), eq(orderStatusPills.name, identifier)),
+      ))
+      .limit(1);
+    if (!resolved) {
+      throw new Error(`Status pill does not exist for state "${currentState}" in this organization`);
     }
+    targetPill = resolved;
   }
 
-  // Update order
-  await db
-    .update(orders)
-    .set({
-      statusPillValue,
-      updatedAt: sql`now()`,
-    })
-    .where(eq(orders.id, orderId));
+  const nextPillValue = targetPill?.name ?? null;
+  const shouldScheduleProductionJobs =
+    currentState === 'open' &&
+    targetPill?.key === 'in_production' &&
+    previousPill?.key !== 'in_production' &&
+    !isInProductionPillValue(previousPillValue);
+
+  const previousIdentity = order.statusPillId ?? previousPill?.id ?? (previousPillValue ? `legacy:${previousPillValue}` : null);
+  const sameAssignment = previousIdentity === (targetPill?.id ?? null);
+  const change = await db.transaction(async (tx) => {
+    await tx
+      .update(orders)
+      .set({
+        statusPillId: targetPill?.id ?? null,
+        statusPillValue: nextPillValue,
+        statusPillAssignedByUserId: actorUserId,
+        statusPillAssignedAt: new Date(),
+        statusPillReason: reason,
+        updatedAt: sql`now()`,
+      })
+      .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
+
+    if (sameAssignment) return { eventId: null };
+
+    const [event] = await tx
+      .insert(orderStatusEvents)
+      .values(buildStatusPillChangeEvent({
+        organizationId, orderId, previousPill: previousPill ?? null,
+        previousLabel: previousPillValue ?? null, targetPill, actorUserId,
+        source, reason, metadata, stateScope: currentState,
+      }))
+      .returning({ id: orderStatusEvents.id });
+    if (!event) throw new Error('Failed to record status pill change event');
+    return { eventId: event.id };
+  });
 
   if (shouldScheduleProductionJobs) {
     const [{ scheduleOrderLineItemsForProduction }, { loadProductionLineItemStatusRulesForOrganization, appendEvent }] =
@@ -319,62 +470,58 @@ export async function assignOrderStatusPill(args: {
     });
   }
 
-  // Create audit log entry
-  try {
-    await db.insert(orderAuditLog).values({
+  // Keep the human-readable audit ledger aligned with the durable event stream.
+  if (change.eventId) {
+    try {
+      await db.insert(orderAuditLog).values({
       orderId,
       userId: actorUserId,
       userName: actorUserName || 'System',
       actionType: 'status_pill_changed',
       fromStatus: previousPillValue || '(none)',
-      toStatus: statusPillValue || '(none)',
-      note: statusPillValue
-        ? `Status pill changed to "${statusPillValue}"`
+      toStatus: nextPillValue || '(none)',
+      note: nextPillValue
+        ? `Status pill changed to "${nextPillValue}"`
         : 'Status pill cleared',
       metadata: {
         currentState,
+        eventId: change.eventId,
+        fromStatusKey: previousPill?.key ?? null,
+        toStatusKey: targetPill?.key ?? null,
+        source,
+        reason,
         productionJobsScheduled: shouldScheduleProductionJobs,
         timestamp: new Date().toISOString(),
       },
-    });
-  } catch (auditError) {
-    console.error('[OrderStatusPillService] Failed to create audit log:', auditError);
-    // Don't fail the assignment if audit fails
+      });
+    } catch (auditError) {
+      console.error('[OrderStatusPillService] Failed to create audit log:', auditError);
+      // Don't fail the assignment if audit fails
+    }
   }
+
+  return { eventId: change.eventId, statusPill: targetPill };
 }
 
 /**
  * Seed default status pills for a new organization
  */
-export async function seedDefaultPillsForOrg(organizationId: string): Promise<void> {
+export async function seedDefaultPillsForOrg(
+  organizationId: string,
+  executor: DbExecutor = db,
+): Promise<{ created: number; skipped: boolean }> {
   // Check if pills already exist
-  const existing = await listStatusPills(organizationId, undefined, false);
+  const existing = await listStatusPills(organizationId, undefined, false, executor);
   if (existing.length > 0) {
-    console.log(`[OrderStatusPillService] Pills already exist for org ${organizationId}, skipping seed`);
-    return;
+    return { created: 0, skipped: true };
   }
 
-  // Seed default pills for each state scope
-  const defaultPills: Omit<InsertOrderStatusPill, 'organizationId'>[] = [
-    // Open state pills
-    { stateScope: 'open', name: 'New', color: '#3b82f6', isDefault: true, isActive: true, sortOrder: 0 },
-    { stateScope: 'open', name: 'In Production', color: '#f97316', isDefault: false, isActive: true, sortOrder: 1 },
-    { stateScope: 'open', name: 'On Hold', color: '#eab308', isDefault: false, isActive: true, sortOrder: 2 },
-    // Production complete state pills
-    { stateScope: 'production_complete', name: 'Ready', color: '#8b5cf6', isDefault: true, isActive: true, sortOrder: 0 },
-    // Closed state pills
-    { stateScope: 'closed', name: 'Completed', color: '#22c55e', isDefault: true, isActive: true, sortOrder: 0 },
-    // Canceled state pills
-    { stateScope: 'canceled', name: 'Canceled', color: '#64748b', isDefault: true, isActive: true, sortOrder: 0 },
-  ];
-
-  // Insert all default pills (safe: array has items)
-  await db.insert(orderStatusPills).values(
-    defaultPills.map(pill => ({
+  const defaults = planDefaultStatusPillSeed(existing.length);
+  const inserted = await executor.insert(orderStatusPills).values(
+    defaults.map((pill) => ({
       ...pill,
       organizationId,
     }))
-  );
-
-  console.log(`[OrderStatusPillService] Seeded ${defaultPills.length} default pills for org ${organizationId}`);
+  ).onConflictDoNothing().returning({ id: orderStatusPills.id });
+  return { created: inserted.length, skipped: inserted.length === 0 };
 }

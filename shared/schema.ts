@@ -3434,6 +3434,10 @@ export const orders = pgTable("orders", {
   workflowStatusId: varchar("workflow_status_id", { length: 64 }),
   canonicalState: varchar("canonical_state", { length: 32 }),
   statusPillValue: varchar("status_pill_value", { length: 100 }), // Org-configurable status pill within current state
+  statusPillId: varchar("status_pill_id").references(() => orderStatusPills.id, { onDelete: 'set null' }),
+  statusPillAssignedByUserId: varchar("status_pill_assigned_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  statusPillAssignedAt: timestamp("status_pill_assigned_at", { withTimezone: true }),
+  statusPillReason: text("status_pill_reason"),
   paymentStatus: varchar("payment_status", { length: 50 }).default("unpaid"), // unpaid, partial, paid
   routingTarget: varchar("routing_target", { length: 50 }), // 'fulfillment' or 'invoicing' (set on production_complete)
   // Billing readiness (MVP invoicing)
@@ -4089,9 +4093,19 @@ export const orderStatusEvents = pgTable("order_status_events", {
   changedByUserId: varchar("changed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   changedAt: timestamp("changed_at", { withTimezone: true }).notNull().defaultNow(),
   note: text("note"),
+  eventType: varchar("event_type", { length: 50 }).notNull().default("workflow_status_changed"),
+  fromStatusPillId: varchar("from_status_pill_id").references(() => orderStatusPills.id, { onDelete: 'set null' }),
+  toStatusPillId: varchar("to_status_pill_id").references(() => orderStatusPills.id, { onDelete: 'set null' }),
+  fromStatusKey: varchar("from_status_key", { length: 100 }),
+  toStatusKey: varchar("to_status_key", { length: 100 }),
+  source: varchar("source", { length: 30 }).notNull().default("user"),
+  reason: text("reason"),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>(),
 }, (table) => [
   index("order_status_events_org_order_idx").on(table.organizationId, table.orderId),
   index("order_status_events_changed_at_idx").on(table.changedAt),
+  index("order_status_events_org_type_idx").on(table.organizationId, table.eventType, table.changedAt),
+  index("order_status_events_to_pill_idx").on(table.organizationId, table.toStatusPillId, table.changedAt),
 ]);
 
 export type OrderWorkflowVersion = typeof orderWorkflowVersions.$inferSelect;
@@ -4109,8 +4123,13 @@ export const orderStatusPills = pgTable("order_status_pills", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   stateScope: varchar("state_scope", { length: 50 }).notNull(), // 'open', 'production_complete', 'closed', 'canceled'
+  key: varchar("key", { length: 100 }).notNull(), // Stable tenant-scoped automation identity; labels may change
   name: varchar("name", { length: 100 }).notNull(), // Display label (e.g., "In Production", "On Hold")
   color: varchar("color", { length: 50 }).notNull().default("#3b82f6"), // Hex color or design token
+  category: varchar("category", { length: 50 }),
+  lifecycleMapping: varchar("lifecycle_mapping", { length: 50 }),
+  customerVisible: boolean("customer_visible").notNull().default(false),
+  notificationTriggerEligible: boolean("notification_trigger_eligible").notNull().default(true),
   isDefault: boolean("is_default").notNull().default(false), // One default pill per (org_id, state_scope)
   isActive: boolean("is_active").notNull().default(true), // Soft delete flag
   sortOrder: integer("sort_order").notNull().default(0), // Display order in UI
@@ -4120,6 +4139,7 @@ export const orderStatusPills = pgTable("order_status_pills", {
   index("order_status_pills_org_idx").on(table.organizationId),
   index("order_status_pills_state_scope_idx").on(table.stateScope),
   index("order_status_pills_org_state_idx").on(table.organizationId, table.stateScope),
+  uniqueIndex("order_status_pills_org_key_uidx").on(table.organizationId, table.key),
   // Unique constraint: only one default pill per (org_id, state_scope)
   // This is enforced in the migration with a partial unique index
 ]);
@@ -4131,11 +4151,16 @@ export const insertOrderStatusPillSchema = createInsertSchema(orderStatusPills).
 }).extend({
   organizationId: z.string().uuid(),
   stateScope: z.enum(["open", "production_complete", "closed", "canceled"]),
+  key: z.string().regex(/^[a-z0-9]+(?:_[a-z0-9]+)*$/).max(100),
   name: z.string().min(1).max(100),
   color: z.string().regex(/^#[0-9A-Fa-f]{6}$/).default("#3b82f6"),
   isDefault: z.boolean().default(false),
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().min(0).default(0),
+  category: z.string().max(50).optional().nullable(),
+  lifecycleMapping: z.enum(["open", "production_complete", "closed", "canceled"]).optional().nullable(),
+  customerVisible: z.boolean().default(false),
+  notificationTriggerEligible: z.boolean().default(true),
 });
 
 export const updateOrderStatusPillSchema = insertOrderStatusPillSchema.partial().extend({
