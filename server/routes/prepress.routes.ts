@@ -2933,6 +2933,23 @@ export function registerPrepressQueueRoutes(
         console.log(`[DEV][Send to Print] lineItemId=${lineItemId} productionJobId=${handoffResult.activeOwnerJobId} station=${handoffResult.activeOwnerStationKey} step=${handoffResult.activeOwnerStepKey}`);
       }
 
+      const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
+      await applyWorkflowStatusPillFailSoft({
+        organizationId,
+        orderId: item.orderId,
+        triggerKey: "sent_to_production",
+        actorUserId: userId,
+        source: "system",
+        reason: "Prepress released the line item to production",
+        metadata: {
+          workflowEvent: "sent_to_production",
+          lineItemId,
+          productionJobId: handoffResult.activeOwnerJobId,
+          stationKey: handoffResult.activeOwnerStationKey,
+          stepKey: handoffResult.activeOwnerStepKey,
+        },
+      });
+
       res.json({
         success: true,
         message: "Sent to print queue successfully",

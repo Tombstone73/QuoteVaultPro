@@ -379,16 +379,18 @@ export async function assignOrderStatusPill(args: {
   organizationId: string;
   orderId: string;
   statusPillId?: string | null;
+  statusPillKey?: string | null;
   statusPillValue?: string | null;
   actorUserId: string;
   actorUserName?: string;
   source?: StatusChangeSource;
   reason?: string | null;
   metadata?: Record<string, unknown>;
+  scheduleProductionJobs?: boolean;
 }): Promise<{ eventId: string | null; statusPill: OrderStatusPill | null }> {
   const {
-    organizationId, orderId, statusPillId, statusPillValue, actorUserId, actorUserName,
-    source = 'user', reason = null, metadata = {},
+    organizationId, orderId, statusPillId, statusPillKey, statusPillValue, actorUserId, actorUserName,
+    source = 'user', reason = null, metadata = {}, scheduleProductionJobs = true,
   } = args;
 
   // Load order with org scope
@@ -417,8 +419,8 @@ export async function assignOrderStatusPill(args: {
       : [];
 
   let targetPill: OrderStatusPill | null = null;
-  if (statusPillId || statusPillValue) {
-    const identifier = statusPillId || statusPillValue || '';
+  if (statusPillId || statusPillKey || statusPillValue) {
+    const identifier = statusPillId || statusPillKey || statusPillValue || '';
     const [resolved] = await db
       .select()
       .from(orderStatusPills)
@@ -428,7 +430,9 @@ export async function assignOrderStatusPill(args: {
         eq(orderStatusPills.isActive, true),
         statusPillId
           ? eq(orderStatusPills.id, identifier)
-          : or(eq(orderStatusPills.key, identifier), eq(orderStatusPills.name, identifier)),
+          : statusPillKey
+            ? eq(orderStatusPills.key, identifier)
+            : or(eq(orderStatusPills.key, identifier), eq(orderStatusPills.name, identifier)),
       ))
       .limit(1);
     if (!resolved) {
@@ -439,6 +443,7 @@ export async function assignOrderStatusPill(args: {
 
   const nextPillValue = targetPill?.name ?? null;
   const shouldScheduleProductionJobs =
+    scheduleProductionJobs &&
     currentState === 'open' &&
     targetPill?.key === 'in_production' &&
     previousPill?.key !== 'in_production' &&
@@ -530,12 +535,18 @@ export async function seedDefaultPillsForOrg(
 ): Promise<{ created: number; skipped: boolean }> {
   const existing = await listStatusPills(organizationId, undefined, false, executor);
   const defaults = planDefaultStatusPillSeed(existing);
-  if (defaults.length === 0) return { created: 0, skipped: true };
-  const inserted = await executor.insert(orderStatusPills).values(
-    defaults.map((pill) => ({
-      ...pill,
-      organizationId,
-    }))
-  ).onConflictDoNothing().returning({ id: orderStatusPills.id });
+  const inserted = defaults.length === 0
+    ? []
+    : await executor.insert(orderStatusPills).values(
+        defaults.map((pill) => ({
+          ...pill,
+          organizationId,
+        }))
+      ).onConflictDoNothing().returning({ id: orderStatusPills.id });
+
+  // Every onboarding/bootstrap/copy path already reconciles pills here. Seed
+  // workflow mappings at the same boundary without making runtime fallback rules.
+  const { seedDefaultWorkflowStatusPillMappingsForOrg } = await import('./workflowStatusPillService');
+  await seedDefaultWorkflowStatusPillMappingsForOrg(organizationId, executor);
   return { created: inserted.length, skipped: inserted.length === 0 };
 }

@@ -28,6 +28,10 @@ import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "./materialWeight";
 import { normalizeMaterialVendorProductUrl } from "./materialVendorPurchasing";
 import { calculateUsableRollCapacity, MATERIAL_FORMS, MATERIAL_INVENTORY_UNITS } from "./materialUnits";
 import {
+  workflowStatusPillAssignmentSourceSchema,
+  workflowStatusPillTriggerSchema,
+} from "./orderStatusWorkflowAutomation";
+import {
   type AiReviewKind,
   aiReviewKindValues,
   type AiReviewStatus,
@@ -4177,6 +4181,39 @@ export const updateOrderStatusPillSchema = insertOrderStatusPillSchema.partial()
 export type InsertOrderStatusPill = z.infer<typeof insertOrderStatusPillSchema>;
 export type UpdateOrderStatusPill = z.infer<typeof updateOrderStatusPillSchema>;
 export type OrderStatusPill = typeof orderStatusPills.$inferSelect;
+
+// Tenant-editable mappings from durable workflow triggers to stable status-pill keys.
+// The target remains a key rather than a label or pill ID so tenant label edits are safe.
+export const workflowStatusPillMappings = pgTable("workflow_status_pill_mappings", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  triggerKey: varchar("trigger_key", { length: 100 }).notNull(),
+  targetStatusKey: varchar("target_status_key", { length: 100 }).notNull(),
+  source: varchar("source", { length: 30 }).notNull().default("system"),
+  isActive: boolean("is_active").notNull().default(true),
+  overwriteExceptionStatus: boolean("overwrite_exception_status").notNull().default(false),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow(),
+}, (table) => [
+  uniqueIndex("workflow_status_pill_mappings_org_trigger_uidx").on(table.organizationId, table.triggerKey),
+  index("workflow_status_pill_mappings_org_target_idx").on(table.organizationId, table.targetStatusKey),
+]);
+
+export const insertWorkflowStatusPillMappingSchema = createInsertSchema(workflowStatusPillMappings).omit({
+  id: true,
+  createdAt: true,
+  updatedAt: true,
+}).extend({
+  organizationId: z.string().uuid(),
+  triggerKey: workflowStatusPillTriggerSchema,
+  targetStatusKey: z.string().regex(/^[a-z0-9]+(?:_[a-z0-9]+)*$/).max(100),
+  source: workflowStatusPillAssignmentSourceSchema.default("system"),
+  isActive: z.boolean().default(true),
+  overwriteExceptionStatus: z.boolean().default(false),
+});
+
+export type WorkflowStatusPillMapping = typeof workflowStatusPillMappings.$inferSelect;
+export type InsertWorkflowStatusPillMapping = z.infer<typeof insertWorkflowStatusPillMappingSchema>;
 
 // Jobs table for production tracking
 export const jobs = pgTable("jobs", {
