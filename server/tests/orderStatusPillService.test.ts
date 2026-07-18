@@ -108,4 +108,18 @@ describe('status pill change event contract', () => {
       metadata: { channel: 'orders_list', stateScope: 'open', notificationTriggerEligible: true },
     });
   });
+
+  test.each(['system', 'automation'] as const)('preserves %s source for future notification rules', (source) => {
+    const event = buildStatusPillChangeEvent({
+      organizationId: 'org-1', orderId: 'order-1', previousPill: null, previousLabel: null,
+      targetPill: pill({ id: 'pill-to', key: 'in_production', name: 'Production Floor' }),
+      actorUserId: 'user-1', source, reason: 'Workflow transition',
+      metadata: { workflowTriggerKey: 'sent_to_production' }, stateScope: 'open',
+    });
+    expect(event.source).toBe(source);
+    expect(event.metadata).toMatchObject({
+      workflowTriggerKey: 'sent_to_production',
+      notificationTriggerEligible: true,
+    });
+  });
 });

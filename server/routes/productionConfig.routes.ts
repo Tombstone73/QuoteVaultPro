@@ -152,7 +152,6 @@ export function registerProductionConfigRoutes(
         if (!assertInternalUser(req, res)) return;
         const organizationId = getRequestOrganizationId(req);
         if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
-
         const stationKey = String(req.params.stationKey ?? "").trim();
         const key = normalizeProductionStepKey(req.params.key);
         if (!stationKey || !key) return res.status(400).json({ error: "Invalid step path" });
@@ -426,6 +425,8 @@ export function registerProductionConfigRoutes(
         if (!assertInternalUser(req, res)) return;
         const organizationId = getRequestOrganizationId(req);
         if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+        const actorUserId = getUserId(req.user);
+        if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
 
         const orderId = String(req.params.orderId);
         const lineItemIds = Array.isArray(req.body.lineItemIds)
@@ -446,10 +447,30 @@ export function registerProductionConfigRoutes(
           organizationId,
           orderId,
           lineItemIds,
+          actorUserId,
           loadRoutingRules: loadProductionLineItemStatusRulesForOrganization,
           appendEvent,
           traceId,
         });
+
+        if (result.data.createdJobCount + result.data.existingJobCount > 0) {
+          const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
+          await applyWorkflowStatusPillFailSoft({
+            organizationId,
+            orderId,
+            triggerKey: "sent_to_production",
+            actorUserId,
+            source: "system",
+            reason: "Order line items were sent to production",
+            metadata: {
+              workflowEvent: "sent_to_production",
+              traceId,
+              lineItemIds: result.data.affectedLineItemIds,
+              createdJobCount: result.data.createdJobCount,
+              existingJobCount: result.data.existingJobCount,
+            },
+          });
+        }
 
         res.json(result);
       } catch (error: any) {

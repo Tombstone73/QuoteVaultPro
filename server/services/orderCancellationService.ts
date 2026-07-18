@@ -10,7 +10,6 @@ import {
   orderAuditLog,
   orderLineItems,
   orderStatusEvents,
-  orderStatusPills,
   orderWorkflowStatuses,
   orderWorkflowVersions,
   orders,
@@ -32,7 +31,7 @@ import {
   orderCancellationReasonLabels,
   type OrderCancellationReason,
 } from "@shared/orderCancellation";
-import { CANCELED_ORDER_STATUS_PILL_KEY } from "./orderStatusPillService";
+import { applyWorkflowStatusPillFailSoft } from "./workflowStatusPillService";
 
 export type OrderCancellationBlockCode =
   | "ORDER_NOT_FOUND"
@@ -266,7 +265,7 @@ export async function cancelOrder(args: {
   ipAddress?: string | null;
   userAgent?: string | null;
 }): Promise<OrderCancellationResult> {
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const now = new Date();
     const nowIso = now.toISOString();
     const warnings: string[] = [];
@@ -550,32 +549,11 @@ export async function cancelOrder(args: {
     }
 
     const workflowStatus = await getCancellationWorkflowStatus(tx, args.organizationId);
-    const [canceledPill] = await tx
-      .select()
-      .from(orderStatusPills)
-      .where(and(
-        eq(orderStatusPills.organizationId, args.organizationId),
-        eq(orderStatusPills.stateScope, "canceled"),
-        eq(orderStatusPills.key, CANCELED_ORDER_STATUS_PILL_KEY),
-        eq(orderStatusPills.isActive, true),
-      ))
-      .limit(1);
-    const [previousPill] = order.statusPillId
-      ? await tx.select().from(orderStatusPills).where(and(
-          eq(orderStatusPills.organizationId, args.organizationId),
-          eq(orderStatusPills.id, order.statusPillId),
-        )).limit(1)
-      : [];
     const updatePayload: Partial<typeof orders.$inferInsert> = {
       state: "canceled",
       status: "canceled",
       canonicalState: "canceled",
       workflowStatusId: workflowStatus?.id ?? order.workflowStatusId,
-      statusPillValue: canceledPill?.name ?? null,
-      statusPillId: canceledPill?.id ?? null,
-      statusPillAssignedByUserId: args.actorUserId,
-      statusPillAssignedAt: now,
-      statusPillReason: noteText || reasonLabel,
       canceledAt: nowIso as any,
       cancellationReason: args.reason,
       routingTarget: null,
@@ -605,30 +583,6 @@ export async function cancelOrder(args: {
         changedByUserId: args.actorUserId,
         changedAt: now,
         note: noteText || reasonLabel,
-      });
-    }
-
-    if ((order.statusPillId ?? null) !== (canceledPill?.id ?? null)) {
-      await tx.insert(orderStatusEvents).values({
-        organizationId: args.organizationId,
-        orderId: args.orderId,
-        eventType: "status_pill_changed",
-        fromStatusPillId: previousPill?.id ?? null,
-        toStatusPillId: canceledPill?.id ?? null,
-        fromStatusKey: previousPill?.key ?? null,
-        toStatusKey: canceledPill?.key ?? null,
-        fromStatusLabel: previousPill?.name ?? order.statusPillValue ?? null,
-        toStatusLabel: canceledPill?.name ?? null,
-        changedByUserId: args.actorUserId,
-        changedAt: now,
-        source: "user",
-        reason: noteText || reasonLabel,
-        note: noteText || reasonLabel,
-        metadata: {
-          source: "order_cancellation",
-          stateScope: "canceled",
-          notificationTriggerEligible: canceledPill?.notificationTriggerEligible ?? false,
-        },
       });
     }
 
@@ -689,4 +643,26 @@ export async function cancelOrder(args: {
 
     return { order: updatedOrder, warnings, sideEffects };
   });
+
+  // Canonical cancellation commits first. Status-pill automation is fail-soft and
+  // cannot roll back or weaken the cancellation side effects.
+  await applyWorkflowStatusPillFailSoft({
+    organizationId: args.organizationId,
+    orderId: args.orderId,
+    triggerKey: "order_canceled",
+    actorUserId: args.actorUserId,
+    source: "system",
+    reason: args.internalNote?.trim() || orderCancellationReasonLabels[args.reason],
+    metadata: {
+      workflowEvent: "order_canceled",
+      cancellationReason: args.reason,
+    },
+  });
+
+  const [refreshedOrder] = await db
+    .select()
+    .from(orders)
+    .where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, args.orderId)))
+    .limit(1);
+  return { ...result, order: refreshedOrder ?? result.order };
 }
