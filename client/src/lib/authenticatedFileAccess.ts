@@ -3,6 +3,22 @@ import { apiFetch } from "@/lib/queryClient";
 const DEFAULT_OPEN_FEATURES = "noopener,noreferrer";
 const DEFAULT_BLOB_REVOKE_DELAY_MS = 60_000;
 
+export class AuthenticatedFileAccessError extends Error {
+  constructor(public readonly status: number, message: string) {
+    super(message);
+    this.name = "AuthenticatedFileAccessError";
+  }
+}
+
+export function getProductionFileAccessMessage(error: unknown, action: "open" | "download"): string {
+  if (error instanceof AuthenticatedFileAccessError && error.status === 404) {
+    return "Production file not found.";
+  }
+  return action === "open"
+    ? "Could not open production file. Please refresh and try again."
+    : "Could not download production file. Please refresh and try again.";
+}
+
 async function readFileAccessError(response: Response): Promise<string> {
   const body = await response.clone().json().catch(() => null);
   if (body && typeof body === "object") {
@@ -19,10 +35,14 @@ async function fetchAuthenticatedFileObjectUrl(url: string): Promise<string> {
   const response = await apiFetch(url, {
     method: "GET",
     credentials: "include",
+    headers: {
+      Accept: "*/*",
+      "X-Requested-With": "XMLHttpRequest",
+    },
   });
 
   if (!response.ok) {
-    throw new Error(await readFileAccessError(response));
+    throw new AuthenticatedFileAccessError(response.status, await readFileAccessError(response));
   }
 
   return URL.createObjectURL(await response.blob());

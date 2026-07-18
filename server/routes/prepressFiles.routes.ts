@@ -43,9 +43,13 @@ export function registerPrepressFileRoutes(
     isAuthenticated: any;
     tenantContext: any;
     assertInternalUser: (req: any, res: any) => boolean;
+    downloadLineItemFile?: typeof prepressFileService.downloadLineItemFile;
+    downloadProductionFileForJob?: typeof prepressFileService.downloadProductionFileForJob;
   },
 ): void {
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
+  const downloadLineItemFile = middleware.downloadLineItemFile ?? prepressFileService.downloadLineItemFile;
+  const downloadProductionFileForJob = middleware.downloadProductionFileForJob ?? prepressFileService.downloadProductionFileForJob;
 
   app.get("/api/prepress/file-naming-policy", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -208,7 +212,7 @@ export function registerPrepressFileRoutes(
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
       const inline = String(req.query.inline || "").toLowerCase() === "1" || String(req.query.inline || "").toLowerCase() === "true";
-      await prepressFileService.downloadLineItemFile(req.params.fileId, organizationId, res, { inline });
+      await downloadLineItemFile(req.params.fileId, organizationId, res, { inline });
     } catch (error: any) {
       console.error("[Prepress] Download error:", error);
       if (!res.headersSent) {
@@ -281,6 +285,35 @@ export function registerPrepressFileRoutes(
     } catch (error: any) {
       console.error("[Prepress] Thumbnail URL error:", error);
       res.status(500).json({ error: error?.message || "Failed to resolve thumbnail URL" });
+    }
+  });
+
+  // Production-specific final-file access. The service validates job, line item, file, and org ownership.
+  app.get("/api/production/jobs/:jobId/files/:fileId/download", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const inline = ["1", "true"].includes(String(req.query.inline || "").toLowerCase());
+      await downloadProductionFileForJob({
+        jobId: req.params.jobId,
+        fileId: req.params.fileId,
+        organizationId,
+        inline,
+        res,
+      });
+    } catch (error: any) {
+      if (
+        error instanceof prepressFileService.ProductionFileAccessError
+        || (error?.name === "ProductionFileAccessError" && Number.isInteger(error?.statusCode))
+      ) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+      console.error("[Production] Final file download error:", error);
+      if (!res.headersSent) {
+        return res.status(500).json({ message: "Could not access production file" });
+      }
     }
   });
 

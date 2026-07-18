@@ -9,7 +9,7 @@
  */
 
 import { db } from "./db";
-import { lineItemFiles, orders, orderLineItems, orderAttachments, organizations } from "../shared/schema";
+import { lineItemFiles, orders, orderLineItems, orderAttachments, organizations, productionJobs } from "../shared/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { getStorageClient } from "./objectStorage";
 import type { Response } from "express";
@@ -777,6 +777,51 @@ export async function getLineItemFiles(
     bridgedOriginals,
     proofs,
   };
+}
+
+export class ProductionFileAccessError extends Error {
+  constructor(public readonly statusCode: number, message: string) {
+    super(message);
+    this.name = "ProductionFileAccessError";
+  }
+}
+
+/**
+ * Stream a final file only when it belongs to the requested production job and tenant.
+ * This is the Production-screen transport boundary; Prepress keeps its existing file route.
+ */
+export async function downloadProductionFileForJob(params: {
+  jobId: string;
+  fileId: string;
+  organizationId: string;
+  inline?: boolean;
+  res: Response;
+}): Promise<void> {
+  const [ownedFile] = await db
+    .select({ fileId: lineItemFiles.id })
+    .from(productionJobs)
+    .innerJoin(
+      lineItemFiles,
+      and(
+        eq(lineItemFiles.lineItemId, productionJobs.lineItemId),
+        eq(lineItemFiles.orderId, productionJobs.orderId),
+      ),
+    )
+    .where(and(
+      eq(productionJobs.id, params.jobId),
+      eq(productionJobs.organizationId, params.organizationId),
+      eq(lineItemFiles.id, params.fileId),
+      eq(lineItemFiles.organizationId, params.organizationId),
+      eq(lineItemFiles.role, "final"),
+      eq(lineItemFiles.status, "active"),
+    ))
+    .limit(1);
+
+  if (!ownedFile) {
+    throw new ProductionFileAccessError(404, "Production file not found");
+  }
+
+  await downloadLineItemFile(params.fileId, params.organizationId, params.res, { inline: params.inline });
 }
 
 export async function ensureFinalArtworkForLineItem(params: {
