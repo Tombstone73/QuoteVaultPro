@@ -10,6 +10,10 @@ import { resolveLocalStoragePath } from '../localStoragePath';
 import { normalizeTenantObjectKey } from '../../utils/orgKeys';
 import { persistReadyFileDerivative } from '../storage/persistFileDerivative';
 import { canonicalFileReadResolver } from '../storage/CanonicalFileReadResolver';
+import { storageProviderConfigRepository } from '../../storage/storageProviderConfig.repo';
+import { storagePlacementRepository } from '../../storage/storagePlacement.repo';
+import { storageRegistry } from '../storage/StorageRegistry';
+import { fileDerivativeRepository } from '../../storage/fileDerivative.repo';
 
 class AssetSourceNotReadyError extends Error {
   constructor(message: string) {
@@ -255,19 +259,59 @@ export class AssetPreviewGenerator {
 
     if (!isPdf && !isImage) return "unsupported";
 
-    try {
-      const source = await canonicalFileReadResolver.resolveOriginal(args.fileRecordId);
-      if (source.status !== "available" || (!source.objectKey && !source.localPathRef)) {
-        throw new AssetSourceNotReadyError("Canonical production file is not readable yet");
-      }
+    const source = await canonicalFileReadResolver.resolveOriginal(args.fileRecordId);
+    const sourcePlacement = await storagePlacementRepository.getActiveCanonicalPlacementByFileRecordId(args.fileRecordId);
+    const providerConfig = source.providerConfigId
+      ? await storageProviderConfigRepository.getById(source.providerConfigId)
+      : null;
 
-      const sourceBytes = await this.readSourceBytes({
-        assetId: args.fileRecordId,
-        organizationId: args.organizationId,
+    if (
+      source.status !== "available"
+      || (!source.objectKey && !source.localPathRef)
+      || !sourcePlacement
+      || !providerConfig
+    ) {
+      return "failed";
+    }
+
+    const existing = await Promise.all([
+      fileDerivativeRepository.getPreferredByFileRecordIdAndType(args.fileRecordId, "thumbnail"),
+      fileDerivativeRepository.getPreferredByFileRecordIdAndType(args.fileRecordId, "preview"),
+    ]);
+    if (existing.every((derivative) => derivative?.state === "ready" && derivative.objectKey)) {
+      return "ready";
+    }
+    const needsThumbnail = !(existing[0]?.state === "ready" && existing[0].objectKey);
+    const needsPreview = !(existing[1]?.state === "ready" && existing[1].objectKey);
+
+    await Promise.all([
+      needsThumbnail ? fileDerivativeRepository.setState({
         fileRecordId: args.fileRecordId,
+        derivativeType: "thumbnail",
+        state: "pending",
+        sourcePlacementId: sourcePlacement.id,
+      }) : Promise.resolve(),
+      needsPreview ? fileDerivativeRepository.setState({
+        fileRecordId: args.fileRecordId,
+        derivativeType: "preview",
+        state: "pending",
+        sourcePlacementId: sourcePlacement.id,
+      }) : Promise.resolve(),
+    ]);
+
+    try {
+      const adapter = storageRegistry.getAdapter(providerConfig.providerType);
+      const downloadHandle = await adapter.getDownloadHandle({
+        providerConfig,
         objectKey: source.objectKey,
         localPathRef: source.localPathRef,
       });
+      const sourceBytes = downloadHandle.kind === "signed_url"
+        ? await fetch(downloadHandle.value).then(async (response) => {
+            if (!response.ok) throw new Error(`Canonical source download failed (${response.status})`);
+            return Buffer.from(await response.arrayBuffer());
+          })
+        : await fs.readFile(downloadHandle.value);
       const imageBuffer = isPdf ? await this.renderPdfFirstPageFromBuffer(sourceBytes) : sourceBytes;
       const baseKey = normalizeTenantObjectKey(`thumbs/${args.organizationId}/file/${args.fileRecordId}`);
       const thumbKey = `${baseKey}/thumb.jpg`;
@@ -283,22 +327,47 @@ export class AssetPreviewGenerator {
           .toBuffer(),
       ]);
 
-      await Promise.all([
-        this.uploadBuffer(thumbKey, thumbBuffer, "image/jpeg"),
-        this.uploadBuffer(previewKey, previewBuffer, "image/jpeg"),
+      const [storedThumb, storedPreview] = await Promise.all([
+        adapter.putObject({
+          buffer: thumbBuffer,
+          originalFilename: `${args.fileName}.thumb.jpg`,
+          mimeType: "image/jpeg",
+          requestedTarget: thumbKey,
+          providerConfig,
+          resource: { organizationId: args.organizationId, resourceType: "order", resourceId: args.fileRecordId },
+        }),
+        adapter.putObject({
+          buffer: previewBuffer,
+          originalFilename: `${args.fileName}.preview.jpg`,
+          mimeType: "image/jpeg",
+          requestedTarget: previewKey,
+          providerConfig,
+          resource: { organizationId: args.organizationId, resourceType: "order", resourceId: args.fileRecordId },
+        }),
       ]);
+      const storedThumbKey = storedThumb.objectKey ?? storedThumb.localPathRef;
+      const storedPreviewKey = storedPreview.objectKey ?? storedPreview.localPathRef;
+      if (!storedThumbKey || !storedPreviewKey) throw new Error("Derivative storage returned no location");
+
+      const [thumbVerification, previewVerification] = await Promise.all([
+        adapter.verifyObject({ providerConfig, objectKey: storedThumb.objectKey, localPathRef: storedThumb.localPathRef }),
+        adapter.verifyObject({ providerConfig, objectKey: storedPreview.objectKey, localPathRef: storedPreview.localPathRef }),
+      ]);
+      if (!thumbVerification.exists || !previewVerification.exists) {
+        throw new Error("Derivative verification failed after storage write");
+      }
       await Promise.all([
         persistReadyFileDerivative({
           fileRecordId: args.fileRecordId,
           derivativeType: "thumbnail",
-          objectKey: thumbKey,
+          objectKey: storedThumbKey,
           mimeType: "image/jpeg",
           sizeBytes: thumbBuffer.length,
         }),
         persistReadyFileDerivative({
           fileRecordId: args.fileRecordId,
           derivativeType: "preview",
-          objectKey: previewKey,
+          objectKey: storedPreviewKey,
           mimeType: "image/jpeg",
           sizeBytes: previewBuffer.length,
         }),
@@ -310,6 +379,22 @@ export class AssetPreviewGenerator {
         fileName: args.fileName,
         error: error instanceof Error ? error.message : String(error),
       });
+      await Promise.all([
+        needsThumbnail ? fileDerivativeRepository.setState({
+          fileRecordId: args.fileRecordId,
+          derivativeType: "thumbnail",
+          state: "failed",
+          sourcePlacementId: sourcePlacement.id,
+          errorText: error instanceof Error ? error.message : String(error),
+        }) : Promise.resolve(),
+        needsPreview ? fileDerivativeRepository.setState({
+          fileRecordId: args.fileRecordId,
+          derivativeType: "preview",
+          state: "failed",
+          sourcePlacementId: sourcePlacement.id,
+          errorText: error instanceof Error ? error.message : String(error),
+        }) : Promise.resolve(),
+      ]).catch(() => undefined);
       return "failed";
     }
   }

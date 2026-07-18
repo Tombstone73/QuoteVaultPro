@@ -255,15 +255,10 @@ export function registerPrepressFileRoutes(
 
       res.set("X-Served-As", "thumbnail");
 
-      const isImage = !!fileRow.mimeType?.startsWith("image/");
-      if (!isImage) {
-        return res.json({ success: true, data: { thumbnailUrl: null }, message: "File is not an image" });
-      }
-
       if (!fileRow.fileRecordId) {
         return res.json({
           success: true,
-          data: { thumbnailUrl: null },
+          data: { thumbnailUrl: null, thumbnailAvailabilityStatus: "missing" },
           message: "Thumbnail derivative unavailable",
         });
       }
@@ -274,13 +269,22 @@ export function registerPrepressFileRoutes(
       );
 
       if (resolved.url) {
-        return res.json({ success: true, data: { thumbnailUrl: resolved.url } });
+        return res.json({
+          success: true,
+          data: {
+            thumbnailUrl: resolved.url,
+            thumbnailAvailabilityStatus: resolved.availabilityStatus,
+          },
+        });
       }
 
       return res.json({
         success: true,
-        data: { thumbnailUrl: null },
-        message: "Thumbnail derivative unavailable",
+        data: {
+          thumbnailUrl: null,
+          thumbnailAvailabilityStatus: resolved.availabilityStatus,
+        },
+        message: resolved.availabilityStatus === "pending" ? "Thumbnail processing" : "Thumbnail derivative unavailable",
       });
     } catch (error: any) {
       console.error("[Prepress] Thumbnail URL error:", error);
@@ -408,6 +412,8 @@ export function registerPrepressFileRoutes(
           downloadUrl: `/api/prepress/files/${f.id}/download`,
           previewUrl: previewAccess.url ?? null,
           thumbnailUrl: thumbnailAccess.url ?? null,
+          previewAvailabilityStatus: previewAccess.availabilityStatus ?? "missing",
+          thumbnailAvailabilityStatus: thumbnailAccess.availabilityStatus ?? "missing",
         };
       };
 

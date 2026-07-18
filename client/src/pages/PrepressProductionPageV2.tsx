@@ -14,7 +14,7 @@ import { cn } from "@/lib/utils";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { formatDistanceToNow } from "date-fns";
-import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
+import { PrepressFileThumbnail as FileThumbnail } from "@/components/prepress/PrepressFileThumbnail";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrepressArtworkSideBadge } from "@/components/prepress/PrepressArtworkSideBadge";
@@ -54,6 +54,8 @@ type LineItemFile = {
   previewUrl?: string | null;
   downloadUrl?: string | null;
   thumbnailUrl?: string | null;
+  thumbnailAvailabilityStatus?: "available" | "pending" | "missing";
+  previewAvailabilityStatus?: "available" | "pending" | "missing";
   mimeType?: string;
   artworkSide?: "front" | "back" | "both" | "na";
 };
@@ -95,6 +97,7 @@ type VisibleFileRecord = AttachmentData & {
   downloadUrl: string;
   sizeBytesValue: number | null;
   sideLabel: "front" | "back" | "both" | "na";
+  thumbnailAvailabilityStatus?: "available" | "pending" | "missing";
 };
 
 type PendingViewerRequest = {
@@ -298,7 +301,6 @@ function formatPrepressTagLabel(tag: string | null | undefined, defaultTag: stri
   if (normalized === "cut_file" || normalized === "cut") return "Cut File";
   return tag || defaultTag;
 }
-
 const PREPRESS_QUEUE_QUERY_KEY = ["/api/prepress/queue"] as const;
 
 function getPrepressLineItemQueryKey(lineItemId: string | null) {
@@ -815,6 +817,7 @@ export default function PrepressProductionPageV2() {
     originalUrl: file.originalUrl ?? `/api/prepress/files/${file.id}/download`,
     previewUrl: file.previewUrl ?? null,
     thumbUrl: file.thumbnailUrl || null,
+    thumbnailAvailabilityStatus: file.thumbnailAvailabilityStatus,
     displayName: file.computedDisplayFilename || file.originalFilename,
     uploadedByLabel: file.uploadedBy,
     tagLabel: formatPrepressTagLabel(file.tag, defaultTag),
@@ -1920,6 +1923,7 @@ export default function PrepressProductionPageV2() {
                             filename={file.originalFilename || file.fileName}
                             mimeType={file.mimeType || undefined}
                             thumbnailUrl={file.thumbUrl || undefined}
+                            thumbnailAvailabilityStatus={file.thumbnailAvailabilityStatus}
                           />
                         </td>
                         <td className="px-4 py-3">
@@ -2712,7 +2716,6 @@ export default function PrepressProductionPageV2() {
     </div>
   );
 }
-
 function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: PrepressQueueItem; isSelected: boolean; onClick: () => void; onPreviewClick: () => void }) {
   const config = getPrepressWorkflowDisplay(item);
   const ownerLabel = formatOwnerLabel(item);
@@ -2802,91 +2805,6 @@ function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: Prepress
           </div>
         ) : null}
       </div>
-    </div>
-  );
-}
-
-function FileThumbnail({
-  fileId,
-  filename,
-  mimeType,
-  thumbnailUrl,
-  compact = false,
-}: {
-  fileId?: string;
-  filename: string;
-  mimeType?: string;
-  thumbnailUrl?: string;
-  compact?: boolean;
-}) {
-  const isImage = !!mimeType?.startsWith("image/");
-  const isPdf = !!mimeType?.includes("pdf") || filename.toLowerCase().endsWith(".pdf");
-  const [thumbFailed, setThumbFailed] = useState(false);
-
-  const { data: resolvedThumbnailUrl } = useQuery({
-    queryKey: ["/api/prepress/files", fileId, "thumbnail"],
-    queryFn: async () => {
-      if (!fileId) return null as string | null;
-      const res = await fetch(`/api/prepress/files/${fileId}/thumbnail`, { credentials: "include" });
-      if (!res.ok) return null as string | null;
-      const json = await res.json().catch(() => ({}));
-      return (json?.data?.thumbnailUrl as string | null) || null;
-    },
-    enabled: !!fileId && isImage,
-    staleTime: 60_000,
-    gcTime: 5 * 60_000,
-    retry: 1,
-  });
-
-  const normalizeThumbnailUrl = (value?: string | null): string | undefined => {
-    if (!value) return undefined;
-    return resolveObjectsPublicUrl(value) ?? undefined;
-  };
-
-  const finalThumbnailUrl =
-    normalizeThumbnailUrl(thumbnailUrl) ||
-    normalizeThumbnailUrl(resolvedThumbnailUrl) ||
-    undefined;
-  const displayThumbnailUrl = thumbFailed ? undefined : finalThumbnailUrl;
-  const baseClass = compact ? "w-16 h-16" : "w-20 h-20";
-
-  React.useEffect(() => {
-    setThumbFailed(false);
-  }, [finalThumbnailUrl]);
-
-  return (
-    <div className={cn("relative rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group", baseClass)}>
-      {displayThumbnailUrl ? (
-        <img
-          src={displayThumbnailUrl}
-          alt={filename}
-          className="absolute inset-0 w-full h-full object-cover"
-          loading="lazy"
-          onError={(e) => {
-            setThumbFailed(true);
-            if (import.meta.env.DEV) {
-              console.info(`[thumb] failed url=${e.currentTarget.src}`);
-            }
-          }}
-        />
-      ) : isPdf ? (
-        <div className="absolute inset-0 bg-slate-700/60 flex items-center justify-center">
-          <svg className={cn(compact ? "w-6 h-6" : "w-8 h-8", "text-white")} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 21h10a2 2 0 002-2V9.414a1 1 0 00-.293-.707l-5.414-5.414A1 1 0 0012.586 3H7a2 2 0 00-2 2v14a2 2 0 002 2z" />
-          </svg>
-          <span className="absolute bottom-1 text-[9px] font-bold text-white/90">PDF</span>
-        </div>
-      ) : (
-        <svg className={cn(compact ? "w-6 h-6" : "w-8 h-8", "text-slate-500")} fill="none" stroke="currentColor" viewBox="0 0 24 24">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-        </svg>
-      )}
-      <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-opacity">
-        <ZoomIn className="w-5 h-5 text-white" />
-      </div>
-      {import.meta.env.DEV && thumbFailed ? (
-        <div className="absolute bottom-1 left-1 rounded bg-black/70 px-1 py-0.5 text-[9px] text-amber-300">thumb failed</div>
-      ) : null}
     </div>
   );
 }
