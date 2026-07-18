@@ -9,6 +9,11 @@ import { apiFetch } from "@/lib/queryClient";
 import { useToast } from "@/hooks/use-toast";
 import type { ProductionFileSummary } from "@/hooks/useProduction";
 import { resolveProductionPreviewUrl } from "@shared/productionHydration";
+import {
+  getFilePreviewPollInterval,
+  isFilePreviewProcessingTimedOut,
+  type FilePreviewUiStatus,
+} from "@/lib/filePreviewPolling";
 
 export function resolveProductionFilePreviewImage(file: ProductionFileSummary | null | undefined): string | null {
   if (!file) return null;
@@ -42,16 +47,21 @@ export function ProductionFilePreviewPanel({
       const payload = await response.json() as {
         data?: {
           thumbnailUrl?: string | null;
-          thumbnailStatus?: "missing" | "processing" | "ready" | "failed";
+          thumbnailStatus?: FilePreviewUiStatus;
+          processingStartedAt?: string | null;
         };
       };
       return {
         thumbnailUrl: payload.data?.thumbnailUrl ?? null,
         status: payload.data?.thumbnailStatus ?? "missing",
+        processingStartedAt: payload.data?.processingStartedAt ?? null,
       };
     },
     enabled: !!primaryFile && !initialPreviewImage && primaryFile.previewAvailabilityStatus !== "failed",
-    refetchInterval: (query) => query.state.data?.status === "processing" ? 1500 : false,
+    refetchInterval: (query) => getFilePreviewPollInterval(
+      query.state.data?.status,
+      query.state.data?.processingStartedAt,
+    ),
     refetchOnMount: "always",
     staleTime: 0,
     retry: 1,
@@ -66,6 +76,10 @@ export function ProductionFilePreviewPanel({
         : repairedPreview?.status ?? primaryFile.previewAvailabilityStatus,
   } : null, [primaryFile, repairedPreview]);
   const previewImage = useMemo(() => resolveProductionFilePreviewImage(effectiveFile), [effectiveFile]);
+  const processingTimedOut = isFilePreviewProcessingTimedOut(
+    repairedPreview?.status,
+    repairedPreview?.processingStartedAt,
+  );
   const [previewFailed, setPreviewFailed] = useState(false);
   const [accessError, setAccessError] = useState<string | null>(null);
   const [accessPending, setAccessPending] = useState<"open" | "download" | null>(null);
@@ -127,14 +141,18 @@ export function ProductionFilePreviewPanel({
             <div className="mt-2 text-sm font-medium text-titan-text-primary">
               {primaryFile
                 ? effectiveFile?.previewAvailabilityStatus === "pending"
-                  ? "Production file preview processing"
+                  ? processingTimedOut
+                    ? "Preview still processing"
+                    : "Production file preview processing"
                   : "Production file preview unavailable"
                 : "No final production file"}
             </div>
             <div className="mt-1 text-xs">
               {primaryFile
                 ? effectiveFile?.previewAvailabilityStatus === "pending"
-                  ? "Production file preview processing. Open or download remains available."
+                  ? processingTimedOut
+                    ? "Preview still processing. Open or download remains available."
+                    : "Production file preview processing. Open or download remains available."
                   : "The final file is available to open or download."
                 : "Upload final output in Prepress before production release."}
             </div>

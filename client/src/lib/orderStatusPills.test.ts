@@ -1,7 +1,7 @@
 import { describe, expect, test } from '@jest/globals';
 import type { OrderStatusPill } from '@/hooks/useOrderStatusPills';
 
-import { orderMatchesStatusPillFilter, resolveOrderStatusPillId } from './orderStatusPills';
+import { buildOrderStatusPillsUrl, orderMatchesStatusPillFilter, resolveOrderStatusPillId } from './orderStatusPills';
 
 const pills = [
   { id: 'pill-new', key: 'new', name: 'New' },
@@ -21,5 +21,14 @@ describe('order status pill list and filter resolution', () => {
     expect(orderMatchesStatusPillFilter({ statusPillId: 'pill-new' }, 'pill-new', pills)).toBe(true);
     expect(orderMatchesStatusPillFilter({ statusPillValue: 'Proof Sent' }, 'pill-proof', pills)).toBe(true);
     expect(orderMatchesStatusPillFilter({ statusPillId: 'pill-new' }, 'all', pills)).toBe(true);
+  });
+
+  test('the Orders filter requests the full tenant status catalog', () => {
+    expect(buildOrderStatusPillsUrl()).toBe('/api/order-status-pills');
+  });
+
+  test('order assignment selectors retain canonical state-scoped catalogs', () => {
+    expect(buildOrderStatusPillsUrl('open')).toBe('/api/order-status-pills?state=open');
+    expect(buildOrderStatusPillsUrl('canceled')).toBe('/api/order-status-pills?state=canceled');
   });
 });

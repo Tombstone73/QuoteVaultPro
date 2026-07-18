@@ -32,6 +32,7 @@ import {
   orderCancellationReasonLabels,
   type OrderCancellationReason,
 } from "@shared/orderCancellation";
+import { CANCELED_ORDER_STATUS_PILL_KEY } from "./orderStatusPillService";
 
 export type OrderCancellationBlockCode =
   | "ORDER_NOT_FOUND"
@@ -555,8 +556,8 @@ export async function cancelOrder(args: {
       .where(and(
         eq(orderStatusPills.organizationId, args.organizationId),
         eq(orderStatusPills.stateScope, "canceled"),
+        eq(orderStatusPills.key, CANCELED_ORDER_STATUS_PILL_KEY),
         eq(orderStatusPills.isActive, true),
-        eq(orderStatusPills.isDefault, true),
       ))
       .limit(1);
     const [previousPill] = order.statusPillId

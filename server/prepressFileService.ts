@@ -42,6 +42,8 @@ import {
 } from "@shared/prepressFileClassification";
 import { storageApplicationService } from "./services/storage/StorageApplicationService";
 import { assetPreviewGenerator } from "./services/assets/AssetPreviewGenerator";
+import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
+import { storagePlacementRepository } from "./storage/storagePlacement.repo";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
@@ -293,13 +295,11 @@ export async function uploadLineItemFile(params: {
   });
 
   if (role === "final") {
-    await generateFinalProductionFilePreview({
-      role,
+    await queueLineItemFilePreviewRepair({
+      fileId: stored.linkedRecord.id,
       organizationId,
-      fileRecordId: stored.fileRecord.id,
-      fileName: originalFilename,
-      mimeType,
-    });
+      actorUserId: createdByUserId,
+    }).completion;
   }
 
   return stored.linkedRecord;
@@ -373,7 +373,85 @@ export async function ensureLineItemFilePreview(params: {
 }
 
 type PreviewRepairResult = Awaited<ReturnType<typeof ensureLineItemFilePreview>>;
-const previewRepairsInFlight = new Map<string, Promise<PreviewRepairResult>>();
+type PreviewRepairEntry = {
+  completion: Promise<PreviewRepairResult>;
+  startedAt: Date;
+};
+
+const previewRepairsInFlight = new Map<string, PreviewRepairEntry>();
+const DEFAULT_PREVIEW_REPAIR_TIMEOUT_MS = 120_000;
+
+function previewRepairKey(params: Pick<Parameters<typeof ensureLineItemFilePreview>[0], "organizationId" | "fileId">): string {
+  return `${params.organizationId}:${params.fileId}`;
+}
+
+export function getLineItemFilePreviewRepairState(params: Pick<Parameters<typeof ensureLineItemFilePreview>[0], "organizationId" | "fileId">): {
+  inFlight: boolean;
+  startedAt: Date | null;
+} {
+  const entry = previewRepairsInFlight.get(previewRepairKey(params));
+  return {
+    inFlight: !!entry,
+    startedAt: entry?.startedAt ?? null,
+  };
+}
+
+export function shouldQueueLineItemFilePreviewRepair(args: {
+  canRepair: boolean;
+  derivativeStatus: "available" | "pending" | "missing" | "failed";
+  repairInFlight: boolean;
+}): boolean {
+  if (!args.canRepair || args.repairInFlight) return false;
+  return args.derivativeStatus === "missing" || args.derivativeStatus === "pending";
+}
+
+async function persistLineItemFilePreviewRepairFailure(
+  params: Parameters<typeof ensureLineItemFilePreview>[0],
+  error: unknown,
+): Promise<void> {
+  const [file] = await db
+    .select({ fileRecordId: lineItemFiles.fileRecordId })
+    .from(lineItemFiles)
+    .where(and(
+      eq(lineItemFiles.id, params.fileId),
+      eq(lineItemFiles.organizationId, params.organizationId),
+      eq(lineItemFiles.status, "active"),
+    ))
+    .limit(1);
+
+  if (!file?.fileRecordId) return;
+  const placement = await storagePlacementRepository.getActiveCanonicalPlacementByFileRecordId(file.fileRecordId);
+  const errorText = error instanceof Error ? error.message : String(error);
+  await Promise.all(["thumbnail", "preview"].map((derivativeType) =>
+    fileDerivativeRepository.setState({
+      fileRecordId: file.fileRecordId!,
+      derivativeType: derivativeType as "thumbnail" | "preview",
+      state: "failed",
+      sourcePlacementId: placement?.id,
+      errorText,
+    })
+  ));
+}
+
+function runWithPreviewRepairTimeout<T>(operation: Promise<T>, timeoutMs: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      reject(new Error(`Final production preview generation timed out after ${timeoutMs}ms`));
+    }, timeoutMs);
+    if (typeof timeout.unref === "function") timeout.unref();
+
+    operation.then(
+      (value) => {
+        clearTimeout(timeout);
+        resolve(value);
+      },
+      (error) => {
+        clearTimeout(timeout);
+        reject(error);
+      },
+    );
+  });
+}
 
 /**
  * Start one background repair per tenant/file. Callers can return a processing
@@ -382,12 +460,19 @@ const previewRepairsInFlight = new Map<string, Promise<PreviewRepairResult>>();
 export function queueLineItemFilePreviewRepair(
   params: Parameters<typeof ensureLineItemFilePreview>[0],
   runner: typeof ensureLineItemFilePreview = ensureLineItemFilePreview,
+  options: {
+    timeoutMs?: number;
+    persistFailure?: typeof persistLineItemFilePreviewRepairFailure;
+  } = {},
 ): { status: "processing"; completion: Promise<PreviewRepairResult> } {
-  const key = `${params.organizationId}:${params.fileId}`;
+  const key = previewRepairKey(params);
   const existing = previewRepairsInFlight.get(key);
-  if (existing) return { status: "processing", completion: existing };
+  if (existing) return { status: "processing", completion: existing.completion };
 
-  const completion = runner(params)
+  const startedAt = new Date();
+  const timeoutMs = options.timeoutMs ?? DEFAULT_PREVIEW_REPAIR_TIMEOUT_MS;
+  const persistFailure = options.persistFailure ?? persistLineItemFilePreviewRepairFailure;
+  const completion = runWithPreviewRepairTimeout(runner(params), timeoutMs)
     .then((result) => {
       if (result.previewStatus === "failed") {
         console.error("[Prepress] Final production preview repair failed", {
@@ -397,19 +482,28 @@ export function queueLineItemFilePreviewRepair(
       }
       return result;
     })
-    .catch((error) => {
+    .catch(async (error) => {
       console.error("[Prepress] Final production preview repair failed", {
         organizationId: params.organizationId,
         fileId: params.fileId,
         error: error instanceof Error ? error.message : String(error),
       });
+      try {
+        await persistFailure(params, error);
+      } catch (persistError) {
+        console.error("[Prepress] Failed to persist final production preview repair failure", {
+          organizationId: params.organizationId,
+          fileId: params.fileId,
+          error: persistError instanceof Error ? persistError.message : String(persistError),
+        });
+      }
       return { fileRecordId: "", previewStatus: "failed" as const };
     })
     .finally(() => {
       previewRepairsInFlight.delete(key);
     });
 
-  previewRepairsInFlight.set(key, completion);
+  previewRepairsInFlight.set(key, { completion, startedAt });
   return { status: "processing", completion };
 }
 

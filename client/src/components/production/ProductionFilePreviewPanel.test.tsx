@@ -1,5 +1,5 @@
 import React from "react";
-import { describe, expect, jest, test } from "@jest/globals";
+import { beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { TextDecoder, TextEncoder } from "util";
 
 import { ProductionFilePreviewPanel } from "./ProductionFilePreviewPanel";
@@ -13,6 +13,10 @@ jest.mock("@/lib/apiConfig", () => ({
 jest.mock("@/lib/queryClient", () => ({ apiFetch: jest.fn() }));
 
 const mockedApiFetch = apiFetch as jest.MockedFunction<typeof apiFetch>;
+
+beforeEach(() => {
+  mockedApiFetch.mockReset();
+});
 
 (globalThis as any).TextEncoder = TextEncoder;
 (globalThis as any).TextDecoder = TextDecoder;
@@ -113,7 +117,7 @@ describe("ProductionFilePreviewPanel", () => {
 
     expect(mockedApiFetch).toHaveBeenCalledTimes(1);
     expect(queryClient.getQueryData(["/api/prepress/files", "final-1", "thumbnail", "production"]))
-      .toEqual({ thumbnailUrl: null, status: "processing" });
+      .toEqual({ thumbnailUrl: null, status: "processing", processingStartedAt: null });
 
     await act(async () => {
       await new Promise((resolve) => setTimeout(resolve, 1550));
@@ -124,6 +128,54 @@ describe("ProductionFilePreviewPanel", () => {
     });
     expect(mockedApiFetch).toHaveBeenCalledTimes(2);
     expect(container.innerHTML).toContain("generated-thumb.jpg");
+    await act(async () => root.unmount());
+    queryClient.clear();
+    delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+  });
+
+  test("shows a non-blocking timeout message and keeps file actions available", async () => {
+    const ReactClient = require("react-dom/client") as typeof import("react-dom/client");
+    const { act } = require("react") as typeof import("react");
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    const container = document.createElement("div");
+    const root = ReactClient.createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    mockedApiFetch.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {
+          thumbnailStatus: "processing",
+          thumbnailUrl: null,
+          processingStartedAt: "2020-01-01T00:00:00.000Z",
+        },
+      }),
+    } as Response);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <ProductionFilePreviewPanel
+            files={[finalFile({ thumbnailUrl: null, previewUrl: null })]}
+            onPreview={() => undefined}
+          />
+        </QueryClientProvider>,
+      );
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    });
+
+    expect(queryClient.getQueryData(["/api/prepress/files", "final-1", "thumbnail", "production"]))
+      .toEqual({
+        thumbnailUrl: null,
+        status: "processing",
+        processingStartedAt: "2020-01-01T00:00:00.000Z",
+      });
+    expect(container.innerHTML).toContain("Preview still processing");
+    expect(container.innerHTML).toContain("Open");
+    expect(container.innerHTML).toContain("Download");
     await act(async () => root.unmount());
     queryClient.clear();
     delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;

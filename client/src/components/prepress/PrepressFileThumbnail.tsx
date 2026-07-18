@@ -4,6 +4,7 @@ import { Loader2, ZoomIn } from "lucide-react";
 
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { cn } from "@/lib/utils";
+import { getFilePreviewPollInterval, isFilePreviewProcessingTimedOut, type FilePreviewUiStatus } from "@/lib/filePreviewPolling";
 
 export function PrepressFileThumbnail({
   fileId,
@@ -33,11 +34,15 @@ export function PrepressFileThumbnail({
       const json = await res.json().catch(() => ({}));
       return {
         url: (json?.data?.thumbnailUrl as string | null) || null,
-        status: (json?.data?.thumbnailStatus as "missing" | "processing" | "ready" | "failed") || "missing",
+        status: (json?.data?.thumbnailStatus as FilePreviewUiStatus) || "missing",
+        processingStartedAt: (json?.data?.processingStartedAt as string | null) || null,
       };
     },
     enabled: !!fileId && !thumbnailUrl && (isImage || isPdf),
-    refetchInterval: (query) => query.state.data?.status === "processing" ? 1500 : false,
+    refetchInterval: (query) => getFilePreviewPollInterval(
+      query.state.data?.status,
+      query.state.data?.processingStartedAt,
+    ),
     refetchOnMount: "always",
     staleTime: 0,
     gcTime: 5 * 60_000,
@@ -56,6 +61,10 @@ export function PrepressFileThumbnail({
         ? "processing"
         : thumbnailAvailabilityStatus ?? "missing");
   const displayThumbnailUrl = thumbFailed ? undefined : finalThumbnailUrl;
+  const processingTimedOut = isFilePreviewProcessingTimedOut(
+    resolvedThumbnail?.status,
+    resolvedThumbnail?.processingStartedAt,
+  );
   const baseClass = compact ? "h-16 w-16" : "h-20 w-20";
 
   useEffect(() => setThumbFailed(false), [finalThumbnailUrl]);
@@ -73,7 +82,9 @@ export function PrepressFileThumbnail({
       ) : resolvedStatus === "processing" ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-slate-700/60 text-white">
           <Loader2 className={cn(compact ? "h-5 w-5" : "h-7 w-7", "animate-spin")} />
-          <span className="text-[9px] font-semibold uppercase">Preview processing</span>
+          <span className="px-1 text-center text-[9px] font-semibold uppercase">
+            {processingTimedOut ? "Still processing" : "Preview processing"}
+          </span>
         </div>
       ) : isPdf ? (
         <div className="absolute inset-0 flex items-center justify-center bg-slate-700/60">

@@ -4144,6 +4144,13 @@ export const orderStatusPills = pgTable("order_status_pills", {
   // This is enforced in the migration with a partial unique index
 ]);
 
+export const orderStatusPillLifecycleMappingValues = [
+  "intake", "order", "artwork", "design", "proof", "prepress", "production",
+  "fulfillment", "invoicing", "payment", "complete", "closed", "hold", "exception", "canceled",
+] as const;
+export const orderStatusPillLifecycleMappingSchema = z.enum(orderStatusPillLifecycleMappingValues);
+export type OrderStatusPillLifecycleMapping = z.infer<typeof orderStatusPillLifecycleMappingSchema>;
+
 export const insertOrderStatusPillSchema = createInsertSchema(orderStatusPills).omit({
   id: true,
   createdAt: true,
@@ -4158,7 +4165,7 @@ export const insertOrderStatusPillSchema = createInsertSchema(orderStatusPills).
   isActive: z.boolean().default(true),
   sortOrder: z.number().int().min(0).default(0),
   category: z.string().max(50).optional().nullable(),
-  lifecycleMapping: z.enum(["open", "production_complete", "closed", "canceled"]).optional().nullable(),
+  lifecycleMapping: orderStatusPillLifecycleMappingSchema.optional().nullable(),
   customerVisible: z.boolean().default(false),
   notificationTriggerEligible: z.boolean().default(true),
 });

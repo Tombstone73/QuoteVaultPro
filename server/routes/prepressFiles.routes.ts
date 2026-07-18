@@ -31,7 +31,7 @@ import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 const getUserId = (user: any): string | undefined => user?.claims?.sub || user?.id;
 
 type PreviewUiStatus = "missing" | "processing" | "ready" | "failed";
-const toPreviewUiStatus = (status: string): PreviewUiStatus => {
+export const toPreviewUiStatus = (status: string): PreviewUiStatus => {
   if (status === "available" || status === "ready") return "ready";
   if (status === "pending" || status === "processing") return "processing";
   if (status === "failed") return "failed";
@@ -279,12 +279,17 @@ export function registerPrepressFileRoutes(
             organizationId,
             actorUserId: getUserId(req.user) || "system",
           });
+          const repairState = prepressFileService.getLineItemFilePreviewRepairState({
+            fileId: fileRow.id,
+            organizationId,
+          });
           return res.json({
             success: true,
             data: {
               thumbnailUrl: null,
               thumbnailAvailabilityStatus: "pending",
               thumbnailStatus: "processing",
+              processingStartedAt: repairState.startedAt?.toISOString() ?? null,
             },
             message: "Thumbnail processing",
           });
@@ -316,11 +321,23 @@ export function registerPrepressFileRoutes(
         });
       }
 
-      if (resolved.availabilityStatus === "missing" && canRepair) {
+      const repairState = prepressFileService.getLineItemFilePreviewRepairState({
+        fileId: fileRow.id,
+        organizationId,
+      });
+      if (prepressFileService.shouldQueueLineItemFilePreviewRepair({
+        canRepair,
+        derivativeStatus: resolved.availabilityStatus,
+        repairInFlight: repairState.inFlight,
+      })) {
         prepressFileService.queueLineItemFilePreviewRepair({
           fileId: fileRow.id,
           organizationId,
           actorUserId: getUserId(req.user) || "system",
+        });
+        const queuedState = prepressFileService.getLineItemFilePreviewRepairState({
+          fileId: fileRow.id,
+          organizationId,
         });
         return res.json({
           success: true,
@@ -328,6 +345,7 @@ export function registerPrepressFileRoutes(
             thumbnailUrl: null,
             thumbnailAvailabilityStatus: "pending",
             thumbnailStatus: "processing",
+            processingStartedAt: queuedState.startedAt?.toISOString() ?? null,
           },
           message: "Thumbnail processing",
         });
@@ -339,6 +357,9 @@ export function registerPrepressFileRoutes(
           thumbnailUrl: null,
           thumbnailAvailabilityStatus: resolved.availabilityStatus,
           thumbnailStatus: toPreviewUiStatus(resolved.availabilityStatus),
+          processingStartedAt: resolved.availabilityStatus === "pending"
+            ? repairState.startedAt?.toISOString() ?? null
+            : null,
         },
         message: resolved.availabilityStatus === "pending"
           ? "Thumbnail processing"
@@ -388,11 +409,11 @@ export function registerPrepressFileRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const result = await prepressFileService.ensureLineItemFilePreview({
+      const result = await prepressFileService.queueLineItemFilePreviewRepair({
         fileId: req.params.fileId,
         organizationId,
         actorUserId: req.user.id,
-      });
+      }).completion;
       const [thumbnail, preview] = await Promise.all([
         resolveDerivativeFileAccess({ id: req.params.fileId, fileRecordId: result.fileRecordId }, "thumbnail"),
         resolveDerivativeFileAccess({ id: req.params.fileId, fileRecordId: result.fileRecordId }, "preview"),

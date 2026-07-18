@@ -13,25 +13,30 @@ import type { OrderState } from './orderStateService';
 
 type DbExecutor = any;
 export type StatusChangeSource = 'user' | 'system' | 'automation';
+export const CANCELED_ORDER_STATUS_PILL_KEY = 'canceled';
 
 export const DEFAULT_ORDER_STATUS_PILLS: ReadonlyArray<Omit<InsertOrderStatusPill, 'organizationId'>> = [
-  { key: 'new', stateScope: 'open', name: 'New', color: '#2563EB', category: 'intake', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 10 },
-  { key: 'needs_review', stateScope: 'open', name: 'Needs Review', color: '#7C3AED', category: 'intake', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 20 },
-  { key: 'waiting_on_artwork', stateScope: 'open', name: 'Waiting on Artwork', color: '#C2410C', category: 'blocked', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 30 },
-  { key: 'design_needed', stateScope: 'open', name: 'Design Needed', color: '#9333EA', category: 'design', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 40 },
-  { key: 'proof_sent', stateScope: 'open', name: 'Proof Sent', color: '#0369A1', category: 'proofing', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 50 },
-  { key: 'waiting_on_approval', stateScope: 'open', name: 'Waiting on Approval', color: '#A16207', category: 'blocked', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 60 },
-  { key: 'approved', stateScope: 'open', name: 'Approved', color: '#047857', category: 'proofing', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 70 },
-  { key: 'prepress', stateScope: 'open', name: 'Prepress', color: '#0F766E', category: 'production', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 80 },
-  { key: 'in_production', stateScope: 'open', name: 'In Production', color: '#C2410C', category: 'production', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 90 },
-  { key: 'on_hold', stateScope: 'open', name: 'On Hold', color: '#854D0E', category: 'exception', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 100 },
-  { key: 'problem', stateScope: 'open', name: 'Problem', color: '#B91C1C', category: 'exception', lifecycleMapping: 'open', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 110 },
-  { key: 'ready_for_pickup', stateScope: 'production_complete', name: 'Ready for Pickup', color: '#0369A1', category: 'fulfillment', lifecycleMapping: 'production_complete', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 120 },
-  { key: 'ready_to_ship', stateScope: 'production_complete', name: 'Ready to Ship', color: '#0F766E', category: 'fulfillment', lifecycleMapping: 'production_complete', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 130 },
-  { key: 'shipped', stateScope: 'production_complete', name: 'Shipped', color: '#475569', category: 'fulfillment', lifecycleMapping: 'production_complete', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 140 },
-  { key: 'picked_up', stateScope: 'production_complete', name: 'Picked Up', color: '#475569', category: 'fulfillment', lifecycleMapping: 'production_complete', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 150 },
-  { key: 'complete', stateScope: 'closed', name: 'Complete', color: '#166534', category: 'terminal', lifecycleMapping: 'closed', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 160 },
-  { key: 'canceled', stateScope: 'canceled', name: 'Canceled', color: '#475569', category: 'terminal', lifecycleMapping: 'canceled', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 170 },
+  { key: 'new', stateScope: 'open', name: 'New', color: '#2563EB', category: 'intake', lifecycleMapping: 'intake', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 10 },
+  { key: 'needs_review', stateScope: 'open', name: 'Needs Review', color: '#7C3AED', category: 'intake', lifecycleMapping: 'intake', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 20 },
+  { key: 'waiting_on_artwork', stateScope: 'open', name: 'Waiting on Artwork', color: '#C2410C', category: 'artwork', lifecycleMapping: 'artwork', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 30 },
+  { key: 'design_needed', stateScope: 'open', name: 'Design Needed', color: '#9333EA', category: 'design', lifecycleMapping: 'design', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 40 },
+  { key: 'proof_sent', stateScope: 'open', name: 'Proof Sent', color: '#0369A1', category: 'proof', lifecycleMapping: 'proof', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 50 },
+  { key: 'waiting_on_approval', stateScope: 'open', name: 'Waiting on Approval', color: '#A16207', category: 'proof', lifecycleMapping: 'proof', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 60 },
+  { key: 'approved', stateScope: 'open', name: 'Approved', color: '#047857', category: 'order', lifecycleMapping: 'order', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 70 },
+  { key: 'prepress', stateScope: 'open', name: 'Prepress', color: '#0F766E', category: 'prepress', lifecycleMapping: 'prepress', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 80 },
+  { key: 'in_production', stateScope: 'open', name: 'In Production', color: '#C2410C', category: 'production', lifecycleMapping: 'production', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 90 },
+  { key: 'fulfillment', stateScope: 'production_complete', name: 'Fulfillment', color: '#0E7490', category: 'fulfillment', lifecycleMapping: 'fulfillment', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 100 },
+  { key: 'ready_for_pickup', stateScope: 'production_complete', name: 'Ready for Pickup', color: '#0369A1', category: 'fulfillment', lifecycleMapping: 'fulfillment', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 110 },
+  { key: 'ready_to_ship', stateScope: 'production_complete', name: 'Ready to Ship', color: '#0F766E', category: 'fulfillment', lifecycleMapping: 'fulfillment', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 120 },
+  { key: 'shipped', stateScope: 'production_complete', name: 'Shipped', color: '#475569', category: 'fulfillment', lifecycleMapping: 'fulfillment', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 130 },
+  { key: 'picked_up', stateScope: 'production_complete', name: 'Picked Up', color: '#475569', category: 'fulfillment', lifecycleMapping: 'fulfillment', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 140 },
+  { key: 'invoiced', stateScope: 'production_complete', name: 'Invoiced', color: '#4338CA', category: 'invoicing', lifecycleMapping: 'invoicing', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 150 },
+  { key: 'paid', stateScope: 'production_complete', name: 'Paid', color: '#15803D', category: 'payment', lifecycleMapping: 'payment', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 160 },
+  { key: 'complete', stateScope: 'closed', name: 'Complete', color: '#166534', category: 'complete', lifecycleMapping: 'complete', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 170 },
+  { key: 'closed', stateScope: 'closed', name: 'Closed', color: '#334155', category: 'closed', lifecycleMapping: 'closed', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 180 },
+  { key: 'on_hold', stateScope: 'open', name: 'On Hold', color: '#854D0E', category: 'hold', lifecycleMapping: 'hold', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 190 },
+  { key: 'problem', stateScope: 'open', name: 'Problem', color: '#B91C1C', category: 'exception', lifecycleMapping: 'exception', customerVisible: false, notificationTriggerEligible: true, isDefault: false, isActive: true, sortOrder: 200 },
+  { key: 'canceled', stateScope: 'canceled', name: 'Canceled', color: '#475569', category: 'canceled', lifecycleMapping: 'canceled', customerVisible: false, notificationTriggerEligible: true, isDefault: true, isActive: true, sortOrder: 210 },
 ] as const;
 
 export function slugifyStatusPillKey(label: string): string {
@@ -39,8 +44,21 @@ export function slugifyStatusPillKey(label: string): string {
   return key || 'status';
 }
 
-export function planDefaultStatusPillSeed(existingPillCount: number) {
-  return existingPillCount === 0 ? [...DEFAULT_ORDER_STATUS_PILLS] : [];
+type ExistingStatusPillSeedIdentity = Pick<OrderStatusPill, 'key' | 'stateScope' | 'isDefault'>;
+
+export function planDefaultStatusPillSeed(existingPills: ReadonlyArray<ExistingStatusPillSeedIdentity>) {
+  const existingKeys = new Set(existingPills.map((pill) => pill.key));
+  const scopesWithDefaults = new Set(existingPills.filter((pill) => pill.isDefault).map((pill) => pill.stateScope));
+
+  return DEFAULT_ORDER_STATUS_PILLS
+    .filter((pill) => !existingKeys.has(pill.key))
+    .map((pill) => {
+      if (!pill.isDefault || !scopesWithDefaults.has(pill.stateScope)) {
+        if (pill.isDefault) scopesWithDefaults.add(pill.stateScope);
+        return pill;
+      }
+      return { ...pill, isDefault: false };
+    });
 }
 
 export function buildStatusPillChangeEvent(args: {
@@ -504,19 +522,15 @@ export async function assignOrderStatusPill(args: {
 }
 
 /**
- * Seed default status pills for a new organization
+ * Reconcile missing default status-pill keys for a new or existing organization.
  */
 export async function seedDefaultPillsForOrg(
   organizationId: string,
   executor: DbExecutor = db,
 ): Promise<{ created: number; skipped: boolean }> {
-  // Check if pills already exist
   const existing = await listStatusPills(organizationId, undefined, false, executor);
-  if (existing.length > 0) {
-    return { created: 0, skipped: true };
-  }
-
-  const defaults = planDefaultStatusPillSeed(existing.length);
+  const defaults = planDefaultStatusPillSeed(existing);
+  if (defaults.length === 0) return { created: 0, skipped: true };
   const inserted = await executor.insert(orderStatusPills).values(
     defaults.map((pill) => ({
       ...pill,

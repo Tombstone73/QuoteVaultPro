@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "@jest/globals";
 import { eq, sql } from "drizzle-orm";
 import { readFileSync } from "node:fs";
 
-import { organizations } from "@shared/schema";
+import { organizations, orderStatusPills } from "@shared/schema";
 import { db } from "../db";
 import {
   DEFAULT_PRODUCTION_STATIONS,
@@ -141,6 +141,10 @@ describe("production-map onboarding and configuration copy", () => {
       select key from stations where organization_id = ${sourceOrganizationId} and active = true
     `);
     expect(sourceStations.rows.map((row: any) => row.key)).toEqual(expect.arrayContaining(["prepress", "flatbed", "fulfillment"]));
+    const sourcePills = await db.select({ key: orderStatusPills.key })
+      .from(orderStatusPills)
+      .where(eq(orderStatusPills.organizationId, sourceOrganizationId));
+    expect(sourcePills).toHaveLength(21);
   });
 
   test("configuration copy invokes the same production-map repair after copying source stations and steps", () => {
@@ -148,5 +152,6 @@ describe("production-map onboarding and configuration copy", () => {
     expect(copyServiceSource).toContain("insert into stations (organization_id, key, name, sort, active)");
     expect(copyServiceSource).toContain("lineItemStatuses: sourceRoutingRules");
     expect(copyServiceSource).toContain("await ensureProductionMapForOrg(destinationOrganizationId, tx)");
+    expect(copyServiceSource).toContain("await seedDefaultPillsForOrg(destinationOrganizationId, tx)");
   });
 });

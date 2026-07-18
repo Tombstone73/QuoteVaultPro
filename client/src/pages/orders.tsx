@@ -319,9 +319,8 @@ export default function Orders() {
     setStatusPillFilter('all');
   }, [stateFilter]);
 
-  const pillFilterEnabled = stateFilter === 'open' || stateFilter === 'production_complete' || stateFilter === 'closed';
-  const pillFilterScope: OrderState = pillFilterEnabled ? (stateFilter as OrderState) : 'open';
-  const { data: pillsForFilter, isLoading: pillsForFilterLoading } = useOrderStatusPills(pillFilterScope);
+  const pillFilterEnabled = true;
+  const { data: pillsForFilter, isLoading: pillsForFilterLoading } = useOrderStatusPills();
 
   // Computed ordered columns (ensures Actions column always last)
   const orderedColumns = useMemo(() => getColumnOrder(ORDER_COLUMNS, columnSettings), [columnSettings]);
