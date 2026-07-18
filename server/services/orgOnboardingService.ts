@@ -11,6 +11,7 @@ import { organizations, orgInvites } from "@shared/schema";
 import { eq, and, isNull } from "drizzle-orm";
 import { sha256Hex } from "../lib/tokenHash";
 import { assertProductionMapReady, ensureProductionMapForOrg } from "./productionMapService";
+import { seedDefaultPillsForOrg } from "./orderStatusPillService";
 
 export interface CreateOrgParams {
   name: string;
@@ -71,6 +72,7 @@ export async function createOrgWithInvite(params: CreateOrgParams): Promise<Crea
     // A tenant is not operational until its canonical production map exists.
     // Use the same transaction so a failed bootstrap cannot leave an orphan org.
     assertProductionMapReady(await ensureProductionMapForOrg(orgId, tx));
+    await seedDefaultPillsForOrg(orgId, tx);
 
     // ── 2. Guard duplicate unaccepted invite (mirrors partial UNIQUE index) ─
     // The DB index (org_id, email) WHERE accepted_at IS NULL will also enforce

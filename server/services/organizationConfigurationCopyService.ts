@@ -2,6 +2,7 @@ import crypto from "crypto";
 import { and, desc, eq, inArray, ne, sql } from "drizzle-orm";
 import { db } from "../db";
 import { assertProductionMapReady, DEFAULT_PRODUCTION_STATIONS, ensureProductionMapForOrg } from "./productionMapService";
+import { seedDefaultPillsForOrg } from "./orderStatusPillService";
 import {
   globalVariables,
   materialProductLinks,
@@ -747,6 +748,7 @@ export async function copyOrganizationConfiguration(params: {
       await validateCopiedGraph(tx, sourceOrganizationId, destinationOrganizationId);
       const productionMap = await ensureProductionMapForOrg(destinationOrganizationId, tx);
       assertProductionMapReady(productionMap);
+      await seedDefaultPillsForOrg(destinationOrganizationId, tx);
       warnings.push(...productionMap.invalidRules.map((warning) => `Production map: ${warning}`));
       return { counts, warnings };
     });

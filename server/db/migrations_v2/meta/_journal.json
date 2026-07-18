@@ -799,6 +799,13 @@
       "when": 1784937600000,
       "tag": "0118_order_attachment_both_side",
       "breakpoints": true
+    },
+    {
+      "idx": 119,
+      "version": "7",
+      "when": 1785024000000,
+      "tag": "0119_order_status_pill_workflow_events",
+      "breakpoints": true
     }
   ]
 }

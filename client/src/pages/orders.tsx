@@ -38,6 +38,7 @@ import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/orderProofStatus";
 import { documentNumberMatchesSearch } from "@shared/documentNumbering";
+import { orderMatchesStatusPillFilter, resolveOrderStatusPillId } from "@/lib/orderStatusPills";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
@@ -154,10 +155,12 @@ function ProofSummaryBadge({
 function OrderStatusPillCell({
   orderId,
   state,
+  pillId,
   value,
 }: {
   orderId: string;
   state: OrderState;
+  pillId: string | null;
   value: string | null;
 }) {
   // Never allow selection in canceled state
@@ -186,7 +189,7 @@ function OrderStatusPillCell({
 
   return (
     <Select
-      value={value || ''}
+      value={resolveOrderStatusPillId(pillId, value, pills)}
       onValueChange={(next) => {
         assignPill.mutate(next || null);
       }}
@@ -210,7 +213,7 @@ function OrderStatusPillCell({
       </SelectTrigger>
       <SelectContent onClick={(e) => e.stopPropagation()}>
         {pills.map((pill) => (
-          <SelectItem key={pill.id} value={pill.name}>
+          <SelectItem key={pill.id} value={pill.id}>
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: pill.color }} />
               {pill.name}
@@ -383,7 +386,7 @@ export default function Orders() {
 
     // TitanOS: Filter by status pill within the active state scope
     if (pillFilterEnabled && statusPillFilter !== 'all') {
-      filtered = filtered.filter((order: any) => (order.statusPillValue || null) === statusPillFilter);
+      filtered = filtered.filter((order: any) => orderMatchesStatusPillFilter(order, statusPillFilter, pillsForFilter));
     }
 
     if (priorityFilter !== "all") {
@@ -391,7 +394,7 @@ export default function Orders() {
     }
     
     return filtered;
-  }, [orders, search, stateFilter, pillFilterEnabled, statusPillFilter, priorityFilter]);
+  }, [orders, search, stateFilter, pillFilterEnabled, statusPillFilter, priorityFilter, pillsForFilter]);
 
   const filteredOrders = useMemo(() => {
     let filtered = baseFilteredOrders;
@@ -872,6 +875,7 @@ export default function Orders() {
             <OrderStatusPillCell
               orderId={row.id}
               state={row.state as OrderState}
+              pillId={row.statusPillId ?? null}
               value={row.statusPillValue ?? null}
             />
           </div>
@@ -1111,7 +1115,7 @@ export default function Orders() {
               <SelectContent>
                 <SelectItem value="all">All Status Pills</SelectItem>
                 {(pillsForFilter || []).map((pill) => (
-                  <SelectItem key={pill.id} value={pill.name}>
+                  <SelectItem key={pill.id} value={pill.id}>
                     <div className="flex items-center gap-2">
                       <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: pill.color }} />
                       {pill.name}

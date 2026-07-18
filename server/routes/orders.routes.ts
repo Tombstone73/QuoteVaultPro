@@ -3120,7 +3120,8 @@ export async function registerOrderRoutes(
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const stateScope = (req.query.stateScope ?? req.query.state) as string;
             if (!stateScope) return res.status(400).json({ success: false, message: "state parameter is required" });
-            const { listStatusPills } = await import('../services/orderStatusPillService');
+            const { listStatusPills, seedDefaultPillsForOrg } = await import('../services/orderStatusPillService');
+            await seedDefaultPillsForOrg(organizationId);
             const pills = await listStatusPills(organizationId, stateScope as any, true);
             return res.json({ success: true, data: pills, pills });
         } catch (error: any) {
@@ -3186,20 +3187,25 @@ export async function registerOrderRoutes(
             if (!userId) return res.status(401).json({ error: "Unauthorized" });
 
             const { orderId } = req.params;
-            const value = (req.body?.value ?? req.body?.statusPillValue) as string | null;
+            const statusPillId = (req.body?.statusPillId ?? null) as string | null;
+            const value = (req.body?.value ?? req.body?.statusPillValue ?? null) as string | null;
             const { assignOrderStatusPill } = await import('../services/orderStatusPillService');
             const userName = `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email;
 
-            await assignOrderStatusPill({
+            const assignment = await assignOrderStatusPill({
                 organizationId,
                 orderId,
+                statusPillId,
                 statusPillValue: value,
                 actorUserId: userId,
                 actorUserName: userName,
+                source: 'user',
+                reason: typeof req.body?.reason === 'string' ? req.body.reason.trim() || null : null,
             });
 
             const updatedOrder = await storage.getOrderById(organizationId, orderId);
-            return res.json({ success: true, data: updatedOrder, message: value ? `Status pill set to "${value}"` : 'Status pill cleared' });
+            const label = assignment.statusPill?.name ?? null;
+            return res.json({ success: true, data: updatedOrder, eventId: assignment.eventId, message: label ? `Status pill set to "${label}"` : 'Status pill cleared' });
         } catch (error: any) {
             console.error('[StatusPill:PATCH] Error:', error);
             return res.status(500).json({ success: false, message: error?.message || "Failed to update status pill" });

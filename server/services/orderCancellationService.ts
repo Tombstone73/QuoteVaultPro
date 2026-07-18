@@ -10,6 +10,7 @@ import {
   orderAuditLog,
   orderLineItems,
   orderStatusEvents,
+  orderStatusPills,
   orderWorkflowStatuses,
   orderWorkflowVersions,
   orders,
@@ -548,12 +549,32 @@ export async function cancelOrder(args: {
     }
 
     const workflowStatus = await getCancellationWorkflowStatus(tx, args.organizationId);
+    const [canceledPill] = await tx
+      .select()
+      .from(orderStatusPills)
+      .where(and(
+        eq(orderStatusPills.organizationId, args.organizationId),
+        eq(orderStatusPills.stateScope, "canceled"),
+        eq(orderStatusPills.isActive, true),
+        eq(orderStatusPills.isDefault, true),
+      ))
+      .limit(1);
+    const [previousPill] = order.statusPillId
+      ? await tx.select().from(orderStatusPills).where(and(
+          eq(orderStatusPills.organizationId, args.organizationId),
+          eq(orderStatusPills.id, order.statusPillId),
+        )).limit(1)
+      : [];
     const updatePayload: Partial<typeof orders.$inferInsert> = {
       state: "canceled",
       status: "canceled",
       canonicalState: "canceled",
       workflowStatusId: workflowStatus?.id ?? order.workflowStatusId,
-      statusPillValue: null,
+      statusPillValue: canceledPill?.name ?? null,
+      statusPillId: canceledPill?.id ?? null,
+      statusPillAssignedByUserId: args.actorUserId,
+      statusPillAssignedAt: now,
+      statusPillReason: noteText || reasonLabel,
       canceledAt: nowIso as any,
       cancellationReason: args.reason,
       routingTarget: null,
@@ -583,6 +604,30 @@ export async function cancelOrder(args: {
         changedByUserId: args.actorUserId,
         changedAt: now,
         note: noteText || reasonLabel,
+      });
+    }
+
+    if ((order.statusPillId ?? null) !== (canceledPill?.id ?? null)) {
+      await tx.insert(orderStatusEvents).values({
+        organizationId: args.organizationId,
+        orderId: args.orderId,
+        eventType: "status_pill_changed",
+        fromStatusPillId: previousPill?.id ?? null,
+        toStatusPillId: canceledPill?.id ?? null,
+        fromStatusKey: previousPill?.key ?? null,
+        toStatusKey: canceledPill?.key ?? null,
+        fromStatusLabel: previousPill?.name ?? order.statusPillValue ?? null,
+        toStatusLabel: canceledPill?.name ?? null,
+        changedByUserId: args.actorUserId,
+        changedAt: now,
+        source: "user",
+        reason: noteText || reasonLabel,
+        note: noteText || reasonLabel,
+        metadata: {
+          source: "order_cancellation",
+          stateScope: "canceled",
+          notificationTriggerEligible: canceledPill?.notificationTriggerEligible ?? false,
+        },
       });
     }
 

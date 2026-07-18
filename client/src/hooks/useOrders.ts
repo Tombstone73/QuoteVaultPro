@@ -326,6 +326,7 @@ export type OrderRow = Order & {
   };
   // TitanOS State Architecture fields
   state?: string;
+  statusPillId?: string | null;
   statusPillValue?: string | null;
   paymentStatus?: string;
   routingTarget?: string | null;
