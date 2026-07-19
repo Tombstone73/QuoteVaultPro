@@ -8,7 +8,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
 import type { OrderState } from './useOrderState';
 import type { OrderStatusPillLifecycleMapping } from '@shared/schema';
-import { orderDetailQueryKey, ordersListQueryKey, orderTimelineQueryKey } from './useOrders';
+import { orderDetailQueryKey, orderTimelineQueryKey, type OrderRow, type OrdersListResponse } from './useOrders';
 import { buildOrderStatusPillsUrl } from '@/lib/orderStatusPills';
 
 export interface OrderStatusPill {
@@ -19,7 +19,7 @@ export interface OrderStatusPill {
   name: string;
   color: string;
   category?: string | null;
-  lifecycleMapping?: OrderStatusPillLifecycleMapping | OrderState | null;
+  lifecycleMapping?: OrderStatusPillLifecycleMapping | null;
   customerVisible: boolean;
   notificationTriggerEligible: boolean;
   isDefault: boolean;
@@ -27,6 +27,93 @@ export interface OrderStatusPill {
   sortOrder: number;
   createdAt: string;
   updatedAt: string;
+}
+
+export type OrderStatusPillCachePatch = {
+  statusPillId: string | null;
+  statusPillValue: string | null;
+  statusPillKey: string | null;
+  statusPillColor: string | null;
+  statusPillAssignedAt: string | Date | null;
+  statusPillAssignedByUserId: string | null;
+  updatedAt?: string | Date | null;
+};
+
+export function patchOrderStatusPillCacheData(
+  old: OrdersListResponse | OrderRow[] | Record<string, any> | undefined,
+  orderId: string,
+  patch: OrderStatusPillCachePatch,
+) {
+  if (!old) return old;
+  const patchRow = <T extends Record<string, any>>(row: T): T =>
+    String(row.id) === orderId ? { ...row, ...patch } : row;
+  if (Array.isArray(old)) return old.map((row) => patchRow(row));
+  if (Array.isArray((old as OrdersListResponse).items)) {
+    return { ...old, items: (old as OrdersListResponse).items.map((row) => patchRow(row)) };
+  }
+  return patchRow(old);
+}
+
+export function applyOrderStatusPillMutationSuccess(args: {
+  queryClient: ReturnType<typeof useQueryClient>;
+  orderId: string;
+  selectedStatusPillId: string | null;
+  data: any;
+}) {
+  const { queryClient, orderId, selectedStatusPillId, data } = args;
+  const updatedOrder = data?.data ?? {};
+  const statusPill = data?.statusPill ?? null;
+  const patch: OrderStatusPillCachePatch = {
+    statusPillId: updatedOrder.statusPillId ?? statusPill?.id ?? selectedStatusPillId ?? null,
+    statusPillValue: updatedOrder.statusPillValue ?? statusPill?.name ?? null,
+    statusPillKey: statusPill?.key ?? updatedOrder.statusPillKey ?? null,
+    statusPillColor: statusPill?.color ?? updatedOrder.statusPillColor ?? null,
+    statusPillAssignedAt: updatedOrder.statusPillAssignedAt ?? null,
+    statusPillAssignedByUserId: updatedOrder.statusPillAssignedByUserId ?? null,
+    updatedAt: updatedOrder.updatedAt ?? null,
+  };
+
+  queryClient.setQueriesData<OrdersListResponse | OrderRow[]>(
+    { queryKey: ['orders', 'list'] },
+    (old) => patchOrderStatusPillCacheData(old, orderId, patch) as OrdersListResponse | OrderRow[] | undefined,
+  );
+  queryClient.setQueryData(
+    orderDetailQueryKey(orderId),
+    (old: Record<string, any> | undefined) => patchOrderStatusPillCacheData(old, orderId, patch),
+  );
+
+  queryClient.invalidateQueries({ queryKey: ['orders', 'list'] });
+  queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+  queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+
+  if (statusPill?.key === 'in_production') {
+    queryClient.invalidateQueries({
+      predicate: (query) => {
+        const key = query.queryKey;
+        return Array.isArray(key) && key[0] === '/api/production/jobs';
+      },
+    });
+  }
+
+  return patch;
+}
+
+export async function requestOrderStatusPillAssignment(
+  orderId: string,
+  statusPillId: string | null,
+  fetchFn: typeof fetch = fetch,
+) {
+  const res = await fetchFn(`/api/orders/${orderId}/status-pill`, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ statusPillId }),
+    credentials: 'include',
+  });
+  if (!res.ok) {
+    const data = await res.json();
+    throw new Error(data.message || data.error || 'Failed to update status pill');
+  }
+  return res.json();
 }
 
 /**
@@ -69,36 +156,9 @@ export function useAssignOrderStatusPill(orderId: string) {
   const { toast } = useToast();
 
   return useMutation({
-    mutationFn: async (statusPillId: string | null) => {
-      const res = await fetch(`/api/orders/${orderId}/status-pill`, {
-        method: 'PATCH',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ statusPillId }),
-        credentials: 'include',
-      });
-
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.message || data.error || 'Failed to update status pill');
-      }
-
-      return res.json();
-    },
-    onSuccess: (data) => {
-      // Invalidate TitanOS queries (and keep legacy timeline key for safety)
-      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
-      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
-      queryClient.invalidateQueries({ queryKey: ordersListQueryKey() });
-      queryClient.invalidateQueries({ queryKey: ['/api', 'timeline'] });
-
-      // If the pill implies production, the server may have scheduled jobs.
-      // Refresh all production job lists regardless of filters.
-      queryClient.invalidateQueries({
-        predicate: (query) => {
-          const key = query.queryKey;
-          return Array.isArray(key) && key[0] === '/api/production/jobs';
-        },
-      });
+    mutationFn: (statusPillId: string | null) => requestOrderStatusPillAssignment(orderId, statusPillId),
+    onSuccess: (data, selectedStatusPillId) => {
+      applyOrderStatusPillMutationSuccess({ queryClient, orderId, selectedStatusPillId, data });
 
       // Show success toast
       toast({

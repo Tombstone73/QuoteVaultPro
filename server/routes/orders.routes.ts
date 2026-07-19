@@ -3257,7 +3257,13 @@ export async function registerOrderRoutes(
 
             const updatedOrder = await storage.getOrderById(organizationId, orderId);
             const label = assignment.statusPill?.name ?? null;
-            return res.json({ success: true, data: updatedOrder, eventId: assignment.eventId, message: label ? `Status pill set to "${label}"` : 'Status pill cleared' });
+            return res.json({
+                success: true,
+                data: updatedOrder,
+                statusPill: assignment.statusPill,
+                eventId: assignment.eventId,
+                message: label ? `Status pill set to "${label}"` : 'Status pill cleared',
+            });
         } catch (error: any) {
             console.error('[StatusPill:PATCH] Error:', error);
             return res.status(500).json({ success: false, message: error?.message || "Failed to update status pill" });
