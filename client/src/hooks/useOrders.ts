@@ -328,6 +328,10 @@ export type OrderRow = Order & {
   state?: string;
   statusPillId?: string | null;
   statusPillValue?: string | null;
+  statusPillKey?: string | null;
+  statusPillColor?: string | null;
+  statusPillAssignedAt?: string | Date | null;
+  statusPillAssignedByUserId?: string | null;
   paymentStatus?: string;
   routingTarget?: string | null;
 };

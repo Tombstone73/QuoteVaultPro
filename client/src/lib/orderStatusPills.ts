@@ -24,7 +24,7 @@ export function orderMatchesStatusPillFilter(
   return resolveOrderStatusPillId(order.statusPillId, order.statusPillValue, pills) === filterPillId;
 }
 
-export type OrderStatusPillChoice = Pick<OrderStatusPill, 'id' | 'key' | 'name' | 'color' | 'isActive'> & {
+export type OrderStatusPillChoice = Pick<OrderStatusPill, 'id' | 'key' | 'name' | 'color' | 'isActive' | 'isDefault'> & {
   assignable: boolean;
   currentInactive: boolean;
 };
@@ -47,6 +47,7 @@ export function buildOrderStatusPillChoices(
       name: currentPillValue,
       color: '#64748b',
       isActive: false,
+      isDefault: false,
       assignable: false,
       currentInactive: true,
     });
