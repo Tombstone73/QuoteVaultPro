@@ -26,7 +26,7 @@ import { cn } from "@/lib/utils";
 import { Badge } from "@/components/ui/badge";
 import type { OrderState } from "@/hooks/useOrderState";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { useAssignOrderStatusPill, useOrderStatusPills } from "@/hooks/useOrderStatusPills";
+import { useOrderStatusPills } from "@/hooks/useOrderStatusPills";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
@@ -38,7 +38,8 @@ import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/orderProofStatus";
 import { documentNumberMatchesSearch } from "@shared/documentNumbering";
-import { buildOrderStatusPillChoices, orderMatchesStatusPillFilter, resolveOrderStatusPillId } from "@/lib/orderStatusPills";
+import { orderMatchesStatusPillFilter } from "@/lib/orderStatusPills";
+import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
@@ -149,81 +150,6 @@ function ProofSummaryBadge({
         </Button>
       ) : null}
     </div>
-  );
-}
-
-function OrderStatusPillCell({
-  orderId,
-  state,
-  pillId,
-  value,
-}: {
-  orderId: string;
-  state: OrderState;
-  pillId: string | null;
-  value: string | null;
-}) {
-  // Never allow selection in canceled state
-  if (state === 'canceled') {
-    return value ? (
-      <Badge variant="outline" className="text-xs">
-        {value}
-      </Badge>
-    ) : null;
-  }
-
-  // Operational status pills are independent from the canonical lifecycle tab.
-  const { data: pills, isLoading } = useOrderStatusPills();
-  const assignPill = useAssignOrderStatusPill(orderId);
-
-  if (isLoading) {
-    return <Loader2 className="w-3.5 h-3.5 animate-spin text-muted-foreground" />;
-  }
-
-  if (!pills || pills.length === 0) {
-    return (
-      <span className="text-xs text-muted-foreground">No status pills configured…</span>
-    );
-  }
-
-  const choices = buildOrderStatusPillChoices(pills, pillId, value);
-  const currentColor = choices.find((pill) => pill.id === pillId || pill.name === value)?.color;
-
-  return (
-    <Select
-      value={resolveOrderStatusPillId(pillId, value, choices)}
-      onValueChange={(next) => {
-        assignPill.mutate(next || null);
-      }}
-      disabled={assignPill.isPending}
-    >
-      <SelectTrigger
-        className="h-7 w-[160px]"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <SelectValue placeholder="Select status">
-          {value ? (
-            <div className="flex items-center gap-2">
-              <div
-                className="w-2.5 h-2.5 rounded-full"
-                style={{ backgroundColor: currentColor || '#3b82f6' }}
-              />
-              <span className="text-xs">{value}</span>
-            </div>
-          ) : null}
-        </SelectValue>
-      </SelectTrigger>
-      <SelectContent onClick={(e) => e.stopPropagation()}>
-        {choices.map((pill) => (
-          <SelectItem key={pill.id} value={pill.id} disabled={!pill.assignable}>
-            <div className="flex items-center gap-2">
-              <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: pill.color }} />
-              {pill.name}{pill.currentInactive ? " (inactive)" : ""}
-            </div>
-          </SelectItem>
-        ))}
-      </SelectContent>
-    </Select>
   );
 }
 
@@ -873,11 +799,12 @@ export default function Orders() {
         // TitanOS: Editable status pill (org-configured)
         return (
           <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            <OrderStatusPillCell
+            <OrderStatusPillSelector
               orderId={row.id}
-              state={row.state as OrderState}
-              pillId={row.statusPillId ?? null}
-              value={row.statusPillValue ?? null}
+              currentState={row.state as OrderState}
+              currentPillId={row.statusPillId ?? null}
+              currentPillValue={row.statusPillValue ?? null}
+              className="h-7 w-[160px] text-xs"
             />
           </div>
         );
