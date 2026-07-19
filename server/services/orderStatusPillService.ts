@@ -44,6 +44,22 @@ export function slugifyStatusPillKey(label: string): string {
   return key || 'status';
 }
 
+export function buildStatusPillUpdateData(
+  data: Partial<Omit<InsertOrderStatusPill, 'organizationId' | 'key'>>,
+): Partial<Omit<InsertOrderStatusPill, 'organizationId' | 'key' | 'stateScope'>> {
+  return {
+    ...(data.name !== undefined ? { name: data.name } : {}),
+    ...(data.color !== undefined ? { color: data.color } : {}),
+    ...(data.category !== undefined ? { category: data.category } : {}),
+    ...(data.lifecycleMapping !== undefined ? { lifecycleMapping: data.lifecycleMapping } : {}),
+    ...(data.customerVisible !== undefined ? { customerVisible: data.customerVisible } : {}),
+    ...(data.notificationTriggerEligible !== undefined ? { notificationTriggerEligible: data.notificationTriggerEligible } : {}),
+    ...(data.isDefault !== undefined ? { isDefault: data.isDefault } : {}),
+    ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
+    ...(data.sortOrder !== undefined ? { sortOrder: data.sortOrder } : {}),
+  };
+}
+
 type ExistingStatusPillSeedIdentity = Pick<OrderStatusPill, 'key' | 'stateScope' | 'isDefault'>;
 
 export function planDefaultStatusPillSeed(existingPills: ReadonlyArray<ExistingStatusPillSeedIdentity>) {
@@ -227,17 +243,7 @@ export async function updateStatusPill(
   if (data.stateScope && data.stateScope !== existing.stateScope) {
     throw new Error('Status pill lifecycle scope cannot be changed after creation.');
   }
-  const safeData: Partial<Omit<InsertOrderStatusPill, 'organizationId' | 'key' | 'stateScope'>> = {
-    ...(data.name !== undefined ? { name: data.name } : {}),
-    ...(data.color !== undefined ? { color: data.color } : {}),
-    ...(data.category !== undefined ? { category: data.category } : {}),
-    ...(data.lifecycleMapping !== undefined ? { lifecycleMapping: data.lifecycleMapping } : {}),
-    ...(data.customerVisible !== undefined ? { customerVisible: data.customerVisible } : {}),
-    ...(data.notificationTriggerEligible !== undefined ? { notificationTriggerEligible: data.notificationTriggerEligible } : {}),
-    ...(data.isDefault !== undefined ? { isDefault: data.isDefault } : {}),
-    ...(data.isActive !== undefined ? { isActive: data.isActive } : {}),
-    ...(data.sortOrder !== undefined ? { sortOrder: data.sortOrder } : {}),
-  };
+  const safeData = buildStatusPillUpdateData(data);
 
   return db.transaction(async (tx) => {
     if (data.isDefault === true) {

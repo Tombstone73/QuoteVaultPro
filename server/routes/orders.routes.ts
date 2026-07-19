@@ -3132,7 +3132,7 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.post("/api/orders/status-pills", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    app.post("/api/orders/status-pills", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -3144,7 +3144,7 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.patch("/api/orders/status-pills/:pillId", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    app.patch("/api/orders/status-pills/:pillId", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -3156,7 +3156,7 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.delete("/api/orders/status-pills/:pillId", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    app.delete("/api/orders/status-pills/:pillId", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -3168,7 +3168,7 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.post("/api/orders/status-pills/:pillId/make-default", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    app.post("/api/orders/status-pills/:pillId/make-default", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -3177,6 +3177,56 @@ export async function registerOrderRoutes(
             res.json({ success: true });
         } catch (error: any) {
             res.status(400).json({ success: false, message: error.message });
+        }
+    });
+
+    app.get("/api/settings/order-status-pills", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            const { listStatusPills, seedDefaultPillsForOrg } = await import('../services/orderStatusPillService');
+            await seedDefaultPillsForOrg(organizationId);
+            const pills = await listStatusPills(organizationId, undefined, false);
+            return res.json({ success: true, data: pills, pills });
+        } catch (error: any) {
+            console.error('[StatusPills:SETTINGS_GET] Error:', error);
+            return res.status(500).json({ success: false, message: "Failed to fetch status-pill settings" });
+        }
+    });
+
+    app.get("/api/settings/workflow-status-pill-mappings", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            const { seedDefaultPillsForOrg } = await import('../services/orderStatusPillService');
+            const { listWorkflowStatusPillMappings } = await import('../services/workflowStatusPillService');
+            await seedDefaultPillsForOrg(organizationId);
+            const mappings = await listWorkflowStatusPillMappings(organizationId);
+            return res.json({ success: true, data: mappings, mappings });
+        } catch (error: any) {
+            console.error('[WorkflowStatusPillMappings:GET] Error:', error);
+            return res.status(500).json({ success: false, message: "Failed to fetch workflow status mappings" });
+        }
+    });
+
+    app.patch("/api/settings/workflow-status-pill-mappings/:triggerKey", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            const { workflowStatusPillAssignmentSourceSchema, workflowStatusPillTriggerSchema } = await import('@shared/orderStatusWorkflowAutomation');
+            const triggerKey = workflowStatusPillTriggerSchema.parse(req.params.triggerKey);
+            const payload = z.object({
+                targetStatusKey: z.string().regex(/^[a-z0-9]+(?:_[a-z0-9]+)*$/).max(100),
+                source: workflowStatusPillAssignmentSourceSchema.optional(),
+                isActive: z.boolean().optional(),
+                overwriteExceptionStatus: z.boolean().optional(),
+            }).parse(req.body);
+            const { upsertWorkflowStatusPillMapping } = await import('../services/workflowStatusPillService');
+            const mapping = await upsertWorkflowStatusPillMapping({ organizationId, triggerKey, ...payload });
+            return res.json({ success: true, data: mapping });
+        } catch (error: any) {
+            const message = error instanceof z.ZodError ? fromZodError(error).message : error?.message || "Failed to update workflow status mapping";
+            return res.status(400).json({ success: false, message });
         }
     });
 

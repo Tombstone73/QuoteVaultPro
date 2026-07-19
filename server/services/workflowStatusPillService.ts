@@ -130,7 +130,7 @@ export async function upsertWorkflowStatusPillMapping(args: {
   const triggerKey = workflowStatusPillTriggerSchema.parse(args.triggerKey);
   const source = workflowStatusPillAssignmentSourceSchema.parse(args.source ?? "system");
   const [target] = await db
-    .select({ key: orderStatusPills.key })
+    .select({ key: orderStatusPills.key, isActive: orderStatusPills.isActive })
     .from(orderStatusPills)
     .where(and(
       eq(orderStatusPills.organizationId, args.organizationId),
@@ -138,6 +138,9 @@ export async function upsertWorkflowStatusPillMapping(args: {
     ))
     .limit(1);
   if (!target) throw new Error("Target status pill key does not exist in this organization");
+  if (!target.isActive && (args.isActive ?? true)) {
+    throw new Error("Enabled workflow automation can only target an active status pill");
+  }
 
   const [mapping] = await db
     .insert(workflowStatusPillMappings)

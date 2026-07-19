@@ -87,8 +87,8 @@ export function JobStatusSettings() {
       <CardHeader>
         <div className="flex justify-between items-center">
           <div>
-            <CardTitle>Job Workflow Statuses</CardTitle>
-            <CardDescription>Configure the pipeline stages for production jobs.</CardDescription>
+            <CardTitle>Production Job Statuses</CardTitle>
+            <CardDescription>Configure internal job record stages. These are separate from order status pills.</CardDescription>
           </div>
           <Button onClick={() => { setEditingStatus(null); setIsDialogOpen(true); }}>
             <Plus className="w-4 h-4 mr-2" /> Add Status
@@ -108,6 +108,13 @@ export function JobStatusSettings() {
             </TableRow>
           </TableHeader>
           <TableBody>
+            {!isLoading && (!statuses || statuses.length === 0) ? (
+              <TableRow>
+                <TableCell colSpan={6} className="text-sm text-muted-foreground">
+                  No production job statuses are configured. Add a status only if this job-status pipeline is used by your production records.
+                </TableCell>
+              </TableRow>
+            ) : null}
             {statuses?.map((status) => (
               <TableRow key={status.id}>
                 <TableCell className="font-medium">{status.label}</TableCell>
