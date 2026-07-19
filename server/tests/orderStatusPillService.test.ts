@@ -6,6 +6,7 @@ import {
   CANCELED_ORDER_STATUS_PILL_KEY,
   buildStatusPillChangeEvent,
   buildStatusPillUpdateData,
+  isOrderStatusPillAssignable,
   planDefaultStatusPillSeed,
   slugifyStatusPillKey,
 } from '../services/orderStatusPillService';
@@ -103,6 +104,12 @@ describe('default operational order status pills', () => {
     expect(DEFAULT_ORDER_STATUS_PILLS.find((status) => status.key === 'in_production')).toMatchObject({ stateScope: 'open', lifecycleMapping: 'production' });
     expect(CANCELED_ORDER_STATUS_PILL_KEY).toBe('canceled');
     expect(DEFAULT_ORDER_STATUS_PILLS.find((status) => status.key === CANCELED_ORDER_STATUS_PILL_KEY)).toMatchObject({ stateScope: 'canceled', lifecycleMapping: 'canceled' });
+  });
+
+  test('any active operational pill is assignable independently of canonical scope', () => {
+    expect(isOrderStatusPillAssignable(pill({ key: 'fulfillment', stateScope: 'production_complete', isActive: true }))).toBe(true);
+    expect(isOrderStatusPillAssignable(pill({ key: 'canceled', stateScope: 'canceled', isActive: true }))).toBe(true);
+    expect(isOrderStatusPillAssignable(pill({ key: 'retired', stateScope: 'open', isActive: false }))).toBe(false);
   });
 });
 

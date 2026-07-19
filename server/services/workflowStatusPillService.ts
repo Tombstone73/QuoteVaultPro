@@ -25,7 +25,6 @@ export type WorkflowStatusPillSkipReason =
   | "mapping_disabled"
   | "target_missing"
   | "target_disabled"
-  | "target_state_mismatch"
   | "protected_exception_status"
   | "already_assigned";
 
@@ -56,7 +55,6 @@ type WorkflowStatusTarget = {
 
 export function evaluateWorkflowStatusPillTarget(args: {
   mapping: Pick<WorkflowStatusPillMapping, "isActive" | "targetStatusKey" | "overwriteExceptionStatus"> | null;
-  orderState: string;
   currentStatusPillId: string | null;
   currentStatusKey: string | null;
   targetPill: WorkflowStatusTarget | null;
@@ -65,7 +63,6 @@ export function evaluateWorkflowStatusPillTarget(args: {
   if (!args.mapping.isActive) return "mapping_disabled";
   if (!args.targetPill) return "target_missing";
   if (!args.targetPill.isActive) return "target_disabled";
-  if (args.targetPill.stateScope !== args.orderState) return "target_state_mismatch";
   if (args.currentStatusPillId === args.targetPill.id) return "already_assigned";
   if (
     !args.mapping.overwriteExceptionStatus &&
@@ -257,7 +254,7 @@ export async function applyWorkflowStatusPill(args: {
     return result;
   }
   const [[order], [targetPill]] = await Promise.all([
-    db.select({ state: orders.state, statusPillId: orders.statusPillId })
+    db.select({ statusPillId: orders.statusPillId })
       .from(orders)
       .where(and(eq(orders.organizationId, args.organizationId), eq(orders.id, args.orderId)))
       .limit(1),
@@ -290,7 +287,6 @@ export async function applyWorkflowStatusPill(args: {
 
   const skipReason = evaluateWorkflowStatusPillTarget({
     mapping,
-    orderState: order.state,
     currentStatusPillId: order.statusPillId,
     currentStatusKey: currentPill?.key ?? null,
     targetPill: targetPill ?? null,

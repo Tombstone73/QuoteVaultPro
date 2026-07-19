@@ -57,14 +57,12 @@ describe("workflow status-pill safeguards", () => {
   test("disabled or missing targets skip safely", () => {
     expect(evaluateWorkflowStatusPillTarget({
       mapping,
-      orderState: "open",
       currentStatusPillId: null,
       currentStatusKey: null,
       targetPill: null,
     })).toBe("target_missing");
     expect(evaluateWorkflowStatusPillTarget({
       mapping,
-      orderState: "open",
       currentStatusPillId: null,
       currentStatusKey: null,
       targetPill: pill({ isActive: false }),
@@ -75,7 +73,6 @@ describe("workflow status-pill safeguards", () => {
     for (const currentStatusKey of ["problem", "on_hold"]) {
       expect(evaluateWorkflowStatusPillTarget({
         mapping,
-        orderState: "open",
         currentStatusPillId: `pill-${currentStatusKey}`,
         currentStatusKey,
         targetPill: pill(),
@@ -86,10 +83,18 @@ describe("workflow status-pill safeguards", () => {
   test("terminal mappings can explicitly resolve an exception", () => {
     expect(evaluateWorkflowStatusPillTarget({
       mapping: { ...mapping, targetStatusKey: "canceled", overwriteExceptionStatus: true },
-      orderState: "canceled",
       currentStatusPillId: "pill-problem",
       currentStatusKey: "problem",
       targetPill: pill({ id: "pill-canceled", key: "canceled", name: "Cancelled by Staff", stateScope: "canceled" }),
+    })).toBeNull();
+  });
+
+  test("operational pill mappings do not depend on canonical lifecycle scope", () => {
+    expect(evaluateWorkflowStatusPillTarget({
+      mapping: { ...mapping, targetStatusKey: "fulfillment" },
+      currentStatusPillId: null,
+      currentStatusKey: null,
+      targetPill: pill({ id: "pill-fulfillment", key: "fulfillment", name: "Fulfillment", stateScope: "production_complete" }),
     })).toBeNull();
   });
 });

@@ -1,8 +1,8 @@
 /**
  * TitanOS Order Status Pill Service
  * 
- * Manages org-configurable status pills scoped within canonical states.
- * Pills are display labels that don't affect workflow guardrails.
+ * Manages org-configurable operational status pills.
+ * Pills do not change canonical order lifecycle state.
  */
 
 import { db } from '../db';
@@ -123,6 +123,10 @@ function normalizePillValue(value: string) {
 function isInProductionPillValue(value: string | null | undefined) {
   if (!value) return false;
   return normalizePillValue(value) === 'in production';
+}
+
+export function isOrderStatusPillAssignable(pill: Pick<OrderStatusPill, 'isActive'>) {
+  return pill.isActive === true;
 }
 
 /**
@@ -379,7 +383,8 @@ export async function ensureDefaultPill(organizationId: string, stateScope: Orde
 }
 
 /**
- * Assign a status pill to an order (must match current state scope)
+ * Assign an operational status pill. stateScope is grouping/default metadata,
+ * not a canonical lifecycle transition or assignment gate.
  */
 export async function assignOrderStatusPill(args: {
   organizationId: string;
@@ -432,7 +437,6 @@ export async function assignOrderStatusPill(args: {
       .from(orderStatusPills)
       .where(and(
         eq(orderStatusPills.organizationId, organizationId),
-        eq(orderStatusPills.stateScope, currentState),
         eq(orderStatusPills.isActive, true),
         statusPillId
           ? eq(orderStatusPills.id, identifier)
@@ -442,7 +446,7 @@ export async function assignOrderStatusPill(args: {
       ))
       .limit(1);
     if (!resolved) {
-      throw new Error(`Status pill does not exist for state "${currentState}" in this organization`);
+      throw new Error('Active status pill does not exist in this organization');
     }
     targetPill = resolved;
   }

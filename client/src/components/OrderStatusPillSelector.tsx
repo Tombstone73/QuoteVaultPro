@@ -1,14 +1,14 @@
 /**
  * TitanOS Order Status Pill Selector
  * 
- * Dropdown selector for org-configured status pills within current state
+ * Dropdown selector for the tenant's active operational status-pill catalog.
  */
 
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { useOrderStatusPills, useAssignOrderStatusPill } from '@/hooks/useOrderStatusPills';
 import type { OrderState } from '@/hooks/useOrderState';
 import { Loader2 } from 'lucide-react';
-import { resolveOrderStatusPillId } from '@/lib/orderStatusPills';
+import { buildOrderStatusPillChoices, resolveOrderStatusPillId } from '@/lib/orderStatusPills';
 
 interface OrderStatusPillSelectorProps {
   orderId: string;
@@ -36,7 +36,7 @@ export function OrderStatusPillSelector({
     );
   }
 
-  const { data: pills, isLoading } = useOrderStatusPills(currentState);
+  const { data: pills, isLoading } = useOrderStatusPills();
   const assignPill = useAssignOrderStatusPill(orderId);
 
   if (isLoading) {
@@ -52,9 +52,11 @@ export function OrderStatusPillSelector({
     return null;
   }
 
+  const choices = buildOrderStatusPillChoices(pills, currentPillId, currentPillValue);
+
   return (
     <Select
-      value={resolveOrderStatusPillId(currentPillId, currentPillValue, pills)}
+      value={resolveOrderStatusPillId(currentPillId, currentPillValue, choices)}
       onValueChange={(value) => assignPill.mutate(value || null)}
       disabled={disabled || assignPill.isPending}
     >
@@ -65,7 +67,7 @@ export function OrderStatusPillSelector({
               <div
                 className="w-3 h-3 rounded-full"
                 style={{
-                  backgroundColor: pills.find(p => p.name === currentPillValue)?.color || '#3b82f6',
+                  backgroundColor: choices.find(p => p.id === currentPillId || p.name === currentPillValue)?.color || '#3b82f6',
                 }}
               />
               {currentPillValue}
@@ -74,11 +76,11 @@ export function OrderStatusPillSelector({
         </SelectValue>
       </SelectTrigger>
       <SelectContent>
-        {pills.map((pill) => (
-          <SelectItem key={pill.id} value={pill.id}>
+        {choices.map((pill) => (
+          <SelectItem key={pill.id} value={pill.id} disabled={!pill.assignable}>
             <div className="flex items-center gap-2">
               <div className="w-3 h-3 rounded-full" style={{ backgroundColor: pill.color }} />
-              {pill.name}
+              {pill.name}{pill.currentInactive ? ' (inactive)' : ''}
               {pill.isDefault && (
                 <span className="text-xs text-muted-foreground ml-1">(default)</span>
               )}
