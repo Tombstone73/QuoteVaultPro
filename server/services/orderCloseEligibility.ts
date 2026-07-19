@@ -5,30 +5,34 @@ export type OrderCloseLine = {
 
 export type OrderCloseEligibility =
   | { ok: true; requiresUnpaidConfirmation: boolean; serviceFeeOnly: boolean }
-  | { ok: false; code: "INVOICE_REQUIRED" | "PRODUCTION_COMPLETION_REQUIRED"; message: string };
+  | { ok: false; code: "INVOICE_REQUIRED" | "PRODUCTION_COMPLETION_REQUIRED" | "OPERATIONAL_COMPLETION_REQUIRED"; message: string };
 
-/**
- * Closing an open order is intentionally limited to invoice-backed billing-only
- * work. All other orders retain the normal production_complete -> closed gate.
+/** Closing is terminal. Operational completion always happens first, and an
+ * invoice must exist. Unpaid invoices require the route's explicit override.
  */
 export function assessOrderCloseEligibility(input: {
   state: string | null | undefined;
+  routingTarget?: string | null;
   lineItems: OrderCloseLine[];
   invoiceCount: number;
   unpaidInvoiceCount: number;
 }): OrderCloseEligibility {
-  if (input.state === "production_complete") {
-    return { ok: true, requiresUnpaidConfirmation: input.unpaidInvoiceCount > 0, serviceFeeOnly: false };
-  }
-
   const activeLines = input.lineItems.filter((line) => String(line.status ?? "").toLowerCase() !== "canceled");
   const serviceFeeOnly = activeLines.length > 0 && activeLines.every((line) => line.workflowIntent === "service_fee");
 
-  if (!serviceFeeOnly) {
+  if (input.state !== "production_complete") {
     return {
       ok: false,
       code: "PRODUCTION_COMPLETION_REQUIRED",
-      message: "Complete production before closing this order.",
+      message: "Complete the order operationally before closing it.",
+    };
+  }
+
+  if (input.routingTarget === "fulfillment") {
+    return {
+      ok: false,
+      code: "OPERATIONAL_COMPLETION_REQUIRED",
+      message: "Complete fulfillment and mark the order complete before closing it.",
     };
   }
 
@@ -36,9 +40,9 @@ export function assessOrderCloseEligibility(input: {
     return {
       ok: false,
       code: "INVOICE_REQUIRED",
-      message: "Create an invoice before closing a billing-only order.",
+      message: "Create an invoice before closing this order.",
     };
   }
 
-  return { ok: true, requiresUnpaidConfirmation: input.unpaidInvoiceCount > 0, serviceFeeOnly: true };
+  return { ok: true, requiresUnpaidConfirmation: input.unpaidInvoiceCount > 0, serviceFeeOnly };
 }

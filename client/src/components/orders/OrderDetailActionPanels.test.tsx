@@ -19,7 +19,7 @@ jest.mock("@/hooks/useOrderStatusPills", () => ({
 
 jest.mock("@/components/StateTransitionButtons", () => ({
   CompleteProductionButton: () => <span>Complete Production</span>,
-  CloseOrderButton: () => <span>Close Order</span>,
+  CompleteOrderButton: () => <span>Complete Order</span>,
 }));
 
 const noop = () => undefined;
@@ -31,7 +31,7 @@ describe("Order detail action layout", () => {
         canEditOrder
         canMarkCompleted={false}
         canCompleteProduction={false}
-        canCloseOrder={false}
+        canCompleteOrder={false}
         orderId="order-1"
         isDirty
         isSavingOrder={false}
@@ -70,13 +70,13 @@ describe("Order detail action layout", () => {
     expect(html).toContain("Bypass Proof");
   });
 
-  it("uses Close Order rather than Complete Production for billing-only orders", () => {
+  it("uses Complete Order rather than Complete Production for billing-only orders", () => {
     const html = renderToStaticMarkup(
       <OrderDetailPrimaryActions
         canEditOrder={false}
         canMarkCompleted={false}
         canCompleteProduction={false}
-        canCloseOrder
+        canCompleteOrder
         orderId="order-1"
         isDirty={false}
         isSavingOrder={false}
@@ -89,7 +89,7 @@ describe("Order detail action layout", () => {
       />,
     );
 
-    expect(html).toContain("Close Order");
+    expect(html).toContain("Complete Order");
     expect(html).not.toContain("Complete Production");
   });
 

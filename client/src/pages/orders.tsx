@@ -41,7 +41,7 @@ import { documentNumberMatchesSearch } from "@shared/documentNumbering";
 import { orderMatchesStatusPillFilter } from "@/lib/orderStatusPills";
 import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
 
-type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
+type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "invoiceStatus" | "paymentStatus";
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
 type ProofFilterValue = "all" | "needs_action";
 
@@ -164,6 +164,7 @@ const ORDER_COLUMNS: ColumnDefinition[] = [
   { key: "status", label: "Status", defaultVisible: true, defaultWidth: 130, minWidth: 100, maxWidth: 180, sortable: true },
   { key: "production", label: "Production", defaultVisible: true, defaultWidth: 160, minWidth: 120, maxWidth: 200 },
   { key: "proof", label: "Proof", defaultVisible: true, defaultWidth: 210, minWidth: 150, maxWidth: 280 },
+  { key: "invoiceStatus", label: "Invoice", defaultVisible: true, defaultWidth: 130, minWidth: 110, maxWidth: 180, sortable: false },
   { key: "paymentStatus", label: "Payment", defaultVisible: false, defaultWidth: 110, minWidth: 90, maxWidth: 150, sortable: true },
   { key: "priority", label: "Priority", defaultVisible: true, defaultWidth: 100, minWidth: 80, maxWidth: 150, sortable: true },
   { key: "dueDate", label: "Due Date", defaultVisible: true, defaultWidth: 120, minWidth: 100, maxWidth: 180, sortable: true },
@@ -199,7 +200,7 @@ export default function Orders() {
   const [attachmentsDialogItems, setAttachmentsDialogItems] = useState<any[]>([]);
   const [attachmentsDialogLoading, setAttachmentsDialogLoading] = useState(false);
   const [loadingAttachments, setLoadingAttachments] = useState<string | null>(null);
-  const [pendingStateAction, setPendingStateAction] = useState<{ order: OrderRow; action: "close" | "reopen" | "cancel" } | null>(null);
+  const [pendingStateAction, setPendingStateAction] = useState<{ order: OrderRow; action: "complete" | "close" | "reopen" | "cancel" } | null>(null);
   const [stateActionNote, setStateActionNote] = useState("");
 
   const [attachmentViewerOpen, setAttachmentViewerOpen] = useState(false);
@@ -487,8 +488,10 @@ export default function Orders() {
   });
 
   const orderStateMutation = useMutation({
-    mutationFn: async ({ orderId, action, note }: { orderId: string; action: "close" | "reopen" | "cancel"; note: string }) => {
-      const request = action === "close"
+    mutationFn: async ({ orderId, action, note }: { orderId: string; action: "complete" | "close" | "reopen" | "cancel"; note: string }) => {
+      const request = action === "complete"
+        ? { url: `/api/orders/${orderId}/complete`, method: "POST", body: { notes: note || undefined } }
+        : action === "close"
         ? { url: `/api/orders/${orderId}/close`, method: "POST", body: { notes: note || undefined, confirmUnpaidInvoices: true } }
         : action === "reopen"
           ? { url: `/api/orders/${orderId}/reopen`, method: "POST", body: { reason: note, targetState: "open" } }
@@ -509,7 +512,7 @@ export default function Orders() {
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(variables.orderId) });
       setPendingStateAction(null);
       setStateActionNote("");
-      toast({ title: "Order updated", description: `Order ${variables.action === "close" ? "closed" : variables.action === "reopen" ? "reopened" : "cancelled"}.` });
+      toast({ title: "Order updated", description: `Order ${variables.action === "complete" ? "completed" : variables.action === "close" ? "closed" : variables.action === "reopen" ? "reopened" : "cancelled"}.` });
     },
     onError: (error: Error) => toast({ title: "Status update failed", description: error.message, variant: "destructive" }),
   });
@@ -810,6 +813,30 @@ export default function Orders() {
         );
       }
 
+      case "invoiceStatus": {
+        const invoiceState = row.invoiceState;
+        const statusKey = invoiceState?.key || "not_invoiced";
+        const statusColors: Record<string, string> = {
+          not_invoiced: "bg-slate-100 text-slate-700 border-slate-300",
+          ready_to_invoice: "bg-blue-100 text-blue-800 border-blue-300",
+          invoice_draft: "bg-amber-100 text-amber-800 border-amber-300",
+          invoice_finalized: "bg-indigo-100 text-indigo-800 border-indigo-300",
+          invoice_sent: "bg-sky-100 text-sky-800 border-sky-300",
+          partially_paid: "bg-yellow-100 text-yellow-800 border-yellow-300",
+          paid: "bg-green-100 text-green-800 border-green-300",
+          overdue: "bg-red-100 text-red-800 border-red-300",
+        };
+        return (
+          <Badge
+            variant="outline"
+            className={`text-xs ${statusColors[statusKey] || statusColors.not_invoiced}`}
+            onClick={(e) => e.stopPropagation()}
+          >
+            {invoiceState?.label || "Not invoiced"}
+          </Badge>
+        );
+      }
+
       case "paymentStatus": {
         const paymentStatus = (row as any).paymentStatus || "unpaid";
         const statusColors: Record<string, string> = {
@@ -823,8 +850,8 @@ export default function Orders() {
           paid: "Paid",
         };
         return (
-          <Badge 
-            variant="outline" 
+          <Badge
+            variant="outline"
             className={`text-xs ${statusColors[paymentStatus] || statusColors.unpaid}`}
             onClick={(e) => e.stopPropagation()}
           >
@@ -933,7 +960,12 @@ export default function Orders() {
                   </Button>
                 ) : row.state !== "canceled" ? (
                   <>
-                    {(row.state === "production_complete" || row.productionSummary?.requiredCount === 0) && (
+                    {row.state === "production_complete" && row.routingTarget === "fulfillment" && (row.fulfillmentStatus === "shipped" || row.fulfillmentStatus === "delivered") && (
+                      <Button size="sm" variant="ghost" onClick={() => setPendingStateAction({ order: row, action: "complete" })} title="Complete order">
+                        <Check className="w-4 h-4" />
+                      </Button>
+                    )}
+                    {row.state === "production_complete" && row.routingTarget !== "fulfillment" && row.invoiceState?.key === "paid" && (
                       <Button size="sm" variant="ghost" onClick={() => setPendingStateAction({ order: row, action: "close" })} title="Close order">
                         <Check className="w-4 h-4" />
                       </Button>
@@ -1386,10 +1418,12 @@ export default function Orders() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>
-              {pendingStateAction?.action === "close" ? "Close Order" : pendingStateAction?.action === "reopen" ? "Reopen Order" : "Cancel Order"}
+              {pendingStateAction?.action === "complete" ? "Complete Order" : pendingStateAction?.action === "close" ? "Close Order" : pendingStateAction?.action === "reopen" ? "Reopen Order" : "Cancel Order"}
             </DialogTitle>
             <DialogDescription>
-              {pendingStateAction?.action === "close"
+              {pendingStateAction?.action === "complete"
+                ? "Mark operational work complete. Invoicing and payment remain separate and the order will not be closed."
+                : pendingStateAction?.action === "close"
                 ? "Close this order? If it has unpaid invoices, payment collection remains available after it is closed."
                 : pendingStateAction?.action === "reopen"
                   ? "Provide an audit reason before reopening this order."
@@ -1418,7 +1452,7 @@ export default function Orders() {
                 note: stateActionNote.trim(),
               })}
             >
-              {orderStateMutation.isPending ? "Saving..." : pendingStateAction?.action === "close" ? "Close Order" : pendingStateAction?.action === "reopen" ? "Reopen Order" : "Cancel Order"}
+              {orderStateMutation.isPending ? "Saving..." : pendingStateAction?.action === "complete" ? "Complete Order" : pendingStateAction?.action === "close" ? "Close Order" : pendingStateAction?.action === "reopen" ? "Reopen Order" : "Cancel Order"}
             </Button>
           </DialogFooter>
         </DialogContent>

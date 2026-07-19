@@ -16,7 +16,7 @@ import {
 } from '@/components/ui/dialog';
 import { Textarea } from '@/components/ui/textarea';
 import { Label } from '@/components/ui/label';
-import { OrderStateApiError, useCloseOrder, useReopenOrder, useTransitionOrderState } from '@/hooks/useOrderState';
+import { OrderStateApiError, useCloseOrder, useCompleteOrder, useReopenOrder, useTransitionOrderState } from '@/hooks/useOrderState';
 import type { OrderState } from '@/hooks/useOrderState';
 import { Checkbox } from '@/components/ui/checkbox';
 import { useToast } from '@/hooks/use-toast';
@@ -162,6 +162,58 @@ export function CompleteProductionButton({ orderId, disabled }: CompleteProducti
 interface CloseOrderButtonProps {
   orderId: string;
   disabled?: boolean;
+}
+
+interface CompleteOrderButtonProps {
+  orderId: string;
+  disabled?: boolean;
+}
+
+export function CompleteOrderButton({ orderId, disabled }: CompleteOrderButtonProps) {
+  const [showDialog, setShowDialog] = useState(false);
+  const [notes, setNotes] = useState('');
+  const completeOrder = useCompleteOrder(orderId);
+
+  return (
+    <>
+      <Button onClick={() => setShowDialog(true)} disabled={disabled} variant="default">
+        <CheckCircle2 className="mr-2 h-4 w-4" />
+        Complete Order
+      </Button>
+      <Dialog open={showDialog} onOpenChange={setShowDialog}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Complete Order</DialogTitle>
+            <DialogDescription>
+              Mark operational work complete. The order will remain open for invoicing or payment and will not be closed automatically.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2 py-4">
+            <Label htmlFor="complete-order-notes">Notes (optional)</Label>
+            <Textarea
+              id="complete-order-notes"
+              value={notes}
+              onChange={(event) => setNotes(event.target.value)}
+              placeholder="Add completion context for staff..."
+              rows={3}
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setShowDialog(false)} disabled={completeOrder.isPending}>Cancel</Button>
+            <Button
+              onClick={() => completeOrder.mutate(
+                { notes: notes || undefined },
+                { onSuccess: () => { setShowDialog(false); setNotes(''); } },
+              )}
+              disabled={completeOrder.isPending}
+            >
+              {completeOrder.isPending ? 'Completing...' : 'Complete Order'}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
 }
 
 export function CloseOrderButton({ orderId, disabled }: CloseOrderButtonProps) {

@@ -639,7 +639,7 @@ export async function getInvoiceWithRelations(id: string) {
 }
 
 export async function applyPayment(invoiceId: string, userId: string, data: { amount: number; method: string; notes?: string }) {
-  return db.transaction(async (tx) => {
+  const result = await db.transaction(async (tx) => {
     const rel = await getInvoiceWithRelations(invoiceId);
     if (!rel) throw new Error('Invoice not found');
     const { invoice } = rel;
@@ -685,8 +685,29 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
       updatedAt: new Date(),
     }).where(eq(invoices.id, invoiceId));
 
-    return payment;
+    return {
+      payment,
+      organizationId: String((invoice as any).organizationId),
+      orderId: (invoice as any).orderId ? String((invoice as any).orderId) : null,
+      becamePaid: String(newStatus).toLowerCase() === 'paid',
+    };
   });
+
+  if (result.becamePaid && result.orderId) {
+    const { applyWorkflowStatusPillFailSoft } = await import('./services/workflowStatusPillService');
+    await applyWorkflowStatusPillFailSoft({
+      organizationId: result.organizationId,
+      orderId: result.orderId,
+      triggerKey: 'payment_received',
+      actorUserId: userId,
+      actorUserName: 'System',
+      source: 'system',
+      reason: 'Invoice paid',
+      metadata: { invoiceId, paymentId: result.payment.id },
+    });
+  }
+
+  return result.payment;
 }
 
 export async function markInvoiceSent(id: string) {
@@ -712,6 +733,19 @@ export async function refreshInvoiceStatus(id: string) {
     status = 'overdue';
   }
   const [updated] = await db.update(invoices).set({ amountPaid, balanceDue, status, updatedAt: new Date() }).where(eq(invoices.id, id)).returning();
+  if (status === 'paid' && (invoice as any).orderId) {
+    const { applyWorkflowStatusPillFailSoft } = await import('./services/workflowStatusPillService');
+    await applyWorkflowStatusPillFailSoft({
+      organizationId: String((invoice as any).organizationId),
+      orderId: String((invoice as any).orderId),
+      triggerKey: 'payment_received',
+      actorUserId: String((invoice as any).createdByUserId),
+      actorUserName: 'System',
+      source: 'system',
+      reason: 'Invoice paid',
+      metadata: { invoiceId: id },
+    });
+  }
   return updated;
 }
 

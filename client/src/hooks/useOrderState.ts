@@ -6,6 +6,7 @@
 
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { useToast } from '@/hooks/use-toast';
+import { orderDetailQueryKey, orderTimelineQueryKey } from './useOrders';
 
 export type OrderState = 'open' | 'production_complete' | 'closed' | 'canceled';
 
@@ -147,6 +148,36 @@ export function useCloseOrder(orderId: string) {
     onError: (error: Error) => {
       if (error instanceof OrderStateApiError && error.code === 'UNPAID_INVOICES_CONFIRMATION_REQUIRED') return;
       toast({ title: 'Close Order Failed', description: error.message, variant: 'destructive' });
+    },
+  });
+}
+
+/** Mark operational work complete without entering the terminal closed state. */
+export function useCompleteOrder(orderId: string) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+
+  return useMutation({
+    mutationFn: async ({ notes }: { notes?: string }) => {
+      const res = await fetch(`/api/orders/${orderId}/complete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ notes }),
+        credentials: 'include',
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new OrderStateApiError(data.message || data.error || 'Failed to complete order', data.code, data);
+      return data;
+    },
+    onSuccess: (data) => {
+      queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: ['orders', 'list'] });
+      queryClient.invalidateQueries({ queryKey: ['invoices'] });
+      toast({ title: 'Order Completed', description: data.message || 'Order is operationally complete.' });
+    },
+    onError: (error: Error) => {
+      toast({ title: 'Complete Order Failed', description: error.message, variant: 'destructive' });
     },
   });
 }

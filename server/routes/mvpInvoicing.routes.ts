@@ -194,6 +194,18 @@ export async function registerMvpInvoicingRoutes(
         .update(orders)
         .set({ billingStatus: "billed", updatedAt: sql`now()` as any } as any)
         .where(and(eq(orders.id, inv.orderId), eq(orders.organizationId, input.organizationId)));
+
+      const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
+      await applyWorkflowStatusPillFailSoft({
+        organizationId: input.organizationId,
+        orderId: String(inv.orderId),
+        triggerKey: "invoice_finalized",
+        actorUserId: String(input.userId || inv.createdByUserId),
+        actorUserName: input.userName || "System",
+        source: "system",
+        reason: "Invoice finalized",
+        metadata: { invoiceId: inv.id },
+      });
     }
 
     try {
@@ -429,6 +441,20 @@ export async function registerMvpInvoicingRoutes(
         updatedAt: now,
       } as any)
       .where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId)));
+
+    if (inv.orderId) {
+      const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
+      await applyWorkflowStatusPillFailSoft({
+        organizationId: input.organizationId,
+        orderId: String(inv.orderId),
+        triggerKey: "invoice_finalized",
+        actorUserId: String(input.userId || inv.createdByUserId),
+        actorUserName: input.userName || "System",
+        source: "system",
+        reason: "Invoice sent",
+        metadata: { invoiceId: inv.id, invoiceStatus: nextStatus },
+      });
+    }
 
     try {
       await db.insert(auditLogs).values({

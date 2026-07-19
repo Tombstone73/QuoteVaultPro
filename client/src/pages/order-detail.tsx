@@ -68,7 +68,8 @@ import {
   ReopenOrderButton 
 } from "@/components/StateTransitionButtons";
 import type { OrderState } from "@/hooks/useOrderState";
-import { isTerminalState as checkIfTerminalState, useCloseOrder } from "@/hooks/useOrderState";
+import { isTerminalState as checkIfTerminalState, useCloseOrder, useCompleteOrder } from "@/hooks/useOrderState";
+import { deriveOrderInvoiceState } from "@shared/orderInvoiceState";
 import { OrderLineItemsSection, type OrderLineItemsSectionHandle } from "@/components/orders/OrderLineItemsSection";
 import {
   hasOrderDetailSecondaryActions,
@@ -640,6 +641,7 @@ export default function OrderDetail() {
   const createOrderInvoice = useCreateOrderInvoice();
   const billInvoice = useBillInvoice();
   const closeOrder = useCloseOrder(orderId || '');
+  const completeOrder = useCompleteOrder(orderId || '');
   const orderPaymentResolution = useOrderPaymentResolution(orderId);
   const [billingOverrideDialogOpen, setBillingOverrideDialogOpen] = useState(false);
   const [billingOverrideNote, setBillingOverrideNote] = useState('');
@@ -1786,6 +1788,10 @@ export default function OrderDetail() {
       : billingStatus === 'billed'
         ? 'Billed'
         : 'Not Ready';
+  const invoiceStateSummary = deriveOrderInvoiceState({
+    billingStatus,
+    invoices: orderInvoices,
+  });
   const paymentResolution = orderPaymentResolution.data;
   const isPreparingInvoicePayment = createOrderInvoice.isPending || billInvoice.isPending;
   const billingActions = getOrderBillingActionState({
@@ -1802,6 +1808,16 @@ export default function OrderDetail() {
   const isServiceFeeOnlyOrder = billingLineItems.length > 0 && billingLineItems.every((lineItem: any) =>
     lineItem.product?.workflowIntent === 'service_fee',
   );
+  const fulfillmentOperationallyComplete = order.fulfillmentStatus === 'shipped' || order.fulfillmentStatus === 'delivered';
+  const orderOperationallyComplete = order.state === 'production_complete' && order.routingTarget !== 'fulfillment';
+  const canCompleteOrder = isAdminOrOwner && (
+    (order.state === 'open' && isServiceFeeOnlyOrder)
+    || (order.state === 'production_complete' && !orderOperationallyComplete && fulfillmentOperationallyComplete)
+  );
+  const canCloseTerminalOrder = isAdminOrOwner
+    && orderOperationallyComplete
+    && invoiceStateSummary.activeInvoiceCount > 0
+    && invoiceStateSummary.key === 'paid';
   const unpricedServiceFeeCount = billingLineItems.filter((lineItem: any) => {
     const product = lineItem.product as any;
     if (product?.workflowIntent !== 'service_fee') return false;
@@ -2097,9 +2113,9 @@ export default function OrderDetail() {
 
             <OrderDetailPrimaryActions
               canEditOrder={canEditOrder}
-              canMarkCompleted={isAdminOrOwner && !isTerminal && allowedNextStatuses.includes('completed')}
+              canMarkCompleted={false}
               canCompleteProduction={isAdminOrOwner && order.state === 'open' && !isServiceFeeOnlyOrder}
-              canCloseOrder={isAdminOrOwner && order.state === 'open' && isServiceFeeOnlyOrder && orderInvoices.length > 0}
+              canCompleteOrder={canCompleteOrder}
               orderId={order.id}
               isDirty={isDirty}
               isSavingOrder={isSavingOrder}
@@ -2540,7 +2556,7 @@ export default function OrderDetail() {
                 {/* State Transition Actions */}
                 {isAdminOrOwner && (
                   <div className="flex gap-2 flex-wrap">
-                    {(order.state === 'production_complete' || (order.state === 'open' && isServiceFeeOnlyOrder && orderInvoices.length > 0)) && (
+                    {canCloseTerminalOrder && (
                       <CloseOrderButton orderId={order.id} />
                     )}
                     
@@ -3416,6 +3432,7 @@ export default function OrderDetail() {
                   <CardTitle className="text-lg font-medium">Billing</CardTitle>
                   <div className="flex items-center gap-2">
                     <Badge variant={billingBadgeVariant}>{billingLabel}</Badge>
+                    <Badge variant="outline">{invoiceStateSummary.label}</Badge>
                     {billingOverrideActive && <Badge variant="secondary">Override</Badge>}
                   </div>
                 </div>
@@ -4357,9 +4374,9 @@ export default function OrderDetail() {
       <AlertDialog open={!!closeFeeOnlyAfterInvoice} onOpenChange={(open) => !open && setCloseFeeOnlyAfterInvoice(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Close this billing-only order?</AlertDialogTitle>
+            <AlertDialogTitle>Complete this billing-only order?</AlertDialogTitle>
             <AlertDialogDescription>
-              This order has no production work. Close this order now? Closing does not affect the invoice or payment collection.
+              This order has no production work. Mark it operationally complete now? The invoice and payment workflow remain active.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
@@ -4367,11 +4384,11 @@ export default function OrderDetail() {
               const invoiceId = closeFeeOnlyAfterInvoice?.invoiceId;
               setCloseFeeOnlyAfterInvoice(null);
               if (invoiceId) navigate(`/invoices/${invoiceId}`);
-            }}>Keep Order Open</AlertDialogCancel>
+            }}>Complete Later</AlertDialogCancel>
             <AlertDialogAction
               onClick={() => {
-                closeOrder.mutate(
-                  { confirmUnpaidInvoices: true },
+                completeOrder.mutate(
+                  {},
                   {
                     onSuccess: () => {
                       const invoiceId = closeFeeOnlyAfterInvoice?.invoiceId;
@@ -4381,9 +4398,9 @@ export default function OrderDetail() {
                   },
                 );
               }}
-              disabled={closeOrder.isPending}
+              disabled={completeOrder.isPending}
             >
-              {closeOrder.isPending ? 'Closing...' : 'Close Order'}
+              {completeOrder.isPending ? 'Completing...' : 'Complete Order'}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

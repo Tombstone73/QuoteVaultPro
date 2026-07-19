@@ -30,9 +30,13 @@ function pill(overrides: Partial<OrderStatusPill> = {}): OrderStatusPill {
 }
 
 describe("workflow status-pill default mappings", () => {
-  test("provides stable-key mappings for production and cancellation", () => {
+  test("provides stable-key mappings for production, completion, invoicing, payment, closure, and cancellation", () => {
     expect(DEFAULT_WORKFLOW_STATUS_PILL_MAPPINGS).toEqual(expect.arrayContaining([
       expect.objectContaining({ triggerKey: "sent_to_production", targetStatusKey: "in_production" }),
+      expect.objectContaining({ triggerKey: "order_completed", targetStatusKey: "complete" }),
+      expect.objectContaining({ triggerKey: "invoice_finalized", targetStatusKey: "invoiced" }),
+      expect.objectContaining({ triggerKey: "payment_received", targetStatusKey: "paid" }),
+      expect.objectContaining({ triggerKey: "order_closed", targetStatusKey: "closed" }),
       expect.objectContaining({ triggerKey: "order_canceled", targetStatusKey: "canceled" }),
     ]));
     expect(DEFAULT_WORKFLOW_STATUS_PILL_MAPPINGS.every((mapping) => !mapping.targetStatusKey.includes(" "))).toBe(true);

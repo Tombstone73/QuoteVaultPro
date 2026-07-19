@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useToast } from "@/hooks/use-toast";
 import type { LineItemProofSummary, OrderProofCounts, OrderProofStatus } from "@shared/orderProofStatus";
 import type { CancelOrderRequest } from "@shared/orderCancellation";
+import type { OrderInvoiceStateSummary } from "@shared/orderInvoiceState";
 
 // ============================================================
 // QUERY KEY FACTORIES (Single Source of Truth)
@@ -333,6 +334,7 @@ export type OrderRow = Order & {
   statusPillAssignedAt?: string | Date | null;
   statusPillAssignedByUserId?: string | null;
   paymentStatus?: string;
+  invoiceState?: OrderInvoiceStateSummary;
   routingTarget?: string | null;
 };
 
