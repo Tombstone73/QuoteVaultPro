@@ -22,6 +22,7 @@ import {
     quoteAttachments,
     quoteLineItems,
     productionJobs,
+    invoices,
     jobs,
     jobStatusLog,
     auditLogs,
@@ -45,6 +46,7 @@ import {
 } from "@shared/schema";
 import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzle-orm";
 import { deriveLineItemProofSummary, deriveOrderProofSummary, type LineItemProofSummary, type OrderProofSummary } from "@shared/orderProofStatus";
+import { deriveOrderInvoiceState, type OrderInvoiceStateSummary } from "@shared/orderInvoiceState";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
 import { resolveActiveProductionOwners } from "../services/productionOwnership";
@@ -756,6 +758,7 @@ export class OrdersRepository {
                 previews: Array<{ id: string; filename: string; mimeType?: string | null; thumbnailUrl?: string | null }>;
             };
             listLabel?: string | null;
+            invoiceState?: OrderInvoiceStateSummary;
         }>;
         page: number;
         pageSize: number;
@@ -852,6 +855,27 @@ export class OrdersRepository {
         const orderIds = rows.map((r) => r.order.id);
         const productionSummaries = await this.buildProductionSummaries(organizationId, orderIds);
         const { orderSummaries } = await this.buildProofSummaries(organizationId, orderIds);
+        const invoiceRows = orderIds.length > 0
+            ? await this.dbInstance.select({
+                orderId: invoices.orderId,
+                status: invoices.status,
+                dueDate: invoices.dueDate,
+                lastSentAt: invoices.lastSentAt,
+                amountPaid: invoices.amountPaid,
+                balanceDue: invoices.balanceDue,
+                total: invoices.total,
+            }).from(invoices).where(and(
+                eq(invoices.organizationId, organizationId),
+                inArray(invoices.orderId, orderIds),
+            ))
+            : [];
+        const invoicesByOrderId = new Map<string, typeof invoiceRows>();
+        for (const invoice of invoiceRows) {
+            if (!invoice.orderId) continue;
+            const existing = invoicesByOrderId.get(invoice.orderId) ?? [];
+            existing.push(invoice);
+            invoicesByOrderId.set(invoice.orderId, existing);
+        }
         let previewData = new Map<string, {
             thumbnails: string[];
             totalCount: number;
@@ -913,6 +937,10 @@ export class OrdersRepository {
                 }
                 : { totalCount: 0, previews: [] },
             listLabel: listNotesMap.get(order.id) || null,
+            invoiceState: deriveOrderInvoiceState({
+                billingStatus: order.billingStatus,
+                invoices: invoicesByOrderId.get(order.id) ?? [],
+            }),
             proofStatus: orderSummaries.get(order.id)?.proofStatus ?? "no_proof_required",
             proofStatusLabel: orderSummaries.get(order.id)?.proofStatusLabel ?? "No Proof Needed",
             proofActionRequired: orderSummaries.get(order.id)?.proofActionRequired ?? false,

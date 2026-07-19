@@ -124,6 +124,7 @@ import {
 } from "../services/orderWorkflowService";
 import { cancelOrder, OrderCancellationError } from "../services/orderCancellationService";
 import { assessOrderCloseEligibility } from "../services/orderCloseEligibility";
+import { assessOrderOperationalCompletion } from "../services/orderCompletionPolicy";
 import { cancelOrderRequestSchema } from "@shared/orderCancellation";
 import { isCanceledOrder } from "@shared/operationalState";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
@@ -2969,6 +2970,104 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.post("/api/orders/:orderId/complete", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            if (!userId) return res.status(401).json({ success: false, message: "Authentication required" });
+
+            const parsed = z.object({ notes: z.string().trim().max(2000).optional() }).parse(req.body ?? {});
+            const orderId = String(req.params.orderId);
+            const order = await storage.getOrderById(organizationId, orderId);
+            if (!order) return res.status(404).json({ success: false, message: "Order not found" });
+
+            const lineRows = await db.select({ productId: orderLineItems.productId, status: orderLineItems.status })
+                .from(orderLineItems)
+                .where(eq(orderLineItems.orderId, orderId));
+            const productIds = Array.from(new Set(lineRows.map((line) => line.productId)));
+            const productRows = productIds.length > 0
+                ? await db.select({ id: products.id, workflowIntent: products.workflowIntent }).from(products)
+                    .where(and(eq(products.organizationId, organizationId), inArray(products.id, productIds)))
+                : [];
+            const workflowIntentByProductId = new Map(productRows.map((product) => [product.id, product.workflowIntent]));
+            const invoiceRows = await db.select({ status: invoices.status, balanceDue: invoices.balanceDue })
+                .from(invoices)
+                .where(and(eq(invoices.organizationId, organizationId), eq(invoices.orderId, orderId)));
+            const assessment = assessOrderOperationalCompletion({
+                state: order.state,
+                fulfillmentStatus: order.fulfillmentStatus,
+                lineItems: lineRows.map((line) => ({ status: line.status, workflowIntent: workflowIntentByProductId.get(line.productId) })),
+                invoices: invoiceRows,
+            });
+            if (!assessment.ok) {
+                return res.status(409).json({ success: false, code: assessment.code, message: assessment.message });
+            }
+
+            const now = new Date().toISOString();
+            await db.update(orders).set({
+                state: "production_complete",
+                status: "ready_for_shipment",
+                ...(!assessment.serviceFeeOnly && !order.productionCompletedAt ? { productionCompletedAt: now } : {}),
+                routingTarget: assessment.needsInvoicing ? "invoicing" : null,
+                updatedAt: sql`now()` as any,
+            }).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
+
+            const userName = `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email;
+            await storage.createOrderAuditLog({
+                orderId,
+                userId,
+                userName,
+                actionType: "order_completed_operationally",
+                fromStatus: order.state,
+                toStatus: "production_complete",
+                note: parsed.notes || "Order marked operationally complete",
+                metadata: {
+                    serviceFeeOnly: assessment.serviceFeeOnly,
+                    invoiceCount: assessment.activeInvoiceCount,
+                    needsInvoicing: assessment.needsInvoicing,
+                    allInvoicesPaid: assessment.allInvoicesPaid,
+                },
+            });
+
+            try {
+                await recomputeOrderBillingStatus({ organizationId, orderId });
+            } catch (error) {
+                console.warn("[CompleteOrder] Billing readiness recompute failed:", error);
+            }
+
+            const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
+            await applyWorkflowStatusPillFailSoft({
+                organizationId,
+                orderId,
+                triggerKey: "order_completed",
+                actorUserId: userId,
+                actorUserName: userName,
+                source: "system",
+                reason: "Order marked operationally complete",
+                metadata: { invoiceCount: assessment.activeInvoiceCount, needsInvoicing: assessment.needsInvoicing },
+            });
+
+            const updatedOrder = await storage.getOrderById(organizationId, orderId);
+            return res.json({
+                success: true,
+                data: updatedOrder,
+                invoiceAction: assessment.needsInvoicing ? "ready_to_invoice" : "existing_invoice_preserved",
+                invoiceCount: assessment.activeInvoiceCount,
+                message: assessment.needsInvoicing
+                    ? "Order completed and is ready to invoice."
+                    : "Order completed. Existing invoice preserved.",
+            });
+        } catch (error: any) {
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ success: false, code: "VALIDATION_ERROR", message: fromZodError(error).message });
+            }
+            console.error("[POST /api/orders/:orderId/complete] Error:", error);
+            return res.status(500).json({ success: false, message: "Failed to complete order" });
+        }
+    });
+
     app.post("/api/orders/:orderId/close", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             if (!assertInternalStaffUser(req, res)) return;
@@ -3004,6 +3103,7 @@ export async function registerOrderRoutes(
             const unpaidInvoiceCount = nonVoidInvoices.filter((invoice) => String(invoice.status).toLowerCase() !== "paid").length;
             const eligibility = assessOrderCloseEligibility({
                 state: order.state,
+                routingTarget: order.routingTarget,
                 lineItems: lineRows.map((line) => ({ status: line.status, workflowIntent: workflowIntentByProductId.get(line.productId) })),
                 invoiceCount: nonVoidInvoices.length,
                 unpaidInvoiceCount,
@@ -3031,7 +3131,19 @@ export async function registerOrderRoutes(
                 notes: parsed.notes,
                 metadata: { source: "manual_close", serviceFeeOnly: eligibility.serviceFeeOnly, unpaidInvoiceCount },
             });
-            return res.json({ success: true, data: updatedOrder, message: "Order closed." });
+            const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
+            await applyWorkflowStatusPillFailSoft({
+                organizationId,
+                orderId,
+                triggerKey: "order_closed",
+                actorUserId: userId,
+                actorUserName: userName,
+                source: "system",
+                reason: "Order closed",
+                metadata: { unpaidInvoiceCount },
+            });
+            const refreshedOrder = await storage.getOrderById(organizationId, orderId);
+            return res.json({ success: true, data: refreshedOrder ?? updatedOrder, message: "Order closed." });
         } catch (error: any) {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ success: false, code: "VALIDATION_ERROR", message: fromZodError(error).message });

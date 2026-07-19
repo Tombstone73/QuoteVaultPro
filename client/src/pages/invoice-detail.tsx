@@ -29,7 +29,7 @@ import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shar
 import { useAuth } from "@/hooks/useAuth";
 import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
 import { useOrder } from "@/hooks/useOrders";
-import { useCloseOrder } from "@/hooks/useOrderState";
+import { useCompleteOrder } from "@/hooks/useOrderState";
 import { useToast } from "@/hooks/use-toast";
 import { useCreateEpsHostedSession, usePaymentSettings, useRecordEpsHostedResult } from "@/hooks/usePaymentSettings";
 import { Page } from "@/components/titan/Page";
@@ -228,7 +228,7 @@ export default function InvoiceDetailPage() {
   const [epsAmountOverride, setEpsAmountOverride] = useState(false);
 
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
-  const [closeFeeOnlyOrderAfterSend, setCloseFeeOnlyOrderAfterSend] = useState(false);
+  const [completeFeeOnlyOrderAfterSend, setCompleteFeeOnlyOrderAfterSend] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
   const [expandedQBLines, setExpandedQBLines] = useState<Set<number>>(new Set());
   const takePaymentAutoLaunchRef = useRef(false);
@@ -249,7 +249,7 @@ export default function InvoiceDetailPage() {
 
   // Orders Detail parity: when invoice is tied to an order, pull customer/contact + metadata from the order.
   const orderId = invoice?.orderId ?? undefined;
-  const closeOrder = useCloseOrder(orderId || '');
+  const completeOrder = useCompleteOrder(orderId || '');
   const { data: orderRaw } = useOrder(orderId || undefined);
   const order: any = orderRaw as any;
   const isServiceFeeOnlyOrder = Array.isArray(order?.lineItems) && order.lineItems.length > 0 && order.lineItems.every(
@@ -1015,7 +1015,7 @@ export default function InvoiceDetailPage() {
       setEmailDialogOpen(false);
       setRecipientEmail("");
       refetch();
-      if (isServiceFeeOnlyOrder && orderId) setCloseFeeOnlyOrderAfterSend(true);
+      if (isServiceFeeOnlyOrder && orderId) setCompleteFeeOnlyOrderAfterSend(true);
     } catch (error: any) {
       toast({ title: "Error", description: error.message, variant: "destructive" });
     }
@@ -2933,24 +2933,24 @@ export default function InvoiceDetailPage() {
           <div className="text-center py-12">Invoice not found</div>
         )}
       </div>
-      <AlertDialog open={closeFeeOnlyOrderAfterSend} onOpenChange={setCloseFeeOnlyOrderAfterSend}>
+      <AlertDialog open={completeFeeOnlyOrderAfterSend} onOpenChange={setCompleteFeeOnlyOrderAfterSend}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Close this billing-only order?</AlertDialogTitle>
+            <AlertDialogTitle>Complete this billing-only order?</AlertDialogTitle>
             <AlertDialogDescription>
-              This order has no production work. Close this order now? Closing does not affect this invoice or payment collection.
+              This order has no production work. Mark it operationally complete now? The invoice and payment workflow remain active.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Keep Order Open</AlertDialogCancel>
+            <AlertDialogCancel>Complete Later</AlertDialogCancel>
             <AlertDialogAction
-              disabled={closeOrder.isPending}
-              onClick={() => orderId && closeOrder.mutate(
-                { confirmUnpaidInvoices: true },
-                { onSuccess: () => setCloseFeeOnlyOrderAfterSend(false) },
+              disabled={completeOrder.isPending}
+              onClick={() => orderId && completeOrder.mutate(
+                {},
+                { onSuccess: () => setCompleteFeeOnlyOrderAfterSend(false) },
               )}
             >
-              {closeOrder.isPending ? "Closing..." : "Close Order"}
+              {completeOrder.isPending ? "Completing..." : "Complete Order"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
