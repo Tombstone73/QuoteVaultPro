@@ -9,6 +9,8 @@ import { useOrderStatusPills, useAssignOrderStatusPill } from '@/hooks/useOrderS
 import type { OrderState } from '@/hooks/useOrderState';
 import { Loader2 } from 'lucide-react';
 import { buildOrderStatusPillChoices, resolveOrderStatusPillId } from '@/lib/orderStatusPills';
+import { cn } from '@/lib/utils';
+import { useEffect, useState } from 'react';
 
 interface OrderStatusPillSelectorProps {
   orderId: string;
@@ -27,6 +29,29 @@ export function OrderStatusPillSelector({
   disabled = false,
   className = '',
 }: OrderStatusPillSelectorProps) {
+  const { data: pills, isLoading } = useOrderStatusPills();
+  const assignPill = useAssignOrderStatusPill(orderId);
+  const choices = buildOrderStatusPillChoices(pills, currentPillId, currentPillValue);
+  const controlledPillId = resolveOrderStatusPillId(currentPillId, currentPillValue, choices);
+  const [pendingSelection, setPendingSelection] = useState<{
+    pillId: string;
+    baselinePillId: string;
+  } | null>(null);
+
+  useEffect(() => {
+    setPendingSelection(null);
+  }, [orderId]);
+
+  useEffect(() => {
+    if (pendingSelection && controlledPillId !== pendingSelection.baselinePillId) {
+      setPendingSelection(null);
+    }
+  }, [controlledPillId, pendingSelection]);
+
+  const displayedPillId = pendingSelection?.pillId ?? controlledPillId;
+  const displayedPill = choices.find((pill) => pill.id === displayedPillId)
+    ?? choices.find((pill) => pill.name === currentPillValue);
+
   // TitanOS rule: canceled is a terminal workflow state and should not have editable pills
   if (currentState === 'canceled') {
     return (
@@ -35,9 +60,6 @@ export function OrderStatusPillSelector({
       </span>
     );
   }
-
-  const { data: pills, isLoading } = useOrderStatusPills();
-  const assignPill = useAssignOrderStatusPill(orderId);
 
   if (isLoading) {
     return (
@@ -52,25 +74,28 @@ export function OrderStatusPillSelector({
     return null;
   }
 
-  const choices = buildOrderStatusPillChoices(pills, currentPillId, currentPillValue);
-
   return (
     <Select
-      value={resolveOrderStatusPillId(currentPillId, currentPillValue, choices)}
-      onValueChange={(value) => assignPill.mutate(value || null)}
+      value={displayedPillId}
+      onValueChange={(value) => {
+        setPendingSelection({ pillId: value, baselinePillId: controlledPillId });
+        assignPill.mutate(value || null, {
+          onError: () => {
+            setPendingSelection((current) => current?.pillId === value ? null : current);
+          },
+        });
+      }}
       disabled={disabled || assignPill.isPending}
     >
-      <SelectTrigger className={`w-[200px] ${className}`}>
+      <SelectTrigger className={cn('w-[200px]', className)}>
         <SelectValue placeholder="Select status">
-          {currentPillValue && (
+          {displayedPill && (
             <div className="flex items-center gap-2">
               <div
                 className="w-3 h-3 rounded-full"
-                style={{
-                  backgroundColor: choices.find(p => p.id === currentPillId || p.name === currentPillValue)?.color || '#3b82f6',
-                }}
+                style={{ backgroundColor: displayedPill.color || '#3b82f6' }}
               />
-              {currentPillValue}
+              {displayedPill.name}
             </div>
           )}
         </SelectValue>

@@ -54,7 +54,8 @@ describe('order status pill list and filter resolution', () => {
   test('Orders row and shared selector use the full catalog while lifecycle tabs remain intact', () => {
     const ordersSource = fs.readFileSync(path.join(process.cwd(), 'client/src/pages/orders.tsx'), 'utf8');
     const selectorSource = fs.readFileSync(path.join(process.cwd(), 'client/src/components/OrderStatusPillSelector.tsx'), 'utf8');
-    expect(ordersSource).toContain('const { data: pills, isLoading } = useOrderStatusPills();');
+    expect(ordersSource).toContain('<OrderStatusPillSelector');
+    expect(ordersSource).not.toContain('function OrderStatusPillCell(');
     expect(selectorSource).toContain('const { data: pills, isLoading } = useOrderStatusPills();');
     expect(ordersSource).toContain('<TabsTrigger value="production_complete">');
     expect(ordersSource).toContain('<TabsTrigger value="closed">');
