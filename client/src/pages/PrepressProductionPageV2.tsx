@@ -11,6 +11,13 @@ import { Label } from "@/components/ui/label";
 import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
+import {
+  canCompleteAndReleasePrepress,
+  completeAndReleasePrepress,
+  PrepressCompleteAndReleaseError,
+  requestCompletePrepressSession,
+  requestReleasePrepressLineItem,
+} from "@/lib/prepressActions";
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { formatDistanceToNow } from "date-fns";
@@ -623,17 +630,7 @@ export default function PrepressProductionPageV2() {
   });
 
   const completeSessionMutation = useMutation({
-    mutationFn: async (sessionId: string) => {
-      const res = await fetch(`/api/prepress/session/${sessionId}/complete`, {
-        method: "POST",
-        credentials: "include",
-      });
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.error || "Failed to complete prepress");
-      }
-      return res.json();
-    },
+    mutationFn: (sessionId: string) => requestCompletePrepressSession(sessionId),
     onSuccess: async (response) => {
       const lineItemId = response?.data?.lineItemId ?? selectedLineItemId;
       await Promise.all([
@@ -686,19 +683,7 @@ export default function PrepressProductionPageV2() {
 
   // PROMPT B: Send to Print Queue mutation
   const sendToPrintMutation = useMutation({
-    mutationFn: async (lineItemId: string) => {
-      const res = await fetch(`/api/prepress/line-item/${lineItemId}/send-to-print`, {
-        method: "POST",
-        credentials: "include",
-      });
-      
-      if (!res.ok) {
-        const error = await res.json();
-        throw new Error(error.error || "Failed to send to print");
-      }
-      
-      return res.json();
-    },
+    mutationFn: (lineItemId: string) => requestReleasePrepressLineItem(lineItemId),
     onSuccess: async (_response, lineItemId) => {
       await Promise.all([
         refreshPrepressQueue(),
@@ -724,6 +709,43 @@ export default function PrepressProductionPageV2() {
         title: "Error", 
         description: error.message, 
         variant: "destructive" 
+      });
+    },
+  });
+
+  const completeAndReleaseMutation = useMutation({
+    mutationFn: (input: Parameters<typeof completeAndReleasePrepress>[0]) => completeAndReleasePrepress(input),
+    onSuccess: async (_response, variables) => {
+      await Promise.all([
+        refreshPrepressQueue(),
+        refreshLineItemQueries(variables.lineItemId),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+        queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
+        queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
+        queryClient.refetchQueries({ queryKey: ["/api/operational-summary"], type: "active" }),
+        queryClient.invalidateQueries({ predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === "/api/orders";
+        } }),
+      ]);
+      setSelectedLineItemId(null);
+      toast({
+        title: "Prepress complete and released",
+        description: "Job is now ready for the production board.",
+      });
+    },
+    onError: async (error: Error, variables) => {
+      const completed = error instanceof PrepressCompleteAndReleaseError && error.prepressCompleted;
+      if (completed) {
+        await Promise.all([
+          refreshPrepressQueue(),
+          refreshLineItemQueries(variables.lineItemId),
+        ]);
+      }
+      toast({
+        title: completed ? "Prepress complete; release failed" : "Complete and release failed",
+        description: error.message,
+        variant: "destructive",
       });
     },
   });
@@ -929,6 +951,14 @@ export default function PrepressProductionPageV2() {
     hasFinalFiles &&
     artworkSideReadiness.complete &&
     !selectedItem?.productionReleaseBlockedReason;
+  const canCompleteAndRelease = canCompleteAndReleasePrepress({
+    canCompleteNow: canComplete,
+    canReleaseNow: canSendToPrint,
+    releaseAllowedAfterCompletion:
+      !selectedItem?.hasDownstreamActiveJob &&
+      artworkSideReadiness.complete &&
+      !selectedItem?.productionReleaseBlockedReason,
+  });
   const hasProofReleaseBlock = Boolean(selectedItem?.productionReleaseBlockedReason);
   const activeSessionStartedAt = selectedItem?.sessionStartedAt ? new Date(selectedItem.sessionStartedAt) : null;
   const activeSessionElapsedSeconds =
@@ -1163,6 +1193,15 @@ export default function PrepressProductionPageV2() {
     if (selectedLineItemId) {
       sendToPrintMutation.mutate(selectedLineItemId);
     }
+  };
+
+  const handleCompleteAndRelease = () => {
+    if (!selectedItem || !selectedLineItemId || !canCompleteAndRelease) return;
+    completeAndReleaseMutation.mutate({
+      lineItemId: selectedLineItemId,
+      sessionId: selectedItem.sessionId,
+      hasCompletedSession: selectedItem.hasCompletedSession === true,
+    });
   };
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -2334,10 +2373,10 @@ export default function PrepressProductionPageV2() {
             )}
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center justify-end gap-3">
             <Button
               onClick={handleStartPrepress}
-              disabled={!canStartPrepress || startSessionMutation.isPending}
+              disabled={!canStartPrepress || startSessionMutation.isPending || completeAndReleaseMutation.isPending}
               variant="outline"
               className="bg-transparent border-[#2d3748] text-slate-300 hover:bg-[#2d3748] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
             >
@@ -2349,7 +2388,7 @@ export default function PrepressProductionPageV2() {
             </Button>
             <Button
               onClick={handleComplete}
-              disabled={!canComplete || completeSessionMutation.isPending}
+              disabled={!canComplete || completeSessionMutation.isPending || completeAndReleaseMutation.isPending}
               className={cn(
                 "font-bold shadow-lg transition-all",
                 canComplete
@@ -2369,10 +2408,32 @@ export default function PrepressProductionPageV2() {
               )}
             </Button>
 
+            <Button
+              onClick={handleCompleteAndRelease}
+              disabled={
+                !canCompleteAndRelease ||
+                completeAndReleaseMutation.isPending ||
+                completeSessionMutation.isPending ||
+                sendToPrintMutation.isPending
+              }
+              className={cn(
+                "max-w-[220px] whitespace-normal text-center font-bold leading-tight shadow-lg transition-all",
+                canCompleteAndRelease
+                  ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                  : "bg-slate-700 text-slate-500 cursor-not-allowed"
+              )}
+            >
+              {completeAndReleaseMutation.isPending ? (
+                <><Loader2 className="w-4 h-4 mr-2 shrink-0 animate-spin" /> Completing &amp; releasing...</>
+              ) : (
+                "Complete & Release to Production"
+              )}
+            </Button>
+
             {/* PROMPT B: Send to Print Queue button */}
             <Button
               onClick={handleSendToPrint}
-              disabled={!canSendToPrint || sendToPrintMutation.isPending}
+              disabled={!canSendToPrint || sendToPrintMutation.isPending || completeAndReleaseMutation.isPending}
               className={cn(
                 "font-bold shadow-lg transition-all",
                 canSendToPrint
