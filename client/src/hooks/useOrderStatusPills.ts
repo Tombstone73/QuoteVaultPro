@@ -32,11 +32,14 @@ export interface OrderStatusPill {
 /**
  * Fetch the full active tenant catalog, or a state-scoped subset for assignment controls.
  */
-export function useOrderStatusPills(stateScope?: OrderState) {
+export function useOrderStatusPills(stateScope?: OrderState, options?: { includeInactive?: boolean }) {
+  const includeInactive = options?.includeInactive === true;
   return useQuery<OrderStatusPill[]>({
-    queryKey: ['/api', 'orders', 'status-pills', stateScope],
+    queryKey: ['/api', 'orders', 'status-pills', stateScope, includeInactive ? 'all' : 'active'],
     queryFn: async () => {
-      const res = await fetch(buildOrderStatusPillsUrl(stateScope), {
+      const baseUrl = buildOrderStatusPillsUrl(stateScope);
+      const url = includeInactive ? '/api/settings/order-status-pills' : baseUrl;
+      const res = await fetch(url, {
         credentials: 'include',
       });
 
@@ -172,6 +175,10 @@ export function useUpdateStatusPill() {
       updates: Partial<{
         name: string;
         color: string;
+        category: string | null;
+        lifecycleMapping: OrderStatusPillLifecycleMapping | null;
+        customerVisible: boolean;
+        notificationTriggerEligible: boolean;
         isDefault: boolean;
         sortOrder: number;
         isActive: boolean;

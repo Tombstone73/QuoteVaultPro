@@ -60,6 +60,10 @@ import { JobStatusSettings } from "@/components/job-status-settings";
 import { InvoiceRemindersTab } from "@/components/admin-settings";
 import { CompanyInfoInvoiceBrandingCard } from "@/components/settings/CompanyInfoInvoiceBrandingCard";
 import {
+  OrderStatusPillSettings,
+  WorkflowStatusAutomationSettings,
+} from "@/components/settings/OrderWorkflowStatusSettings";
+import {
   useOrderWorkflow,
   usePublishOrderWorkflow,
   useSaveOrderWorkflowDraft,
@@ -1190,6 +1194,24 @@ export function ProductionSettings() {
         <div className="h-px bg-titan-border-subtle" />
 
         <ProductionSettingsSection
+          title="Order Status Pills"
+          summary="Tenant operational statuses used on the Orders list"
+          help="Edit order-facing operational labels and visibility here. Stable keys remain fixed so workflow automation and future notifications continue to work."
+          defaultOpen={true}
+        >
+          <OrderStatusPillSettings />
+        </ProductionSettingsSection>
+
+        <ProductionSettingsSection
+          title="Workflow Status Automation"
+          summary="Map durable workflow events to order status pills"
+          help="Automatic changes use the same durable status-change event stream as manual changes. Notification delivery rules are not enabled yet."
+          defaultOpen={true}
+        >
+          <WorkflowStatusAutomationSettings />
+        </ProductionSettingsSection>
+
+        <ProductionSettingsSection
           title="Initial Production Routing"
           summary={initialRoutingSummary}
           help="Sets the organization-wide default intake path. Product-level rules can still override this."
@@ -1270,9 +1292,9 @@ export function ProductionSettings() {
         </ProductionSettingsSection>
 
         <ProductionSettingsSection
-          title="Job Workflow Statuses"
+          title="Production Job Statuses"
           summary="Production job status labels used by active job records"
-          help="This is the canonical editor for job_statuses and jobs.statusKey. It replaces the legacy Admin Settings workflow tab."
+          help="These statuses belong to production job records, not orders. They do not appear in the Orders list status-pill selector."
         >
           <JobStatusSettings />
         </ProductionSettingsSection>
@@ -1316,9 +1338,9 @@ export function ProductionSettings() {
         <div className="h-px bg-titan-border-subtle" />
 
         <ProductionSettingsSection
-          title="Routing Rules"
+          title="Production Intake Triggers & Routing"
           summary={routingRulesSummary}
-          help="Controls which internal line-item statuses create or move production jobs, and which station step they start in."
+          help="Internal trigger labels such as Sent to Print create or move production jobs. They are routing signals, not order status pills or customer-visible statuses."
           defaultOpen={true}
           warningCount={routingWarningCount}
           actions={
@@ -1478,9 +1500,9 @@ export function ProductionSettings() {
           <div className="h-px bg-titan-border-subtle" />
 
         <ProductionSettingsSection
-          title="Customer Order Statuses"
+          title="Canonical Order Lifecycle (Advanced)"
           summary={customerStatusesSummary}
-          help="Customer-facing order statuses only. These do not control production routing."
+          help="This versioned workflow defines canonical order lifecycle transitions. It is separate from tenant-editable Order Status Pills and should only be changed when lifecycle rules need revision."
           warningCount={statusWarningCount}
           actions={
             <>
@@ -1759,6 +1781,16 @@ export function NotificationsSettings() {
         </div>
         
         <div className="h-px bg-titan-border-subtle" />
+
+        <div className="rounded-titan-lg border border-titan-border-subtle bg-titan-bg-subtle p-4">
+          <div className="flex flex-wrap items-center gap-2">
+            <h3 className="text-titan-sm font-semibold text-titan-text-primary">Order status notifications</h3>
+            <Badge variant="outline">Coming later</Badge>
+          </div>
+          <p className="mt-1 text-titan-xs text-titan-text-muted">
+            Order status changes are now recorded as notification-ready events. Customer and internal delivery rules are not enabled yet; configure workflow-to-status mappings under Production &amp; Operations.
+          </p>
+        </div>
         
         <div className="space-y-4">
           <InvoiceRemindersTab />

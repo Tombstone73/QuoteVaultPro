@@ -5,6 +5,7 @@ import {
   DEFAULT_ORDER_STATUS_PILLS,
   CANCELED_ORDER_STATUS_PILL_KEY,
   buildStatusPillChangeEvent,
+  buildStatusPillUpdateData,
   planDefaultStatusPillSeed,
   slugifyStatusPillKey,
 } from '../services/orderStatusPillService';
@@ -80,6 +81,21 @@ describe('default operational order status pills', () => {
     const renamed = { ...DEFAULT_ORDER_STATUS_PILLS[1], name: 'Review Required' };
     expect(renamed.key).toBe('needs_review');
     expect(slugifyStatusPillKey('Waiting on Customer / PO')).toBe('waiting_on_customer_po');
+  });
+
+  test('settings updates preserve stable keys while accepting label, color, and visibility fields', () => {
+    const update = buildStatusPillUpdateData({
+      name: 'Production Floor', color: '#123456', category: 'shop',
+      lifecycleMapping: 'production', customerVisible: true,
+      notificationTriggerEligible: false, isActive: false, sortOrder: 95,
+    });
+    expect(update).toMatchObject({
+      name: 'Production Floor', color: '#123456', category: 'shop',
+      lifecycleMapping: 'production', customerVisible: true,
+      notificationTriggerEligible: false, isActive: false, sortOrder: 95,
+    });
+    expect(update).not.toHaveProperty('key');
+    expect(update).not.toHaveProperty('stateScope');
   });
 
   test('proof and production pills remain operational signals within the open lifecycle', () => {
