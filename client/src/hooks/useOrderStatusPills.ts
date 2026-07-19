@@ -30,12 +30,18 @@ export interface OrderStatusPill {
 }
 
 /**
- * Fetch the full active tenant catalog, or a state-scoped subset for assignment controls.
+ * Fetch the full active tenant catalog by default. State-scoped reads remain
+ * available for lifecycle-specific displays, not Orders assignment controls.
  */
 export function useOrderStatusPills(stateScope?: OrderState, options?: { includeInactive?: boolean }) {
   const includeInactive = options?.includeInactive === true;
+  const queryKey = includeInactive
+    ? ['/api', 'orders', 'status-pills', 'settings-all-v2']
+    : stateScope
+      ? ['/api', 'orders', 'status-pills', 'state', stateScope]
+      : ['/api', 'orders', 'status-pills', 'active-catalog-v2'];
   return useQuery<OrderStatusPill[]>({
-    queryKey: ['/api', 'orders', 'status-pills', stateScope, includeInactive ? 'all' : 'active'],
+    queryKey,
     queryFn: async () => {
       const baseUrl = buildOrderStatusPillsUrl(stateScope);
       const url = includeInactive ? '/api/settings/order-status-pills' : baseUrl;
@@ -48,7 +54,8 @@ export function useOrderStatusPills(stateScope?: OrderState, options?: { include
       }
 
       const data = await res.json();
-      return data.data || data.pills || [];
+      const pills = (data.data || data.pills || []) as OrderStatusPill[];
+      return includeInactive ? pills : pills.filter((pill) => pill.isActive !== false);
     },
     staleTime: 5 * 60 * 1000, // 5 minutes
   });

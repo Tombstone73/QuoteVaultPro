@@ -38,7 +38,7 @@ import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/orderProofStatus";
 import { documentNumberMatchesSearch } from "@shared/documentNumbering";
-import { orderMatchesStatusPillFilter, resolveOrderStatusPillId } from "@/lib/orderStatusPills";
+import { buildOrderStatusPillChoices, orderMatchesStatusPillFilter, resolveOrderStatusPillId } from "@/lib/orderStatusPills";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "paymentStatus";
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
@@ -172,7 +172,8 @@ function OrderStatusPillCell({
     ) : null;
   }
 
-  const { data: pills, isLoading } = useOrderStatusPills(state);
+  // Operational status pills are independent from the canonical lifecycle tab.
+  const { data: pills, isLoading } = useOrderStatusPills();
   const assignPill = useAssignOrderStatusPill(orderId);
 
   if (isLoading) {
@@ -185,11 +186,12 @@ function OrderStatusPillCell({
     );
   }
 
-  const currentColor = value ? pills.find((p) => p.name === value)?.color : undefined;
+  const choices = buildOrderStatusPillChoices(pills, pillId, value);
+  const currentColor = choices.find((pill) => pill.id === pillId || pill.name === value)?.color;
 
   return (
     <Select
-      value={resolveOrderStatusPillId(pillId, value, pills)}
+      value={resolveOrderStatusPillId(pillId, value, choices)}
       onValueChange={(next) => {
         assignPill.mutate(next || null);
       }}
@@ -212,11 +214,11 @@ function OrderStatusPillCell({
         </SelectValue>
       </SelectTrigger>
       <SelectContent onClick={(e) => e.stopPropagation()}>
-        {pills.map((pill) => (
-          <SelectItem key={pill.id} value={pill.id}>
+        {choices.map((pill) => (
+          <SelectItem key={pill.id} value={pill.id} disabled={!pill.assignable}>
             <div className="flex items-center gap-2">
               <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: pill.color }} />
-              {pill.name}
+              {pill.name}{pill.currentInactive ? " (inactive)" : ""}
             </div>
           </SelectItem>
         ))}
@@ -1113,7 +1115,7 @@ export default function Orders() {
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">All Status Pills</SelectItem>
-                {(pillsForFilter || []).map((pill) => (
+                {(pillsForFilter || []).filter((pill) => pill.isActive !== false).map((pill) => (
                   <SelectItem key={pill.id} value={pill.id}>
                     <div className="flex items-center gap-2">
                       <div className="w-2.5 h-2.5 rounded-full" style={{ backgroundColor: pill.color }} />
