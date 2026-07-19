@@ -6,6 +6,7 @@ jest.mock("react-router-dom", () => ({
 }));
 
 import { orderDetailQueryKey, ordersListQueryKey } from "./useOrders";
+import { getOrdersListStatusSelectorProps } from "@/components/orders/OrdersListStatusCell";
 import {
   applyOrderStatusPillMutationSuccess,
   requestOrderStatusPillAssignment,
@@ -53,6 +54,10 @@ describe("status-pill assignment cache synchronization", () => {
       statusPillAssignedByUserId: "user-1",
     });
     expect((queryClient.getQueryData(filteredKey) as any)[0].statusPillValue).toBe("Approved");
+    expect(getOrdersListStatusSelectorProps((queryClient.getQueryData(firstPageKey) as any).items[0])).toMatchObject({
+      currentPillId: "pill-approved",
+      currentPillValue: "Approved",
+    });
     expect(queryClient.getQueryData(orderDetailQueryKey("order-1"))).toMatchObject({
       statusPillValue: "Approved",
       statusPillColor: "#047857",

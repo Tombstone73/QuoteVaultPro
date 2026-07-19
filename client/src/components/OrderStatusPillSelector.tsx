@@ -36,6 +36,7 @@ export function OrderStatusPillSelector({
   const [pendingSelection, setPendingSelection] = useState<{
     pillId: string;
     baselinePillId: string;
+    confirmed: boolean;
   } | null>(null);
 
   useEffect(() => {
@@ -43,7 +44,12 @@ export function OrderStatusPillSelector({
   }, [orderId]);
 
   useEffect(() => {
-    if (pendingSelection && controlledPillId !== pendingSelection.baselinePillId) {
+    if (!pendingSelection) return;
+    if (controlledPillId === pendingSelection.pillId) {
+      setPendingSelection(null);
+      return;
+    }
+    if (pendingSelection.confirmed && controlledPillId !== pendingSelection.baselinePillId) {
       setPendingSelection(null);
     }
   }, [controlledPillId, pendingSelection]);
@@ -78,8 +84,14 @@ export function OrderStatusPillSelector({
     <Select
       value={displayedPillId}
       onValueChange={(value) => {
-        setPendingSelection({ pillId: value, baselinePillId: controlledPillId });
+        setPendingSelection({ pillId: value, baselinePillId: controlledPillId, confirmed: false });
         assignPill.mutate(value || null, {
+          onSuccess: (data: any) => {
+            const confirmedPillId = data?.statusPill?.id ?? data?.data?.statusPillId ?? value;
+            setPendingSelection((current) => current?.pillId === value
+              ? { ...current, pillId: confirmedPillId, confirmed: true }
+              : current);
+          },
           onError: () => {
             setPendingSelection((current) => current?.pillId === value ? null : current);
           },

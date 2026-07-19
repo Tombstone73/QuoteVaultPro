@@ -82,7 +82,9 @@ export function applyOrderStatusPillMutationSuccess(args: {
     (old: Record<string, any> | undefined) => patchOrderStatusPillCacheData(old, orderId, patch),
   );
 
-  queryClient.invalidateQueries({ queryKey: ['orders', 'list'] });
+  // The mutation response is authoritative. Mark list queries stale without
+  // immediately replacing the patched row with a potentially lagging read.
+  queryClient.invalidateQueries({ queryKey: ['orders', 'list'], refetchType: 'none' });
   queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
   queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
 
