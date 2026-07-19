@@ -39,7 +39,7 @@ import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus, type OrderProofStatus } from "@shared/orderProofStatus";
 import { documentNumberMatchesSearch } from "@shared/documentNumbering";
 import { orderMatchesStatusPillFilter } from "@/lib/orderStatusPills";
-import { OrderStatusPillSelector } from "@/components/OrderStatusPillSelector";
+import { OrdersListStatusCell } from "@/components/orders/OrdersListStatusCell";
 
 type SortKey = "date" | "orderNumber" | "poNumber" | "customer" | "total" | "dueDate" | "status" | "priority" | "items" | "label" | "listLabel" | "invoiceStatus" | "paymentStatus";
 type ProductionFilterValue = "all" | "needs_handoff" | "partial" | "action_needed";
@@ -799,18 +799,7 @@ export default function Orders() {
         return row.customer?.companyName || <span className="text-muted-foreground italic">No customer</span>;
 
       case "status": {
-        // TitanOS: Editable status pill (org-configured)
-        return (
-          <div className="flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
-            <OrderStatusPillSelector
-              orderId={row.id}
-              currentState={row.state as OrderState}
-              currentPillId={row.statusPillId ?? null}
-              currentPillValue={row.statusPillValue ?? null}
-              className="h-7 w-[160px] text-xs"
-            />
-          </div>
-        );
+        return <OrdersListStatusCell row={row} />;
       }
 
       case "invoiceStatus": {
