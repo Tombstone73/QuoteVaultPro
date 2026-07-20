@@ -2,9 +2,38 @@ import { describe, expect, it } from "@jest/globals";
 import {
   getOrderLineItemActiveWorkWarning,
   getOrderLineItemEditorUiPolicy,
+  getOrderLineItemSelectAllState,
+  getSelectableProductionLineItemIds,
+  toggleAllOrderLineItemSelections,
 } from "./orderLineItemEditorUi";
 
 describe("order line item editor UI policy", () => {
+  it("selects and deselects every selectable line item", () => {
+    const selectable = ["line-1", "line-2"];
+    const selected = toggleAllOrderLineItemSelections(new Set(), selectable);
+    expect(Array.from(selected)).toEqual(selectable);
+    expect(getOrderLineItemSelectAllState(selected, selectable)).toBe(true);
+    expect(Array.from(toggleAllOrderLineItemSelections(selected, selectable))).toEqual([]);
+  });
+
+  it("reports an indeterminate state when only some selectable items are selected", () => {
+    expect(getOrderLineItemSelectAllState(new Set(["line-1"]), ["line-1", "line-2"])).toBe("indeterminate");
+  });
+
+  it("excludes canceled, fulfillment-only, and service lines from bulk production selection", () => {
+    const products = [
+      { id: "print", requiresProductionJob: true, workflowIntent: "standard_production" },
+      { id: "fee", requiresProductionJob: false, workflowIntent: "service_fee" },
+      { id: "fulfillment", requiresProductionJob: false, workflowIntent: "fulfillment_only" },
+    ];
+    expect(getSelectableProductionLineItemIds([
+      { id: "line-1", productId: "print", status: "new" },
+      { id: "line-2", productId: "print", status: "canceled" },
+      { id: "line-3", productId: "fee", status: "new" },
+      { id: "line-4", productId: "fulfillment", status: "new" },
+    ], products)).toEqual(["line-1"]);
+  });
+
   it("does not show a stale prepress warning for a fulfillment item waiting to be picked", () => {
     expect(getOrderLineItemActiveWorkWarning({
       fulfillmentOnly: true,

@@ -3,6 +3,53 @@ export type OrderLineItemActiveWorkWarning = {
   description: string;
 } | null;
 
+export type OrderLineItemSelectionState = false | true | "indeterminate";
+
+export function getOrderLineItemSelectAllState(
+  selectedIds: ReadonlySet<string>,
+  selectableIds: readonly string[],
+): OrderLineItemSelectionState {
+  if (selectableIds.length === 0) return false;
+  const selectedCount = selectableIds.reduce(
+    (count, id) => count + (selectedIds.has(id) ? 1 : 0),
+    0,
+  );
+  if (selectedCount === 0) return false;
+  if (selectedCount === selectableIds.length) return true;
+  return "indeterminate";
+}
+
+export function toggleAllOrderLineItemSelections(
+  selectedIds: ReadonlySet<string>,
+  selectableIds: readonly string[],
+): Set<string> {
+  const allSelected = getOrderLineItemSelectAllState(selectedIds, selectableIds) === true;
+  if (allSelected) {
+    const next = new Set(selectedIds);
+    selectableIds.forEach((id) => next.delete(id));
+    return next;
+  }
+  return new Set([...Array.from(selectedIds), ...selectableIds]);
+}
+
+export function getSelectableProductionLineItemIds(
+  lineItems: ReadonlyArray<{ id: string; productId: string; status?: string | null }>,
+  products: ReadonlyArray<{
+    id: string;
+    requiresProductionJob?: boolean | null;
+    workflowIntent?: string | null;
+  }>,
+): string[] {
+  const productsById = new Map(products.map((product) => [String(product.id), product]));
+  return lineItems
+    .filter((lineItem) => {
+      if (lineItem.status === "canceled") return false;
+      const product = productsById.get(String(lineItem.productId));
+      return product?.requiresProductionJob === true && product.workflowIntent !== "service_fee";
+    })
+    .map((lineItem) => String(lineItem.id));
+}
+
 const PRODUCTION_WARNING_STATES = new Set([
   "ready_for_prepress",
   "in_prepress",

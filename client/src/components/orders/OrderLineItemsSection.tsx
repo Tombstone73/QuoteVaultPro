@@ -61,7 +61,8 @@ import { getLineItemProofBadgeClass } from "@/lib/orderProofUi";
 
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
-import { getOrderLineItemActiveWorkWarning } from "@/components/orders/orderLineItemEditorUi";
+import { getOrderLineItemActiveWorkWarning, getSelectableProductionLineItemIds } from "@/components/orders/orderLineItemEditorUi";
+import { OrderLineItemSelectAllControl } from "@/components/orders/OrderLineItemSelectAllControl";
 import {
   buildPbv2DefaultsHydrationKey,
   hasPbv2Selections,
@@ -2432,6 +2433,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const handleRemoveItem = async (itemId: string) => {
     try {
       await deleteLineItem.mutateAsync(itemId);
+      setSelectedForProduction((current) => {
+        if (!current.has(itemId)) return current;
+        const next = new Set(current);
+        next.delete(itemId);
+        return next;
+      });
       if (expandedId === itemId) setExpandedId(null);
       if (onAfterLineItemsChange) {
         await onAfterLineItemsChange();
@@ -2447,7 +2454,25 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const count = activeLineItems.length;
 
+  const selectableProductionLineItemIds = useMemo(
+    () => getSelectableProductionLineItemIds(activeLineItems, products),
+    [activeLineItems, products],
+  );
+  const selectableProductionLineItemIdSet = useMemo(
+    () => new Set(selectableProductionLineItemIds),
+    [selectableProductionLineItemIds],
+  );
+
+  useEffect(() => {
+    setSelectedForProduction((current) => {
+      const next = new Set(Array.from(current).filter((id) => selectableProductionLineItemIdSet.has(id)));
+      if (next.size === current.size && Array.from(next).every((id) => current.has(id))) return current;
+      return next;
+    });
+  }, [selectableProductionLineItemIdSet]);
+
   const handleToggleProductionSelection = (lineItemId: string) => {
+    if (!selectableProductionLineItemIdSet.has(lineItemId)) return;
     setSelectedForProduction((prev) => {
       const next = new Set(prev);
       if (next.has(lineItemId)) {
@@ -2467,12 +2492,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setSelectedForProduction(new Set());
   };
 
-  const productionRequiredItemCount = useMemo(() => {
-    return activeLineItems.filter((item) => {
-      const product = products.find((p) => p.id === item.productId);
-      return (product as any)?.requiresProductionJob === true && (product as any)?.workflowIntent !== "service_fee";
-    }).length;
-  }, [activeLineItems, products]);
+  const productionRequiredItemCount = selectableProductionLineItemIds.length;
 
   const actionNeededCount = useMemo(() => {
     return activeLineItems.filter((item) => needsOperationalAction(String((item as any).workflowState || "new"))).length;
@@ -2500,6 +2520,14 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           
           {!readOnly && (
             <div className="flex flex-wrap items-center justify-end gap-2">
+              {productionRequiredItemCount > 0 && (
+                <OrderLineItemSelectAllControl
+                  selectedIds={selectedForProduction}
+                  selectableIds={selectableProductionLineItemIds}
+                  onSelectedIdsChange={setSelectedForProduction}
+                  disabled={scheduleProduction.isPending}
+                />
+              )}
               <PopoverTrigger asChild>
                 <Button
                   type="button"
@@ -2734,8 +2762,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     />
                   );
 
-                  const productForItem = products.find((p) => p.id === item.productId);
-                  const itemRequiresProduction = (productForItem as any)?.requiresProductionJob === true && (productForItem as any)?.workflowIntent !== "service_fee";
+                  const itemRequiresProduction = selectableProductionLineItemIdSet.has(String(item.id));
                   const isSelectedForProduction = selectedForProduction.has(item.id);
                   const isProductionFocused = productionFocusLineItemIds.includes(String(item.id));
                   const expandedBriefDetail = isExpanded && expandedItem && expandedItem.id === item.id ? designBriefQuery.data : null;
