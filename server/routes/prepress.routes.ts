@@ -2561,6 +2561,18 @@ export function registerPrepressQueueRoutes(
           return { id: session.id, lineItemId: session.lineItemId, status: "complete" };
         }
 
+        completeFailureStage = "validate_proof_gate";
+        const proofGate = await resolveLineItemProofReleaseGate(tx, {
+          organizationId: orgId,
+          lineItemId: session.lineItemId,
+        });
+        if (!proofGate.allowed) {
+          throw Object.assign(
+            new Error(proofGate.blockedReason || "Cannot complete prepress until proof approved"),
+            { statusCode: 409, code: "PROOF_APPROVAL_REQUIRED" },
+          );
+        }
+
         completeFailureStage = "validate_artwork_sides";
         const artworkReadiness = await loadPrepressArtworkSideReadiness(tx, {
           organizationId: orgId,

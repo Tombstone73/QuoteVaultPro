@@ -378,6 +378,45 @@ type PreviewRepairEntry = {
   startedAt: Date;
 };
 
+type PromotableArtworkFile = {
+  fileRecordId?: string | null;
+  storageBucket?: string | null;
+  storagePath: string;
+  storageKey?: string | null;
+  originalFilename: string;
+  mimeType: string;
+  sizeBytes: number;
+};
+
+export function buildPromotedFinalFileLink(params: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  prepressSessionId?: string | null;
+  createdByUserId: string;
+  tag?: string | null;
+  source: PromotableArtworkFile;
+}) {
+  return {
+    organizationId: params.organizationId,
+    orderId: params.orderId,
+    lineItemId: params.lineItemId,
+    prepressSessionId: params.prepressSessionId ?? null,
+    fileRecordId: params.source.fileRecordId ?? null,
+    role: "final" as const,
+    status: "active" as const,
+    tag: params.tag ?? null,
+    storageBucket: params.source.storageBucket ?? null,
+    storagePath: params.source.storagePath,
+    storageKey: params.source.storageKey ?? params.source.storagePath,
+    originalFilename: params.source.originalFilename,
+    mimeType: params.source.mimeType,
+    sizeBytes: params.source.sizeBytes,
+    supersedesFileId: null,
+    createdByUserId: params.createdByUserId,
+  };
+}
+
 const previewRepairsInFlight = new Map<string, PreviewRepairEntry>();
 const DEFAULT_PREVIEW_REPAIR_TIMEOUT_MS = 120_000;
 
@@ -1029,24 +1068,15 @@ export async function ensureFinalArtworkForLineItem(params: {
     .limit(1);
 
   if (existingOriginal) {
-    const [clonedFinal] = await db.insert(lineItemFiles).values({
+    const [clonedFinal] = await db.insert(lineItemFiles).values(buildPromotedFinalFileLink({
       organizationId,
       orderId,
       lineItemId,
       prepressSessionId: prepressSessionId || existingOriginal.prepressSessionId || null,
-      fileRecordId: existingOriginal.fileRecordId || null,
-      role: "final",
-      status: "active",
       tag: defaultFinalTag,
-      storageBucket: existingOriginal.storageBucket || null,
-      storagePath: existingOriginal.storagePath,
-      storageKey: existingOriginal.storageKey || existingOriginal.storagePath,
-      originalFilename: existingOriginal.originalFilename,
-      mimeType: existingOriginal.mimeType,
-      sizeBytes: existingOriginal.sizeBytes,
-      supersedesFileId: null,
       createdByUserId,
-    }).returning();
+      source: existingOriginal,
+    })).returning();
 
     return {
       file: clonedFinal,
@@ -1074,9 +1104,10 @@ export async function ensureFinalArtworkForLineItem(params: {
     .where(eq(orderAttachments.orderLineItemId, lineItemId))
     .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.createdAt));
 
-  const eligibleAttachment = attachmentCandidates.find((candidate) =>
-    candidate.role === "artwork" || candidate.role === "proof" || candidate.role === "reference",
-  );
+  // The print-ready fast path is deliberately limited to customer artwork.
+  // Proof/reference documents remain visible in Prepress but must never become
+  // a production file merely because no final file exists.
+  const eligibleAttachment = attachmentCandidates.find((candidate) => candidate.role === "artwork");
 
   if (!eligibleAttachment) {
     return null;
@@ -1102,24 +1133,23 @@ export async function ensureFinalArtworkForLineItem(params: {
     return null;
   }
 
-  const [clonedAttachmentFinal] = await db.insert(lineItemFiles).values({
+  const [clonedAttachmentFinal] = await db.insert(lineItemFiles).values(buildPromotedFinalFileLink({
     organizationId,
     orderId,
     lineItemId,
     prepressSessionId: prepressSessionId || null,
-    fileRecordId: eligibleAttachment.fileRecordId || null,
-    role: "final",
-    status: "active",
     tag: defaultFinalTag,
-    storageBucket: null,
-    storagePath: resolvedStoragePath,
-    storageKey: resolvedStoragePath,
-    originalFilename: eligibleAttachment.originalFilename || eligibleAttachment.fileName || `artwork-${eligibleAttachment.id}`,
-    mimeType: eligibleAttachment.mimeType || resolvedOriginal.mimeType || "application/octet-stream",
-    sizeBytes: Math.max(0, Number(eligibleAttachment.sizeBytes ?? eligibleAttachment.fileSize ?? 0)),
-    supersedesFileId: null,
     createdByUserId,
-  }).returning();
+    source: {
+      fileRecordId: eligibleAttachment.fileRecordId || null,
+      storageBucket: null,
+      storagePath: resolvedStoragePath,
+      storageKey: resolvedStoragePath,
+      originalFilename: eligibleAttachment.originalFilename || eligibleAttachment.fileName || `artwork-${eligibleAttachment.id}`,
+      mimeType: eligibleAttachment.mimeType || resolvedOriginal.mimeType || "application/octet-stream",
+      sizeBytes: Math.max(0, Number(eligibleAttachment.sizeBytes ?? eligibleAttachment.fileSize ?? 0)),
+    },
+  })).returning();
 
   return {
     file: clonedAttachmentFinal,

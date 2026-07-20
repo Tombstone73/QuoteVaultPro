@@ -14,6 +14,7 @@ import { cn } from "@/lib/utils";
 import {
   canCompleteAndReleasePrepress,
   completeAndReleasePrepress,
+  markPrepressItemsPrintReady,
   PrepressCompleteAndReleaseError,
   requestCompletePrepressSession,
   requestReleasePrepressLineItem,
@@ -143,7 +144,16 @@ function formatOwnerLabel(item: Pick<PrepressQueueItem, "activeOwnerStepKey" | "
   return rawValue ? rawValue.replace(/_/g, " ") : null;
 }
 
-function getPrepressWorkflowDisplay(item: Pick<PrepressQueueItem, "workflowState" | "hasCompletedSession"> | null | undefined) {
+function getPrepressWorkflowDisplay(item: Pick<PrepressQueueItem, "workflowState" | "hasCompletedSession" | "productionReleaseBlockedReason"> | null | undefined) {
+  if (item?.productionReleaseBlockedReason) {
+    return {
+      label: "Awaiting Proof Approval",
+      bgClass: "bg-amber-500/15",
+      textClass: "text-amber-300",
+      borderClass: "border-amber-500/40",
+      note: "Completion and release blocked",
+    };
+  }
   const workflowState = String(item?.workflowState || "ready_for_prepress").toLowerCase() as PrepressQueueWorkflowState;
 
   if (workflowState === "in_prepress") {
@@ -325,6 +335,7 @@ export default function PrepressProductionPageV2() {
   
   // UI State
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
+  const [selectedQueueLineItemIds, setSelectedQueueLineItemIds] = useState<Set<string>>(() => new Set());
   const [searchQuery, setSearchQuery] = useState("");
   const [destinationFilter, setDestinationFilter] = useState<PrepressDestinationFilter>(DEFAULT_PREPRESS_LIST_PREFERENCES.destination);
   const [statusFilter, setStatusFilter] = useState<PrepressStatusFilter>(DEFAULT_PREPRESS_LIST_PREFERENCES.status);
@@ -719,6 +730,44 @@ export default function PrepressProductionPageV2() {
     },
   });
 
+  const bulkPrintReadyMutation = useMutation({
+    mutationFn: async ({ items, releaseToProduction }: { items: PrepressQueueItem[]; releaseToProduction: boolean }) =>
+      markPrepressItemsPrintReady(
+        items.map((item) => ({
+          lineItemId: item.lineItemId,
+          workflowState: item.workflowState,
+          sessionId: item.sessionId,
+          hasCompletedSession: item.hasCompletedSession,
+          blockedReason: item.productionReleaseBlockedReason,
+        })),
+        { releaseToProduction },
+      ),
+    onSuccess: async (results) => {
+      const successes = results.filter((result) => result.status !== "failed");
+      const failures = results.filter((result) => result.status === "failed");
+      setSelectedQueueLineItemIds((current) => {
+        const next = new Set(current);
+        successes.forEach((result) => next.delete(result.lineItemId));
+        return next;
+      });
+      await Promise.all([
+        refreshPrepressQueue(),
+        refreshPrepressNavigationCount(),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+      ]);
+      toast({
+        title: failures.length > 0 ? "Print-ready action partially completed" : "Selected lines are print-ready",
+        description: failures.length > 0
+          ? `${successes.length} completed; ${failures.length} blocked. ${failures.slice(0, 2).map((result) => result.message).join(" ")}`
+          : `${successes.length} ${successes.length === 1 ? "line" : "lines"} completed successfully.`,
+        variant: failures.length > 0 ? "destructive" : "default",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Print-ready action failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const completeAndReleaseMutation = useMutation({
     mutationFn: (input: Parameters<typeof completeAndReleasePrepress>[0]) => completeAndReleasePrepress(input),
     onSuccess: async (_response, variables) => {
@@ -818,6 +867,9 @@ export default function PrepressProductionPageV2() {
   const totalQueueCount = queueData?.totalCount ?? queue.length;
   const filteredQueueCount = queueData?.filteredCount ?? queue.length;
   const filteredQueue = queue;
+  const selectedQueueItems = filteredQueue.filter((item) => selectedQueueLineItemIds.has(item.lineItemId));
+  const allQueueItemsSelected = filteredQueue.length > 0 && selectedQueueItems.length === filteredQueue.length;
+  const someQueueItemsSelected = selectedQueueItems.length > 0 && !allQueueItemsSelected;
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId) ?? null;
   const selectedAlertStation = useMemo<ProductionAlertStation>(() => {
     const station = selectedItem?.selectedProductionDestination || selectedItem?.suggestedProductionDestination;
@@ -909,7 +961,7 @@ export default function PrepressProductionPageV2() {
   const hasFinalFiles = finalFiles.length > 0;
   const hasUsableExistingArtwork =
     originalFiles.length > 0 ||
-    bridgedOriginalFiles.some((file) => file.role === "artwork" || file.role === "proof" || file.role === "reference");
+    bridgedOriginalFiles.some((file) => file.role === "artwork");
   const canCompleteWithExistingArtwork = !hasFinalFiles && hasUsableExistingArtwork;
   const artworkSideReadiness = resolveProductionArtworkSideReadiness({
     sides: selectedItem?.printSides ?? "Unknown",
@@ -947,6 +999,7 @@ export default function PrepressProductionPageV2() {
     selectedWorkflowState === "in_prepress" &&
     (hasFinalFiles || hasUsableExistingArtwork) &&
     artworkSideReadiness.complete &&
+    !selectedItem?.productionReleaseBlockedReason &&
     !!selectedItem?.sessionId;
   const canSendToPrint =
     isOwnedByPrepress &&
@@ -1003,6 +1056,14 @@ export default function PrepressProductionPageV2() {
       setSelectedLineItemId(null);
     }
   }, [selectedLineItemId, selectedItem]);
+
+  React.useEffect(() => {
+    const queueIds = new Set(queue.map((item) => item.lineItemId));
+    setSelectedQueueLineItemIds((current) => {
+      const next = new Set(Array.from(current).filter((id) => queueIds.has(id)));
+      return next.size === current.size ? current : next;
+    });
+  }, [queue]);
 
   useEffect(() => {
     if (selectedWorkflowState !== "in_prepress" || !selectedItem?.sessionStartedAt) {
@@ -1208,6 +1269,24 @@ export default function PrepressProductionPageV2() {
       sessionId: selectedItem.sessionId,
       hasCompletedSession: selectedItem.hasCompletedSession === true,
     });
+  };
+
+  const handleToggleSelectAllQueueItems = (checked: boolean) => {
+    setSelectedQueueLineItemIds(checked ? new Set(filteredQueue.map((item) => item.lineItemId)) : new Set());
+  };
+
+  const handleToggleQueueItem = (lineItemId: string, checked: boolean) => {
+    setSelectedQueueLineItemIds((current) => {
+      const next = new Set(current);
+      if (checked) next.add(lineItemId);
+      else next.delete(lineItemId);
+      return next;
+    });
+  };
+
+  const handleBulkPrintReady = (releaseToProduction: boolean) => {
+    if (selectedQueueItems.length === 0 || bulkPrintReadyMutation.isPending) return;
+    bulkPrintReadyMutation.mutate({ items: selectedQueueItems, releaseToProduction });
   };
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1455,6 +1534,44 @@ export default function PrepressProductionPageV2() {
               </svg>
             </button>
           </div>
+
+          <div className="space-y-2 border-t border-[#2d3748]/30 pt-3">
+            <div className="flex items-center justify-between gap-3">
+              <label className="flex min-w-0 items-center gap-2 text-xs text-slate-300">
+                <Checkbox
+                  checked={allQueueItemsSelected ? true : someQueueItemsSelected ? "indeterminate" : false}
+                  onCheckedChange={(checked) => handleToggleSelectAllQueueItems(checked === true)}
+                  aria-label="Select all prepress line items"
+                />
+                <span>{selectedQueueItems.length > 0 ? `${selectedQueueItems.length} selected` : "Select all"}</span>
+              </label>
+              {selectedQueueItems.some((item) => item.productionReleaseBlockedReason) ? (
+                <span className="text-[10px] font-medium text-amber-300">Proof-blocked lines will be reported</span>
+              ) : null}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => handleBulkPrintReady(false)}
+                disabled={selectedQueueItems.length === 0 || bulkPrintReadyMutation.isPending}
+                className="h-auto min-h-9 whitespace-normal border-[#1773cf]/60 px-2 py-1.5 text-[11px] leading-tight text-[#8ec5ff]"
+              >
+                {bulkPrintReadyMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                Use artwork as print file
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={() => handleBulkPrintReady(true)}
+                disabled={selectedQueueItems.length === 0 || bulkPrintReadyMutation.isPending}
+                className="h-auto min-h-9 whitespace-normal bg-emerald-600 px-2 py-1.5 text-[11px] leading-tight text-white hover:bg-emerald-700"
+              >
+                Complete &amp; Release selected
+              </Button>
+            </div>
+          </div>
         </div>
 
         {/* Job List */}
@@ -1503,6 +1620,8 @@ export default function PrepressProductionPageV2() {
               key={item.lineItemId}
               item={item}
               isSelected={selectedLineItemId === item.lineItemId}
+              isChecked={selectedQueueLineItemIds.has(item.lineItemId)}
+              onCheckedChange={(checked) => handleToggleQueueItem(item.lineItemId, checked)}
               onClick={() => setSelectedLineItemId(item.lineItemId)}
               onPreviewClick={() => handleOpenQueuePreview(item)}
             />
@@ -2347,6 +2466,12 @@ export default function PrepressProductionPageV2() {
         {/* Sticky Footer */}
         <div className="sticky bottom-0 z-20 shrink-0 border-t border-[#2d3748] bg-[#1a232e] p-4 flex items-center justify-between">
           <div className="flex items-center gap-4">
+            {hasProofReleaseBlock ? (
+              <div className="flex items-center gap-2 text-amber-300" role="alert">
+                <AlertCircle className="w-4 h-4" />
+                <span className="text-xs font-medium">Awaiting Proof Approval - completion and release are blocked</span>
+              </div>
+            ) : null}
             {artworkSideReadiness.warning ? (
               <div className="flex items-center gap-2 text-amber-400" role="alert">
                 <AlertCircle className="w-4 h-4" />
@@ -2783,7 +2908,21 @@ export default function PrepressProductionPageV2() {
     </div>
   );
 }
-function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: PrepressQueueItem; isSelected: boolean; onClick: () => void; onPreviewClick: () => void }) {
+function JobCard({
+  item,
+  isSelected,
+  isChecked,
+  onCheckedChange,
+  onClick,
+  onPreviewClick,
+}: {
+  item: PrepressQueueItem;
+  isSelected: boolean;
+  isChecked: boolean;
+  onCheckedChange: (checked: boolean) => void;
+  onClick: () => void;
+  onPreviewClick: () => void;
+}) {
   const config = getPrepressWorkflowDisplay(item);
   const ownerLabel = formatOwnerLabel(item);
 
@@ -2806,6 +2945,17 @@ function JobCard({ item, isSelected, onClick, onPreviewClick }: { item: Prepress
         !isSelected && "bg-[#1a232e] border border-[#2d3748] hover:border-[#1773cf]/50"
       )}
     >
+      <div
+        className="flex shrink-0 items-start pt-1"
+        onClick={(event) => event.stopPropagation()}
+        onPointerDownCapture={(event) => event.stopPropagation()}
+      >
+        <Checkbox
+          checked={isChecked}
+          onCheckedChange={(checked) => onCheckedChange(checked === true)}
+          aria-label={`Select ${item.jobNumber} ${item.productName}`}
+        />
+      </div>
       <div
         className="relative w-16 h-16 flex-shrink-0 rounded-lg border border-[#2d3748] overflow-hidden bg-[#111921] flex items-center justify-center group cursor-zoom-in"
         onClick={(event) => {
