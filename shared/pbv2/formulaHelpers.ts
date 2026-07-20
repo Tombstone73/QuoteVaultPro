@@ -35,7 +35,19 @@ export type SheetYieldResult = {
   partialSheetPolicy: PartialSheetPolicy;
   totalSheetCount: number;
   sheetSqft: number;
+  consumedSqft: number;
   billedSheetSqft: number;
+  fullLayoutBillableSqft: number;
+  lastSheetPieceCount: number;
+  lastSheetOccupiedWidth: number;
+  lastSheetConsumedLength: number;
+  lastSheetBillableWidth: number;
+  lastSheetBillableLength: number;
+  leftoverDropWidth: number;
+  leftoverDropLength: number;
+  widthDropUsable: boolean;
+  lengthDropUsable: boolean;
+  dropUsable: boolean;
 };
 
 function assertPositiveFinite(value: number, label: string): void {
@@ -104,33 +116,71 @@ export function parseFormulaBoolean(value: unknown): boolean | null {
   return null;
 }
 
-function billPartialSheet(input: {
+type SheetLayoutBilling = {
+  billableSqft: number;
+  policy: PartialSheetPolicy;
+  pieceCount: number;
+  occupiedWidth: number;
+  consumedLength: number;
+  billableWidth: number;
+  billableLength: number;
+  leftoverWidth: number;
+  leftoverLength: number;
+  widthDropUsable: boolean;
+  lengthDropUsable: boolean;
+};
+
+function emptySheetLayoutBilling(): SheetLayoutBilling {
+  return {
+    billableSqft: 0,
+    policy: "none",
+    pieceCount: 0,
+    occupiedWidth: 0,
+    consumedLength: 0,
+    billableWidth: 0,
+    billableLength: 0,
+    leftoverWidth: 0,
+    leftoverLength: 0,
+    widthDropUsable: false,
+    lengthDropUsable: false,
+  };
+}
+
+function billSheetLayout(input: {
   pieceW: number;
   pieceH: number;
-  partialPieces: number;
+  pieceCount: number;
   sheetWidth: number;
+  sheetLength: number;
   usableDropMin: number;
   billableLengthIncrement: number;
   minimumBillableSqft: number;
-}): { billableSqft: number; policy: PartialSheetPolicy } {
-  if (input.partialPieces <= 0) return { billableSqft: 0, policy: "none" };
+}): SheetLayoutBilling {
+  if (input.pieceCount <= 0) return emptySheetLayoutBilling();
 
   const piecesAcross = Math.floor(input.sheetWidth / input.pieceW);
-  if (piecesAcross <= 0) return { billableSqft: Infinity, policy: "measured_partial_sheet" };
+  if (piecesAcross <= 0) {
+    return { ...emptySheetLayoutBilling(), billableSqft: Infinity, policy: "measured_partial_sheet" };
+  }
 
-  const rowsNeeded = Math.ceil(input.partialPieces / piecesAcross);
+  const rowsNeeded = Math.ceil(input.pieceCount / piecesAcross);
   const consumedLength = rowsNeeded * input.pieceH;
   const increment = input.billableLengthIncrement > 0 ? input.billableLengthIncrement : 1;
-  const billableLength = Math.ceil(consumedLength / increment) * increment;
-  const fullRows = Math.floor(input.partialPieces / piecesAcross);
-  const piecesInLastRow = input.partialPieces % piecesAcross;
+  const roundedConsumedLength = Math.min(input.sheetLength, Math.ceil(consumedLength / increment) * increment);
+  const fullRows = Math.floor(input.pieceCount / piecesAcross);
+  const piecesInLastRow = input.pieceCount % piecesAcross;
   const occupiedWidth =
     piecesInLastRow > 0 && fullRows === 0
       ? piecesInLastRow * input.pieceW
       : piecesAcross * input.pieceW;
-  const drop = input.sheetWidth - occupiedWidth;
-  const effectiveWidth = drop >= input.usableDropMin ? occupiedWidth : input.sheetWidth;
-  const measuredSqft = (effectiveWidth * billableLength) / 144;
+  const usableDropMin = Math.max(0, input.usableDropMin);
+  const leftoverWidth = Math.max(0, input.sheetWidth - occupiedWidth);
+  const leftoverLength = Math.max(0, input.sheetLength - consumedLength);
+  const widthDropUsable = leftoverWidth > 0 && leftoverWidth >= usableDropMin;
+  const lengthDropUsable = leftoverLength > 0 && leftoverLength >= usableDropMin;
+  const billableWidth = widthDropUsable ? occupiedWidth : input.sheetWidth;
+  const billableLength = lengthDropUsable ? roundedConsumedLength : input.sheetLength;
+  const measuredSqft = (billableWidth * billableLength) / 144;
   const policy = input.minimumBillableSqft > measuredSqft
     ? "minimum_billable_sqft"
     : "measured_partial_sheet";
@@ -138,6 +188,15 @@ function billPartialSheet(input: {
   return {
     billableSqft: Math.ceil(Math.max(measuredSqft, input.minimumBillableSqft)),
     policy,
+    pieceCount: input.pieceCount,
+    occupiedWidth,
+    consumedLength,
+    billableWidth,
+    billableLength,
+    leftoverWidth,
+    leftoverLength,
+    widthDropUsable,
+    lengthDropUsable,
   };
 }
 
@@ -210,17 +269,41 @@ export function calculateSheetYield(
   const totalSheetCount = fullSheets + (partialSheetPieceCount > 0 ? 1 : 0);
   const sheetSqft = (sheetWidth * sheetLength) / 144;
   const partialSheetFinishedSqft = (partialSheetPieceCount * w * h) / 144;
-  const partialSheet = billPartialSheet({
+  const fullLayoutBilling = orientationUsed === "mixed"
+    ? {
+        ...emptySheetLayoutBilling(),
+        billableSqft: sheetSqft,
+        policy: "measured_partial_sheet" as const,
+        pieceCount: chosen.piecesPerSheet,
+        occupiedWidth: sheetWidth,
+        consumedLength: sheetLength,
+        billableWidth: sheetWidth,
+        billableLength: sheetLength,
+      }
+    : billSheetLayout({
+        pieceW,
+        pieceH,
+        pieceCount: chosen.piecesPerSheet,
+        sheetWidth,
+        sheetLength,
+        usableDropMin,
+        billableLengthIncrement,
+        minimumBillableSqft,
+      });
+  const partialSheet = billSheetLayout({
     pieceW,
     pieceH,
-    partialPieces: partialSheetPieceCount,
+    pieceCount: partialSheetPieceCount,
     sheetWidth,
+    sheetLength,
     usableDropMin,
     billableLengthIncrement,
     minimumBillableSqft,
   });
   const partialSheetBillableSqft = partialSheet.billableSqft;
-  const billedSheetSqft = Math.ceil(fullSheets * sheetSqft + partialSheetBillableSqft);
+  const billedSheetSqft = Math.ceil(fullSheets * fullLayoutBilling.billableSqft + partialSheetBillableSqft);
+  const lastSheetBilling = partialSheetPieceCount > 0 ? partialSheet : fullLayoutBilling;
+  const consumedSqft = (quantity * w * h) / 144;
 
   return {
     sheetUsageMethod: "layout_yield",
@@ -239,7 +322,19 @@ export function calculateSheetYield(
     partialSheetPolicy: partialSheet.policy,
     totalSheetCount,
     sheetSqft,
+    consumedSqft,
     billedSheetSqft,
+    fullLayoutBillableSqft: fullLayoutBilling.billableSqft,
+    lastSheetPieceCount: lastSheetBilling.pieceCount,
+    lastSheetOccupiedWidth: lastSheetBilling.occupiedWidth,
+    lastSheetConsumedLength: lastSheetBilling.consumedLength,
+    lastSheetBillableWidth: lastSheetBilling.billableWidth,
+    lastSheetBillableLength: lastSheetBilling.billableLength,
+    leftoverDropWidth: lastSheetBilling.leftoverWidth,
+    leftoverDropLength: lastSheetBilling.leftoverLength,
+    widthDropUsable: lastSheetBilling.widthDropUsable,
+    lengthDropUsable: lastSheetBilling.lengthDropUsable,
+    dropUsable: lastSheetBilling.widthDropUsable || lastSheetBilling.lengthDropUsable,
   };
 }
 
@@ -301,7 +396,9 @@ export function extractFormulaVariables(
  * Keeping the helper map in one place ensures the client tester and the
  * server evaluator always expose the same set of functions.
  */
-export function formulaHelperScope(): Record<string, (...args: unknown[]) => unknown> {
+export function formulaHelperScope(
+  defaultAllowRotation: boolean | string | number | null | undefined = false,
+): Record<string, (...args: unknown[]) => unknown> {
   return {
     sheet_consumption_sqft: (
       w: unknown,
@@ -323,7 +420,7 @@ export function formulaHelperScope(): Record<string, (...args: unknown[]) => unk
         Number(usable_drop_min),
         Number(billable_length_increment),
         Number(minimum_billable_sqft),
-        allow_rotation as string | number | boolean | null | undefined,
+        (allow_rotation ?? defaultAllowRotation) as string | number | boolean | null | undefined,
       ),
   };
 }

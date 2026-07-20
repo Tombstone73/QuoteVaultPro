@@ -40,6 +40,70 @@ async function renderPanel(treeJson: unknown, measurementMode?: "dimensions_requ
 }
 
 describe("PricingValidationPanel fixed-size preview", () => {
+  it("shows consumed, billable, and reusable-drop facts in formula debug", async () => {
+    jest.useFakeTimers();
+    const fetchMock = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({
+        success: true,
+        data: {
+          unitPrice: 120,
+          totalPrice: 120,
+          breakdown: { basePrice: 120, optionsPrice: 0, total: 120 },
+          debug: {
+            baseRateUsed: 5,
+            sheetYield: {
+              finishedSqft: 24,
+              totalFinishedSqft: 24,
+              consumedSqft: 24,
+              billedSheetSqft: 24,
+              totalSheetCount: 1,
+              lastSheetOccupiedWidth: 48,
+              lastSheetConsumedLength: 72,
+              lastSheetBillableWidth: 48,
+              lastSheetBillableLength: 72,
+              leftoverDropWidth: 0,
+              leftoverDropLength: 24,
+              widthDropUsable: false,
+              lengthDropUsable: true,
+              dropUsable: true,
+              available: true,
+            },
+          },
+        },
+      }),
+    }));
+    (globalThis as any).fetch = fetchMock;
+
+    const { container, cleanup } = await renderPanel({
+      schemaVersion: 2,
+      rootNodeIds: [],
+      nodes: {},
+      meta: { requiresDimensions: true, pricingV2: { base: { perSqftCents: 500 } } },
+    });
+
+    await act(async () => {
+      jest.advanceTimersByTime(300);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    const debugButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Formula Debug")
+    ));
+    await act(async () => {
+      debugButton?.click();
+    });
+
+    expect(container.textContent).toContain("Consumed sqft: 24.00");
+    expect(container.textContent).toContain("Billed sheet sqft: 24.00");
+    expect(container.textContent).toContain("Remaining drop: width 0.00 in · length 24.00 in");
+    expect(container.textContent).toContain("Usable drop: Yes");
+    expect(container.textContent).toContain("24.00 billable sqft × $5.00/sqft");
+
+    await cleanup();
+    jest.useRealTimers();
+  });
+
   it("shows width and height inputs for custom-size product metadata", async () => {
     jest.useFakeTimers();
     const fetchMock = jest.fn(async () => ({

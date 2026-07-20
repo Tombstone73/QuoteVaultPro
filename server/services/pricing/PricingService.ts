@@ -348,7 +348,19 @@ export type PricingPreviewEvaluationResult = {
       billedSheets?: number | null;
       sheetCount?: number | null;
       sheetSqft?: number | null;
+      consumedSqft?: number | null;
       billedSheetSqft?: number | null;
+      fullLayoutBillableSqft?: number | null;
+      lastSheetPieceCount?: number | null;
+      lastSheetOccupiedWidth?: number | null;
+      lastSheetConsumedLength?: number | null;
+      lastSheetBillableWidth?: number | null;
+      lastSheetBillableLength?: number | null;
+      leftoverDropWidth?: number | null;
+      leftoverDropLength?: number | null;
+      widthDropUsable?: boolean | null;
+      lengthDropUsable?: boolean | null;
+      dropUsable?: boolean | null;
       mode?: ComputedSheetUsageMode;
       sheetUsageMethod?: string | null;
       allowRotation?: boolean | null;
@@ -1723,7 +1735,19 @@ type SheetYieldMetrics = {
   billedSheets: number | null;
   sheetCount: number | null;
   sheetSqft: number | null;
+  consumedSqft?: number | null;
   billedSheetSqft: number | null;
+  fullLayoutBillableSqft?: number | null;
+  lastSheetPieceCount?: number | null;
+  lastSheetOccupiedWidth?: number | null;
+  lastSheetConsumedLength?: number | null;
+  lastSheetBillableWidth?: number | null;
+  lastSheetBillableLength?: number | null;
+  leftoverDropWidth?: number | null;
+  leftoverDropLength?: number | null;
+  widthDropUsable?: boolean | null;
+  lengthDropUsable?: boolean | null;
+  dropUsable?: boolean | null;
   sheetUsageMethod?: string | null;
   allowRotation?: boolean | null;
   allowRotationSource?: string | null;
@@ -2261,7 +2285,19 @@ function resolveComputedSheetUsage(input: {
       billedSheets: sheetYield.sheetSqft > 0 ? sheetYield.billedSheetSqft / sheetYield.sheetSqft : sheetYield.totalSheetCount,
       sheetCount: sheetYield.totalSheetCount,
       sheetSqft: sheetYield.sheetSqft,
+      consumedSqft: sheetYield.consumedSqft,
       billedSheetSqft: sheetYield.billedSheetSqft,
+      fullLayoutBillableSqft: sheetYield.fullLayoutBillableSqft,
+      lastSheetPieceCount: sheetYield.lastSheetPieceCount,
+      lastSheetOccupiedWidth: sheetYield.lastSheetOccupiedWidth,
+      lastSheetConsumedLength: sheetYield.lastSheetConsumedLength,
+      lastSheetBillableWidth: sheetYield.lastSheetBillableWidth,
+      lastSheetBillableLength: sheetYield.lastSheetBillableLength,
+      leftoverDropWidth: sheetYield.leftoverDropWidth,
+      leftoverDropLength: sheetYield.leftoverDropLength,
+      widthDropUsable: sheetYield.widthDropUsable,
+      lengthDropUsable: sheetYield.lengthDropUsable,
+      dropUsable: sheetYield.dropUsable,
       sheetUsageMethod: sheetYield.sheetUsageMethod,
       allowRotation: sheetYield.allowRotation,
       allowRotationSource: sheetYield.allowRotationSource,
@@ -4336,7 +4372,9 @@ function evaluatePreviewFormulaToCents(input: {
       { label: 'pieces_per_sheet', value: input.sheetYieldMetrics.piecesPerSheet ?? "unavailable" },
       { label: 'total_sheet_count', value: input.sheetYieldMetrics.totalSheetCount ?? input.sheetYieldMetrics.sheetCount ?? "unavailable" },
       { label: 'partial_sheet_policy', value: input.sheetYieldMetrics.partialSheetPolicy ?? "unavailable" },
+      { label: 'consumed_sqft', value: input.sheetYieldMetrics.consumedSqft ?? input.totalSqft },
       { label: 'billed_sheet_sqft', value: input.sheetYieldMetrics.billedSheetSqft ?? "unavailable" },
+      { label: 'drop_usable', value: input.sheetYieldMetrics.dropUsable == null ? "unavailable" : String(input.sheetYieldMetrics.dropUsable) },
     );
   }
 
@@ -4569,7 +4607,19 @@ function buildBaseFormulaDebugContext(input: {
       billedSheets: input.sheetYieldMetrics.billedSheets,
       sheetCount: input.sheetYieldMetrics.sheetCount,
       sheetSqft: input.sheetYieldMetrics.sheetSqft,
+      consumedSqft: input.sheetYieldMetrics.consumedSqft,
       billedSheetSqft: input.sheetYieldMetrics.billedSheetSqft,
+      fullLayoutBillableSqft: input.sheetYieldMetrics.fullLayoutBillableSqft,
+      lastSheetPieceCount: input.sheetYieldMetrics.lastSheetPieceCount,
+      lastSheetOccupiedWidth: input.sheetYieldMetrics.lastSheetOccupiedWidth,
+      lastSheetConsumedLength: input.sheetYieldMetrics.lastSheetConsumedLength,
+      lastSheetBillableWidth: input.sheetYieldMetrics.lastSheetBillableWidth,
+      lastSheetBillableLength: input.sheetYieldMetrics.lastSheetBillableLength,
+      leftoverDropWidth: input.sheetYieldMetrics.leftoverDropWidth,
+      leftoverDropLength: input.sheetYieldMetrics.leftoverDropLength,
+      widthDropUsable: input.sheetYieldMetrics.widthDropUsable,
+      lengthDropUsable: input.sheetYieldMetrics.lengthDropUsable,
+      dropUsable: input.sheetYieldMetrics.dropUsable,
       sheetUsageMethod: input.sheetYieldMetrics.sheetUsageMethod,
       allowRotation: input.sheetYieldMetrics.allowRotation,
       allowRotationSource: input.sheetYieldMetrics.allowRotationSource,

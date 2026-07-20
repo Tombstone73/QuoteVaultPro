@@ -467,7 +467,7 @@ export default function PricingFormulasSettings() {
         basePricePerSqft: base_price,
         p: base_price,
         MACHINE_RATE,
-        ...formulaHelperScope(),
+        ...formulaHelperScope(formulaVars.allow_rotation),
       };
 
       const result = evaluate(expression, scope);
