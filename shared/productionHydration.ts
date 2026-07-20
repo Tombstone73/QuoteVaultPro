@@ -31,7 +31,7 @@ export type SheetProductionLayout = {
 export function describeProductionPrintPasses(input: {
   sheetsToPrint: number;
   printPasses: number;
-  sides: ProductionSides;
+  sides?: unknown;
 }): string {
   if (input.sides === "Double-sided") {
     return `Double-sided job: ${input.sheetsToPrint} sheets \u00d7 2 sides (front + back)`;
@@ -179,10 +179,18 @@ export function resolveProductionArtworkSideReadiness<T extends ProductionArtwor
     const selectedFromIntent = input.sameArtworkFileId
       ? list.find((item) => item.id === input.sameArtworkFileId || item.fileRecordId === input.sameArtworkFileId) ?? null
       : null;
-    const shared = both ?? explicitFront ?? selectedFromIntent;
+    // A single artwork file plus explicit same-art intent is unambiguous. This
+    // also repairs older records whose attachment side was never materialized.
+    // Multiple files remain fail-closed until staff chooses one explicitly.
+    const soleArtwork = list.length === 1 ? list[0] : null;
+    const shared = both ?? explicitFront ?? selectedFromIntent ?? soleArtwork;
     return {
       complete: Boolean(shared),
-      warning: shared ? null : "Choose artwork for both sides before completing prepress.",
+      warning: shared
+        ? null
+        : list.length > 1
+          ? "Choose which artwork file should be used on both sides."
+          : "Choose artwork for both sides before completing prepress.",
       useSameArtworkBothSides: true,
       front: shared,
       back: shared,

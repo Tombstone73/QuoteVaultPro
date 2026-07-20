@@ -26,6 +26,7 @@ import { PrepressFileThumbnail as FileThumbnail } from "@/components/prepress/Pr
 import { AttachmentViewerDialog, type AttachmentData } from "@/components/AttachmentViewerDialog";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrepressArtworkSideBadge } from "@/components/prepress/PrepressArtworkSideBadge";
+import { PrepressArtworkSideSelect } from "@/components/prepress/PrepressArtworkSideSelect";
 import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
 import {
   type ProductionAlertSeverity,
@@ -105,6 +106,8 @@ type VisibleFileRecord = AttachmentData & {
   downloadUrl: string;
   sizeBytesValue: number | null;
   sideLabel: "front" | "back" | "both" | "na";
+  artworkAssignmentFileId: string;
+  artworkAssignable: boolean;
   thumbnailAvailabilityStatus?: "available" | "pending" | "missing" | "failed";
 };
 
@@ -730,6 +733,40 @@ export default function PrepressProductionPageV2() {
     },
   });
 
+  const assignArtworkSideMutation = useMutation({
+    mutationFn: async ({ orderId, lineItemId, fileId, side }: {
+      orderId: string;
+      lineItemId: string;
+      fileId: string;
+      side: "front" | "back" | "both";
+    }) => {
+      const res = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/files/${fileId}/artwork-side`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ side }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Failed to assign artwork side");
+      return data;
+    },
+    onSuccess: async (_data, variables) => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/prepress/line-item", variables.lineItemId, "files"] }),
+        refreshPrepressQueue(),
+      ]);
+      toast({
+        title: "Artwork side assigned",
+        description: variables.side === "both"
+          ? "The file will be used for Front and Back."
+          : `Artwork assigned to ${variables.side}.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Artwork assignment failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const bulkPrintReadyMutation = useMutation({
     mutationFn: async ({ items, releaseToProduction }: { items: PrepressQueueItem[]; releaseToProduction: boolean }) =>
       markPrepressItemsPrintReady(
@@ -904,6 +941,8 @@ export default function PrepressProductionPageV2() {
     downloadUrl: file.downloadUrl ?? `/api/prepress/files/${file.id}/download`,
     sizeBytesValue: file.sizeBytes,
     sideLabel: file.artworkSide ?? "na",
+    artworkAssignmentFileId: file.id,
+    artworkAssignable: category === "original_customer" && file.role === "original",
   });
   const toVisibleBridgedFile = (file: BridgedOriginalFile, category: "bridged_original" | "proof"): VisibleFileRecord => {
     // Respect the server classification even if an older/mixed response places
@@ -924,6 +963,8 @@ export default function PrepressProductionPageV2() {
       uploadedByLabel: file.uploadedBy || (file.systemGenerated ? "System generated" : "—"),
       tagLabel: file.tagLabel || (resolvedCategory === "proof" ? "Proof" : "Order"),
       sideLabel: file.side === "front" || file.side === "back" || file.side === "both" ? file.side : "na",
+      artworkAssignmentFileId: file.id,
+      artworkAssignable: file.prepressCategory === "original_customer" && file.role === "artwork",
       downloadUrl: file.downloadUrl,
       sizeBytesValue: file.sizeBytes,
     };
@@ -1849,7 +1890,7 @@ export default function PrepressProductionPageV2() {
                 </div>
                 {artworkSideReadiness.warning && (
                   <p className="mt-2 text-xs font-medium text-amber-300" role="alert">
-                    {artworkSideReadiness.warning} Complete the assignment on the order line before releasing this job.
+                    {artworkSideReadiness.warning} Assign a file below as Front, Back, or Both before releasing this job.
                   </p>
                 )}
               </div>
@@ -1926,7 +1967,19 @@ export default function PrepressProductionPageV2() {
                             <span className="bg-slate-700 px-2 py-0.5 rounded">{file.tagLabel}</span>
                           </td>
                           <td className="px-4 py-3">
-                            <PrepressArtworkSideBadge side={file.sideLabel} />
+                            {selectedItem?.printSides === "Double-sided" && file.artworkAssignable ? (
+                              <PrepressArtworkSideSelect
+                                filename={file.displayName}
+                                side={file.sideLabel}
+                                disabled={assignArtworkSideMutation.isPending}
+                                onAssign={(side) => assignArtworkSideMutation.mutate({
+                                  orderId: selectedItem.orderId,
+                                  lineItemId: selectedItem.lineItemId,
+                                  fileId: file.artworkAssignmentFileId,
+                                  side,
+                                })}
+                              />
+                            ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
                           </td>
                           <td className="px-4 py-3 text-right">
                             <button 
@@ -1970,7 +2023,19 @@ export default function PrepressProductionPageV2() {
                                 </div>
                               </td>
                               <td className="px-4 py-3">
-                                <PrepressArtworkSideBadge side={file.sideLabel} />
+                                {selectedItem?.printSides === "Double-sided" && file.artworkAssignable ? (
+                                  <PrepressArtworkSideSelect
+                                    filename={file.displayName}
+                                    side={file.sideLabel}
+                                    disabled={assignArtworkSideMutation.isPending}
+                                    onAssign={(side) => assignArtworkSideMutation.mutate({
+                                      orderId: selectedItem.orderId,
+                                      lineItemId: selectedItem.lineItemId,
+                                      fileId: file.artworkAssignmentFileId,
+                                      side,
+                                    })}
+                                  />
+                                ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
                               </td>
                               <td className="px-4 py-3 text-right">
                                 <button
