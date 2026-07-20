@@ -79,6 +79,7 @@ export type InboundOrderListFilters = {
   converted?: boolean;
   linkedQuoteStatus?: string;
   search?: string;
+  sort?: "received_desc" | "received_asc" | "customer_asc" | "customer_desc" | "subject_asc" | "subject_desc" | "due_date_asc" | "due_date_desc";
   limit: number;
   offset: number;
 };
@@ -441,7 +442,7 @@ export class InboundOrdersRepository {
     }
 
     if (filters.search) {
-      const pattern = `%${filters.search}%`;
+      const pattern = `%${filters.search.trim()}%`;
       predicates.push(sql`(
         ${inboundOrderRecords.id} ilike ${pattern}
         or ${inboundOrderRecords.externalReference} ilike ${pattern}
@@ -451,14 +452,106 @@ export class InboundOrdersRepository {
         or ${inboundOrderRecords.normalizedPayloadJson}::text ilike ${pattern}
         or ${inboundOrderRecords.extractedCustomerJson}::text ilike ${pattern}
         or ${inboundOrderRecords.extractedOrderJson}::text ilike ${pattern}
+        or exists (
+          select 1 from ${customers}
+          where ${customers.organizationId} = ${organizationId}
+            and ${customers.id} = ${inboundOrderRecords.matchedCustomerId}
+            and (${customers.companyName} ilike ${pattern} or ${customers.email} ilike ${pattern})
+        )
+        or exists (
+          select 1 from ${customerContacts}
+          where ${customerContacts.organizationId} = ${organizationId}
+            and ${customerContacts.id} = ${inboundOrderRecords.matchedContactId}
+            and (
+              ${customerContacts.firstName} ilike ${pattern}
+              or ${customerContacts.lastName} ilike ${pattern}
+              or concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName}) ilike ${pattern}
+              or ${customerContacts.email} ilike ${pattern}
+            )
+        )
+        or exists (
+          select 1 from ${inboundOrderLineItems}
+          left join ${products}
+            on ${products.organizationId} = ${organizationId}
+            and ${products.id} = ${inboundOrderLineItems.productId}
+          where ${inboundOrderLineItems.organizationId} = ${organizationId}
+            and ${inboundOrderLineItems.inboundRecordId} = ${inboundOrderRecords.id}
+            and (
+              ${inboundOrderLineItems.productNameRaw} ilike ${pattern}
+              or ${inboundOrderLineItems.description} ilike ${pattern}
+              or ${inboundOrderLineItems.rawLineJson}::text ilike ${pattern}
+              or ${inboundOrderLineItems.normalizedLineJson}::text ilike ${pattern}
+              or ${products.name} ilike ${pattern}
+              or ${products.description} ilike ${pattern}
+              or ${products.aiParsingDescription} ilike ${pattern}
+            )
+        )
+        or exists (
+          select 1 from ${inboundOrderReviewSnapshots}
+          where ${inboundOrderReviewSnapshots.organizationId} = ${organizationId}
+            and ${inboundOrderReviewSnapshots.inboundRecordId} = ${inboundOrderRecords.id}
+            and ${inboundOrderReviewSnapshots.payloadJson}::text ilike ${pattern}
+        )
+        or exists (
+          select 1 from ${inboundOrderParseAttempts}
+          where ${inboundOrderParseAttempts.organizationId} = ${organizationId}
+            and ${inboundOrderParseAttempts.inboundOrderRecordId} = ${inboundOrderRecords.id}
+            and (
+              ${inboundOrderParseAttempts.parsedDraft}::text ilike ${pattern}
+              or ${inboundOrderParseAttempts.rawResponse}::text ilike ${pattern}
+              or ${inboundOrderParseAttempts.repairedResponse}::text ilike ${pattern}
+            )
+        )
       )`);
     }
+
+    const customerSort = sql<string>`lower(coalesce(
+      (select ${customers.companyName} from ${customers}
+        where ${customers.organizationId} = ${organizationId}
+          and ${customers.id} = ${inboundOrderRecords.matchedCustomerId}
+        limit 1),
+      ${inboundOrderRecords.extractedCustomerJson}->>'companyName',
+      ${inboundOrderRecords.extractedCustomerJson}->>'name',
+      ${inboundOrderRecords.rawPayloadJson}#>>'{sender,name}',
+      ''
+    ))`;
+    const subjectSort = sql<string>`lower(coalesce(
+      ${inboundOrderRecords.rawPayloadJson}->>'subject',
+      ${inboundOrderRecords.normalizedPayloadJson}->>'subject',
+      ${inboundOrderRecords.sourceLabel},
+      ''
+    ))`;
+    const dueDateSort = sql<string>`coalesce(
+      (select ${inboundOrderReviewSnapshots.payloadJson}#>>'{reviewedOrderJson,dueDate}'
+        from ${inboundOrderReviewSnapshots}
+        where ${inboundOrderReviewSnapshots.organizationId} = ${organizationId}
+          and ${inboundOrderReviewSnapshots.inboundRecordId} = ${inboundOrderRecords.id}
+        order by ${inboundOrderReviewSnapshots.createdAt} desc
+        limit 1),
+      ${inboundOrderRecords.extractedOrderJson}->>'dueDate',
+      ${inboundOrderRecords.normalizedPayloadJson}->>'dueDate'
+    )`;
+    const orderBy = filters.sort === "received_asc"
+      ? [asc(inboundOrderRecords.receivedAt), asc(inboundOrderRecords.createdAt)]
+      : filters.sort === "customer_asc"
+        ? [asc(customerSort), desc(inboundOrderRecords.receivedAt)]
+        : filters.sort === "customer_desc"
+          ? [desc(customerSort), desc(inboundOrderRecords.receivedAt)]
+          : filters.sort === "subject_asc"
+            ? [asc(subjectSort), desc(inboundOrderRecords.receivedAt)]
+            : filters.sort === "subject_desc"
+              ? [desc(subjectSort), desc(inboundOrderRecords.receivedAt)]
+              : filters.sort === "due_date_asc"
+                ? [sql`${dueDateSort} asc nulls last`, desc(inboundOrderRecords.receivedAt)]
+                : filters.sort === "due_date_desc"
+                  ? [sql`${dueDateSort} desc nulls last`, desc(inboundOrderRecords.receivedAt)]
+                  : [desc(inboundOrderRecords.receivedAt), desc(inboundOrderRecords.createdAt)];
 
     return this.dbInstance
       .select()
       .from(inboundOrderRecords)
       .where(and(...predicates))
-      .orderBy(desc(inboundOrderRecords.receivedAt), desc(inboundOrderRecords.createdAt))
+      .orderBy(...orderBy)
       .limit(filters.limit)
       .offset(filters.offset);
   }
