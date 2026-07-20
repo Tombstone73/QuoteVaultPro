@@ -47,9 +47,9 @@ import { transitionLineItemWorkflowState } from "../services/lineItemWorkflowSer
 import {
   findActiveJobForLineItem,
   isPrepressOwnershipJob,
-  resolveActiveProductionOwners,
   transitionToStation,
 } from "../services/productionOwnership";
+import { resolvePrepressQueueEligibility } from "../services/prepressQueueEligibility";
 import { routeLineItemToProduction } from "../services/productionRoutingService";
 import { resolvePostPrepressProductionRoute } from "../services/productionRoutingResolver";
 import { assertParentOrderInProduction } from "../services/orderProductionGate";
@@ -910,16 +910,18 @@ export function registerPrepressQueueRoutes(
       const sortOrder = String(req.query.sortOrder || "asc").toLowerCase() === "desc" ? "desc" : "asc";
       const rushOnly = String(req.query.rush || "").toLowerCase() === "true";
 
-      // Build base WHERE conditions.
-      // Operational truth is workflow_state + active ownership, not line_item.status or routing snapshots.
+      // Resolve canonical default queue membership shared with the navigation badge.
       // The status filter param is kept for UI compatibility and maps to derived prepress stage.
+      const eligibility = await resolvePrepressQueueEligibility(db, {
+        organizationId,
+        debugLabel: "GET /api/prepress/queue",
+      });
+
       const conditions: any[] = [
-        eq(orders.organizationId, organizationId),           // Always filter by org
-        inArray(orderLineItems.workflowState, ["ready_for_prepress", "in_prepress"] as any),
-        notInArray(orders.status, ['completed', 'canceled']), // Exclude orders by legacy status field
-        // Also filter on the canonical TitanOS state column (deprecated `status` field alone misses
-        // orders that were closed via the newer state system).
-        notInArray(orders.state, ['closed', 'canceled', 'production_complete']),
+        eq(orders.organizationId, organizationId),
+        eligibility.lineItemIds.length > 0
+          ? inArray(orderLineItems.id, eligibility.lineItemIds)
+          : sql`false`,
       ];
 
       // Get line items with order/customer/material data (session is resolved separately)
@@ -985,15 +987,7 @@ export function registerPrepressQueueRoutes(
         });
       }));
 
-      const lineItemIds = items.map((i) => i.lineItemId);
-      const activeOwnerByLineItem = lineItemIds.length > 0
-        ? await resolveActiveProductionOwners(db, {
-            organizationId,
-            lineItemIds,
-            debugLabel: "GET /api/prepress/queue",
-          })
-        : new Map<string, any>();
-
+      const activeOwnerByLineItem = eligibility.activeOwnerByLineItem;
       const queueItems = items.filter((item) => isPrepressOwnershipJob(activeOwnerByLineItem.get(item.lineItemId)));
 
       // Get file counts for each line item
