@@ -1552,6 +1552,17 @@ describe("InboundOrdersPage", () => {
     expect(container.querySelector("[data-testid='clean-inbound-queue']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-source-documents']")).toBeTruthy();
     expect(container.querySelector("[data-testid='clean-order-workstation']")).toBeTruthy();
+    const cleanFilterTrigger = container.querySelector("[aria-label='Open Clean View queue filters']") as HTMLButtonElement;
+    act(() => {
+      cleanFilterTrigger.click();
+    });
+    await waitForCondition(
+      () => Boolean(document.body.querySelector("[data-testid='clean-queue-filters-popover']")),
+      "Clean View filter popover portal",
+    );
+    const cleanFilterPopover = document.body.querySelector("[data-testid='clean-queue-filters-popover']") as HTMLElement;
+    expect(container.querySelector("[data-testid='clean-inbound-queue']")?.contains(cleanFilterPopover)).toBe(false);
+    expect(cleanFilterPopover.className).toContain("z-50");
     expect(container.querySelector("[data-testid='clean-inbound-queue']")?.className).toContain("h-full");
     expect(container.querySelector("[data-testid='clean-source-documents']")?.className).toContain("h-full");
     const cleanWorkstation = container.querySelector("[data-testid='clean-order-workstation']") as HTMLElement;
@@ -4630,7 +4641,18 @@ describe("InboundOrdersPage", () => {
     expect(workspace.className).toContain("min-[1024px]:flex-row");
     expect(queuePanel.className).toContain("min-[1024px]:flex");
     expect(queuePanel.style.width).toBe("300px");
-    expect(container.querySelector("[aria-label='Open queue filters']")).toBeTruthy();
+    const filterTrigger = container.querySelector("[aria-label='Open queue filters']") as HTMLButtonElement;
+    expect(filterTrigger).toBeTruthy();
+    act(() => {
+      filterTrigger.click();
+    });
+    await waitForCondition(
+      () => Boolean(document.body.querySelector("[data-testid='inbound-queue-filters-popover']")),
+      "queue filter popover portal",
+    );
+    const filterPopover = document.body.querySelector("[data-testid='inbound-queue-filters-popover']") as HTMLElement;
+    expect(queuePanel.contains(filterPopover)).toBe(false);
+    expect(filterPopover.className).toContain("z-50");
     expect(container.textContent).toContain("Source Documents");
     expect(container.textContent).toContain("Order Workstation");
   });
