@@ -7512,6 +7512,31 @@ export const lineItemProofVersions = pgTable("line_item_proof_versions", {
   uniqueIndex("line_item_proof_versions_line_item_version_uidx").on(table.lineItemId, table.versionNumber),
 ]);
 
+/**
+ * Durable membership for proof packages. The primary line_item_id on
+ * line_item_proof_versions is retained for backwards compatibility and for
+ * naming/version sequencing; this table is authoritative for every line item
+ * covered by the customer approval artifact.
+ */
+export const proofVersionLineItems = pgTable("proof_version_line_items", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
+  proofVersionId: varchar("proof_version_id").notNull().references(() => lineItemProofVersions.id, { onDelete: 'cascade' }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  sortOrder: integer("sort_order").notNull().default(0),
+  lineItemLabelSnapshot: text("line_item_label_snapshot"),
+  displaySizeSnapshot: text("display_size_snapshot"),
+  quantitySnapshot: decimal("quantity_snapshot", { precision: 12, scale: 3 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("proof_version_line_items_org_idx").on(table.organizationId),
+  index("proof_version_line_items_order_idx").on(table.orderId),
+  index("proof_version_line_items_line_item_idx").on(table.lineItemId),
+  index("proof_version_line_items_version_idx").on(table.proofVersionId),
+  uniqueIndex("proof_version_line_items_version_line_uidx").on(table.proofVersionId, table.lineItemId),
+]);
+
 export const lineItemProofApprovals = pgTable("line_item_proof_approvals", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
@@ -7600,6 +7625,11 @@ export const insertLineItemProofVersionSchema = createInsertSchema(lineItemProof
   updatedAt: true,
 });
 
+export const insertProofVersionLineItemSchema = createInsertSchema(proofVersionLineItems).omit({
+  id: true,
+  createdAt: true,
+});
+
 export const updateLineItemProofVersionSchema = insertLineItemProofVersionSchema.partial().extend({
   id: z.string(),
 });
@@ -7647,6 +7677,9 @@ export type UpdateLineItemFile = z.infer<typeof updateLineItemFileSchema>;
 export type LineItemProofVersion = typeof lineItemProofVersions.$inferSelect;
 export type InsertLineItemProofVersion = z.infer<typeof insertLineItemProofVersionSchema>;
 export type UpdateLineItemProofVersion = z.infer<typeof updateLineItemProofVersionSchema>;
+
+export type ProofVersionLineItem = typeof proofVersionLineItems.$inferSelect;
+export type InsertProofVersionLineItem = z.infer<typeof insertProofVersionLineItemSchema>;
 
 export type LineItemProofApproval = typeof lineItemProofApprovals.$inferSelect;
 export type InsertLineItemProofApproval = z.infer<typeof insertLineItemProofApprovalSchema>;

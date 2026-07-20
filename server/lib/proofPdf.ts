@@ -8,7 +8,7 @@ type BasicProofPreview = {
 
 export type BasicProofRenderStatus = "ready" | "metadata_only";
 
-type BasicProofPdfArgs = {
+export type BasicProofPdfArgs = {
   orderNumber: string | null;
   lineItemLabel: string;
   displaySizeLabel: string | null;
@@ -20,6 +20,34 @@ type BasicProofPdfArgs = {
   preview: BasicProofPreview | null;
   previewError?: string | null;
 };
+
+export async function generateCombinedProofPdfBytes(
+  items: BasicProofPdfArgs[],
+): Promise<{ bytes: Uint8Array; renderStatus: BasicProofRenderStatus }> {
+  if (items.length === 0) {
+    throw new Error("A combined proof requires at least one line item");
+  }
+
+  const combined = await PDFDocument.create();
+  let allPreviewsReady = true;
+  for (const item of items) {
+    const rendered = await generateBasicProofPdfBytes(item);
+    allPreviewsReady = allPreviewsReady && rendered.renderStatus === "ready";
+    const source = await PDFDocument.load(rendered.bytes);
+    const pages = await combined.copyPages(source, source.getPageIndices());
+    for (const page of pages) combined.addPage(page);
+  }
+
+  const orderNumber = items[0]?.orderNumber;
+  combined.setTitle(`Combined Proof${orderNumber ? ` - Order ${orderNumber}` : ""}`);
+  combined.setSubject(`Combined proof package covering ${items.length} line items`);
+  combined.setCreator("QuoteVaultPro");
+  combined.setProducer("QuoteVaultPro");
+  return {
+    bytes: await combined.save({ useObjectStreams: false }),
+    renderStatus: allPreviewsReady ? "ready" : "metadata_only",
+  };
+}
 
 function drawWrappedText(args: {
   page: PDFPage;

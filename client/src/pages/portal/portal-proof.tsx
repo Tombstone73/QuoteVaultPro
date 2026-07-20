@@ -663,7 +663,12 @@ export default function PortalProofPage() {
         {/* Right: sidebar */}
         <div className="border-t md:w-[360px] md:shrink-0 md:border-l md:border-t-0 md:overflow-y-auto">
           <div className="space-y-4 p-4 md:p-5">
-            {data.lineItemDisplay && <ProofSpecsSection display={data.lineItemDisplay} />}
+            {(data.lineItemDisplays?.length > 1 ? data.lineItemDisplays : data.lineItemDisplay ? [data.lineItemDisplay] : []).map((display, index) => (
+              <div key={"lineItemId" in display ? String(display.lineItemId) : index}>
+                {data.lineItemDisplays?.length > 1 ? <p className="mb-2 text-sm font-semibold">Line item {index + 1}</p> : null}
+                <ProofSpecsSection display={display} />
+              </div>
+            ))}
             {data.proofText && (data.proofText.customerNote || data.proofText.disclaimer) && (
               <ProofTextSection proofText={data.proofText} />
             )}
@@ -701,7 +706,12 @@ export default function PortalProofPage() {
       {/* Right: sidebar */}
       <div className="border-t md:w-[360px] md:shrink-0 md:border-l md:border-t-0 md:overflow-y-auto">
         <div className="space-y-4 p-4 md:p-5">
-          {data.lineItemDisplay && <ProofSpecsSection display={data.lineItemDisplay} />}
+          {(data.lineItemDisplays?.length > 1 ? data.lineItemDisplays : data.lineItemDisplay ? [data.lineItemDisplay] : []).map((display, index) => (
+            <div key={"lineItemId" in display ? String(display.lineItemId) : index}>
+              {data.lineItemDisplays?.length > 1 ? <p className="mb-2 text-sm font-semibold">Line item {index + 1}</p> : null}
+              <ProofSpecsSection display={display} />
+            </div>
+          ))}
           {data.proofText && (data.proofText.customerNote || data.proofText.disclaimer) && (
             <ProofTextSection proofText={data.proofText} />
           )}

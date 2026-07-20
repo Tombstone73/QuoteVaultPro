@@ -3,7 +3,7 @@ import express, { NextFunction, Response } from "express";
 import * as fs from "node:fs/promises";
 import path from "node:path";
 import request from "supertest";
-import { eq, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 
@@ -36,7 +36,7 @@ jest.mock("../services/productionRoutingService", () => {
 import { db } from "../db";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { tenantContext, getRequestOrganizationId } from "../tenantContext";
-import { auditLogs, lineItemFiles, lineItemProofManualApprovalOverrides, lineItemProofVersions, orderAttachments, orderLineItems, productionJobs } from "../../shared/schema";
+import { auditLogs, lineItemFiles, lineItemProofManualApprovalOverrides, lineItemProofVersions, orderAttachments, orderLineItems, productionJobs, proofVersionLineItems } from "../../shared/schema";
 import { proofingQueueResponseSchema, proofingReadModelSchema, type ProofVersionHistoryEntry } from "../../shared/proofing";
 import { createProofAccessToken, validateProofToken } from "../services/proofAccessTokenService";
 import {
@@ -124,6 +124,22 @@ async function ensureProofingSchemaReady() {
   await db.execute(sql`create index if not exists line_item_proof_versions_proof_file_idx on line_item_proof_versions (proof_file_id)`);
   await db.execute(sql`create unique index if not exists line_item_proof_versions_line_item_version_uidx on line_item_proof_versions (line_item_id, version_number)`);
   await db.execute(sql`create unique index if not exists line_item_proof_versions_active_review_uidx on line_item_proof_versions (line_item_id) where status = 'awaiting_response'`);
+
+  await db.execute(sql`
+    create table if not exists proof_version_line_items (
+      id varchar primary key default gen_random_uuid()::text,
+      organization_id varchar not null references organizations(id) on delete cascade,
+      order_id varchar not null references orders(id) on delete cascade,
+      proof_version_id varchar not null references line_item_proof_versions(id) on delete cascade,
+      line_item_id varchar not null references order_line_items(id) on delete cascade,
+      sort_order integer not null default 0,
+      line_item_label_snapshot text,
+      display_size_snapshot text,
+      quantity_snapshot numeric(12, 3),
+      created_at timestamp with time zone not null default now()
+    )
+  `);
+  await db.execute(sql`create unique index if not exists proof_version_line_items_version_line_uidx on proof_version_line_items (proof_version_id, line_item_id)`);
 
   await db.execute(sql`
     create table if not exists line_item_proof_approvals (
@@ -1063,6 +1079,7 @@ describe("proofing route integration", () => {
     await db.execute(sql`delete from proof_access_tokens where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_manual_approval_overrides where organization_id = ${orgId}`);
     await db.execute(sql`delete from line_item_proof_approvals where organization_id = ${orgId}`);
+    await db.delete(proofVersionLineItems).where(eq(proofVersionLineItems.organizationId, orgId));
     await db.execute(sql`delete from line_item_proof_versions where organization_id = ${orgId}`);
     await db.execute(sql`delete from order_attachments where order_id = ${orderId}`);
     await db.execute(sql`delete from line_item_files where organization_id = ${orgId}`);
@@ -2710,5 +2727,53 @@ describe("proofing route integration", () => {
       .expect(409);
 
     expect(String(actionRes.body?.error || "")).toMatch(/manual approval override/i);
+  });
+
+  test("combined proof approval updates every included line item", async () => {
+    const first = await createLineItemFixture("combined_first", { requiresProofApproval: true });
+    const second = await createLineItemFixture("combined_second", { requiresProofApproval: true });
+
+    const proofVersion = await db.transaction(async (tx) => {
+      const created = await createLineItemProofVersion(tx, {
+        organizationId: orgId,
+        lineItemId: first.lineItemId,
+        proofFileId: first.proofFileA,
+        createdByUserId: userId,
+      });
+      await tx.insert(proofVersionLineItems).values({
+        organizationId: orgId,
+        orderId,
+        proofVersionId: created.id,
+        lineItemId: second.lineItemId,
+        sortOrder: 1,
+        lineItemLabelSnapshot: "Line combined_second",
+      });
+      await markProofVersionSent(tx, {
+        organizationId: orgId,
+        proofVersionId: created.id,
+        actorUserId: userId,
+        sentToEmail: "customer@example.com",
+      });
+      return created;
+    });
+
+    const token = await createPortalToken(first.lineItemId, proofVersion.id);
+    await request(app)
+      .post(`/api/portal/proof/${token}/action`)
+      .send({ action: "approve", comment: "Combined package approved" })
+      .expect(200);
+
+    const rows = await db
+      .select({ id: orderLineItems.id, approvedProofVersionId: orderLineItems.approvedProofVersionId })
+      .from(orderLineItems)
+      .where(inArray(orderLineItems.id, [first.lineItemId, second.lineItemId]));
+    expect(rows).toHaveLength(2);
+    expect(rows.every((row) => row.approvedProofVersionId === proofVersion.id)).toBe(true);
+
+    const secondaryTruth = await db.transaction((tx) => resolveLineItemProofingTruth(tx, {
+      organizationId: orgId,
+      lineItemId: second.lineItemId,
+    }));
+    expect(secondaryTruth.approvedProofVersion?.id).toBe(proofVersion.id);
   });
 });

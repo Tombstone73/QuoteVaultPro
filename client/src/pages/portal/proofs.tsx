@@ -40,7 +40,7 @@ function ProofRow({ proof }: { proof: PortalProofDto }) {
           ) : null}
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          {proof.lineItemSummary.name} / Created {formatDate(proof.createdAt)}
+          {proof.packageLineItemCount > 1 ? `${proof.packageLineItemCount} line items` : proof.lineItemSummary.name} / Created {formatDate(proof.createdAt)}
         </p>
       </div>
       <Button asChild variant="outline" size="sm">

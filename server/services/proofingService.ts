@@ -24,6 +24,7 @@ import {
   lineItemProofApprovals,
   lineItemProofManualApprovalOverrides,
   lineItemProofVersions,
+  proofVersionLineItems,
   lineItemFiles,
   orderAttachments,
   orderAuditLog,
@@ -33,7 +34,7 @@ import {
   proofAccessTokens,
   quoteAttachmentPages,
 } from "@shared/schema";
-import { generateBasicProofPdfBytes } from "../lib/proofPdf";
+import { generateBasicProofPdfBytes, generateCombinedProofPdfBytes } from "../lib/proofPdf";
 import { assetRepository } from "./assets/AssetRepository";
 import { assetPreviewGenerator } from "./assets/AssetPreviewGenerator";
 import { processPdfAttachmentDerivedData } from "./pdfProcessing";
@@ -1140,6 +1141,188 @@ async function createGeneratedProofAttachment(tx: any, args: {
     attachment: stored.linkedRecord,
     snapshot: args.snapshot,
   });
+}
+
+async function createGeneratedCombinedProofAttachment(tx: any, args: {
+  organizationId: string;
+  actorUserId: string;
+  items: Array<{ snapshot: ProofInputSnapshot; source: ArtworkProofSource }>;
+}): Promise<ProofArtifactSummary> {
+  const generatedAt = new Date();
+  const renderInputs = [];
+  let allPreviewsReady = true;
+
+  for (const item of args.items) {
+    const resolvedPreview = await resolveGeneratedProofPreview(tx, {
+      organizationId: args.organizationId,
+      lineItemId: item.snapshot.lineItemId,
+      orderId: item.snapshot.orderId,
+      source: item.source,
+    });
+    allPreviewsReady = allPreviewsReady && resolvedPreview.previewStatus === "ready";
+    renderInputs.push({
+      orderNumber: item.snapshot.orderNumber,
+      lineItemLabel: item.snapshot.lineItemLabel,
+      displaySizeLabel: item.snapshot.displaySizeLabel,
+      quantity: item.snapshot.quantity,
+      finishingSummary: item.snapshot.finishingSummary,
+      preflightStatus: item.snapshot.preflightStatus,
+      sourceFileName: item.snapshot.sourceArtwork?.fileName ?? item.source.fileName,
+      generatedAt,
+      preview: resolvedPreview.preview,
+      previewError: resolvedPreview.previewError,
+    });
+  }
+
+  const pdfResult = await generateCombinedProofPdfBytes(renderInputs);
+  const previewReady = allPreviewsReady && pdfResult.renderStatus === "ready";
+  const primary = args.items[0].snapshot;
+  const timestampToken = generatedAt.toISOString().replace(/[:.]/g, "-");
+  const fileName = `${primary.orderNumber || "order"}-combined-proof-${timestampToken}.pdf`;
+  const marker = previewReady ? GENERATED_PROOF_PREVIEW_READY_MARKER : GENERATED_PROOF_METADATA_ONLY_MARKER;
+
+  const stored = await storageApplicationService.finalizeUpload({
+    organizationId: args.organizationId,
+    createdByUserId: args.actorUserId,
+    resource: {
+      organizationId: args.organizationId,
+      resourceType: "order",
+      resourceId: primary.orderId,
+      lineItemId: primary.lineItemId,
+    },
+    source: {
+      kind: "buffer",
+      buffer: Buffer.from(pdfResult.bytes),
+      originalFilename: fileName,
+      mimeType: "application/pdf",
+    },
+    persistLink: async (persistTx, storedResult) => {
+      const [created] = await persistTx
+        .insert(orderAttachments)
+        .values({
+          orderId: primary.orderId,
+          orderLineItemId: primary.lineItemId,
+          fileRecordId: storedResult.fileRecord.id,
+          uploadedByUserId: args.actorUserId,
+          fileName: storedResult.storedObject.originalFilename,
+          fileUrl: storedResult.legacyFileUrl,
+          fileSize: storedResult.storedObject.sizeBytes,
+          mimeType: "application/pdf",
+          description: `${GENERATED_PROOF_DESCRIPTION_MARKER} ${marker} Generated combined proof package for ${args.items.length} line items.`,
+          originalFilename: storedResult.storedObject.originalFilename,
+          storedFilename: storedResult.storedObject.storedFilename,
+          relativePath: storedResult.legacyRelativePath,
+          storageProvider: storedResult.legacyStorageProvider as any,
+          extension: "pdf",
+          sizeBytes: storedResult.storedObject.sizeBytes,
+          checksum: storedResult.storedObject.checksum,
+          role: "proof",
+          side: "na",
+          isPrimary: true,
+          updatedAt: new Date(),
+        })
+        .returning({
+          id: orderAttachments.id,
+          fileName: orderAttachments.fileName,
+          mimeType: orderAttachments.mimeType,
+          description: orderAttachments.description,
+          fileRecordId: orderAttachments.fileRecordId,
+        });
+      return created;
+    },
+  });
+
+  return buildProofArtifactSummary({ attachment: stored.linkedRecord, snapshot: primary });
+}
+
+export async function createGeneratedCombinedProofVersion(tx: any, args: {
+  organizationId: string;
+  lineItemIds: string[];
+  actorUserId: string;
+  internalNotes?: string | null;
+}) {
+  const lineItemIds = Array.from(new Set(args.lineItemIds.map((id) => String(id).trim()).filter(Boolean)));
+  if (lineItemIds.length < 2) {
+    throwProofingBadRequest("Select at least two line items for a combined proof");
+  }
+
+  const members: Array<{ snapshot: ProofInputSnapshot; sources: ArtworkProofSource[] }> = [];
+  const missingArtworkLineItemIds: string[] = [];
+  for (const lineItemId of lineItemIds) {
+    const lineItem = await loadProofLineItem(tx, { organizationId: args.organizationId, lineItemId });
+    assertProofOrderNotCancelled(lineItem);
+    if (!lineItem.requiresProofApproval) {
+      throw Object.assign(new Error("Every selected line item must require proof approval"), {
+        statusCode: 409,
+        code: "combined_proof_line_not_required",
+        lineItemIds: [lineItemId],
+      });
+    }
+    const snapshot = await buildProofInputSnapshot(tx, { organizationId: args.organizationId, lineItemId });
+    const sourceRows = await resolveEligibleProofArtworkSourceRows(tx, { organizationId: args.organizationId, lineItemId });
+    const sources = sourceRows
+      .filter((row) => row.eligible && row.artworkSource)
+      .map((row) => row.artworkSource as ArtworkProofSource);
+    if (sources.length === 0) {
+      missingArtworkLineItemIds.push(lineItemId);
+      continue;
+    }
+    members.push({ snapshot, sources });
+  }
+
+  if (missingArtworkLineItemIds.length > 0) {
+    throw Object.assign(new Error(`Artwork is required for ${missingArtworkLineItemIds.length} selected line item(s)`), {
+      statusCode: 409,
+      code: "combined_proof_missing_artwork",
+      lineItemIds: missingArtworkLineItemIds,
+    });
+  }
+  const orderIds = new Set(members.map((item) => item.snapshot.orderId));
+  if (orderIds.size !== 1) {
+    throwProofingConflict("Combined proof line items must belong to the same order");
+  }
+
+  const artifact = await createGeneratedCombinedProofAttachment(tx, {
+    organizationId: args.organizationId,
+    actorUserId: args.actorUserId,
+    items: members.flatMap((member) => member.sources.map((source) => ({ snapshot: member.snapshot, source }))),
+  });
+  const primary = members[0].snapshot;
+  const proofVersion = await createLineItemProofVersion(tx, {
+    organizationId: args.organizationId,
+    lineItemId: primary.lineItemId,
+    proofFileId: artifact.attachmentId,
+    createdByUserId: args.actorUserId,
+    internalNotes: args.internalNotes ?? null,
+    sourceAction: "proof_file_generated",
+  });
+
+  await tx.insert(proofVersionLineItems).values(members.map((item, index) => ({
+    organizationId: args.organizationId,
+    orderId: primary.orderId,
+    proofVersionId: proofVersion.id,
+    lineItemId: item.snapshot.lineItemId,
+    sortOrder: index,
+    lineItemLabelSnapshot: item.snapshot.lineItemLabel,
+    displaySizeSnapshot: item.snapshot.displaySizeLabel,
+    quantitySnapshot: item.snapshot.quantity == null ? null : String(item.snapshot.quantity),
+  }))).onConflictDoNothing();
+
+  return {
+    proofVersion,
+    artifact,
+    lineItems: members.map((item) => ({
+      lineItemId: item.snapshot.lineItemId,
+      lineItemLabel: item.snapshot.lineItemLabel,
+      displaySizeLabel: item.snapshot.displaySizeLabel,
+      quantity: item.snapshot.quantity,
+      artworkFileCount: item.sources.length,
+    })),
+    proofing: await resolveLineItemProofingTruth(tx, {
+      organizationId: args.organizationId,
+      lineItemId: primary.lineItemId,
+    }),
+  };
 }
 
 export async function createAndSendProofVersion(tx: any, args: {
@@ -2276,6 +2459,11 @@ export async function cancelProofVersion(tx: any, args: {
       organizationId: args.organizationId,
       proofVersionId: args.proofVersionId,
     });
+    const packageLineItems = await loadProofPackageLineItems(tx, {
+      organizationId: args.organizationId,
+      proofVersionId: proofVersion.id,
+      fallbackLineItemId: proofVersion.lineItemId,
+    });
 
     if (proofVersion.status === "approved" || proofVersion.status === "rejected" || proofVersion.status === "revision_requested") {
       throwProofingBadRequest("Resolved proof versions cannot be cancelled from this workflow.");
@@ -2291,29 +2479,27 @@ export async function cancelProofVersion(tx: any, args: {
         .where(eq(lineItemProofVersions.id, proofVersion.id))
         .returning();
 
-      const lineItem = await loadProofLineItem(tx, {
-        organizationId: args.organizationId,
-        lineItemId: proofVersion.lineItemId,
-      });
-
-      await appendProofingEvent(tx, {
-        organizationId: args.organizationId,
-        orderId: proofVersion.orderId,
-        lineItemId: proofVersion.lineItemId,
-        eventType: "proof_draft_cancelled",
-        actorUserId: args.actorUserId,
-        payload: {
-          proofVersionId: proofVersion.id,
-          versionNumber: proofVersion.versionNumber,
-          previousProofStatus: proofVersion.status,
-          newProofStatus: updatedDraft.status,
-          reason: trimNullable(args.reason),
-        },
-      });
+      for (const member of packageLineItems) {
+        await appendProofingEvent(tx, {
+          organizationId: args.organizationId,
+          orderId: proofVersion.orderId,
+          lineItemId: member.lineItemId,
+          eventType: "proof_draft_cancelled",
+          actorUserId: args.actorUserId,
+          payload: {
+            proofVersionId: proofVersion.id,
+            versionNumber: proofVersion.versionNumber,
+            previousProofStatus: proofVersion.status,
+            newProofStatus: updatedDraft.status,
+            reason: trimNullable(args.reason),
+            packageLineItemCount: packageLineItems.length,
+          },
+        });
+      }
 
       return {
         proofVersion: updatedDraft,
-        lineItem,
+        lineItem: packageLineItems[0],
         workflowTransition: null,
       };
     }
@@ -2323,10 +2509,7 @@ export async function cancelProofVersion(tx: any, args: {
       throwProofingBadRequest(`Only active sent proof versions can be cancelled. Current status: ${statusLabel}.`);
     }
 
-    const lineItem = await loadProofLineItem(tx, {
-      organizationId: args.organizationId,
-      lineItemId: proofVersion.lineItemId,
-    });
+    const lineItem = packageLineItems[0];
 
     const [updatedVersion] = await tx
       .update(lineItemProofVersions)
@@ -2344,49 +2527,49 @@ export async function cancelProofVersion(tx: any, args: {
         requiresProofApproval: true,
         updatedAt: new Date(),
       })
-      .where(eq(orderLineItems.id, lineItem.lineItemId));
+      .where(inArray(orderLineItems.id, packageLineItems.map((item) => item.lineItemId)));
 
-    let workflowTransition: Awaited<ReturnType<typeof transitionLineItemWorkflowState>> | null = null;
-    const currentWorkflowState = String(lineItem.workflowState || "").trim().toLowerCase();
-    const proofPendingTarget =
-      lineItem.requiresPrepress && (currentWorkflowState === "ready_for_prepress" || currentWorkflowState === "in_prepress")
-        ? (currentWorkflowState as any)
-        : "awaiting_proof_approval";
-
-    if (lineItem.workflowState !== proofPendingTarget) {
-      workflowTransition = await transitionLineItemWorkflowState(tx, {
+    const workflowTransitions: Array<Awaited<ReturnType<typeof transitionLineItemWorkflowState>> | null> = [];
+    for (const member of packageLineItems) {
+      let transition: Awaited<ReturnType<typeof transitionLineItemWorkflowState>> | null = null;
+      const currentWorkflowState = String(member.workflowState || "").trim().toLowerCase();
+      const proofPendingTarget =
+        member.requiresPrepress && (currentWorkflowState === "ready_for_prepress" || currentWorkflowState === "in_prepress")
+          ? (currentWorkflowState as any)
+          : "awaiting_proof_approval";
+      if (member.workflowState !== proofPendingTarget) {
+        transition = await transitionLineItemWorkflowState(tx, {
+          organizationId: args.organizationId,
+          lineItemId: member.lineItemId,
+          toState: proofPendingTarget,
+          actorUserId: args.actorUserId,
+          metadata: { source: "proofing_cancel_version", proofVersionId: proofVersion.id, versionNumber: proofVersion.versionNumber },
+        });
+      }
+      workflowTransitions.push(transition);
+      await appendProofingEvent(tx, {
         organizationId: args.organizationId,
-        lineItemId: lineItem.lineItemId,
-        toState: proofPendingTarget,
+        orderId: proofVersion.orderId,
+        lineItemId: member.lineItemId,
+        eventType: "proof_version_cancelled",
         actorUserId: args.actorUserId,
-        metadata: {
-          source: "proofing_cancel_version",
+        payload: {
           proofVersionId: proofVersion.id,
           versionNumber: proofVersion.versionNumber,
+          previousProofStatus: proofVersion.status,
+          newProofStatus: updatedVersion.status,
+          workflowToState: transition?.toState ?? member.workflowState,
+          reason: trimNullable(args.reason),
+          packageLineItemCount: packageLineItems.length,
         },
       });
     }
 
-    await appendProofingEvent(tx, {
-      organizationId: args.organizationId,
-      orderId: proofVersion.orderId,
-      lineItemId: proofVersion.lineItemId,
-      eventType: "proof_version_cancelled",
-      actorUserId: args.actorUserId,
-      payload: {
-        proofVersionId: proofVersion.id,
-        versionNumber: proofVersion.versionNumber,
-        previousProofStatus: proofVersion.status,
-        newProofStatus: updatedVersion.status,
-        workflowToState: workflowTransition?.toState ?? lineItem.workflowState,
-        reason: trimNullable(args.reason),
-      },
-    });
-
     return {
       proofVersion: updatedVersion,
       lineItem,
-      workflowTransition,
+      workflowTransition: workflowTransitions[0],
+      workflowTransitions,
     };
   } catch (error: any) {
     normalizeProofingWriteError(error);
@@ -2491,7 +2674,7 @@ async function resolveProofingTruthMap(tx: any, args: {
   const rawVersions = await tx
     .select({
       id: lineItemProofVersions.id,
-      lineItemId: lineItemProofVersions.lineItemId,
+      lineItemId: proofVersionLineItems.lineItemId,
       proofFileId: lineItemProofVersions.proofFileId,
       versionNumber: lineItemProofVersions.versionNumber,
       status: lineItemProofVersions.status,
@@ -2502,13 +2685,50 @@ async function resolveProofingTruthMap(tx: any, args: {
       sentToEmail: lineItemProofVersions.sentToEmail,
     })
     .from(lineItemProofVersions)
-    .where(and(eq(lineItemProofVersions.organizationId, args.organizationId), inArray(lineItemProofVersions.lineItemId, lineItemIds)))
+    .innerJoin(proofVersionLineItems, eq(proofVersionLineItems.proofVersionId, lineItemProofVersions.id))
+    .where(and(eq(lineItemProofVersions.organizationId, args.organizationId), inArray(proofVersionLineItems.lineItemId, lineItemIds)))
     .orderBy(desc(lineItemProofVersions.versionNumber), desc(lineItemProofVersions.createdAt));
+
+  const versionIds: string[] = Array.from(new Set(rawVersions.map((version: any) => String(version.id))));
+  const rawPackageLineItems = versionIds.length === 0 ? [] : await tx
+    .select({
+      proofVersionId: proofVersionLineItems.proofVersionId,
+      lineItemId: proofVersionLineItems.lineItemId,
+      sortOrder: proofVersionLineItems.sortOrder,
+      labelSnapshot: proofVersionLineItems.lineItemLabelSnapshot,
+      sizeSnapshot: proofVersionLineItems.displaySizeSnapshot,
+      quantitySnapshot: proofVersionLineItems.quantitySnapshot,
+      description: orderLineItems.description,
+      width: orderLineItems.width,
+      height: orderLineItems.height,
+      quantity: orderLineItems.quantity,
+    })
+    .from(proofVersionLineItems)
+    .innerJoin(orderLineItems, eq(orderLineItems.id, proofVersionLineItems.lineItemId))
+    .where(and(
+      eq(proofVersionLineItems.organizationId, args.organizationId),
+      inArray(proofVersionLineItems.proofVersionId, versionIds),
+    ))
+    .orderBy(proofVersionLineItems.sortOrder);
+
+  const packageLineItemsByVersion = new Map<string, NonNullable<ProofVersionHistoryEntry["packageLineItems"]>>();
+  for (const member of rawPackageLineItems) {
+    const bucket = packageLineItemsByVersion.get(member.proofVersionId) ?? [];
+    bucket.push({
+      lineItemId: member.lineItemId,
+      lineItemLabel: member.labelSnapshot || member.description || "Line item",
+      displaySizeLabel: member.sizeSnapshot || (member.width && member.height ? `${member.width} x ${member.height}` : null),
+      quantity: member.quantitySnapshot == null
+        ? (member.quantity == null ? null : Number(member.quantity))
+        : Number(member.quantitySnapshot),
+    });
+    packageLineItemsByVersion.set(member.proofVersionId, bucket);
+  }
 
   const rawApprovals = await tx
     .select({
       id: lineItemProofApprovals.id,
-      lineItemId: lineItemProofApprovals.lineItemId,
+      lineItemId: proofVersionLineItems.lineItemId,
       proofVersionId: lineItemProofApprovals.proofVersionId,
       decision: lineItemProofApprovals.decision,
       responseNotes: lineItemProofApprovals.responseNotes,
@@ -2519,7 +2739,8 @@ async function resolveProofingTruthMap(tx: any, args: {
       createdAt: lineItemProofApprovals.createdAt,
     })
     .from(lineItemProofApprovals)
-    .where(and(eq(lineItemProofApprovals.organizationId, args.organizationId), inArray(lineItemProofApprovals.lineItemId, lineItemIds)))
+    .innerJoin(proofVersionLineItems, eq(proofVersionLineItems.proofVersionId, lineItemProofApprovals.proofVersionId))
+    .where(and(eq(lineItemProofApprovals.organizationId, args.organizationId), inArray(proofVersionLineItems.lineItemId, lineItemIds)))
     .orderBy(desc(lineItemProofApprovals.respondedAt), desc(lineItemProofApprovals.createdAt));
 
   const rawManualOverrides = await tx
@@ -2559,6 +2780,7 @@ async function resolveProofingTruthMap(tx: any, args: {
       updatedAt: toIsoString(version.updatedAt)!,
       sentToName: version.sentToName ?? null,
       sentToEmail: version.sentToEmail ?? null,
+      packageLineItems: packageLineItemsByVersion.get(version.id) ?? [],
     });
     versionsByLineItem.set(version.lineItemId, bucket);
   }
@@ -2914,6 +3136,17 @@ export async function createLineItemProofVersion(tx: any, args: {
       })
       .returning();
 
+    await tx.insert(proofVersionLineItems).values({
+      organizationId: args.organizationId,
+      orderId: lineItem.orderId,
+      proofVersionId: created.id,
+      lineItemId: lineItem.lineItemId,
+      sortOrder: 0,
+      lineItemLabelSnapshot: null,
+      displaySizeSnapshot: null,
+      quantitySnapshot: null,
+    }).onConflictDoNothing();
+
     await appendProofingEvent(tx, {
       organizationId: args.organizationId,
       orderId: lineItem.orderId,
@@ -2951,6 +3184,26 @@ export async function createLineItemProofVersion(tx: any, args: {
   }
 }
 
+async function loadProofPackageLineItems(tx: any, args: {
+  organizationId: string;
+  proofVersionId: string;
+  fallbackLineItemId: string;
+}) {
+  const memberships = await tx
+    .select({ lineItemId: proofVersionLineItems.lineItemId, sortOrder: proofVersionLineItems.sortOrder })
+    .from(proofVersionLineItems)
+    .where(and(
+      eq(proofVersionLineItems.organizationId, args.organizationId),
+      eq(proofVersionLineItems.proofVersionId, args.proofVersionId),
+    ))
+    .orderBy(proofVersionLineItems.sortOrder);
+  const ids = memberships.length > 0 ? memberships.map((row: any) => row.lineItemId) : [args.fallbackLineItemId];
+  return Promise.all(ids.map((lineItemId: string) => loadProofLineItem(tx, {
+    organizationId: args.organizationId,
+    lineItemId,
+  })));
+}
+
 export async function markProofVersionSent(tx: any, args: {
   organizationId: string;
   proofVersionId: string;
@@ -2965,11 +3218,13 @@ export async function markProofVersionSent(tx: any, args: {
       organizationId: args.organizationId,
       proofVersionId: args.proofVersionId,
     });
-    const lineItem = await loadProofLineItem(tx, {
+    const packageLineItems = await loadProofPackageLineItems(tx, {
       organizationId: args.organizationId,
-      lineItemId: proofVersion.lineItemId,
+      proofVersionId: proofVersion.id,
+      fallbackLineItemId: proofVersion.lineItemId,
     });
-    assertProofOrderNotCancelled(lineItem);
+    packageLineItems.forEach(assertProofOrderNotCancelled);
+    const lineItem = packageLineItems[0];
 
     if (proofVersion.status !== "draft") {
       throwProofingConflict("Only draft proof versions can be sent for review");
@@ -2978,10 +3233,11 @@ export async function markProofVersionSent(tx: any, args: {
     const [blockingVersion] = await tx
       .select({ id: lineItemProofVersions.id })
       .from(lineItemProofVersions)
+      .innerJoin(proofVersionLineItems, eq(proofVersionLineItems.proofVersionId, lineItemProofVersions.id))
       .where(
         and(
           eq(lineItemProofVersions.organizationId, args.organizationId),
-          eq(lineItemProofVersions.lineItemId, proofVersion.lineItemId),
+          inArray(proofVersionLineItems.lineItemId, packageLineItems.map((item) => item.lineItemId)),
           eq(lineItemProofVersions.status, "awaiting_response"),
           ne(lineItemProofVersions.id, proofVersion.id),
         ),
@@ -3014,7 +3270,7 @@ export async function markProofVersionSent(tx: any, args: {
         approvedProofVersionId: null,
         updatedAt: new Date(),
       })
-      .where(eq(orderLineItems.id, proofVersion.lineItemId));
+      .where(inArray(orderLineItems.id, packageLineItems.map((item) => item.lineItemId)));
 
     const [updatedVersion] = await tx
       .update(lineItemProofVersions)
@@ -3031,42 +3287,41 @@ export async function markProofVersionSent(tx: any, args: {
       .where(eq(lineItemProofVersions.id, proofVersion.id))
       .returning();
 
-    const currentWorkflowState = String(lineItem.workflowState || "").trim().toLowerCase();
-    const proofAwaitingTarget =
-      lineItem.requiresPrepress && (currentWorkflowState === "ready_for_prepress" || currentWorkflowState === "in_prepress")
-        ? (currentWorkflowState as any)
-        : "awaiting_proof_approval";
+    const workflowTransitions = [];
+    for (const member of packageLineItems) {
+      const currentWorkflowState = String(member.workflowState || "").trim().toLowerCase();
+      const proofAwaitingTarget =
+        member.requiresPrepress && (currentWorkflowState === "ready_for_prepress" || currentWorkflowState === "in_prepress")
+          ? (currentWorkflowState as any)
+          : "awaiting_proof_approval";
+      const transition = await transitionLineItemWorkflowState(tx, {
+        organizationId: args.organizationId,
+        lineItemId: member.lineItemId,
+        toState: proofAwaitingTarget,
+        actorUserId: args.actorUserId,
+        metadata: { source: "proofing_send_for_review", proofVersionId: proofVersion.id, versionNumber: proofVersion.versionNumber },
+      });
+      workflowTransitions.push(transition);
+      await appendProofingEvent(tx, {
+        organizationId: args.organizationId,
+        orderId: proofVersion.orderId,
+        lineItemId: member.lineItemId,
+        eventType: "proof_sent",
+        actorUserId: args.actorUserId,
+        payload: {
+          proofVersionId: proofVersion.id,
+          versionNumber: proofVersion.versionNumber,
+          previousProofStatus: proofVersion.status,
+          newProofStatus: updatedVersion.status,
+          workflowToState: transition.toState,
+          sentToEmail: args.sentToEmail ?? null,
+          customerMessage: args.customerMessage ?? null,
+          packageLineItemCount: packageLineItems.length,
+        },
+      });
+    }
 
-    const workflowTransition = await transitionLineItemWorkflowState(tx, {
-      organizationId: args.organizationId,
-      lineItemId: proofVersion.lineItemId,
-      toState: proofAwaitingTarget,
-      actorUserId: args.actorUserId,
-      metadata: {
-        source: "proofing_send_for_review",
-        proofVersionId: proofVersion.id,
-        versionNumber: proofVersion.versionNumber,
-      },
-    });
-
-    await appendProofingEvent(tx, {
-      organizationId: args.organizationId,
-      orderId: proofVersion.orderId,
-      lineItemId: proofVersion.lineItemId,
-      eventType: "proof_sent",
-      actorUserId: args.actorUserId,
-      payload: {
-        proofVersionId: proofVersion.id,
-        versionNumber: proofVersion.versionNumber,
-        previousProofStatus: proofVersion.status,
-        newProofStatus: updatedVersion.status,
-        workflowToState: workflowTransition.toState,
-        sentToEmail: args.sentToEmail ?? null,
-        customerMessage: args.customerMessage ?? null,
-      },
-    });
-
-    return { proofVersion: updatedVersion, workflowTransition };
+    return { proofVersion: updatedVersion, workflowTransition: workflowTransitions[0], workflowTransitions };
   } catch (error: any) {
     normalizeProofingWriteError(error);
   }
@@ -3104,11 +3359,13 @@ export async function recordProofResponse(tx: any, args: {
       throwProofingConflict("Only active sent proof versions awaiting response can be decided");
     }
 
-    const lineItem = await loadProofLineItem(tx, {
+    const packageLineItems = await loadProofPackageLineItems(tx, {
       organizationId: args.organizationId,
-      lineItemId: proofVersion.lineItemId,
+      proofVersionId: proofVersion.id,
+      fallbackLineItemId: proofVersion.lineItemId,
     });
-    assertProofOrderNotCancelled(lineItem);
+    packageLineItems.forEach(assertProofOrderNotCancelled);
+    const lineItem = packageLineItems[0];
 
     const [existingResponse] = await tx
       .select({ id: lineItemProofApprovals.id })
@@ -3137,11 +3394,6 @@ export async function recordProofResponse(tx: any, args: {
       .returning();
 
     const nextProofStatus: ProofVersionStatus = args.decision;
-    const nextWorkflowState = deriveProofResponseWorkflowState({
-      decision: args.decision,
-      requiresPrepress: lineItem.requiresPrepress,
-    });
-
     await tx
       .update(lineItemProofVersions)
       .set({
@@ -3156,46 +3408,55 @@ export async function recordProofResponse(tx: any, args: {
         approvedProofVersionId: args.decision === "approved" ? proofVersion.id : null,
         updatedAt: new Date(),
       })
-      .where(eq(orderLineItems.id, lineItem.lineItemId));
+      .where(inArray(orderLineItems.id, packageLineItems.map((item) => item.lineItemId)));
 
-    const workflowTransition = await transitionLineItemWorkflowState(tx, {
-      organizationId: args.organizationId,
-      lineItemId: lineItem.lineItemId,
-      toState: nextWorkflowState,
-      actorUserId: args.actorUserId ?? null,
-      metadata: {
-        source: "proofing_record_response",
-        proofVersionId: proofVersion.id,
-        approvalId: approval.id,
+    const workflowTransitions = [];
+    for (const member of packageLineItems) {
+      const nextWorkflowState = deriveProofResponseWorkflowState({
         decision: args.decision,
-      },
-    });
-
-    await appendProofingEvent(tx, {
-      organizationId: args.organizationId,
-      orderId: lineItem.orderId,
-      lineItemId: lineItem.lineItemId,
-      eventType:
-        args.decision === "approved"
-          ? "proof_approved"
-          : args.decision === "rejected"
-            ? "proof_rejected"
-            : "proof_revision_requested",
-      actorUserId: args.actorUserId ?? null,
-      payload: {
-        proofVersionId: proofVersion.id,
-        approvalId: approval.id,
-        previousProofStatus: proofVersion.status,
-        newProofStatus: nextProofStatus,
-        workflowToState: workflowTransition.toState,
-        customerAction: !args.actorUserId || args.responderSource === "customer",
-        responseNotes: args.responseNotes ?? null,
-      },
-    });
+        requiresPrepress: member.requiresPrepress,
+      });
+      const transition = await transitionLineItemWorkflowState(tx, {
+        organizationId: args.organizationId,
+        lineItemId: member.lineItemId,
+        toState: nextWorkflowState,
+        actorUserId: args.actorUserId ?? null,
+        metadata: {
+          source: "proofing_record_response",
+          proofVersionId: proofVersion.id,
+          approvalId: approval.id,
+          decision: args.decision,
+        },
+      });
+      workflowTransitions.push(transition);
+      await appendProofingEvent(tx, {
+        organizationId: args.organizationId,
+        orderId: member.orderId,
+        lineItemId: member.lineItemId,
+        eventType:
+          args.decision === "approved"
+            ? "proof_approved"
+            : args.decision === "rejected"
+              ? "proof_rejected"
+              : "proof_revision_requested",
+        actorUserId: args.actorUserId ?? null,
+        payload: {
+          proofVersionId: proofVersion.id,
+          approvalId: approval.id,
+          previousProofStatus: proofVersion.status,
+          newProofStatus: nextProofStatus,
+          workflowToState: transition.toState,
+          customerAction: !args.actorUserId || args.responderSource === "customer",
+          responseNotes: args.responseNotes ?? null,
+          packageLineItemCount: packageLineItems.length,
+        },
+      });
+    }
 
     return {
       approval,
-      workflowTransition,
+      workflowTransition: workflowTransitions[0],
+      workflowTransitions,
     };
   } catch (error: any) {
     normalizeProofingWriteError(error);
