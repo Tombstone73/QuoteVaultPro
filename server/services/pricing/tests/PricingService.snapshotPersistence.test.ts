@@ -258,6 +258,71 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     }));
   });
 
+  test("canonical product rotation makes pricing preview, order, and inbound runtime agree", async () => {
+    const staleTree = makeAcmDropBillingTree() as any;
+    staleTree.meta.formulaVariables.allow_rotation = 0;
+    await db.execute(sql`
+      update pbv2_tree_versions
+      set tree_json = ${JSON.stringify(staleTree)}::jsonb
+      where id = ${treeVersionId}
+    `);
+    await db.execute(sql`
+      update products
+      set pricing_profile_config = ${JSON.stringify({
+        allowRotation: true,
+        formulaVariables: {
+          sheet_width: 48,
+          sheet_length: 96,
+          usable_drop_min: 24,
+          billable_length_increment: 12,
+          minimum_billable_sqft: 3,
+        },
+      })}::jsonb
+      where id = ${productId}
+    `);
+
+    const selections = {
+      thickness: { value: "choice_3mm" },
+      sides: { value: "choice_single" },
+    };
+    const preview = evaluatePricingPreviewFromTree({
+      treeJson: staleTree,
+      widthIn: 72,
+      heightIn: 48,
+      quantity: 1,
+      pbv2ExplicitSelections: selections,
+      pricingProfileConfig: {
+        allowRotation: true,
+        formulaVariables: {
+          sheet_width: 48,
+          sheet_length: 96,
+          usable_drop_min: 24,
+          billable_length_increment: 12,
+          minimum_billable_sqft: 3,
+        },
+      },
+      pricingFormulaOverride: COROPLAST_4X8_FORMULA,
+      debug: true,
+    });
+    const runtime = await priceLineItem({
+      organizationId,
+      productId,
+      widthIn: 72,
+      heightIn: 48,
+      quantity: 1,
+      pbv2ExplicitSelections: selections,
+    });
+
+    expect(preview.totalPrice).toBe(120);
+    expect(runtime.lineTotalCents).toBe(12000);
+    expect(runtime.pbv2SnapshotJson.pbv2PricingSnapshot?.formulaVariables.allow_rotation).toBe(true);
+    expect(runtime.pbv2SnapshotJson.pbv2PricingSnapshot?.sheetYield).toEqual(expect.objectContaining({
+      allowRotation: true,
+      allowRotationSource: "product.pricingProfileConfig.allowRotation",
+      orientationUsed: "rotated",
+    }));
+  });
+
   test("quantity-only order pricing matches preview and ignores a stale geometry formula", async () => {
     const staleFormula = "ceil((((w + 0.25) * (h + 0.25)) / 144) * q)";
     await db.execute(sql`
@@ -674,7 +739,7 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
     });
 
     const snapshot = result.pbv2SnapshotJson.pbv2PricingSnapshot;
-    expect(result.lineTotalCents).toBe(17100);
+    expect(result.lineTotalCents).toBe(13500);
     expect(snapshot?.tierResolution).toEqual(expect.objectContaining({
       quantity: 5,
       enabled: true,
@@ -756,7 +821,7 @@ describe("PricingService PBV2 pricing snapshot persistence payload", () => {
       orientationUsed: "normal",
       piecesPerSheet: 4,
       totalSheetCount: 6,
-      billedSheetSqft: 166,
+      billedSheetSqft: 126,
     }));
     expect(snapshot?.formulaScopeUsed?.allow_rotation).toBe(false);
     expect(snapshot?.formulaScopeUsed?.base_price).toBe(0.8);

@@ -24,6 +24,8 @@ import { getPricingFormulaSelectionValues } from "@/lib/pricingFormulaSelection"
 import {
   buildPricingConfigWithAllowRotation,
   getAllowRotationFromPricingConfig,
+  mergeFormulaLibraryConfigWithProductConfig,
+  normalizeProductPricingRotationConfig,
   pricingConfigHasRotationState,
   shouldShowPricingEngineRotationControl,
 } from "@/lib/productPricingRotation";
@@ -798,7 +800,7 @@ function PricingEngineRadioSection({
   const DEFAULT_FLAT_GOODS_CONFIG: FlatGoodsConfig = {
     sheetWidth: 48,
     sheetHeight: 96,
-    allowRotation: true,
+    allowRotation: false,
     materialType: "sheet",
     minPricePerItem: null,
   };
@@ -855,26 +857,23 @@ function PricingEngineRadioSection({
     const safeSheetHeight = parsePositiveFinite(config?.sheetHeight) ?? DEFAULT_FLAT_GOODS_CONFIG.sheetHeight;
     const allowRotation = pricingConfigHasRotationState(config)
       ? getAllowRotationFromPricingConfig(config)
-      : DEFAULT_FLAT_GOODS_CONFIG.allowRotation;
+      : false;
     const configRecord = config && typeof config === "object" && !Array.isArray(config)
       ? (config as Record<string, any>)
       : {};
     const formulaVariables = configRecord.formulaVariables && typeof configRecord.formulaVariables === "object" && !Array.isArray(configRecord.formulaVariables)
       ? configRecord.formulaVariables
       : {};
-    return {
+    return normalizeProductPricingRotationConfig({
       ...DEFAULT_FLAT_GOODS_CONFIG,
       ...(config || {}),
       sheetWidth: safeSheetWidth,
       sheetHeight: safeSheetHeight,
       allowRotation,
-      formulaVariables: {
-        ...formulaVariables,
-        allow_rotation: allowRotation,
-      },
+      formulaVariables,
       materialType: config?.materialType === "roll" ? "roll" : "sheet",
       minPricePerItem: config?.minPricePerItem ?? null,
-    } as FlatGoodsConfig;
+    }, false) as FlatGoodsConfig;
   }, []);
 
   const updateFlatGoodsConfig = useCallback((updates: Partial<FlatGoodsConfig>, shouldDirty = true) => {
@@ -953,8 +952,9 @@ function PricingEngineRadioSection({
     }
     if (values.pricingProfileConfig !== undefined) {
       const currentConfig = form.getValues("pricingProfileConfig");
-      if (JSON.stringify(currentConfig ?? null) !== JSON.stringify(values.pricingProfileConfig ?? null)) {
-        form.setValue("pricingProfileConfig", values.pricingProfileConfig as FlatGoodsConfig, { shouldDirty: false });
+      const mergedConfig = mergeFormulaLibraryConfigWithProductConfig(values.pricingProfileConfig, currentConfig);
+      if (JSON.stringify(currentConfig ?? null) !== JSON.stringify(mergedConfig)) {
+        form.setValue("pricingProfileConfig", mergedConfig as FlatGoodsConfig, { shouldDirty: false });
       }
     }
   }, [formulaId, pricingFormulas, form]);
@@ -990,18 +990,11 @@ function PricingEngineRadioSection({
     if (currentProfile !== "flat_goods") return;
     const current = form.getValues("pricingProfileConfig") as FlatGoodsConfig | null;
     const safe = getSafeFlatGoodsConfig(current);
-    const currentRecord = current && typeof current === "object" && !Array.isArray(current) ? current as Record<string, any> : {};
-    const currentFormulaVariables = currentRecord.formulaVariables && typeof currentRecord.formulaVariables === "object" && !Array.isArray(currentRecord.formulaVariables)
-      ? currentRecord.formulaVariables
-      : {};
-
     const shouldSeed =
       !current ||
       parsePositiveFinite(current.sheetWidth) === null ||
       parsePositiveFinite(current.sheetHeight) === null ||
-      typeof current.allowRotation !== "boolean" ||
-      !Object.prototype.hasOwnProperty.call(currentFormulaVariables, "allow_rotation") ||
-      getAllowRotationFromPricingConfig(current) !== current.allowRotation;
+      typeof current.allowRotation !== "boolean";
 
     if (shouldSeed) {
       form.setValue("pricingProfileConfig", safe, { shouldDirty: false });
@@ -1153,7 +1146,11 @@ function PricingEngineRadioSection({
                         form.setValue("pricingProfileKey", values.pricingProfileKey, { shouldDirty: true });
                       }
                       if (values.pricingProfileConfig !== undefined) {
-                        form.setValue("pricingProfileConfig", values.pricingProfileConfig as FlatGoodsConfig, { shouldDirty: true });
+                        form.setValue(
+                          "pricingProfileConfig",
+                          normalizeProductPricingRotationConfig(values.pricingProfileConfig, false) as FlatGoodsConfig,
+                          { shouldDirty: true },
+                        );
                       }
                     }}
                     value={field.value || "__none__"}

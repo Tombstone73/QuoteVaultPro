@@ -1,5 +1,9 @@
 import type { Product, InsertProduct } from "@shared/schema";
 import { sanitizeLegacyPriceBreaksForPbv2 } from "@shared/pbv2/legacyPriceBreaks";
+import {
+  normalizeProductPricingRotationConfig,
+  shouldPersistProductRotation,
+} from "@shared/pbv2/productPricingRotation";
 
 function cloneJson<T>(value: T): T {
   const sc = (globalThis as any).structuredClone as ((v: any) => any) | undefined;
@@ -25,6 +29,15 @@ function withCopySuffix(name: string): string {
 }
 
 export function buildDuplicatedProductInsert(original: Product): Omit<InsertProduct, "organizationId"> {
+  const copiedPricingConfig = original.pricingProfileConfig ? cloneJson(original.pricingProfileConfig) : null;
+  const pricingProfileConfig = shouldPersistProductRotation({
+    pricingProfileKey: original.pricingProfileKey,
+    pricingFormula: original.pricingFormula,
+    pricingProfileConfig: copiedPricingConfig,
+  })
+    ? normalizeProductPricingRotationConfig(copiedPricingConfig, false)
+    : copiedPricingConfig;
+
   return sanitizeLegacyPriceBreaksForPbv2({
     name: withCopySuffix(original.name),
     description: original.description,
@@ -41,7 +54,7 @@ export function buildDuplicatedProductInsert(original: Product): Omit<InsertProd
     allowZeroPrice: original.allowZeroPrice ?? false,
 
     pricingProfileKey: original.pricingProfileKey ?? "default",
-    pricingProfileConfig: original.pricingProfileConfig ? cloneJson(original.pricingProfileConfig) : null,
+    pricingProfileConfig,
     pricingEngine: (original as any).pricingEngine ?? "pricingProfile",
 
     pricingFormulaId: original.pricingFormulaId ?? null,

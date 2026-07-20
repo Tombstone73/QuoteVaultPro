@@ -47,6 +47,7 @@ import {
   type Pbv2TierResolutionWarning,
 } from '../../../shared/pbv2/pricingAdapter';
 import { calculateSheetYield, extractFormulaVariables, parseFormulaBoolean, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
+import { getProductAllowRotation, parseProductPricingBoolean } from '../../../shared/pbv2/productPricingRotation';
 import { resolvePbv2RuntimeDimensions } from '../../../shared/pbv2/fixedDimensions';
 import { dimensionsForProductPricing } from '../../../shared/productMeasurementMode';
 import { skipsRequiredPrintOptionValidation } from '../../../shared/productPricingValidation';
@@ -3290,9 +3291,21 @@ function resolveProductFormulaVariables(treeJson: any, product?: any, pricingPro
     : {};
   const resolved: FormulaVariableResolution = { variables: {}, sources: {} };
 
-  mergeFormulaVariables(resolved, numericRecord((pricingProfileConfig as any).formulaVariables), "product.pricingProfileConfig.formulaVariables");
   mergeFormulaVariables(resolved, numericRecord((meta as any).pricingFormulaVariables), "tree.meta.pricingFormulaVariables");
   mergeFormulaVariables(resolved, numericRecord((meta as any).formulaVariables), "tree.meta.formulaVariables");
+  mergeFormulaVariables(resolved, numericRecord((pricingProfileConfig as any).variables), "product.pricingProfileConfig.variables");
+  mergeFormulaVariables(resolved, numericRecord((pricingProfileConfig as any).formulaVariables), "product.pricingProfileConfig.formulaVariables");
+  const productAllowRotation = getProductAllowRotation(pricingProfileConfig);
+  if (productAllowRotation !== null) {
+    resolved.variables.allow_rotation = Number(productAllowRotation);
+    const canonicalRotation = parseProductPricingBoolean((pricingProfileConfig as any).allowRotation);
+    const nestedRotation = parseProductPricingBoolean((pricingProfileConfig as any)?.formulaVariables?.allow_rotation);
+    resolved.sources.allow_rotation = canonicalRotation !== null
+      ? "product.pricingProfileConfig.allowRotation"
+      : nestedRotation !== null
+        ? "product.pricingProfileConfig.formulaVariables"
+        : "product.pricingProfileConfig.variables";
+  }
 
   return resolved;
 }
@@ -3974,11 +3987,15 @@ function resolveSnapshotFormulaVariables(treeJson: any, product: any): Record<st
     ? product.pricingProfileConfig
     : {};
 
-  return (
-    numericRecordOrUndefined((meta as any).formulaVariables) ??
-    numericRecordOrUndefined((meta as any).pricingFormulaVariables) ??
-    numericRecordOrUndefined((pricingProfileConfig as any).formulaVariables)
-  );
+  const resolved = {
+    ...(numericRecordOrUndefined((meta as any).pricingFormulaVariables) ?? {}),
+    ...(numericRecordOrUndefined((meta as any).formulaVariables) ?? {}),
+    ...(numericRecordOrUndefined((pricingProfileConfig as any).variables) ?? {}),
+    ...(numericRecordOrUndefined((pricingProfileConfig as any).formulaVariables) ?? {}),
+  };
+  const productAllowRotation = getProductAllowRotation(pricingProfileConfig);
+  if (productAllowRotation !== null) resolved.allow_rotation = Number(productAllowRotation);
+  return Object.keys(resolved).length > 0 ? resolved : undefined;
 }
 
 function resolveSnapshotFormula(treeJson: any, product: any, pricingProfileKey: string): { formula: string } {

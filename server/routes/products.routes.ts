@@ -58,6 +58,10 @@ import { applyProductTypeIdUpdateGuard } from "../lib/productUpdateGuards";
 import { getDefaultFormula } from "@shared/pricingProfiles";
 import { filterProductsForCatalog } from "@shared/productCatalogVisibility";
 import {
+  getProductAllowRotation,
+} from "@shared/pbv2/productPricingRotation";
+import { normalizeProductRotationForWrite } from "../lib/productPricingRotationWrite";
+import {
   ProductParsingDescriptionGeneratorError,
   productParsingDescriptionGeneratorService,
 } from "../services/products/ProductParsingDescriptionGeneratorService";
@@ -168,7 +172,10 @@ function numericFormulaVariables(value: unknown): Record<string, number> {
 
 function formulaVariablesFromProductConfig(config: unknown): Record<string, number> {
   if (!config || typeof config !== "object" || Array.isArray(config)) return {};
-  return numericFormulaVariables((config as Record<string, unknown>).formulaVariables);
+  const variables = numericFormulaVariables((config as Record<string, unknown>).formulaVariables);
+  const allowRotation = getProductAllowRotation(config);
+  if (allowRotation !== null) variables.allow_rotation = Number(allowRotation);
+  return variables;
 }
 
 /** Service/Fee is a billing-only workflow intent, never a production default. */
@@ -2254,7 +2261,9 @@ export function registerProductRoutes(
 
       console.log("[POST /api/products] Parsed & cleaned data:", JSON.stringify(productData, null, 2));
 
-      const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(applyProductWorkflowIntentDefaults(productData));
+      const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(
+        applyProductWorkflowIntentDefaults(normalizeProductRotationForWrite(productData)),
+      );
       const product = await storage.createProduct(organizationId, sanitizedProductData as InsertProduct);
       res.json(product);
     } catch (error) {
@@ -2390,7 +2399,10 @@ export function registerProductRoutes(
       }
 
       const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(
-        applyProductWorkflowIntentDefaults(productData, existingProduct.workflowIntent),
+        applyProductWorkflowIntentDefaults(
+          normalizeProductRotationForWrite(productData, existingProduct),
+          existingProduct.workflowIntent,
+        ),
         existingProduct,
       );
       const product = await storage.updateProduct(organizationId, productId, sanitizedProductData as UpdateProduct);

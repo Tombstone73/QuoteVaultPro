@@ -1,6 +1,7 @@
 import { db } from "../db";
 import { buildDuplicatedProductInsert } from "../lib/duplicateProductTransform";
 import { readPbv2OverrideConfig, writePbv2OverrideConfig } from "../lib/pbv2OverrideConfig";
+import { normalizeProductPricingRotationConfig, shouldPersistProductRotation } from "@shared/pbv2/productPricingRotation";
 import {
     users,
     products,
@@ -281,7 +282,13 @@ export class SharedRepository {
             primaryMaterialId: originalProduct.primaryMaterialId,
             optionsJson: originalProduct.optionsJson,
             pricingProfileKey: originalProduct.pricingProfileKey ?? "default",
-            pricingProfileConfig: originalProduct.pricingProfileConfig,
+            pricingProfileConfig: shouldPersistProductRotation({
+                pricingProfileKey: originalProduct.pricingProfileKey,
+                pricingFormula: originalProduct.pricingFormula,
+                pricingProfileConfig: originalProduct.pricingProfileConfig,
+            })
+                ? normalizeProductPricingRotationConfig(originalProduct.pricingProfileConfig, false)
+                : originalProduct.pricingProfileConfig,
             variantLabel: originalProduct.variantLabel,
             category: originalProduct.category,
             storeUrl: originalProduct.storeUrl,

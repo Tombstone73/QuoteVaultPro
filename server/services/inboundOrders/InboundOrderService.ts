@@ -4676,12 +4676,15 @@ export class InboundOrderService {
               ],
             };
           }
-        } catch {
+        } catch (error) {
+          const failureReason = error instanceof Error && error.message.trim()
+            ? error.message.trim()
+            : "Pricing calculation failed.";
           nextReview = {
             ...nextReview,
             message: poPricing
-              ? "System pricing unavailable for PO price comparison."
-              : "System pricing unavailable. Enter a valid pricing override before conversion.",
+              ? `System pricing unavailable for PO price comparison: ${failureReason}`
+              : `System pricing unavailable: ${failureReason} Enter a valid pricing override before conversion.`,
           };
         }
       }

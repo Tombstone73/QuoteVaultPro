@@ -1830,6 +1830,27 @@ describe("InboundOrderService editable review draft", () => {
     });
   });
 
+  test("surfaces the actual system pricing failure reason", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(
+      repo as any,
+      undefined as any,
+      async () => {
+        throw new Error("sheet_consumption_sqft: piece 72x48 exceeds sheet 48x96 without rotation");
+      },
+    );
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.reviewedLineItemsJson[0].pricingReviewJson?.message).toContain(
+      "piece 72x48 exceeds sheet 48x96 without rotation",
+    );
+  });
+
   test("PO total mismatch blocks mark ready until staff resolves it", async () => {
     const attempt = parseAttempt({ parsedDraft: parsedDraftWithPoPricing({ totalPriceCents: 5000, evidenceText: "Total: $50.00" }) });
     const { repo } = makeRepository(inboundRecord(), attempt);
