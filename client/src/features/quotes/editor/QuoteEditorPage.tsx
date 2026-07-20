@@ -1370,6 +1370,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             onShippingInstructionsChange={!readOnly ? ((instructions: string | null) => state.handlers.setQuoteNotes(instructions ?? '')) : undefined}
                             onShipToChange={!readOnly ? saveShipTo : undefined}
                             onShippingCentsChange={!readOnly ? saveShippingCents : undefined}
+                            defaultCustomer={state.selectedCustomer}
                         />
 
                         {/* Attachments - Now more prominent in right column */}

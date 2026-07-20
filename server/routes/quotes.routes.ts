@@ -89,6 +89,7 @@ import {
   LineItemPriceOverrideValidationError,
 } from "../lib/lineItemPricingPersistence";
 import { generateQuotePdfBytes, QuotePdfEligibilityError } from "../lib/quotePdf";
+import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValidation";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -425,6 +426,7 @@ export function registerQuoteRoutes(
         quantity,
         optionSelectionsJson, // PBV2 selections
         pbv2TreeVersionIdOverride, // Optional: specific tree version to use
+        overridePriceCents, // Optional staff-entered effective total preview
       } = req.body;
 
       // PBV2_DEBUG: Log calculation entry point
@@ -537,6 +539,9 @@ export function registerQuoteRoutes(
           heightIn: runtimeHeight,
           pbv2ExplicitSelections,
           pbv2TreeVersionIdOverride,
+          overridePriceCents: Number.isFinite(Number(overridePriceCents))
+            ? Math.max(0, Math.round(Number(overridePriceCents)))
+            : undefined,
         });
       } catch (pricingError: any) {
         // Convert PBV2 schema version errors to 400 with friendly message
@@ -2334,6 +2339,11 @@ export function registerQuoteRoutes(
           heightIn: pricingDimensions.heightIn,
           pbv2ExplicitSelections: lineItem.optionSelectionsJson?.selected || currentLineItem.optionSelectionsJson?.selected || {},
           pbv2TreeVersionIdOverride: undefined, // Always reprice with active tree
+          ...(skipsRequiredPrintOptionValidation(pricingProduct) &&
+          hasExplicitPriceOverrideMetadata(lineItem) &&
+          Number.isFinite(Number(lineItem.overridePriceCents))
+            ? { overridePriceCents: Math.max(0, Math.round(Number(lineItem.overridePriceCents))) }
+            : {}),
         });
 
         // Structured logging for PBV2 pricing persistence
@@ -2345,7 +2355,9 @@ export function registerQuoteRoutes(
         updateData.selectedOptions = pricingResult.pbv2SnapshotJson.selectedOptions || [];
         updateData.pricedAt = new Date();
         updateData.linePrice = pricingResult.lineTotalCents / 100;
-        repricedBaseTotalCents = pricingResult.lineTotalCents;
+        repricedBaseTotalCents = pricingResult.pricingOverrideApplied
+          ? pricingResult.breakdown.baseCents
+          : pricingResult.lineTotalCents;
         updateData.priceBreakdown = {
           basePrice: pricingResult.breakdown.baseCents / 100,
           optionsPrice: pricingResult.breakdown.optionsCents / 100,

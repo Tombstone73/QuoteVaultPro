@@ -30,6 +30,7 @@ import { buildPbv2DefaultSelections } from "@shared/pbv2OrderEntryRuntime";
 import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import { getProductWorkflowDefaults } from "@shared/productWorkflowIntent";
+import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValidation";
 import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
 import { deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
@@ -435,6 +436,7 @@ export function LineItemsSection({
   const isExpandedTreeV2 = useMemo(() => {
     return Boolean(expandedOptionTreeJson && (expandedOptionTreeJson as any)?.schemaVersion === 2);
   }, [expandedOptionTreeJson]);
+  const expandedSkipsPrintOptionValidation = skipsRequiredPrintOptionValidation(expandedProduct);
   const expandedProductOptions = useMemo(
     () => {
       const base = ((expandedProduct as any)?.optionsJson as ProductOptionItem[] | undefined) || [];
@@ -733,7 +735,7 @@ export function LineItemsSection({
   // Handle save line item
   const handleSaveItem = async () => {
     if (!expandedKey || !onSaveLineItem || !expandedItem) return;
-    if (isExpandedTreeV2 && !optionsV2Valid) {
+    if (isExpandedTreeV2 && !optionsV2Valid && !expandedSkipsPrintOptionValidation) {
       setCalcError("Complete required product options before saving.");
       return;
     }
@@ -902,7 +904,7 @@ export function LineItemsSection({
         return;
       }
 
-      if (isExpandedTreeV2 && !optionsV2Valid) {
+      if (isExpandedTreeV2 && !optionsV2Valid && !expandedSkipsPrintOptionValidation) {
         setCalcError(null);
         return;
       }
@@ -938,6 +940,11 @@ export function LineItemsSection({
         customerId,
         quoteId,
         debugSource: "LineItemsSection",
+        ...(expandedSkipsPrintOptionValidation &&
+        getQuoteLineItemPriceOverrideMode(expandedItem) &&
+        Number.isFinite(Number(expandedItem.overridePriceCents))
+          ? { overridePriceCents: Math.max(0, Math.round(Number(expandedItem.overridePriceCents))) }
+          : {}),
       })
         .then((r) => r.json())
         .then((data) => {
@@ -1014,6 +1021,7 @@ export function LineItemsSection({
       optionSelectionsV2,
       isExpandedTreeV2,
       optionsV2Valid,
+      expandedSkipsPrintOptionValidation,
       expandedKey,
       customerId,
       quoteId,
@@ -1048,6 +1056,7 @@ export function LineItemsSection({
                     const contentId = itemKey ? `line-item-${itemKey}-details` : undefined;
                     const product = getProduct(products, item.productId);
                     const fulfillmentOnly = (product as any)?.workflowIntent === "fulfillment_only";
+                    const serviceFee = skipsRequiredPrintOptionValidation(product);
                     
                     // Generic option summary (no hardcoded keys)
                     const { chips: optionChips, overflowCount } = extractOptionChips(item.selectedOptions, 3);
@@ -1242,6 +1251,9 @@ export function LineItemsSection({
                             }
                             isCalculating={isCalculating}
                             calcError={calcError}
+                            fulfillmentOnly={fulfillmentOnly}
+                            serviceFee={serviceFee}
+                            quantityOnly={(product as any)?.measurementMode === "quantity_only"}
                             description={description}
                             productionNotes={productionNotes}
                             onDescriptionChange={setDescription}

@@ -69,6 +69,7 @@ import {
 } from "@shared/pbv2OrderEntryRuntime";
 import { getPbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
+import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValidation";
 import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
 import { resolveProductionSides } from "@shared/productionHydration";
 import { buildLineItemOptionSummaryChips } from "@shared/lineItemOptionSelections";
@@ -1044,6 +1045,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     return products.find((p) => p.id === effectiveProductId) ?? null;
   }, [draftProductId, expandedItem, products]);
   const expandedProductPbv2Runtime = expandedProduct as ProductWithPbv2Runtime | null;
+  const expandedSkipsPrintOptionValidation = skipsRequiredPrintOptionValidation(expandedProduct);
   const expandedItemPbv2Runtime = expandedItem as OrderLineItemWithPbv2Runtime | null;
   const draftMatchesPersistedProduct = Boolean(expandedItem && currentDraftProductId === expandedItem.productId);
   const effectiveLineItemPbv2Runtime = draftMatchesPersistedProduct ? expandedItemPbv2Runtime : null;
@@ -1901,7 +1903,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       if (dimsRequired && (!Number.isFinite(widthNum) || widthNum <= 0 || !Number.isFinite(heightNum) || heightNum <= 0)) return;
       if (!Number.isFinite(qtyNum) || qtyNum <= 0) return;
 
-      if (isPbv2Mode && !optionsV2Valid) {
+      if (isPbv2Mode && !optionsV2Valid && !expandedSkipsPrintOptionValidation) {
         setCalcError(null);
         return;
       }
@@ -2124,6 +2126,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       currentDraftProductVariantId,
       isPbv2Mode,
       optionsV2Valid,
+      expandedSkipsPrintOptionValidation,
       customerId,
       pbv2TreeVersionId,
       widthNum,
@@ -2143,7 +2146,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     opts?: { silent?: boolean },
   ): Promise<{ saved: boolean; error?: string }> => {
     if (!expandedItem) return { saved: true };
-    if (isPbv2Mode && !optionsV2Valid) {
+    if (isPbv2Mode && !optionsV2Valid && !expandedSkipsPrintOptionValidation) {
       const message = "Complete required product options before saving.";
       setCalcError(message);
       return { saved: false, error: message };

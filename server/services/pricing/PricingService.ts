@@ -49,6 +49,7 @@ import {
 import { calculateSheetYield, extractFormulaVariables, parseFormulaBoolean, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
 import { resolvePbv2RuntimeDimensions } from '../../../shared/pbv2/fixedDimensions';
 import { dimensionsForProductPricing } from '../../../shared/productMeasurementMode';
+import { skipsRequiredPrintOptionValidation } from '../../../shared/productPricingValidation';
 import { buildNumericSelectionFormulaVariables } from '../../../shared/pbv2/numericSelectionFormulaVariables';
 import {
   collectPbv2WeightMaterialIds,
@@ -489,14 +490,13 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       }));
     }
     const pricingMethod = String(product.pricingProfileKey || "default");
-    const ruleValidatedSelections = resolveRuleValidatedSelectionsForPricing(
+    const selectionResolution = resolveSelectionsForProductPricing(
+      product,
       treeVersion.treeJson as any,
-      pbv2ExplicitSelections || {}
+      pbv2ExplicitSelections || {},
     );
-    const pricingMatrixResolution = resolvePricingMatrixVariablesForPricing(
-      treeVersion.treeJson as any,
-      ruleValidatedSelections.selected
-    );
+    const ruleValidatedSelections = selectionResolution;
+    const pricingMatrixResolution = selectionResolution.pricingMatrixResolution;
     const selectionsV2: LineItemOptionSelectionsV2 = {
       schemaVersion: 2,
       selected: ruleValidatedSelections.selected,
@@ -611,14 +611,13 @@ export async function priceLineItem(input: PricingInput): Promise<PricingOutput>
       heightIn,
     }));
   }
-  const ruleValidatedSelections = resolveRuleValidatedSelectionsForPricing(
+  const selectionResolution = resolveSelectionsForProductPricing(
+    product,
     treeVersion.treeJson as any,
-    pbv2ExplicitSelections
+    pbv2ExplicitSelections,
   );
-  const pricingMatrixResolution = resolvePricingMatrixVariablesForPricing(
-    treeVersion.treeJson as any,
-    ruleValidatedSelections.selected
-  );
+  const ruleValidatedSelections = selectionResolution;
+  const pricingMatrixResolution = selectionResolution.pricingMatrixResolution;
   const selectionFormulaVariables = buildNumericSelectionFormulaVariables({
     treeJson: treeVersion.treeJson,
     selections: ruleValidatedSelections.selected,
@@ -1393,6 +1392,29 @@ function resolvePricingMatrixVariablesForPricing(
   }
 
   return resolution;
+}
+
+export function resolveSelectionsForProductPricing(
+  product: { workflowIntent?: string | null; pricingProfileKey?: string | null; isService?: boolean | null },
+  tree: any,
+  selections: LineItemOptionSelectionsV2 | Record<string, unknown> | undefined,
+): {
+  selected: Record<string, { value?: any; note?: string }>;
+  ruleEvaluation?: ProductOptionRuleEvaluationResult;
+  pricingMatrixResolution: ProductOptionPricingMatrixResolution;
+} {
+  if (skipsRequiredPrintOptionValidation(product)) {
+    return {
+      selected: toSelectionEntryMap(selections),
+      pricingMatrixResolution: { variables: {}, ignoredVariables: [], errors: [] },
+    };
+  }
+
+  const ruleResolution = resolveRuleValidatedSelectionsForPricing(tree, selections);
+  return {
+    ...ruleResolution,
+    pricingMatrixResolution: resolvePricingMatrixVariablesForPricing(tree, ruleResolution.selected),
+  };
 }
 
 function resolveRuleValidatedSelectionsForPricing(
