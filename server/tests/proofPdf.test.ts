@@ -1,7 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
 import { PDFDocument } from "pdf-lib";
-import { generateBasicProofPdfBytes, generateCombinedProofPdfBytes } from "../lib/proofPdf";
+import { buildProofPdfFacts, generateBasicProofPdfBytes, generateCombinedProofPdfBytes } from "../lib/proofPdf";
 
 const ONE_PIXEL_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn6v0sAAAAASUVORK5CYII=",
@@ -16,14 +16,15 @@ describe("generateBasicProofPdfBytes", () => {
       displaySizeLabel: "24 x 36 in",
       quantity: 10,
       finishingSummary: ["Trim"],
+      printSides: "Single-sided",
+      useSameArtworkBothSides: false,
       preflightStatus: "ready",
-      sourceFileName: "artwork.png",
       generatedAt: new Date("2025-01-01T00:00:00.000Z"),
-      preview: {
-        bytes: ONE_PIXEL_PNG,
-        mimeType: "image/png",
-        fileName: "artwork.png",
-      },
+      artworkPreviews: [{
+        label: "Artwork",
+        sourceFileName: "artwork.png",
+        preview: { bytes: ONE_PIXEL_PNG, mimeType: "image/png", fileName: "artwork.png" },
+      }],
     });
 
     expect(result.renderStatus).toBe("ready");
@@ -38,10 +39,11 @@ describe("generateBasicProofPdfBytes", () => {
       displaySizeLabel: "24 x 36 in",
       quantity: 10,
       finishingSummary: ["Trim"],
+      printSides: "Single-sided",
+      useSameArtworkBothSides: false,
       preflightStatus: "ready",
-      sourceFileName: "artwork.ai",
       generatedAt: new Date("2025-01-01T00:00:00.000Z"),
-      preview: null,
+      artworkPreviews: [{ label: "Artwork", sourceFileName: "artwork.ai", preview: null }],
     });
 
     expect(result.renderStatus).toBe("metadata_only");
@@ -56,10 +58,15 @@ describe("generateCombinedProofPdfBytes", () => {
       displaySizeLabel: "24 x 36 in",
       quantity: 2,
       finishingSummary: ["Trim"],
+      printSides: "Single-sided" as const,
+      useSameArtworkBothSides: false,
       preflightStatus: "ready",
-      sourceFileName: "artwork.png",
       generatedAt: new Date("2025-01-01T00:00:00.000Z"),
-      preview: { bytes: ONE_PIXEL_PNG, mimeType: "image/png", fileName: "artwork.png" },
+      artworkPreviews: [{
+        label: "Artwork" as const,
+        sourceFileName: "artwork.png",
+        preview: { bytes: ONE_PIXEL_PNG, mimeType: "image/png", fileName: "artwork.png" },
+      }],
     };
     const result = await generateCombinedProofPdfBytes([
       { ...base, lineItemLabel: "Banner" },
@@ -68,5 +75,60 @@ describe("generateCombinedProofPdfBytes", () => {
     const document = await PDFDocument.load(result.bytes);
     expect(result.renderStatus).toBe("ready");
     expect(document.getPageCount()).toBe(2);
+  });
+
+  test("renders mixed single- and double-sided line items with both double-sided previews", async () => {
+    const base = {
+      orderNumber: "SO-201",
+      displaySizeLabel: "24 x 36 in",
+      quantity: 2,
+      finishingSummary: ["Trim"],
+      preflightStatus: "ready",
+      generatedAt: new Date("2025-01-01T00:00:00.000Z"),
+    };
+    const preview = { bytes: ONE_PIXEL_PNG, mimeType: "image/png", fileName: "artwork.png" };
+    const result = await generateCombinedProofPdfBytes([
+      {
+        ...base,
+        lineItemLabel: "Banner",
+        printSides: "Single-sided",
+        useSameArtworkBothSides: false,
+        artworkPreviews: [{ label: "Artwork", sourceFileName: "banner.png", preview }],
+      },
+      {
+        ...base,
+        lineItemLabel: "Yard Sign",
+        printSides: "Double-sided",
+        useSameArtworkBothSides: false,
+        artworkPreviews: [
+          { label: "Front", sourceFileName: "front.png", preview },
+          { label: "Back", sourceFileName: "back.png", preview },
+        ],
+      },
+    ]);
+    const document = await PDFDocument.load(result.bytes);
+    expect(result.renderStatus).toBe("ready");
+    expect(document.getPageCount()).toBe(3);
+  });
+});
+
+describe("proof PDF facts", () => {
+  test("identifies print sides and shared Front/Back artwork explicitly", () => {
+    const facts = buildProofPdfFacts({
+      orderNumber: "SO-300",
+      lineItemLabel: "Coroplast",
+      displaySizeLabel: "24 x 18 in",
+      quantity: 10,
+      finishingSummary: [],
+      printSides: "Double-sided",
+      useSameArtworkBothSides: true,
+      preflightStatus: "ready",
+      generatedAt: new Date("2025-01-01T00:00:00.000Z"),
+      label: "Artwork",
+      sourceFileName: "customer-art.pdf",
+      preview: null,
+    });
+    expect(facts).toContainEqual({ label: "Print Sides", value: "Double-sided" });
+    expect(facts).toContainEqual({ label: "Artwork Sides", value: "Same artwork used on front and back." });
   });
 });

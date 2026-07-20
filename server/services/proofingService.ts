@@ -50,6 +50,13 @@ import {
   withOrderOriginalArtworkDisplayFilename,
 } from "./originalArtworkFiles";
 import { getFileUploadNamingPolicy } from "../prepressFileService";
+import { buildPrepressOptionRows } from "../routes/flatStockNesting.shared";
+import {
+  resolveArtworkSideIntent,
+  resolveProductionSides,
+  type ProductionSides,
+} from "@shared/productionHydration";
+import { resolveProofArtworkLayout } from "@shared/proofArtwork";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
 type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "cancelled" | "superseded";
@@ -96,6 +103,7 @@ type ArtworkProofSource = {
   updatedAt: Date | null;
   assetPreviewStatus?: "pending" | "ready" | "failed" | null;
   assetPreviewError?: string | null;
+  side?: "front" | "back" | "both" | "na";
 };
 
 export type EligibleProofArtworkSource = {
@@ -126,6 +134,8 @@ type LoadedProofSnapshotLineItem = {
   height: string | null;
   quantity: number;
   specsJson: Record<string, any> | null;
+  optionSelectionsJson: Record<string, any> | null;
+  pbv2SnapshotJson: Record<string, any> | null;
   selectedOptions: Array<{
     optionId: string;
     optionName: string;
@@ -679,7 +689,7 @@ function pickSpecValue(specsJson: Record<string, any> | null | undefined, candid
   return null;
 }
 
-function buildFinishingSummary(lineItem: LoadedProofSnapshotLineItem): string[] {
+export function buildProofFinishingSummary(lineItem: LoadedProofSnapshotLineItem): string[] {
   const facts: string[] = [];
   const pushFact = (label: string, value: unknown) => {
     const normalized = String(value ?? "").trim();
@@ -688,14 +698,9 @@ function buildFinishingSummary(lineItem: LoadedProofSnapshotLineItem): string[] 
     if (!facts.includes(fact)) facts.push(fact);
   };
 
-  for (const option of Array.isArray(lineItem.selectedOptions) ? lineItem.selectedOptions : []) {
-    const optionName = String(option?.optionName ?? "").trim();
-    if (!optionName) continue;
-    const value = typeof option?.value === "boolean"
-      ? option.value ? "Yes" : "No"
-      : String(option?.value ?? "").trim();
-    if (!value || value === "false" || value === "0") continue;
-    pushFact(optionName, value);
+  for (const option of buildPrepressOptionRows(lineItem)) {
+    if (/^(print\s*)?sides?$/i.test(option.optionLabel.trim())) continue;
+    pushFact(option.optionLabel, option.selectedLabel);
   }
 
   for (const usage of Array.isArray(lineItem.materialUsages) ? lineItem.materialUsages : []) {
@@ -710,8 +715,6 @@ function buildFinishingSummary(lineItem: LoadedProofSnapshotLineItem): string[] 
   pushFact("Cut", pickSpecValue(lineItem.specsJson, ["cut", "cutType", "trim", "trimType"]));
   pushFact("Hem", pickSpecValue(lineItem.specsJson, ["hem", "hemming"]));
   pushFact("Grommets", pickSpecValue(lineItem.specsJson, ["grommets", "grommetSpacing"]));
-  pushFact("Sides", pickSpecValue(lineItem.specsJson, ["sides", "printSides"]));
-
   return facts.slice(0, 8);
 }
 
@@ -726,6 +729,8 @@ async function loadProofSnapshotLineItem(tx: any, args: { organizationId: string
       height: orderLineItems.height,
       quantity: orderLineItems.quantity,
       specsJson: orderLineItems.specsJson,
+      optionSelectionsJson: orderLineItems.optionSelectionsJson,
+      pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
       selectedOptions: orderLineItems.selectedOptions,
       materialUsages: orderLineItems.materialUsages,
       updatedAt: orderLineItems.updatedAt,
@@ -742,6 +747,8 @@ async function loadProofSnapshotLineItem(tx: any, args: { organizationId: string
   return {
     ...row,
     specsJson: (row.specsJson as Record<string, any> | null) ?? null,
+    optionSelectionsJson: (row.optionSelectionsJson as Record<string, any> | null) ?? null,
+    pbv2SnapshotJson: (row.pbv2SnapshotJson as Record<string, any> | null) ?? null,
     selectedOptions: Array.isArray(row.selectedOptions) ? row.selectedOptions as LoadedProofSnapshotLineItem["selectedOptions"] : [],
     materialUsages: Array.isArray(row.materialUsages) ? row.materialUsages as LoadedProofSnapshotLineItem["materialUsages"] : [],
   };
@@ -749,14 +756,8 @@ async function loadProofSnapshotLineItem(tx: any, args: { organizationId: string
 
 function buildSelectedOptionMap(lineItem: LoadedProofSnapshotLineItem): Record<string, string> {
   const map: Record<string, string> = {};
-  for (const option of Array.isArray(lineItem.selectedOptions) ? lineItem.selectedOptions : []) {
-    const name = String(option?.optionName ?? "").trim();
-    if (!name) continue;
-    const value = typeof option?.value === "boolean"
-      ? (option.value ? "Yes" : "No")
-      : String(option?.value ?? "").trim();
-    if (!value || value === "false" || value === "0") continue;
-    map[name] = value;
+  for (const option of buildPrepressOptionRows(lineItem)) {
+    map[option.optionLabel] = option.selectedLabel;
   }
   // Include material usages as "Material" entries when not already set by selectedOptions
   for (const usage of Array.isArray(lineItem.materialUsages) ? lineItem.materialUsages : []) {
@@ -781,6 +782,8 @@ export async function buildProofInputSnapshot(tx: any, args: {
   });
   const finishedWidth = parseNullableNumber(lineItem.width);
   const finishedHeight = parseNullableNumber(lineItem.height);
+  const printSides = resolveProductionSides(lineItem);
+  const artworkIntent = resolveArtworkSideIntent(lineItem);
   const snapshotBasisAt = maxIsoTimestamp([
     toIsoString(lineItem.updatedAt),
     toIsoString(source?.updatedAt ?? null),
@@ -805,7 +808,10 @@ export async function buildProofInputSnapshot(tx: any, args: {
     finishedHeight,
     displaySizeLabel: buildDisplaySizeLabel(finishedWidth, finishedHeight),
     quantity: Number.isFinite(lineItem.quantity) ? lineItem.quantity : null,
-    finishingSummary: buildFinishingSummary(lineItem),
+    printSides,
+    useSameArtworkBothSides: artworkIntent.useSameArtworkBothSides,
+    sameArtworkFileId: artworkIntent.sameArtworkFileId,
+    finishingSummary: buildProofFinishingSummary(lineItem),
     selectedOptionMap: buildSelectedOptionMap(lineItem),
     snapshotBasisAt,
     lineItemUpdatedAt: toIsoString(lineItem.updatedAt),
@@ -1042,38 +1048,89 @@ async function resolveGeneratedProofPreview(tx: any, args: {
   };
 }
 
+function resolveGeneratedProofArtworkLayout(snapshot: ProofInputSnapshot, sources: ArtworkProofSource[]) {
+  const printSides: ProductionSides = snapshot.printSides ?? "Unknown";
+  const canonicalSources = sources.map((source) => ({ ...source, id: source.sourceId }));
+  const layout = resolveProofArtworkLayout({
+    printSides,
+    sources: canonicalSources,
+    useSameArtworkBothSides: snapshot.useSameArtworkBothSides === true,
+    sameArtworkFileId: snapshot.sameArtworkFileId ?? null,
+  });
+  if (!layout.complete) {
+    throw Object.assign(new Error(layout.warning || "Artwork side assignment is incomplete for this proof."), {
+      statusCode: 409,
+      code: "proof_artwork_side_assignment_incomplete",
+      lineItemId: snapshot.lineItemId,
+    });
+  }
+  return { printSides, ...layout };
+}
+
+async function buildGeneratedProofRenderInput(tx: any, args: {
+  organizationId: string;
+  snapshot: ProofInputSnapshot;
+  sources: ArtworkProofSource[];
+  generatedAt: Date;
+}) {
+  const layout = resolveGeneratedProofArtworkLayout(args.snapshot, args.sources);
+  const artworkPreviews = [];
+  let allPreviewsReady = true;
+  for (const panel of layout.panels) {
+    const resolvedPreview = await resolveGeneratedProofPreview(tx, {
+      organizationId: args.organizationId,
+      lineItemId: args.snapshot.lineItemId,
+      orderId: args.snapshot.orderId,
+      source: panel.source,
+    });
+    allPreviewsReady = allPreviewsReady && resolvedPreview.previewStatus === "ready";
+    artworkPreviews.push({
+      label: panel.label,
+      sourceFileName: panel.source?.originalFilename || panel.source?.fileName || null,
+      preview: resolvedPreview.preview,
+      previewError: resolvedPreview.previewError,
+    });
+  }
+
+  return {
+    renderInput: {
+      orderNumber: args.snapshot.orderNumber,
+      lineItemLabel: args.snapshot.lineItemLabel,
+      displaySizeLabel: args.snapshot.displaySizeLabel,
+      quantity: args.snapshot.quantity,
+      finishingSummary: args.snapshot.finishingSummary,
+      printSides: layout.printSides,
+      useSameArtworkBothSides: layout.sameArtworkBothSides,
+      preflightStatus: args.snapshot.preflightStatus,
+      generatedAt: args.generatedAt,
+      artworkPreviews,
+    },
+    allPreviewsReady,
+  };
+}
+
 async function createGeneratedProofAttachment(tx: any, args: {
   organizationId: string;
   actorUserId: string;
   snapshot: ProofInputSnapshot;
-  source: ArtworkProofSource | null;
+  sources: ArtworkProofSource[];
 }): Promise<ProofArtifactSummary> {
-  const resolvedPreview = await resolveGeneratedProofPreview(tx, {
+  const generatedAt = new Date();
+  const renderedInput = await buildGeneratedProofRenderInput(tx, {
     organizationId: args.organizationId,
-    lineItemId: args.snapshot.lineItemId,
-    orderId: args.snapshot.orderId,
-    source: args.source,
+    snapshot: args.snapshot,
+    sources: args.sources,
+    generatedAt,
   });
   const timestampToken = new Date().toISOString().replace(/[:.]/g, "-");
   const safeLineItem = args.snapshot.lineItemLabel.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "line-item";
   const fileName = `${safeLineItem}-proof-${timestampToken}.pdf`;
-  const pdfResult = await generateBasicProofPdfBytes({
-    orderNumber: args.snapshot.orderNumber,
-    lineItemLabel: args.snapshot.lineItemLabel,
-    displaySizeLabel: args.snapshot.displaySizeLabel,
-    quantity: args.snapshot.quantity,
-    finishingSummary: args.snapshot.finishingSummary,
-    preflightStatus: args.snapshot.preflightStatus,
-    sourceFileName: args.snapshot.sourceArtwork?.fileName ?? null,
-    generatedAt: new Date(),
-    preview: resolvedPreview.preview,
-    previewError: resolvedPreview.previewError,
-  });
-  const finalPreviewStatus: ProofArtifactPreviewStatus = resolvedPreview.previewStatus === "ready" && pdfResult.renderStatus === "ready"
+  const pdfResult = await generateBasicProofPdfBytes(renderedInput.renderInput);
+  const finalPreviewStatus: ProofArtifactPreviewStatus = renderedInput.allPreviewsReady && pdfResult.renderStatus === "ready"
     ? "ready"
-    : resolvedPreview.previewStatus === "ready"
+    : renderedInput.allPreviewsReady
       ? "generation_failed"
-      : resolvedPreview.previewStatus;
+      : "missing_preview";
   const descriptionPreviewMarker = finalPreviewStatus === "ready"
     ? GENERATED_PROOF_PREVIEW_READY_MARKER
     : finalPreviewStatus === "generation_failed"
@@ -1081,9 +1138,9 @@ async function createGeneratedProofAttachment(tx: any, args: {
       : finalPreviewStatus === "missing_preview"
         ? GENERATED_PROOF_MISSING_PREVIEW_MARKER
         : GENERATED_PROOF_METADATA_ONLY_MARKER;
-  const descriptionPreviewError = resolvedPreview.previewError
-    ? ` ${GENERATED_PROOF_PREVIEW_ERROR_PREFIX}${resolvedPreview.previewError.replace(/\]/g, ")")}]`
-    : "";
+  const descriptionPreviewError = finalPreviewStatus === "ready"
+    ? ""
+    : ` ${GENERATED_PROOF_PREVIEW_ERROR_PREFIX}One or more assigned artwork previews could not be embedded.]`;
 
   const stored = await storageApplicationService.finalizeUpload({
     organizationId: args.organizationId,
@@ -1146,32 +1203,21 @@ async function createGeneratedProofAttachment(tx: any, args: {
 async function createGeneratedCombinedProofAttachment(tx: any, args: {
   organizationId: string;
   actorUserId: string;
-  items: Array<{ snapshot: ProofInputSnapshot; source: ArtworkProofSource }>;
+  items: Array<{ snapshot: ProofInputSnapshot; sources: ArtworkProofSource[] }>;
 }): Promise<ProofArtifactSummary> {
   const generatedAt = new Date();
   const renderInputs = [];
   let allPreviewsReady = true;
 
   for (const item of args.items) {
-    const resolvedPreview = await resolveGeneratedProofPreview(tx, {
+    const resolved = await buildGeneratedProofRenderInput(tx, {
       organizationId: args.organizationId,
-      lineItemId: item.snapshot.lineItemId,
-      orderId: item.snapshot.orderId,
-      source: item.source,
-    });
-    allPreviewsReady = allPreviewsReady && resolvedPreview.previewStatus === "ready";
-    renderInputs.push({
-      orderNumber: item.snapshot.orderNumber,
-      lineItemLabel: item.snapshot.lineItemLabel,
-      displaySizeLabel: item.snapshot.displaySizeLabel,
-      quantity: item.snapshot.quantity,
-      finishingSummary: item.snapshot.finishingSummary,
-      preflightStatus: item.snapshot.preflightStatus,
-      sourceFileName: item.snapshot.sourceArtwork?.fileName ?? item.source.fileName,
+      snapshot: item.snapshot,
+      sources: item.sources,
       generatedAt,
-      preview: resolvedPreview.preview,
-      previewError: resolvedPreview.previewError,
     });
+    allPreviewsReady = allPreviewsReady && resolved.allPreviewsReady;
+    renderInputs.push(resolved.renderInput);
   }
 
   const pdfResult = await generateCombinedProofPdfBytes(renderInputs);
@@ -1285,7 +1331,7 @@ export async function createGeneratedCombinedProofVersion(tx: any, args: {
   const artifact = await createGeneratedCombinedProofAttachment(tx, {
     organizationId: args.organizationId,
     actorUserId: args.actorUserId,
-    items: members.flatMap((member) => member.sources.map((source) => ({ snapshot: member.snapshot, source }))),
+    items: members.map((member) => ({ snapshot: member.snapshot, sources: member.sources })),
   });
   const primary = members[0].snapshot;
   const proofVersion = await createLineItemProofVersion(tx, {
@@ -1348,13 +1394,13 @@ export async function createAndSendProofVersion(tx: any, args: {
   let artifact: ProofArtifactSummary;
 
   if (args.mode === "generated") {
-    const source = await loadLatestArtworkProofSource(tx, {
+    const sources = await loadProofArtworkSources(tx, {
       organizationId: args.organizationId,
       lineItemId: args.lineItemId,
       selectedSourceIds: args.artworkSourceIds ?? null,
     });
 
-    if (!source) {
+    if (sources.length === 0) {
       throw Object.assign(new Error("No eligible artwork files found for this line item"), {
         statusCode: 409,
         code: "no_eligible_artwork_found",
@@ -1365,7 +1411,7 @@ export async function createAndSendProofVersion(tx: any, args: {
       organizationId: args.organizationId,
       actorUserId: args.actorUserId,
       snapshot,
-      source,
+      sources,
     });
     proofFileId = artifact.attachmentId;
   } else {
@@ -1435,13 +1481,13 @@ export async function createGeneratedDraftProofVersion(tx: any, args: {
     selectedArtworkSourceIds: args.artworkSourceIds ?? null,
   });
 
-  const source = await loadLatestArtworkProofSource(tx, {
+  const sources = await loadProofArtworkSources(tx, {
     organizationId: args.organizationId,
     lineItemId: args.lineItemId,
     selectedSourceIds: args.artworkSourceIds ?? null,
   });
 
-  if (!source) {
+  if (sources.length === 0) {
     throw Object.assign(
       new Error("No eligible artwork files found for this line item"),
       { statusCode: 409, code: "no_eligible_artwork_found" },
@@ -1452,7 +1498,7 @@ export async function createGeneratedDraftProofVersion(tx: any, args: {
     organizationId: args.organizationId,
     actorUserId: args.actorUserId,
     snapshot,
-    source,
+    sources,
   });
 
   const createdVersion = await createLineItemProofVersion(tx, {
@@ -1612,6 +1658,7 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       orderNumber: orders.orderNumber,
       orderLineItemId: orderAttachments.orderLineItemId,
       role: orderAttachments.role,
+      side: orderAttachments.side,
       fileRecordId: orderAttachments.fileRecordId,
       fileName: orderAttachments.fileName,
       fileUrl: orderAttachments.fileUrl,
@@ -1726,6 +1773,9 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       uploadedByUserId: attachmentSource.uploadedByUserId ?? null,
       uploadedByName: attachmentSource.uploadedByName ?? null,
       updatedAt: attachmentSource.updatedAt ?? null,
+      side: attachmentSource.side === "front" || attachmentSource.side === "back" || attachmentSource.side === "both"
+        ? attachmentSource.side
+        : "na",
     };
     if (!seen.has(`attachment:${source.sourceId}`) && !hasSeenCanonicalOriginal(source)) {
       resolved.push(buildEligibleArtworkSource(source, {
@@ -1814,6 +1864,7 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       updatedAt: assetSource.updatedAt ?? null,
       assetPreviewStatus: assetSource.assetPreviewStatus ?? null,
       assetPreviewError: assetSource.assetPreviewError ?? null,
+      side: "na",
     };
     if (!seen.has(`asset:${source.sourceId}`) && !hasSeenCanonicalOriginal(source)) {
       resolved.push(buildEligibleArtworkSource(source, {
@@ -1883,6 +1934,7 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       uploadedByUserId: null,
       uploadedByName: null,
       updatedAt: lineItemFile.updatedAt ?? null,
+      side: "na",
     };
     if (!seen.has(`line-item-file:${source.sourceId}`) && !hasSeenCanonicalOriginal(source)) {
       resolved.push(buildEligibleArtworkSource(source, {
@@ -1958,12 +2010,25 @@ async function loadLatestArtworkProofSource(tx: any, args: {
   lineItemId: string;
   selectedSourceIds?: string[] | null;
 }): Promise<ArtworkProofSource | null> {
+  const sources = await loadProofArtworkSources(tx, args);
+  return sources[0] ?? null;
+}
+
+async function loadProofArtworkSources(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  selectedSourceIds?: string[] | null;
+}): Promise<ArtworkProofSource[]> {
   const sources = await resolveEligibleProofArtworkSourceRows(tx, args);
   const selectedIds = new Set((args.selectedSourceIds ?? []).map((id) => String(id || "").trim()).filter(Boolean));
   if (selectedIds.size > 0) {
-    return sources.find((source) => source.eligible && source.artworkSource && selectedIds.has(source.id))?.artworkSource ?? null;
+    return sources
+      .filter((source) => source.eligible && source.artworkSource && selectedIds.has(source.id))
+      .map((source) => source.artworkSource as ArtworkProofSource);
   }
-  return sources.find((source) => source.eligible && source.artworkSource)?.artworkSource ?? null;
+  return sources
+    .filter((source) => source.eligible && source.artworkSource)
+    .map((source) => source.artworkSource as ArtworkProofSource);
 }
 
 export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
