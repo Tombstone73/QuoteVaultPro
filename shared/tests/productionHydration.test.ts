@@ -1,10 +1,50 @@
 import { describe, expect, test } from "@jest/globals";
 import {
+  calculateSheetProductionLayout,
+  describeProductionPrintPasses,
   resolveProductionArtworkSideReadiness,
   resolveProductionArtworkSides,
   resolveProductionPreviewUrl,
   resolveProductionSides,
 } from "../productionHydration";
+
+describe("production print passes", () => {
+  test("derives one impression per sheet for single-sided work", () => {
+    const layout = calculateSheetProductionLayout({
+      stationKey: "flatbed",
+      materialType: "sheet",
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 50,
+      sheetWidthIn: 48,
+      sheetHeightIn: 96,
+      allowRotation: true,
+      sides: "Single-sided",
+    });
+
+    expect(layout).toMatchObject({ sheetsToPrint: 5, printPasses: 5 });
+    expect(describeProductionPrintPasses({ ...layout!, sides: "Single-sided" }))
+      .toBe("Single-sided job: 5 sheets");
+  });
+
+  test("derives front and back impressions for double-sided work", () => {
+    const layout = calculateSheetProductionLayout({
+      stationKey: "flatbed",
+      materialType: "sheet",
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 50,
+      sheetWidthIn: 48,
+      sheetHeightIn: 96,
+      allowRotation: true,
+      sides: "Double-sided",
+    });
+
+    expect(layout).toMatchObject({ sheetsToPrint: 5, printPasses: 10 });
+    expect(describeProductionPrintPasses({ ...layout!, sides: "Double-sided" }))
+      .toBe("Double-sided job: 5 sheets \u00d7 2 sides (front + back)");
+  });
+});
 
 describe("production artwork hydration", () => {
   test("prefers an explicit thumbnail URL over every other preview candidate", () => {

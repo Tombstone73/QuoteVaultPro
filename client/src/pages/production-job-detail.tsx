@@ -15,7 +15,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ROUTES } from "@/config/routes";
-import { resolveProductionArtworkSides, resolveProductionPreviewUrl } from "@shared/productionHydration";
+import { describeProductionPrintPasses, resolveProductionArtworkSides, resolveProductionPreviewUrl } from "@shared/productionHydration";
 import {
   useAddProductionNote,
   useCompleteProductionJob,
@@ -718,7 +718,16 @@ export default function ProductionJobDetailPage() {
                       <div className="text-muted-foreground">Sheet layout:</div>
                       <div>{data.productionLayout.piecesPerSheet} up on {data.productionLayout.sheetWidthIn} × {data.productionLayout.sheetHeightIn}</div>
                       <div className="text-muted-foreground">Production workload:</div>
-                      <div>{data.productionLayout.sheetsToPrint} sheets / {data.productionLayout.printPasses} print passes</div>
+                      <div>
+                        {data.productionLayout.sheetsToPrint} sheets / {data.productionLayout.printPasses} print passes
+                        <div className="text-xs text-muted-foreground">
+                          {describeProductionPrintPasses({
+                            sheetsToPrint: data.productionLayout.sheetsToPrint,
+                            printPasses: data.productionLayout.printPasses,
+                            sides: data.sides,
+                          })}
+                        </div>
+                      </div>
                     </>
                   ) : null}
 

@@ -727,6 +727,9 @@ export const products = pgTable("products", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   name: varchar("name", { length: 255 }).notNull(),
+  // Short, tenant-editable operator label. Customer-facing documents continue
+  // to use `name`; this alias is only consumed by production-facing adapters.
+  shopName: varchar("shop_name", { length: 120 }),
   description: text("description").notNull(),
   aiParsingDescription: text("ai_parsing_description"),
   aiParsingDescriptionLinkedToDescription: boolean("ai_parsing_description_linked_to_description").default(false).notNull(),

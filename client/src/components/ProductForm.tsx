@@ -199,6 +199,27 @@ export const ProductForm = ({
       <div className="bg-[#1e293b] border border-slate-700 rounded-lg p-4 space-y-3">
         <h3 className="text-xs font-medium text-slate-400 uppercase tracking-wider">Basic Information</h3>
 
+        <FormField
+          control={form.control}
+          name="shopName"
+          render={({ field }) => (
+            <FormItem>
+              <FormLabel className="text-xs text-slate-400">Shop name</FormLabel>
+              <FormControl>
+                <Input
+                  placeholder="e.g., ACM"
+                  {...field}
+                  value={field.value || ""}
+                />
+              </FormControl>
+              <FormDescription className="text-[11px] text-slate-500">
+                Short internal name shown on production screens.
+              </FormDescription>
+              <FormMessage />
+            </FormItem>
+          )}
+        />
+
         <div className="grid grid-cols-2 gap-6">
           {/* LEFT: Description */}
           <FormField

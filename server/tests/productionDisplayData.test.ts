@@ -167,6 +167,20 @@ describe("production display data", () => {
     ]);
   });
 
+  test("prefers the tenant shop name for production media and falls back when blank", () => {
+    expect(resolveLineItemProductionDisplayData({
+      lineItem: { id: "li-shop" },
+      productShopName: "ACM",
+      primaryMaterialName: "ACM / Dibond / Max Metal / Aluminum Composite Material",
+    }).mediaLabel).toBe("ACM");
+
+    expect(resolveLineItemProductionDisplayData({
+      lineItem: { id: "li-formal" },
+      productShopName: "  ",
+      primaryMaterialName: "Formal material name",
+    }).mediaLabel).toBe("Formal material name");
+  });
+
   test("prepress option rows prefer current saved Print Sides over stale snapshot labels", () => {
     const rows = buildPrepressOptionRows({
       id: "li-print-sides",
@@ -414,6 +428,17 @@ describe("production display data", () => {
     });
 
     expect(display.productLabel).toBe("4mm Coroplast");
+    expect(display.optionRows).toEqual([]);
+  });
+
+  test("combines a thickness option with the shop name instead of the formal catalog name", () => {
+    const display = resolvePrepressJobSpecificationsDisplay({
+      productName: "ACM / Dibond / Max Metal / Aluminum Composite Material",
+      productShopName: "ACM",
+      optionRows: [{ optionLabel: "Thickness", selectedLabel: "3mm" }],
+    });
+
+    expect(display.productLabel).toBe("3mm ACM");
     expect(display.optionRows).toEqual([]);
   });
 

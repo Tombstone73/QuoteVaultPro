@@ -26,7 +26,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
-import { resolveProductionArtworkSides, resolveProductionPreviewUrl } from "@shared/productionHydration";
+import { describeProductionPrintPasses, resolveProductionArtworkSides, resolveProductionPreviewUrl } from "@shared/productionHydration";
 import {
   ProductionJobListItem,
   ProductionFileSummary,
@@ -1396,6 +1396,13 @@ function PreviewPanel({
                 <Fact label="Layout" value={`${(job as any).productionLayout.piecesPerSheet} up`} />
                 <Fact label="Sheets to print" value={`${(job as any).productionLayout.sheetsToPrint}`} />
                 <Fact label="Print passes" value={`${(job as any).productionLayout.printPasses}`} />
+                <div className="col-span-2 -mt-2 text-right text-[11px] text-titan-text-muted">
+                  {describeProductionPrintPasses({
+                    sheetsToPrint: (job as any).productionLayout.sheetsToPrint,
+                    printPasses: (job as any).productionLayout.printPasses,
+                    sides,
+                  })}
+                </div>
               </>
             ) : job.stationKey === "flatbed" ? (
               <Fact label="Sheet layout" value="Not configured" />

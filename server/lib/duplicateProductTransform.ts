@@ -40,6 +40,7 @@ export function buildDuplicatedProductInsert(original: Product): Omit<InsertProd
 
   return sanitizeLegacyPriceBreaksForPbv2({
     name: withCopySuffix(original.name),
+    shopName: original.shopName ?? null,
     description: original.description,
     aiParsingDescription: original.aiParsingDescription ?? null,
     aiParsingDescriptionLinkedToDescription: original.aiParsingDescriptionLinkedToDescription ?? false,
