@@ -164,6 +164,20 @@ export type InboundQuoteDraftLineInput = {
   notes?: string | null;
   artworkFileIds?: string[];
   snapshotJson: Record<string, unknown>;
+  pricing: {
+    lineTotalCents: number;
+    pbv2TreeVersionId: string;
+    pbv2SnapshotJson: Record<string, unknown>;
+    optionSelectionsJson: Record<string, unknown>;
+    selectedOptions: unknown[];
+    breakdown: {
+      baseCents: number;
+      optionsCents: number;
+      totalCents: number;
+      pricingMethod: string;
+      nestingDetails?: unknown;
+    };
+  };
 };
 
 export type InboundQuoteDraftInput = {
@@ -2613,6 +2627,11 @@ export class InboundOrdersRepository {
       const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "quote", tx);
       const quoteNumber = numberCore;
       const now = new Date();
+      const subtotalCents = input.lineItems.reduce(
+        (sum, lineItem) => sum + Math.max(0, Math.round(lineItem.pricing.lineTotalCents)),
+        0,
+      );
+      const subtotal = (subtotalCents / 100).toFixed(2);
 
       // Keep quote.source aligned with normal staff-created quotes so internal quote lists and permissions include it.
       // Inbound provenance stays on the tenant-scoped inbound relationship,
@@ -2635,12 +2654,12 @@ export class InboundOrdersRepository {
           billToCompany: input.customerName ?? null,
           billToPhone: input.contactPhone ?? null,
           billToEmail: input.contactEmail ?? null,
-          subtotal: "0",
+          subtotal,
           taxAmount: "0",
-          taxableSubtotal: "0",
+          taxableSubtotal: subtotal,
           marginPercentage: "0",
           discountAmount: "0",
-          totalPrice: "0",
+          totalPrice: subtotal,
         })
         .returning();
 
@@ -2662,15 +2681,19 @@ export class InboundOrdersRepository {
           sourceLineItemId: lineItem.sourceLineItemId,
           staffReviewedDraft: lineItem.snapshotJson,
         },
-        pbv2SnapshotJson: {},
-        optionSelectionsJson: {},
-        selectedOptions: [],
-        linePrice: "0",
+        pbv2TreeVersionId: lineItem.pricing.pbv2TreeVersionId,
+        pbv2SnapshotJson: lineItem.pricing.pbv2SnapshotJson,
+        optionSelectionsJson: lineItem.pricing.optionSelectionsJson,
+        selectedOptions: lineItem.pricing.selectedOptions,
+        pricedAt: now,
+        linePrice: (lineItem.pricing.lineTotalCents / 100).toFixed(2),
         priceBreakdown: {
-          basePrice: 0,
-          optionsPrice: 0,
-          total: 0,
-          formula: "inbound_review_unpriced_draft",
+          basePrice: lineItem.pricing.breakdown.baseCents / 100,
+          optionsPrice: lineItem.pricing.breakdown.optionsCents / 100,
+          total: lineItem.pricing.lineTotalCents / 100,
+          formula: "",
+          pricingMethod: lineItem.pricing.breakdown.pricingMethod,
+          nestingDetails: lineItem.pricing.breakdown.nestingDetails ?? null,
         },
         materialUsages: [],
         taxAmount: "0",

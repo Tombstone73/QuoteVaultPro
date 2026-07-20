@@ -14,14 +14,14 @@ import { hydrateInboundPbv2Selections } from "@shared/inboundOrderPbv2Options";
 
 const mockPriceLineItem = jest.fn<(...args: any[]) => Promise<any>>();
 
-function mockSuccessfulPricing() {
-  mockPriceLineItem.mockResolvedValue({
+function pricingResult(lineTotalCents = 4500) {
+  return {
     pbv2TreeVersionId: "tree_pvc",
-    lineTotalCents: 4500,
+    lineTotalCents,
     breakdown: {
-      baseCents: 4500,
+      baseCents: lineTotalCents,
       optionsCents: 0,
-      totalCents: 4500,
+      totalCents: lineTotalCents,
       pricingMethod: "pbv2",
     },
     pbv2SnapshotJson: {
@@ -35,13 +35,17 @@ function mockSuccessfulPricing() {
       pricedAt: "2026-06-09T12:30:00.000Z",
       quantity: 3,
       pricing: {
-        baseCents: 4500,
+        baseCents: lineTotalCents,
         optionsCents: 0,
-        totalCents: 4500,
+        totalCents: lineTotalCents,
         pricingMethod: "pbv2",
       },
     },
-  } as any);
+  } as any;
+}
+
+function mockSuccessfulPricing() {
+  mockPriceLineItem.mockResolvedValue(pricingResult());
 }
 
 function inboundRecord(overrides: Record<string, any> = {}) {
@@ -2336,7 +2340,7 @@ describe("InboundOrderService editable review draft", () => {
         sender: { name: "Shawn Fears", email: "shawn@example.com" },
       },
     }));
-    const service = new InboundOrderService(repo as any);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
     await prepareReadyDraft(service, {
       lineItem: {
         artworkLinks: [{
@@ -2380,7 +2384,60 @@ describe("InboundOrderService editable review draft", () => {
     }));
     const conversionInput = (repo.createQuoteDraftFromInboundReview as any).mock.calls[0][1];
     expect(conversionInput.lineItems[0].artworkFileIds).toEqual(["file_artwork_1"]);
+    expect(conversionInput.lineItems[0].pricing).toEqual(expect.objectContaining({
+      lineTotalCents: 4500,
+      pbv2TreeVersionId: "tree_pvc",
+      optionSelectionsJson: expect.objectContaining({ schemaVersion: 2 }),
+    }));
     expect(JSON.stringify(conversionInput)).not.toContain(sourceBody);
+  });
+
+  test("prices every inbound print line before persisting a multi-line quote draft", async () => {
+    const baseLine = parsedDraft().lineItems[0];
+    const twoLineDraft = parsedDraft({
+      lineItems: [
+        baseLine,
+        {
+          ...baseLine,
+          sourceText: "2 PVC Signs 48x24 3mm White PVC",
+          quantity: 2,
+          width: 48,
+          height: 24,
+        },
+      ],
+      missingDecisions: [],
+    });
+    const { repo } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: twoLineDraft }));
+    mockPriceLineItem.mockImplementation(async ({ quantity }: any) => (
+      pricingResult(quantity === 2 ? 7600 : 4500)
+    ));
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+
+    await prepareReadyDraft(service);
+    (repo.createQuoteDraftFromInboundReview as any).mockResolvedValue({
+      quote: {
+        id: "quote_multi",
+        quoteNumber: 1002,
+        status: "draft",
+        totalPrice: "121.00",
+        createdAt: new Date("2026-06-09T12:30:00.000Z"),
+      },
+      lineItems: [{ id: "quote_line_1" }, { id: "quote_line_2" }],
+      skippedLineItems: [],
+    });
+
+    await service.createQuoteDraftFromInbound({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    const conversionInput = (repo.createQuoteDraftFromInboundReview as any).mock.calls[0][1];
+    expect(conversionInput.lineItems).toHaveLength(2);
+    expect(conversionInput.lineItems.map((lineItem: any) => lineItem.pricing.lineTotalCents)).toEqual([4500, 7600]);
+    expect(conversionInput.lineItems.every((lineItem: any) => (
+      lineItem.pricing.pbv2SnapshotJson?.pricing?.totalCents === lineItem.pricing.lineTotalCents
+    ))).toBe(true);
   });
 
   test("blocks order conversion when inbound is not ready or draft is missing", async () => {

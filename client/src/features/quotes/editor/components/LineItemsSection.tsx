@@ -47,6 +47,10 @@ import {
   resolveQuoteLineItemOverrideModeChange,
   resolveQuoteLineItemOverrideUiState,
 } from "./quoteLineItemPriceOverrideUiState";
+import {
+  buildQuoteLineItemPricingFingerprint,
+  shouldRequestQuoteLineItemPricingPreview,
+} from "../quoteLineItemPricingPreview";
 
 type LineItemsSectionProps = {
   quoteId: string | null;
@@ -460,6 +464,9 @@ export function LineItemsSection({
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
   const [isCalculating, setIsCalculating] = useState(false);
   const [calcError, setCalcError] = useState<string | null>(null);
+  const lastPricingFingerprintRef = useRef("");
+  const pricingRequestSequenceRef = useRef(0);
+  const currentPricingFingerprintRef = useRef("");
   const [savingItemKey, setSavingItemKey] = useState<string | null>(null);
   const [savedItemKey, setSavedItemKey] = useState<string | null>(null);
   const [editingPriceItemKey, setEditingPriceItemKey] = useState<string | null>(null);
@@ -505,6 +512,9 @@ export function LineItemsSection({
     Record<
       string,
       {
+        productId: string;
+        variantId: string | null;
+        pbv2TreeVersionId: string | null;
         width: number;
         height: number;
         quantity: number;
@@ -657,6 +667,9 @@ export function LineItemsSection({
     
     // Save snapshot for dirty detection
     savedSnapshotRef.current[itemKey] = {
+      productId: expandedItem.productId,
+      variantId: expandedItem.variantId ?? null,
+      pbv2TreeVersionId: expandedItem.pbv2TreeVersionId ?? expandedProductActiveTreeVersionId ?? null,
       width: expandedItem.width,
       height: expandedItem.height,
       quantity: expandedItem.quantity,
@@ -686,6 +699,22 @@ export function LineItemsSection({
   const widthNum = fixedDimensions ? fixedDimensions.widthIn : dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
   const heightNum = fixedDimensions ? fixedDimensions.heightIn : dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
   const qtyNum = Number.isFinite(qty) && qty > 0 ? qty : 1;
+  const pricingSelections = isExpandedTreeV2 ? optionSelectionsV2.selected || {} : optionSelections;
+  const pricingFingerprint = buildQuoteLineItemPricingFingerprint({
+    productId: expandedItem?.productId ?? "",
+    variantId: expandedItem?.variantId ?? null,
+    treeVersionId: expandedItem?.pbv2TreeVersionId ?? expandedProductActiveTreeVersionId ?? null,
+    width: widthNum,
+    height: heightNum,
+    quantity: qtyNum,
+    selections: pricingSelections,
+  });
+  currentPricingFingerprintRef.current = pricingFingerprint;
+
+  useEffect(() => {
+    lastPricingFingerprintRef.current = "";
+    pricingRequestSequenceRef.current += 1;
+  }, [expandedKey]);
 
   const handleOptionSelectionsV2Change = useCallback((next: LineItemOptionSelectionsV2) => {
     setOptionSelectionsV2(next);
@@ -747,6 +776,9 @@ export function LineItemsSection({
         setSavedItemKey(expandedKey);
         // Update saved snapshot with current values
         savedSnapshotRef.current[expandedKey] = {
+          productId: expandedItem.productId,
+          variantId: expandedItem.variantId ?? null,
+          pbv2TreeVersionId: expandedItem.pbv2TreeVersionId ?? expandedProductActiveTreeVersionId ?? null,
           width: widthNum,
           height: heightNum,
           quantity: qtyNum,
@@ -904,10 +936,35 @@ export function LineItemsSection({
         return;
       }
 
-      if (isExpandedTreeV2 && !optionsV2Valid && !expandedSkipsPrintOptionValidation) {
+      const saved = expandedKey ? savedSnapshotRef.current[expandedKey] : null;
+      const savedSelections = isExpandedTreeV2
+        ? ((saved?.optionSelectionsJson as any)?.selected ?? saved?.optionSelectionsJson ?? {})
+        : buildOptionSelectionsRecordFromSelectedOptions(saved?.selectedOptions);
+      const savedFingerprint = saved
+        ? buildQuoteLineItemPricingFingerprint({
+            productId: saved.productId,
+            variantId: saved.variantId,
+            treeVersionId: saved.pbv2TreeVersionId,
+            width: saved.width,
+            height: saved.height,
+            quantity: saved.quantity,
+            selections: savedSelections,
+          })
+        : "";
+      const pricingInputsMatchSaved = Boolean(saved && pricingFingerprint === savedFingerprint);
+      const optionsValid = !isExpandedTreeV2 || optionsV2Valid || expandedSkipsPrintOptionValidation;
+      if (!shouldRequestQuoteLineItemPricingPreview({
+        fingerprint: pricingFingerprint,
+        lastRequestedFingerprint: lastPricingFingerprintRef.current,
+        pricingInputsMatchSaved,
+        optionsValid,
+      })) {
         setCalcError(null);
+        setIsCalculating(false);
         return;
       }
+      lastPricingFingerprintRef.current = pricingFingerprint;
+      const requestSequence = ++pricingRequestSequenceRef.current;
 
       setIsCalculating(true);
       setCalcError(null);
@@ -948,6 +1005,12 @@ export function LineItemsSection({
       })
         .then((r) => r.json())
         .then((data) => {
+          if (
+            requestSequence !== pricingRequestSequenceRef.current ||
+            currentPricingFingerprintRef.current !== pricingFingerprint
+          ) {
+            return;
+          }
           // Backend returns 'linePrice' in dollars (legacy compatibility)
           const price = Number(data?.linePrice);
           if (!Number.isFinite(price)) return;
@@ -988,6 +1051,12 @@ export function LineItemsSection({
           }
         })
         .catch((err: any) => {
+          if (
+            requestSequence !== pricingRequestSequenceRef.current ||
+            currentPricingFingerprintRef.current !== pricingFingerprint
+          ) {
+            return;
+          }
           if (isSessionExpiredError(err)) {
             setCalcError(SESSION_EXPIRED_MESSAGE);
             notifySessionExpired("quote-line-price-preview");
@@ -1009,16 +1078,17 @@ export function LineItemsSection({
           }
           setCalcError(errorMessage);
         })
-        .finally(() => setIsCalculating(false));
+        .finally(() => {
+          if (
+            requestSequence === pricingRequestSequenceRef.current &&
+            currentPricingFingerprintRef.current === pricingFingerprint
+          ) {
+            setIsCalculating(false);
+          }
+        });
     },
     [
-      expandedItem?.productId,
-      expandedItem?.variantId,
-      widthText,
-      heightText,
-      qtyNum,
-      optionSelections,
-      optionSelectionsV2,
+      pricingFingerprint,
       isExpandedTreeV2,
       optionsV2Valid,
       expandedSkipsPrintOptionValidation,
@@ -1085,6 +1155,55 @@ export function LineItemsSection({
                       ? requiresProofApproval
                       : Boolean((item as any).requiresProofApproval ?? productRequiresProofApproval);
                     const proofApprovalLockEnabled = orgPreferences.proofing?.proofApprovalLockEnabled === true;
+                    const handlePriceOverrideModeChange = async (selectedValue: string) => {
+                      const previousOverrideCents =
+                        hasOverride && typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)
+                          ? item.overridePriceCents
+                          : null;
+                      if (selectedValue === "__none") {
+                        setPriceOverrideModeByKey((prev) => {
+                          const next = { ...prev };
+                          delete next[itemKey];
+                          return next;
+                        });
+                        setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: baseCalculatedTotal.toFixed(2) }));
+                        await refreshQuotePricingAfterOverrideChange({
+                          item,
+                          itemKey,
+                          nextOverrideCents: null,
+                          priceOverrideMode: null,
+                          priceOverrideValueCents: null,
+                          previousOverrideCents,
+                        });
+                        return;
+                      }
+
+                      const nextMode = selectedValue as LineItemPriceOverrideMode;
+                      setPriceOverrideModeByKey((prev) => ({ ...prev, [itemKey]: nextMode }));
+                      const rawValue = priceEditTextByKey[itemKey] ?? editorPriceValue.toFixed(2);
+                      const nextOverride = resolveQuoteLineItemOverrideModeChange({
+                        baseCalculatedTotalCents,
+                        quantity: Number(item.quantity) > 0 ? Number(item.quantity) : 1,
+                        mode: nextMode,
+                        rawValue,
+                        fallbackValueCents: Math.round(editorPriceValue * 100),
+                      });
+
+                      if (!nextOverride) {
+                        setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: editorPriceValue.toFixed(2) }));
+                        return;
+                      }
+
+                      setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: nextOverride.displayText }));
+                      await refreshQuotePricingAfterOverrideChange({
+                        item,
+                        itemKey,
+                        nextOverrideCents: nextOverride.pricing.effectiveTotalCents,
+                        priceOverrideMode: nextMode,
+                        priceOverrideValueCents: nextOverride.valueCents,
+                        previousOverrideCents,
+                      });
+                    };
 
                     return (
                       <SortableLineItemWrapper key={itemKey} id={itemKey}>
@@ -1269,92 +1388,32 @@ export function LineItemsSection({
                             widthInputRef={(node) => {
                               widthInputRefs.current[itemKey] = node;
                             }}
-                            optionsSlot={
-                              <>
-                                <div className="mb-3 rounded-md border border-border/40 bg-background/70 p-3">
-                                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
-                                    <div>
-                                      <div className="text-sm font-medium">Price Override</div>
-                                      <div className="text-xs text-muted-foreground">
-                                        Calculated {formatMoney(baseCalculatedTotal)} · Effective {formatMoney(visiblePrice.displayTotal)}
-                                      </div>
-                                    </div>
-                                    {hasOverride ? (
-                                      <Badge variant="outline" className="border-amber-500/40 bg-amber-500/10 text-amber-700">
-                                        {overrideLabel}
-                                      </Badge>
-                                    ) : null}
-                                  </div>
-                                  <div className="grid gap-2 sm:grid-cols-[minmax(180px,260px)_1fr]">
-                                    <select
-                                      value={overrideUiState.selectValue}
-                                      onChange={async (event) => {
-                                        const selectedValue = event.target.value;
-                                        const previousOverrideCents =
-                                          hasOverride && typeof item.overridePriceCents === "number" && Number.isFinite(item.overridePriceCents)
-                                            ? item.overridePriceCents
-                                            : null;
-                                        if (selectedValue === "__none") {
-                                          setPriceOverrideModeByKey((prev) => {
-                                            const next = { ...prev };
-                                            delete next[itemKey];
-                                            return next;
-                                          });
-                                          setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: baseCalculatedTotal.toFixed(2) }));
-                                          await refreshQuotePricingAfterOverrideChange({
-                                            item,
-                                            itemKey,
-                                            nextOverrideCents: null,
-                                            priceOverrideMode: null,
-                                            priceOverrideValueCents: null,
-                                            previousOverrideCents,
-                                          });
-                                          return;
-                                        }
-
-                                        const nextMode = selectedValue as LineItemPriceOverrideMode;
-                                        setPriceOverrideModeByKey((prev) => ({ ...prev, [itemKey]: nextMode }));
-                                        const rawValue = priceEditTextByKey[itemKey] ?? editorPriceValue.toFixed(2);
-                                        const nextOverride = resolveQuoteLineItemOverrideModeChange({
-                                          baseCalculatedTotalCents,
-                                          quantity: Number(item.quantity) > 0 ? Number(item.quantity) : 1,
-                                          mode: nextMode,
-                                          rawValue,
-                                          fallbackValueCents: Math.round(editorPriceValue * 100),
-                                        });
-
-                                        if (!nextOverride) {
-                                          setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: editorPriceValue.toFixed(2) }));
-                                          return;
-                                        }
-
-                                        setPriceEditTextByKey((prev) => ({ ...prev, [itemKey]: nextOverride.displayText }));
-                                        await refreshQuotePricingAfterOverrideChange({
-                                          item,
-                                          itemKey,
-                                          nextOverrideCents: nextOverride.pricing.effectiveTotalCents,
-                                          priceOverrideMode: nextMode,
-                                          priceOverrideValueCents: nextOverride.valueCents,
-                                          previousOverrideCents,
-                                        });
-                                      }}
-                                      className="h-9 rounded-md border border-input bg-background px-3 text-sm focus:outline-none focus:ring-2 focus:ring-ring"
-                                      disabled={readOnly}
-                                    >
-                                      <option value="__none">No override</option>
-                                      <option value="override_total_after_margin">Total override</option>
-                                      <option value="override_unit_after_margin">Unit override</option>
-                                      <option value="override_total_before_margin">Total before margin</option>
-                                      <option value="override_unit_before_margin">Unit before margin</option>
-                                      <option value="apply_discount">Discount</option>
-                                      <option value="append_value">Add value</option>
-                                    </select>
-                                    <div className="self-center text-xs text-muted-foreground">
-                                      Base unit {formatMoney(baseCalculatedTotal / Math.max(1, Number(item.quantity) || 1))} · Qty {item.quantity || 0}
-                                    </div>
+                            priceControlSlot={
+                              isExpanded ? (
+                                <div>
+                                  <select
+                                    aria-label="Price override mode"
+                                    value={overrideUiState.selectValue}
+                                    onChange={(event) => void handlePriceOverrideModeChange(event.target.value)}
+                                    className="h-8 w-36 rounded-md border border-input bg-background px-2 text-xs shadow-sm focus:outline-none focus:ring-2 focus:ring-ring"
+                                    disabled={readOnly}
+                                  >
+                                    <option value="__none">No override</option>
+                                    <option value="override_total_after_margin">Total override</option>
+                                    <option value="override_unit_after_margin">Unit override</option>
+                                    <option value="override_total_before_margin">Total before margin</option>
+                                    <option value="override_unit_before_margin">Unit before margin</option>
+                                    <option value="apply_discount">Discount</option>
+                                    <option value="append_value">Add value</option>
+                                  </select>
+                                  <div className="hidden">
+                                    Calculated {formatMoney(baseCalculatedTotal)} · Effective {formatMoney(visiblePrice.displayTotal)}
                                   </div>
                                 </div>
-
+                              ) : undefined
+                            }
+                            optionsSlot={
+                              <>
                                 {isExpandedTreeV2 && expandedOptionTreeJson ? (
                                   <ProductOptionsPanelV2
                                     tree={expandedOptionTreeJson}
