@@ -1135,9 +1135,11 @@ function PreviewPanel({
   notes,
   onPreviewArtwork,
   onPreviewProductionFile,
-  previewsCollapsed,
+  artworkCollapsed,
+  productionFileCollapsed,
   previewSize,
-  onTogglePreviews,
+  onToggleArtwork,
+  onToggleProductionFile,
   onPreviewSizeChange,
   documentNumberDisplayMode,
 }: {
@@ -1147,9 +1149,11 @@ function PreviewPanel({
   notes: Array<{ id: string; text: string; createdAt: string; actorUserId?: string | null; edited?: boolean }>;
   onPreviewArtwork: (side: "front" | "back") => void;
   onPreviewProductionFile: (file: ProductionFileSummary) => void;
-  previewsCollapsed: boolean;
+  artworkCollapsed: boolean;
+  productionFileCollapsed: boolean;
   previewSize: ProductionPreviewSize;
-  onTogglePreviews: () => void;
+  onToggleArtwork: () => void;
+  onToggleProductionFile: () => void;
   onPreviewSizeChange: (size: ProductionPreviewSize) => void;
   documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
 }) {
@@ -1184,7 +1188,7 @@ function PreviewPanel({
 
   const productionFiles = job.productionFiles ?? job.order.productionFiles ?? [];
   const primaryProductionFile = productionFiles[0] ?? null;
-  const previewColumnClass = previewsCollapsed
+  const previewColumnClass = artworkCollapsed && productionFileCollapsed
     ? "xl:grid-cols-[300px_minmax(260px,1fr)_minmax(280px,360px)]"
     : previewSize === "compact"
       ? "xl:grid-cols-[minmax(320px,0.75fr)_minmax(260px,1.25fr)_minmax(280px,340px)]"
@@ -1214,15 +1218,16 @@ function PreviewPanel({
     <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4">
       <div className={`grid grid-cols-1 gap-4 ${previewColumnClass}`}>
         <ProductionPreviewArea
-          collapsed={previewsCollapsed}
+          artworkCollapsed={artworkCollapsed}
+          productionFileCollapsed={productionFileCollapsed}
           size={previewSize}
           artworkCount={thumbs.length}
           productionFileName={primaryProductionFile?.fileName}
           productionFileStatus={primaryProductionFile?.previewAvailabilityStatus}
-          onToggle={onTogglePreviews}
+          onToggleArtwork={onToggleArtwork}
+          onToggleProductionFile={onToggleProductionFile}
           onSizeChange={onPreviewSizeChange}
-        >
-          <div className="space-y-3">
+          artworkPreview={
           <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
           {/* FRONT preview - always shown */}
           <div className="min-w-0 space-y-1">
@@ -1277,12 +1282,14 @@ function PreviewPanel({
             </div>
           )}
           </div>
+          }
+          productionFilePreview={
           <ProductionFilePreviewPanel
             files={productionFiles}
             onPreview={onPreviewProductionFile}
           />
-          </div>
-        </ProductionPreviewArea>
+          }
+        />
 
         <div className="space-y-3 min-w-0 overflow-hidden">
           <div className="flex items-start justify-between gap-3">
@@ -1457,9 +1464,16 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
   const [productionPreviewFile, setProductionPreviewFile] = useState<ProductionFileSummary | null>(null);
   const [productionFileAccessError, setProductionFileAccessError] = useState<string | null>(null);
-  const [previewsCollapsed, setPreviewsCollapsed] = useState(
-    () => typeof window !== "undefined" && window.localStorage.getItem("titan.production.flatbed.previewsCollapsed") === "true",
-  );
+  const [artworkCollapsed, setArtworkCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("titan.production.flatbed.artworkCollapsed") === "true"
+      || window.localStorage.getItem("titan.production.flatbed.previewsCollapsed") === "true";
+  });
+  const [productionFileCollapsed, setProductionFileCollapsed] = useState(() => {
+    if (typeof window === "undefined") return false;
+    return window.localStorage.getItem("titan.production.flatbed.productionFileCollapsed") === "true"
+      || window.localStorage.getItem("titan.production.flatbed.previewsCollapsed") === "true";
+  });
   const [previewSize, setPreviewSize] = useState<ProductionPreviewSize>(() => {
     if (typeof window === "undefined") return "normal";
     const saved = window.localStorage.getItem("titan.production.flatbed.previewSize");
@@ -1468,8 +1482,12 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   const [printerFilter, setPrinterFilter] = useState("all");
 
   useEffect(() => {
-    window.localStorage.setItem("titan.production.flatbed.previewsCollapsed", String(previewsCollapsed));
-  }, [previewsCollapsed]);
+    window.localStorage.setItem("titan.production.flatbed.artworkCollapsed", String(artworkCollapsed));
+  }, [artworkCollapsed]);
+
+  useEffect(() => {
+    window.localStorage.setItem("titan.production.flatbed.productionFileCollapsed", String(productionFileCollapsed));
+  }, [productionFileCollapsed]);
 
   useEffect(() => {
     window.localStorage.setItem("titan.production.flatbed.previewSize", previewSize);
@@ -1678,9 +1696,11 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
               setPreviewModalOpen(true);
             }}
             onPreviewProductionFile={setProductionPreviewFile}
-            previewsCollapsed={previewsCollapsed}
+            artworkCollapsed={artworkCollapsed}
+            productionFileCollapsed={productionFileCollapsed}
             previewSize={previewSize}
-            onTogglePreviews={() => setPreviewsCollapsed((current) => !current)}
+            onToggleArtwork={() => setArtworkCollapsed((current) => !current)}
+            onToggleProductionFile={() => setProductionFileCollapsed((current) => !current)}
             onPreviewSizeChange={setPreviewSize}
             documentNumberDisplayMode={productionNumberDisplayMode}
           />
