@@ -131,7 +131,9 @@ export function LineItemAttachmentsPanel({
   const queryClient = useQueryClient();
   const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const dragDepthRef = useRef(0);
   const [isUploading, setIsUploading] = useState(false);
+  const [isDragOver, setIsDragOver] = useState(false);
   const [isExpanded, setIsExpanded] = useState(defaultExpanded);
   const [userClosed, setUserClosed] = useState(false); // Track if user explicitly closed the panel
   const [isCreatingQuote, setIsCreatingQuote] = useState(false);
@@ -690,6 +692,47 @@ export function LineItemAttachmentsPanel({
     fileInputRef.current?.click();
   };
 
+  const uploadDisabled =
+    isUploading ||
+    isCreatingQuote ||
+    isPersistingLineItem ||
+    (!lineItemId && !ensureLineItemId && !onTemporaryOrderUpload);
+
+  const preventArtworkDropNavigation = (event: React.DragEvent<HTMLDivElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+  };
+
+  const handleArtworkDragEnter = (event: React.DragEvent<HTMLDivElement>) => {
+    preventArtworkDropNavigation(event);
+    if (uploadDisabled) return;
+    dragDepthRef.current += 1;
+    setIsDragOver(true);
+  };
+
+  const handleArtworkDragOver = (event: React.DragEvent<HTMLDivElement>) => {
+    preventArtworkDropNavigation(event);
+    if (uploadDisabled) return;
+    event.dataTransfer.dropEffect = "copy";
+    if (!isDragOver) setIsDragOver(true);
+  };
+
+  const handleArtworkDragLeave = (event: React.DragEvent<HTMLDivElement>) => {
+    preventArtworkDropNavigation(event);
+    dragDepthRef.current = Math.max(0, dragDepthRef.current - 1);
+    if (dragDepthRef.current === 0) setIsDragOver(false);
+  };
+
+  const handleArtworkDrop = (event: React.DragEvent<HTMLDivElement>) => {
+    preventArtworkDropNavigation(event);
+    dragDepthRef.current = 0;
+    setIsDragOver(false);
+    if (uploadDisabled) return;
+    const droppedFiles = Array.from(event.dataTransfer.files ?? []);
+    if (droppedFiles.length === 0) return;
+    void performUpload(droppedFiles);
+  };
+
   return (
     <div 
       className="border rounded-lg bg-muted/30"
@@ -733,7 +776,20 @@ export function LineItemAttachmentsPanel({
 
         {/* Upload button - always visible when no files, or when expanded */}
         {(fileCount === 0 || isExpanded) && (
-          <div className="mt-2">
+          <div
+            className={cn(
+              "mt-2 rounded-md border border-dashed p-2 transition-colors",
+              isDragOver
+                ? "border-primary bg-primary/10 ring-2 ring-primary/20"
+                : "border-border/70 bg-background/40",
+              uploadDisabled && "opacity-60",
+            )}
+            data-testid="line-item-artwork-dropzone"
+            onDragEnter={handleArtworkDragEnter}
+            onDragOver={handleArtworkDragOver}
+            onDragLeave={handleArtworkDragLeave}
+            onDrop={handleArtworkDrop}
+          >
             <input
               type="file"
               ref={fileInputRef}
@@ -758,7 +814,7 @@ export function LineItemAttachmentsPanel({
                 e.stopPropagation();
                 handleUploadClick(e);
               }}
-              disabled={isUploading || isCreatingQuote || isPersistingLineItem || (!lineItemId && !ensureLineItemId && !onTemporaryOrderUpload)}
+              disabled={uploadDisabled}
             >
               {(isUploading || isCreatingQuote || isPersistingLineItem) ? (
                 <Loader2 className="w-3.5 h-3.5 mr-1.5 animate-spin" />
@@ -773,6 +829,12 @@ export function LineItemAttachmentsPanel({
                 ? "Uploading..."
                 : "Upload Artwork"}
             </Button>
+            <p className={cn(
+              "mt-1 text-center text-[11px]",
+              isDragOver ? "font-medium text-primary" : "text-muted-foreground",
+            )}>
+              {isDragOver ? "Drop files to add artwork" : "or drag and drop artwork files here"}
+            </p>
             {!lineItemId && !ensureLineItemId && !onTemporaryOrderUpload ? (
               <p className="text-xs text-muted-foreground text-center mt-1">
                 Save line item to upload artwork
