@@ -197,6 +197,25 @@ describe("sheet_consumption_sqft", () => {
     }));
   });
 
+  test("ACM 24x48 bills only its 8 sqft footprint when both remaining drops are usable", () => {
+    const result = runAcmDropBillingPreview(24, 48);
+
+    expect(result.totalPrice).toBe(40);
+    expect(result.debug?.sheetYield).toEqual(expect.objectContaining({
+      consumedSqft: 8,
+      billedSheetSqft: 8,
+      leftoverDropWidth: 24,
+      leftoverDropLength: 48,
+      widthDropUsable: true,
+      lengthDropUsable: true,
+      dropUsable: true,
+    }));
+  });
+
+  test("ACM 49x72 fails closed because it does not fit either orientation", () => {
+    expect(() => runAcmDropBillingPreview(49, 72)).toThrow("exceeds sheet 48x96 in both orientations");
+  });
+
   // ── orientation selection ──────────────────────────────────────────────────
 
   test("normal orientation wins when it uses less effective width", () => {

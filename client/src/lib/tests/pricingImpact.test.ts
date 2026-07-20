@@ -187,6 +187,43 @@ describe("normalizeLegacyPricingImpact", () => {
       unit: "perPiece",
     });
   });
+
+  test("tree normalization preserves sheet formula and rotation configuration", () => {
+    const source = {
+      schemaVersion: 2,
+      meta: {
+        pricingV2: {
+          base: {
+            formula: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+            formulaVariables: {
+              sheet_width: 48,
+              sheet_length: 96,
+              usable_drop_min: 24,
+              billable_length_increment: 12,
+              minimum_billable_sqft: 3,
+              allow_rotation: true,
+            },
+          },
+        },
+      },
+      nodes: {
+        custom: { id: "custom", pricingImpact: [{ mode: "addFlatCents", cents: 100 }] },
+      },
+    };
+
+    const { tree, changed } = normalizeTreePricingImpacts(source);
+
+    expect(changed).toBe(true);
+    expect(tree.meta).toEqual(source.meta);
+    expect(tree.meta.pricingV2.base.formulaVariables.allow_rotation).toBe(true);
+    expect(tree.meta.pricingV2.base.formulaVariables).toMatchObject({
+      sheet_width: 48,
+      sheet_length: 96,
+      usable_drop_min: 24,
+      billable_length_increment: 12,
+      minimum_billable_sqft: 3,
+    });
+  });
 });
 
 describe("normalizeFormulaInputDraft", () => {
