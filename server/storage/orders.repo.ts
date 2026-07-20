@@ -44,7 +44,7 @@ import {
     type CustomerContact,
     type InsertJobStatusLog,
 } from "@shared/schema";
-import { eq, and, or, ilike, gte, lte, desc, sql, isNull, inArray } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, asc, desc, sql, isNull, inArray } from "drizzle-orm";
 import { deriveLineItemProofSummary, deriveOrderProofSummary, type LineItemProofSummary, type OrderProofSummary } from "@shared/orderProofStatus";
 import { deriveOrderInvoiceState, type OrderInvoiceStateSummary } from "@shared/orderInvoiceState";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
@@ -1100,7 +1100,11 @@ export class OrdersRepository {
     async getOrderById(organizationId: string, id: string): Promise<OrderWithRelations | undefined> {
         const [order] = await this.dbInstance.select().from(orders).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId)));
         if (!order) return undefined;
-        const rawLineItems = await this.dbInstance.select().from(orderLineItems).where(eq(orderLineItems.orderId, id));
+        const rawLineItems = await this.dbInstance
+            .select()
+            .from(orderLineItems)
+            .where(eq(orderLineItems.orderId, id))
+            .orderBy(asc(orderLineItems.sortOrder), asc(orderLineItems.createdAt), asc(orderLineItems.id));
         const lineItemIds = rawLineItems.map((lineItem) => String(lineItem.id));
         const activeOwnerByLineItem = lineItemIds.length > 0
             ? await resolveActiveProductionOwners(this.dbInstance, {
@@ -1128,7 +1132,7 @@ export class OrdersRepository {
         }
 
         const enrichedLineItems = await Promise.all(
-            rawLineItems.map(async (li) => {
+            rawLineItems.map(async (li, index) => {
                 const [product] = await this.dbInstance.select().from(products).where(eq(products.id, li.productId));
                 let productVariant = null as any;
                 if (li.productVariantId) {
@@ -1144,6 +1148,8 @@ export class OrdersRepository {
                     activeOwnerJobId: activeOwner?.id ?? null,
                     activeOwnerStationKey: activeOwner?.stationKey ?? null,
                     activeOwnerStepKey: activeOwner?.stepKey ?? null,
+                    activeOwnerStatus: activeOwner?.status ?? null,
+                    lineNumber: index + 1,
                 } as any;
             })
         );

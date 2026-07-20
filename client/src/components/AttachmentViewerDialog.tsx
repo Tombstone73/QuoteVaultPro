@@ -13,7 +13,7 @@ import { apiFetchBlob } from "@/lib/queryClient";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { cn } from "@/lib/utils";
 import { resolvePdfViewportScale, type PdfFitMode } from "@/lib/attachmentViewerSizing";
-import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, House, Printer, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Printer, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
 
 export type AttachmentPage = {
   id: string;
@@ -605,7 +605,7 @@ export function AttachmentViewerDialog({
 
   const clampZoom = (value: number) => Math.min(3, Math.max(0.5, value));
   const canPanImage = isImage && zoomLevel > 1 && !!imageBlobUrl;
-  const clampPdfZoom = (value: number) => Math.min(4, Math.max(0.4, value));
+  const clampPdfZoom = (value: number) => Math.min(4, Math.max(0.05, value));
   const pdfCanGoPrev = isPdf && pdfPageNumber > 1;
   const pdfCanGoNext = isPdf && pdfPageCount > 0 && pdfPageNumber < pdfPageCount;
   const canPanPdf = isPdf && !pdfLoading && !pdfError && pdfRenderedScale > 0;
@@ -886,8 +886,8 @@ export function AttachmentViewerDialog({
                   <Button type="button" variant="outline" size="icon" onClick={() => setZoomLevel((value) => Math.max(value - 0.25, 0.5))} title="Zoom out">
                     <ZoomOut className="h-4 w-4" />
                   </Button>
-                  <Button type="button" variant="outline" size="icon" onClick={resetImageView} title="Reset view">
-                    <House className="h-4 w-4" />
+                  <Button type="button" variant="outline" size="sm" onClick={resetImageView} title="Fit page">
+                    Fit Page
                   </Button>
                   <Button type="button" variant="outline" size="sm" onClick={() => setZoomLevel(1)} title="Reset zoom">
                     {Math.round(zoomLevel * 100)}%
@@ -907,11 +907,11 @@ export function AttachmentViewerDialog({
                   <Button type="button" variant="outline" size="icon" onClick={() => setPdfPageNumber((value) => Math.min(pdfPageCount || value, value + 1))} disabled={!pdfCanGoNext} title="Next page">
                     <ChevronRight className="h-4 w-4" />
                   </Button>
-                  <Button type="button" variant="outline" size="icon" onClick={resetPdfView} title="Reset view">
-                    <House className="h-4 w-4" />
+                  <Button type="button" variant={pdfFitMode === "page" ? "default" : "outline"} size="sm" onClick={resetPdfView} title="Fit page">
+                    Fit Page
                   </Button>
-                  <Button type="button" variant="outline" size="sm" onClick={() => setPdfFitMode("width")} title="Fit width">
-                    Width
+                  <Button type="button" variant={pdfFitMode === "width" ? "default" : "outline"} size="sm" onClick={() => setPdfFitMode("width")} title="Fit width">
+                    Fit Width
                   </Button>
                   <Button type="button" variant="outline" size="icon" onClick={() => {
                     setPdfFitMode("custom");

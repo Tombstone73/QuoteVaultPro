@@ -1071,6 +1071,7 @@ export function registerProductionJobsRoutes(
         string,
         Array<{
           id: string;
+          lineNumber: number;
           description: string;
           quantity: number;
           width: any;
@@ -1100,6 +1101,7 @@ export function registerProductionJobsRoutes(
         string,
         {
           id: string;
+          lineNumber: number;
           description: string;
           quantity: number;
           width: any;
@@ -1128,6 +1130,7 @@ export function registerProductionJobsRoutes(
         const list = lineItemsByOrderId.get(li.orderId) ?? [];
         const mapped = {
           id: li.id,
+          lineNumber: list.length + 1,
           description: li.description,
           quantity: Number(li.quantity) || 0,
           width: li.width,
@@ -1555,6 +1558,7 @@ export function registerProductionJobsRoutes(
           productionJobId: row.id, // Explicit production job ID for clarity
           jobId: row.id,
           lineItemId: String(row.lineItemId ?? ""),
+          lineNumber: primaryLineItem?.lineNumber ?? null,
           orderId: row.orderId,
           orderNumber: String(row.orderNumber ?? ""), // Order number at top level for easy access
           displayNumber: row.displayNumber,
@@ -2049,6 +2053,8 @@ export function registerProductionJobsRoutes(
 
       const primaryLineItem = lineItems.find((li) => li.id === lineItemId) ?? null;
       if (!primaryLineItem) return res.status(404).json({ error: "Line item not found for production job" });
+      const primaryLineNumber = lineItems.findIndex((li) => li.id === lineItemId) + 1;
+      (primaryLineItem as any).lineNumber = primaryLineNumber;
 
       const attachmentRows = await db
         .select({
@@ -2432,6 +2438,7 @@ export function registerProductionJobsRoutes(
           routingSource,
           idempotencyNote,
           lineItemId: job.lineItemId,
+          lineNumber: primaryLineNumber,
           orderId,
           status: job.status,
           startedAt: toIso(job.startedAt),

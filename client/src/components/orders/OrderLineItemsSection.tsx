@@ -9,7 +9,6 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Separator } from "@/components/ui/separator";
 import { Textarea } from "@/components/ui/textarea";
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
@@ -44,6 +43,8 @@ import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } 
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
 import { LineItemThumbnail } from "@/components/LineItemThumbnail";
+import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { toAttachmentViewerAttachments } from "@/lib/attachmentViewer";
 import { deriveLineItemPricingDisplay, deriveVisibleLineItemPriceDisplay } from "@/components/orders/lineItemPricingDisplay";
 import { buildQuoteCalculatePayload } from "@/components/orders/quoteCalculatePayload";
 import { filterAndPrioritizeProductsForMaterial } from "@/components/orders/productSuggestionPriority";
@@ -61,7 +62,16 @@ import { getLineItemProofBadgeClass } from "@/lib/orderProofUi";
 
 import { computePbv2InputSignature, pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import { LineItemCard } from "@/components/line-items/LineItemCard";
-import { getOrderLineItemActiveWorkWarning, getSelectableProductionLineItemIds } from "@/components/orders/orderLineItemEditorUi";
+import {
+  getOrderLineItemActiveWorkWarning,
+  buildOrderLineNumberMap,
+  buildOrderLineItemProductionActionRequests,
+  getOrderLineItemProductionActions,
+  getSelectableProductionLineItemIds,
+  resolveOrderLineItemOperationalDisplay,
+  sortOrderLineItemsByPersistedOrder,
+  type OrderLineItemProductionAction,
+} from "@/components/orders/orderLineItemEditorUi";
 import { OrderLineItemSelectAllControl } from "@/components/orders/OrderLineItemSelectAllControl";
 import {
   buildPbv2DefaultsHydrationKey,
@@ -300,19 +310,6 @@ function stableStringify(value: unknown): string {
   return `{${keys.map((key) => `${JSON.stringify(key)}:${stableStringify(obj[key])}`).join(",")}}`;
 }
 
-const WORKFLOW_LABELS: Record<string, string> = {
-  new: "New",
-  needs_design: "Needs Design",
-  in_design: "In Design",
-  ready_for_prepress: "Ready for Prepress",
-  in_prepress: "In Prepress",
-  ready_for_production: "Ready for Production",
-  in_production: "In Production",
-  completed: "Completed",
-  on_hold: "On Hold",
-  canceled: "Canceled",
-};
-
 function workflowBadgeVariant(state: string | undefined): "default" | "secondary" | "outline" | "destructive" {
   if (state === "completed") return "default";
   if (state === "canceled") return "destructive";
@@ -374,33 +371,6 @@ function getWorkflowActions(state: string | undefined) {
       return [];
     default:
       return [];
-  }
-}
-
-function getOperationalNextStep(state: string | undefined, hasActiveOwner: boolean): string {
-  switch (state) {
-    case "new":
-      return "Review routing";
-    case "needs_design":
-      return "Start design";
-    case "in_design":
-      return "Finish design";
-    case "ready_for_prepress":
-      return "Start prepress";
-    case "in_prepress":
-      return "Finish prepress";
-    case "ready_for_production":
-      return hasActiveOwner ? "Production scheduled" : "Send to production";
-    case "in_production":
-      return "Production in progress";
-    case "completed":
-      return "None";
-    case "on_hold":
-      return "Review hold";
-    case "canceled":
-      return "None";
-    default:
-      return "Review item";
   }
 }
 
@@ -620,6 +590,89 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [selectedForProduction, setSelectedForProduction] = useState<Set<string>>(new Set());
   const scheduleProduction = useScheduleOrderLineItemsForProduction(orderId);;
   const transitionWorkflow = useTransitionLineItemWorkflow(orderId);
+  const [productionOwnerOverrides, setProductionOwnerOverrides] = useState<Record<string, {
+    activeOwnerJobId?: string | null;
+    activeOwnerStationKey?: string | null;
+    activeOwnerStepKey?: string | null;
+    activeOwnerStatus?: string | null;
+    workflowState?: string | null;
+  }>>({});
+  const productionAction = useMutation({
+    mutationFn: async (input: {
+      action: OrderLineItemProductionAction;
+      lineItemId: string;
+      jobId: string;
+      stationKey?: string | null;
+    }) => {
+      const requests = buildOrderLineItemProductionActionRequests(input);
+      let result: any = null;
+      for (const request of requests) {
+        const response = await fetch(request.url, {
+          method: request.method,
+          headers: request.body ? { "Content-Type": "application/json" } : undefined,
+          body: request.body ? JSON.stringify(request.body) : undefined,
+          credentials: "include",
+        });
+        result = await response.json().catch(() => ({}));
+        if (!response.ok) throw new Error(result.error || result.message || `Failed to ${input.action.replace(/_/g, " ")}`);
+      }
+      return result;
+    },
+    onMutate: (input) => {
+      const previous = productionOwnerOverrides[input.lineItemId];
+      setProductionOwnerOverrides((current) => ({
+        ...current,
+        [input.lineItemId]: input.action === "return_to_prepress"
+          ? {
+              activeOwnerJobId: input.jobId,
+              activeOwnerStationKey: "prepress",
+              activeOwnerStepKey: "prepress",
+              activeOwnerStatus: "queued",
+              workflowState: "in_prepress",
+            }
+          : {
+              activeOwnerJobId: input.jobId,
+              activeOwnerStationKey: input.stationKey ?? null,
+              activeOwnerStatus: input.action === "hold" ? "paused" : "in_progress",
+              workflowState: "in_production",
+            },
+      }));
+      return { previous };
+    },
+    onSuccess: async (_result, input) => {
+      toast({
+        title: input.action === "return_to_prepress" ? "Sent to prepress" : "Production updated",
+        description: input.action === "hold"
+          ? "Production is on hold."
+          : input.action === "complete"
+            ? "Production step completed."
+            : input.action === "return_to_prepress"
+              ? "The line item is back in the prepress queue."
+              : "Production started.",
+      });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
+      ]);
+      await onAfterLineItemsChange?.();
+      setProductionOwnerOverrides((current) => {
+        const next = { ...current };
+        delete next[input.lineItemId];
+        return next;
+      });
+    },
+    onError: (error: Error, input, context) => {
+      setProductionOwnerOverrides((current) => {
+        const next = { ...current };
+        if (context?.previous) next[input.lineItemId] = context.previous;
+        else delete next[input.lineItemId];
+        return next;
+      });
+      toast({ title: "Workflow action failed", description: error.message, variant: "destructive" });
+    },
+  });
 
   const acceptPbv2Components = useMutation({
     mutationFn: async (lineItemId: string) => {
@@ -726,9 +779,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   }, [displayLineItems]);
   const lineItemAssetsAssociationKnown = lineItemPreviewsQuery.isSuccess;
 
-  // UI-only reordering: keep a stable ordered id list for the current session.
   const activeLineItems = useMemo(
-    () => displayLineItems.filter((li) => li.status !== "canceled"),
+    () => sortOrderLineItemsByPersistedOrder(displayLineItems.filter((li) => li.status !== "canceled") as any[]) as OrderLineItem[],
     [displayLineItems]
   );
 
@@ -831,14 +883,15 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   useEffect(() => {
     const nextIds = activeLineItems.map((li) => li.id);
 
-    setOrderedKeys((prev) => {
-      if (!prev.length) return nextIds;
-
-      const existing = prev.filter((id) => nextIds.includes(id));
-      const additions = nextIds.filter((id) => !existing.includes(id));
-      return [...existing, ...additions];
-    });
+    setOrderedKeys((prev) => prev.length === nextIds.length && prev.every((id, index) => id === nextIds[index]) ? prev : nextIds);
   }, [activeLineItems]);
+
+  const lineNumberById = useMemo(
+    () => buildOrderLineNumberMap(
+      sortOrderLineItemsByPersistedOrder(displayLineItems as any[]).map((item) => String(item.id)),
+    ),
+    [displayLineItems],
+  );
 
   const orderedLineItems = useMemo(() => {
     if (!orderedKeys.length) return activeLineItems;
@@ -1377,7 +1430,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     return null;
   }, [expandedItem, expandedProduct]);
 
-  const [artworkModalLineItemId, setArtworkModalLineItemId] = useState<string | null>(null);
+  const [artworkViewerLineItemId, setArtworkViewerLineItemId] = useState<string | null>(null);
 
   const [missingArtworkSuppressReason, setMissingArtworkSuppressReason] = useState<string>("");
   const [savingFlagLineItemId, setSavingFlagLineItemId] = useState<string | null>(null);
@@ -1386,15 +1439,24 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setMissingArtworkSuppressReason("");
   }, [expandedId]);
 
-  const artworkModalLineItem = useMemo(
-    () => displayLineItems.find((li) => li.id === artworkModalLineItemId) ?? null,
-    [displayLineItems, artworkModalLineItemId]
-  );
-
-  const artworkModalProductName = useMemo(() => {
-    if (!artworkModalLineItem) return "";
-    return (artworkModalLineItem as any).product?.name || artworkModalLineItem.description || "Item";
-  }, [artworkModalLineItem]);
+  const artworkViewerAttachments = useMemo(() => {
+    const attachedFiles = (allOrderFiles as any[]).filter(
+      (file) => String(file?.orderLineItemId ?? "") === String(artworkViewerLineItemId ?? ""),
+    );
+    if (attachedFiles.length > 0) return toAttachmentViewerAttachments(attachedFiles);
+    const previewUrl = artworkViewerLineItemId
+      ? lineItemPreviews[String(artworkViewerLineItemId)]?.thumbUrls?.[0]
+      : null;
+    return previewUrl
+      ? toAttachmentViewerAttachments([{
+          id: `line-item-preview-${artworkViewerLineItemId}`,
+          fileName: "Artwork preview",
+          mimeType: "image/jpeg",
+          previewUrl,
+          thumbnailUrl: previewUrl,
+        }])
+      : [];
+  }, [allOrderFiles, artworkViewerLineItemId, lineItemPreviews]);
 
   const filteredProducts = useMemo(() => {
     return filterAndPrioritizeProductsForMaterial(products as any[], searchQuery, knownMaterialIdForSuggestions) as Product[];
@@ -2492,10 +2554,37 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setSelectedForProduction(new Set());
   };
 
+  const handleLineItemDragEnd = async (event: DragEndEvent) => {
+    const { active, over } = event;
+    if (!over || String(active.id) === String(over.id)) return;
+    const previous = orderedKeys.length ? orderedKeys : activeLineItems.map((item) => item.id);
+    const oldIndex = previous.indexOf(String(active.id));
+    const newIndex = previous.indexOf(String(over.id));
+    if (oldIndex < 0 || newIndex < 0) return;
+    const next = arrayMove(previous, oldIndex, newIndex);
+    setOrderedKeys(next);
+    try {
+      await Promise.all(next.map((lineItemId, index) => updateLineItemSilent.mutateAsync({
+        id: lineItemId,
+        data: { sortOrder: index },
+      } as any)));
+      await onAfterLineItemsChange?.();
+    } catch (error: any) {
+      setOrderedKeys(previous);
+      toast({ title: "Reorder failed", description: error?.message || "Could not save line item order.", variant: "destructive" });
+    }
+  };
+
   const productionRequiredItemCount = selectableProductionLineItemIds.length;
 
   const actionNeededCount = useMemo(() => {
-    return activeLineItems.filter((item) => needsOperationalAction(String((item as any).workflowState || "new"))).length;
+    return activeLineItems.filter((item) => {
+      const operational = resolveOrderLineItemOperationalDisplay(item as any);
+      if (operational.isProductionOwned) {
+        return ["queued", "paused"].includes(String((item as any).activeOwnerStatus ?? "queued").toLowerCase());
+      }
+      return needsOperationalAction(String((item as any).workflowState || "new"));
+    }).length;
   }, [activeLineItems]);
 
   return (
@@ -2580,22 +2669,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
-            onDragEnd={(event: DragEndEvent) => {
-              const { active, over } = event;
-              if (!over) return;
-
-              const activeId = String(active.id);
-              const overId = String(over.id);
-              if (activeId === overId) return;
-
-              setOrderedKeys((prev) => {
-                const base = prev.length ? prev : sortableItems;
-                const oldIndex = base.indexOf(activeId);
-                const newIndex = base.indexOf(overId);
-                if (oldIndex < 0 || newIndex < 0) return prev;
-                return arrayMove(base, oldIndex, newIndex);
-              });
-            }}
+            onDragEnd={(event: DragEndEvent) => { void handleLineItemDragEnd(event); }}
           >
             <SortableContext items={sortableItems} strategy={verticalListSortingStrategy}>
               <div className="space-y-1 overflow-x-hidden">
@@ -2720,6 +2794,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
                   const heroTotalCount = Number(previewForLineItem?.thumbCount) || previewThumbUrls.length;
                   const heroOverflowCount = Math.max(0, heroTotalCount - 1);
+                  const lineNumber = lineNumberById.get(String(item.id)) ?? (Number((item as any).lineNumber) || 1);
 
                   const reorderDisabled = readOnly;
 
@@ -2731,12 +2806,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                       onClick={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
-                        setArtworkModalLineItemId(String(item.id));
+                        setArtworkViewerLineItemId(String(item.id));
                       }}
                       onPointerDown={(e) => {
                         e.stopPropagation();
                       }}
-                      aria-label="Open artwork"
+                      aria-label={`View artwork for Line ${lineNumber}`}
+                      title={`View artwork for Line ${lineNumber}`}
                     >
                       <img
                         src={heroThumbUrls[0]}
@@ -2753,13 +2829,30 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                         </div>
                       )}
                     </button>
+                  ) : attachmentsForThumb.length > 0 ? (
+                    <button
+                      type="button"
+                      className="h-11 w-11 shrink-0 rounded"
+                      onClick={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setArtworkViewerLineItemId(String(item.id));
+                      }}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      aria-label={`View artwork for Line ${lineNumber}`}
+                      title={`View artwork for Line ${lineNumber}`}
+                    >
+                      <span className="pointer-events-none">
+                        <LineItemThumbnail
+                          parentId={orderId}
+                          lineItemId={item.id}
+                          parentType="order"
+                          attachments={attachmentsForThumb as any}
+                        />
+                      </span>
+                    </button>
                   ) : (
-                    <LineItemThumbnail
-                      parentId={orderId}
-                      lineItemId={item.id}
-                      parentType="order"
-                      attachments={attachmentsForThumb.length ? (attachmentsForThumb as any) : undefined}
-                    />
+                    <LineItemThumbnail parentId={orderId} lineItemId={item.id} parentType="order" />
                   );
 
                   const itemRequiresProduction = selectableProductionLineItemIdSet.has(String(item.id));
@@ -2770,18 +2863,25 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     expandedBriefDetail?.effectiveRequiresDesign ||
                     hasAnyDesignBriefText(designBriefDraft)
                   );
-                  const workflowState = String((item as any).workflowState || "new");
+                  const ownerOverride = productionOwnerOverrides[String(item.id)] ?? null;
+                  const operationalItem = ownerOverride ? { ...(item as any), ...ownerOverride } : (item as any);
+                  const workflowState = String(operationalItem.workflowState || "new");
                   const lineItemProofSummary = (item as any).proofSummary ?? null;
                   const showOpenProofingAction = shouldOfferProofingNavigation({
                     lineItemId: item.id,
                     requiresProofApproval: Boolean((item as any).requiresProofApproval),
                     approvedProofVersionId: (item as any).approvedProofVersionId ?? null,
                   }) || Boolean(lineItemProofSummary?.openProofingAvailable);
-                  const hasActiveOwner = Boolean((item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || (item as any).activeOwnerJobId);
+                  const hasActiveOwner = Boolean(operationalItem.activeOwnerStepKey || operationalItem.activeOwnerStationKey || operationalItem.activeOwnerJobId);
                   const activeWorkWarning = !readOnly && isExpanded
                     ? getOrderLineItemActiveWorkWarning({ fulfillmentOnly, workflowState, hasActiveOwner })
                     : null;
-                  const ownerLabel = (item as any).activeOwnerStepKey || (item as any).activeOwnerStationKey || null;
+                  const operationalDisplay = resolveOrderLineItemOperationalDisplay(operationalItem);
+                  const ownerLabel = operationalDisplay.ownerLabel;
+                  const activeProductionActions = getOrderLineItemProductionActions(operationalItem);
+                  const operationalBadgeState = operationalDisplay.isProductionOwned
+                    ? String(operationalItem.activeOwnerStatus || "").toLowerCase() === "paused" ? "on_hold" : "in_production"
+                    : workflowState;
                   const policy =
                     productArtworkPolicy === "required" || productArtworkPolicy === "not_required"
                       ? productArtworkPolicy
@@ -2802,14 +2902,14 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     ? "Ready for fulfillment"
                     : fulfillmentOnly && workflowState === "in_production"
                       ? "Pick / pack"
-                      : WORKFLOW_LABELS[workflowState] || workflowState;
+                      : operationalDisplay.statusLabel;
                   const operationalNextStep = serviceFee
                     ? (displayTotal > 0 || (productForPolicy as any)?.allowZeroPrice === true ? "Ready to invoice" : "Price not configured")
                     : fulfillmentOnly && workflowState === "ready_for_production"
                     ? "Pick / pack"
                     : fulfillmentOnly && workflowState === "in_production"
                       ? "Complete fulfillment"
-                      : getOperationalNextStep(workflowState, hasActiveOwner);
+                      : operationalDisplay.nextStepLabel;
                   const initialDraftDebug = initialDraftDebugByLineItemId[String(item.id)];
                   const initialDraftSnapshot = (itemSpecsJson?.initialDraft && typeof itemSpecsJson.initialDraft === "object")
                     ? itemSpecsJson.initialDraft as any
@@ -2916,6 +3016,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                   setPendingJumpToLineItemId(itemKey);
                                 }}
                                 title={productName}
+                                lineLabel={`Line ${lineNumber}`}
                                 sizeLabel={formatLineItemMeasurementLabel(productForPolicy, item.width, item.height)}
                                 qtyLabel={`Qty ${item.quantity || 0}`}
                                 unitPriceLabel={serviceFee ? formatMoney(displayTotal) : `${formatMoney(displayPerEa)}/ea`}
@@ -2935,7 +3036,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 overflowCount={overflowCount}
                                 summaryFooter={
                                   <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                                    <Badge variant={workflowBadgeVariant(workflowState)} className="h-5 px-1.5 text-[11px] font-medium">
+                                    <Badge variant={workflowBadgeVariant(operationalBadgeState)} className="h-5 px-1.5 text-[11px] font-medium">
                                       {operationalStatusLabel}
                                     </Badge>
                                     {lineItemProofSummary ? (
@@ -3793,79 +3894,64 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 readOnly={readOnly}
                               />
 
-                              <div className="mt-2 rounded-md border border-border/40 bg-muted/10 px-3 py-2">
-                                <div className="flex flex-wrap items-start justify-between gap-3">
-                                  <div className="min-w-0 flex-1">
-                                    <div className="flex flex-wrap items-center gap-2">
-                                      <span className="text-[11px] font-semibold uppercase tracking-[0.12em] text-muted-foreground">Status</span>
-                                      <Badge variant={workflowBadgeVariant(workflowState)}>
-                                        {operationalStatusLabel}
-                                      </Badge>
-                                      {lineItemProofSummary ? (
-                                        <Badge
-                                          variant="outline"
-                                          className={cn(getLineItemProofBadgeClass(lineItemProofSummary.status))}
-                                        >
-                                          {lineItemProofSummary.label}
-                                        </Badge>
-                                      ) : null}
-                                      {operationalWarning ? (
-                                        <span
-                                          className={cn(
-                                            "inline-flex items-center rounded px-1.5 py-0.5 text-[11px] font-medium",
-                                            operationalWarningTone === "danger"
-                                              ? "bg-red-100 text-red-800"
-                                              : "bg-amber-100 text-amber-800"
-                                          )}
-                                        >
-                                          {operationalWarning}
-                                        </span>
-                                      ) : null}
-                                    </div>
-                                    <div className="mt-1 text-sm">
-                                      <span className="text-muted-foreground">Next step:</span>{" "}
-                                      <span className="font-medium text-foreground">{operationalNextStep}</span>
-                                    </div>
-                                    {ownerLabel ? (
-                                      <div className="mt-1 text-xs text-muted-foreground">Owner: {String(ownerLabel)}</div>
-                                    ) : null}
-                                  </div>
-
-                                  {!readOnly && !serviceFee && getWorkflowActions(workflowState).length > 0 && (
-                                    <div className="flex flex-wrap gap-2">
-                                      {showOpenProofingAction ? (
-                                        <Button asChild type="button" variant="outline" size="sm" className="h-8">
-                                          <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>
-                                        </Button>
-                                      ) : null}
-                                      {getWorkflowActions(workflowState).map((action, index) => (
-                                      <Button
-                                        key={`${item.id}-${index}`}
-                                        type="button"
-                                        variant="outline"
-                                        size="sm"
-                                        className="h-8"
-                                        disabled={transitionWorkflow.isPending}
-                                        onClick={() => transitionWorkflow.mutate({
-                                          lineItemId: String(item.id),
-                                          toState: action.toState,
-                                          action: (action as any).action,
-                                        })}
-                                      >
-                                        {fulfillmentOnly && action.label === "Start Production" ? "Start Fulfillment" : action.label}
-                                      </Button>
-                                    ))}
-                                    </div>
-                                  )}
-                                  {!readOnly && !serviceFee && showOpenProofingAction && getWorkflowActions(workflowState).length === 0 ? (
-                                    <div className="flex flex-wrap gap-2">
-                                      <Button asChild type="button" variant="outline" size="sm" className="h-8">
-                                        <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>
-                                      </Button>
-                                    </div>
+                              {!readOnly && !serviceFee ? (
+                                <div className="mt-2 flex flex-wrap justify-end gap-2">
+                                  {showOpenProofingAction ? (
+                                    <Button asChild type="button" variant="outline" size="sm" className="h-8">
+                                      <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>
+                                    </Button>
                                   ) : null}
+                                  {activeProductionActions.map((action) => (
+                                    <Button
+                                      key={`${item.id}-${action}`}
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8"
+                                      disabled={productionAction.isPending}
+                                      onClick={() => productionAction.mutate({
+                                        action,
+                                        lineItemId: String(item.id),
+                                        jobId: String(operationalItem.activeOwnerJobId),
+                                        stationKey: operationalItem.activeOwnerStationKey,
+                                      })}
+                                    >
+                                      {{ start: "Start Production", resume: "Resume Production", hold: "Hold", complete: "Complete", return_to_prepress: "Return to Prepress" }[action]}
+                                    </Button>
+                                  ))}
+                                  {!operationalDisplay.isProductionOwned && workflowState === "ready_for_production" && !fulfillmentOnly ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8"
+                                      disabled={scheduleProduction.isPending}
+                                      onClick={() => scheduleProduction.mutate([String(item.id)])}
+                                    >
+                                      Send to Production
+                                    </Button>
+                                  ) : null}
+                                  {!operationalDisplay.isProductionOwned && workflowState !== "ready_for_production"
+                                    ? getWorkflowActions(workflowState).map((action, index) => (
+                                        <Button
+                                          key={`${item.id}-${index}`}
+                                          type="button"
+                                          variant="outline"
+                                          size="sm"
+                                          className="h-8"
+                                          disabled={transitionWorkflow.isPending}
+                                          onClick={() => transitionWorkflow.mutate({
+                                            lineItemId: String(item.id),
+                                            toState: action.toState,
+                                            action: (action as any).action,
+                                          })}
+                                        >
+                                          {fulfillmentOnly && action.label === "Start Production" ? "Start Fulfillment" : action.label}
+                                        </Button>
+                                      ))
+                                    : null}
                                 </div>
-                              </div>
+                              ) : null}
                             </div>
                           </div>
                         </div>
@@ -3964,32 +4050,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
         )}
       </CardContent>
 
-      <Dialog
-        open={!!artworkModalLineItemId}
+      <AttachmentViewerDialog
+        attachments={artworkViewerAttachments}
+        open={!!artworkViewerLineItemId && artworkViewerAttachments.length > 0}
         onOpenChange={(open) => {
-          if (!open) setArtworkModalLineItemId(null);
+          if (!open) setArtworkViewerLineItemId(null);
         }}
-      >
-        <DialogContent className="max-w-4xl max-h-[90vh] overflow-y-auto">
-          <DialogHeader>
-            <DialogTitle>{artworkModalProductName ? "Artwork — " + artworkModalProductName : "Artwork"}</DialogTitle>
-            <DialogDescription>View and manage artwork for this line item.</DialogDescription>
-          </DialogHeader>
-
-          {artworkModalLineItemId && (
-            <div className="mt-2">
-              <LineItemAttachmentsPanel
-                quoteId={null}
-                parentType="order"
-                orderId={orderId}
-                lineItemId={artworkModalLineItemId}
-                productName={artworkModalProductName}
-                defaultExpanded={true}
-              />
-            </div>
-          )}
-        </DialogContent>
-      </Dialog>
+      />
     </Card>
     </Popover>
   );

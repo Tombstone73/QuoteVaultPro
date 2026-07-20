@@ -208,6 +208,7 @@ export type DesignQueueItem = {
 
 export type PrepressQueueItem = {
   lineItemId: string;
+  lineNumber?: number | null;
   orderId: string;
   jobNumber: string;
   customerName: string;
@@ -285,6 +286,11 @@ export type OrderWithRelations = Order & {
   lineItems: (OrderLineItem & {
     product: any;
     productVariant?: any;
+    lineNumber?: number;
+    activeOwnerJobId?: string | null;
+    activeOwnerStationKey?: string | null;
+    activeOwnerStepKey?: string | null;
+    activeOwnerStatus?: string | null;
   })[];
 };
 

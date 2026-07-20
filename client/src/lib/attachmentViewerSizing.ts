@@ -22,6 +22,7 @@ export function resolvePdfViewportScale(input: {
       ? fitPageScale
       : input.customScale;
 
-  return Math.min(4, Math.max(0.4, requestedScale));
+  // Large-format artwork can require a scale well below 40% to fit. Clamping
+  // at 0.4 made "Fit Page" crop the exact files operators most need to inspect.
+  return Math.min(4, Math.max(0.05, requestedScale));
 }
-

@@ -77,6 +77,7 @@ export type ProductionTimerSummary = {
 
 export type ProductionOrderLineItemSummary = {
   id: string;
+  lineNumber?: number | null;
   description: string;
   quantity: number;
   width: string | null;
@@ -138,6 +139,7 @@ export type ProductionFileSummary = {
 
 export type ProductionJobListItem = {
   id: string;
+  lineNumber?: number | null;
   view: string;
   stationKey?: string | null;
   stepKey?: string | null;
@@ -427,7 +429,9 @@ export function useScheduleOrderLineItemsForProduction(orderId: string) {
     },
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
-      qc.invalidateQueries({ queryKey: ["/api/orders", orderId] as any });
+      qc.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
       const diagnosticEntries = data?.data?.lineItemDiagnostics
         ? Object.entries(data.data.lineItemDiagnostics)
         : [];

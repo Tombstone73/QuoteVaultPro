@@ -5,6 +5,23 @@ export type OrderLineItemActiveWorkWarning = {
 
 export type OrderLineItemSelectionState = false | true | "indeterminate";
 
+export function sortOrderLineItemsByPersistedOrder<T extends {
+  id: string;
+  sortOrder?: number | null;
+  createdAt?: string | Date | null;
+}>(lineItems: readonly T[]): T[] {
+  return [...lineItems].sort((left, right) => {
+    const sortDelta = (Number(left.sortOrder) || 0) - (Number(right.sortOrder) || 0);
+    if (sortDelta !== 0) return sortDelta;
+    const createdDelta = String(left.createdAt ?? "").localeCompare(String(right.createdAt ?? ""));
+    return createdDelta !== 0 ? createdDelta : String(left.id).localeCompare(String(right.id));
+  });
+}
+
+export function buildOrderLineNumberMap(lineItemIds: readonly string[]): Map<string, number> {
+  return new Map(lineItemIds.map((id, index) => [String(id), index + 1]));
+}
+
 export function getOrderLineItemSelectAllState(
   selectedIds: ReadonlySet<string>,
   selectableIds: readonly string[],
@@ -33,7 +50,14 @@ export function toggleAllOrderLineItemSelections(
 }
 
 export function getSelectableProductionLineItemIds(
-  lineItems: ReadonlyArray<{ id: string; productId: string; status?: string | null }>,
+  lineItems: ReadonlyArray<{
+    id: string;
+    productId: string;
+    status?: string | null;
+    activeOwnerJobId?: string | null;
+    activeOwnerStationKey?: string | null;
+    activeOwnerStepKey?: string | null;
+  }>,
   products: ReadonlyArray<{
     id: string;
     requiresProductionJob?: boolean | null;
@@ -44,10 +68,136 @@ export function getSelectableProductionLineItemIds(
   return lineItems
     .filter((lineItem) => {
       if (lineItem.status === "canceled") return false;
+      if (lineItem.activeOwnerJobId || lineItem.activeOwnerStationKey || lineItem.activeOwnerStepKey) return false;
       const product = productsById.get(String(lineItem.productId));
       return product?.requiresProductionJob === true && product.workflowIntent !== "service_fee";
     })
     .map((lineItem) => String(lineItem.id));
+}
+
+export type OrderLineItemOperationalDisplay = {
+  statusLabel: string;
+  nextStepLabel: string;
+  ownerLabel: string | null;
+  isProductionOwned: boolean;
+};
+
+const PREPRODUCTION_OWNER_KEYS = new Set(["design", "proof", "proofing", "prepress"]);
+
+function normalizedOwnerKey(value: string | null | undefined): string {
+  return String(value ?? "").trim().toLowerCase();
+}
+
+export function isLineItemOwnedByProduction(input: {
+  activeOwnerJobId?: string | null;
+  activeOwnerStationKey?: string | null;
+  activeOwnerStepKey?: string | null;
+}): boolean {
+  if (!input.activeOwnerJobId && !input.activeOwnerStationKey && !input.activeOwnerStepKey) return false;
+  const station = normalizedOwnerKey(input.activeOwnerStationKey);
+  const step = normalizedOwnerKey(input.activeOwnerStepKey);
+  return !PREPRODUCTION_OWNER_KEYS.has(station) && !PREPRODUCTION_OWNER_KEYS.has(step);
+}
+
+export function resolveOrderLineItemOperationalDisplay(input: {
+  workflowState?: string | null;
+  activeOwnerJobId?: string | null;
+  activeOwnerStationKey?: string | null;
+  activeOwnerStepKey?: string | null;
+  activeOwnerStatus?: string | null;
+}): OrderLineItemOperationalDisplay {
+  const isProductionOwned = isLineItemOwnedByProduction(input);
+  const ownerKey = normalizedOwnerKey(input.activeOwnerStationKey || input.activeOwnerStepKey);
+  const ownerLabel = ownerKey ? ownerKey.replace(/_/g, " ").replace(/\b\w/g, (value) => value.toUpperCase()) : null;
+  const ownerStatus = normalizedOwnerKey(input.activeOwnerStatus);
+
+  if (isProductionOwned) {
+    if (ownerStatus === "paused") {
+      return { statusLabel: "Production on hold", nextStepLabel: "Resume production", ownerLabel, isProductionOwned };
+    }
+    if (ownerStatus === "queued") {
+      return {
+        statusLabel: ownerLabel ? `Scheduled for ${ownerLabel}` : "Scheduled for production",
+        nextStepLabel: "Start production",
+        ownerLabel,
+        isProductionOwned,
+      };
+    }
+    return {
+      statusLabel: "In Production",
+      nextStepLabel: ownerLabel ? `${ownerLabel} in progress` : "Production in progress",
+      ownerLabel,
+      isProductionOwned,
+    };
+  }
+
+  const workflowState = normalizedOwnerKey(input.workflowState) || "new";
+  const labels: Record<string, [string, string]> = {
+    new: ["New", "Review routing"],
+    needs_design: ["Needs Design", "Start design"],
+    in_design: ["In Design", "Finish design"],
+    ready_for_prepress: ["Ready for Prepress", "Start prepress"],
+    in_prepress: ["In Prepress", "Finish prepress"],
+    ready_for_production: ["Ready for Production", "Send to production"],
+    in_production: ["In Production", "Production in progress"],
+    completed: ["Completed", "None"],
+    on_hold: ["On Hold", "Review hold"],
+    canceled: ["Canceled", "None"],
+  };
+  const [statusLabel, nextStepLabel] = labels[workflowState] ?? [workflowState, "Review item"];
+  return { statusLabel, nextStepLabel, ownerLabel, isProductionOwned };
+}
+
+export type OrderLineItemProductionAction = "start" | "resume" | "hold" | "complete" | "return_to_prepress";
+
+export type OrderLineItemProductionActionRequest = {
+  url: string;
+  method: "POST" | "PATCH";
+  body?: Record<string, unknown>;
+};
+
+export function buildOrderLineItemProductionActionRequests(input: {
+  action: OrderLineItemProductionAction;
+  lineItemId: string;
+  jobId: string;
+}): OrderLineItemProductionActionRequest[] {
+  if (input.action === "hold") {
+    return [
+      { url: `/api/production/jobs/${input.jobId}/stop`, method: "POST" },
+      { url: `/api/production/jobs/${input.jobId}/status`, method: "PATCH", body: { status: "paused" } },
+    ];
+  }
+  if (input.action === "resume") {
+    return [
+      { url: `/api/production/jobs/${input.jobId}/status`, method: "PATCH", body: { status: "in_progress" } },
+      { url: `/api/production/jobs/${input.jobId}/start`, method: "POST" },
+    ];
+  }
+  if (input.action === "return_to_prepress") {
+    return [{
+      url: `/api/production/line-item/${input.lineItemId}/send-to-prepress`,
+      method: "POST",
+      body: { note: "Returned to prepress from the order line item.", noPrintsCompletedYet: false },
+    }];
+  }
+  if (input.action === "complete") {
+    return [{ url: `/api/production/jobs/${input.jobId}/complete`, method: "POST" }];
+  }
+  return [{ url: `/api/production/jobs/${input.jobId}/start`, method: "POST" }];
+}
+
+export function getOrderLineItemProductionActions(input: {
+  activeOwnerJobId?: string | null;
+  activeOwnerStationKey?: string | null;
+  activeOwnerStepKey?: string | null;
+  activeOwnerStatus?: string | null;
+}): OrderLineItemProductionAction[] {
+  if (!isLineItemOwnedByProduction(input) || !input.activeOwnerJobId) return [];
+  const status = normalizedOwnerKey(input.activeOwnerStatus) || "queued";
+  if (status === "done" || status === "void" || status === "canceled" || status === "cancelled") return [];
+  if (status === "paused") return ["resume", "return_to_prepress"];
+  if (status === "queued") return ["start", "hold", "return_to_prepress"];
+  return ["hold", "complete", "return_to_prepress"];
 }
 
 const PRODUCTION_WARNING_STATES = new Set([

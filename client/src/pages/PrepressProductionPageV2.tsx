@@ -1681,6 +1681,7 @@ export default function PrepressProductionPageV2() {
               </h2>
               {selectedItem && (
                 <div className="flex items-center gap-2 mt-1">
+                  {selectedItem.lineNumber ? <span className="text-slate-300 text-xs font-semibold">Line {selectedItem.lineNumber}</span> : null}
                   <span className={cn(
                     "text-[10px] font-bold px-2 py-0.5 rounded border uppercase tracking-widest",
                     selectedWorkflowDisplay.bgClass,
@@ -1758,7 +1759,9 @@ export default function PrepressProductionPageV2() {
             <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-6 gap-4 bg-[#1a232e] p-5 border border-[#2d3748] rounded-lg shadow-sm items-start">
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Product</p>
-                <p className="text-sm font-medium">{selectedItem?.productName || "—"}</p>
+                <p className="text-sm font-medium">
+                  {selectedItem?.lineNumber ? `Line ${selectedItem.lineNumber} · ` : ""}{selectedItem?.productName || "—"}
+                </p>
               </div>
               <div>
                 <p className="text-[10px] text-slate-500 uppercase font-bold">Size</p>
@@ -2912,6 +2915,7 @@ export default function PrepressProductionPageV2() {
             <div className="space-y-6 text-sm">
               <div className="grid grid-cols-2 gap-4">
                 <div><span className="text-slate-500">Job #:</span> {specSheetData.jobNumber || "—"}</div>
+                <div><span className="text-slate-500">Order line:</span> {selectedItem?.lineNumber ? `Line ${selectedItem.lineNumber}` : "—"}</div>
                 <div><span className="text-slate-500">Customer:</span> {specSheetData.customerName || "—"}</div>
                 <div><span className="text-slate-500">Product:</span> {specSheetData.productName || "—"}</div>
                 <div><span className="text-slate-500">Size:</span> {specSheetData.width && specSheetData.height ? `${specSheetData.width}" x ${specSheetData.height}"` : "—"}</div>
@@ -3060,7 +3064,9 @@ function JobCard({
           </div>
         </div>
         <p className="text-xs font-semibold truncate text-slate-200">{item.customerName}</p>
-        <p className="text-[10px] truncate text-slate-400">{item.productName}</p>
+        <p className="text-[10px] truncate text-slate-400">
+          {item.lineNumber ? `Line ${item.lineNumber} · ` : ""}{item.productName}
+        </p>
         <div className="flex items-center justify-between mt-1 text-[9px]">
           {ownerLabel ? (
             <span className="text-slate-500">Owner: {ownerLabel}</span>

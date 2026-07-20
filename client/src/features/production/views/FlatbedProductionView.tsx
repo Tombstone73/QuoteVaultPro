@@ -1199,6 +1199,7 @@ function PreviewPanel({
 
   // Show Order # and Production Job ID (Order # is primary identifier)
   const jobRefParts = [
+    job.lineNumber ? `Line ${job.lineNumber}` : null,
     orderNumber && orderNumber !== "—" ? `Order ${orderNumber}` : null,
     productionJobId ? `Job ${String(productionJobId).slice(-6)}` : null,
   ].filter(Boolean);
@@ -1765,6 +1766,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                         ) : (
                           <span className="text-sm font-semibold">{job.order.customerName || "—"}</span>
                         )}
+                        {job.lineNumber ? <div className="mt-1 text-xs font-semibold text-titan-text-muted">Line {job.lineNumber}</div> : null}
                         {Array.isArray((job as any).productionAlerts) && (job as any).productionAlerts.length > 0 ? (
                           <div className="mt-1">
                             <Badge variant="destructive" className="text-[10px] uppercase tracking-wide">
