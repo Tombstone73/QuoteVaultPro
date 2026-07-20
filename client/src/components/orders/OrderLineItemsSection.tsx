@@ -72,6 +72,7 @@ import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode
 import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValidation";
 import { formatLineItemMeasurementLabel } from "@shared/lineItemPresentation";
 import { resolveProductionSides } from "@shared/productionHydration";
+import { removeArtworkFileReferencesFromSpecs } from "@shared/artworkSideAssignment";
 import { buildLineItemOptionSummaryChips } from "@shared/lineItemOptionSelections";
 import {
   buildInitialOrderLineItemDraftFromProduct,
@@ -1203,6 +1204,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [optionSelections, setOptionSelections] = useState<Record<string, OptionSelection>>({});
   const [optionSelectionsV2, setOptionSelectionsV2] = useState<LineItemOptionSelectionsV2>({ schemaVersion: 2, selected: {} });
   const [useSameArtworkBothSides, setUseSameArtworkBothSides] = useState(false);
+  const [artworkRemovalByLineItemId, setArtworkRemovalByLineItemId] = useState<Record<string, {
+    fileIds: string[];
+    removedBothSide: boolean;
+  }>>({});
   const [optionsV2Valid, setOptionsV2Valid] = useState(true);
   const [pbv2PanelRenderStats, setPbv2PanelRenderStats] = useState<ProductOptionsPanelV2RenderStats>({
     renderedNodeCount: 0,
@@ -1613,6 +1618,32 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     orderId,
   ]);
 
+  const handleSavedArtworkRemoved = useCallback((file: {
+    id: string;
+    fileRecordId?: string | null;
+    side?: "front" | "back" | "both" | "na" | null;
+  }) => {
+    if (!expandedItem) return;
+    const itemId = String(expandedItem.id);
+    const fileIds = [file.id, file.fileRecordId].filter((value): value is string => Boolean(value));
+    setArtworkRemovalByLineItemId((current) => {
+      const existing = current[itemId] ?? { fileIds: [], removedBothSide: false };
+      return {
+        ...current,
+        [itemId]: {
+          fileIds: Array.from(new Set([...existing.fileIds, ...fileIds])),
+          removedBothSide: existing.removedBothSide || file.side === "both",
+        },
+      };
+    });
+    const cleanedSpecs = removeArtworkFileReferencesFromSpecs({
+      specsJson: expandedItem.specsJson,
+      fileIds,
+      removedSide: file.side,
+    });
+    setUseSameArtworkBothSides(hydratePersistedArtworkSideIntent({ specsJson: cleanedSpecs }).useSameArtworkBothSides);
+  }, [expandedItem]);
+
   const widthNum = fixedDimensions ? fixedDimensions.widthIn : dimsRequired ? Number.parseFloat(widthText) || 0 : 1;
   const heightNum = fixedDimensions ? fixedDimensions.heightIn : dimsRequired ? Number.parseFloat(heightText) || 0 : 1;
   const qtyNum = Number.isFinite(qty) && qty > 0 ? qty : 1;
@@ -1753,6 +1784,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     const currentBrief = JSON.stringify(designBriefDraft);
     const persistedBrief = JSON.stringify(savedBrief);
     const pricingDirtyByUser = pricingDirtyByUserRef.current[expandedItem.id] === true;
+    const artworkRemovalDirty = Boolean(artworkRemovalByLineItemId[expandedItem.id]?.fileIds.length);
 
     const dirty = hasOrderLineItemDraftChanges(saved, {
       productId: pricingDirtyByUser ? currentDraftProductId : saved.productId,
@@ -1799,7 +1831,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       });
     }
 
-    return dirty;
+    return dirty || artworkRemovalDirty;
   }, [
     expandedItem,
     currentDraftProductId,
@@ -1822,6 +1854,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     // Forces recompute against the freshly-written savedSnapshotRef after a save.
     savedSnapshotVersion,
     pendingPriceOverrideById,
+    artworkRemovalByLineItemId,
   ]);
 
   // Surface unsaved line item state to the parent order editor so it can guard
@@ -2184,8 +2217,16 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
       const selectedOptionsArray = buildSelectedOptionsArray(expandedProductOptions, optionSelections, widthNum, heightNum, qtyNum);
       const replacementInitialDraft = productChanged ? initialDraftDebugByLineItemId[itemId] : null;
+      const artworkRemoval = artworkRemovalByLineItemId[itemId];
+      const baseSpecsJson = productChanged
+        ? {}
+        : removeArtworkFileReferencesFromSpecs({
+            specsJson: expandedItem.specsJson || {},
+            fileIds: artworkRemoval?.fileIds ?? [],
+            removedSide: artworkRemoval?.removedBothSide ? "both" : null,
+          });
       const nextSpecsJson = mergeArtworkSideIntentIntoSpecs({
-        ...(productChanged ? {} : (expandedItem.specsJson || {})),
+        ...baseSpecsJson,
         notes: notes || "",
         lineItemNotes: {
           ...(productChanged ? {} : (((expandedItem.specsJson as any)?.lineItemNotes as any) || {})),
@@ -2274,6 +2315,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       setPendingPriceOverrideById((prev) => {
         if (!prev[itemId]) return prev;
         const next = { ...prev };
+        delete next[itemId];
+        return next;
+      });
+      setArtworkRemovalByLineItemId((current) => {
+        if (!current[itemId]) return current;
+        const next = { ...current };
         delete next[itemId];
         return next;
       });
@@ -3553,6 +3600,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         doubleSided={printSides === "Double-sided"}
                                         useSameArtworkBothSides={useSameArtworkBothSides}
                                         onUseSameArtworkBothSidesChange={setUseSameArtworkBothSides}
+                                        onSavedAttachmentRemoved={handleSavedArtworkRemoved}
                                       />
                                     </div>
 

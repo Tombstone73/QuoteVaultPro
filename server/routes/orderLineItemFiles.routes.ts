@@ -45,6 +45,7 @@ import {
   isOrderArtworkSide,
   OrderLineItemArtworkAssignmentError,
 } from "../services/orderLineItemArtworkAssignmentService";
+import { removeArtworkFileReferencesFromSpecs } from "@shared/artworkSideAssignment";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -55,6 +56,32 @@ function toLegacyStorageProvider(provider: string | null | undefined): "local" |
     return provider;
   }
   return null;
+}
+
+async function clearRemovedArtworkSideIntent(args: {
+  orderId: string;
+  lineItemId: string;
+  fileIds: Array<string | null | undefined>;
+  removedSide?: "front" | "back" | "both" | "na" | null;
+}): Promise<void> {
+  const [lineItem] = await db
+    .select({ specsJson: orderLineItems.specsJson })
+    .from(orderLineItems)
+    .where(and(eq(orderLineItems.id, args.lineItemId), eq(orderLineItems.orderId, args.orderId)))
+    .limit(1);
+  if (!lineItem) return;
+
+  const nextSpecsJson = removeArtworkFileReferencesFromSpecs({
+    specsJson: lineItem.specsJson,
+    fileIds: args.fileIds,
+    removedSide: args.removedSide,
+  });
+  if (JSON.stringify(nextSpecsJson) === JSON.stringify(lineItem.specsJson ?? {})) return;
+
+  await db
+    .update(orderLineItems)
+    .set({ specsJson: nextSpecsJson, updatedAt: new Date() })
+    .where(and(eq(orderLineItems.id, args.lineItemId), eq(orderLineItems.orderId, args.orderId)));
 }
 
 export function registerOrderLineItemFileRoutes(
@@ -715,10 +742,17 @@ export function registerOrderLineItemFileRoutes(
           thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
           thumbKey: orderAttachments.thumbKey,
           previewKey: orderAttachments.previewKey,
+          side: orderAttachments.side,
         });
 
       if (deletedAttachment.length) {
         const record = deletedAttachment[0];
+        await clearRemovedArtworkSideIntent({
+          orderId,
+          lineItemId,
+          fileIds: [record.id, record.fileRecordId],
+          removedSide: record.side,
+        });
         try {
           const resolvedOriginal = record.fileRecordId
             ? await canonicalFileReadResolver.resolveOriginal(String(record.fileRecordId))
@@ -972,6 +1006,12 @@ export function registerOrderLineItemFileRoutes(
       }
 
       await assetRepository.unlinkAsset(organizationId, fileId, 'order_line_item', lineItemId);
+
+      await clearRemovedArtworkSideIntent({
+        orderId,
+        lineItemId,
+        fileIds: [fileId, removedAsset?.fileRecordId],
+      });
 
       try {
         const resolvedOriginal = removedAsset?.fileRecordId
