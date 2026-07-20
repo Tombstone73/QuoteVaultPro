@@ -372,8 +372,9 @@ export default function PBV2ProductBuilderSectionV2({
   const [saveTemplateGroupId, setSaveTemplateGroupId] = useState<string | null>(null);
 
   // Fetch draft/active tree (skip for new products without productId)
+  const treeQueryKey = ["/api/products", productId, "pbv2", "tree", requestedDraftTreeVersionId ?? null] as const;
   const treeQuery = useQuery<TreeResponse>({
-    queryKey: ["/api/products", productId, "pbv2", "tree", requestedDraftTreeVersionId ?? null],
+    queryKey: treeQueryKey,
     enabled: !!productId,
     queryFn: async () => {
       if (!productId) {
@@ -1237,12 +1238,6 @@ export default function PBV2ProductBuilderSectionV2({
         description: "Deleted options were cleaned from the pricing matrix before save.",
       });
     }
-    if (pricingImpactNormalizer.changed) {
-      toast({
-        title: "Normalized pricing setup",
-        description: "Legacy or incomplete pricing impacts were cleaned before save.",
-      });
-    }
     const nodes = (normalizedTree as any)?.nodes || {};
     const edges = Array.isArray((normalizedTree as any)?.edges) ? (normalizedTree as any).edges : [];
     const nodeCount = Object.keys(nodes).length;
@@ -1374,18 +1369,11 @@ export default function PBV2ProductBuilderSectionV2({
         toast({ title: "Draft saved" });
       }
       
-      setHasLocalChanges(false);
-      setIsLocalDirty(false); // Clear dirty flag on successful save
-      setIsSaving(false); // Release saving lock
-      isSavingRef.current = false;
-      
-      if (import.meta.env.DEV) {
-        console.log('[PBV2_SAVE_SUCCESS] isSaving=false, tree persisted with nodeCount=', nodeCount);
-      }
-      
-      // Update query cache with saved tree to prevent stale refetch
+      // Update the exact query cache entry before releasing the dirty lock. Otherwise
+      // hydration can observe the stale pre-normalized draft and incorrectly tell the
+      // user to save the repair again after this PUT already persisted it.
       queryClient.setQueryData(
-        ["/api/products", productId, "pbv2", "tree"],
+        treeQueryKey,
         (old: any) => {
           if (!old?.data?.draft) return old;
           return {
@@ -1400,11 +1388,20 @@ export default function PBV2ProductBuilderSectionV2({
           };
         }
       );
-      
-      await treeQuery.refetch();
+
+      setHasLocalChanges(false);
+      setIsLocalDirty(false); // Clear dirty flag only after cache matches the persisted tree
+      setIsSaving(false); // Release saving lock
+      isSavingRef.current = false;
+
+      if (import.meta.env.DEV) {
+        console.log('[PBV2_SAVE_SUCCESS] isSaving=false, tree persisted with nodeCount=', nodeCount);
+      }
+
+      const refetchedTree = await treeQuery.refetch();
 
       // HARD FAIL CHECK: Verify draft exists after refetch
-      const refetchedData = treeQuery.data;
+      const refetchedData = refetchedTree.data;
       if (!refetchedData?.data?.draft) {
         if (import.meta.env.DEV) {
           console.error('[PBV2_DRAFT_PUT] failed: draft row not found after save');

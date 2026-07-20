@@ -53,6 +53,7 @@ describe("sheet_consumption_sqft 4x8 drop billing", () => {
   test.each([
     { width: 48, height: 73, expected: 32, usable: false },
     { width: 48, height: 48, expected: 16, usable: true },
+    { width: 24, height: 48, expected: 8, usable: true },
     { width: 48, height: 96, expected: 32, usable: false },
     { width: 24, height: 96, expected: 16, usable: true },
   ])("$width x $height bills $expected sqft", ({ width, height, expected, usable }) => {
@@ -60,6 +61,10 @@ describe("sheet_consumption_sqft 4x8 drop billing", () => {
 
     expect(result.billedSheetSqft).toBe(expected);
     expect(result.dropUsable).toBe(usable);
+  });
+
+  test("49x72 does not fit a 48x96 sheet in either orientation", () => {
+    expect(() => calculate(49, 72, true)).toThrow("exceeds sheet 48x96 in both orientations");
   });
 
   test("returns exact billable sqft without a 32.064 floating artifact", () => {
