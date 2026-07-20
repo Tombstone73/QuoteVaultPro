@@ -1233,6 +1233,47 @@ describe("sheet_consumption_sqft — 48×96 expected outputs", () => {
     expect(runFormula(FORMULA_4X8, 60, 25, 1).totalPrice).toBe(20);
   });
 
+  test("canonical product allowRotation=true overrides stale active-tree false and prices rotated ACM", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeRowTierBasisTree("computed_sheet_usage", undefined, {
+        sheet_width: 48,
+        sheet_length: 96,
+        usable_drop_min: 24,
+        billable_length_increment: 12,
+        minimum_billable_sqft: 3,
+        allow_rotation: 0,
+      }),
+      widthIn: 72,
+      heightIn: 48,
+      quantity: 1,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingProfileConfig: { allowRotation: true },
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBeGreaterThan(0);
+    expect(result.debug?.variables.allow_rotation).toBe(true);
+    expect(result.debug?.variableSources?.allow_rotation).toBe("product.pricingProfileConfig.allowRotation");
+    expect(result.debug?.sheetYield).toEqual(expect.objectContaining({
+      allowRotation: true,
+      orientationUsed: "rotated",
+    }));
+  });
+
+  test("canonical product allowRotation=false rejects rotated-only ACM", () => {
+    expect(() => evaluatePricingPreviewFromTree({
+      treeJson: makeRowTierBasisTree("computed_sheet_usage"),
+      widthIn: 72,
+      heightIn: 48,
+      quantity: 1,
+      pbv2ExplicitSelections: { rate: { value: "standard" } },
+      pricingProfileConfig: { allowRotation: false },
+      pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+      debug: true,
+    })).toThrow("without rotation");
+  });
+
   test("30×30 q1 → 12  (drop 18\" too narrow, 30\" row rounds to 36\")", () => {
     // normal (30w×30h): piecesAcross=1, fullRow, drop=18<24 → effectiveW=48
     //   consumedLength=30, billableLength=36, sqft=48*36/144=12

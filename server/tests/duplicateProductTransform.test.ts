@@ -148,4 +148,50 @@ describe("buildDuplicatedProductInsert", () => {
 
     expect(dup.priceBreaks).toEqual({ enabled: false, type: "quantity", tiers: [] });
   });
+
+  test("preserves canonical allowRotation when duplicating a product", () => {
+    const original = {
+      id: "rotation_product",
+      organizationId: "org_1",
+      name: "ACM",
+      description: "Aluminum composite",
+      productTypeId: null,
+      pricingFormula: "sheet_consumption_sqft(w,h,q,48,96,24,12,3) * base_price",
+      variantLabel: "Variant",
+      category: "Rigid media",
+      storeUrl: null,
+      showStoreLink: true,
+      thumbnailUrls: [],
+      priceBreaks: { enabled: false, type: "quantity", tiers: [] },
+      pricingMode: "area",
+      isService: false,
+      primaryMaterialId: null,
+      optionsJson: null,
+      optionTreeJson: null,
+      pbv2ActiveTreeVersionId: null,
+      artworkPolicy: "not_required" as any,
+      pricingProfileKey: "default",
+      pricingProfileConfig: { allowRotation: true, formulaVariables: { sheet_width: 48 } } as any,
+      pricingEngine: "formulaLibrary" as any,
+      pricingFormulaId: null,
+      useNestingCalculator: false,
+      sheetWidth: null,
+      sheetHeight: null,
+      materialType: "sheet" as any,
+      minPricePerItem: null,
+      nestingVolumePricing: { enabled: false, tiers: [] },
+      requiresProductionJob: true,
+      requiresProofApproval: false,
+      isTaxable: true,
+      isActive: true,
+      createdAt: new Date() as any,
+      updatedAt: new Date() as any,
+    } satisfies Product;
+
+    const duplicate = buildDuplicatedProductInsert(original);
+    expect(duplicate.pricingProfileConfig).toEqual({
+      allowRotation: true,
+      formulaVariables: { sheet_width: 48 },
+    });
+  });
 });

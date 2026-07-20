@@ -1205,11 +1205,11 @@ const productOptionItemSchema = z.object({
 const flatGoodsConfigSchema = z.object({
   sheetWidth: z.coerce.number().positive(),
   sheetHeight: z.coerce.number().positive(),
-  allowRotation: z.boolean().default(true),
+  allowRotation: z.boolean().default(false),
   minSheets: z.coerce.number().int().positive().optional(),
   materialType: z.enum(["sheet", "roll"]).default("sheet"),
   minPricePerItem: z.coerce.number().positive().optional().nullable(),
-});
+}).passthrough();
 
 // Union for pricing profile config (extensible for future profile types)
 const pricingProfileConfigSchema = z.union([

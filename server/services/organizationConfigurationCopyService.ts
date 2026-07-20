@@ -4,6 +4,10 @@ import { db } from "../db";
 import { assertProductionMapReady, DEFAULT_PRODUCTION_STATIONS, ensureProductionMapForOrg } from "./productionMapService";
 import { seedDefaultPillsForOrg } from "./orderStatusPillService";
 import {
+  normalizeProductPricingRotationConfig,
+  shouldPersistProductRotation,
+} from "@shared/pbv2/productPricingRotation";
+import {
   globalVariables,
   materialProductLinks,
   materials,
@@ -569,6 +573,14 @@ export async function copyOrganizationConfiguration(params: {
           ...rest
         } = row;
         idMap.set(pbv2ActiveTreeVersionId, pbv2ActiveTreeVersionId);
+        const remappedPricingProfileConfig = replaceIdsDeep(pricingProfileConfig, idMap) as Record<string, any> | null;
+        const normalizedPricingProfileConfig: Record<string, any> | null = shouldPersistProductRotation({
+          pricingProfileKey: rest.pricingProfileKey,
+          pricingFormula: rest.pricingFormula,
+          pricingProfileConfig: remappedPricingProfileConfig,
+        })
+          ? normalizeProductPricingRotationConfig(remappedPricingProfileConfig, false)
+          : remappedPricingProfileConfig;
         return {
           ...rest,
           id,
@@ -578,7 +590,7 @@ export async function copyOrganizationConfiguration(params: {
           pricingFormulaId: pricingFormulaId ? idMap.get(pricingFormulaId) ?? null : null,
           optionsJson: replaceIdsDeep(optionsJson, idMap),
           optionTreeJson: replaceIdsDeep(optionTreeJson, idMap),
-          pricingProfileConfig: replaceIdsDeep(pricingProfileConfig, idMap),
+          pricingProfileConfig: normalizedPricingProfileConfig,
           pbv2ActiveTreeVersionId: null,
         };
       });

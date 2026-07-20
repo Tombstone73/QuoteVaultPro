@@ -1,56 +1,29 @@
-export function parseBooleanLikeConfigValue(value: unknown): boolean | null {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "number" && Number.isFinite(value)) {
-    if (value === 1) return true;
-    if (value === 0) return false;
-  }
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (["true", "yes", "y", "1", "on", "allow", "allowed"].includes(normalized)) return true;
-    if (["false", "no", "n", "0", "off", "deny", "denied", "disallow", "disallowed"].includes(normalized)) return false;
-  }
-  return null;
-}
+import {
+  getProductAllowRotation,
+  normalizeProductPricingRotationConfig,
+  pricingFormulaUsesSheetConsumption,
+  productPricingConfigHasRotation,
+} from "@shared/pbv2/productPricingRotation";
 
-function isRecord(value: unknown): value is Record<string, any> {
-  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
-}
+export {
+  mergeFormulaLibraryConfigWithProductConfig,
+  normalizeProductPricingRotationConfig,
+  parseProductPricingBoolean as parseBooleanLikeConfigValue,
+} from "@shared/pbv2/productPricingRotation";
 
 export function pricingConfigHasRotationState(config: unknown): boolean {
-  if (!isRecord(config)) return false;
-  const formulaVariables = isRecord(config.formulaVariables) ? config.formulaVariables : null;
-  return Object.prototype.hasOwnProperty.call(config, "allowRotation")
-    || Boolean(formulaVariables && Object.prototype.hasOwnProperty.call(formulaVariables, "allow_rotation"));
+  return productPricingConfigHasRotation(config);
 }
 
 export function getAllowRotationFromPricingConfig(config: unknown): boolean {
-  if (!isRecord(config)) return false;
-  const formulaVariables = isRecord(config.formulaVariables) ? config.formulaVariables : null;
-  const fromFormulaVariables = parseBooleanLikeConfigValue(formulaVariables?.allow_rotation);
-  if (fromFormulaVariables !== null) return fromFormulaVariables;
-  const fromTopLevel = parseBooleanLikeConfigValue(config.allowRotation);
-  if (fromTopLevel !== null) return fromTopLevel;
-  return false;
+  return getProductAllowRotation(config) ?? false;
 }
 
 export function buildPricingConfigWithAllowRotation(config: unknown, allowRotation: boolean): Record<string, any> {
-  const currentRecord = isRecord(config) ? { ...config } : {};
-  const currentFormulaVariables = isRecord(currentRecord.formulaVariables)
-    ? currentRecord.formulaVariables
-    : {};
-
-  return {
-    ...currentRecord,
+  return normalizeProductPricingRotationConfig({
+    ...(config && typeof config === "object" && !Array.isArray(config) ? config : {}),
     allowRotation,
-    formulaVariables: {
-      ...currentFormulaVariables,
-      allow_rotation: allowRotation,
-    },
-  };
-}
-
-export function pricingFormulaUsesSheetConsumption(formula: unknown): boolean {
-  return /\bsheet_consumption_sqft\s*\(/i.test(String(formula || ""));
+  }, allowRotation);
 }
 
 export function shouldShowPricingEngineRotationControl(input: {
