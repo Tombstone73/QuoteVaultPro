@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from "@jest/globals";
 import {
   canCompleteAndReleasePrepress,
   completeAndReleasePrepress,
+  markPrepressItemsPrintReady,
   PrepressCompleteAndReleaseError,
 } from "./prepressActions";
 
@@ -63,5 +64,56 @@ describe("Prepress complete and release action", () => {
     expect(canCompleteAndReleasePrepress({ canCompleteNow: false, canReleaseNow: true, releaseAllowedAfterCompletion: false })).toBe(true);
     expect(canCompleteAndReleasePrepress({ canCompleteNow: true, canReleaseNow: false, releaseAllowedAfterCompletion: false })).toBe(false);
     expect(canCompleteAndReleasePrepress({ canCompleteNow: false, canReleaseNow: false, releaseAllowedAfterCompletion: true })).toBe(false);
+  });
+
+  test("promotes and completes multiple selected line items through canonical session endpoints", async () => {
+    const fetchFn = jest.fn(async (url: string) => {
+      if (url === "/api/prepress/session/start") {
+        return jsonResponse(true, { success: true, data: { id: "session-created" } });
+      }
+      return jsonResponse(true, { success: true, data: { finalFileId: `final-${url}` } });
+    }) as unknown as typeof fetch;
+
+    const results = await markPrepressItemsPrintReady([
+      { lineItemId: "line-1", workflowState: "ready_for_prepress", sessionId: null, hasCompletedSession: false },
+      { lineItemId: "line-2", workflowState: "in_prepress", sessionId: "session-2", hasCompletedSession: false },
+    ], { fetchFn });
+
+    expect(results.map((result) => result.status)).toEqual(["completed", "completed"]);
+    expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/start", expect.objectContaining({ method: "POST" }));
+    expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/session-created/complete", expect.objectContaining({ method: "POST" }));
+    expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/session-2/complete", expect.objectContaining({ method: "POST" }));
+  });
+
+  test("reports proof-blocked lines without preventing safe selected lines", async () => {
+    const fetchFn = jest.fn(async () => jsonResponse(true, { success: true, data: { finalFileId: "final-2" } })) as unknown as typeof fetch;
+
+    const results = await markPrepressItemsPrintReady([
+      {
+        lineItemId: "line-proof",
+        workflowState: "in_prepress",
+        sessionId: "session-proof",
+        hasCompletedSession: false,
+        blockedReason: "Awaiting proof approval",
+      },
+      { lineItemId: "line-safe", workflowState: "in_prepress", sessionId: "session-safe", hasCompletedSession: false },
+    ], { fetchFn });
+
+    expect(results).toEqual(expect.arrayContaining([
+      expect.objectContaining({ lineItemId: "line-proof", status: "failed", message: "Awaiting proof approval" }),
+      expect.objectContaining({ lineItemId: "line-safe", status: "completed" }),
+    ]));
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+  });
+
+  test("can complete and release selected print-ready lines", async () => {
+    const fetchFn = jest.fn(async () => jsonResponse(true, { success: true, data: {} })) as unknown as typeof fetch;
+
+    const [result] = await markPrepressItemsPrintReady([
+      { lineItemId: "line-1", workflowState: "in_prepress", sessionId: "session-1", hasCompletedSession: false },
+    ], { fetchFn, releaseToProduction: true });
+
+    expect(result.status).toBe("released");
+    expect(fetchFn).toHaveBeenNthCalledWith(2, "/api/prepress/line-item/line-1/send-to-print", expect.any(Object));
   });
 });

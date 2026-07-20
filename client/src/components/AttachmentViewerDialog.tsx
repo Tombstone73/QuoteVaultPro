@@ -12,6 +12,7 @@ import { buildPdfDownloadUrl, buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import { apiFetchBlob } from "@/lib/queryClient";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { cn } from "@/lib/utils";
+import { resolvePdfViewportScale, type PdfFitMode } from "@/lib/attachmentViewerSizing";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, House, Printer, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
 
 export type AttachmentPage = {
@@ -181,7 +182,7 @@ export function AttachmentViewerDialog({
   const [pdfZoomLevel, setPdfZoomLevel] = useState(1);
   const [pdfRenderedScale, setPdfRenderedScale] = useState(1);
   const [pdfRotation, setPdfRotation] = useState(0);
-  const [pdfFitMode, setPdfFitMode] = useState<"page" | "width" | "custom">("page");
+  const [pdfFitMode, setPdfFitMode] = useState<PdfFitMode>("page");
   const [pdfStageSize, setPdfStageSize] = useState({ width: 0, height: 0 });
   const [pdfMetadata, setPdfMetadata] = useState<Record<string, string | number | null>>({});
   const [isPdfDragging, setIsPdfDragging] = useState(false);
@@ -511,20 +512,14 @@ export function AttachmentViewerDialog({
 
         const rotation = (page.rotate ?? 0) + pdfRotation;
         const baseViewport = page.getViewport({ scale: 1, rotation });
-        const availableWidth = Math.max(pdfStageSize.width - 32, 120);
-        const availableHeight = Math.max(pdfStageSize.height - 32, 120);
-
-        const fitWidthScale = availableWidth / Math.max(baseViewport.width, 1);
-        const fitPageScale = Math.min(fitWidthScale, availableHeight / Math.max(baseViewport.height, 1));
-
-        const nextScale =
-          pdfFitMode === "width"
-            ? fitWidthScale
-            : pdfFitMode === "page"
-            ? fitPageScale
-            : pdfZoomLevel;
-
-        const clampedScale = Math.min(4, Math.max(0.4, nextScale));
+        const clampedScale = resolvePdfViewportScale({
+          pageWidth: baseViewport.width,
+          pageHeight: baseViewport.height,
+          stageWidth: pdfStageSize.width,
+          stageHeight: pdfStageSize.height,
+          fitMode: pdfFitMode,
+          customScale: pdfZoomLevel,
+        });
         const viewport = page.getViewport({ scale: clampedScale, rotation });
         const canvas = pdfCanvasRef.current;
         if (!canvas) return;
@@ -831,7 +826,7 @@ export function AttachmentViewerDialog({
             {pdfLoading ? (
               <div className="text-sm text-muted-foreground">Loading PDF…</div>
             ) : (
-              <canvas ref={pdfCanvasRef} className="max-w-full rounded-md bg-white shadow-2xl" />
+              <canvas ref={pdfCanvasRef} className="block shrink-0 rounded-md bg-white shadow-2xl" />
             )}
           </div>
         </div>
