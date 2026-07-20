@@ -44,6 +44,7 @@ import {
   autoSyncCanonicalProofForLineItem,
   cancelProofVersion,
   createAndSendProofVersion,
+  createGeneratedCombinedProofVersion,
   createGeneratedDraftProofVersion,
   createLineItemProofVersion,
   createLineItemProofVersionFromExistingAttachment,
@@ -1124,6 +1125,7 @@ describe("proofing route integration", () => {
       artworkFileName?: string;
       artworkFileUrl?: string;
       artworkStorageProvider?: string | null;
+      sortOrder?: number;
     },
   ) {
     const lineItemId = `line_${name}_${Date.now()}_${Math.floor(Math.random() * 10000)}`;
@@ -1146,6 +1148,7 @@ describe("proofing route integration", () => {
     const artworkFileName = options?.artworkFileName ?? `${name}-artwork.pdf`;
     const artworkFileUrl = options?.artworkFileUrl ?? `https://example.com/${artworkFileId}.pdf`;
     const artworkStorageProvider = options?.artworkStorageProvider ?? null;
+    const sortOrder = options?.sortOrder ?? 0;
 
     await db.execute(sql`
       insert into order_line_items (
@@ -1165,7 +1168,7 @@ describe("proofing route integration", () => {
         status
       )
       values (
-        ${lineItemId}, ${orderId}, ${productId}, ${`Line ${name}`}, ${1}, ${10}, ${10}, ${0}, ${requiresDesign}, ${requiresProofApproval}, ${requiresPrepress}, ${designStatus}, ${workflowState}, ${"new"}
+        ${lineItemId}, ${orderId}, ${productId}, ${`Line ${name}`}, ${1}, ${10}, ${10}, ${sortOrder}, ${requiresDesign}, ${requiresProofApproval}, ${requiresPrepress}, ${designStatus}, ${workflowState}, ${"new"}
       )
     `);
 
@@ -2729,6 +2732,48 @@ describe("proofing route integration", () => {
     expect(String(actionRes.body?.error || "")).toMatch(/manual approval override/i);
   });
 
+  test("creates one combined proof package in persisted line-item order", async () => {
+    const firstStorageKey = `proofing-tests/${Date.now()}-combined-first.png`;
+    const secondStorageKey = `proofing-tests/${Date.now()}-combined-second.png`;
+    await seedLocalImageForPreviewTest(firstStorageKey);
+    await seedLocalImageForPreviewTest(secondStorageKey);
+    const first = await createLineItemFixture("combined_order_first", {
+      requiresProofApproval: true,
+      addArtwork: true,
+      artworkMimeType: "image/png",
+      artworkFileName: "combined-first.png",
+      artworkFileUrl: firstStorageKey,
+      artworkStorageProvider: "local",
+      sortOrder: 10,
+    });
+    const second = await createLineItemFixture("combined_order_second", {
+      requiresProofApproval: true,
+      addArtwork: true,
+      artworkMimeType: "image/png",
+      artworkFileName: "combined-second.png",
+      artworkFileUrl: secondStorageKey,
+      artworkStorageProvider: "local",
+      sortOrder: 20,
+    });
+
+    const created = await db.transaction((tx) => createGeneratedCombinedProofVersion(tx, {
+      organizationId: orgId,
+      lineItemIds: [second.lineItemId, first.lineItemId],
+      actorUserId: userId,
+    }));
+
+    expect(created.lineItems.map((item) => item.lineItemId)).toEqual([first.lineItemId, second.lineItemId]);
+    const members = await db
+      .select({ lineItemId: proofVersionLineItems.lineItemId, sortOrder: proofVersionLineItems.sortOrder })
+      .from(proofVersionLineItems)
+      .where(eq(proofVersionLineItems.proofVersionId, created.proofVersion.id))
+      .orderBy(proofVersionLineItems.sortOrder);
+    expect(members).toEqual([
+      { lineItemId: first.lineItemId, sortOrder: 0 },
+      { lineItemId: second.lineItemId, sortOrder: 1 },
+    ]);
+  });
+
   test("combined proof approval updates every included line item", async () => {
     const first = await createLineItemFixture("combined_first", { requiresProofApproval: true });
     const second = await createLineItemFixture("combined_second", { requiresProofApproval: true });
@@ -2775,5 +2820,53 @@ describe("proofing route integration", () => {
       lineItemId: second.lineItemId,
     }));
     expect(secondaryTruth.approvedProofVersion?.id).toBe(proofVersion.id);
+  });
+
+  test("combined proof rejection updates every included line item", async () => {
+    const first = await createLineItemFixture("combined_reject_first", { requiresProofApproval: true });
+    const second = await createLineItemFixture("combined_reject_second", { requiresProofApproval: true });
+
+    const proofVersion = await db.transaction(async (tx) => {
+      const created = await createLineItemProofVersion(tx, {
+        organizationId: orgId,
+        lineItemId: first.lineItemId,
+        proofFileId: first.proofFileA,
+        createdByUserId: userId,
+      });
+      await tx.insert(proofVersionLineItems).values({
+        organizationId: orgId,
+        orderId,
+        proofVersionId: created.id,
+        lineItemId: second.lineItemId,
+        sortOrder: 1,
+        lineItemLabelSnapshot: "Line combined_reject_second",
+      });
+      await markProofVersionSent(tx, {
+        organizationId: orgId,
+        proofVersionId: created.id,
+        actorUserId: userId,
+        sentToEmail: "customer@example.com",
+      });
+      return created;
+    });
+
+    const token = await createPortalToken(first.lineItemId, proofVersion.id);
+    await request(app)
+      .post(`/api/portal/proof/${token}/action`)
+      .send({ action: "reject", comment: "Please revise both lines" })
+      .expect(200);
+
+    const firstTruth = await db.transaction((tx) => resolveLineItemProofingTruth(tx, {
+      organizationId: orgId,
+      lineItemId: first.lineItemId,
+    }));
+    const secondTruth = await db.transaction((tx) => resolveLineItemProofingTruth(tx, {
+      organizationId: orgId,
+      lineItemId: second.lineItemId,
+    }));
+    expect(firstTruth.proofVersionHistory[0]?.status).toBe("rejected");
+    expect(secondTruth.proofVersionHistory[0]?.status).toBe("rejected");
+    expect(firstTruth.proofDecisionHistory[0]?.decision).toBe("rejected");
+    expect(secondTruth.proofDecisionHistory[0]?.decision).toBe("rejected");
   });
 });

@@ -182,6 +182,7 @@ export const proofingQueueRowSchema = z.object({
   lineItemId: z.string(),
   orderId: z.string(),
   orderNumber: z.string().nullable(),
+  lineItemSortOrder: z.number().int(),
   customerDisplayName: z.string().nullable(),
   lineItemLabel: z.string(),
   packageLabel: z.string(),
