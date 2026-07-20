@@ -22,6 +22,72 @@ export function buildOrderLineNumberMap(lineItemIds: readonly string[]): Map<str
   return new Map(lineItemIds.map((id, index) => [String(id), index + 1]));
 }
 
+export type OrderLineItemReorderEntry = {
+  id: string;
+  sortOrder: number;
+};
+
+export function buildOrderLineItemReorderPayload(lineItemIds: readonly string[]): {
+  items: OrderLineItemReorderEntry[];
+} {
+  return {
+    items: lineItemIds.map((id, sortOrder) => ({ id: String(id), sortOrder })),
+  };
+}
+
+export function moveOrderLineItemIds(
+  lineItemIds: readonly string[],
+  activeId: string,
+  overId: string,
+): string[] {
+  const oldIndex = lineItemIds.indexOf(String(activeId));
+  const newIndex = lineItemIds.indexOf(String(overId));
+  if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return [...lineItemIds];
+  const next = [...lineItemIds];
+  const [moved] = next.splice(oldIndex, 1);
+  next.splice(newIndex, 0, moved);
+  return next;
+}
+
+export function applyOrderLineItemReorder<T extends { id: string; sortOrder?: number | null }>(
+  lineItems: readonly T[],
+  entries: readonly OrderLineItemReorderEntry[],
+): T[] {
+  const sortOrderById = new Map(entries.map((entry) => [String(entry.id), entry.sortOrder]));
+  return lineItems
+    .map((lineItem) => {
+      const sortOrder = sortOrderById.get(String(lineItem.id));
+      return sortOrder === undefined ? lineItem : { ...lineItem, sortOrder };
+    })
+    .sort((left, right) => {
+      const leftOrder = sortOrderById.get(String(left.id));
+      const rightOrder = sortOrderById.get(String(right.id));
+      if (leftOrder === undefined && rightOrder === undefined) return 0;
+      if (leftOrder === undefined) return 1;
+      if (rightOrder === undefined) return -1;
+      return leftOrder - rightOrder;
+    });
+}
+
+export async function persistOrderLineItemReorder(
+  orderId: string,
+  lineItemIds: readonly string[],
+  fetcher: typeof fetch = fetch,
+): Promise<OrderLineItemReorderEntry[]> {
+  const payload = buildOrderLineItemReorderPayload(lineItemIds);
+  const response = await fetcher(`/api/orders/${orderId}/line-items/reorder`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    credentials: "include",
+    body: JSON.stringify(payload),
+  });
+  const result = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    throw new Error(result?.message || "Could not save line item order.");
+  }
+  return Array.isArray(result?.items) ? result.items : payload.items;
+}
+
 export function getOrderLineItemSelectAllState(
   selectedIds: ReadonlySet<string>,
   selectableIds: readonly string[],

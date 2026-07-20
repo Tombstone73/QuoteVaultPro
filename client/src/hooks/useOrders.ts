@@ -145,6 +145,7 @@ export type OrderLineItem = {
   specsJson?: any;
   createdAt: string;
   updatedAt: string;
+  sortOrder: number;
   proofSummary?: LineItemProofSummary;
 };
 

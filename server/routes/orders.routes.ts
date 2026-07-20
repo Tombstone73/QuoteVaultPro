@@ -6016,6 +6016,58 @@ export async function registerOrderRoutes(
     });
 
     // Order Line Items routes
+    app.patch("/api/orders/:orderId/line-items/reorder", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
+            const orderId = String(req.params.orderId);
+            const payload = z.object({
+                items: z.array(z.object({
+                    id: z.string().min(1),
+                    sortOrder: z.number().int().min(0),
+                })).min(1),
+            }).parse(req.body ?? {});
+            const requestedIds = payload.items.map((item) => item.id);
+            if (new Set(requestedIds).size !== requestedIds.length) {
+                return res.status(400).json({ message: "Line item order contains duplicate IDs." });
+            }
+
+            const [order] = await db
+                .select({ id: orders.id })
+                .from(orders)
+                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+            if (!order) return res.status(404).json({ message: "Order not found" });
+
+            const activeItems = await db
+                .select({ id: orderLineItems.id })
+                .from(orderLineItems)
+                .where(and(eq(orderLineItems.orderId, orderId), sql`lower(coalesce(${orderLineItems.status}, '')) <> 'canceled'`));
+            const activeIds = new Set(activeItems.map((item) => String(item.id)));
+            if (requestedIds.length !== activeIds.size || requestedIds.some((id) => !activeIds.has(id))) {
+                return res.status(409).json({ message: "Line items changed while reordering. Refresh and try again." });
+            }
+
+            await db.transaction(async (tx) => {
+                for (const item of payload.items) {
+                    await tx
+                        .update(orderLineItems)
+                        .set({ sortOrder: item.sortOrder, updatedAt: new Date() })
+                        .where(and(eq(orderLineItems.id, item.id), eq(orderLineItems.orderId, orderId)));
+                }
+            });
+
+            return res.json({ success: true, items: payload.items });
+        } catch (error) {
+            if (error instanceof z.ZodError) {
+                return res.status(400).json({ message: fromZodError(error).message });
+            }
+            console.error("[ORDER_LINE_ITEM_REORDER] Error:", error);
+            return res.status(500).json({ message: "Failed to reorder order line items." });
+        }
+    });
+
     app.get("/api/orders/:orderId/line-items", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);

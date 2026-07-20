@@ -1,7 +1,9 @@
-import { describe, expect, it } from "@jest/globals";
+import { describe, expect, it, jest } from "@jest/globals";
 import {
   getOrderLineItemActiveWorkWarning,
   buildOrderLineNumberMap,
+  applyOrderLineItemReorder,
+  buildOrderLineItemReorderPayload,
   buildOrderLineItemProductionActionRequests,
   getOrderLineItemEditorUiPolicy,
   getOrderLineItemSelectAllState,
@@ -9,6 +11,8 @@ import {
   getOrderLineItemProductionActions,
   resolveOrderLineItemOperationalDisplay,
   toggleAllOrderLineItemSelections,
+  moveOrderLineItemIds,
+  persistOrderLineItemReorder,
   sortOrderLineItemsByPersistedOrder,
 } from "./orderLineItemEditorUi";
 
@@ -30,6 +34,67 @@ describe("order line item editor UI policy", () => {
       "line-a": 2,
       "line-c": 3,
     });
+  });
+
+  it("moves line 6 above line 5 and builds the atomic persistence payload", () => {
+    const reordered = moveOrderLineItemIds(
+      ["line-1", "line-2", "line-3", "line-4", "line-5", "line-6"],
+      "line-6",
+      "line-5",
+    );
+
+    expect(reordered).toEqual(["line-1", "line-2", "line-3", "line-4", "line-6", "line-5"]);
+    expect(buildOrderLineItemReorderPayload(reordered)).toEqual({
+      items: reordered.map((id, sortOrder) => ({ id, sortOrder })),
+    });
+    expect(Object.fromEntries(buildOrderLineNumberMap(reordered))).toMatchObject({
+      "line-6": 5,
+      "line-5": 6,
+    });
+  });
+
+  it("hydrates line items in the persisted order returned by a reorder", () => {
+    const entries = buildOrderLineItemReorderPayload(["line-2", "line-1"]).items;
+    expect(applyOrderLineItemReorder([
+      { id: "line-1", sortOrder: 0 },
+      { id: "line-2", sortOrder: 1 },
+    ], entries)).toEqual([
+      { id: "line-2", sortOrder: 0 },
+      { id: "line-1", sortOrder: 1 },
+    ]);
+  });
+
+  it("sends the complete ordered ID and sort-value payload in one request", async () => {
+    const fetcher = jest.fn(async () => ({
+      ok: true,
+      json: async () => ({ success: true, items: [
+        { id: "line-2", sortOrder: 0 },
+        { id: "line-1", sortOrder: 1 },
+      ] }),
+    })) as unknown as typeof fetch;
+
+    await expect(persistOrderLineItemReorder("order-1", ["line-2", "line-1"], fetcher)).resolves.toEqual([
+      { id: "line-2", sortOrder: 0 },
+      { id: "line-1", sortOrder: 1 },
+    ]);
+    expect(fetcher).toHaveBeenCalledWith("/api/orders/order-1/line-items/reorder", expect.objectContaining({
+      method: "PATCH",
+      credentials: "include",
+      body: JSON.stringify({ items: [
+        { id: "line-2", sortOrder: 0 },
+        { id: "line-1", sortOrder: 1 },
+      ] }),
+    }));
+  });
+
+  it("surfaces persistence errors so the editor can roll back its optimistic order", async () => {
+    const fetcher = jest.fn(async () => ({
+      ok: false,
+      json: async () => ({ message: "Line items changed while reordering. Refresh and try again." }),
+    })) as unknown as typeof fetch;
+
+    await expect(persistOrderLineItemReorder("order-1", ["line-2", "line-1"], fetcher))
+      .rejects.toThrow("Line items changed while reordering. Refresh and try again.");
   });
   it("selects and deselects every selectable line item", () => {
     const selectable = ["line-1", "line-2"];

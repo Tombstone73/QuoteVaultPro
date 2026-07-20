@@ -2088,7 +2088,11 @@ export class OrdersRepository {
 
     // Order line item operations
     async getOrderLineItems(orderId: string): Promise<OrderLineItem[]> {
-        return await this.dbInstance.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
+        return await this.dbInstance
+            .select()
+            .from(orderLineItems)
+            .where(eq(orderLineItems.orderId, orderId))
+            .orderBy(asc(orderLineItems.sortOrder), asc(orderLineItems.createdAt), asc(orderLineItems.id));
     }
 
     async getOrderLineItemById(id: string): Promise<OrderLineItem | undefined> {

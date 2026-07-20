@@ -129,6 +129,30 @@ describe("LineItemCard visible price render path", () => {
 });
 
 describe("LineItemCard collapsed header actions", () => {
+  it("forwards pointer-down from the reorder handle to the sortable listener without expanding the row", async () => {
+    const onToggleExpand = jest.fn();
+    const onPointerDown = jest.fn();
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      onToggleExpand,
+      showDragHandle: true,
+      dragHandleProps: {
+        attributes: { "aria-roledescription": "sortable" },
+        listeners: { onPointerDown },
+      },
+    });
+
+    const handle = container.querySelector('button[aria-label="Drag to reorder"]');
+    expect(handle).toBeTruthy();
+    act(() => {
+      handle!.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, cancelable: true }));
+    });
+
+    expect(onPointerDown).toHaveBeenCalledTimes(1);
+    expect(onToggleExpand).not.toHaveBeenCalled();
+    expect(handle?.getAttribute("aria-roledescription")).toBe("sortable");
+    await cleanup();
+  });
+
   it("shows the persisted line label and lets a thumbnail action open without expanding", async () => {
     const onToggleExpand = jest.fn();
     const onViewArtwork = jest.fn();

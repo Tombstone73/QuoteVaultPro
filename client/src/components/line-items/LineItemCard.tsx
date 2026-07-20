@@ -74,6 +74,7 @@ export type LineItemCardProps = {
     attributes?: Record<string, any>;
     listeners?: Record<string, any>;
     disabled?: boolean;
+    disabledReason?: string;
   };
   showDragHandle?: boolean;
 
@@ -638,7 +639,11 @@ export function LineItemCard({
               disabled={dragDisabled}
               aria-label="Drag to reorder"
               onClick={(e) => e.stopPropagation()}
-              onPointerDown={(e) => e.stopPropagation()}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                dragHandleProps?.listeners?.onPointerDown?.(event);
+              }}
+              title={dragDisabled ? dragHandleProps?.disabledReason ?? "Reordering is unavailable" : "Drag to reorder"}
             >
               <GripVertical className="h-4 w-4" />
             </button>
