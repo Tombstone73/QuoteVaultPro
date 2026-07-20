@@ -681,7 +681,8 @@ export class InboundOrderParsingService {
   }
 
   refineParsedDraft(record: InboundOrderRecord, draft: InboundOrderParsedDraft, evidenceBundle?: InboundOrderEvidenceBundle): InboundOrderParsedDraft {
-    const evidenceRefined = evidenceBundle ? this.applyReconciledEvidence(this.applyAttachmentEvidencePriority(draft, evidenceBundle), evidenceBundle) : draft;
+    const signatureRefined = this.removeSignatureOnlyLineItems(record, draft);
+    const evidenceRefined = evidenceBundle ? this.applyReconciledEvidence(this.applyAttachmentEvidencePriority(signatureRefined, evidenceBundle), evidenceBundle) : signatureRefined;
     const hasPurchaseOrderDueDate = Boolean(
       evidenceBundle?.items.some((item) => item.documentType === "purchase_order" && item.poSummary?.dueDate),
     );
@@ -716,7 +717,6 @@ export class InboundOrderParsingService {
       evidence.bodyText,
       evidence.notes,
       evidence.subject,
-      draft.order.notes,
     ].filter(Boolean).join("\n");
 
     let changed = false;
@@ -951,8 +951,8 @@ export class InboundOrderParsingService {
     text: string,
   ): { quantity: number; sourceText: string } | null {
     const numericPatterns = [
-      /\b(?:qty|quantity|count)\s*[:#-]?\s*(\d{1,5})\b/i,
-      /\b(\d{1,5})\s+(?:prints?|copies|pcs|pieces|signs?|banners?|decals?|stickers?|posters?)\s+(?:total|needed|required|please)?\b/i,
+      /\b(?:qty|qnty|quantity|count)\s*[:#-]?\s*(\d{1,5})\b/i,
+      /\b(\d{1,5})\s+(?:[\w/-]+\s+){0,3}(?:prints?|copies|pcs|pieces|signs?|banners?|decals?|stickers?|posters?)(?:\s+(?:total|needed|required|please))?\b/i,
       /\b(?:need|needs|make|print|produce|order)\s+(\d{1,5})\s+(?:prints?|copies|pcs|pieces|signs?|banners?|decals?|stickers?|posters?)\b/i,
     ];
     for (const pattern of numericPatterns) {
@@ -964,6 +964,8 @@ export class InboundOrderParsingService {
         const quantityOffset = matchText.indexOf(match[1]);
         const quantityIndex = (match.index ?? 0) + (quantityOffset >= 0 ? quantityOffset : 0);
         const previousChar = text[quantityIndex - 1] ?? "";
+        const precedingText = text.slice(Math.max(0, (match.index ?? 0) - 24), match.index ?? 0);
+        if (/\b\d+(?:\.\d+)?\s*(?:x|by|\u00d7)\s*$/i.test(precedingText)) continue;
         if (/x|X|\u00d7|Ã—/.test(previousChar)) continue;
         return { quantity, sourceText: matchText.replace(/\s+/g, " ").trim() };
       }
@@ -1074,10 +1076,30 @@ export class InboundOrderParsingService {
     const evidenceText = [
       evidence.bodyText,
       evidence.notes,
-      evidence.subject,
-      draft.order.notes,
       ...(evidenceBundle?.items.map((item) => item.rawText).filter(Boolean) ?? []),
     ].filter(Boolean).join("\n");
+    const reconciliation = evidenceBundle?.reconciliation;
+    const hasConfirmedReconciledCore = Boolean(
+      reconciliation
+      && typeof reconciliation.product.value === "string"
+      && reconciliation.product.status !== "missing"
+      && reconciliation.product.status !== "conflict"
+      && typeof reconciliation.quantity.value === "number"
+      && reconciliation.quantity.status !== "missing"
+      && reconciliation.quantity.status !== "conflict"
+      && typeof reconciliation.dimensions.value === "string"
+      && reconciliation.dimensions.status !== "missing"
+      && reconciliation.dimensions.status !== "conflict",
+    );
+    if (
+      hasConfirmedReconciledCore
+      && baseLine.quantity
+      && baseLine.width
+      && baseLine.height
+      && this.extractDistinctDimensions(evidenceText).length <= 1
+    ) {
+      return draft;
+    }
 
     const fragments = this.extractLineItemFragments(evidenceText);
     if (fragments.length > 1) {
@@ -1164,12 +1186,29 @@ export class InboundOrderParsingService {
     const fragments: Array<{ sourceText: string; reasons: string[] }> = [];
     const add = (sourceText: string, reasons: string[]) => {
       const normalized = sourceText.replace(/\s+/g, " ").trim();
-      if (!normalized || fragments.some((item) => item.sourceText.toLowerCase() === normalized.toLowerCase())) return;
+      if (!normalized) return;
+      const normalizedKey = normalized.toLowerCase();
+      const relatedIndex = fragments.findIndex((item) => {
+        const itemKey = item.sourceText.toLowerCase();
+        return itemKey === normalizedKey || itemKey.includes(normalizedKey) || normalizedKey.includes(itemKey);
+      });
+      if (relatedIndex >= 0) {
+        if (fragments[relatedIndex].sourceText.length < normalized.length) {
+          fragments[relatedIndex] = { sourceText: normalized, reasons };
+        }
+        return;
+      }
       fragments.push({ sourceText: normalized, reasons });
     };
 
     // Explicit quantity subgroups are one requested item group even when they
     // are written in a single paragraph rather than a list.
+    const subsetAfterTotal = /\b\d{1,5}\s+(?:signs?|banners?|decals?|stickers?|posters?)\s+total\s*:\s*(\d{1,5})\s+([^.;\n]{0,90}?(?:signs?|banners?|decals?|stickers?|posters?))\b\s*(?:and\s+)?(?:the\s+)?other\s+(\d{1,5})\s+([^.;\n]{0,90}?(?:signs?|banners?|decals?|stickers?|posters?))\b/i.exec(text);
+    if (subsetAfterTotal) {
+      add(`${subsetAfterTotal[1]} ${subsetAfterTotal[2]}`, ["quantity subset", "different specifications"]);
+      add(`${subsetAfterTotal[3]} ${subsetAfterTotal[4]}`, ["quantity subset", "different specifications"]);
+      return fragments;
+    }
     const subset = /\b(\d{1,5})\s+([^.;\n]{0,90}?(?:signs?|banners?|decals?|stickers?|posters?))\b\s*(?:and\s+)?(?:the\s+)?other\s+(\d{1,5})\s+([^.;\n]{0,90}?(?:signs?|banners?|decals?|stickers?|posters?))\b/i.exec(text);
     if (subset) {
       add(`${subset[1]} ${subset[2]}`, ["quantity subset", "different specifications"]);
@@ -1178,6 +1217,7 @@ export class InboundOrderParsingService {
     }
 
     for (const line of lines) {
+      if (this.isSignatureOrCompanyIdentityText(line)) continue;
       const itemStarts = Array.from(line.matchAll(/\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:[\w/-]+\s+){0,3}(?:coroplast\s+)?(?:signs?|banners?|decals?|stickers?|posters?|magnets?)\b/gi));
       if (itemStarts.length > 1) {
         itemStarts.forEach((match, index) => {
@@ -1188,9 +1228,9 @@ export class InboundOrderParsingService {
         continue;
       }
       const hasProduct = /\b(?:coroplast|corrugated\s+plastic|yard\s+sign|lawn\s+sign|signs?|banners?|decals?|stickers?|posters?|magnets?)\b/i.test(line);
-      const hasQuantity = /\b(?:qty|quantity|count)\s*[:#-]?\s*\d+\b|\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:[\w/-]+\s+){0,3}(?:signs?|banners?|decals?|stickers?|posters?|magnets?)\b/i.test(line);
+      const hasQuantity = /\b(?:qty|qnty|quantity|count)\s*[:#-]?\s*\d+\b|\b(?:\d+|one|two|three|four|five|six|seven|eight|nine|ten)\s+(?:[\w/-]+\s+){0,3}(?:signs?|banners?|decals?|stickers?|posters?|magnets?)\b/i.test(line);
       const hasDimension = this.extractDistinctDimensions(line).length > 0;
-      if (!hasProduct && !(hasQuantity && hasDimension)) continue;
+      if (!(hasProduct && (hasQuantity || hasDimension)) && !(hasQuantity && hasDimension)) continue;
       const reasons: string[] = [];
       if (hasProduct) reasons.push("different product");
       if (hasQuantity) reasons.push("different quantity");
@@ -1204,13 +1244,87 @@ export class InboundOrderParsingService {
       const clauses = text.split(/(?=\b(?:also|another|one\s+large|second\s+item|additionally)\b)|(?<=\.)\s+/i);
       for (const clause of clauses) {
         const cleaned = clause.replace(/\s+/g, " ").trim();
-        if (/\b(?:coroplast|signs?|banners?|decals?|stickers?|posters?|magnets?)\b/i.test(cleaned)
+        if (!this.isSignatureOrCompanyIdentityText(cleaned)
+          && /\b(?:coroplast|signs?|banners?|decals?|stickers?|posters?|magnets?)\b/i.test(cleaned)
           && (/\b\d+\b/.test(cleaned) || this.extractDistinctDimensions(cleaned).length > 0)) {
           add(cleaned, ["separate request phrase"]);
         }
       }
     }
     return fragments.length > 1 ? fragments : [];
+  }
+
+  private removeSignatureOnlyLineItems(record: InboundOrderRecord, draft: InboundOrderParsedDraft): InboundOrderParsedDraft {
+    if (draft.lineItems.length < 2) return draft;
+    const evidence = getManualInboundEvidence(record);
+    const knownIdentityValues = [
+      evidence.senderName,
+      draft.customer.sourceName,
+      draft.customer.companyName,
+    ]
+      .filter((value): value is string => Boolean(value?.trim()))
+      .map((value) => value.replace(/\s+/g, " ").trim().toLowerCase());
+    const retainedIndexes: number[] = [];
+    draft.lineItems.forEach((lineItem, index) => {
+      const text = combinedLineItemText(lineItem).replace(/\s+/g, " ").trim();
+      const identityCandidates = [lineItem.sourceText, lineItem.productName, text]
+        .filter((value): value is string => Boolean(value?.trim()))
+        .map((value) => value.replace(/\s+/g, " ").trim());
+      const hasOperationalDetail = Boolean(
+        lineItem.quantity
+        || hasDimensionSignal(lineItem)
+        || lineItem.materialText
+        || lineItem.optionTexts.length
+        || lineItem.finishingTexts.length
+        || lineItem.artworkRefs.length,
+      );
+      const matchesKnownIdentity = identityCandidates.some((candidate) => {
+        const normalizedCandidate = candidate.toLowerCase();
+        return knownIdentityValues.some((value) => (
+          normalizedCandidate === value || normalizedCandidate === `${value}, inc.` || normalizedCandidate === `${value} inc.`
+        ));
+      });
+      const looksLikeCompanyIdentity = identityCandidates.some((candidate) => (
+        this.isSignatureOrCompanyIdentityText(candidate)
+      ));
+      const looksLikeContactBlock = identityCandidates.some((candidate) => (
+        /(?:\b(?:phone|tel|fax|mobile|email|www\.)\b|@|\b(?:president|owner|manager|sales|estimator)\b)/i.test(candidate)
+      ));
+      if (hasOperationalDetail || (!matchesKnownIdentity && !looksLikeCompanyIdentity && !looksLikeContactBlock)) {
+        retainedIndexes.push(index);
+      }
+    });
+    if (retainedIndexes.length === 0 || retainedIndexes.length === draft.lineItems.length) return draft;
+
+    const newIndexByOldIndex = new Map(retainedIndexes.map((oldIndex, newIndex) => [oldIndex, newIndex]));
+    const missingDecisions = draft.missingDecisions.flatMap((decision) => {
+      const match = /^lineItems\.(\d+)(\..+)?$/.exec(decision.field);
+      if (!match) return [decision];
+      const nextIndex = newIndexByOldIndex.get(Number(match[1]));
+      return nextIndex == null ? [] : [{ ...decision, field: `lineItems.${nextIndex}${match[2] ?? ""}` }];
+    });
+    return {
+      ...draft,
+      lineItems: retainedIndexes.map((index) => draft.lineItems[index]),
+      missingDecisions,
+      globalWarnings: [
+        ...draft.globalWarnings,
+        warning(
+          "signature_line_item_removed",
+          `${draft.lineItems.length - retainedIndexes.length} signature or company identity ${draft.lineItems.length - retainedIndexes.length === 1 ? "block was" : "blocks were"} excluded from product line items.`,
+          "info",
+          "lineItems",
+        ),
+      ],
+    };
+  }
+
+  private isSignatureOrCompanyIdentityText(value: string): boolean {
+    const text = value.replace(/\s+/g, " ").trim();
+    if (!text) return false;
+    return /^[a-z0-9&.' -]{2,80},?\s+(?:inc\.?|llc\.?|ltd\.?|corp\.?|corporation|company|co\.?)$/i.test(text)
+      || /^(?:phone|tel|fax|mobile|email)\s*[:#-]/i.test(text)
+      || /^(?:www\.|https?:\/\/)[^\s]+$/i.test(text);
   }
 
   private lineItemFromFragment(

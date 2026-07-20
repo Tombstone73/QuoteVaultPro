@@ -104,6 +104,18 @@ describe("inbound email ingestion classifier", () => {
     });
   });
 
+  test("treats an ambiguous PDF as supported fetchable evidence", () => {
+    const classification = classifyInboundEmailAttachment({
+      filename: "CPM Construction 8x4 ACM for Titan x1.pdf",
+      mimeType: "application/pdf",
+    });
+
+    expect(classification.safeToDownload).toBe(true);
+    expect(classification.reason).toContain("PDF attachment supported for secure download");
+    expect(classification.reason).not.toContain("not supported for automatic download");
+    expect(classification.reason).not.toContain("lacks strong PO or artwork signals");
+  });
+
   test("classifies Brainstorm-style purchase order filenames as PO candidates", () => {
     const classification = classifyInboundEmailAttachment({
       filename: "Purchase Order No 151866 Titan Merchants Sign 7_6_26.pdf",

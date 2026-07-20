@@ -2432,6 +2432,48 @@ describe("InboundOrderService editable review draft", () => {
     expect(JSON.stringify(conversionInput)).not.toContain(sourceBody);
   });
 
+  test("refresh preserves an explicitly staff-selected quantity", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        ...initialized,
+        status: "draft",
+        reviewedLineItemsJson: [{
+          ...initialized.reviewedLineItemsJson[0],
+          quantity: 7,
+          quantitySource: "staff_selected",
+        }],
+      },
+    });
+    repo.setLatestParseAttempt(parseAttempt({
+      id: "attempt_2",
+      parsedDraft: parsedDraft({
+        lineItems: [{ ...parsedDraft().lineItems[0], quantity: 1 }],
+      }),
+      createdAt: new Date("2026-06-09T12:20:00.000Z"),
+    }));
+
+    const staffPreserved = await service.refreshReviewDraftFromLatestParse({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(staffPreserved.reviewedLineItemsJson[0]).toMatchObject({
+      quantity: 7,
+      quantitySource: "staff_selected",
+    });
+  });
+
   test("prices every inbound print line before persisting a multi-line quote draft", async () => {
     const baseLine = parsedDraft().lineItems[0];
     const twoLineDraft = parsedDraft({

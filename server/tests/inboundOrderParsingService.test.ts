@@ -642,6 +642,56 @@ describe("InboundOrderParsingService", () => {
     expect(sameItem.lineItems[0]).toMatchObject({ quantity: 20, width: 24, height: 18 });
   });
 
+  test("extracts Qnty 1 and excludes a company signature from line items", () => {
+    const bodyText = [
+      "Zane-Another ACM sign! Qnty 1, 96\" x 48\", one-sided on 3mm ACM.",
+      "T3 Signs, Inc.",
+      "sales@t3signs.example",
+    ].join("\n");
+    const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);
+    const base = parsedDraft({
+      customer: { ...parsedDraft().customer, companyName: "T3 Signs, Inc." },
+      order: { ...parsedDraft().order, notes: bodyText },
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        sourceText: "Zane-Another ACM sign! Qnty 1, 96\" x 48\", one-sided on 3mm ACM.",
+        productName: "Coroplast",
+        materialText: "3mm ACM",
+        quantity: null,
+        width: null,
+        height: null,
+        dimensionsUnit: null,
+      }, {
+        ...parsedDraft().lineItems[0],
+        sourceText: "T3 Signs, Inc.",
+        productName: "T3 Signs, Inc.",
+        materialText: null,
+        quantity: null,
+        width: null,
+        height: null,
+        dimensionsUnit: null,
+      }],
+      missingDecisions: [{
+        field: "lineItems.1.quantity",
+        label: "What quantity is needed?",
+        reason: "No clear quantity was detected.",
+        severity: "blocking",
+      }],
+    });
+
+    const refined = service.refineParsedDraft(inboundRecord({ rawPayloadJson: { bodyText } }) as any, base as any);
+
+    expect(refined.lineItems).toHaveLength(1);
+    expect(refined.lineItems[0]).toMatchObject({ quantity: 1, width: 96, height: 48 });
+    expect(refined.lineItems[0].optionTexts).toContain("single-sided");
+    expect(refined.missingDecisions).not.toEqual(expect.arrayContaining([
+      expect.objectContaining({ field: "lineItems.1.quantity" }),
+    ]));
+    expect(refined.globalWarnings).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "signature_line_item_removed" }),
+    ]));
+  });
+
   test("keeps differently sized banners and their artwork candidate-specific", () => {
     const bodyText = "1 banner 4 x 8 feet, north.pdf\n1 banner 8 x 2 feet, south.pdf";
     const service = new InboundOrderParsingService(makeRepository().repo as any, () => null);

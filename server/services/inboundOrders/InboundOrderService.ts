@@ -4171,7 +4171,10 @@ export class InboundOrderService {
   }
 
   private reviewQuantitySource(lineItem: InboundOrderParsedDraft["lineItems"][number]): InboundOrderReviewValueSource {
-    return lineItem.warnings.some((warning) => warning.code === "quantity_inferred_from_number_word")
+    return lineItem.warnings.some((warning) => (
+      warning.code === "quantity_inferred_from_number_word"
+      || warning.code === "quantity_inferred_from_structured_phrase"
+    ))
       ? "source_evidence"
       : "ai_inferred";
   }
@@ -4526,9 +4529,11 @@ export class InboundOrderService {
     const reviewedLineItemsJson = refreshedPayload.reviewedLineItemsJson.map((lineItem, index) => {
       const existingLineItem = existingPayload.reviewedLineItemsJson[index];
       if (!existingLineItem) return lineItem;
+      const quantityWasStaffSelected = existingLineItem.quantitySource === "staff_selected";
       const staffLinks = existingLineItem.artworkLinks.filter((link) => (
         link.source === "staff_selected" || link.source === "staff_removed"
       ));
+      const refreshedQuantity = quantityWasStaffSelected ? existingLineItem.quantity : lineItem.quantity;
       const pricingReviewJson = existingLineItem.pricingReviewJson?.acknowledged || existingLineItem.pricingReviewJson?.priceOverrideMode
         ? preservePricingResolution(existingLineItem.pricingReviewJson, lineItem.pricingReviewJson ?? {
           status: "not_available",
@@ -4553,14 +4558,19 @@ export class InboundOrderService {
           priceOverrideSource: null,
           effectiveUnitPriceCents: null,
           effectiveTotalCents: null,
-        }, lineItem.quantity ?? 1)
+        }, refreshedQuantity ?? 1)
         : lineItem.pricingReviewJson;
-      if (staffLinks.length === 0) return { ...lineItem, pricingReviewJson };
+      const refreshedLineItem = {
+        ...lineItem,
+        quantity: refreshedQuantity,
+        quantitySource: quantityWasStaffSelected ? existingLineItem.quantitySource : lineItem.quantitySource,
+        pricingReviewJson,
+      };
+      if (staffLinks.length === 0) return refreshedLineItem;
       const staffKeys = new Set(staffLinks.map((link) => artworkLinkKey(link)));
       const retainedLinks = lineItem.artworkLinks.filter((link) => !staffKeys.has(artworkLinkKey(link)));
       return {
-        ...lineItem,
-        pricingReviewJson,
+        ...refreshedLineItem,
         artworkLinks: [...retainedLinks, ...staffLinks],
       };
     });

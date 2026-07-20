@@ -193,7 +193,7 @@ function inboundFileUnavailableLabel(file: ClientInboundOrderFile) {
   if (!file.fileRecordId && attachmentState === "pending_trust") return "Awaiting trust";
   if (!file.fileRecordId && attachmentState === "download_failed") return "Download failed";
   if (!file.fileRecordId && !(file.providerAttachmentId ?? metadata.providerAttachmentId)) return "Provider file unavailable";
-  if (!file.fileRecordId) return "File not stored";
+  if (!file.fileRecordId) return "File content not stored yet";
   if (String(attachmentSafetyMetadata(file).attachmentState ?? "") === "blocked_file_type") return "Blocked file type";
   if (file.status === "rejected") return "Rejected";
   return "Unavailable";
@@ -202,6 +202,20 @@ function inboundFileUnavailableLabel(file: ClientInboundOrderFile) {
 function inboundFileUnavailableReason(file: ClientInboundOrderFile) {
   const metadata = attachmentSafetyMetadata(file);
   const providerAttachmentId = file.providerAttachmentId ?? metadata.providerAttachmentId;
+  const providerMessageId = file.providerMessageId ?? metadata.providerMessageId;
+  const attachmentState = String(metadata.attachmentState ?? "");
+  if (!file.fileRecordId && attachmentState === "blocked_file_type") {
+    return String(metadata.attachmentSafetyReason ?? metadata.failureReason ?? file.reviewNotes ?? "This attachment type is blocked by file safety policy.");
+  }
+  if (!file.fileRecordId && attachmentState === "download_failed") {
+    return String(metadata.failureReason ?? metadata.downloadError ?? file.reviewNotes ?? "The provider download failed. Retry the download.");
+  }
+  if (!file.fileRecordId && attachmentState === "pending_trust") {
+    return String(metadata.attachmentSafetyReason ?? file.reviewNotes ?? "The sender must be trusted before file content can be fetched.");
+  }
+  if (!file.fileRecordId && providerAttachmentId && providerMessageId) {
+    return "File content not stored yet. Fetch file to view/download.";
+  }
   return String(
     metadata.attachmentSafetyReason
       ?? metadata.failureReason
@@ -1191,7 +1205,17 @@ function CleanAttachmentFileActions({
       `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/trust-action`,
       { action: "download_once" },
     ),
-    onSuccess: async () => {
+    onSuccess: async (response) => {
+      queryClient.setQueryData<ClientInboundOrderDetailResponse | undefined>(["/api/inbound-orders", recordId], (current) => {
+        if (!current?.data) return current;
+        return {
+          ...current,
+          data: {
+            ...current.data,
+            files: current.data.files.map((candidate) => candidate.id === file.id ? response.data : candidate),
+          },
+        };
+      });
       await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] });
       toast({ title: "Attachment fetched", description: `${filename} is now available to open or download.` });
     },
@@ -7502,6 +7526,7 @@ function PricingReviewCard({
   const initialOverrideCents = review?.priceOverrideValueCents ?? null;
   const overrideInputRef = useRef<HTMLInputElement>(null);
   const overrideCentsRef = useRef<number | null>(initialOverrideCents);
+  const [overrideMode, setOverrideMode] = useState<InboundPriceOverrideMode | null>(review?.priceOverrideMode ?? null);
   const [overrideAmountText, setOverrideAmountText] = useState(() => (
     initialOverrideCents != null && initialOverrideCents > 0
       ? (initialOverrideCents / 100).toFixed(2)
@@ -7515,6 +7540,9 @@ function PricingReviewCard({
       setOverrideAmountText(nextCents != null && nextCents > 0 ? (nextCents / 100).toFixed(2) : "");
     }
   }, [review?.priceOverrideValueCents]);
+  useEffect(() => {
+    setOverrideMode(review?.priceOverrideMode ?? null);
+  }, [review?.priceOverrideMode]);
   if (!review) return null;
   const quantity = Math.max(1, quantityValue ?? 1);
   const effective = resolveInboundLineEffectivePricing(review, quantity);
@@ -7548,6 +7576,7 @@ function PricingReviewCard({
   });
   const applyPoSuggestion = () => {
     if (!poSuggestion) return;
+    setOverrideMode(poSuggestion.mode);
     overrideCentsRef.current = poSuggestion.valueCents;
     setOverrideAmountText((poSuggestion.valueCents / 100).toFixed(2));
     applyChange({
@@ -7603,7 +7632,8 @@ function PricingReviewCard({
       </div>
       {review.status === "not_available" && effective.effectiveTotalCents <= 0 ? (
         <div className="mt-2 text-amber-600 dark:text-amber-300">
-          System pricing is unavailable. Enter a unit or total override before conversion.
+          {review.message ? `System pricing error: ${review.message} ` : "System pricing is unavailable. "}
+          Enter a unit or total override before conversion.
         </div>
       ) : null}
       {hasMismatch ? (
@@ -7629,17 +7659,19 @@ function PricingReviewCard({
         <select
           className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
           aria-label="Inbound price override mode"
-          value={review.priceOverrideMode ?? ""}
+          value={overrideMode ?? ""}
           onChange={(event) => {
             const mode = (trimToNull(event.target.value) as InboundPriceOverrideMode | null);
             if (!mode) {
+              setOverrideMode(null);
               overrideCentsRef.current = null;
               setOverrideAmountText("");
               clearOverride();
               return;
             }
+            setOverrideMode(mode);
             const suggestedValue = poSuggestion?.mode === mode ? poSuggestion.valueCents : null;
-            const nextValueCents = review.priceOverrideMode === mode
+            const nextValueCents = overrideMode === mode
               ? review.priceOverrideValueCents
               : suggestedValue;
             overrideCentsRef.current = nextValueCents;
@@ -7665,7 +7697,7 @@ function PricingReviewCard({
           type="number"
           min="0"
           step="0.01"
-          disabled={!review.priceOverrideMode}
+          disabled={!overrideMode}
           value={overrideAmountText}
           onChange={(event) => {
             const nextText = event.target.value;

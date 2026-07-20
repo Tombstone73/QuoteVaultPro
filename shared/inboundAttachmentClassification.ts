@@ -229,7 +229,12 @@ export function classifyInboundAttachment(input: InboundAttachmentClassification
     }
     if (scores.PO === 0 && scores.ARTWORK === 0 && scores.REFERENCE === 0) {
       scores.REFERENCE += 38;
-      pushReason(breakdown.metadata, isPdf ? "PDF is useful evidence but lacks strong PO or artwork signals" : "Word document is useful evidence but lacks strong PO or artwork signals");
+      pushReason(
+        breakdown.metadata,
+        isPdf
+          ? "PDF is valid inbound evidence and needs staff classification as artwork, reference, or purchase order"
+          : "Word document is valid inbound evidence and needs staff classification as artwork, reference, or purchase order",
+      );
     }
   }
 
