@@ -388,6 +388,7 @@ type QueueFilters = {
   hasWarnings: boolean;
   unconvertedOnly: boolean;
   search: string;
+  sort: "received_desc" | "received_asc" | "customer_asc" | "customer_desc" | "subject_asc" | "subject_desc" | "due_date_asc" | "due_date_desc";
 };
 
 type InboundReviewWorkspaceMode = "operational" | "clean" | "debug";
@@ -411,6 +412,7 @@ const defaultQueueFilters: QueueFilters = {
   hasWarnings: false,
   unconvertedOnly: true,
   search: "",
+  sort: "received_desc",
 };
 
 const queueSearchDebounceMs = 300;
@@ -470,6 +472,17 @@ const trustFilterOptions: Array<{ value: QueueFilters["trustFilter"]; label: str
   { value: "untrusted", label: "Untrusted" },
   { value: "unknown", label: "Unknown" },
   { value: "pending_attachment_trust", label: "Pending attachment trust" },
+];
+
+const queueSortOptions: Array<{ value: QueueFilters["sort"]; label: string }> = [
+  { value: "received_desc", label: "Received: newest" },
+  { value: "received_asc", label: "Received: oldest" },
+  { value: "customer_asc", label: "Customer: A–Z" },
+  { value: "customer_desc", label: "Customer: Z–A" },
+  { value: "subject_asc", label: "Subject: A–Z" },
+  { value: "subject_desc", label: "Subject: Z–A" },
+  { value: "due_date_asc", label: "Due date: earliest" },
+  { value: "due_date_desc", label: "Due date: latest" },
 ];
 
 const senderTrustLabels: Record<InboundSenderTrustStatus, string> = {
@@ -565,6 +578,7 @@ function buildInboundOrderListUrl(filters: QueueFilters) {
   if (filters.hasWarnings) params.set("hasWarnings", "true");
   if (filters.unconvertedOnly && filters.statusGroup !== "converted" && filters.statusGroup !== "ignored") params.set("converted", "false");
   if (filters.search.trim()) params.set("search", filters.search.trim());
+  params.set("sort", filters.sort);
 
   return `/api/inbound-orders?${params.toString()}`;
 }
@@ -3698,6 +3712,17 @@ function QueueTriageControls({
                   <option key={option.value} value={option.value}>{option.label}</option>
                 ))}
               </select>
+              <select
+                className="h-8 min-w-0 max-w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
+                value={filters.sort}
+                onChange={(event) => setFilter({ sort: event.target.value as QueueFilters["sort"] })}
+                disabled={isLoading}
+                aria-label="Queue sort"
+              >
+                {queueSortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
+              </select>
               <div className="flex flex-wrap gap-2">
                 <label className="flex min-h-8 min-w-0 max-w-full items-center gap-2 rounded-md border border-input px-2 py-1 text-xs text-foreground">
                   <input
@@ -4825,7 +4850,7 @@ function CleanInboundQueue({
         <div className="flex items-center justify-between gap-2">
           <div>
             <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Queue</div>
-            <div className="text-[11px] text-slate-500">{records.length} active</div>
+            <div className="text-[11px] text-slate-500">{visibleRecords.length} visible</div>
           </div>
           <Popover>
             <PopoverTrigger asChild>
@@ -4860,6 +4885,16 @@ function CleanInboundQueue({
                 <option value="needs_review">Needs Review</option>
                 <option value="ready">Ready</option>
                 <option value="all">All statuses</option>
+              </select>
+              <select
+                aria-label="Clean queue sort"
+                className="h-8 rounded-md border border-slate-700 bg-slate-900 px-2 text-xs text-slate-100"
+                value={filters.sort}
+                onChange={(event) => onChange({ ...filters, sort: event.target.value as QueueFilters["sort"] })}
+              >
+                {queueSortOptions.map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
               </select>
               <label className="flex items-center gap-2 text-xs text-slate-300">
                 <input

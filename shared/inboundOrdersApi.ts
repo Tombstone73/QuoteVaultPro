@@ -48,6 +48,16 @@ export const inboundOrderListQuerySchema = z.object({
   converted: z.enum(["true", "false"]).transform((value) => value === "true").optional(),
   linkedQuoteStatus: z.enum(["draft", "pending_approval", "pending", "active", "canceled"]).optional(),
   search: z.string().trim().min(1).max(255).optional(),
+  sort: z.enum([
+    "received_desc",
+    "received_asc",
+    "customer_asc",
+    "customer_desc",
+    "subject_asc",
+    "subject_desc",
+    "due_date_asc",
+    "due_date_desc",
+  ]).default("received_desc"),
   limit: z.coerce.number().int().min(1).max(100).default(25),
   offset: z.coerce.number().int().min(0).default(0),
 });

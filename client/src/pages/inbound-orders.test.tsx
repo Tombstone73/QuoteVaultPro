@@ -908,6 +908,150 @@ describe("InboundOrdersPage", () => {
     expect(detailRequests).not.toContain("/api/inbound-orders/inbound_2");
   });
 
+  test("requests customer sorting and renders the server-sorted queue without changing the selected job", async () => {
+    const t3 = record({
+      id: "inbound_t3",
+      externalReference: "T3-PO",
+      extractedCustomerJson: { companyName: "T3 Signs" },
+      rawPayloadJson: {
+        reference: "T3-PO",
+        sender: { name: "T3 Signs", email: "orders@t3.test" },
+        subject: "T3 signs",
+        bodyText: "T3 order",
+      },
+    });
+    const alpha = record({
+      id: "inbound_alpha",
+      externalReference: "ALPHA-PO",
+      extractedCustomerJson: { companyName: "Alpha Graphics" },
+      rawPayloadJson: {
+        reference: "ALPHA-PO",
+        sender: { name: "Alpha Graphics", email: "orders@alpha.test" },
+        subject: "Alpha signs",
+        bodyText: "Alpha order",
+      },
+    });
+    const listRequests: string[] = [];
+    const detailRequests: string[] = [];
+
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path === "/api/inbound-orders/email-settings") {
+        return jsonResponse({ success: true, data: { inboundEmailIntakeEnabled: true, inboundEmailPullPaused: false } });
+      }
+      if (path.startsWith("/api/inbound-orders?")) {
+        listRequests.push(path);
+        const sort = new URL(`http://test.local${path}`).searchParams.get("sort");
+        return jsonResponse(listResponse(sort === "customer_asc" ? [alpha, t3] : [t3, alpha]));
+      }
+      if (path === `/api/inbound-orders/${t3.id}`) {
+        detailRequests.push(path);
+        return jsonResponse({ success: true, data: detail(t3) });
+      }
+      if (path === `/api/inbound-orders/${alpha.id}`) {
+        detailRequests.push(path);
+        return jsonResponse({ success: true, data: detail(alpha) });
+      }
+      if (path.endsWith("/draft-preview")) return jsonResponse(draftPreview());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForCondition(() => listRequests.length > 0, "initial sorted queue request");
+    await waitForText("T3-PO");
+    await waitForCondition(() => detailRequests.includes(`/api/inbound-orders/${t3.id}`), "T3 job selected");
+
+    act(() => {
+      Simulate.click(container.querySelector("button[aria-label='Open queue filters']") as HTMLButtonElement);
+    });
+    await waitForCondition(
+      () => Boolean(document.body.querySelector("select[aria-label='Queue sort']")),
+      "queue sort control",
+    );
+    const sortSelect = document.body.querySelector("select[aria-label='Queue sort']") as HTMLSelectElement;
+    expect(sortSelect).not.toBeNull();
+    act(() => {
+      Simulate.change(sortSelect, { target: { value: "customer_asc" } } as any);
+    });
+
+    await waitForCondition(
+      () => listRequests.some((path) => path.includes("sort=customer_asc")),
+      "customer sort request",
+    );
+    await waitForText("ALPHA-PO");
+    expect(container.textContent!.indexOf("ALPHA-PO")).toBeLessThan(container.textContent!.indexOf("T3-PO"));
+    expect(detailRequests).not.toContain(`/api/inbound-orders/${alpha.id}`);
+  });
+
+  test("composes trusted quick filtering with the debounced server search and updates the visible count", async () => {
+    const trusted = record({
+      id: "trusted_t3",
+      externalReference: "T3-TRUSTED",
+      rawPayloadJson: {
+        reference: "T3-TRUSTED",
+        sender: { name: "T3 Trusted", email: "trusted@t3.test" },
+        subject: "T3 trusted",
+        bodyText: "T3 trusted order",
+      },
+      senderTrustStatus: "trusted_sender",
+      canAutoDownloadAttachments: true,
+    });
+    const untrusted = record({
+      id: "untrusted_t3",
+      externalReference: "T3-UNTRUSTED",
+      rawPayloadJson: {
+        reference: "T3-UNTRUSTED",
+        sender: { name: "T3 Untrusted", email: "untrusted@t3.test" },
+        subject: "T3 untrusted",
+        bodyText: "T3 untrusted order",
+      },
+      senderTrustStatus: "untrusted",
+      attachmentDownloadPolicy: "pending_trust",
+    });
+
+    apiFetchMock.mockImplementation(async (url: any) => {
+      const path = String(url);
+      if (path === "/api/inbound-orders/email-settings") {
+        return jsonResponse({ success: true, data: { inboundEmailIntakeEnabled: true, inboundEmailPullPaused: false } });
+      }
+      if (path.startsWith("/api/inbound-orders?")) {
+        const search = new URL(`http://test.local${path}`).searchParams.get("search");
+        return jsonResponse(listResponse(search === "t3" ? [trusted, untrusted] : [trusted, untrusted]));
+      }
+      if (path === `/api/inbound-orders/${trusted.id}`) return jsonResponse({ success: true, data: detail(trusted) });
+      if (path === `/api/inbound-orders/${untrusted.id}`) return jsonResponse({ success: true, data: detail(untrusted) });
+      if (path.endsWith("/draft-preview")) return jsonResponse(draftPreview());
+      return jsonResponse({ message: `Unexpected URL ${path}` }, false, 500);
+    });
+
+    renderPage();
+    await waitForText("T3-TRUSTED");
+    const searchInput = container.querySelector("input[placeholder='Search queue']") as HTMLInputElement;
+    act(() => Simulate.change(searchInput, { target: { value: "t3" } } as any));
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 350));
+    });
+
+    const cleanButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => Simulate.click(cleanButton));
+    await waitForCondition(
+      () => Boolean(container.querySelector("[data-testid='clean-queue-quick-filters']")),
+      "Clean View queue quick filters",
+    );
+
+    const quickFilters = container.querySelector("[data-testid='clean-queue-quick-filters']") as HTMLElement;
+    const trustedCheckbox = Array.from(quickFilters.querySelectorAll("label"))
+      .find((label) => label.textContent?.includes("Trusted"))
+      ?.querySelector("input") as HTMLInputElement;
+    act(() => Simulate.change(trustedCheckbox, { target: { checked: true } } as any));
+
+    const cleanQueue = container.querySelector("[data-testid='clean-inbound-queue']") as HTMLElement;
+    expect(cleanQueue.textContent).toContain("1 visible");
+    expect(cleanQueue.textContent).toContain("T3-TRUSTED");
+    expect(cleanQueue.textContent).not.toContain("T3-UNTRUSTED");
+  });
+
   test("does not auto-select a different inbound record on each debounced search result", async () => {
     const first = record({
       id: "inbound_1",
