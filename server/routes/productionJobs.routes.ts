@@ -17,6 +17,7 @@ import {
   productionAlerts,
   productionEvents,
   productionJobs,
+  productionStationSteps,
   products,
   reprintRequests,
   users,
@@ -64,6 +65,7 @@ import {
   resolveSheetConfiguration,
 } from "@shared/productionHydration";
 import { sortFinalProductionFiles } from "@shared/productionFileHydration";
+import { resolveProductionCompletionRoute } from "../services/productionCompletionRouting";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -284,6 +286,29 @@ async function completeProductionJobWorkflow(
 
   const effectiveSkipProduction = args.skipProduction === "auto" ? job.status === "queued" : args.skipProduction;
 
+  const [stepDefinition] = await tx
+    .select({ triggers: productionStationSteps.triggers })
+    .from(productionStationSteps)
+    .where(and(
+      eq(productionStationSteps.organizationId, args.organizationId),
+      eq(productionStationSteps.stationKey, String(job.stationKey ?? "")),
+      eq(productionStationSteps.key, String(job.stepKey ?? "queued")),
+      eq(productionStationSteps.active, true),
+    ))
+    .limit(1);
+  const productionConfig = await getProductionConfigForOrganization(args.organizationId);
+  const completionRoute = resolveProductionCompletionRoute({
+    stationKey: job.stationKey,
+    stepKey: job.stepKey,
+    finishingMode: productionConfig.finishingMode,
+    triggers: stepDefinition?.triggers ?? [],
+  });
+  if (completionRoute.kind === "missing_mapping") {
+    throw Object.assign(new Error(
+      `Cannot complete ${completionRoute.stationKey}/${completionRoute.stepKey}: configure an on-complete route in Production & Operations settings.`,
+    ), { statusCode: 409 });
+  }
+
   await assertParentOrderInProductionForJob(tx, {
     organizationId: args.organizationId,
     job,
@@ -395,9 +420,10 @@ async function completeProductionJobWorkflow(
           `Line item workflow state unchanged (was: ${lineItem.workflowState}). ` +
           `Use /prepress/.../send-to-print or design-complete routes for workflow advancement.`,
         );
-      } else {
+      } else if (completionRoute.kind === "route") {
+        const target = completionRoute.route;
         console.log(
-          `[ProductionJobComplete] Station "${completingStationKey}" job ${args.jobId} complete - routing line item ${job.lineItemId} to Fulfillment.`,
+          `[ProductionJobComplete] Station "${completingStationKey}" job ${args.jobId} complete - routing line item ${job.lineItemId} to ${target.stationKey}.`,
         );
         try {
           await routeLineItemToProduction({
@@ -405,29 +431,32 @@ async function completeProductionJobWorkflow(
             organizationId: args.organizationId,
             orderId: job.orderId,
             lineItemId: job.lineItemId,
-            stationKey: FULFILLMENT_STATION_KEY,
-            stepKey: "fulfillment",
+            stationKey: target.stationKey,
+            stepKey: target.stepKey,
             trigger: "line_item_status",
             actorUserId: args.userId,
             extraEventPayload: {
               routingReason: "production_station_complete",
+              completionRouteSource: target.source,
               previousStationKey: completingStationKey,
               previousJobId: args.jobId,
             },
           });
 
-          await markOrderReadyForFulfillmentIfProductionComplete(tx, {
-            organizationId: args.organizationId,
-            orderId: job.orderId,
-            actorUserId: args.userId,
-            productionJobId: args.jobId,
-          });
+          if (target.stationKey === FULFILLMENT_STATION_KEY) {
+            await markOrderReadyForFulfillmentIfProductionComplete(tx, {
+              organizationId: args.organizationId,
+              orderId: job.orderId,
+              actorUserId: args.userId,
+              productionJobId: args.jobId,
+            });
+          }
         } catch (routeErr: any) {
           throw Object.assign(
             new Error(
-              `[ProductionJobComplete] Cannot route line item ${job.lineItemId} to Fulfillment after completing station "${completingStationKey}". ` +
+              `[ProductionJobComplete] Cannot route line item ${job.lineItemId} to ${target.stationKey} after completing station "${completingStationKey}". ` +
               (routeErr?.message ?? String(routeErr)) +
-              ` - ensure a station with key="${FULFILLMENT_STATION_KEY}" exists in Production Settings for this organization.`,
+              ` - ensure a station with key="${target.stationKey}" exists in Production Settings for this organization.`,
             ),
             { statusCode: routeErr?.statusCode ?? 409, cause: routeErr },
           );
@@ -472,7 +501,11 @@ async function completeProductionJobWorkflow(
     .from(productionJobs)
     .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
     .limit(1);
-  return updatedRows[0];
+  return {
+    ...updatedRows[0],
+    nextStationKey: completionRoute.kind === "route" ? completionRoute.route.stationKey : null,
+    nextStepKey: completionRoute.kind === "route" ? completionRoute.route.stepKey : null,
+  };
 }
 
 /**
@@ -2959,6 +2992,51 @@ export function registerProductionJobsRoutes(
         ipAddress: req.ip || null,
         userAgent: req.headers["user-agent"] || null,
       }));
+
+      if (completedJob?.orderId && completedJob?.nextStationKey === FULFILLMENT_STATION_KEY) {
+        const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
+        await applyWorkflowStatusPillFailSoft({
+          organizationId,
+          orderId: completedJob.orderId,
+          triggerKey: "sent_to_fulfillment",
+          actorUserId: userId,
+          source: "system",
+          reason: "Production completion routed work to fulfillment",
+          metadata: {
+            workflowEvent: "sent_to_fulfillment",
+            productionJobId: completedJob.id,
+            lineItemId: completedJob.lineItemId,
+            previousStationKey: completedJob.stationKey,
+          },
+        });
+      }
+      if (completedJob?.orderId && String(completedJob?.stationKey ?? "").toLowerCase() === FULFILLMENT_STATION_KEY) {
+        const [remaining] = await db
+          .select({ id: productionJobs.id })
+          .from(productionJobs)
+          .where(and(
+            eq(productionJobs.organizationId, organizationId),
+            eq(productionJobs.orderId, completedJob.orderId),
+            sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
+          ))
+          .limit(1);
+        if (!remaining) {
+          const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
+          await applyWorkflowStatusPillFailSoft({
+            organizationId,
+            orderId: completedJob.orderId,
+            triggerKey: "production_completed",
+            actorUserId: userId,
+            source: "system",
+            reason: "All production and fulfillment work completed",
+            metadata: {
+              workflowEvent: "production_completed",
+              productionJobId: completedJob.id,
+              lineItemId: completedJob.lineItemId,
+            },
+          });
+        }
+      }
 
       return res.json({ success: true, data: completedJob, message: "Production job completed" });
     } catch (error: any) {

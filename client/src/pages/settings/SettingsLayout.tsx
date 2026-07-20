@@ -1327,6 +1327,7 @@ export function ProductionSettings() {
                   stationKey={station.key}
                   stationLabel={station.name}
                   steps={station.steps}
+                  stationOptions={stationOptions}
                   isLoading={isStepsLoading}
                 />
               ))

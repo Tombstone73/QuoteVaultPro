@@ -22,6 +22,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   useCreateProductionStep,
   useReorderProductionSteps,
@@ -33,6 +34,7 @@ type StationStepEditorProps = {
   stationKey: string;
   stationLabel: string;
   steps: ProductionManagedStep[];
+  stationOptions?: Array<{ key: string; name: string }>;
   isLoading?: boolean;
 };
 
@@ -108,7 +110,7 @@ const normalizeStepKey = (value: string) =>
     .replace(/[^a-z0-9_-]/g, "")
     .replace(/-+/g, "-");
 
-export function StationStepEditor({ stationKey, stationLabel, steps, isLoading }: StationStepEditorProps) {
+export function StationStepEditor({ stationKey, stationLabel, steps, stationOptions = [], isLoading }: StationStepEditorProps) {
   const createStep = useCreateProductionStep();
   const updateStep = useUpdateProductionStep();
   const reorderSteps = useReorderProductionSteps();
@@ -134,6 +136,10 @@ export function StationStepEditor({ stationKey, stationLabel, steps, isLoading }
   }, [sortedSteps, selectedStepKey]);
 
   const selectedStep = sortedSteps.find((step) => step.key === selectedStepKey) ?? sortedSteps[0] ?? null;
+  const completionRouteTrigger = selectedStep?.triggers.find((trigger) => trigger.type === "on_complete_route") ?? null;
+  const completionTargetStation = String(
+    completionRouteTrigger?.config?.stationKey ?? completionRouteTrigger?.config?.targetStationKey ?? "none",
+  );
 
   React.useEffect(() => {
     setDraftLabel(selectedStep?.label ?? "");
@@ -187,6 +193,21 @@ export function StationStepEditor({ stationKey, stationLabel, steps, isLoading }
       key: normalizeStepKey(newStepLabel),
     });
     setNewStepLabel("");
+  };
+
+  const handleCompletionRouteChange = async (targetStationKey: string) => {
+    if (!selectedStep) return;
+    const otherTriggers = selectedStep.triggers.filter((trigger) => trigger.type !== "on_complete_route");
+    await updateStep.mutateAsync({
+      stationKey,
+      key: selectedStep.key,
+      triggers: targetStationKey === "none"
+        ? otherTriggers
+        : [...otherTriggers, {
+            type: "on_complete_route",
+            config: { stationKey: targetStationKey, stepKey: "queued" },
+          }],
+    });
   };
 
   return (
@@ -268,23 +289,25 @@ export function StationStepEditor({ stationKey, stationLabel, steps, isLoading }
 
           <div className="rounded-md bg-titan-bg-subtle p-4 space-y-3">
             <div className="flex items-center gap-2 text-sm font-medium text-titan-text-primary">
-              <Zap className="h-4 w-4" /> Step Entry Triggers
+              <Zap className="h-4 w-4" /> Completion Routing
             </div>
             <div className="text-xs text-titan-text-muted">
-              Triggers are not active in the current runtime. Proofing, routing, and workflow handoffs are controlled by dedicated services, not this section.
+              Optionally route work to another active station when this step is completed. Built-in print stations otherwise follow the configured finishing/fulfillment flow.
             </div>
-            <div className="flex flex-wrap gap-2">
-              {selectedStep.triggers.length === 0 ? (
-                <Badge variant="outline">No active triggers</Badge>
-              ) : (
-                selectedStep.triggers.map((trigger, index) => (
-                  <Badge key={`${trigger.type}-${index}`} variant="secondary">{trigger.type} (inactive)</Badge>
-                ))
-              )}
-            </div>
-            <Button variant="outline" size="sm" disabled>
-              Triggers Unavailable (Phase 2)
-            </Button>
+            <Select value={completionTargetStation} onValueChange={handleCompletionRouteChange} disabled={updateStep.isPending}>
+              <SelectTrigger aria-label="Route on completion">
+                <SelectValue placeholder="Use built-in workflow" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">Use built-in workflow</SelectItem>
+                {stationOptions
+                  .filter((station) => station.key !== stationKey)
+                  .map((station) => (
+                    <SelectItem key={station.key} value={station.key}>{station.name}</SelectItem>
+                  ))}
+              </SelectContent>
+            </Select>
+            {completionRouteTrigger ? <Badge variant="secondary">Routes to {completionTargetStation}</Badge> : null}
           </div>
 
           <div className="flex justify-end">
