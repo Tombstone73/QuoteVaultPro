@@ -176,10 +176,29 @@ function inboundFileDownloadUrl(recordId: string, file: ClientInboundOrderFile) 
 }
 
 function inboundFileUnavailableLabel(file: ClientInboundOrderFile) {
-  if (!file.fileRecordId) return "Metadata only";
+  const metadata = attachmentSafetyMetadata(file);
+  const attachmentState = String(metadata.attachmentState ?? "");
+  if (!file.fileRecordId && attachmentState === "pending_trust") return "Awaiting trust";
+  if (!file.fileRecordId && attachmentState === "download_failed") return "Download failed";
+  if (!file.fileRecordId && !(file.providerAttachmentId ?? metadata.providerAttachmentId)) return "Provider file unavailable";
+  if (!file.fileRecordId) return "File not stored";
   if (String(attachmentSafetyMetadata(file).attachmentState ?? "") === "blocked_file_type") return "Blocked file type";
   if (file.status === "rejected") return "Rejected";
   return "Unavailable";
+}
+
+function inboundFileUnavailableReason(file: ClientInboundOrderFile) {
+  const metadata = attachmentSafetyMetadata(file);
+  const providerAttachmentId = file.providerAttachmentId ?? metadata.providerAttachmentId;
+  return String(
+    metadata.attachmentSafetyReason
+      ?? metadata.failureReason
+      ?? metadata.downloadError
+      ?? file.reviewNotes
+      ?? (!providerAttachmentId
+        ? "The provider did not supply a recoverable attachment identifier."
+        : "The provider file has not been fetched into private storage."),
+  );
 }
 
 async function fetchInboundAttachmentBlob(recordId: string, file: ClientInboundOrderFile) {
@@ -1086,6 +1105,11 @@ function SourceEvidenceFileCard({
           <span>{formatFileSize(file.sizeBytes)}</span>
           {!file.fileRecordId && <Badge variant="outline">Metadata only</Badge>}
         </div>
+        {!file.fileRecordId && (
+          <div className="mt-1 text-xs text-amber-600 dark:text-amber-300">
+            File unavailable: {inboundFileUnavailableReason(file)}
+          </div>
+        )}
       </div>
       {useInAppViewer ? (
         <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} onOpenAttachment={onOpenAttachment} />
@@ -1122,9 +1146,33 @@ function CleanAttachmentFileActions({
   className?: string;
   onOpenAttachment?: (recordId: string, file: ClientInboundOrderFile) => void;
 }) {
+  const queryClient = useQueryClient();
   const { toast } = useToast();
   const downloadUrl = inboundFileDownloadUrl(recordId, file);
   const filename = file.sourceFilename || "attachment";
+  const metadata = attachmentSafetyMetadata(file);
+  const recoverableProviderAttachmentId = file.providerAttachmentId ?? metadata.providerAttachmentId;
+  const recoverableProviderMessageId = file.providerMessageId ?? metadata.providerMessageId;
+  const retrySupported = Boolean(
+    !file.fileRecordId
+      && recoverableProviderAttachmentId
+      && recoverableProviderMessageId
+      && String(metadata.attachmentState ?? "") !== "blocked_file_type",
+  );
+  const retryLabel = String(metadata.attachmentState ?? "") === "download_failed" ? "Retry download" : "Fetch file";
+  const retryMutation = useMutation({
+    mutationFn: () => postJson<{ success: boolean; data: ClientInboundOrderFile }>(
+      `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/trust-action`,
+      { action: "download_once" },
+    ),
+    onSuccess: async () => {
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] });
+      toast({ title: "Attachment fetched", description: `${filename} is now available to open or download.` });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Attachment fetch failed", description: error.message, variant: "destructive" });
+    },
+  });
 
   const handleOpen = async (event: ReactMouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
@@ -1161,9 +1209,27 @@ function CleanAttachmentFileActions({
           </Button>
         </>
       ) : (
-        <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground" title={`${filename} is ${inboundFileUnavailableLabel(file).toLowerCase()} and has no available file action.`}>
-          {inboundFileUnavailableLabel(file)}
-        </span>
+        <>
+          <span className="rounded border border-border px-2 py-1 text-[11px] font-medium text-muted-foreground" title={inboundFileUnavailableReason(file)}>
+            {inboundFileUnavailableLabel(file)}
+          </span>
+          {retrySupported && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 px-2 text-xs"
+              disabled={retryMutation.isPending}
+              onClick={(event) => {
+                event.stopPropagation();
+                retryMutation.mutate();
+              }}
+            >
+              {retryMutation.isPending && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
+              {retryLabel}
+            </Button>
+          )}
+        </>
       )}
       {onClassify && (
         <Button
@@ -3961,6 +4027,11 @@ function InboundAttachmentCard({
         </div>
         {!minimal && file.reviewNotes && (
           <div className="mt-1 text-xs text-muted-foreground">{file.reviewNotes}</div>
+        )}
+        {!file.fileRecordId && (
+          <div className="mt-1 text-xs text-amber-600 dark:text-amber-300">
+            File unavailable: {inboundFileUnavailableReason(file)}
+          </div>
         )}
         {!minimal && <AttachmentSafetyDetails recordId={recordId} file={file} />}
       </div>

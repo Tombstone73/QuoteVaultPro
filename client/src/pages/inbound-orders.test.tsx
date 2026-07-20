@@ -692,6 +692,15 @@ function setupParsedInboundReview({
         },
       });
     }
+    if (path.includes(`/api/inbound-orders/${row.id}/files/`) && path.endsWith("/trust-action")) {
+      const fileId = path.split("/files/")[1]?.split("/trust-action")[0];
+      const existingFile = (detailOverrides.files ?? []).find((file: any) => file.id === fileId);
+      if (!existingFile) return jsonResponse({ success: false, message: "Attachment not found" }, false, 404);
+      existingFile.fileRecordId = existingFile.fileRecordId ?? `file_record_${fileId}`;
+      existingFile.status = "available";
+      existingFile.metadataJson = { ...(existingFile.metadataJson ?? {}), attachmentState: "downloaded" };
+      return jsonResponse({ success: true, data: existingFile });
+    }
     if (path.includes(`/api/inbound-orders/${row.id}/files/`) && path.endsWith("/download")) {
       const fileId = path.split("/files/")[1]?.split("/download")[0];
       const existingFile = (detailOverrides.files ?? []).find((file: any) => file.id === fileId);
@@ -1371,7 +1380,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("Offset House Visual PO.pdf");
     expect(container.textContent).toContain("Metadata only");
     expect(container.textContent).not.toContain("Status: Quarantined");
-    expect(container.textContent).not.toContain("Attachment download failed: Gmail attachment unavailable");
+    expect(container.textContent).toContain("File unavailable: Attachment download failed: Gmail attachment unavailable");
     expect(container.textContent).toContain("orders@printer.test");
     expect(container.textContent).toContain("csr@printer.test");
 
@@ -1992,6 +2001,54 @@ describe("InboundOrdersPage", () => {
       variant: "destructive",
     }));
     expect(container.querySelector("a[href='/api/inbound-orders/inbound_1/files/file_blocked/download']")).toBeNull();
+  });
+
+  test("shows why metadata-only files are unavailable and can fetch recoverable provider content", async () => {
+    const metadataOnlyPdf = {
+      id: "file_metadata_pdf",
+      inboundRecordId: "inbound_1",
+      fileRecordId: null,
+      sourceFilename: "Coffee Bag Shoe Box V2 12.8.25.pdf",
+      role: "artwork",
+      status: "uploaded",
+      providerAttachmentId: "att_metadata_pdf",
+      providerMessageId: "gmail_msg_1",
+      mimeType: "application/pdf",
+      sizeBytes: 1024,
+      reviewNotes: "Attachment content was not downloaded during ingestion.",
+      metadataJson: {
+        attachmentState: "metadata_only",
+        failureReason: "Attachment content was not downloaded during ingestion.",
+      },
+    };
+    setupParsedInboundReview({ detailOverrides: { files: [metadataOnlyPdf] } });
+
+    renderPage();
+    await waitForText("Clean View");
+    const cleanButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement;
+    act(() => {
+      Simulate.click(cleanButton);
+    });
+    await waitForText("Source Documents");
+    await waitForText("Coffee Bag Shoe Box V2 12.8.25.pdf");
+    expect(container.textContent).toContain("File unavailable: Attachment content was not downloaded during ingestion.");
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Open Coffee Bag Shoe Box V2 12.8.25.pdf")).toBe(false);
+
+    const fetchButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Fetch file")) as HTMLButtonElement;
+    expect(fetchButton).toBeTruthy();
+    await act(async () => {
+      Simulate.click(fetchButton);
+    });
+
+    await waitForCondition(() => apiFetchMock.mock.calls.some(([url, options]) => (
+      String(url) === "/api/inbound-orders/inbound_1/files/file_metadata_pdf/trust-action"
+        && JSON.parse(String(options?.body ?? "{}"))?.action === "download_once"
+    )), "metadata-only attachment fetch request");
+    await waitForCondition(() => Array.from(container.querySelectorAll("button")).some((button) => (
+      button.getAttribute("aria-label") === "Open Coffee Bag Shoe Box V2 12.8.25.pdf"
+    )), "fetched attachment open action");
   });
 
   test("allows quarantined ZIP attachments to be downloaded, classified as artwork, and assigned in Clean View", async () => {

@@ -1228,7 +1228,14 @@ export function classifyInboundEmailAttachment(attachment: InboundEmailAttachmen
   });
   const role = inboundAttachmentClassificationToRole(classification.classification);
   const textCandidate = /^text\//i.test(mimeType) || ["txt", "csv"].includes(extension);
-  const safeToDownload = Boolean(classification.classification !== "OTHER" || textCandidate);
+  // Transport safety is based on file type and sender trust, never the document's
+  // operational classification. Classification may change later and must not decide
+  // whether provider bytes are retained.
+  const safeToDownload = Boolean(
+    extension
+    && ALLOWED_INBOUND_ATTACHMENT_EXTENSIONS.has(extension)
+    && !BLOCKED_INBOUND_ATTACHMENT_EXTENSIONS.has(extension),
+  );
   const label = classification.classification === "PO"
     ? "Likely purchase order attachment"
     : classification.classification === "ARTWORK"
@@ -1329,7 +1336,7 @@ function classificationFromRule(
     role,
     poCandidate: classification === "PO",
     artworkCandidate: classification === "ARTWORK",
-    safeToDownload: classification !== "OTHER" && classification !== "IGNORE_INLINE",
+    safeToDownload: base.safeToDownload,
     reason,
     classification: result,
     sourceHint: base.sourceHint,
@@ -1827,6 +1834,10 @@ export class InboundEmailIngestionService {
       return updated;
     }
 
+    // Retrying an attachment that is already stored must not create duplicate
+    // canonical file or storage records.
+    if (file.fileRecordId) return file;
+
     if (args.action === "trust_sender_and_download") {
       if (!senderEmail) throw new InboundEmailIngestionError("INBOUND_SENDER_EMAIL_MISSING", "Cannot trust sender because the inbound record has no sender email.", 400);
       await this.inboundRepository.createEmailTrustRule({
@@ -1866,7 +1877,9 @@ export class InboundEmailIngestionService {
         }
       : await this.resolveSenderTrust(args.organizationId, message);
     const attachment = this.attachmentMetadataFromFile(file);
-    const classification = classifyInboundEmailAttachmentForMessage(attachment, message);
+    const providerMessageId = attachmentMetadataProviderMessageId(file, message.messageId);
+    const attachmentMessage = { ...message, messageId: providerMessageId };
+    const classification = classifyInboundEmailAttachmentForMessage(attachment, attachmentMessage);
     const safetyDecision = this.evaluateAttachmentSafety(attachment, classification, trustDecision, {
       bypassTrust: args.action === "download_once",
     });
@@ -1900,7 +1913,7 @@ export class InboundEmailIngestionService {
       });
     }
 
-    const downloaded = await adapter.downloadAttachment(mailbox, message, attachment);
+    const downloaded = await adapter.downloadAttachment(mailbox, attachmentMessage, attachment);
     const filename = normalizeAttachmentFileName(file.sourceFilename);
     const storedStatus = safetyDecision.zipFile ? "quarantined" : "available";
     const storedAttachmentState = safetyDecision.zipFile ? "scan_pending" : "downloaded";
@@ -1933,7 +1946,7 @@ export class InboundEmailIngestionService {
           checksum: stored.fileRecord.checksum ?? null,
           status: storedStatus,
           providerAttachmentId: attachment.attachmentId ?? file.providerAttachmentId,
-          providerMessageId: attachmentMetadataProviderMessageId(file, message.messageId),
+          providerMessageId,
           contentDisposition: file.contentDisposition,
           metadataJson: {
             ...baseMetadata,
@@ -3838,7 +3851,7 @@ export class InboundEmailIngestionService {
 
   private evaluateAttachmentSafety(
     attachment: InboundEmailAttachmentMetadata,
-    classification: ReturnType<typeof classifyInboundEmailAttachmentForMessage>,
+    _classification: ReturnType<typeof classifyInboundEmailAttachmentForMessage>,
     trustDecision: SenderTrustDecision,
     options: { bypassTrust?: boolean } = {},
   ): AttachmentSafetyDecision {
@@ -3857,7 +3870,7 @@ export class InboundEmailIngestionService {
         reason: `Blocked file type .${extension} is never downloaded automatically.`,
       };
     }
-    if (!allowedForAutoDownload || (!classification.safeToDownload && !zipFile)) {
+    if (!allowedForAutoDownload) {
       return {
         extension,
         blocked,
@@ -3865,9 +3878,7 @@ export class InboundEmailIngestionService {
         zipFile,
         downloadAllowed: false,
         attachmentState: "metadata_only",
-        reason: !allowedForAutoDownload
-          ? `Attachment type ${extension ? `.${extension}` : "unknown"} is not allowed for automatic download.`
-          : classification.reason,
+        reason: `Attachment type ${extension ? `.${extension}` : "unknown"} is not allowed for automatic download.`,
       };
     }
     if (!trustDecision.trusted && !options.bypassTrust) {

@@ -476,6 +476,64 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(events.some((event) => event.eventType === "attachment.classification_rule.matched")).toBe(true);
   });
 
+  test("stores an allowed PDF even when its operational classification is junk/signature", async () => {
+    const { service, repo, storage, createdFiles } = serviceHarness();
+    repo.resolveCustomerIdForSender.mockResolvedValue("customer_1");
+    repo.listEnabledAttachmentClassificationRules.mockResolvedValue([{
+      id: "rule_junk_pdf",
+      organizationId: "org_1",
+      customerId: "customer_1",
+      senderDomain: null,
+      matchType: "filename_exact",
+      matchValue: "Coffee Bag Shoe Box V2 12.8.25.pdf",
+      classification: "junk_signature",
+      enabled: true,
+      matchCount: 0,
+      lastMatchedAt: null,
+      createdByUserId: "user_1",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    }]);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      downloadAttachment: jest.fn(async () => ({
+        buffer: Buffer.from("%PDF-real-customer-file"),
+        mimeType: "application/pdf",
+        sizeBytes: 23,
+      })),
+    };
+
+    await (service as any).ingestAttachments({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      mailbox,
+      message: message({
+        attachments: [{
+          filename: "Coffee Bag Shoe Box V2 12.8.25.pdf",
+          mimeType: "application/pdf",
+          size: 23,
+          attachmentId: "att_customer_pdf",
+          contentDisposition: "attachment",
+        }],
+      }),
+      record,
+      adapter,
+      skippedReason: null,
+    });
+
+    expect(adapter.downloadAttachment).toHaveBeenCalledTimes(1);
+    expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
+    expect(createdFiles[0]).toEqual(expect.objectContaining({
+      role: "email_attachment",
+      status: "available",
+      fileRecordId: "file_record_1",
+    }));
+    expect(createdFiles[0].metadataJson).toEqual(expect.objectContaining({
+      attachmentState: "downloaded",
+      downloadAttemptAllowed: true,
+    }));
+  });
+
   test("pullLatestEmails reaches attachment ingestion for a fresh Gmail message with candidates", async () => {
     const { repo, storage, createdFiles, events } = serviceHarness();
     const adapter: InboundEmailProviderAdapter = {
@@ -1153,7 +1211,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       checksum: null,
       status: "uploaded",
       providerAttachmentId: "att_once",
-      providerMessageId: "gmail_msg_1",
+      providerMessageId: "gmail_msg_later",
       contentDisposition: "attachment",
       metadataJson: { attachmentState: "pending_trust" },
       reviewNotes: "Pending trust",
@@ -1162,10 +1220,11 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       createdAt: new Date(),
       updatedAt: new Date(),
     });
+    const downloadAttachment = jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 }));
     const service = new InboundEmailIngestionService(mailboxDbHarness() as any, {
       gmail: {
         listRecentMessages: jest.fn(async () => []),
-        downloadAttachment: jest.fn(async () => ({ buffer: Buffer.from("%PDF"), mimeType: "application/pdf", sizeBytes: 4 })),
+        downloadAttachment,
       },
     }, repo as any, storage as any);
 
@@ -1178,6 +1237,11 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     });
 
     expect(repo.createEmailTrustRule).not.toHaveBeenCalled();
+    expect(downloadAttachment).toHaveBeenCalledWith(
+      mailbox,
+      expect.objectContaining({ messageId: "gmail_msg_later" }),
+      expect.objectContaining({ attachmentId: "att_once" }),
+    );
     expect(storage.finalizeUpload).toHaveBeenCalledTimes(1);
     expect(updated).toEqual(expect.objectContaining({
       fileRecordId: "file_record_1",
