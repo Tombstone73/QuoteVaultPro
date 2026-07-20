@@ -1,4 +1,5 @@
 import { PDFDocument, StandardFonts, rgb, type PDFPage, type PDFFont } from "pdf-lib";
+import type { ProductionSides } from "@shared/productionHydration";
 
 type BasicProofPreview = {
   bytes: Buffer;
@@ -14,9 +15,44 @@ export type BasicProofPdfArgs = {
   displaySizeLabel: string | null;
   quantity: number | null;
   finishingSummary: string[];
+  printSides: ProductionSides;
+  useSameArtworkBothSides: boolean;
   preflightStatus: string;
-  sourceFileName: string | null;
   generatedAt: Date;
+  artworkPreviews: ProofArtworkPreview[];
+};
+
+type BasicProofSinglePageArgs = Omit<BasicProofPdfArgs, "artworkPreviews"> & ProofArtworkPreview;
+
+export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promise<{ bytes: Uint8Array; renderStatus: BasicProofRenderStatus }> {
+  const panels = args.artworkPreviews.length > 0
+    ? args.artworkPreviews
+    : [{ label: "Artwork" as const, sourceFileName: null, preview: null, previewError: "Artwork not assigned." }];
+
+  if (args.printSides !== "Double-sided" || args.useSameArtworkBothSides || panels.length === 1) {
+    return generateSingleArtworkProofPdfBytes({ ...args, ...panels[0] });
+  }
+
+  const combined = await PDFDocument.create();
+  let allReady = true;
+  for (const panel of panels) {
+    const rendered = await generateSingleArtworkProofPdfBytes({ ...args, ...panel });
+    allReady = allReady && rendered.renderStatus === "ready";
+    const source = await PDFDocument.load(rendered.bytes);
+    const pages = await combined.copyPages(source, source.getPageIndices());
+    for (const page of pages) combined.addPage(page);
+  }
+  combined.setTitle(`Proof - ${args.lineItemLabel}`);
+  combined.setSubject(`Double-sided proof with ${panels.length} artwork sides`);
+  return {
+    bytes: await combined.save({ useObjectStreams: false }),
+    renderStatus: allReady ? "ready" : "metadata_only",
+  };
+}
+
+export type ProofArtworkPreview = {
+  label: "Artwork" | "Front" | "Back";
+  sourceFileName: string | null;
   preview: BasicProofPreview | null;
   previewError?: string | null;
 };
@@ -86,7 +122,20 @@ function drawWrappedText(args: {
   return cursorY;
 }
 
-export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promise<{ bytes: Uint8Array; renderStatus: BasicProofRenderStatus }> {
+export function buildProofPdfFacts(args: BasicProofSinglePageArgs): Array<{ label: string; value: string }> {
+  return [
+    { label: "Finished Size", value: args.displaySizeLabel || "Not specified" },
+    { label: "Quantity", value: args.quantity != null ? String(args.quantity) : "Not specified" },
+    { label: "Print Sides", value: args.printSides },
+    ...(args.printSides === "Double-sided" && args.useSameArtworkBothSides
+      ? [{ label: "Artwork Sides", value: "Same artwork used on front and back." }]
+      : []),
+    { label: "Preflight", value: args.preflightStatus.replace(/_/g, " ") },
+    { label: "Source", value: args.sourceFileName || "Persisted artwork source" },
+  ];
+}
+
+async function generateSingleArtworkProofPdfBytes(args: BasicProofSinglePageArgs): Promise<{ bytes: Uint8Array; renderStatus: BasicProofRenderStatus }> {
   const pdfDoc = await PDFDocument.create();
   const page = pdfDoc.addPage([612, 792]);
   const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
@@ -108,7 +157,12 @@ export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promi
 
   page.drawRectangle({ x: 0, y: pageHeight - 110, width: pageWidth, height: 110, color: rgb(0.96, 0.97, 0.99) });
   page.drawText("Basic Proof", { x: margin, y: pageHeight - 56, font: fontBold, size: 24, color: rgb(0.07, 0.18, 0.66) });
-  page.drawText(args.lineItemLabel || "Line Item", { x: margin, y: pageHeight - 84, font: font, size: 12, color: rgb(0.18, 0.21, 0.29) });
+  const artworkLabel = args.useSameArtworkBothSides && args.printSides === "Double-sided"
+    ? "Front & Back Artwork"
+    : args.label === "Artwork"
+      ? "Artwork"
+      : `${args.label} Artwork`;
+  page.drawText(`${args.lineItemLabel || "Line Item"} - ${artworkLabel}`, { x: margin, y: pageHeight - 84, font: font, size: 12, color: rgb(0.18, 0.21, 0.29) });
 
   const orderLabel = args.orderNumber ? `Order #${args.orderNumber}` : "Order";
   page.drawText(orderLabel, { x: pageWidth - margin - fontBold.widthOfTextAtSize(orderLabel, 11), y: pageHeight - 56, font: fontBold, size: 11, color: rgb(0.18, 0.21, 0.29) });
@@ -180,12 +234,7 @@ export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promi
 
   page.drawText("Proof Basis", { x: panelX, y: pageHeight - 154, font: fontBold, size: 15, color: rgb(0.14, 0.17, 0.23) });
 
-  const facts: Array<{ label: string; value: string }> = [
-    { label: "Finished Size", value: args.displaySizeLabel || "Not specified" },
-    { label: "Quantity", value: args.quantity != null ? String(args.quantity) : "Not specified" },
-    { label: "Preflight", value: args.preflightStatus.replace(/_/g, " ") },
-    { label: "Source", value: args.sourceFileName || "Persisted artwork source" },
-  ];
+  const facts = buildProofPdfFacts(args);
 
   let cursorY = pageHeight - 182;
   for (const fact of facts) {
