@@ -19,7 +19,7 @@ import { isSessionExpiredError, notifySessionExpired, SESSION_EXPIRED_MESSAGE } 
 import { ProductOptionsPanel } from "./ProductOptionsPanel";
 import { ProductOptionsPanelV2 } from "./ProductOptionsPanelV2";
 import { LineItemAttachmentsPanel } from "@/components/LineItemAttachmentsPanel";
-import { uploadTemporaryOrderAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
+import { uploadTemporaryOrderAttachmentViaChunked, type TemporaryOrderAttachmentUpload } from "@/lib/uploads/chunkedAttachmentUpload";
 import { setPendingExpandedLineItemId } from "@/lib/ui/persistExpandedLineItem";
 import { setPendingScrollPosition } from "@/lib/ui/persistScrollPosition";
 import { cn, isValidHttpUrl } from "@/lib/utils";
@@ -507,6 +507,15 @@ export function LineItemsSection({
     [lineItems, onUpdateLineItem],
   );
 
+  const removeTemporaryOrderAttachment = useCallback((itemKey: string, uploadId: string) => {
+    const currentItem = lineItems.find((lineItem) => getItemKey(lineItem) === itemKey);
+    if (!currentItem) return;
+    onUpdateLineItem(itemKey, {
+      pendingOrderAttachments: ((currentItem.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [])
+        .filter((attachment) => attachment.uploadId !== uploadId),
+    });
+  }, [lineItems, onUpdateLineItem]);
+
   // Track saved state snapshot for dirty detection
   const savedSnapshotRef = useRef<
     Record<
@@ -522,6 +531,7 @@ export function LineItemsSection({
         requiresProofApproval: boolean;
         selectedOptions: any[];
         optionSelectionsJson: any;
+        pendingOrderAttachmentIds: string[];
       }
     >
   >({});
@@ -679,6 +689,8 @@ export function LineItemsSection({
         : (expandedProduct as any)?.requiresProofApproval === true,
       selectedOptions: expandedItem.selectedOptions || [],
       optionSelectionsJson: (expandedItem as any)?.optionSelectionsJson ?? null,
+      pendingOrderAttachmentIds: ((expandedItem.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [])
+        .map((attachment) => attachment.uploadId),
     };
   }, [
     expandedItem?.id,
@@ -749,6 +761,8 @@ export function LineItemsSection({
 
     const currentV2 = JSON.stringify((expandedItem as any)?.optionSelectionsJson ?? null);
     const savedV2 = JSON.stringify(saved.optionSelectionsJson ?? null);
+    const currentPendingOrderAttachmentIds = ((expandedItem.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [])
+      .map((attachment) => attachment.uploadId);
     
     return (
       Math.abs(widthNum - saved.width) > 0.01 ||
@@ -757,7 +771,8 @@ export function LineItemsSection({
       currentNotes !== savedNotes ||
       requiresProofApproval !== saved.requiresProofApproval ||
       currentOptions !== savedOptions ||
-      currentV2 !== savedV2
+      currentV2 !== savedV2 ||
+      JSON.stringify(currentPendingOrderAttachmentIds) !== JSON.stringify(saved.pendingOrderAttachmentIds)
     );
   }, [expandedItem, expandedKey, widthNum, heightNum, qtyNum, notes, requiresProofApproval]);
 
@@ -786,6 +801,8 @@ export function LineItemsSection({
           requiresProofApproval,
           selectedOptions: expandedItem.selectedOptions || [],
           optionSelectionsJson: (expandedItem as any)?.optionSelectionsJson ?? null,
+          pendingOrderAttachmentIds: ((expandedItem.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [])
+            .map((attachment) => attachment.uploadId),
         };
         // Clear saved indicator after 2 seconds
         setTimeout(() => setSavedItemKey(null), 2000);
@@ -1454,6 +1471,11 @@ export function LineItemsSection({
                                   onTemporaryOrderUpload={
                                     !readOnly && createTarget === "order"
                                       ? (files) => uploadTemporaryOrderAttachments(itemKey, files)
+                                      : undefined
+                                  }
+                                  onTemporaryOrderAttachmentRemove={
+                                    !readOnly && createTarget === "order"
+                                      ? (uploadId) => removeTemporaryOrderAttachment(itemKey, uploadId)
                                       : undefined
                                   }
                                   lineItemKey={itemKey}

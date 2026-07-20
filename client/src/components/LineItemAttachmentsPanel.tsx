@@ -51,6 +51,7 @@ type AttachmentPage = {
 
 type LineItemAttachment = {
   id: string;
+  fileRecordId?: string | null;
   source?: 'attachment' | 'asset';
   fileName: string;
   fileUrl: string;
@@ -97,6 +98,10 @@ interface LineItemAttachmentsPanelProps {
   lineItemKey?: string;
   pendingOrderAttachments?: TemporaryOrderAttachmentUpload[];
   onTemporaryOrderUpload?: (files: File[]) => Promise<void>;
+  /** Remove a staged attachment from the unsaved order draft. */
+  onTemporaryOrderAttachmentRemove?: (uploadId: string) => void;
+  /** Notify the line-item editor after a persisted attachment is unlinked. */
+  onSavedAttachmentRemoved?: (file: Pick<LineItemAttachment, "id" | "fileRecordId" | "side">) => void;
   /** Show explicit Front/Back controls for a double-sided print line. */
   doubleSided?: boolean;
   /** Persisted line-item intent; controlled by the order line editor. */
@@ -116,6 +121,8 @@ export function LineItemAttachmentsPanel({
   lineItemKey,
   pendingOrderAttachments = [],
   onTemporaryOrderUpload,
+  onTemporaryOrderAttachmentRemove,
+  onSavedAttachmentRemoved,
   doubleSided = false,
   useSameArtworkBothSides: controlledUseSameArtworkBothSides,
   onUseSameArtworkBothSidesChange,
@@ -533,6 +540,8 @@ export function LineItemAttachmentsPanel({
         return prev.filter((x) => x.id !== file.id);
       });
 
+      onSavedAttachmentRemoved?.({ id: file.id, fileRecordId: file.fileRecordId ?? null, side: file.side ?? null });
+
       queryClient.invalidateQueries({ queryKey: [filesApiPath] });
 
       toast({
@@ -694,7 +703,7 @@ export function LineItemAttachmentsPanel({
             <span className="text-sm font-medium">Artwork</span>
             {fileCount > 0 && (
               <span className="text-xs bg-primary/10 text-primary px-1.5 py-0.5 rounded-full">
-                {fileCount}
+                <span data-testid="line-item-artwork-count">{fileCount}</span>
               </span>
             )}
           </div>
@@ -838,6 +847,23 @@ export function LineItemAttachmentsPanel({
                       {formatFileSize(file.sizeBytes)} · staged
                     </div>
                   </div>
+                  {onTemporaryOrderAttachmentRemove ? (
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 w-6 shrink-0 p-0 text-destructive hover:text-destructive"
+                      aria-label={`Remove staged artwork ${file.fileName}`}
+                      title="Remove staged artwork"
+                      onPointerDownCapture={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        onTemporaryOrderAttachmentRemove(file.uploadId);
+                      }}
+                    >
+                      <X className="h-3 w-3" />
+                    </Button>
+                  ) : null}
                 </div>
               ))}
             </div>
@@ -1080,6 +1106,7 @@ export function LineItemAttachmentsPanel({
                           variant="ghost"
                           size="sm"
                           className="h-6 w-6 p-0 text-destructive hover:text-destructive"
+                          aria-label={`Remove saved artwork ${fileName}`}
                           onPointerDownCapture={(e) => e.stopPropagation()}
                           onClick={(e) => {
                             e.stopPropagation();
