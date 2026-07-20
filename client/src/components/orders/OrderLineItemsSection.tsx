@@ -26,8 +26,8 @@ import {
   Upload,
   Send,
 } from "lucide-react";
-import { DndContext, PointerSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
-import { SortableContext, useSortable, arrayMove, verticalListSortingStrategy } from "@dnd-kit/sortable";
+import { DndContext, KeyboardSensor, PointerSensor, closestCenter, useSensor, useSensors, DragEndEvent } from "@dnd-kit/core";
+import { SortableContext, useSortable, sortableKeyboardCoordinates, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 import type { OrderLineItem, Product, ProductOptionItem } from "@shared/schema";
 import type { OptionSelection } from "@/features/quotes/editor/types";
@@ -52,7 +52,7 @@ import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOp
 import { useToast } from "@/hooks/use-toast";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionLineItemWorkflow, useUpdateOrderLineItem } from "@/hooks/useOrders";
+import { orderDetailQueryKey, useCreateOrderLineItem, useDeleteOrderLineItem, useTransitionLineItemWorkflow, useUpdateOrderLineItem } from "@/hooks/useOrders";
 import { useOrderFiles } from "@/hooks/useOrderFiles";
 import type { OrderFileWithUser } from "@/hooks/useOrderFiles";
 import { useOrderLineItemPreviews } from "@/hooks/useOrderLineItemPreviews";
@@ -65,6 +65,9 @@ import { LineItemCard } from "@/components/line-items/LineItemCard";
 import {
   getOrderLineItemActiveWorkWarning,
   buildOrderLineNumberMap,
+  applyOrderLineItemReorder,
+  moveOrderLineItemIds,
+  persistOrderLineItemReorder,
   buildOrderLineItemProductionActionRequests,
   getOrderLineItemProductionActions,
   getSelectableProductionLineItemIds,
@@ -886,13 +889,6 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     setOrderedKeys((prev) => prev.length === nextIds.length && prev.every((id, index) => id === nextIds[index]) ? prev : nextIds);
   }, [activeLineItems]);
 
-  const lineNumberById = useMemo(
-    () => buildOrderLineNumberMap(
-      sortOrderLineItemsByPersistedOrder(displayLineItems as any[]).map((item) => String(item.id)),
-    ),
-    [displayLineItems],
-  );
-
   const orderedLineItems = useMemo(() => {
     if (!orderedKeys.length) return activeLineItems;
     const byId = new Map(activeLineItems.map((li) => [li.id, li] as const));
@@ -918,14 +914,20 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   }, [activeLineItems, orderedKeys, productionPriorityLineItemIds]);
 
   const sortableItems = useMemo(
-    () => (orderedKeys.length ? orderedKeys : activeLineItems.map((li) => li.id)),
-    [orderedKeys, activeLineItems]
+    () => orderedLineItems.map((lineItem) => String(lineItem.id)),
+    [orderedLineItems]
+  );
+
+  const lineNumberById = useMemo(
+    () => buildOrderLineNumberMap(sortableItems),
+    [sortableItems],
   );
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
       activationConstraint: { distance: 6 },
-    })
+    }),
+    useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates }),
   );
 
   const [expandedId, setExpandedId] = useState<string | null>(null);
@@ -2557,18 +2559,18 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const handleLineItemDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     if (!over || String(active.id) === String(over.id)) return;
-    const previous = orderedKeys.length ? orderedKeys : activeLineItems.map((item) => item.id);
+    const previous = sortableItems;
     const oldIndex = previous.indexOf(String(active.id));
     const newIndex = previous.indexOf(String(over.id));
     if (oldIndex < 0 || newIndex < 0) return;
-    const next = arrayMove(previous, oldIndex, newIndex);
+    const next = moveOrderLineItemIds(previous, String(active.id), String(over.id));
     setOrderedKeys(next);
     try {
-      await Promise.all(next.map((lineItemId, index) => updateLineItemSilent.mutateAsync({
-        id: lineItemId,
-        data: { sortOrder: index },
-      } as any)));
-      await onAfterLineItemsChange?.();
+      const persistedEntries = await persistOrderLineItemReorder(orderId, next);
+      queryClient.setQueryData(orderDetailQueryKey(orderId), (current: any) => current
+        ? { ...current, lineItems: applyOrderLineItemReorder(current.lineItems ?? [], persistedEntries) }
+        : current);
+      await queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
     } catch (error: any) {
       setOrderedKeys(previous);
       toast({ title: "Reorder failed", description: error?.message || "Could not save line item order.", variant: "destructive" });
@@ -2796,7 +2798,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const heroOverflowCount = Math.max(0, heroTotalCount - 1);
                   const lineNumber = lineNumberById.get(String(item.id)) ?? (Number((item as any).lineNumber) || 1);
 
-                  const reorderDisabled = readOnly;
+                  const reorderDisabled = readOnly || productionPriorityLineItemIds.length > 0;
+                  const reorderDisabledReason = productionPriorityLineItemIds.length > 0
+                    ? "Clear the production-focused view before reordering line items."
+                    : undefined;
 
                   const thumbnailNode = heroThumbUrls.length ? (
                     <button
@@ -3073,6 +3078,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                   attributes: dragAttributes,
                                   listeners: dragListeners,
                                   disabled: reorderDisabled,
+                                  disabledReason: reorderDisabledReason,
                                 }}
                                 showDragHandle={!readOnly}
                                 primaryControlSlot={
