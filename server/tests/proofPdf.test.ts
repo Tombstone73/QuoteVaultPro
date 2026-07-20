@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
-import { generateBasicProofPdfBytes } from "../lib/proofPdf";
+import { PDFDocument } from "pdf-lib";
+import { generateBasicProofPdfBytes, generateCombinedProofPdfBytes } from "../lib/proofPdf";
 
 const ONE_PIXEL_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn6v0sAAAAASUVORK5CYII=",
@@ -45,5 +46,27 @@ describe("generateBasicProofPdfBytes", () => {
 
     expect(result.renderStatus).toBe("metadata_only");
     expect(result.bytes.byteLength).toBeGreaterThan(0);
+  });
+});
+
+describe("generateCombinedProofPdfBytes", () => {
+  test("creates one labeled page per selected line item", async () => {
+    const base = {
+      orderNumber: "SO-200",
+      displaySizeLabel: "24 x 36 in",
+      quantity: 2,
+      finishingSummary: ["Trim"],
+      preflightStatus: "ready",
+      sourceFileName: "artwork.png",
+      generatedAt: new Date("2025-01-01T00:00:00.000Z"),
+      preview: { bytes: ONE_PIXEL_PNG, mimeType: "image/png", fileName: "artwork.png" },
+    };
+    const result = await generateCombinedProofPdfBytes([
+      { ...base, lineItemLabel: "Banner" },
+      { ...base, lineItemLabel: "Yard Sign" },
+    ]);
+    const document = await PDFDocument.load(result.bytes);
+    expect(result.renderStatus).toBe("ready");
+    expect(document.getPageCount()).toBe(2);
   });
 });

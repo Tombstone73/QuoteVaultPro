@@ -290,6 +290,13 @@ export type PortalProofDto = {
     quantity: number;
     dimensions: { width: number | null; height: number | null };
   };
+  lineItemSummaries: Array<{
+    id: string;
+    name: string;
+    quantity: number;
+    dimensions: { width: number | null; height: number | null };
+  }>;
+  packageLineItemCount: number;
   orderSummary: {
     id: string;
     orderNumber: string;

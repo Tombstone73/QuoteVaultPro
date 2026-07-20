@@ -28,6 +28,7 @@ import {
   cancelProofVersion,
   createAndSendProofVersion,
   createGeneratedDraftProofVersion,
+  createGeneratedCombinedProofVersion,
   createLineItemProofVersionFromExistingAttachment,
   createLineItemProofVersion,
   generateLineItemArtworkPreviewDerivative,
@@ -247,6 +248,81 @@ export function registerProofingRoutes(
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error generating artwork preview derivative:", error);
       return res.status(status).json({ success: false, message: error?.message || "Failed to generate artwork preview derivative" });
+    }
+  });
+
+  app.post("/api/proofing/combined/review", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const parsed = z.object({ lineItemIds: z.array(z.string().min(1)).min(2) }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ success: false, error: fromZodError(parsed.error).message });
+      const rows = await Promise.all(Array.from(new Set(parsed.data.lineItemIds)).map(async (lineItemId) => {
+        const sources = await listEligibleProofArtworkSources(db, { organizationId, lineItemId });
+        return { lineItemId, sources, eligibleCount: sources.filter((source) => source.eligible).length };
+      }));
+      return res.json({ success: true, data: { rows } });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      return res.status(status).json({ success: false, error: error?.message || "Failed to review combined proof selection" });
+    }
+  });
+
+  app.post("/api/proofing/combined/versions", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        lineItemIds: z.array(z.string().min(1)).min(2),
+        internalNotes: z.string().optional().nullable(),
+      }).safeParse(req.body);
+      if (!parsed.success) {
+        return res.status(400).json({ success: false, error: fromZodError(parsed.error).message });
+      }
+
+      const created = await db.transaction(async (tx) => {
+        const result = await createGeneratedCombinedProofVersion(tx, {
+          organizationId,
+          lineItemIds: parsed.data.lineItemIds,
+          actorUserId: userId,
+          internalNotes: parsed.data.internalNotes ?? null,
+        });
+        await tx.insert(auditLogs).values({
+          organizationId,
+          userId,
+          userName: req.user?.email || req.user?.name || null,
+          actionType: "CREATE",
+          entityType: "line_item_proof_version",
+          entityId: result.proofVersion.id,
+          entityName: `Combined proof v${result.proofVersion.versionNumber}`,
+          description: `Created combined proof draft for ${result.lineItems.length} line items`,
+          newValues: {
+            lineItemIds: result.lineItems.map((lineItem) => lineItem.lineItemId),
+            proofFileId: result.proofVersion.proofFileId,
+            versionNumber: result.proofVersion.versionNumber,
+            status: result.proofVersion.status,
+          },
+          ipAddress: req.ip || null,
+          userAgent: req.headers["user-agent"] || null,
+        } as any);
+        return result;
+      });
+
+      return res.json({ success: true, data: created });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error creating combined proof version:", error);
+      return res.status(status).json({
+        success: false,
+        error: error?.message || "Failed to create combined proof",
+        reason: error?.code || null,
+        lineItemIds: error?.lineItemIds || undefined,
+      });
     }
   });
 

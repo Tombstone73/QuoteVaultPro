@@ -60,6 +60,7 @@ import {
 } from "@/lib/proofingRecovery";
 import { getStaffProofDownloadUrl, getStaffProofPreviewUrl, shouldFetchStaffPreviewAsBlob } from "@/lib/proofingPreviewUrls";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
+import { combinedProofReviewIsReady, updateCombinedProofSelection } from "@/lib/combinedProofSelection";
 import {
   getInitialProofingFilter,
   getProofingFilterCount,
@@ -619,6 +620,13 @@ export default function StaffProofingPage() {
   const [activeFilter, setActiveFilter] = useState<ProofingFilterValue>(() => getInitialProofingFilter(requestedSlice));
   const [sortOrder, setSortOrder] = useState<ProofingSortValue>("newest");
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
+  const [batchSelectedLineItemIds, setBatchSelectedLineItemIds] = useState<string[]>([]);
+  const [combinedProofDialogOpen, setCombinedProofDialogOpen] = useState(false);
+  const [combinedProofReview, setCombinedProofReview] = useState<Array<{
+    lineItemId: string;
+    sources: EligibleProofArtworkSource[];
+    eligibleCount: number;
+  }>>([]);
   const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -709,6 +717,17 @@ export default function StaffProofingPage() {
   const visibleQueueRows = isLineItemOverrideActive && requestedRow
     ? [requestedRow]
     : filteredSortedQueueRows;
+  const batchSelectedRows = baseQueueRows.filter((row) => batchSelectedLineItemIds.includes(row.lineItemId));
+  const batchSelectionOrderId = batchSelectedRows[0]?.orderId ?? null;
+
+  useEffect(() => {
+    if (!queueQuery.data) return;
+    const validIds = new Set(baseQueueRows.map((row) => row.lineItemId));
+    setBatchSelectedLineItemIds((current) => {
+      const next = current.filter((id) => validIds.has(id));
+      return next.length === current.length ? current : next;
+    });
+  }, [baseQueueRows, queueQuery.data]);
 
   const filterCounts = useMemo(() => {
     return proofingFilterValues.reduce<Record<ProofingFilterValue, number>>((acc, filter) => {
@@ -1085,6 +1104,86 @@ export default function StaffProofingPage() {
     setInternalNotesDirty(false);
   }
 
+  function toggleBatchLineItem(row: ProofingQueueRow, checked: boolean) {
+    const result = updateCombinedProofSelection({
+      selectedIds: batchSelectedLineItemIds,
+      selectedRows: batchSelectedRows,
+      row,
+      checked,
+    });
+    if (result.error) {
+      toast({
+        title: "Choose line items from one order",
+        description: result.error,
+        variant: "destructive",
+      });
+      return;
+    }
+    setBatchSelectedLineItemIds(result.selectedIds);
+  }
+
+  const combinedReviewMutation = useMutation({
+    mutationFn: () => readJson<JsonEnvelope<{ rows: Array<{ lineItemId: string; sources: EligibleProofArtworkSource[]; eligibleCount: number }> }>>(
+      "/api/proofing/combined/review",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ lineItemIds: batchSelectedRows.map((row) => row.lineItemId) }),
+      },
+    ),
+    onSuccess: (result) => setCombinedProofReview(result.data.rows),
+    onError: (error: Error) => {
+      setCombinedProofReview([]);
+      toast({ title: "Could not review proof package", description: error.message, variant: "destructive" });
+    },
+  });
+
+  function openCombinedProofDialog() {
+    if (batchSelectedRows.length < 2) return;
+    setCombinedProofReview([]);
+    setCreateInternalNotes("");
+    setCombinedProofDialogOpen(true);
+    combinedReviewMutation.mutate();
+  }
+
+  const createCombinedProofMutation = useMutation({
+    mutationFn: () => readJson<JsonEnvelope<{
+      proofVersion: ProofVersionHistoryEntry;
+      proofing: ProofingReadModel;
+      lineItems: Array<{ lineItemId: string; lineItemLabel: string; displaySizeLabel: string | null; quantity: number | null }>;
+    }>>("/api/proofing/combined/versions", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        lineItemIds: batchSelectedRows.map((row) => row.lineItemId),
+        internalNotes: createInternalNotes.trim() || null,
+      }),
+    }),
+    onSuccess: async (result) => {
+      const primaryLineItemId = result.data.lineItems[0]?.lineItemId ?? batchSelectedRows[0]?.lineItemId;
+      await Promise.all(batchSelectedRows.map(({ lineItemId }) =>
+        queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId] }),
+      ));
+      await refreshProofing(primaryLineItemId, batchSelectionOrderId);
+      setSelectedLineItemId(primaryLineItemId);
+      setSelectedVersionId(result.data.proofVersion.id);
+      setCombinedProofDialogOpen(false);
+      setCreateInternalNotes("");
+      setBatchSelectedLineItemIds([]);
+      setSendToEmail("");
+      setSendToName("");
+      setCustomerMessage("");
+      setEmailSubject(`Combined Proof Ready for Review - Version ${result.data.proofVersion.versionNumber}`);
+      setVersionIdForSend(result.data.proofVersion.id);
+      setSendDialogMode("send");
+      setSendDialogOpen(true);
+      toast({ title: "Combined proof created", description: `${result.data.lineItems.length} line items are included in one proof package.` });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to create combined proof", description: error.message, variant: "destructive" });
+    },
+  });
+
   const createDraftMutation = useMutation({
     mutationFn: async () => {
       if (!selectedRow?.orderId || !selectedRow.lineItemId) {
@@ -1431,6 +1530,14 @@ export default function StaffProofingPage() {
                 </SelectContent>
               </Select>
               <Button
+                variant="outline"
+                className="h-9 rounded-lg border-[#3b4660] bg-[#141824] px-4 text-sm font-bold text-white hover:bg-[#20263a]"
+                onClick={openCombinedProofDialog}
+                disabled={batchSelectedRows.length < 2}
+              >
+                Create Combined Proof{batchSelectedRows.length > 0 ? ` (${batchSelectedRows.length})` : ""}
+              </Button>
+              <Button
                 className="h-9 rounded-lg bg-[#1337ec] px-4 text-sm font-bold text-white transition-all hover:bg-[#1a43ff]"
                 onClick={() => openCreateProofDialog("generated")}
                 disabled={!selectedRow}
@@ -1492,6 +1599,10 @@ export default function StaffProofingPage() {
               ) : (
                 visibleQueueRows.map((row) => {
                   const isSelected = row.lineItemId === activeRow?.lineItemId;
+                  const isBatchSelectable = row.requiresProofApproval
+                    && row.currentQueueStatus !== "awaiting_approval"
+                    && row.currentQueueStatus !== "approved"
+                    && row.currentQueueStatus !== "approved_by_override";
                   const printJobId = row.activeOwnerJobId ?? row.productionJobId;
                   return (
                     <div
@@ -1512,9 +1623,21 @@ export default function StaffProofingPage() {
                       }`}
                     >
                       <div className="mb-2 flex items-start justify-between">
-                        <span className={`text-[10px] font-mono ${isSelected ? "font-bold text-[#4b7bff]" : "text-slate-400"}`}>
-                          {row.orderNumber ? `#${row.orderNumber}` : row.orderId}
-                        </span>
+                        <div className="flex items-center gap-2">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${row.lineItemLabel} for combined proof`}
+                            checked={batchSelectedLineItemIds.includes(row.lineItemId)}
+                            disabled={!isBatchSelectable}
+                            title={isBatchSelectable ? "Include in a combined proof" : "This line is not available for a new proof package"}
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(event) => toggleBatchLineItem(row, event.target.checked)}
+                            className="h-4 w-4 rounded border-[#3b4660] bg-[#0B1120] text-[#1337ec]"
+                          />
+                          <span className={`text-[10px] font-mono ${isSelected ? "font-bold text-[#4b7bff]" : "text-slate-400"}`}>
+                            {row.orderNumber ? `#${row.orderNumber}` : row.orderId}
+                          </span>
+                        </div>
                         <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${getQueueCardBadgeClass(row)}`}>
                           {getQueueCardBadgeLabel(row)}
                         </span>
@@ -2299,6 +2422,75 @@ export default function StaffProofingPage() {
 
       <AttachmentViewerDialog attachment={displayedFileForViewer as any} open={viewerOpen} onOpenChange={setViewerOpen} />
 
+      <Dialog open={combinedProofDialogOpen} onOpenChange={setCombinedProofDialogOpen}>
+        <DialogContent className="sm:max-w-2xl">
+          <DialogHeader>
+            <DialogTitle>Create Combined Proof</DialogTitle>
+            <DialogDescription>
+              Review the selected line items and artwork. One multi-page proof package and one customer approval link will cover every listed line.
+            </DialogDescription>
+          </DialogHeader>
+          <ScrollArea className="max-h-[26rem] rounded-lg border p-3">
+            <div className="space-y-3">
+              {batchSelectedRows.map((row, index) => {
+                const review = combinedProofReview.find((item) => item.lineItemId === row.lineItemId);
+                const eligibleSources = review?.sources.filter((source) => source.eligible) ?? [];
+                return (
+                  <div key={row.lineItemId} className="rounded-lg border p-3">
+                    <div className="flex items-start justify-between gap-3">
+                      <div>
+                        <p className="font-medium">{index + 1}. {row.lineItemLabel}</p>
+                        <p className="text-xs text-muted-foreground">{row.packageLabel || row.orderNumber || row.orderId}</p>
+                      </div>
+                      <Badge variant={review && eligibleSources.length === 0 ? "destructive" : "outline"}>
+                        {review ? `${eligibleSources.length} artwork file${eligibleSources.length === 1 ? "" : "s"}` : "Checking artwork"}
+                      </Badge>
+                    </div>
+                    {eligibleSources.length > 0 ? (
+                      <div className="mt-2 space-y-1 text-xs text-muted-foreground">
+                        {eligibleSources.map((source) => (
+                          <p key={`${source.sourceType}:${source.id}`} className="truncate">
+                            {source.computedDisplayFilename || source.displayFilename || source.originalFilename || source.fileName}
+                          </p>
+                        ))}
+                      </div>
+                    ) : review ? (
+                      <p className="mt-2 text-xs font-medium text-destructive">Artwork is required before this line can be included.</p>
+                    ) : null}
+                  </div>
+                );
+              })}
+            </div>
+          </ScrollArea>
+          <div className="grid gap-2">
+            <Label htmlFor="combined-proof-notes">Internal notes</Label>
+            <Textarea
+              id="combined-proof-notes"
+              rows={3}
+              value={createInternalNotes}
+              onChange={(event) => setCreateInternalNotes(event.target.value)}
+              placeholder="Optional notes for the proof package"
+            />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setCombinedProofDialogOpen(false)} disabled={createCombinedProofMutation.isPending}>
+              Cancel
+            </Button>
+            <Button
+              onClick={() => createCombinedProofMutation.mutate()}
+              disabled={createCombinedProofMutation.isPending || !combinedProofReviewIsReady({
+                selectedCount: batchSelectedRows.length,
+                reviewRows: combinedProofReview,
+                loading: combinedReviewMutation.isPending,
+              })}
+            >
+              {createCombinedProofMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
+              Create Proof Package
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
@@ -2521,6 +2713,14 @@ export default function StaffProofingPage() {
                       {displayedFile ? ` — ${displayedFile.originalFilename || displayedFile.fileName || "Proof file"}` : ""}
                     </p>
                     <p className="mt-0.5 text-xs text-muted-foreground capitalize">{displayedVersion.status.replace(/_/g, " ")}</p>
+                    {(displayedVersion.packageLineItems?.length ?? 0) > 1 ? (
+                      <div className="mt-2 text-xs text-muted-foreground">
+                        <p className="font-medium text-foreground">Combined proof · {displayedVersion.packageLineItems?.length} line items</p>
+                        {displayedVersion.packageLineItems?.map((lineItem) => (
+                          <p key={lineItem.lineItemId} className="truncate">{lineItem.lineItemLabel} · Qty {lineItem.quantity ?? "—"}</p>
+                        ))}
+                      </div>
+                    ) : null}
                     {currentProofIssue ? (
                       <p className="mt-1 text-xs text-destructive">This proof does not include an artwork preview and cannot be sent to the customer.</p>
                     ) : null}

@@ -120,6 +120,12 @@ export const proofVersionHistoryEntrySchema = z.object({
   updatedAt: z.string().datetime(),
   sentToName: z.string().nullable(),
   sentToEmail: z.string().nullable(),
+  packageLineItems: z.array(z.object({
+    lineItemId: z.string(),
+    lineItemLabel: z.string(),
+    displaySizeLabel: z.string().nullable(),
+    quantity: z.number().nullable(),
+  })).optional(),
 });
 
 export const proofDecisionHistoryEntrySchema = z.object({

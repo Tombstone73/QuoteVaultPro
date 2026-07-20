@@ -97,7 +97,7 @@ export default function PortalProofDetailPage() {
           <Badge variant={proofVariant(proof)}>{proof.displayStatus}</Badge>
         </div>
         <p className="mt-1 text-sm text-muted-foreground">
-          Order {proof.orderSummary.displayNumber || proof.orderSummary.orderNumber} / {proof.lineItemSummary.name}
+          Order {proof.orderSummary.displayNumber || proof.orderSummary.orderNumber} / {proof.packageLineItemCount > 1 ? `${proof.packageLineItemCount} line items` : proof.lineItemSummary.name}
         </p>
       </div>
 
@@ -107,6 +107,16 @@ export default function PortalProofDetailPage() {
             <CardTitle>Proof Preview</CardTitle>
           </CardHeader>
           <CardContent className="space-y-4">
+            {proof.packageLineItemCount > 1 ? (
+              <div className="rounded-md border bg-muted/20 p-3">
+                <p className="text-sm font-medium">Included line items</p>
+                <ul className="mt-2 space-y-1 text-sm text-muted-foreground">
+                  {proof.lineItemSummaries.map((lineItem) => (
+                    <li key={lineItem.id}>{lineItem.name} · Qty {lineItem.quantity}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
             {proof.proofFileAvailable ? (
               <div className="rounded-md border bg-muted/30 p-4">
                 <p className="text-sm font-medium">

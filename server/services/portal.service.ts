@@ -13,6 +13,7 @@ import {
   invoices,
   lineItemProofApprovals,
   lineItemProofVersions,
+  proofVersionLineItems,
   orderAttachments,
   orderLineItems,
   orders,
@@ -190,6 +191,8 @@ export type PortalProofDto = {
   proofFileAvailable: boolean;
   proofNotes: string | null;
   lineItemSummary: PortalProofLineItemSummaryDto;
+  lineItemSummaries: PortalProofLineItemSummaryDto[];
+  packageLineItemCount: number;
   orderSummary: PortalProofOrderSummaryDto;
   customerActionRequired: boolean;
   history?: PortalProofHistoryItemDto[];
@@ -2254,7 +2257,11 @@ function proofArtifactReady(row: PortalProofRow): boolean {
   return artifact.previewStatus === "ready";
 }
 
-function mapPortalProofRow(row: PortalProofRow, history?: PortalProofHistoryItemDto[]): PortalProofDto {
+function mapPortalProofRow(
+  row: PortalProofRow,
+  history?: PortalProofHistoryItemDto[],
+  packageLineItems?: PortalProofLineItemSummaryDto[],
+): PortalProofDto {
   const mapped = mapPortalProofStatus(row.status);
   const orderDisplayStatus = mapPortalOrderStatus({
     state: row.orderState,
@@ -2269,6 +2276,17 @@ function mapPortalProofRow(row: PortalProofRow, history?: PortalProofHistoryItem
     .filter(Boolean)
     .join("\n\n") || null;
 
+  const primaryLineItemSummary: PortalProofLineItemSummaryDto = {
+    id: row.lineItemId,
+    name: row.lineItemDescription,
+    quantity: Number(row.lineItemQuantity || 0),
+    dimensions: {
+      width: row.lineItemWidth == null ? null : Number(row.lineItemWidth),
+      height: row.lineItemHeight == null ? null : Number(row.lineItemHeight),
+    },
+  };
+  const resolvedLineItemSummaries = packageLineItems?.length ? packageLineItems : [primaryLineItemSummary];
+
   return {
     id: row.id,
     versionNumber: Number(row.versionNumber || 0),
@@ -2279,15 +2297,9 @@ function mapPortalProofRow(row: PortalProofRow, history?: PortalProofHistoryItem
     previewAvailable: proofArtifactReady(row),
     proofFileAvailable: Boolean(row.proofFileRecordId || row.proofFileUrl),
     proofNotes,
-    lineItemSummary: {
-      id: row.lineItemId,
-      name: row.lineItemDescription,
-      quantity: Number(row.lineItemQuantity || 0),
-      dimensions: {
-        width: row.lineItemWidth == null ? null : Number(row.lineItemWidth),
-        height: row.lineItemHeight == null ? null : Number(row.lineItemHeight),
-      },
-    },
+    lineItemSummary: primaryLineItemSummary,
+    lineItemSummaries: resolvedLineItemSummaries,
+    packageLineItemCount: resolvedLineItemSummaries.length,
     orderSummary: {
       id: row.orderId,
       orderNumber: String(row.orderNumber),
@@ -2395,18 +2407,58 @@ async function loadPortalProofHistory(scope: PortalScope, lineItemId: string, tx
   }));
 }
 
+async function loadPortalProofPackageLineItems(
+  scope: PortalScope,
+  proofVersionId: string,
+  tx: any = db,
+): Promise<PortalProofLineItemSummaryDto[]> {
+  const rows = await tx
+    .select({
+      id: orderLineItems.id,
+      name: orderLineItems.description,
+      quantity: orderLineItems.quantity,
+      width: orderLineItems.width,
+      height: orderLineItems.height,
+    })
+    .from(proofVersionLineItems)
+    .innerJoin(orderLineItems, eq(orderLineItems.id, proofVersionLineItems.lineItemId))
+    .innerJoin(orders, eq(orders.id, proofVersionLineItems.orderId))
+    .where(and(
+      eq(proofVersionLineItems.organizationId, scope.organizationId),
+      eq(proofVersionLineItems.proofVersionId, proofVersionId),
+      eq(orders.customerId, scope.customerId),
+    ))
+    .orderBy(asc(proofVersionLineItems.sortOrder));
+  return rows.map((row: any) => ({
+    id: row.id,
+    name: row.name,
+    quantity: Number(row.quantity || 0),
+    dimensions: {
+      width: row.width == null ? null : Number(row.width),
+      height: row.height == null ? null : Number(row.height),
+    },
+  }));
+}
+
 export async function listPortalProofs(req: Request): Promise<PortalProofDto[]> {
   const scope = getPortalScope(req);
   const rows = await loadPortalProofRows(scope);
-  return rows.map((row) => mapPortalProofRow(row));
+  return Promise.all(rows.map(async (row) => mapPortalProofRow(
+    row,
+    undefined,
+    await loadPortalProofPackageLineItems(scope, row.id),
+  )));
 }
 
 export async function getPortalProof(req: Request, proofId: string): Promise<PortalProofDto | null> {
   const scope = getPortalScope(req);
   const [row] = await loadPortalProofRows(scope, proofId);
   if (!row) return null;
-  const history = await loadPortalProofHistory(scope, row.lineItemId);
-  return mapPortalProofRow(row, history);
+  const [history, packageLineItems] = await Promise.all([
+    loadPortalProofHistory(scope, row.lineItemId),
+    loadPortalProofPackageLineItems(scope, row.id),
+  ]);
+  return mapPortalProofRow(row, history, packageLineItems);
 }
 
 export async function getPortalProofFileDownload(req: Request, proofId: string): Promise<PortalFileDownloadResult | null> {

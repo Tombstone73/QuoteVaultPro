@@ -52,6 +52,7 @@ export type PortalProofData = {
     createdAt: string;
   };
   lineItemDisplay: LineItemDisplay | null;
+  lineItemDisplays: Array<LineItemDisplay & { lineItemId: string }>;
   attachments: PortalProofAttachment[];
   status: PortalProofStatus;
   proofText: PortalProofText | null;

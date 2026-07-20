@@ -13,8 +13,8 @@
 
 import type { Express } from "express";
 import { db } from "../db";
-import { auditLogs, orderAttachments, lineItemProofVersions, quoteAttachmentPages } from "@shared/schema";
-import { and, eq, sql } from "drizzle-orm";
+import { auditLogs, orderAttachments, lineItemProofVersions, proofVersionLineItems, quoteAttachmentPages } from "@shared/schema";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { validateProofToken } from "../services/proofAccessTokenService";
@@ -101,6 +101,34 @@ export function registerPortalProofRoutes(app: Express): void {
         // Non-critical — proof page still renders without line item display
       }
 
+      const packageMemberships = await db
+        .select({ lineItemId: proofVersionLineItems.lineItemId })
+        .from(proofVersionLineItems)
+        .where(and(
+          eq(proofVersionLineItems.organizationId, validation.tokenRecord.organizationId),
+          eq(proofVersionLineItems.proofVersionId, validation.proofVersion.id),
+        ))
+        .orderBy(asc(proofVersionLineItems.sortOrder));
+      const lineItemDisplays = (await Promise.all(packageMemberships.map(async ({ lineItemId }) => {
+        try {
+          const snapshot = await buildProofInputSnapshot(db, {
+            organizationId: validation.tokenRecord.organizationId,
+            lineItemId,
+          });
+          return {
+            lineItemId,
+            productName: snapshot.lineItemLabel?.trim() || null,
+            orderedSize: snapshot.displaySizeLabel ?? null,
+            quantity: snapshot.quantity ?? null,
+            detectedArtworkSize: null,
+            orderNumber: snapshot.orderNumber ?? null,
+            options: Object.entries(snapshot.selectedOptionMap ?? {}).map(([label, value]) => ({ label, value })),
+          };
+        } catch {
+          return null;
+        }
+      }))).filter((display): display is NonNullable<typeof display> => display !== null);
+
       return res.json({
         success: true,
         data: {
@@ -110,6 +138,7 @@ export function registerPortalProofRoutes(app: Express): void {
             createdAt: new Date(validation.proofVersion.createdAt).toISOString(),
           },
           lineItemDisplay,
+          lineItemDisplays,
           attachments: [
             (() => {
               const artifactSummary = buildProofArtifactSummary({

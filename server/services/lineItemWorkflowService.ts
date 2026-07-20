@@ -47,7 +47,7 @@ const VALID_TRANSITIONS: Record<LineItemWorkflowState, LineItemWorkflowState[]> 
   needs_design: ["in_design", "on_hold", "canceled"],
   in_design: ["needs_design", "awaiting_proof_approval", "ready_for_prepress", "on_hold", "canceled"],
   awaiting_proof_approval: ["needs_design", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
-  ready_for_prepress: ["awaiting_proof_approval", "in_prepress", "ready_for_production", "on_hold", "canceled"],
+  ready_for_prepress: ["needs_design", "awaiting_proof_approval", "in_prepress", "ready_for_production", "on_hold", "canceled"],
   in_prepress: ["awaiting_proof_approval", "ready_for_production", "in_design", "needs_design", "on_hold", "canceled"],
   ready_for_production: ["awaiting_proof_approval", "in_production", "in_prepress", "on_hold", "canceled"],
   in_production: ["completed", "on_hold", "canceled"],
