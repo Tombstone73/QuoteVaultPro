@@ -410,6 +410,12 @@ export default function PrepressProductionPageV2() {
     await queryClient.refetchQueries({ queryKey: PREPRESS_QUEUE_QUERY_KEY, type: "active" });
   }, [queryClient]);
 
+  const refreshPrepressNavigationCount = React.useCallback(async () => {
+    const queryKey = ["/api/operational-summary"] as const;
+    await queryClient.invalidateQueries({ queryKey });
+    await queryClient.refetchQueries({ queryKey, type: "active" });
+  }, [queryClient]);
+
   const refreshLineItemQueries = React.useCallback(async (lineItemId: string | null) => {
     if (!lineItemId) return;
     const queryKey = getPrepressLineItemQueryKey(lineItemId);
@@ -635,6 +641,7 @@ export default function PrepressProductionPageV2() {
       const lineItemId = response?.data?.lineItemId ?? selectedLineItemId;
       await Promise.all([
         refreshPrepressQueue(),
+        refreshPrepressNavigationCount(),
         refreshLineItemQueries(lineItemId),
         queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
         queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
@@ -690,8 +697,7 @@ export default function PrepressProductionPageV2() {
         refreshLineItemQueries(lineItemId),
         queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
         queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
-        queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
-        queryClient.refetchQueries({ queryKey: ["/api/operational-summary"], type: "active" }),
+        refreshPrepressNavigationCount(),
         queryClient.invalidateQueries({ predicate: (query) => {
           const key = query.queryKey;
           return Array.isArray(key) && key[0] === "/api/orders";
@@ -721,8 +727,7 @@ export default function PrepressProductionPageV2() {
         refreshLineItemQueries(variables.lineItemId),
         queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
         queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
-        queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
-        queryClient.refetchQueries({ queryKey: ["/api/operational-summary"], type: "active" }),
+        refreshPrepressNavigationCount(),
         queryClient.invalidateQueries({ predicate: (query) => {
           const key = query.queryKey;
           return Array.isArray(key) && key[0] === "/api/orders";
@@ -739,6 +744,7 @@ export default function PrepressProductionPageV2() {
       if (completed) {
         await Promise.all([
           refreshPrepressQueue(),
+          refreshPrepressNavigationCount(),
           refreshLineItemQueries(variables.lineItemId),
         ]);
       }

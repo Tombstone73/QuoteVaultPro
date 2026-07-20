@@ -26,6 +26,7 @@ import { normalizeProductionStationKey } from "@shared/productionStations";
 import { listProofingQueue } from "./proofingService";
 import type { ProofingQueueRow } from "@shared/proofing";
 import { FulfillmentDashboardRepo } from "./fulfillment/repository";
+import { resolvePrepressQueueEligibility } from "./prepressQueueEligibility";
 
 export interface OperationalSummary {
   inboundOrders: number;
@@ -136,7 +137,7 @@ export async function computeOperationalSummary(organizationId: string): Promise
     inboundResult,
     designResult,
     proofingQueue,
-    prepressResult,
+    prepressEligibility,
     overviewCount,
     flatbedCount,
     rollCount,
@@ -171,17 +172,10 @@ export async function computeOperationalSummary(organizationId: string): Promise
       slice: "all",
     }),
 
-    db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(orderLineItems)
-      .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
-      .where(
-        and(
-          eq(orders.organizationId, organizationId),
-          inArray(orderLineItems.workflowState as any, ["ready_for_prepress", "in_prepress"]),
-          notInArray(orders.state as any, CLOSED_ORDER_STATES),
-        ),
-      ),
+    resolvePrepressQueueEligibility(db, {
+      organizationId,
+      debugLabel: "operational-summary-prepress",
+    }),
 
     countVisibleProductionJobs(organizationId),
     countVisibleProductionJobs(organizationId, "flatbed"),
@@ -240,7 +234,8 @@ export async function computeOperationalSummary(organizationId: string): Promise
     overview: overviewCount,
     design: count(designResult),
     proofing: countAwaitingProofQueueRows(proofingQueue.rows),
-    prepress: count(prepressResult),
+    // Total eligible jobs in the default Prepress view; user filters do not affect the badge.
+    prepress: prepressEligibility.lineItemIds.length,
     flatbed: flatbedCount,
     roll: rollCount,
     fulfillment: fulfillmentResult,
