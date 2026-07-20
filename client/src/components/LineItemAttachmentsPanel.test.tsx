@@ -50,7 +50,56 @@ function renderPanel(doubleSided: boolean, useSameArtworkBothSides?: boolean) {
   );
 }
 
-describe("LineItemAttachmentsPanel double-sided artwork controls", () => {
+function TemporaryArtworkHarness() {
+  const [pending, setPending] = useState<any[]>([]);
+  const [savedNames, setSavedNames] = useState<string[]>([]);
+
+  return (
+    <>
+      <div data-testid="artwork-dirty-state">{pending.length > 0 ? "dirty" : "clean"}</div>
+      <div data-testid="saved-artwork">{savedNames.join(",")}</div>
+      <button type="button" onClick={() => setSavedNames(pending.map((file) => file.fileName))}>Save Item</button>
+      <LineItemAttachmentsPanel
+        quoteId={null}
+        parentType="order"
+        orderId={null}
+        lineItemId="temp-line-1"
+        defaultExpanded
+        pendingOrderAttachments={pending}
+        onTemporaryOrderUpload={async (files) => {
+          setPending((current) => [
+            ...current,
+            ...files.map((file, index) => ({
+              uploadId: `staged-${current.length + index + 1}`,
+              fileName: file.name,
+              mimeType: file.type,
+              sizeBytes: file.size,
+              uploadedAt: "2026-07-20T00:00:00.000Z",
+            })),
+          ]);
+        }}
+        onTemporaryOrderAttachmentRemove={(uploadId) => {
+          setPending((current) => current.filter((file) => file.uploadId !== uploadId));
+        }}
+      />
+    </>
+  );
+}
+
+function setInputFiles(input: HTMLInputElement, files: File[]) {
+  Object.defineProperty(input, "files", { configurable: true, value: files });
+}
+
+function createDropEvent(files: File[]) {
+  const event = new Event("drop", { bubbles: true, cancelable: true });
+  Object.defineProperty(event, "dataTransfer", {
+    configurable: true,
+    value: { files, dropEffect: "none" },
+  });
+  return event;
+}
+
+describe("LineItemAttachmentsPanel artwork controls", () => {
   test("shows explicit Front/Back assignment controls only for double-sided line items", () => {
     const doubleSided = renderPanel(true);
     expect(doubleSided).toContain("Use same artwork on both sides");
@@ -65,6 +114,69 @@ describe("LineItemAttachmentsPanel double-sided artwork controls", () => {
     expect(sameArtwork).toContain('data-testid="order-use-same-artwork-both-sides"');
     expect(sameArtwork).toContain('data-state="checked"');
     expect(sameArtwork).not.toContain("Back artwork not assigned");
+  });
+
+  test("button-selected artwork still stages through the temporary order path", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    await act(async () => root.render(
+      <QueryClientProvider client={client}><TemporaryArtworkHarness /></QueryClientProvider>,
+    ));
+    const input = host.querySelector("input[type='file']") as HTMLInputElement;
+    const file = new File(["art"], "button-art.pdf", { type: "application/pdf" });
+    setInputFiles(input, [file]);
+    await act(async () => {
+      input.dispatchEvent(new Event("change", { bubbles: true }));
+      await Promise.resolve();
+    });
+
+    expect(host.textContent).toContain("button-art.pdf");
+    expect(host.querySelector("[data-testid='line-item-artwork-count']")?.textContent).toBe("1");
+    expect(host.querySelector("[data-testid='artwork-dirty-state']")?.textContent).toBe("dirty");
+
+    await act(async () => root.unmount());
+    host.remove();
+  });
+
+  test("drag and drop prevents navigation, stages artwork, updates count and persists on Save Item", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    await act(async () => root.render(
+      <QueryClientProvider client={client}><TemporaryArtworkHarness /></QueryClientProvider>,
+    ));
+    const dropzone = host.querySelector("[data-testid='line-item-artwork-dropzone']") as HTMLElement;
+    const file = new File(["art"], "dropped-art.pdf", { type: "application/pdf" });
+    const dragEnterEvent = new Event("dragenter", { bubbles: true, cancelable: true });
+    Object.defineProperty(dragEnterEvent, "dataTransfer", {
+      configurable: true,
+      value: { files: [file], dropEffect: "none" },
+    });
+    await act(async () => dropzone.dispatchEvent(dragEnterEvent));
+    expect(dropzone.textContent).toContain("Drop files to add artwork");
+
+    const dropEvent = createDropEvent([file]);
+    await act(async () => {
+      dropzone.dispatchEvent(dropEvent);
+      await Promise.resolve();
+    });
+
+    expect(dropEvent.defaultPrevented).toBe(true);
+    expect(host.textContent).toContain("dropped-art.pdf");
+    expect(host.querySelector("[data-testid='line-item-artwork-count']")?.textContent).toBe("1");
+    expect(host.querySelector("[data-testid='artwork-dirty-state']")?.textContent).toBe("dirty");
+
+    const saveButton = Array.from(host.querySelectorAll("button")).find((button) => button.textContent === "Save Item") as HTMLButtonElement;
+    await act(async () => saveButton.click());
+    expect(host.querySelector("[data-testid='saved-artwork']")?.textContent).toBe("dropped-art.pdf");
+
+    await act(async () => root.unmount());
+    host.remove();
   });
 
   test("removes staged artwork locally and updates the count", async () => {
