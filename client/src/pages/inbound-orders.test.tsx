@@ -2198,7 +2198,8 @@ describe("InboundOrdersPage", () => {
     });
     await waitForText("Source Documents");
     await waitForText("Coffee Bag Shoe Box V2 12.8.25.pdf");
-    expect(container.textContent).toContain("File unavailable: Attachment content was not downloaded during ingestion.");
+    expect(container.textContent).toContain("File unavailable: File content not stored yet. Fetch file to view/download.");
+    expect(container.textContent).not.toContain("not supported for automatic download");
     expect(Array.from(container.querySelectorAll("button")).some((button) => button.getAttribute("aria-label") === "Open Coffee Bag Shoe Box V2 12.8.25.pdf")).toBe(false);
 
     const fetchButton = Array.from(container.querySelectorAll("button"))
@@ -4154,7 +4155,7 @@ describe("InboundOrdersPage", () => {
     const { getSavedBody } = setupParsedInboundReview({ parsed, review });
 
     renderPage();
-    await waitForText("System pricing is unavailable. Enter a unit or total override before conversion.");
+    await waitForText("System pricing error: PBV2 pricing failed Enter a unit or total override before conversion.");
 
     const overrideMode = container.querySelector("select[aria-label='Inbound price override mode']") as HTMLSelectElement;
     const overrideAmount = container.querySelector("input[aria-label='Inbound price override amount']") as HTMLInputElement;

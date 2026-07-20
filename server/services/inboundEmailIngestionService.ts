@@ -1246,7 +1246,11 @@ export function classifyInboundEmailAttachment(attachment: InboundEmailAttachmen
           ? "Likely inline signature/logo image"
           : textCandidate
             ? "Text attachment supported for evidence"
-            : "Attachment type is not supported for automatic download";
+            : safeToDownload
+              ? extension === "pdf"
+                ? "PDF attachment supported for secure download and staff classification"
+                : "Attachment type supported for secure download and staff review"
+              : "Attachment type is not supported for automatic download";
   return {
     role,
     poCandidate: classification.classification === "PO",
