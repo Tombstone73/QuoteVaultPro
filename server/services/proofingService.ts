@@ -588,6 +588,7 @@ type LoadedProofLineItem = {
   requiresPrepress: boolean;
   requiresProofApproval: boolean;
   approvedProofVersionId: string | null;
+  sortOrder: number;
   updatedAt: Date;
 };
 
@@ -616,6 +617,7 @@ async function loadProofLineItem(tx: any, args: { organizationId: string; lineIt
       requiresPrepress: orderLineItems.requiresPrepress,
       requiresProofApproval: orderLineItems.requiresProofApproval,
       approvedProofVersionId: orderLineItems.approvedProofVersionId,
+      sortOrder: orderLineItems.sortOrder,
       updatedAt: orderLineItems.updatedAt,
     })
     .from(orderLineItems)
@@ -1292,7 +1294,7 @@ export async function createGeneratedCombinedProofVersion(tx: any, args: {
     throwProofingBadRequest("Select at least two line items for a combined proof");
   }
 
-  const members: Array<{ snapshot: ProofInputSnapshot; sources: ArtworkProofSource[] }> = [];
+  const members: Array<{ snapshot: ProofInputSnapshot; sources: ArtworkProofSource[]; sortOrder: number }> = [];
   const missingArtworkLineItemIds: string[] = [];
   for (const lineItemId of lineItemIds) {
     const lineItem = await loadProofLineItem(tx, { organizationId: args.organizationId, lineItemId });
@@ -1313,7 +1315,7 @@ export async function createGeneratedCombinedProofVersion(tx: any, args: {
       missingArtworkLineItemIds.push(lineItemId);
       continue;
     }
-    members.push({ snapshot, sources });
+    members.push({ snapshot, sources, sortOrder: lineItem.sortOrder });
   }
 
   if (missingArtworkLineItemIds.length > 0) {
@@ -1323,6 +1325,7 @@ export async function createGeneratedCombinedProofVersion(tx: any, args: {
       lineItemIds: missingArtworkLineItemIds,
     });
   }
+  members.sort((left, right) => left.sortOrder - right.sortOrder || left.snapshot.lineItemId.localeCompare(right.snapshot.lineItemId));
   const orderIds = new Set(members.map((item) => item.snapshot.orderId));
   if (orderIds.size !== 1) {
     throwProofingConflict("Combined proof line items must belong to the same order");
@@ -2951,6 +2954,7 @@ function buildProofingQueueRow(base: LoadedProofQueueLineItem, truth: ProofingRe
     lineItemId: base.lineItemId,
     orderId: base.orderId,
     orderNumber: base.orderNumber,
+    lineItemSortOrder: base.sortOrder,
     customerDisplayName: base.customerDisplayName,
     lineItemLabel: base.lineItemLabel,
     packageLabel: base.packageLabel,
@@ -3005,6 +3009,7 @@ export async function listProofingQueue(tx: any, args: {
       orderId: orderLineItems.orderId,
       organizationId: orders.organizationId,
       orderNumber: orders.orderNumber,
+      sortOrder: orderLineItems.sortOrder,
       customerDisplayName: customers.companyName,
       lineItemLabel: orderLineItems.description,
       packageLabel: orderLineItems.description,

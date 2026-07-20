@@ -3,6 +3,35 @@ export type CombinedProofSelectableLine = {
   orderId: string;
 };
 
+export function isCombinedProofLineSelectable(row: {
+  requiresProofApproval: boolean;
+  currentQueueStatus: string;
+}) {
+  return row.requiresProofApproval
+    && row.currentQueueStatus !== "awaiting_approval"
+    && row.currentQueueStatus !== "approved"
+    && row.currentQueueStatus !== "approved_by_override";
+}
+
+export function selectAllCombinedProofLinesForOrder(args: {
+  selectedIds: string[];
+  anchorRow: CombinedProofSelectableLine;
+  candidateRows: CombinedProofSelectableLine[];
+}): string[] {
+  const matchingIds = args.candidateRows
+    .filter((row) => row.orderId === args.anchorRow.orderId)
+    .map((row) => row.lineItemId);
+  return Array.from(new Set([
+    ...args.selectedIds.filter((id) => matchingIds.includes(id)),
+    ...matchingIds,
+  ]));
+}
+
+export function getCombinedProofJobLabel(rows: Array<CombinedProofSelectableLine & { orderNumber?: string | null }>) {
+  if (rows.length === 0) return null;
+  return rows[0].orderNumber ? `#${rows[0].orderNumber}` : rows[0].orderId;
+}
+
 export function updateCombinedProofSelection(args: {
   selectedIds: string[];
   selectedRows: CombinedProofSelectableLine[];

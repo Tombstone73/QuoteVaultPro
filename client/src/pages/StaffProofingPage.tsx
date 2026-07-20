@@ -24,6 +24,7 @@ import {
 } from "lucide-react";
 
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { CombinedProofSelectionBar } from "@/components/proofing/CombinedProofSelectionBar";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -60,7 +61,13 @@ import {
 } from "@/lib/proofingRecovery";
 import { getStaffProofDownloadUrl, getStaffProofPreviewUrl, shouldFetchStaffPreviewAsBlob } from "@/lib/proofingPreviewUrls";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
-import { combinedProofReviewIsReady, updateCombinedProofSelection } from "@/lib/combinedProofSelection";
+import {
+  combinedProofReviewIsReady,
+  getCombinedProofJobLabel,
+  isCombinedProofLineSelectable,
+  selectAllCombinedProofLinesForOrder,
+  updateCombinedProofSelection,
+} from "@/lib/combinedProofSelection";
 import {
   getInitialProofingFilter,
   getProofingFilterCount,
@@ -717,12 +724,21 @@ export default function StaffProofingPage() {
   const visibleQueueRows = isLineItemOverrideActive && requestedRow
     ? [requestedRow]
     : filteredSortedQueueRows;
-  const batchSelectedRows = baseQueueRows.filter((row) => batchSelectedLineItemIds.includes(row.lineItemId));
+  const batchSelectedRows = batchSelectedLineItemIds
+    .map((lineItemId) => baseQueueRows.find((row) => row.lineItemId === lineItemId))
+    .filter((row): row is ProofingQueueRow => Boolean(row))
+    .sort((left, right) => left.lineItemSortOrder - right.lineItemSortOrder || left.lineItemId.localeCompare(right.lineItemId));
   const batchSelectionOrderId = batchSelectedRows[0]?.orderId ?? null;
+  const batchSelectionJobLabel = getCombinedProofJobLabel(batchSelectedRows);
+  const matchingJobSelectableRows = batchSelectionOrderId
+    ? baseQueueRows
+      .filter((row) => row.orderId === batchSelectionOrderId && isCombinedProofLineSelectable(row))
+      .sort((left, right) => left.lineItemSortOrder - right.lineItemSortOrder || left.lineItemId.localeCompare(right.lineItemId))
+    : [];
 
   useEffect(() => {
     if (!queueQuery.data) return;
-    const validIds = new Set(baseQueueRows.map((row) => row.lineItemId));
+    const validIds = new Set(baseQueueRows.filter(isCombinedProofLineSelectable).map((row) => row.lineItemId));
     setBatchSelectedLineItemIds((current) => {
       const next = current.filter((id) => validIds.has(id));
       return next.length === current.length ? current : next;
@@ -1120,6 +1136,16 @@ export default function StaffProofingPage() {
       return;
     }
     setBatchSelectedLineItemIds(result.selectedIds);
+  }
+
+  function selectAllForBatchJob() {
+    const anchorRow = batchSelectedRows[0];
+    if (!anchorRow) return;
+    setBatchSelectedLineItemIds(selectAllCombinedProofLinesForOrder({
+      selectedIds: batchSelectedLineItemIds,
+      anchorRow,
+      candidateRows: matchingJobSelectableRows,
+    }));
   }
 
   const combinedReviewMutation = useMutation({
@@ -1535,7 +1561,7 @@ export default function StaffProofingPage() {
                 onClick={openCombinedProofDialog}
                 disabled={batchSelectedRows.length < 2}
               >
-                Create Combined Proof{batchSelectedRows.length > 0 ? ` (${batchSelectedRows.length})` : ""}
+                Create Combined Proof{batchSelectedRows.length > 0 ? ` (${batchSelectedRows.length} lines)` : ""}
               </Button>
               <Button
                 className="h-9 rounded-lg bg-[#1337ec] px-4 text-sm font-bold text-white transition-all hover:bg-[#1a43ff]"
@@ -1548,6 +1574,16 @@ export default function StaffProofingPage() {
             </div>
           </div>
         </header>
+
+        {batchSelectionJobLabel ? (
+          <CombinedProofSelectionBar
+            selectedCount={batchSelectedRows.length}
+            jobLabel={batchSelectionJobLabel}
+            matchingCount={matchingJobSelectableRows.length}
+            onSelectAll={selectAllForBatchJob}
+            onClear={() => setBatchSelectedLineItemIds([])}
+          />
+        ) : null}
 
         <Tabs value={activeFilter} onValueChange={(value) => setActiveFilter(value as ProofingFilterValue)} className="shrink-0 bg-[#0B1120] px-6 border-b border-[#232948]">
           <TabsList className="h-auto w-full justify-start gap-6 rounded-none bg-transparent px-0 py-0">
@@ -1599,10 +1635,7 @@ export default function StaffProofingPage() {
               ) : (
                 visibleQueueRows.map((row) => {
                   const isSelected = row.lineItemId === activeRow?.lineItemId;
-                  const isBatchSelectable = row.requiresProofApproval
-                    && row.currentQueueStatus !== "awaiting_approval"
-                    && row.currentQueueStatus !== "approved"
-                    && row.currentQueueStatus !== "approved_by_override";
+                  const isBatchSelectable = isCombinedProofLineSelectable(row);
                   const printJobId = row.activeOwnerJobId ?? row.productionJobId;
                   return (
                     <div
