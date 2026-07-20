@@ -87,6 +87,7 @@ import { isCanceledOrder } from "@shared/operationalState";
 import { ROUTES } from "@/config/routes";
 import { downloadAuthenticatedPdf, openAuthenticatedPdfForPrint, openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
 import { apiFetch } from "@/lib/queryClient";
+import { hasEnteredShipToAddress, resolveCustomerShipTo } from "@/lib/customerShipTo";
 import { useOrderPaymentResolution } from "@/hooks/usePaymentOrchestrator";
 import type { PaymentInvoiceCandidate } from "@shared/paymentOrchestration";
 import { getOrderBillingActionState } from "@/lib/paymentResolutionUi";
@@ -1519,24 +1520,57 @@ export default function OrderDetail() {
   };
 
   const autofillShipToFromCustomer = async (customer: CustomerWithContacts) => {
+    const resolved = resolveCustomerShipTo(customer);
+    if (!resolved) return;
+    const currentShipTo = {
+      company: order?.shipToCompany,
+      name: order?.shipToName,
+      email: order?.shipToEmail,
+      phone: order?.shipToPhone,
+      address1: order?.shipToAddress1,
+      address2: order?.shipToAddress2,
+      city: order?.shipToCity,
+      state: order?.shipToState,
+      postalCode: order?.shipToPostalCode,
+      country: order?.shipToCountry,
+    };
+    if (
+      hasEnteredShipToAddress(currentShipTo) &&
+      !window.confirm("Replace the current Ship To address with the customer's address?")
+    ) {
+      return;
+    }
+
+    const next = resolved.data;
     const payload: ShipToUpdatePayload = {
-      shipToCompany: customer.companyName || null,
-      shipToAddress1: customer.shippingStreet1 || null,
-      shipToAddress2: customer.shippingStreet2 || null,
-      shipToCity: customer.shippingCity || null,
-      shipToState: customer.shippingState || null,
-      shipToPostalCode: customer.shippingPostalCode || null,
-      shipToCountry: customer.shippingCountry || null,
+      shipToCompany: next.company,
+      shipToEmail: next.email,
+      shipToPhone: next.phone,
+      shipToAddress1: next.address1,
+      shipToAddress2: next.address2,
+      shipToCity: next.city,
+      shipToState: next.state,
+      shipToPostalCode: next.postalCode,
+      shipToCountry: next.country,
     };
 
-    if (customer.email) {
-      payload.shipToEmail = customer.email;
-    }
-    if (customer.phone) {
-      payload.shipToPhone = customer.phone;
-    }
+    suppressShipToBlurRef.current = true;
+    if (shipToCompanyInputRef.current) shipToCompanyInputRef.current.value = next.company ?? "";
+    if (shipToEmailInputRef.current) shipToEmailInputRef.current.value = next.email ?? "";
+    if (shipToPhoneInputRef.current) shipToPhoneInputRef.current.value = next.phone ?? "";
+    if (shipToAddress1InputRef.current) shipToAddress1InputRef.current.value = next.address1 ?? "";
+    if (shipToAddress2InputRef.current) shipToAddress2InputRef.current.value = next.address2 ?? "";
+    if (shipToCityInputRef.current) shipToCityInputRef.current.value = next.city ?? "";
+    if (shipToStateInputRef.current) shipToStateInputRef.current.value = next.state ?? "";
+    if (shipToPostalCodeInputRef.current) shipToPostalCodeInputRef.current.value = next.postalCode ?? "";
 
-    await saveShipTo(payload);
+    try {
+      await saveShipTo(payload);
+    } finally {
+      setTimeout(() => {
+        suppressShipToBlurRef.current = false;
+      }, 0);
+    }
   };
 
   /**
@@ -1999,6 +2033,7 @@ export default function OrderDetail() {
     (value || '').replace(/\D+/g, '');
 
   const customerCompanyName: string | null = order.customer?.companyName || order.billToCompany || null;
+  const defaultCustomerShipTo = resolveCustomerShipTo(order.customer);
   const contactNameFromContact: string | null = (() => {
     const c: any = order.contact;
     if (!c) return null;
@@ -2925,7 +2960,26 @@ export default function OrderDetail() {
                         <div className="text-sm font-medium">Ship To</div>
 
                         {isEditingFulfillment && (
-                          <div className="flex items-center gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <Button
+                              type="button"
+                              variant="outline"
+                              size="sm"
+                              className="h-8"
+                              onClick={() => {
+                                if (order.customer) void autofillShipToFromCustomer(order.customer as CustomerWithContacts);
+                              }}
+                              disabled={!defaultCustomerShipTo}
+                            >
+                              Use customer address
+                            </Button>
+                            <span className="text-xs text-muted-foreground">
+                              {defaultCustomerShipTo?.source === "shipping"
+                                ? "Customer shipping address"
+                                : defaultCustomerShipTo?.source === "billing"
+                                  ? "Billing address fallback"
+                                  : "No customer address on file"}
+                            </span>
                             <Popover open={isShipToAutofillOpen} onOpenChange={setIsShipToAutofillOpen}>
                               <PopoverTrigger asChild>
                                 <Button

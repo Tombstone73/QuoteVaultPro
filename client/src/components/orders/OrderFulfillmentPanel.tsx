@@ -11,6 +11,7 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@
 import { Edit, Truck, ExternalLink, Check, Edit as EditIcon, Trash2, FileText, ChevronsUpDown } from "lucide-react";
 import { FulfillmentStatusBadge } from "@/components/FulfillmentStatusBadge";
 import { format } from "date-fns";
+import { hasEnteredShipToAddress, resolveCustomerShipTo, type CustomerAddressLike } from "@/lib/customerShipTo";
 
 type Mode = "order" | "quote";
 
@@ -36,15 +37,8 @@ type Shipment = {
   notes?: string | null;
 };
 
-type Customer = {
+type Customer = CustomerAddressLike & {
   id: string;
-  companyName?: string | null;
-  email?: string | null;
-  phone?: string | null;
-  shippingStreet1?: string | null;
-  shippingCity?: string | null;
-  shippingState?: string | null;
-  shippingPostalCode?: string | null;
 };
 
 type OrderFulfillmentPanelProps = {
@@ -75,6 +69,7 @@ type OrderFulfillmentPanelProps = {
   onExitEdit?: () => void;
   onAutofillShipTo?: (customer: Customer) => void;
   onAddNewShipToAddress?: () => void;
+  defaultCustomer?: CustomerAddressLike | null;
   
   // For ship-to autofill
   customers?: Customer[];
@@ -131,6 +126,7 @@ export function OrderFulfillmentPanel({
   onExitEdit,
   onAutofillShipTo,
   onAddNewShipToAddress,
+  defaultCustomer,
   customers = [],
   isCustomersLoading = false,
   isShipToAutofillOpen = false,
@@ -171,6 +167,7 @@ export function OrderFulfillmentPanel({
   const shipToCityInputRef = useRef<HTMLInputElement>(null);
   const shipToStateInputRef = useRef<HTMLInputElement>(null);
   const shipToPostalCodeInputRef = useRef<HTMLInputElement>(null);
+  const resolvedDefaultCustomerAddress = resolveCustomerShipTo(defaultCustomer);
 
   const handleShipToBlur = (field: keyof ShipToData, value: string) => {
     if (suppressBlurRef.current) return;
@@ -185,6 +182,34 @@ export function OrderFulfillmentPanel({
     setTimeout(() => {
       suppressBlurRef.current = false;
     }, 100);
+  };
+
+  const handleUseCustomerAddress = () => {
+    if (!resolvedDefaultCustomerAddress) return;
+    if (
+      hasEnteredShipToAddress(shipToData as Record<string, unknown>) &&
+      !window.confirm("Replace the current Ship To address with the customer's address?")
+    ) {
+      return;
+    }
+
+    const next = resolvedDefaultCustomerAddress.data;
+    suppressBlurRef.current = true;
+    if (shipToCompanyInputRef.current) shipToCompanyInputRef.current.value = next.company ?? "";
+    if (shipToEmailInputRef.current) shipToEmailInputRef.current.value = next.email ?? "";
+    if (shipToPhoneInputRef.current) shipToPhoneInputRef.current.value = next.phone ?? "";
+    if (shipToAddress1InputRef.current) shipToAddress1InputRef.current.value = next.address1 ?? "";
+    if (shipToAddress2InputRef.current) shipToAddress2InputRef.current.value = next.address2 ?? "";
+    if (shipToCityInputRef.current) shipToCityInputRef.current.value = next.city ?? "";
+    if (shipToStateInputRef.current) shipToStateInputRef.current.value = next.state ?? "";
+    if (shipToPostalCodeInputRef.current) shipToPostalCodeInputRef.current.value = next.postalCode ?? "";
+    try {
+      onShipToChange?.(next);
+    } finally {
+      setTimeout(() => {
+        suppressBlurRef.current = false;
+      }, 0);
+    }
   };
 
   return (
@@ -265,6 +290,27 @@ export function OrderFulfillmentPanel({
             {/* Ship To */}
             <div className="space-y-3">
               <div className="text-sm font-medium">Ship To</div>
+
+              {isEditingFulfillment && defaultCustomer && (
+                <div className="flex flex-wrap items-center gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={handleUseCustomerAddress}
+                    disabled={!resolvedDefaultCustomerAddress}
+                  >
+                    Use customer address
+                  </Button>
+                  <span className="text-xs text-muted-foreground">
+                    {resolvedDefaultCustomerAddress?.source === "shipping"
+                      ? "Customer shipping address"
+                      : resolvedDefaultCustomerAddress?.source === "billing"
+                        ? "Billing address fallback"
+                        : "No customer address on file"}
+                  </span>
+                </div>
+              )}
 
               {!isQuoteMode && isEditingFulfillment && setIsShipToAutofillOpen && (
                 <div className="flex items-center gap-2">
