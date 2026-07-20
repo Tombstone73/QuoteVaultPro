@@ -12,6 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   buildQuoteRecipientFallbackPayload,
@@ -28,6 +29,8 @@ type QuoteRecipientFallbackDialogProps = {
   selectedContactId?: string | null;
   initialRecipientEmail?: string | null;
   initialRecipientName?: string | null;
+  initialSubject?: string | null;
+  initialBody?: string | null;
   attachPdfDefault?: boolean;
   isSending?: boolean;
   onOpenChange: (open: boolean) => void;
@@ -40,6 +43,8 @@ export function QuoteRecipientFallbackDialog({
   selectedContactId,
   initialRecipientEmail,
   initialRecipientName,
+  initialSubject,
+  initialBody,
   attachPdfDefault = true,
   isSending = false,
   onOpenChange,
@@ -51,6 +56,8 @@ export function QuoteRecipientFallbackDialog({
   );
   const [recipientEmail, setRecipientEmail] = useState("");
   const [recipientName, setRecipientName] = useState("");
+  const [subject, setSubject] = useState("");
+  const [body, setBody] = useState("");
   const [saveToCustomerContact, setSaveToCustomerContact] = useState(true);
   const [contactChoice, setContactChoice] = useState(initialContactChoice);
   const [attachPdf, setAttachPdf] = useState(attachPdfDefault);
@@ -60,11 +67,13 @@ export function QuoteRecipientFallbackDialog({
     if (!open) return;
     setRecipientEmail(initialRecipientEmail ?? "");
     setRecipientName(initialRecipientName ?? "");
+    setSubject(initialSubject ?? "");
+    setBody(initialBody ?? "");
     setSaveToCustomerContact(true);
     setContactChoice(initialContactChoice);
     setAttachPdf(attachPdfDefault);
     setEmailError(null);
-  }, [attachPdfDefault, initialContactChoice, initialRecipientEmail, initialRecipientName, open]);
+  }, [attachPdfDefault, initialBody, initialContactChoice, initialRecipientEmail, initialRecipientName, initialSubject, open]);
 
   const submit = () => {
     if (!isValidRecipientEmail(recipientEmail)) {
@@ -76,6 +85,8 @@ export function QuoteRecipientFallbackDialog({
       buildQuoteRecipientFallbackPayload({
         recipientEmail,
         recipientName,
+        subject,
+        body,
         saveToCustomerContact,
         contactChoice,
         attachPdf,
@@ -85,14 +96,14 @@ export function QuoteRecipientFallbackDialog({
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="sm:max-w-[480px]">
+      <DialogContent className="sm:max-w-[560px]">
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <Mail className="h-5 w-5" />
             Send Quote
           </DialogTitle>
           <DialogDescription>
-            Add a recipient email for this quote.
+            Review the recipient and message before sending this quote.
           </DialogDescription>
         </DialogHeader>
 
@@ -123,6 +134,27 @@ export function QuoteRecipientFallbackDialog({
               value={recipientName}
               onChange={(event) => setRecipientName(event.target.value)}
               placeholder="Optional"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="quote-email-subject">Subject</Label>
+            <Input
+              id="quote-email-subject"
+              value={subject}
+              onChange={(event) => setSubject(event.target.value)}
+              placeholder="Quote subject"
+            />
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="quote-email-body">Message</Label>
+            <Textarea
+              id="quote-email-body"
+              value={body}
+              onChange={(event) => setBody(event.target.value)}
+              placeholder="Add a message for the customer"
+              rows={7}
             />
           </div>
 

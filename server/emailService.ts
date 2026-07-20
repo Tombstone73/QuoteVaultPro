@@ -116,6 +116,39 @@ interface EmailTemplates {
   invoiceEmailBody?: string;
 }
 
+export function resolveQuoteEmailContent(input: {
+  customSubject?: string | null;
+  customBody?: string | null;
+  subjectTemplate?: string | null;
+  bodyTemplate?: string | null;
+  variables: Record<string, unknown>;
+}): { subject: string; bodyText: string } {
+  const replaceVariables = (template: string) => {
+    let result = template;
+    Object.entries(input.variables).forEach(([key, value]) => {
+      result = result.replace(new RegExp(`\\{${key}\\}`, "g"), String(value ?? ""));
+    });
+    return result;
+  };
+
+  const subjectTemplate = input.subjectTemplate || "Quote #{quoteNumber} from {companyName}";
+  const bodyTemplate = input.bodyTemplate || "Hello,\n\nPlease find your quote #{quoteNumber} below.\n\nThank you for your business!";
+
+  return {
+    subject: input.customSubject?.trim() || replaceVariables(subjectTemplate),
+    bodyText: input.customBody?.trim() || replaceVariables(bodyTemplate),
+  };
+}
+
+export function quoteEmailPlainTextToHtml(bodyText: string): string {
+  return bodyText
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/\r?\n/g, "<br>");
+}
+
 export type EmailAttachment = {
   filename: string;
   content: Buffer;
@@ -391,7 +424,11 @@ class EmailService {
     quoteId: string,
     recipientEmail: string,
     userId?: string,
-    options: { attachments?: Array<{ filename: string; content: Buffer; contentType: string }> } = {},
+    options: {
+      subject?: string;
+      body?: string;
+      attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+    } = {},
   ): Promise<void> {
     console.log('[EmailService] [STAGE: load-config] Loading config for quote email:', {
       organizationId,
@@ -431,14 +468,16 @@ class EmailService {
     };
 
     // Use custom template or default
-    const subjectTemplate = templates.quoteEmailSubject || 'Quote #{quoteNumber} from {companyName}';
-    const bodyTemplate = templates.quoteEmailBody || 'Hello,\n\nPlease find your quote #{quoteNumber} below.\n\nThank you for your business!';
-
-    const subject = this.replaceTemplateVariables(subjectTemplate, variables);
-    const bodyText = this.replaceTemplateVariables(bodyTemplate, variables);
+    const { subject, bodyText } = resolveQuoteEmailContent({
+      customSubject: options.subject,
+      customBody: options.body,
+      subjectTemplate: templates.quoteEmailSubject,
+      bodyTemplate: templates.quoteEmailBody,
+      variables,
+    });
 
     // Convert plain text body to HTML with proper formatting
-    const bodyHtml = bodyText.split('\n').map(line => line || '<br>').join('<br>');
+    const bodyHtml = quoteEmailPlainTextToHtml(bodyText);
 
     // Generate full HTML email with quote details
     const htmlContent = this.generateQuoteEmailHTML(quote, bodyHtml);

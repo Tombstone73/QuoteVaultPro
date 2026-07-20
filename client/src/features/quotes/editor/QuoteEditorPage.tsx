@@ -43,6 +43,7 @@ import { SummaryCard } from "./components/SummaryCard";
 import { QuoteRecipientFallbackDialog } from "./components/QuoteRecipientFallbackDialog";
 import { getQuoteSendEligibility } from "./quoteActionEligibility";
 import {
+    buildQuoteEmailDraftDefaults,
     getContactDisplayName,
     resolveAttachQuotePdfDefault,
     resolveSelectedContactEmail,
@@ -79,7 +80,9 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const [recipientFallbackDefaults, setRecipientFallbackDefaults] = useState<{
         email: string;
         name: string;
-    }>({ email: "", name: "" });
+        subject: string;
+        body: string;
+    }>({ email: "", name: "", subject: "", body: "" });
     const createOrderSubmitGuardRef = useRef(createInitialOrderSubmitGuardState());
 
     const backPath = createTarget === "order" ? ROUTES.orders.list : ROUTES.quotes.list;
@@ -414,8 +417,11 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         mutationFn: async (payload: {
             recipientEmail: string;
             recipientName?: string;
+            subject?: string;
+            body?: string;
             saveToCustomerContact?: boolean;
             contactId?: string | null;
+            attachPdf?: boolean;
         }) => {
             if (!state.quoteId) throw new Error("Save the quote before sending.");
             const res = await apiRequest("POST", `/api/quotes/${state.quoteId}/email`, payload);
@@ -478,9 +484,22 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         const contacts = (state.contacts || []) as QuoteRecipientContactLike[];
         const selectedEmail = resolveSelectedContactEmail(contacts, state.selectedContactId);
         const selectedContact = contacts.find((contact) => contact.id === state.selectedContactId);
+        const recipientName = selectedContact ? getContactDisplayName(selectedContact) : "";
+        const quoteNumber = (state.quote as any)?.displayNumber
+            || ((state.quote as any)?.quoteNumber ? `QT-${(state.quote as any).quoteNumber}` : "Quote");
+        const emailDraft = buildQuoteEmailDraftDefaults({
+            quoteReference: String(quoteNumber),
+            companyName: String((state.organization as any)?.name || "our company"),
+            recipientName,
+            customerName: state.selectedCustomer?.companyName ?? (state.quote as any)?.customerName ?? null,
+            subjectTemplate: orgPreferences?.emailTemplates?.quoteEmailSubject,
+            bodyTemplate: orgPreferences?.emailTemplates?.quoteEmailBody,
+        });
         setRecipientFallbackDefaults({
             email: selectedEmail ?? "",
-            name: selectedContact ? getContactDisplayName(selectedContact) : "",
+            name: recipientName,
+            subject: emailDraft.subject,
+            body: emailDraft.body,
         });
         setRecipientFallbackOpen(true);
     };
@@ -1459,6 +1478,8 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                 selectedContactId={state.selectedContactId}
                 initialRecipientEmail={recipientFallbackDefaults.email}
                 initialRecipientName={recipientFallbackDefaults.name}
+                initialSubject={recipientFallbackDefaults.subject}
+                initialBody={recipientFallbackDefaults.body}
                 attachPdfDefault={resolveAttachQuotePdfDefault(orgPreferences)}
                 isSending={sendQuoteEmailMutation.isPending}
                 onOpenChange={setRecipientFallbackOpen}

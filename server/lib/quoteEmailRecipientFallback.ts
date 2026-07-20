@@ -6,6 +6,8 @@ const emailSchema = z.string().trim().email();
 export const quoteEmailRecipientPayloadSchema = z.object({
   recipientEmail: emailSchema,
   recipientName: z.string().trim().max(200).optional().or(z.literal("")),
+  subject: z.string().trim().max(500).optional().or(z.literal("")),
+  body: z.string().trim().max(20_000).optional().or(z.literal("")),
   saveToCustomerContact: z.boolean().optional().default(false),
   contactId: z.string().trim().nullable().optional(),
   attachPdf: z.boolean().optional().default(true),
@@ -80,7 +82,11 @@ export type QuoteEmailRecipientDeps = {
     quoteId: string,
     recipientEmail: string,
     userId?: string,
-    options?: { attachments?: Array<{ filename: string; content: Buffer; contentType: string }> },
+    options?: {
+      subject?: string;
+      body?: string;
+      attachments?: Array<{ filename: string; content: Buffer; contentType: string }>;
+    },
   ) => Promise<void>;
   createAuditLog: (entry: {
     organizationId: string;
@@ -257,6 +263,8 @@ export async function sendQuoteEmailWithRecipientFallback(
       contactId: payload.contactId ?? (contactSave?.success ? contactSave.contactId : null),
       mode: recipientMode,
       attachPdf: payload.attachPdf,
+      subject: payload.subject || null,
+      body: payload.body || null,
     },
   });
 
@@ -267,7 +275,11 @@ export async function sendQuoteEmailWithRecipientFallback(
       quote.id,
       payload.recipientEmail,
       input.isInternalUser ? undefined : input.userId,
-      { attachments },
+      {
+        ...(payload.subject ? { subject: payload.subject } : {}),
+        ...(payload.body ? { body: payload.body } : {}),
+        attachments,
+      },
     );
   } catch (error) {
     sendError = error instanceof Error ? error.message : "Failed to send quote email.";
@@ -291,7 +303,13 @@ export async function sendQuoteEmailWithRecipientFallback(
       entityId: quote.id,
       entityName: String(quote.displayNumber ?? quote.quoteNumber ?? quote.id),
       description: `Quote email sent to ${payload.recipientEmail}.`,
-      newValues: { recipientMode, attachPdf: payload.attachPdf, pdfAttached: payload.attachPdf },
+      newValues: {
+        recipientMode,
+        attachPdf: payload.attachPdf,
+        pdfAttached: payload.attachPdf,
+        subject: payload.subject || null,
+        body: payload.body || null,
+      },
     });
     return {
       success: true,
@@ -306,7 +324,13 @@ export async function sendQuoteEmailWithRecipientFallback(
     entityId: quote.id,
     entityName: String(quote.displayNumber ?? quote.quoteNumber ?? quote.id),
     description: `Quote email sent to ${payload.recipientEmail}.`,
-    newValues: { recipientMode, attachPdf: payload.attachPdf, pdfAttached: payload.attachPdf },
+    newValues: {
+      recipientMode,
+      attachPdf: payload.attachPdf,
+      pdfAttached: payload.attachPdf,
+      subject: payload.subject || null,
+      body: payload.body || null,
+    },
   });
 
   return {
