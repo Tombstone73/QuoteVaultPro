@@ -116,6 +116,32 @@ describe("sendQuoteEmailWithRecipientFallback", () => {
     }));
   });
 
+  test("passes staff-edited subject and body to the quote email service", async () => {
+    await sendQuoteEmailWithRecipientFallback(
+      deps,
+      input({
+        recipientEmail: "once@example.com",
+        saveToCustomerContact: false,
+        attachPdf: false,
+        subject: "Your updated quote",
+        body: "Hello Mike,\n\nPlease review the revised quote.",
+      }),
+    );
+
+    expect(sendQuoteEmail).toHaveBeenCalledWith("org_1", "quote_1", "once@example.com", undefined, {
+      subject: "Your updated quote",
+      body: "Hello Mike,\n\nPlease review the revised quote.",
+      attachments: undefined,
+    });
+    expect(createAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      actionType: "quote_email_sent",
+      newValues: expect.objectContaining({
+        subject: "Your updated quote",
+        body: "Hello Mike,\n\nPlease review the revised quote.",
+      }),
+    }));
+  });
+
   test("updates an existing linked customer contact before sending", async () => {
     await sendQuoteEmailWithRecipientFallback(
       deps,

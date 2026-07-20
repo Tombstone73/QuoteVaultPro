@@ -18,6 +18,12 @@ export interface OrgPreferences {
     attachOrderPdfByDefault?: boolean;
   };
 
+  emailTemplates?: {
+    replyToEmail?: string;
+    quoteEmailSubject?: string;
+    quoteEmailBody?: string;
+  };
+
   fileUploadNaming?: {
     fileUploadJobPrefixMode?: "none" | "numeric_only" | "full_job_number";
     prepressFileLabelMode?: "optional" | "required";

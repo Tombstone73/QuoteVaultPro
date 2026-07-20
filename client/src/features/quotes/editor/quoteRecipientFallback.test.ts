@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
 import {
+  buildQuoteEmailDraftDefaults,
   buildQuoteRecipientFallbackPayload,
   CREATE_NEW_CONTACT_CHOICE,
   getInitialRecipientContactChoice,
@@ -58,6 +59,44 @@ describe("quote recipient fallback helpers", () => {
         attachPdf: true,
       }).contactId,
     ).toBeNull();
+  });
+
+  test("builds editable quote email defaults and includes edits in the send payload", () => {
+    expect(buildQuoteEmailDraftDefaults({
+      quoteReference: "QT-20000",
+      companyName: "Titan Graphics",
+      recipientName: "Mike",
+    })).toEqual({
+      subject: "Quote QT-20000 from Titan Graphics",
+      body: "Hello Mike,\n\nPlease review quote QT-20000 below.\n\nThank you for your business!",
+    });
+
+    expect(buildQuoteRecipientFallbackPayload({
+      recipientEmail: "mike@example.com",
+      recipientName: "Mike",
+      subject: "Updated quote subject",
+      body: "Please review the revised pricing.",
+      saveToCustomerContact: false,
+      contactChoice: CREATE_NEW_CONTACT_CHOICE,
+      attachPdf: true,
+    })).toEqual(expect.objectContaining({
+      subject: "Updated quote subject",
+      body: "Please review the revised pricing.",
+    }));
+  });
+
+  test("resolves organization quote templates for dialog defaults", () => {
+    expect(buildQuoteEmailDraftDefaults({
+      quoteReference: "QT-20000",
+      companyName: "Titan Graphics",
+      recipientName: "Mike",
+      customerName: "Eye 4 Group",
+      subjectTemplate: "Estimate {quoteNumber} — {companyName}",
+      bodyTemplate: "Hello {recipientName}, this is for {customerName}.",
+    })).toEqual({
+      subject: "Estimate QT-20000 — Titan Graphics",
+      body: "Hello Mike, this is for Eye 4 Group.",
+    });
   });
 
   test("prefers selected contact and rejects invalid selected contact email", () => {
