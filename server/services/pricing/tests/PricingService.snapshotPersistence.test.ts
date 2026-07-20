@@ -112,6 +112,23 @@ function makeMagnetBillableTree() {
   return tree;
 }
 
+function makeAcmDropBillingTree() {
+  const tree = makeAcmTree(5, { perSqftCents: 500 }) as any;
+  tree.pricingMatrix.rows = tree.pricingMatrix.rows.map((row: any) => ({
+    ...row,
+    variables: { base_price: 5 },
+  }));
+  tree.meta.formulaVariables = {
+    sheet_width: 48,
+    sheet_length: 96,
+    usable_drop_min: 24,
+    billable_length_increment: 12,
+    minimum_billable_sqft: 3,
+    allow_rotation: 1,
+  };
+  return tree;
+}
+
 function makeQuantityOnlyTree() {
   return {
     schemaVersion: 2,
@@ -183,6 +200,64 @@ beforeEach(async () => {
 });
 
 describe("PricingService PBV2 pricing snapshot persistence payload", () => {
+  test.each([
+    { widthIn: 48, heightIn: 72, expectedOrientation: "normal" },
+    { widthIn: 72, heightIn: 48, expectedOrientation: "rotated" },
+  ])("ACM $widthIn x $heightIn preview and order runtime bill the reusable 48x24 drop consistently", async ({
+    widthIn,
+    heightIn,
+    expectedOrientation,
+  }) => {
+    const tree = makeAcmDropBillingTree();
+    await db.execute(sql`
+      update pbv2_tree_versions
+      set tree_json = ${JSON.stringify(tree)}::jsonb
+      where id = ${treeVersionId}
+    `);
+
+    const selections = {
+      thickness: { value: "choice_3mm" },
+      sides: { value: "choice_single" },
+    };
+    const preview = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn,
+      heightIn,
+      quantity: 1,
+      pbv2ExplicitSelections: selections,
+      pricingFormulaOverride: COROPLAST_4X8_FORMULA,
+      debug: true,
+    });
+    const orderPrice = await priceLineItem({
+      organizationId,
+      productId,
+      widthIn,
+      heightIn,
+      quantity: 1,
+      pbv2ExplicitSelections: selections,
+    });
+    const runtimeDebug = orderPrice.pbv2SnapshotJson.pbv2PricingSnapshot;
+
+    expect(preview.totalPrice).toBe(120);
+    expect(preview.debug?.evaluatedFormulaTotalRaw).toBe(120);
+    expect(preview.debug?.sheetYield).toEqual(expect.objectContaining({
+      consumedSqft: 24,
+      billedSheetSqft: 24,
+      leftoverDropLength: 24,
+      lengthDropUsable: true,
+      dropUsable: true,
+      orientationUsed: expectedOrientation,
+    }));
+    expect(orderPrice.lineTotalCents).toBe(12000);
+    expect(runtimeDebug?.evaluatedFormulaTotalRaw).toBe(120);
+    expect(runtimeDebug?.sheetYield).toEqual(expect.objectContaining({
+      billedSheetSqft: 24,
+      leftoverDropLength: 24,
+      lengthDropUsable: true,
+      orientationUsed: expectedOrientation,
+    }));
+  });
+
   test("quantity-only order pricing matches preview and ignores a stale geometry formula", async () => {
     const staleFormula = "ceil((((w + 0.25) * (h + 0.25)) / 144) * q)";
     await db.execute(sql`

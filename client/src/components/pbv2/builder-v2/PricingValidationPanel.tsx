@@ -146,7 +146,19 @@ type PricingPreviewResponse = {
       billedSheets?: number | null;
       sheetCount?: number | null;
       sheetSqft?: number | null;
+      consumedSqft?: number | null;
       billedSheetSqft?: number | null;
+      fullLayoutBillableSqft?: number | null;
+      lastSheetPieceCount?: number | null;
+      lastSheetOccupiedWidth?: number | null;
+      lastSheetConsumedLength?: number | null;
+      lastSheetBillableWidth?: number | null;
+      lastSheetBillableLength?: number | null;
+      leftoverDropWidth?: number | null;
+      leftoverDropLength?: number | null;
+      widthDropUsable?: boolean | null;
+      lengthDropUsable?: boolean | null;
+      dropUsable?: boolean | null;
       mode?: "exact_flat_goods" | "layout_yield" | "sheet_equivalent" | "unavailable";
       sheetUsageMethod?: string | null;
       allowRotation?: boolean | null;
@@ -1367,7 +1379,13 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
                       <div><span className="text-slate-400">Partial sheet billable sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.partialSheetBillableSqft === "number" ? formulaDebug.sheetYield.partialSheetBillableSqft.toFixed(2) : "—"}</span></div>
                       <div><span className="text-slate-400">Partial sheet policy:</span> <span className="font-mono">{formulaDebug.sheetYield?.partialSheetPolicy ?? "—"}</span></div>
                       <div><span className="text-slate-400">Total sheet count:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.totalSheetCount === "number" ? formulaDebug.sheetYield.totalSheetCount.toFixed(0) : "—"}</span></div>
+                      <div><span className="text-slate-400">Consumed sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.consumedSqft === "number" ? formulaDebug.sheetYield.consumedSqft.toFixed(2) : "—"}</span></div>
                       <div><span className="text-slate-400">Billed sheet sqft:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.billedSheetSqft === "number" ? formulaDebug.sheetYield.billedSheetSqft.toFixed(2) : "—"}</span></div>
+                      <div><span className="text-slate-400">Last sheet occupied:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.lastSheetOccupiedWidth === "number" && typeof formulaDebug.sheetYield?.lastSheetConsumedLength === "number" ? `${formulaDebug.sheetYield.lastSheetOccupiedWidth.toFixed(2)} × ${formulaDebug.sheetYield.lastSheetConsumedLength.toFixed(2)} in` : "—"}</span></div>
+                      <div><span className="text-slate-400">Billable footprint:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.lastSheetBillableWidth === "number" && typeof formulaDebug.sheetYield?.lastSheetBillableLength === "number" ? `${formulaDebug.sheetYield.lastSheetBillableWidth.toFixed(2)} × ${formulaDebug.sheetYield.lastSheetBillableLength.toFixed(2)} in` : "—"}</span></div>
+                      <div><span className="text-slate-400">Remaining drop:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.leftoverDropWidth === "number" && typeof formulaDebug.sheetYield?.leftoverDropLength === "number" ? `width ${formulaDebug.sheetYield.leftoverDropWidth.toFixed(2)} in · length ${formulaDebug.sheetYield.leftoverDropLength.toFixed(2)} in` : "—"}</span></div>
+                      <div><span className="text-slate-400">Usable drop:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.dropUsable === "boolean" ? `${formulaDebug.sheetYield.dropUsable ? "Yes" : "No"} (width: ${formulaDebug.sheetYield.widthDropUsable ? "usable" : "not usable"}; length: ${formulaDebug.sheetYield.lengthDropUsable ? "usable" : "not usable"})` : "—"}</span></div>
+                      <div><span className="text-slate-400">Final price basis:</span> <span className="font-mono">{typeof formulaDebug.sheetYield?.billedSheetSqft === "number" && typeof formulaDebug.baseRateUsed === "number" ? `${formulaDebug.sheetYield.billedSheetSqft.toFixed(2)} billable sqft × ${currencyFormatter.format(formulaDebug.baseRateUsed)}/sqft` : "—"}</span></div>
                       <div><span className="text-slate-400">Selected tier basis:</span> <span className="font-mono">{tierResolution?.tierBasis ?? "—"}</span></div>
                       <div><span className="text-slate-400">Pre-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.preCeilSqftTotal === "number" ? formulaDebug.preCeilSqftTotal.toFixed(4) : "—"}</span></div>
                       <div><span className="text-slate-400">Post-ceil sqft:</span> <span className="font-mono">{typeof formulaDebug.postCeilSqftTotal === "number" ? formulaDebug.postCeilSqftTotal.toFixed(0) : "—"}</span></div>

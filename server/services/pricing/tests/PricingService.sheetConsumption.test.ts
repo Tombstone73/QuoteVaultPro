@@ -141,9 +141,62 @@ function runFormulaExpectError(formula: string, w = 24, h = 36, q = 1): any {
   }
 }
 
+function runAcmDropBillingPreview(widthIn: number, heightIn: number) {
+  return evaluatePricingPreviewFromTree({
+    treeJson: makeMatrixBasePriceTree(5),
+    widthIn,
+    heightIn,
+    quantity: 1,
+    pbv2ExplicitSelections: { rate: { value: "standard" } },
+    pricingFormulaOverride: "sheet_consumption_sqft(w,h,q,sheet_width,sheet_length,usable_drop_min,billable_length_increment,minimum_billable_sqft) * base_price",
+    formulaVariables: {
+      sheet_width: 48,
+      sheet_length: 96,
+      usable_drop_min: 24,
+      billable_length_increment: 12,
+      minimum_billable_sqft: 3,
+      allow_rotation: 1,
+    },
+    debug: true,
+  });
+}
+
 // sheet_consumption_sqft(w, h, q, sheet_width, sheet_length, usable_drop_min, billable_length_increment, minimum_billable_sqft)
 
 describe("sheet_consumption_sqft", () => {
+  test.each([
+    { widthIn: 48, heightIn: 72, orientation: "normal" },
+    { widthIn: 72, heightIn: 48, orientation: "rotated" },
+  ])("ACM $widthIn x $heightIn bills 24 sqft at $5 with a reusable drop", ({ widthIn, heightIn, orientation }) => {
+    const result = runAcmDropBillingPreview(widthIn, heightIn);
+
+    expect(result.totalPrice).toBe(120);
+    expect(result.unitPrice).toBe(120);
+    expect(result.debug?.evaluatedFormulaTotalRaw).toBe(120);
+    expect(result.debug?.sheetYield).toEqual(expect.objectContaining({
+      consumedSqft: 24,
+      billedSheetSqft: 24,
+      leftoverDropWidth: 0,
+      leftoverDropLength: 24,
+      lengthDropUsable: true,
+      dropUsable: true,
+      orientationUsed: orientation,
+    }));
+  });
+
+  test("ACM 48x73 bills the full sheet because the 23-inch end drop is unusable", () => {
+    const result = runAcmDropBillingPreview(48, 73);
+
+    expect(result.totalPrice).toBe(160);
+    expect(result.debug?.evaluatedFormulaTotalRaw).toBe(160);
+    expect(result.debug?.sheetYield).toEqual(expect.objectContaining({
+      billedSheetSqft: 32,
+      leftoverDropLength: 23,
+      lengthDropUsable: false,
+      dropUsable: false,
+    }));
+  });
+
   // ── orientation selection ──────────────────────────────────────────────────
 
   test("normal orientation wins when it uses less effective width", () => {
@@ -185,7 +238,7 @@ describe("sheet_consumption_sqft", () => {
       "sheet_consumption_sqft(w, h, q, 48, 20, 0, 12, 0)",
       24, 11, 2,
     );
-    expect(result.totalPrice).toBeCloseTo(7, 1);
+    expect(result.totalPrice).toBeCloseTo(4, 1);
   });
 
   test("billable_length_increment=0 treated as 1 (no division by zero)", () => {
@@ -261,7 +314,7 @@ describe("sheet_consumption_sqft", () => {
       "sheet_consumption_sqft(w, h, q, 48, 96, 24, 12, 3, true)",
       60, 25, 1,
     );
-    expect(result.totalPrice).toBeCloseTo(32, 1);
+    expect(result.totalPrice).toBeCloseTo(20, 1);
   });
 
   test("partial final row (q < piecesAcross): uses actual occupied width", () => {
@@ -1174,10 +1227,10 @@ describe("sheet_consumption_sqft — 48×96 expected outputs", () => {
     expect(runFormula(FORMULA_4X8, 60, 23, 1).totalPrice).toBe(10);
   });
 
-  test("60x25 q1 bills the configured partial-sheet minimum", () => {
+  test("60x25 q1 bills the occupied full-width area while preserving the usable end drop", () => {
     // rotated (25w×60h): piecesAcross=1, fullRow, drop=23<24 → effectiveW=48
     //   sqft=48*60/144=20 → ceil=20
-    expect(runFormula(FORMULA_4X8, 60, 25, 1).totalPrice).toBe(32);
+    expect(runFormula(FORMULA_4X8, 60, 25, 1).totalPrice).toBe(20);
   });
 
   test("30×30 q1 → 12  (drop 18\" too narrow, 30\" row rounds to 36\")", () => {
