@@ -3009,6 +3009,48 @@ describe("InboundOrderService editable review draft", () => {
     expect(getRecord().createdOrderId).toBeNull();
   });
 
+  test("does not attach metadata-only artwork as a usable order file", async () => {
+    const record = inboundRecord({ id: "inbound_metadata_art" });
+    const { repo } = makeRepository(record);
+    (repo as any).listFiles.mockResolvedValue([{
+      id: "file_metadata_art",
+      inboundRecordId: record.id,
+      fileRecordId: null,
+      sourceFilename: "customer-art.pdf",
+      role: "artwork",
+      mimeType: "application/pdf",
+      sizeBytes: 120,
+      checksum: null,
+      status: "uploaded",
+      providerAttachmentId: "provider_attachment_1",
+      providerMessageId: "provider_message_1",
+      metadataJson: { attachmentState: "metadata_only" },
+    }]);
+    const orderRepo = makeOrderRepository();
+    (orderRepo as any).listAllOrderAttachments = jest.fn(async () => []);
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+
+    const result = await service.attachInboundRecordToOrder({
+      organizationId: "org_1",
+      inboundRecordId: record.id,
+      orderId: "order_1",
+      actorUserId: "user_1",
+      includeMessageHistory: false,
+      includeAttachments: true,
+      includeParsedNotes: false,
+      includeJunkAttachments: false,
+      confirmCustomerMismatch: false,
+      artworkAssignments: [{ fileId: "file_metadata_art", orderLineItemId: "order_line_1", side: "front" }],
+    });
+
+    expect(orderRepo.createOrderAttachment).not.toHaveBeenCalled();
+    expect(result.createdAttachmentIds).toEqual([]);
+    expect(result.skippedAttachments).toEqual([{
+      fileId: "file_metadata_art",
+      reason: "Metadata-only attachment has no usable stored file.",
+    }]);
+  });
+
   test("requires confirmation before attaching an inbound record to an order with a different customer", async () => {
     const record = inboundRecord({ id: "inbound_customer_mismatch", matchedCustomerId: "customer_inbound" });
     const { repo } = makeRepository(record);
