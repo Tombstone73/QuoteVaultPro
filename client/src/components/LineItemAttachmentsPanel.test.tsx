@@ -116,6 +116,55 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     expect(sameArtwork).not.toContain("Back artwork not assigned");
   });
 
+  test("automatically assigns the only artwork file to Both when shared-art intent is active", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const filesPath = "/api/orders/order-1/line-items/line-1/files";
+    client.setQueryData([filesPath], [{
+      id: "only-art",
+      source: "attachment",
+      fileName: "only-art.pdf",
+      fileUrl: "/objects/only-art.pdf",
+      mimeType: "application/pdf",
+      createdAt: "2026-07-20T00:00:00.000Z",
+      side: "na",
+    }]);
+    client.setQueryData(["/api/system/status"], { thumbnailsEnabled: true });
+    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({ data: { id: "only-art", side: "both" } }) })) as unknown as typeof fetch;
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = fetchMock;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={client}>
+            <LineItemAttachmentsPanel
+              quoteId={null}
+              parentType="order"
+              orderId="order-1"
+              lineItemId="line-1"
+              defaultExpanded
+              doubleSided
+              useSameArtworkBothSides
+            />
+          </QueryClientProvider>,
+        );
+        await Promise.resolve();
+      });
+
+      expect(fetchMock).toHaveBeenCalledWith(
+        `${filesPath}/only-art/artwork-side`,
+        expect.objectContaining({ method: "PATCH", body: JSON.stringify({ side: "both" }) }),
+      );
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      globalThis.fetch = previousFetch;
+    }
+  });
+
   test("button-selected artwork still stages through the temporary order path", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const host = document.createElement("div");

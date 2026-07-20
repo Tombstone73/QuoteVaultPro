@@ -130,13 +130,34 @@ async function loadPrepressArtworkSideReadiness(executor: any, args: {
       eq(orderAttachments.role, "artwork"),
     ));
 
+  const originalFiles = await executor
+    .select({
+      id: lineItemFiles.id,
+      fileRecordId: lineItemFiles.fileRecordId,
+      side: sql<string>`'na'`,
+    })
+    .from(lineItemFiles)
+    .where(and(
+      eq(lineItemFiles.organizationId, args.organizationId),
+      eq(lineItemFiles.lineItemId, args.lineItemId),
+      eq(lineItemFiles.role, "original"),
+      eq(lineItemFiles.status, "active"),
+    ));
+  const attachmentFileRecordIds = new Set(
+    artwork.map((file: any) => file.fileRecordId).filter((id: unknown): id is string => typeof id === "string"),
+  );
+  const canonicalArtwork = [
+    ...artwork,
+    ...originalFiles.filter((file: any) => !file.fileRecordId || !attachmentFileRecordIds.has(file.fileRecordId)),
+  ];
+
   const sides = resolveProductionSides(lineItem);
   const intent = resolveArtworkSideIntent(lineItem);
   return {
     sides,
     ...resolveProductionArtworkSideReadiness({
       sides,
-      artwork,
+      artwork: canonicalArtwork,
       useSameArtworkBothSides: intent.useSameArtworkBothSides,
       sameArtworkFileId: intent.sameArtworkFileId,
     }),

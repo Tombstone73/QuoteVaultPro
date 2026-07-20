@@ -177,6 +177,24 @@ describe("production artwork hydration", () => {
       sameArtworkFileId: "saved-file",
     })).toMatchObject({ complete: true, warning: null });
 
+    const autoShared = resolveProductionArtworkSideReadiness({
+      sides: "Double-sided",
+      artwork: [{ id: "only-file", side: "na" }],
+      useSameArtworkBothSides: true,
+    });
+    expect(autoShared).toMatchObject({ complete: true, warning: null });
+    expect(autoShared.front?.id).toBe("only-file");
+    expect(autoShared.back?.id).toBe("only-file");
+
+    expect(resolveProductionArtworkSideReadiness({
+      sides: "Double-sided",
+      artwork: [{ id: "one", side: "na" }, { id: "two", side: "na" }],
+      useSameArtworkBothSides: true,
+    })).toMatchObject({
+      complete: false,
+      warning: "Choose which artwork file should be used on both sides.",
+    });
+
     expect(resolveProductionArtworkSideReadiness({
       sides: "Single-sided",
       artwork: [{ id: "unassigned", side: "na" }],

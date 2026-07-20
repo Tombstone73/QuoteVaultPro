@@ -1,4 +1,7 @@
-import { removeArtworkFileReferencesFromSpecs } from "@shared/artworkSideAssignment";
+import {
+  applyArtworkSideAssignmentToSpecs,
+  removeArtworkFileReferencesFromSpecs,
+} from "@shared/artworkSideAssignment";
 
 describe("removeArtworkFileReferencesFromSpecs", () => {
   it("clears Front/Back/Both references while preserving unrelated specs", () => {
@@ -30,5 +33,45 @@ describe("removeArtworkFileReferencesFromSpecs", () => {
       fileIds: ["attachment-1"],
       removedSide: "both",
     })).toEqual({ artworkSideAssignment: { useSameArtworkBothSides: false } });
+  });
+});
+
+describe("applyArtworkSideAssignmentToSpecs", () => {
+  it("persists a stable Both assignment without replacing unrelated specs", () => {
+    expect(applyArtworkSideAssignmentToSpecs({
+      specsJson: { notes: "Keep me", artworkSideAssignment: { frontFileId: "old-front" } },
+      fileId: "attachment-1",
+      fileRecordId: "record-1",
+      side: "both",
+    })).toEqual({
+      notes: "Keep me",
+      artworkSideAssignment: {
+        useSameArtworkBothSides: true,
+        bothFileId: "record-1",
+        sharedFileId: "record-1",
+      },
+    });
+  });
+
+  it("turns off shared intent when separate Front or Back art is assigned", () => {
+    expect(applyArtworkSideAssignmentToSpecs({
+      specsJson: {
+        artworkSideAssignment: {
+          useSameArtworkBothSides: true,
+          bothFileId: "record-shared",
+          sharedFileId: "record-shared",
+          backFileId: "record-back",
+        },
+      },
+      fileId: "attachment-front",
+      fileRecordId: "record-front",
+      side: "front",
+    })).toEqual({
+      artworkSideAssignment: {
+        useSameArtworkBothSides: false,
+        backFileId: "record-back",
+        frontFileId: "record-front",
+      },
+    });
   });
 });

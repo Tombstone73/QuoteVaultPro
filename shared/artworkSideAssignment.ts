@@ -1,5 +1,7 @@
 type ArtworkSide = "front" | "back" | "both" | "na" | null | undefined;
 
+type AssignableArtworkSide = "front" | "back" | "both";
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -53,4 +55,37 @@ export function removeArtworkFileReferencesFromSpecs(args: {
     ...specs,
     artworkSideAssignment: nextAssignment,
   };
+}
+
+/**
+ * Keeps line-item artwork intent aligned with the canonical per-file side stored
+ * on order_attachments. This snapshot is what queue hydration uses to distinguish
+ * an intentional shared file from an incomplete double-sided assignment.
+ */
+export function applyArtworkSideAssignmentToSpecs(args: {
+  specsJson: unknown;
+  fileId: string;
+  fileRecordId?: string | null;
+  side: AssignableArtworkSide;
+}): Record<string, unknown> {
+  const specs = asRecord(args.specsJson) ?? {};
+  const current = asRecord(specs.artworkSideAssignment) ?? {};
+  const next: Record<string, unknown> = { ...current };
+  const stableFileId = args.fileRecordId?.trim() || args.fileId;
+
+  if (args.side === "both") {
+    next.useSameArtworkBothSides = true;
+    next.bothFileId = stableFileId;
+    next.sharedFileId = stableFileId;
+    delete next.frontFileId;
+    delete next.backFileId;
+    delete next.fileId;
+  } else {
+    next.useSameArtworkBothSides = false;
+    delete next.bothFileId;
+    delete next.sharedFileId;
+    next[args.side === "front" ? "frontFileId" : "backFileId"] = stableFileId;
+  }
+
+  return { ...specs, artworkSideAssignment: next };
 }

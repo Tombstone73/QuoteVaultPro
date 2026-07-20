@@ -257,6 +257,7 @@ export function LineItemAttachmentsPanel({
   const frontArtwork = artworkAttachments.find((file) => file.side === 'front') ?? null;
   const backArtwork = artworkAttachments.find((file) => file.side === 'back') ?? null;
   const sharedArtwork = artworkAttachments.find((file) => file.side === 'both') ?? null;
+  const automaticBothSideAssignmentRef = useRef<string | null>(null);
 
   useEffect(() => {
     if (controlledUseSameArtworkBothSides !== undefined) return;
@@ -265,15 +266,32 @@ export function LineItemAttachmentsPanel({
   }, [controlledUseSameArtworkBothSides, doubleSided, sharedArtwork?.id]);
 
   const assignArtworkSide = async (fileId: string, side: 'front' | 'back' | 'both') => {
-    if (!orderId || !lineItemId || !filesApiPath) return;
+    if (!orderId || !lineItemId || !filesApiPath) return false;
     try {
       await assignOrderLineItemArtworkSide({ orderId, lineItemId, fileId, side });
       await queryClient.invalidateQueries({ queryKey: [filesApiPath] });
       toast({ title: 'Artwork side assigned', description: side === 'both' ? 'The same artwork is assigned to Front and Back.' : `Artwork assigned to ${side}.` });
+      return true;
     } catch (error: any) {
       toast({ title: 'Artwork assignment failed', description: error?.message || 'Please try again.', variant: 'destructive' });
+      return false;
     }
   };
+
+  useEffect(() => {
+    if (!doubleSided || !useSameArtworkBothSides || artworkAttachments.length !== 1) {
+      automaticBothSideAssignmentRef.current = null;
+      return;
+    }
+    const soleArtwork = artworkAttachments[0];
+    if (soleArtwork.side === 'both') return;
+    const assignmentKey = `${lineItemId}:${soleArtwork.id}`;
+    if (automaticBothSideAssignmentRef.current === assignmentKey) return;
+    automaticBothSideAssignmentRef.current = assignmentKey;
+    void assignArtworkSide(soleArtwork.id, 'both').then((success) => {
+      if (!success) automaticBothSideAssignmentRef.current = null;
+    });
+  }, [doubleSided, useSameArtworkBothSides, artworkAttachments.length, artworkAttachments[0]?.id, artworkAttachments[0]?.side, lineItemId]);
   const viewerAttachments = useMemo(() => toAttachmentViewerAttachments(attachments as any[]), [attachments]);
 
   // Format file size for display
@@ -861,7 +879,7 @@ export function LineItemAttachmentsPanel({
                     setUncontrolledUseSameArtworkBothSides(next);
                     onUseSameArtworkBothSidesChange?.(next);
                     if (!next && sharedArtwork) void assignArtworkSide(sharedArtwork.id, 'front');
-                    if (next && frontArtwork) void assignArtworkSide(frontArtwork.id, 'both');
+                    if (next && artworkAttachments.length > 1 && frontArtwork) void assignArtworkSide(frontArtwork.id, 'both');
                   }}
                   data-testid="order-use-same-artwork-both-sides"
                 />
@@ -896,6 +914,9 @@ export function LineItemAttachmentsPanel({
                 )}
               </div>
               {!useSameArtworkBothSides && !backArtwork && <p className="text-xs text-amber-700">Back artwork not assigned. Choose the same artwork for both sides or assign a Back file.</p>}
+              {useSameArtworkBothSides && artworkAttachments.length > 1 && !sharedArtwork && (
+                <p className="text-xs text-amber-700">Choose which artwork file should be used on both sides.</p>
+              )}
             </div>
           )}
           {pendingOrderAttachments.length > 0 && (

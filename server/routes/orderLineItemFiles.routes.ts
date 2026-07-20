@@ -45,7 +45,10 @@ import {
   isOrderArtworkSide,
   OrderLineItemArtworkAssignmentError,
 } from "../services/orderLineItemArtworkAssignmentService";
-import { removeArtworkFileReferencesFromSpecs } from "@shared/artworkSideAssignment";
+import {
+  applyArtworkSideAssignmentToSpecs,
+  removeArtworkFileReferencesFromSpecs,
+} from "@shared/artworkSideAssignment";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -535,7 +538,8 @@ export function registerOrderLineItemFileRoutes(
     }
 
     try {
-      const updated = await db.transaction(async (tx) => assignOrderLineItemArtworkSide({
+      const updated = await db.transaction(async (tx) => {
+        const assigned = await assignOrderLineItemArtworkSide({
         organizationId,
         orderId,
         lineItemId,
@@ -591,7 +595,57 @@ export function registerOrderLineItemFileRoutes(
               ))
               .where(and(eq(assets.id, scopedFileId), eq(assets.organizationId, organizationId)))
               .limit(1);
-            if (!assetRow) return null;
+            if (!assetRow) {
+              // Prepress originals use line_item_files rather than assets. The
+              // same endpoint accepts that stable file ID and materializes the
+              // canonical order_attachment side metadata on first assignment.
+              const [prepressFile] = await tx
+                .select()
+                .from(lineItemFiles)
+                .where(and(
+                  eq(lineItemFiles.id, scopedFileId),
+                  eq(lineItemFiles.organizationId, organizationId),
+                  eq(lineItemFiles.orderId, scopedOrderId),
+                  eq(lineItemFiles.lineItemId, scopedLineItemId),
+                  eq(lineItemFiles.role, "original"),
+                  eq(lineItemFiles.status, "active"),
+                ))
+                .limit(1);
+              if (!prepressFile) return null;
+
+              if (prepressFile.fileRecordId) {
+                const [existingLink] = await tx
+                  .select()
+                  .from(orderAttachments)
+                  .where(and(
+                    eq(orderAttachments.orderId, scopedOrderId),
+                    eq(orderAttachments.orderLineItemId, scopedLineItemId),
+                    eq(orderAttachments.fileRecordId, prepressFile.fileRecordId),
+                  ))
+                  .limit(1);
+                if (existingLink) return existingLink;
+              }
+
+              const [materialized] = await tx
+                .insert(orderAttachments)
+                .values({
+                  orderId: scopedOrderId,
+                  orderLineItemId: scopedLineItemId,
+                  fileRecordId: prepressFile.fileRecordId,
+                  uploadedByUserId: prepressFile.createdByUserId,
+                  fileName: prepressFile.originalFilename,
+                  fileUrl: prepressFile.storageKey || prepressFile.storagePath,
+                  fileSize: prepressFile.sizeBytes,
+                  sizeBytes: prepressFile.sizeBytes,
+                  mimeType: prepressFile.mimeType,
+                  role: "artwork",
+                  side: "na",
+                  isPrimary: false,
+                  storageProvider: null,
+                })
+                .returning();
+              return materialized ?? null;
+            }
 
             if (assetRow.fileRecordId) {
               const [existingLink] = await tx
@@ -650,8 +704,30 @@ export function registerOrderLineItemFileRoutes(
               .returning();
             return row ?? null;
           },
-        },
-      }));
+          },
+        });
+
+        const [lineItem] = await tx
+          .select({ specsJson: orderLineItems.specsJson })
+          .from(orderLineItems)
+          .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId)))
+          .limit(1);
+        if (lineItem) {
+          await tx
+            .update(orderLineItems)
+            .set({
+              specsJson: applyArtworkSideAssignmentToSpecs({
+                specsJson: lineItem.specsJson,
+                fileId: assigned.id,
+                fileRecordId: assigned.fileRecordId,
+                side: req.body.side,
+              }),
+              updatedAt: new Date(),
+            })
+            .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId)));
+        }
+        return assigned;
+      });
 
       const userId = getUserId(req.user);
       try {
