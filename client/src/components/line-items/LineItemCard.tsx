@@ -42,6 +42,7 @@ export type LineItemCardProps = {
 
   // Collapsed view data
   title: string; // Product name
+  lineLabel?: string;
   sizeLabel: string; // e.g., "24\" × 36\""
   qtyLabel: string; // e.g., "Qty 100"
   unitPriceLabel: string; // e.g., "$2.50/ea"
@@ -227,6 +228,7 @@ export function LineItemCard({
   isExpanded,
   onToggleExpand,
   title,
+  lineLabel,
   sizeLabel,
   qtyLabel,
   unitPriceLabel,
@@ -607,13 +609,20 @@ export function LineItemCard({
       className={cn("relative rounded-lg border border-border/40 bg-background/30 focus:outline-none", isExpanded && "bg-background/40 border-border/60")}
     >
       {/* Collapsed Summary Row - Enterprise Dense Layout */}
-      <button
-        type="button"
+      <div
+        role="button"
+        tabIndex={0}
         className={cn(
           "w-full text-left p-2.5 hover:bg-muted/20 transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-1 rounded-lg",
           headerActions && "pr-20"
         )}
         onClick={onToggleExpand}
+        onKeyDown={(event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onToggleExpand();
+          }
+        }}
         aria-expanded={isExpanded}
         aria-controls={contentId}
         aria-label={isExpanded ? "Collapse line item" : "Expand line item"}
@@ -640,6 +649,7 @@ export function LineItemCard({
             {thumbnail}
             <div className="min-w-0 flex-1">
               <div className="flex items-center gap-1.5 mb-0.5">
+                {lineLabel ? <span className="shrink-0 text-xs font-semibold text-muted-foreground">{lineLabel}</span> : null}
                 <span className="text-sm font-semibold truncate">{title}</span>
                 {badges?.draft && (
                   <Badge variant="secondary" className="text-[10px] py-0 px-1.5 shrink-0">
@@ -724,7 +734,7 @@ export function LineItemCard({
             )}
           </div>
         )}
-      </button>
+      </div>
       {headerActions}
 
       {/* Expanded Editor - When Expanded (edit mode OR view mode) */}
@@ -738,6 +748,7 @@ export function LineItemCard({
               aria-hidden="true"
               className="h-0 w-full overflow-hidden outline-none"
             />
+            {lineLabel ? <div className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted-foreground">{lineLabel}</div> : null}
             {/* Compact operational controls */}
             <div className="flex flex-wrap items-end gap-3">
               {primaryControlSlot ? (

@@ -222,6 +222,54 @@ describe("production schedule routing diagnostics", () => {
     ).rejects.toThrow("Order not found");
   });
 
+  test("reuses an existing production job instead of creating a duplicate", async () => {
+    const routeLineItemToProductionFn = jest.fn(async () => ({
+      jobId: "existing-flatbed-job",
+      outcome: "existing" as const,
+      reason: "active production owner already exists",
+      stationKey: "flatbed",
+      stepKey: "print",
+      status: "queued",
+      stationId: "flatbed-station",
+      ignoredDueToDone: false,
+      ignoredDueToExistingRouting: true,
+    }));
+    const result = await scheduleOrderLineItemsForProduction({
+      organizationId: orgA,
+      orderId: orderA,
+      lineItemIds: [lineItemA],
+      loadRoutingRules: async () => ({ source: "test", rules: [] }),
+      appendEvent: async () => undefined,
+      loadLineItemsForSchedulingFn: async () => ({
+        orderExists: true,
+        lineItemRecords: [{
+          lineItemId: lineItemA,
+          productId: productA,
+          productTypeId: null,
+          materialId: null,
+          status: "in_production",
+          workflowState: "ready_for_production",
+          lineItemRequiresDesignSnapshot: false,
+          lineItemRequiresProofApprovalSnapshot: false,
+          lineItemRequiresPrepressSnapshot: false,
+          approvedProofVersionId: null,
+          requiresProductionJob: true,
+        }],
+      }),
+      transactionRunner: {
+        transaction: async <T>(callback: (tx: any) => Promise<T>) => db.transaction(callback),
+      },
+      resolveInitialProductionRouteFn: async () => ({ stationKey: "flatbed", stepKey: "print", reason: "product_route" }),
+      routeLineItemToProductionFn,
+    });
+
+    expect(result.data.createdJobCount).toBe(0);
+    expect(result.data.existingJobCount).toBe(1);
+    expect(result.data.scheduled).toEqual([expect.objectContaining({ productionJobId: "existing-flatbed-job", reused: true })]);
+    expect(result.message).toContain("already in production");
+    expect(routeLineItemToProductionFn).toHaveBeenCalledTimes(1);
+  });
+
   test("returns partial success when one of two line items fails", async () => {
     const okLineItemId = `line_sched_ok_${suffix}`;
     const failLineItemId = `line_sched_fail_${suffix}`;

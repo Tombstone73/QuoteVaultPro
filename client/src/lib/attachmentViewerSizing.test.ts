@@ -31,5 +31,19 @@ describe("attachment viewer PDF sizing", () => {
     expect(scale).toBe(1);
     expect((612 * scale) / (792 * scale)).toBeCloseTo(612 / 792, 8);
   });
-});
 
+  test("fit page can zoom below forty percent for large-format artwork", () => {
+    const scale = resolvePdfViewportScale({
+      pageWidth: 4000,
+      pageHeight: 1000,
+      stageWidth: 800,
+      stageHeight: 500,
+      fitMode: "page",
+      customScale: 1,
+    });
+
+    expect(scale).toBeCloseTo(0.192, 5);
+    expect(4000 * scale).toBeLessThanOrEqual(768);
+    expect(1000 * scale).toBeLessThanOrEqual(468);
+  });
+});

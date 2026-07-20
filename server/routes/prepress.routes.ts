@@ -989,6 +989,26 @@ export function registerPrepressQueueRoutes(
         .where(and(...conditions))
         .orderBy(asc(orders.dueDate), desc(orders.priority));
 
+      const queueOrderIds = Array.from(new Set(items.map((item) => String(item.orderId))));
+      const lineNumberById = new Map<string, number>();
+      if (queueOrderIds.length > 0) {
+        const orderedSiblings = await db
+          .select({
+            id: orderLineItems.id,
+            orderId: orderLineItems.orderId,
+          })
+          .from(orderLineItems)
+          .where(inArray(orderLineItems.orderId, queueOrderIds))
+          .orderBy(asc(orderLineItems.orderId), asc(orderLineItems.sortOrder), asc(orderLineItems.createdAt), asc(orderLineItems.id));
+        const nextLineNumberByOrder = new Map<string, number>();
+        for (const sibling of orderedSiblings) {
+          const orderId = String(sibling.orderId);
+          const lineNumber = (nextLineNumberByOrder.get(orderId) ?? 0) + 1;
+          nextLineNumberByOrder.set(orderId, lineNumber);
+          lineNumberById.set(String(sibling.id), lineNumber);
+        }
+      }
+
       const destinationByLineItem = new Map<string, {
         suggested: "roll" | "flatbed";
         selected: "roll" | "flatbed";
@@ -1363,6 +1383,7 @@ export function registerPrepressQueueRoutes(
 
         return {
           lineItemId: item.lineItemId,
+          lineNumber: lineNumberById.get(String(item.lineItemId)) ?? null,
           orderId: item.orderId,
           jobNumber: item.orderNumber,
           customerName: item.customerName ?? "—",

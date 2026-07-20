@@ -129,6 +129,35 @@ describe("LineItemCard visible price render path", () => {
 });
 
 describe("LineItemCard collapsed header actions", () => {
+  it("shows the persisted line label and lets a thumbnail action open without expanding", async () => {
+    const onToggleExpand = jest.fn();
+    const onViewArtwork = jest.fn();
+    const { container, cleanup } = await renderInteractiveLineItemCard({
+      lineLabel: "Line 3",
+      onToggleExpand,
+      thumbnail: (
+        <button
+          type="button"
+          aria-label="View artwork for Line 3"
+          onClick={(event) => {
+            event.stopPropagation();
+            onViewArtwork();
+          }}
+        >
+          Art
+        </button>
+      ),
+    });
+
+    const thumbnail = container.querySelector('button[aria-label="View artwork for Line 3"]');
+    expect(thumbnail).toBeTruthy();
+    click(thumbnail!);
+    expect(onViewArtwork).toHaveBeenCalledTimes(1);
+    expect(onToggleExpand).not.toHaveBeenCalled();
+    expect(container.textContent).toContain("Line 3");
+    await cleanup();
+  });
+
   it("renders duplicate and remove actions while collapsed for quote line items", async () => {
     const { container, cleanup } = await renderInteractiveLineItemCard({
       itemKey: "quote-line-1",

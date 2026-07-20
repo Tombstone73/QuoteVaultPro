@@ -1,13 +1,36 @@
 import { describe, expect, it } from "@jest/globals";
 import {
   getOrderLineItemActiveWorkWarning,
+  buildOrderLineNumberMap,
+  buildOrderLineItemProductionActionRequests,
   getOrderLineItemEditorUiPolicy,
   getOrderLineItemSelectAllState,
   getSelectableProductionLineItemIds,
+  getOrderLineItemProductionActions,
+  resolveOrderLineItemOperationalDisplay,
   toggleAllOrderLineItemSelections,
+  sortOrderLineItemsByPersistedOrder,
 } from "./orderLineItemEditorUi";
 
 describe("order line item editor UI policy", () => {
+  it("numbers line items from persisted sort order and updates after reorder", () => {
+    const sorted = sortOrderLineItemsByPersistedOrder([
+      { id: "line-b", sortOrder: 2 },
+      { id: "line-a", sortOrder: 0 },
+      { id: "line-c", sortOrder: 1 },
+    ]);
+    expect(sorted.map((item) => item.id)).toEqual(["line-a", "line-c", "line-b"]);
+    expect(Object.fromEntries(buildOrderLineNumberMap(sorted.map((item) => item.id)))).toEqual({
+      "line-a": 1,
+      "line-c": 2,
+      "line-b": 3,
+    });
+    expect(Object.fromEntries(buildOrderLineNumberMap(["line-b", "line-a", "line-c"]))).toEqual({
+      "line-b": 1,
+      "line-a": 2,
+      "line-c": 3,
+    });
+  });
   it("selects and deselects every selectable line item", () => {
     const selectable = ["line-1", "line-2"];
     const selected = toggleAllOrderLineItemSelections(new Set(), selectable);
@@ -32,6 +55,62 @@ describe("order line item editor UI policy", () => {
       { id: "line-3", productId: "fee", status: "new" },
       { id: "line-4", productId: "fulfillment", status: "new" },
     ], products)).toEqual(["line-1"]);
+  });
+
+  it("excludes a line already owned by Flatbed from bulk production selection", () => {
+    expect(getSelectableProductionLineItemIds([
+      { id: "line-1", productId: "print", status: "new", activeOwnerJobId: "job-1", activeOwnerStationKey: "flatbed" },
+    ], [{ id: "print", requiresProductionJob: true, workflowIntent: "standard_production" }])).toEqual([]);
+  });
+
+  it("uses the active Flatbed job as the operational display authority", () => {
+    expect(resolveOrderLineItemOperationalDisplay({
+      workflowState: "ready_for_production",
+      activeOwnerJobId: "job-1",
+      activeOwnerStationKey: "flatbed",
+      activeOwnerStatus: "in_progress",
+    })).toEqual({
+      statusLabel: "In Production",
+      nextStepLabel: "Flatbed in progress",
+      ownerLabel: "Flatbed",
+      isProductionOwned: true,
+    });
+  });
+
+  it("derives production action eligibility from the active job status", () => {
+    expect(getOrderLineItemProductionActions({ activeOwnerJobId: "job-1", activeOwnerStationKey: "flatbed", activeOwnerStatus: "queued" }))
+      .toEqual(["start", "hold", "return_to_prepress"]);
+    expect(getOrderLineItemProductionActions({ activeOwnerJobId: "job-1", activeOwnerStationKey: "flatbed", activeOwnerStatus: "paused" }))
+      .toEqual(["resume", "return_to_prepress"]);
+  });
+
+  it("routes production actions through the production and prepress workflow endpoints", () => {
+    expect(buildOrderLineItemProductionActionRequests({ action: "start", lineItemId: "line-1", jobId: "job-1" }))
+      .toEqual([{ url: "/api/production/jobs/job-1/start", method: "POST" }]);
+    expect(buildOrderLineItemProductionActionRequests({ action: "hold", lineItemId: "line-1", jobId: "job-1" }))
+      .toEqual([
+        { url: "/api/production/jobs/job-1/stop", method: "POST" },
+        { url: "/api/production/jobs/job-1/status", method: "PATCH", body: { status: "paused" } },
+      ]);
+    expect(buildOrderLineItemProductionActionRequests({ action: "return_to_prepress", lineItemId: "line-1", jobId: "job-1" })[0].url)
+      .toBe("/api/production/line-item/line-1/send-to-prepress");
+  });
+
+  it("reflects hold and return-to-prepress owner updates without a page reload", () => {
+    expect(resolveOrderLineItemOperationalDisplay({
+      workflowState: "in_production",
+      activeOwnerJobId: "job-1",
+      activeOwnerStationKey: "flatbed",
+      activeOwnerStatus: "paused",
+    })).toMatchObject({ statusLabel: "Production on hold", nextStepLabel: "Resume production" });
+
+    expect(resolveOrderLineItemOperationalDisplay({
+      workflowState: "in_prepress",
+      activeOwnerJobId: "prepress-job",
+      activeOwnerStationKey: "prepress",
+      activeOwnerStepKey: "prepress",
+      activeOwnerStatus: "queued",
+    })).toMatchObject({ statusLabel: "In Prepress", nextStepLabel: "Finish prepress", isProductionOwned: false });
   });
 
   it("does not show a stale prepress warning for a fulfillment item waiting to be picked", () => {

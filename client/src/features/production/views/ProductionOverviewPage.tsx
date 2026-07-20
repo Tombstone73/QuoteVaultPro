@@ -2186,7 +2186,7 @@ function JobCard({
             {/* Title */}
             {boardCardConfig.jobDescription && (
               <div className="text-sm font-medium truncate">
-                {job.jobDescription || "Untitled Job"}
+                {job.lineNumber ? `Line ${job.lineNumber} · ` : ""}{job.jobDescription || "Untitled Job"}
               </div>
             )}
             {/* Material + Due Date compact row */}
@@ -2216,7 +2216,7 @@ function JobCard({
                 className="text-lg font-semibold leading-tight cursor-pointer"
                 onClick={handleCardClick}
               >
-                {job.jobDescription || "Untitled Job"}
+                {job.lineNumber ? `Line ${job.lineNumber} · ` : ""}{job.jobDescription || "Untitled Job"}
           </h3>
         )}
 
@@ -2436,7 +2436,7 @@ function JobRow({
         );
       
       case "jobDescription":
-        return <span className="text-sm text-muted-foreground">{job.jobDescription || "—"}</span>;
+        return <span className="text-sm text-muted-foreground">{job.lineNumber ? `Line ${job.lineNumber} · ` : ""}{job.jobDescription || "—"}</span>;
       
       case "media":
         return <span className="text-sm text-muted-foreground">{job.media || "—"}</span>;
