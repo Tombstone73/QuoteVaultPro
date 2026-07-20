@@ -1,6 +1,7 @@
 import { describe, expect, it } from "@jest/globals";
 import { buildLineItemOptionSummaryChips } from "@shared/lineItemOptionSelections";
 import {
+  buildOrderLineItemDuplicatePayload,
   buildProductReplacementDraft,
   buildSavedSnapshotAfterLineItemSave,
   hydrateExpandedOrderLineItemOptionState,
@@ -33,6 +34,88 @@ const savedSnapshot: OrderLineItemSavedSnapshot = {
 };
 
 describe("order line item edit state", () => {
+  it("builds a safe duplicate payload with PBV2 selections and commercial state", () => {
+    const payload = buildOrderLineItemDuplicatePayload({
+      id: "11111111-1111-4111-8111-111111111111",
+      orderId: "order-1",
+      productId: "acm-product",
+      productVariantId: "3mm",
+      productType: "flat_sheet",
+      description: "ACM panel",
+      width: "96.00",
+      height: "48.00",
+      quantity: 2,
+      unitPrice: "75.00",
+      totalPrice: "150.00",
+      sortOrder: 3,
+      requiresDesign: true,
+      requiresPrepress: true,
+      requiresProofApproval: true,
+      productionNotes: "Route carefully",
+      workflowState: "in_prepress",
+      status: "in_production",
+      approvedProofVersionId: "proof-1",
+      productionJobId: "job-1",
+      inventoryReservationId: "reservation-1",
+      optionSelectionsJson: {
+        schemaVersion: 2,
+        selected: { thickness: { value: "3mm" }, print_sides: { value: "single_sided" } },
+      },
+      specsJson: {
+        customerNotes: "Keep this",
+        artworkSideAssignment: { frontFileId: "file-1", useSameArtworkBothSides: true },
+      },
+    });
+
+    expect(payload.pbv2ExplicitSelections).toEqual({
+      thickness: { value: "3mm" },
+      print_sides: { value: "single_sided" },
+    });
+    expect(payload.specsJson).toEqual({ customerNotes: "Keep this" });
+    expect(payload).toMatchObject({
+      duplicateSourceLineItemId: "11111111-1111-4111-8111-111111111111",
+      productId: "acm-product",
+      width: 96,
+      height: 48,
+      quantity: 2,
+      requiresDesign: true,
+      requiresPrepress: true,
+      requiresProofApproval: true,
+      productionNotes: "Route carefully",
+      sortOrder: 4,
+    });
+    expect(payload).not.toHaveProperty("status");
+    expect(payload).not.toHaveProperty("workflowState");
+    expect(payload).not.toHaveProperty("approvedProofVersionId");
+    expect(payload).not.toHaveProperty("productionJobId");
+    expect(payload).not.toHaveProperty("inventoryReservationId");
+  });
+
+  it("preserves price override inputs on a duplicated line", () => {
+    const payload = buildOrderLineItemDuplicatePayload({
+      id: "22222222-2222-4222-8222-222222222222",
+      orderId: "order-1",
+      productId: "acm-product",
+      description: "ACM panel",
+      width: "48.00",
+      height: "24.00",
+      quantity: 2,
+      unitPrice: "40.00",
+      totalPrice: "80.00",
+      hasPriceOverride: true,
+      baseCalculatedTotalCents: 10000,
+      effectiveTotalCents: 8000,
+      priceOverrideMode: "override_unit_after_margin",
+      priceOverrideValueCents: 4000,
+    });
+
+    expect(payload).toMatchObject({
+      priceOverrideMode: "override_unit_after_margin",
+      priceOverrideValueCents: 4000,
+      overridePriceCents: 8000,
+    });
+  });
+
   it("hydrates persisted PBV2 selections without replacing them with product defaults", () => {
     const hydrated = hydratePersistedOrderLineItemOptionSelections({
       optionSelectionsJson: { selected: { printSides: { value: "double", label: "Double-Sided" } } },

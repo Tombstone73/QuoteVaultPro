@@ -8,6 +8,7 @@ import {
   resolvePersistedLineItemSelectionEntries,
   resolveSavedLineItemOptionSelections,
 } from "@shared/lineItemOptionSelections";
+import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
 
 export type OrderLineItemSavedSnapshot = {
   productId: string;
@@ -83,6 +84,55 @@ export type LineItemPatchKind = "attachment" | "hydration" | "product_add" | "pr
 
 function asRecord(value: unknown): Record<string, any> | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, any> : null;
+}
+
+/**
+ * Builds the normal-create contract for duplicating an existing order line.
+ * Commercial inputs are retained, while generated workflow/artwork state is
+ * deliberately excluded. Artwork files remain linked only to the source line.
+ */
+export function buildOrderLineItemDuplicatePayload(lineItem: any): Record<string, unknown> {
+  const snapshot = asRecord(lineItem?.pbv2SnapshotJson);
+  const tree = asRecord(snapshot?.treeJson) as OptionTreeV2 | null;
+  const selections = resolveSavedLineItemOptionSelections(lineItem, tree, { includeDefaults: false });
+  const pricing = hydrateLineItemEditPricingState(lineItem);
+  const specs = { ...(asRecord(lineItem?.specsJson) ?? {}) };
+
+  // Attachment relations are intentionally not duplicated. Remove the saved
+  // side intent too so the duplicate cannot point at files it does not own.
+  delete specs.artworkSideAssignment;
+
+  return {
+    duplicateSourceLineItemId: String(lineItem.id),
+    orderId: String(lineItem.orderId),
+    productId: String(lineItem.productId),
+    productVariantId: lineItem.productVariantId || null,
+    productType: lineItem.productType || "wide_roll",
+    description: String(lineItem.description ?? ""),
+    width: lineItem.width == null ? null : Number(lineItem.width),
+    height: lineItem.height == null ? null : Number(lineItem.height),
+    quantity: Number(lineItem.quantity),
+    unitPrice: Number(lineItem.unitPrice),
+    totalPrice: Number(lineItem.totalPrice),
+    requiresDesign: Boolean(lineItem.requiresDesign),
+    requiresPrepress: Boolean(lineItem.requiresPrepress),
+    requiresProofApproval: Boolean(lineItem.requiresProofApproval),
+    requiresInventory: lineItem.requiresInventory !== false,
+    sortOrder: Number(lineItem.sortOrder ?? 0) + 1,
+    productionNotes: lineItem.productionNotes ?? null,
+    specsJson: specs,
+    optionSelectionsJson: selections,
+    pbv2ExplicitSelections: selections.selected,
+    ...(pricing.hasPriceOverride && pricing.priceOverrideMode
+      ? {
+          priceOverrideMode: pricing.priceOverrideMode,
+          priceOverrideValueCents: pricing.priceOverrideValueCents,
+          priceOverrideValuePercent: pricing.priceOverrideValuePercent,
+          overridePriceCents: pricing.effectiveTotalCents,
+          overrideReason: lineItem.overrideReason ?? null,
+        }
+      : {}),
+  };
 }
 
 /**
