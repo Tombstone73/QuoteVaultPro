@@ -169,7 +169,7 @@ export type InboundQuoteDraftLineInput = {
     pbv2TreeVersionId: string;
     pbv2SnapshotJson: Record<string, unknown>;
     optionSelectionsJson: Record<string, unknown>;
-    selectedOptions: unknown[];
+    selectedOptions: NonNullable<(typeof quoteLineItems.$inferInsert)["selectedOptions"]>;
     breakdown: {
       baseCents: number;
       optionsCents: number;

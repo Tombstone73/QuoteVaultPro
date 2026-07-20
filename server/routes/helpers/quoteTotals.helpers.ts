@@ -1,7 +1,14 @@
+import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
+
 export type QuoteAggregateLineItem = {
   linePrice: unknown;
   status?: string | null;
   isTaxableSnapshot?: boolean | null;
+  quantity?: unknown;
+  specsJson?: unknown;
+  pbv2SnapshotJson?: unknown;
+  overridePriceCents?: unknown;
+  effectiveTotalCents?: unknown;
 };
 
 export type QuoteAggregateInput = {
@@ -22,13 +29,16 @@ function roundCurrency(value: number): number {
 
 export function calculateQuoteAggregateTotals(input: QuoteAggregateInput) {
   const activeRows = input.lineItems.filter((line) => line.status !== "canceled");
+  const effectiveLineTotal = (line: QuoteAggregateLineItem) => (
+    hydrateLineItemEditPricingState(line).effectiveTotalCents / 100
+  );
   const subtotal = roundCurrency(
-    activeRows.reduce((sum, line) => sum + toFiniteNumber(line.linePrice), 0),
+    activeRows.reduce((sum, line) => sum + effectiveLineTotal(line), 0),
   );
   const taxableLineSubtotal = roundCurrency(
     activeRows
       .filter((line) => line.isTaxableSnapshot !== false)
-      .reduce((sum, line) => sum + toFiniteNumber(line.linePrice), 0),
+      .reduce((sum, line) => sum + effectiveLineTotal(line), 0),
   );
   const discountAmount = Math.min(
     Math.max(0, toFiniteNumber(input.discountAmount)),

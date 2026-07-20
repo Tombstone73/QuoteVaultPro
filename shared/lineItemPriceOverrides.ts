@@ -140,13 +140,22 @@ export function hydrateLineItemEditPricingState(lineItem: unknown): LineItemEdit
       );
 
   const snapshotTotalCents = getPbv2SnapshotTotalCents(record);
+  const storedLineTotalCents =
+    toDollarsAsCents(record.linePrice) ??
+    toDollarsAsCents(record.totalPrice);
+  const usableStoredLineTotalCents =
+    storedLineTotalCents !== null && (
+      storedLineTotalCents > 0 || snapshotTotalCents === null || snapshotTotalCents === 0
+    )
+      ? storedLineTotalCents
+      : null;
 
   const persistedEffectiveTotalCents =
     toCents(record.effectiveTotalCents) ??
     toCents(overrideRecord.effectiveTotalCents) ??
+    usableStoredLineTotalCents ??
     snapshotTotalCents ??
-    toDollarsAsCents(record.linePrice) ??
-    toDollarsAsCents(record.totalPrice) ??
+    storedLineTotalCents ??
     0;
 
   const baseCalculatedTotalCents =

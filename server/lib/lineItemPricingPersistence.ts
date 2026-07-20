@@ -311,8 +311,17 @@ export function enrichLineItemWithEffectivePricing<T extends Record<string, any>
     specsJson: lineItem.specsJson,
     legacyOverridePriceCents: lineItem.overridePriceCents,
   });
-  const effectiveTotalCents = pricing.effectiveTotalCents;
-  const effectiveUnitPriceCents = pricing.effectiveUnitPriceCents;
+  const storedEffectiveTotalCents =
+    toDollarFieldCents(lineItem.linePrice) ??
+    toDollarFieldCents(lineItem.totalPrice);
+  const effectiveTotalCents = pricing.hasPriceOverride
+    ? pricing.effectiveTotalCents
+    : storedEffectiveTotalCents !== null && (
+        storedEffectiveTotalCents > 0 || pricing.baseCalculatedTotalCents === 0
+      )
+      ? storedEffectiveTotalCents
+      : pricing.effectiveTotalCents;
+  const effectiveUnitPriceCents = Math.round(effectiveTotalCents / quantity);
   const normalizedPriceOverride = pricing.hasPriceOverride
     ? {
         schemaVersion: 1,

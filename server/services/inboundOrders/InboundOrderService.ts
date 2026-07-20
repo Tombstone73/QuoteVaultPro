@@ -386,7 +386,7 @@ export type InboundQuoteDraftSkippedLineItem = {
   detail: string;
 };
 
-export type InboundQuoteDraftPreviewLineItem = InboundQuoteDraftLineInput & {
+export type InboundQuoteDraftPreviewLineItem = Omit<InboundQuoteDraftLineInput, "pricing"> & {
   index: number;
 };
 
@@ -3966,8 +3966,11 @@ export class InboundOrderService {
 
     const pricedLineItems: InboundQuoteDraftLineInput[] = [];
     for (const lineItem of preview.lineItemsToConvert) {
+      const rawOptionSelections = getPathValue(lineItem.snapshotJson, "optionSelectionsJson");
       const optionSelections = this.normalizePbv2Selections(
-        getPathValue(lineItem.snapshotJson, "optionSelectionsJson"),
+        rawOptionSelections && typeof rawOptionSelections === "object" && !Array.isArray(rawOptionSelections)
+          ? rawOptionSelections as Record<string, unknown>
+          : null,
       );
       const pbv2TreeVersionId = stringFromUnknown(
         getPathValue(lineItem.snapshotJson, "pbv2TreeVersionId"),

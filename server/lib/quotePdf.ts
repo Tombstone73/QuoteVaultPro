@@ -6,6 +6,7 @@ import {
   type CompanyDocumentBranding,
   type CompanyDocumentBrandingInput,
 } from "./documentCompanyBranding";
+import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
 
 export class QuotePdfEligibilityError extends Error {
   statusCode: number;
@@ -26,6 +27,10 @@ type QuotePdfLineItem = {
   height?: string | number | null;
   quantity?: string | number | null;
   linePrice?: string | number | null;
+  specsJson?: unknown;
+  pbv2SnapshotJson?: unknown;
+  overridePriceCents?: string | number | null;
+  effectiveTotalCents?: string | number | null;
   status?: string | null;
   description?: string | null;
 };
@@ -51,6 +56,7 @@ type QuotePdfInput = {
     requestedDueDate?: string | Date | null;
     validUntil?: string | Date | null;
     subtotal?: string | number | null;
+    discountAmount?: string | number | null;
     taxAmount?: string | number | null;
     shippingCents?: number | null;
     totalPrice?: string | number | null;
@@ -121,11 +127,13 @@ function isValidPdfLineItem(lineItem: QuotePdfLineItem): boolean {
   if (lineItem.status === "canceled" || lineItem.status === "draft") return false;
   return (
     hasText(lineItem.productId) &&
-    toNumber(lineItem.width) > 0 &&
-    toNumber(lineItem.height) > 0 &&
     toNumber(lineItem.quantity) > 0 &&
-    Number.isFinite(toNumber(lineItem.linePrice))
+    Number.isFinite(hydrateLineItemEditPricingState(lineItem).effectiveTotalCents)
   );
+}
+
+function getPdfLineItemTotalCents(lineItem: QuotePdfLineItem): number {
+  return hydrateLineItemEditPricingState(lineItem).effectiveTotalCents;
 }
 
 export function getQuotePdfEligibility(quote: QuotePdfInput["quote"]): QuotePdfEligibility {
@@ -339,9 +347,12 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
       drawText(page, wrapped[index], MARGIN, y - index * 12, index === 0 ? bold : regular, 10);
     }
 
+    const width = toNumber(lineItem.width);
+    const height = toNumber(lineItem.height);
+    const sizeLabel = width > 0 && height > 0 ? `${width} x ${height}` : "-";
     drawRight(page, String(toNumber(lineItem.quantity)), 390, y, regular, 10);
-    drawRight(page, `${toNumber(lineItem.width)} x ${toNumber(lineItem.height)}`, 462, y, regular, 10);
-    drawRight(page, formatMoney(toCentsFromDecimal(lineItem.linePrice), currency), PAGE_WIDTH - MARGIN, y, regular, 10);
+    drawRight(page, sizeLabel, 462, y, regular, 10);
+    drawRight(page, formatMoney(getPdfLineItemTotalCents(lineItem), currency), PAGE_WIDTH - MARGIN, y, regular, 10);
     y -= Math.max(26, wrapped.length * 12 + 10);
   }
 
@@ -349,14 +360,23 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   page.drawLine({ start: { x: 350, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
   y -= 18;
 
-  const subtotalCents = toCentsFromDecimal(input.quote.subtotal);
+  const subtotalCents = eligibility.lineItems.reduce(
+    (sum, lineItem) => sum + getPdfLineItemTotalCents(lineItem),
+    0,
+  );
+  const discountCents = Math.min(toCentsFromDecimal(input.quote.discountAmount), subtotalCents);
   const taxCents = toCentsFromDecimal(input.quote.taxAmount);
   const shippingCents = Math.max(0, Math.round(Number(input.quote.shippingCents ?? 0)));
-  const totalCents = toCentsFromDecimal(input.quote.totalPrice);
+  const totalCents = Math.max(0, subtotalCents - discountCents + taxCents + shippingCents);
 
   drawText(page, "Subtotal", 370, y, regular, 10);
   drawRight(page, formatMoney(subtotalCents, currency), PAGE_WIDTH - MARGIN, y, regular, 10);
   y -= 16;
+  if (discountCents > 0) {
+    drawText(page, "Discount", 370, y, regular, 10);
+    drawRight(page, `-${formatMoney(discountCents, currency)}`, PAGE_WIDTH - MARGIN, y, regular, 10);
+    y -= 16;
+  }
   if (shippingCents > 0) {
     drawText(page, "Shipping", 370, y, regular, 10);
     drawRight(page, formatMoney(shippingCents, currency), PAGE_WIDTH - MARGIN, y, regular, 10);

@@ -234,6 +234,91 @@ describe("quote PDF generation", () => {
     expect(getQuotePdfEligibility({ ...validDraftQuote, status: "pending" }).eligible).toBe(true);
   });
 
+  test("includes quantity-only lines and derives PDF totals from effective overrides", async () => {
+    const priceOverride = (
+      mode: "override_unit_after_margin" | "override_total_after_margin",
+      valueCents: number,
+      baseCalculatedTotalCents: number,
+    ) => ({
+      priceOverride: {
+        schemaVersion: 1,
+        mode,
+        valueCents,
+        valuePercent: null,
+        baseCalculatedTotalCents,
+      },
+    });
+    const quote = {
+      ...validDraftQuote,
+      subtotal: "139.00",
+      totalPrice: "139.00",
+      lineItems: [
+        {
+          id: "line_coroplast_1",
+          productId: "product_coroplast",
+          productName: "Coroplast",
+          width: 24,
+          height: 18,
+          quantity: 2,
+          linePrice: "100.00",
+          pbv2SnapshotJson: { pricing: { totalCents: 10000 } },
+          specsJson: priceOverride("override_unit_after_margin", 9000, 10000),
+          status: "active",
+        },
+        {
+          id: "line_banner",
+          productId: "product_banner",
+          productName: "Banner",
+          width: 60,
+          height: 36,
+          quantity: 1,
+          linePrice: "80.00",
+          pbv2SnapshotJson: { pricing: { totalCents: 8000 } },
+          specsJson: priceOverride("override_total_after_margin", 4000, 8000),
+          status: "active",
+        },
+        {
+          id: "line_coroplast_2",
+          productId: "product_coroplast",
+          productName: "Coroplast Small",
+          width: 12,
+          height: 12,
+          quantity: 2,
+          linePrice: "20.00",
+          pbv2SnapshotJson: { pricing: { totalCents: 2000 } },
+          specsJson: priceOverride("override_unit_after_margin", 1100, 2000),
+          status: "active",
+        },
+        {
+          id: "line_stakes",
+          productId: "product_stakes",
+          productName: "Economy Yard Sign Stakes",
+          width: 0,
+          height: 0,
+          quantity: 25,
+          linePrice: "0.00",
+          pbv2SnapshotJson: { pricing: { totalCents: 0 } },
+          specsJson: {
+            ...priceOverride("override_unit_after_margin", 100, 0),
+            staffReviewedDraft: { inboundRecordId: "inbound_1" },
+          },
+          status: "active",
+        },
+      ],
+    };
+
+    expect(getQuotePdfEligibility(quote).lineItems).toHaveLength(4);
+    const bytes = await generateQuotePdfBytes({
+      quote,
+      organization: { name: "Titan Graphics", settings: { currency: "USD" } },
+    });
+    const text = extractDecodedPdfContent(bytes);
+
+    expect(text).toContain("Economy Yard Sign Stakes");
+    expect(text).toContain("$267.00");
+    expect(text).not.toContain("$139.00");
+  });
+
   test("blocks unsaved and invalid quotes", () => {
     expect(getQuotePdfEligibility({ ...validDraftQuote, id: null }).eligible).toBe(false);
     expect(getQuotePdfEligibility({ ...validDraftQuote, lineItems: [] }).eligible).toBe(false);
