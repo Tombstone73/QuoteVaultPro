@@ -50,6 +50,7 @@ import {
 import { Input } from "@/components/ui/input";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Label } from "@/components/ui/label";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
@@ -3630,14 +3631,21 @@ function QueueTriageControls({
             placeholder="Search queue"
           />
         </label>
-        <details className="group relative shrink-0">
-          <summary className="flex h-8 cursor-pointer list-none items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" aria-label="Open queue filters">
-            <SlidersHorizontal className="h-3.5 w-3.5" />
-            Filters
-            {activeFilterCount > 0 && <Badge variant="secondary" className="ml-0.5 h-5 px-1.5 text-[10px]">{activeFilterCount}</Badge>}
-            <ChevronDown className="h-3.5 w-3.5 transition-transform group-open:rotate-180" />
-          </summary>
-          <div className="absolute right-0 top-9 z-40 w-[min(310px,calc(100vw-1rem))] rounded-md border border-border bg-popover p-2 shadow-xl">
+        <Popover>
+          <PopoverTrigger asChild>
+            <button type="button" className="group flex h-8 shrink-0 items-center gap-1 rounded-md border border-border bg-background px-2 text-xs font-medium text-foreground shadow-sm transition-colors hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2" aria-label="Open queue filters">
+              <SlidersHorizontal className="h-3.5 w-3.5" />
+              Filters
+              {activeFilterCount > 0 && <Badge variant="secondary" className="ml-0.5 h-5 px-1.5 text-[10px]">{activeFilterCount}</Badge>}
+              <ChevronDown className="h-3.5 w-3.5 transition-transform group-data-[state=open]:rotate-180" />
+            </button>
+          </PopoverTrigger>
+          <PopoverContent
+            align="end"
+            sideOffset={4}
+            className="w-[min(310px,calc(100vw-1rem))] p-2"
+            data-testid="inbound-queue-filters-popover"
+          >
             <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">Queue Filters</div>
             <div className="mt-2 grid grid-cols-2 gap-1.5">
               {statusButtons.map((button) => (
@@ -3702,8 +3710,8 @@ function QueueTriageControls({
                 </label>
               </div>
             </div>
-          </div>
-        </details>
+          </PopoverContent>
+        </Popover>
       </div>
       <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
         <span className="truncate">{activeStatus?.label ?? "Active"} queue</span>
@@ -4809,12 +4817,23 @@ function CleanInboundQueue({
             <div className="text-[11px] font-bold uppercase tracking-[0.18em] text-slate-300">Queue</div>
             <div className="text-[11px] text-slate-500">{records.length} active</div>
           </div>
-          <details className="group relative">
-            <summary className="flex h-7 cursor-pointer list-none items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 text-[11px] font-semibold text-slate-200">
-              <SlidersHorizontal className="h-3.5 w-3.5" />
-              Filters
-            </summary>
-            <div className="absolute left-0 top-8 z-30 grid w-64 gap-2 rounded-md border border-slate-700 bg-slate-950 p-3 shadow-xl">
+          <Popover>
+            <PopoverTrigger asChild>
+              <button
+                type="button"
+                className="flex h-7 items-center gap-1 rounded border border-slate-700 bg-slate-900 px-2 text-[11px] font-semibold text-slate-200"
+                aria-label="Open Clean View queue filters"
+              >
+                <SlidersHorizontal className="h-3.5 w-3.5" />
+                Filters
+              </button>
+            </PopoverTrigger>
+            <PopoverContent
+              align="start"
+              sideOffset={4}
+              className="grid w-[min(16rem,calc(100vw-1rem))] gap-2 border-slate-700 bg-slate-950 p-3 text-slate-100 shadow-xl"
+              data-testid="clean-queue-filters-popover"
+            >
               <Input
                 value={searchValue}
                 onChange={(event) => onSearchChange(event.target.value)}
@@ -4840,8 +4859,8 @@ function CleanInboundQueue({
                 />
                 Warnings only
               </label>
-            </div>
-          </details>
+            </PopoverContent>
+          </Popover>
         </div>
         <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[11px] text-slate-300" data-testid="clean-queue-quick-filters">
           {([
