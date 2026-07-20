@@ -42,6 +42,25 @@ describe("order line item edit pricing state", () => {
     expect(state.effectiveUnitPriceCents).toBe(2100);
   });
 
+  it("uses a positive persisted effective line total ahead of a stale base snapshot", () => {
+    const state = hydrateLineItemEditPricingState({
+      id: "li-persisted-effective",
+      quantity: 5,
+      totalPrice: "25.00",
+      hasPriceOverride: false,
+      pbv2SnapshotJson: {
+        pricing: {
+          totalCents: 1000,
+        },
+      },
+    });
+
+    expect(state.baseCalculatedTotalCents).toBe(1000);
+    expect(state.persistedEffectiveTotalCents).toBe(2500);
+    expect(state.effectiveTotalCents).toBe(2500);
+    expect(state.effectiveUnitPriceCents).toBe(500);
+  });
+
   it("does not hydrate default overridePriceCents zero as an active override", () => {
     const lineItem = {
       id: "li-default-zero",

@@ -172,6 +172,10 @@ async function refreshQuoteAggregateTotals(organizationId: string, quoteId: stri
       status: quoteLineItems.status,
       linePrice: quoteLineItems.linePrice,
       isTaxableSnapshot: quoteLineItems.isTaxableSnapshot,
+      quantity: quoteLineItems.quantity,
+      specsJson: quoteLineItems.specsJson,
+      pbv2SnapshotJson: quoteLineItems.pbv2SnapshotJson,
+      overridePriceCents: quoteLineItems.overridePriceCents,
     })
     .from(quoteLineItems)
     .where(eq(quoteLineItems.quoteId, quoteId));
@@ -234,6 +238,26 @@ async function repriceQuotePbv2LineItems(organizationId: string, quoteId: string
       pbv2TreeVersionIdOverride: undefined,
     });
 
+    const baseLinePrice = pricingResult.lineTotalCents / 100;
+    const basePriceBreakdown = {
+      basePrice: pricingResult.breakdown.baseCents / 100,
+      optionsPrice: pricingResult.breakdown.optionsCents / 100,
+      total: baseLinePrice,
+      formula: "",
+      nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
+      pricingMethod: pricingResult.breakdown.pricingMethod,
+    };
+    const effectivePatch = buildQuoteLineItemPriceOverridePersistencePatch({
+      existingLineItem: {
+        ...line,
+        linePrice: baseLinePrice,
+        pbv2SnapshotJson: pricingResult.pbv2SnapshotJson,
+        priceBreakdown: basePriceBreakdown,
+      },
+      incomingUpdate: {},
+      baseCalculatedTotalCents: pricingResult.lineTotalCents,
+    });
+
     await db
       .update(quoteLineItems)
       .set({
@@ -241,17 +265,15 @@ async function repriceQuotePbv2LineItems(organizationId: string, quoteId: string
         pbv2SnapshotJson: pricingResult.pbv2SnapshotJson,
         selectedOptions: pricingResult.pbv2SnapshotJson.selectedOptions || [],
         pricedAt: new Date(),
-        linePrice: (pricingResult.lineTotalCents / 100).toFixed(2),
+        specsJson: effectivePatch.specsJson,
+        linePrice: effectivePatch.linePrice.toFixed(2),
         priceBreakdown: {
-          basePrice: pricingResult.breakdown.baseCents / 100,
-          optionsPrice: pricingResult.breakdown.optionsCents / 100,
-          total: pricingResult.lineTotalCents / 100,
-          formula: "",
-          nestingDetails: pricingResult.breakdown.nestingDetails ?? null,
-          pricingMethod: pricingResult.breakdown.pricingMethod,
+          ...basePriceBreakdown,
+          total: effectivePatch.linePrice,
         } as any,
-        formulaLinePrice: null,
+        formulaLinePrice: effectivePatch.formulaLinePrice?.toFixed(2) ?? null,
         priceOverride: null,
+        overridePriceCents: effectivePatch.overridePriceCents,
       })
       .where(eq(quoteLineItems.id, line.id));
   }
@@ -1265,6 +1287,9 @@ export function registerQuoteRoutes(
       }
 
       const { id } = req.params;
+      // Repair stale aggregate rows from older quote saves before rendering the
+      // document. The aggregate resolver honors persisted line overrides.
+      await refreshQuoteAggregateTotals(organizationId, id);
       const quote = await storage.getQuoteById(organizationId, id);
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
@@ -1303,11 +1328,14 @@ export function registerQuoteRoutes(
       const { id } = req.params;
 
       // Internal users can access any quote, customers only their own
-      const quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
+      let quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId);
 
       if (!quote) {
         return res.status(404).json({ message: "Quote not found" });
       }
+
+      await refreshQuoteAggregateTotals(organizationId, id);
+      quote = await storage.getQuoteById(organizationId, id, isInternalUser ? undefined : userId) ?? quote;
 
       res.json(quote);
     } catch (error) {

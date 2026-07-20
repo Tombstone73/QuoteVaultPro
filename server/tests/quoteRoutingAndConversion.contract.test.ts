@@ -552,6 +552,26 @@ describe("quote routing persistence and conversion contract", () => {
 
   });
 
+  test("quote to order conversion preserves a persisted effective unit override", async () => {
+    const quoteInput = buildPrepressOnlyQuoteInput(`Effective price conversion ${suffix}`);
+    quoteInput.lineItems[0] = {
+      ...quoteInput.lineItems[0],
+      quantity: 3,
+      linePrice: 10,
+      pbv2SnapshotJson: { pricing: { totalCents: 1000 } },
+      priceOverrideMode: "override_unit_after_margin",
+      priceOverrideValueCents: 700,
+    } as any;
+
+    const quote = await quotesRepo.createQuote(organizationId, quoteInput as any);
+    expect(Number(quote.subtotal)).toBe(21);
+    expect(Number(quote.lineItems[0].linePrice)).toBe(21);
+
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+    expect(Number(createdOrder.lineItems[0].unitPrice)).toBe(7);
+    expect(Number(createdOrder.lineItems[0].totalPrice)).toBe(21);
+  });
+
   test("quote to order conversion carries permanent billing and pickup snapshots", async () => {
     const quote = await quotesRepo.createQuote(organizationId, {
       ...buildPrepressOnlyQuoteInput(`Pickup snapshot ${suffix}`),

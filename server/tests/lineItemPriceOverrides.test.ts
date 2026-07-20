@@ -487,6 +487,39 @@ describe("line item price override effective pricing", () => {
     }));
   });
 
+  test("PBV2 bulk reprice reapplies a persisted quote unit override to the new base snapshot", () => {
+    const patch = buildQuoteLineItemPriceOverridePersistencePatch({
+      existingLineItem: {
+        quantity: 2,
+        linePrice: "50.00",
+        pbv2SnapshotJson: { pricing: { totalCents: 12000 } },
+        specsJson: {
+          priceOverride: {
+            schemaVersion: 1,
+            mode: "override_unit_after_margin",
+            valueCents: 9000,
+            baseCalculatedTotalCents: 10000,
+            effectiveTotalCents: 18000,
+          },
+        },
+        overridePriceCents: 18000,
+        priceBreakdown: { basePrice: 120, optionsPrice: 0, total: 120 },
+      },
+      incomingUpdate: {},
+      baseCalculatedTotalCents: 12000,
+    });
+
+    expect(patch.formulaLinePrice).toBe(120);
+    expect(patch.linePrice).toBe(180);
+    expect(patch.overridePriceCents).toBe(18000);
+    expect((patch.specsJson as any).priceOverride).toEqual(expect.objectContaining({
+      mode: "override_unit_after_margin",
+      valueCents: 9000,
+      baseCalculatedTotalCents: 12000,
+      effectiveTotalCents: 18000,
+    }));
+  });
+
   test("quote line item PATCH supports explicit zero total override", () => {
     const patch = buildQuoteLineItemPriceOverridePersistencePatch({
       existingLineItem: {
@@ -604,6 +637,20 @@ describe("line item price override effective pricing", () => {
     expect(enriched.priceOverrideMode).toBe("override_total_after_margin");
     expect(enriched.overridePriceCents).toBe(4000);
     expect(enriched.linePrice).toBe(40);
+  });
+
+  test("quote read enrichment keeps a positive persisted effective line price ahead of a stale snapshot", () => {
+    const enriched = enrichLineItemWithEffectivePricing({
+      quantity: 5,
+      linePrice: "25.00",
+      pbv2SnapshotJson: { pricing: { totalCents: 1000 } },
+      specsJson: {},
+    });
+
+    expect(enriched.baseCalculatedTotalCents).toBe(1000);
+    expect(enriched.effectiveTotalCents).toBe(2500);
+    expect(enriched.effectiveUnitPriceCents).toBe(500);
+    expect(enriched.linePrice).toBe(25);
   });
 
   test("quote line item PATCH accepts frontend overrideAt ISO strings as Date values", () => {

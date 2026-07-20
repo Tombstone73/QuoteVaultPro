@@ -23,6 +23,7 @@ import {
 import { buildQuoteLineItemSavePayload, hasExplicitLineItemPriceOverride } from "./quoteLineItemSavePayload";
 import { productRequiresEnteredDimensions } from "@shared/productMeasurementMode";
 import { getProductWorkflowDefaults } from "@shared/productWorkflowIntent";
+import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
 
 type QuoteEditorRouteParams = {
     id?: string;
@@ -529,43 +530,11 @@ export function useQuoteEditorState() {
 
     // Single source of truth: computedTotals derived from current editor state
     const computedTotals = useMemo(() => {
-        // Subtotal = sum of current lineItems in CENTS (PBV2-compatible)
-        // NOTE: linePrice is in dollars for quotes/temp items (different from order line items which use totalPrice)
-        // Priority: lineTotalCents > pbv2SnapshotJson.pricing.totalCents > linePrice (converted to cents)
+        // Subtotal is always the effective persisted/editor line total. PBV2 snapshots
+        // describe the calculated base; explicit unit/total overrides must win.
         const subtotalCents = activeLineItems.reduce((sum, item) => {
-            // Try cents fields first (PBV2 pricing)
-            let itemCents: number | null = null;
-            
-            // Priority 1: priceBreakdown.lineTotalCents
-            if ((item.priceBreakdown as any)?.lineTotalCents != null) {
-                itemCents = Number((item.priceBreakdown as any).lineTotalCents);
-            }
-            // Priority 2: pbv2SnapshotJson.pricing.totalCents
-            else if ((item as any).pbv2SnapshotJson?.pricing?.totalCents != null) {
-                itemCents = Number((item as any).pbv2SnapshotJson.pricing.totalCents);
-            }
-            // Priority 3: lineTotalCents (if exists)
-            else if ((item as any).lineTotalCents != null) {
-                itemCents = Number((item as any).lineTotalCents);
-            }
-            // Fallback: Convert dollar fields to cents
-            else if (item.linePrice != null) {
-                const linePrice = typeof item.linePrice === 'string' 
-                    ? parseFloat(item.linePrice) 
-                    : item.linePrice;
-                if (Number.isFinite(linePrice)) {
-                    itemCents = Math.round(linePrice * 100);
-                }
-            }
-            // Last resort: totalPrice (decimal string)
-            else if ((item as any).totalPrice != null) {
-                const totalPrice = parseFloat(String((item as any).totalPrice));
-                if (Number.isFinite(totalPrice)) {
-                    itemCents = Math.round(totalPrice * 100);
-                }
-            }
-            
-            if (itemCents == null || !Number.isFinite(itemCents)) {
+            const itemCents = hydrateLineItemEditPricingState(item).effectiveTotalCents;
+            if (!Number.isFinite(itemCents)) {
                 console.warn("[QuoteEditor] Invalid price for item:", item.id, item);
                 return sum;
             }

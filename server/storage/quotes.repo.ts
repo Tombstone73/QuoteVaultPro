@@ -604,7 +604,13 @@ export class QuotesRepository {
         lineItems: Omit<InsertQuoteLineItem, 'quoteId'>[];
     }): Promise<QuoteWithRelations> {
         // Calculate totals from line items
-        const lineItemsInput = data.lineItems ?? [];
+        const lineItemsInput = (data.lineItems ?? []).map((item) => {
+            const preparedItem = {
+                ...item,
+                specsJson: mergeExplicitPriceOverrideIntoSpecsJson((item as any).specsJson ?? null, item),
+            };
+            return enrichLineItemWithEffectivePricing(preparedItem);
+        });
         const subtotal = lineItemsInput.reduce((sum, item) => sum + parseFloat(item.linePrice.toString()), 0);
         const totalPrice = subtotal; // Will be updated if tax is applied
 

@@ -1665,7 +1665,8 @@ export class OrdersRepository {
         }
         
         const quoteLines = await this.dbInstance.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quoteId));
-        if (quoteLines.length === 0) throw new Error('Quote has no line items');
+        const activeQuoteLines = quoteLines.filter((line) => line.status !== "canceled" && line.status !== "draft");
+        if (activeQuoteLines.length === 0) throw new Error('Quote has no active line items');
 
         const [customer] = quote.customerId
             ? await this.dbInstance
@@ -1693,7 +1694,7 @@ export class OrdersRepository {
         const orgPrepressDefault = org?.prepressDefaultEnabled ?? true;
 
         // Fetch product types for prepress override logic (migration 0051)
-        const productIds = Array.from(new Set(quoteLines.map(ql => ql.productId)));
+        const productIds = Array.from(new Set(activeQuoteLines.map(ql => ql.productId)));
         const productsWithTypes = productIds.length > 0
             ? await this.dbInstance
                 .select({
@@ -1722,7 +1723,8 @@ export class OrdersRepository {
         }
 
         // Convert quote line items to order line items
-        const orderLineItemsData: CreateOrderLineItemInput[] = quoteLines.map((ql, index) => {
+        const orderLineItemsData: CreateOrderLineItemInput[] = activeQuoteLines.map((storedQuoteLine, index) => {
+            const ql = enrichLineItemWithEffectivePricing(storedQuoteLine as any);
             // TEMP→PERMANENT routing truth handoff:
             // If the quote line item carries explicit routing intent (migration 0015), use it.
             // Otherwise fall back to productType / org-level default (pre-existing behavior).
@@ -1766,8 +1768,8 @@ export class OrdersRepository {
                 height: ql.height ? Number(ql.height) : 0,
                 quantity: ql.quantity,
                 sqft: null,
-                unitPrice: parseFloat(ql.linePrice) / ql.quantity,
-                totalPrice: parseFloat(ql.linePrice),
+                unitPrice: ql.effectiveUnitPriceCents / 100,
+                totalPrice: ql.effectiveTotalCents / 100,
                 status: initialStatus,
                 workflowState,
                 designStatus: designSnapshot.effectiveRequiresDesign ? "needs_design" : null,
