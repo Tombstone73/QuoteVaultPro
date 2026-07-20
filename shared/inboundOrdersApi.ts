@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { inboundPriceOverrideModes } from "./inboundOrderPricing";
 import {
   inboundEmailIgnoreRuleTypeSchema,
   inboundEmailTrustRuleTypeSchema,
@@ -489,6 +490,11 @@ export const inboundOrderLinePricingReviewSchema = z.object({
   sourceEvidence: z.array(z.string().trim().min(1).max(500)).default([]),
   alternatePricingNotes: z.array(z.string().trim().min(1).max(500)).default([]),
   evaluatedAt: z.string().trim().max(80).nullable().default(null),
+  priceOverrideMode: z.enum(inboundPriceOverrideModes).nullable().default(null),
+  priceOverrideValueCents: z.number().int().min(0).nullable().default(null),
+  priceOverrideSource: z.enum(["staff", "po"]).nullable().default(null),
+  effectiveUnitPriceCents: z.number().int().min(0).nullable().default(null),
+  effectiveTotalCents: z.number().int().min(0).nullable().default(null),
 });
 
 export const inboundOrderCombineSchema = z.object({

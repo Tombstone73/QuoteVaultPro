@@ -93,6 +93,11 @@ import {
 } from "@shared/inboundAttachmentClassification";
 import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { getMissingInboundPbv2RequiredOptions } from "@shared/inboundOrderPbv2Options";
+import {
+  getInboundPoPriceSuggestion,
+  resolveInboundLineEffectivePricing,
+  type InboundPriceOverrideMode,
+} from "@shared/inboundOrderPricing";
 import type {
   InboundOrderRecordStatus,
   InboundOrderSourceType,
@@ -5629,17 +5634,25 @@ function CleanLineItemCard({
   const artworkCountMismatch = lineItem.artworkQuantityMode === "one_each_per_file"
     && activeArtworkLinks.length > 0
     && lineItem.quantity !== activeArtworkLinks.length;
+  const effectivePricing = resolveInboundLineEffectivePricing(lineItem.pricingReviewJson, lineItem.quantity);
+  const pricingSummary = effectivePricing.effectiveTotalCents > 0
+    ? `${formatCents(effectivePricing.effectiveTotalCents)} · ${effectivePricing.hasPriceOverride
+      ? lineItem.pricingReviewJson?.priceOverrideSource === "po" ? "PO override" : "Staff override"
+      : "System price"}`
+    : "Price needed";
   const lineItemSummaryParts = workflowComplete
     ? [
       lineItem.productName || "Product",
       `Qty ${lineItem.quantity ?? "-"}`,
       sizeDisplay,
+      pricingSummary,
       activeArtworkLinks.length ? `Artwork linked · ${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"}` : "Artwork pending",
     ]
     : [
       hasSelectedProduct && !lineItem.productUnresolved ? lineItem.productName || "Product selected" : "Product unresolved",
       hasQuantity ? `Qty ${lineItem.quantity}` : "Quantity needed",
       hasDimensions ? sizeDisplay : "Size needed",
+      pricingSummary,
       activeArtworkLinks.length ? `Artwork linked · ${activeArtworkLinks.length} file${activeArtworkLinks.length === 1 ? "" : "s"}` : "Artwork needed",
     ];
   const [workflowOpen, setWorkflowOpen] = useState(!workflowComplete);
@@ -6109,7 +6122,7 @@ function CleanLineItemCard({
             )}
           </section>
           <div data-clean-resolution-target="pricing">
-            <PricingReviewCard review={lineItem.pricingReviewJson} onChange={(pricingReviewJson) => onChange({ pricingReviewJson })} />
+            <PricingReviewCard review={lineItem.pricingReviewJson} quantity={lineItem.quantity} onChange={(pricingReviewJson) => onChange({ pricingReviewJson })} />
           </div>
         </div>
       )}
@@ -7402,36 +7415,111 @@ function ReviewLineItemProductOptions({
 
 function PricingReviewCard({
   review,
+  quantity: quantityValue,
   onChange,
 }: {
   review: ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"];
+  quantity: number | null;
   onChange: (review: NonNullable<ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"]>) => void;
 }) {
-  if (!review || review.status === "not_available") return null;
+  if (!review) return null;
+  const quantity = Math.max(1, quantityValue ?? 1);
+  const effective = resolveInboundLineEffectivePricing(review, quantity);
+  const poSuggestion = getInboundPoPriceSuggestion(review);
+  const detectedPoTotalCents = review.poExtendedPriceCents
+    ?? review.poTotalPriceCents
+    ?? (review.comparisonType !== "unit" ? review.poPriceCents : null);
   const hasMismatch = review.status === "mismatch" || review.status === "resolved";
-  if (!hasMismatch && review.status !== "matched") return null;
   const difference = review.differenceCents;
+  const overrideLabel = effective.hasPriceOverride
+    ? review.priceOverrideSource === "po"
+      ? "PO override"
+      : "Staff override"
+    : "System price";
+  const applyChange = (next: typeof review) => {
+    const nextEffective = resolveInboundLineEffectivePricing(next, quantity);
+    onChange({
+      ...next,
+      effectiveUnitPriceCents: nextEffective.effectiveUnitPriceCents,
+      effectiveTotalCents: nextEffective.effectiveTotalCents,
+    });
+  };
+  const clearOverride = () => applyChange({
+    ...review,
+    status: hasMismatch ? "resolved" : review.status,
+    acknowledged: hasMismatch,
+    resolution: hasMismatch ? "accept_system_price" : null,
+    priceOverrideMode: null,
+    priceOverrideValueCents: null,
+    priceOverrideSource: null,
+  });
+  const applyPoSuggestion = () => {
+    if (!poSuggestion) return;
+    applyChange({
+      ...review,
+      status: hasMismatch ? "resolved" : review.status,
+      acknowledged: true,
+      resolution: "honor_po_price",
+      priceOverrideMode: poSuggestion.mode,
+      priceOverrideValueCents: poSuggestion.valueCents,
+      priceOverrideSource: "po",
+    });
+  };
   return (
     <div className={cn(
       "rounded-md border px-3 py-2 text-xs",
       hasMismatch
         ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
-        : "border-emerald-500/30 bg-emerald-500/10 text-emerald-100",
+        : review.status === "matched"
+          ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-100"
+          : "border-border bg-muted/20 text-foreground",
     )}>
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div className="font-semibold text-foreground">
-          {hasMismatch ? "PO price differs from system price." : "PO price matches system price."}
+          Pricing review
         </div>
-        {review.acknowledged ? <Badge variant="outline">Acknowledged</Badge> : null}
+        <div className="flex items-center gap-2">
+          <Badge variant={effective.hasPriceOverride ? "default" : "outline"}>{overrideLabel}</Badge>
+          {review.acknowledged ? <Badge variant="outline">Acknowledged</Badge> : null}
+        </div>
       </div>
       <div className="mt-2 grid gap-2 sm:grid-cols-3">
-        <div><span className="text-muted-foreground">PO price</span><div className="font-mono text-foreground">{formatCents(review.poPriceCents)}</div></div>
-        <div><span className="text-muted-foreground">System price</span><div className="font-mono text-foreground">{formatCents(review.systemPriceCents)}</div></div>
-        <div><span className="text-muted-foreground">Difference</span><div className="font-mono text-foreground">{formatCents(difference == null ? null : Math.abs(difference))}</div></div>
+        <div>
+          <span className="text-muted-foreground">Calculated</span>
+          <div className="font-mono text-foreground">
+            {formatCents(review.systemUnitPriceCents)} / ea · {formatCents(review.systemPriceCents)} total
+          </div>
+        </div>
+        <div>
+          <span className="text-muted-foreground">Detected PO</span>
+          <div className="font-mono text-foreground">
+            {review.poUnitPriceCents != null ? `${formatCents(review.poUnitPriceCents)} / ea` : "—"}
+            {detectedPoTotalCents != null
+              ? ` · ${formatCents(detectedPoTotalCents)} total`
+              : ""}
+          </div>
+        </div>
+        <div>
+          <span className="text-muted-foreground">Effective</span>
+          <div className="font-mono font-semibold text-foreground" data-testid="inbound-effective-price">
+            {formatCents(effective.effectiveUnitPriceCents)} / ea · {formatCents(effective.effectiveTotalCents)} total
+          </div>
+        </div>
       </div>
+      {review.status === "not_available" && effective.effectiveTotalCents <= 0 ? (
+        <div className="mt-2 text-amber-600 dark:text-amber-300">
+          System pricing is unavailable. Enter a unit or total override before conversion.
+        </div>
+      ) : null}
+      {hasMismatch ? (
+        <div className="mt-2 text-amber-700 dark:text-amber-200">
+          PO price differs from system price{difference == null ? "." : ` by ${formatCents(Math.abs(difference))}.`}
+        </div>
+      ) : review.status === "matched" ? (
+        <div className="mt-2 text-emerald-700 dark:text-emerald-200">PO price matches system price.</div>
+      ) : null}
       <div className="mt-2 flex flex-wrap gap-2 text-muted-foreground">
         {review.comparisonType ? <span>Compared {review.comparisonType} price</span> : null}
-        {review.poUnitPriceCents != null ? <span>PO unit {formatCents(review.poUnitPriceCents)}</span> : null}
         {review.poRushFeesCents != null ? <span>Rush fee {formatCents(review.poRushFeesCents)}</span> : null}
       </div>
       {review.sourceEvidence.length > 0 && (
@@ -7442,20 +7530,92 @@ function PricingReviewCard({
       {review.alternatePricingNotes.length > 0 && (
         <div className="mt-1 text-muted-foreground">Notes: {review.alternatePricingNotes.join("; ")}</div>
       )}
+      <div className="mt-3 grid gap-2 sm:grid-cols-[190px_180px_1fr]">
+        <select
+          className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
+          aria-label="Inbound price override mode"
+          value={review.priceOverrideMode ?? ""}
+          onChange={(event) => {
+            const mode = (trimToNull(event.target.value) as InboundPriceOverrideMode | null);
+            if (!mode) {
+              clearOverride();
+              return;
+            }
+            const suggestedValue = poSuggestion?.mode === mode ? poSuggestion.valueCents : null;
+            applyChange({
+              ...review,
+              priceOverrideMode: mode,
+              priceOverrideValueCents: review.priceOverrideMode === mode
+                ? review.priceOverrideValueCents
+                : suggestedValue,
+              priceOverrideSource: "staff",
+              resolution: "pricing_exception",
+              acknowledged: Boolean(suggestedValue && suggestedValue > 0),
+              status: hasMismatch && suggestedValue ? "resolved" : review.status,
+            });
+          }}
+        >
+          <option value="">No override · use system price</option>
+          <option value="override_unit_after_margin">Unit price override</option>
+          <option value="override_total_after_margin">Total price override</option>
+        </select>
+        <Input
+          aria-label="Inbound price override amount"
+          type="number"
+          min="0"
+          step="0.01"
+          disabled={!review.priceOverrideMode}
+          value={review.priceOverrideValueCents == null ? "" : (review.priceOverrideValueCents / 100).toFixed(2)}
+          onChange={(event) => {
+            const value = trimToNull(event.target.value);
+            const valueCents = value == null ? null : Math.max(0, Math.round(Number(value) * 100));
+            applyChange({
+              ...review,
+              priceOverrideValueCents: Number.isFinite(valueCents) ? valueCents : null,
+              priceOverrideSource: "staff",
+              resolution: "pricing_exception",
+              acknowledged: valueCents !== null && valueCents > 0,
+              status: hasMismatch && valueCents !== null && valueCents > 0 ? "resolved" : review.status,
+            });
+          }}
+          placeholder="0.00"
+        />
+        <div className="flex flex-wrap gap-2">
+          {poSuggestion ? (
+            <Button type="button" size="sm" variant="outline" onClick={applyPoSuggestion}>
+              Apply detected PO price
+            </Button>
+          ) : null}
+        </div>
+      </div>
       {hasMismatch && (
-        <div className="mt-3 grid gap-2 sm:grid-cols-[180px_1fr]">
+        <div className="mt-2 grid gap-2 sm:grid-cols-[190px_1fr]">
           <select
             className="h-8 rounded-md border border-input bg-background px-2 text-xs text-foreground"
             aria-label="Resolve PO price mismatch"
             value={review.resolution ?? ""}
             onChange={(event) => {
               const resolution = trimToNull(event.target.value) as NonNullable<typeof review>["resolution"];
-              onChange({
+              if (resolution === "honor_po_price") {
+                applyPoSuggestion();
+                return;
+              }
+              const next = {
                 ...review,
-                status: resolution ? "resolved" : "mismatch",
+                status: resolution ? "resolved" as const : "mismatch" as const,
                 acknowledged: Boolean(resolution),
                 resolution,
-              });
+              };
+              if (resolution === "accept_system_price") {
+                applyChange({
+                  ...next,
+                  priceOverrideMode: null,
+                  priceOverrideValueCents: null,
+                  priceOverrideSource: null,
+                });
+                return;
+              }
+              applyChange(next);
             }}
           >
             <option value="">Resolve pricing...</option>
@@ -8450,6 +8610,7 @@ function DraftBuilderPanel({
                           <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={(patch) => updateLineItem(index, patch)} />
                           <PricingReviewCard
                             review={lineItem.pricingReviewJson}
+                            quantity={lineItem.quantity}
                             onChange={(pricingReviewJson) => updateLineItem(index, { pricingReviewJson })}
                           />
                           <div className="grid gap-2 lg:grid-cols-3">
@@ -8976,6 +9137,7 @@ function DraftBuilderPanel({
                     />
                     <PricingReviewCard
                       review={lineItem.pricingReviewJson}
+                      quantity={lineItem.quantity}
                       onChange={(pricingReviewJson) => updateLineItem(index, { pricingReviewJson })}
                     />
                     <label className="flex items-center gap-2 text-sm text-foreground">

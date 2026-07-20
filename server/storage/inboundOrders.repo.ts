@@ -166,7 +166,8 @@ export type InboundQuoteDraftLineInput = {
   snapshotJson: Record<string, unknown>;
   pricing: {
     lineTotalCents: number;
-    pbv2TreeVersionId: string;
+    calculatedLineTotalCents: number;
+    pbv2TreeVersionId: string | null;
     pbv2SnapshotJson: Record<string, unknown>;
     optionSelectionsJson: Record<string, unknown>;
     selectedOptions: NonNullable<(typeof quoteLineItems.$inferInsert)["selectedOptions"]>;
@@ -177,6 +178,9 @@ export type InboundQuoteDraftLineInput = {
       pricingMethod: string;
       nestingDetails?: unknown;
     };
+    priceOverrideMode: "override_unit_after_margin" | "override_total_after_margin" | null;
+    priceOverrideValueCents: number | null;
+    priceOverrideSource: "staff" | "po" | null;
   };
 };
 
@@ -2663,7 +2667,36 @@ export class InboundOrdersRepository {
         })
         .returning();
 
-      const lineItemRows = input.lineItems.map((lineItem, index) => ({
+      const lineItemRows = input.lineItems.map((lineItem, index) => {
+        const hasPriceOverride = lineItem.pricing.priceOverrideMode !== null
+          && lineItem.pricing.priceOverrideValueCents !== null;
+        const effectiveUnitPriceCents = Math.round(
+          lineItem.pricing.lineTotalCents / Math.max(1, lineItem.quantity),
+        );
+        const calculatedUnitPriceCents = Math.round(
+          lineItem.pricing.calculatedLineTotalCents / Math.max(1, lineItem.quantity),
+        );
+        const priceOverride = hasPriceOverride
+          ? {
+              mode: lineItem.pricing.priceOverrideMode === "override_unit_after_margin" ? "unit" as const : "total" as const,
+              value: lineItem.pricing.priceOverrideValueCents! / 100,
+            }
+          : null;
+        const canonicalPriceOverride = hasPriceOverride
+          ? {
+              schemaVersion: 1,
+              mode: lineItem.pricing.priceOverrideMode,
+              valueCents: lineItem.pricing.priceOverrideValueCents,
+              valuePercent: null,
+              baseCalculatedUnitPriceCents: calculatedUnitPriceCents,
+              baseCalculatedTotalCents: lineItem.pricing.calculatedLineTotalCents,
+              effectiveUnitPriceCents,
+              effectiveTotalCents: lineItem.pricing.lineTotalCents,
+              source: lineItem.pricing.priceOverrideSource ?? "staff",
+              appliedAt: now.toISOString(),
+            }
+          : null;
+        return ({
         quoteId: quote.id,
         status: "active" as const,
         productId: lineItem.productId,
@@ -2680,6 +2713,7 @@ export class InboundOrdersRepository {
           inboundReviewSnapshotVersion: input.snapshotVersion,
           sourceLineItemId: lineItem.sourceLineItemId,
           staffReviewedDraft: lineItem.snapshotJson,
+          ...(canonicalPriceOverride ? { priceOverride: canonicalPriceOverride } : {}),
         },
         pbv2TreeVersionId: lineItem.pricing.pbv2TreeVersionId,
         pbv2SnapshotJson: lineItem.pricing.pbv2SnapshotJson,
@@ -2687,6 +2721,16 @@ export class InboundOrdersRepository {
         selectedOptions: lineItem.pricing.selectedOptions,
         pricedAt: now,
         linePrice: (lineItem.pricing.lineTotalCents / 100).toFixed(2),
+        formulaLinePrice: (lineItem.pricing.calculatedLineTotalCents / 100).toFixed(2),
+        priceOverride,
+        overridePriceCents: hasPriceOverride ? lineItem.pricing.lineTotalCents : null,
+        overrideAt: hasPriceOverride ? now : null,
+        overrideByUserId: hasPriceOverride ? input.actorUserId : null,
+        overrideReason: hasPriceOverride
+          ? lineItem.pricing.priceOverrideSource === "po"
+            ? "Inbound PO price applied during review"
+            : "Inbound staff price override"
+          : null,
         priceBreakdown: {
           basePrice: lineItem.pricing.breakdown.baseCents / 100,
           optionsPrice: lineItem.pricing.breakdown.optionsCents / 100,
@@ -2708,7 +2752,8 @@ export class InboundOrdersRepository {
         designBriefRequiredSnapshot: false,
         designPricingModeSnapshot: "none" as const,
         requiresProofApproval: false,
-      }));
+        });
+      });
 
       const createdLineItems = lineItemRows.length
         ? await tx.insert(quoteLineItems).values(lineItemRows).returning()
