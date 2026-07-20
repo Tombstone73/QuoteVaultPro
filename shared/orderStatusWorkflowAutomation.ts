@@ -48,6 +48,7 @@ export const DEFAULT_WORKFLOW_STATUS_PILL_MAPPINGS: ReadonlyArray<DefaultWorkflo
   { triggerKey: "sent_to_prepress", targetStatusKey: "prepress", source: "system", overwriteExceptionStatus: false },
   { triggerKey: "sent_to_production", targetStatusKey: "in_production", source: "system", overwriteExceptionStatus: false },
   { triggerKey: "sent_to_fulfillment", targetStatusKey: "fulfillment", source: "system", overwriteExceptionStatus: false },
+  { triggerKey: "production_completed", targetStatusKey: "complete", source: "system", overwriteExceptionStatus: false },
   { triggerKey: "ready_for_pickup", targetStatusKey: "ready_for_pickup", source: "system", overwriteExceptionStatus: false },
   { triggerKey: "ready_to_ship", targetStatusKey: "ready_to_ship", source: "system", overwriteExceptionStatus: false },
   { triggerKey: "shipped", targetStatusKey: "shipped", source: "system", overwriteExceptionStatus: false },

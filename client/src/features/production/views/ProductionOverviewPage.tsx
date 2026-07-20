@@ -1,6 +1,6 @@
 import { useEffect, useState, useMemo, useRef } from "react";
 import { useNavigate, Link } from "react-router-dom";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
@@ -48,14 +48,12 @@ import {
   type ProductionJobListItem,
   type ProductionOrderArtworkSummary 
 } from "@/hooks/useProduction";
-import { useDesignQueue } from "@/hooks/useOrders";
 import { format, isPast, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { buildProofingLineItemPath, isProofApprovalRoutingBlocked } from "@/lib/proofingNavigation";
 import { ROUTES } from "@/config/routes";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
-import type { ProofingQueueResponse } from "@shared/proofing";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { productionCardTheme, computeUrgency, statusColors } from "../theme/productionCardTheme";
 import {
@@ -78,6 +76,16 @@ import {
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { documentNumberMatchesSearch, type ProductionDocumentNumberDisplayMode } from "@shared/documentNumbering";
 import { getProductionOrderNumber } from "@/lib/productionDocumentNumbers";
+import { useToast } from "@/hooks/use-toast";
+import { useProductionStations } from "@/hooks/useProductionSettings";
+import {
+  PRODUCTION_COMPLETE_COLUMN_ID,
+  type ProductionOverviewBoardColumn,
+  buildProductionOverviewColumns,
+  defaultStepKeyForProductionStation,
+  groupProductionOverviewJobsByColumn,
+  resolveProductionOverviewJobColumn,
+} from "./productionOverviewBoard";
 
 type ViewMode = "board" | "list";
 
@@ -111,16 +119,6 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
   { id: "station", label: "Station", visible: true, width: 110, sortable: true, sortField: "station" },
 ];
 
-// Kanban column configuration (hardcoded for MVP, future org-config)
-const KANBAN_COLUMNS = [
-  { id: "queued", label: "Queued", stepKey: null },
-  { id: "prepress", label: "Prepress", stepKey: "prepress" },
-  { id: "printing", label: "Printing", stepKey: "printing" },
-  { id: "finishing", label: "Finishing", stepKey: "finishing" },
-  { id: "fulfillment", label: "Fulfillment", stepKey: "fulfillment" },
-  { id: "production_complete", label: "Production Complete", stepKey: "production_complete" },
-] as const;
-
 // Column width constraints for fit mode
 const MIN_COLUMN_WIDTH = 320;
 const DEFAULT_COLUMN_WIDTH = 420;
@@ -147,15 +145,6 @@ const DEFAULT_BOARD_CARD_CONFIG: BoardCardConfig = {
 
 // Board column visibility configuration
 type BoardColumnVisibility = Record<string, boolean>;
-
-const DEFAULT_BOARD_COLUMN_VISIBILITY: BoardColumnVisibility = {
-  queued: true,
-  prepress: true,
-  printing: true,
-  finishing: true,
-  fulfillment: true,
-  production_complete: true,
-};
 
 // Board sorting configuration
 type BoardSortKey = "dueDate" | "customer" | "orderNumber" | "status";
@@ -293,27 +282,14 @@ export default function ProductionOverviewPage() {
   // Fetch ALL production jobs (no station/status filter for overview)
   // This shows jobs across all production modules (flatbed, roll, apparel)
   const { data: allJobs, isLoading, error } = useProductionJobs({});
+  const { data: productionStations = [], isLoading: stationsLoading } = useProductionStations();
+  const jobs = useMemo(() => allJobs ?? [], [allJobs]);
+  const boardColumns = useMemo(
+    () => buildProductionOverviewColumns(productionStations, jobs),
+    [jobs, productionStations],
+  );
   const { preferences } = useOrgPreferences();
   const productionNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
-  const { data: designQueue = [], isLoading: isDesignQueueLoading, error: designQueueError } = useDesignQueue();
-  const {
-    data: proofingQueueData,
-    isLoading: isProofingQueueLoading,
-    error: proofingQueueError,
-  } = useQuery<ProofingQueueResponse>({
-    queryKey: ["/api/proofing/queue", "all"],
-    queryFn: async () => {
-      const res = await fetch("/api/proofing/queue?slice=all", { credentials: "include" });
-      if (!res.ok) {
-        const json = await res.json().catch(() => ({}));
-        throw new Error(json.error || "Failed to fetch proofing queue");
-      }
-      const json = await res.json();
-      return json.data as ProofingQueueResponse;
-    },
-    staleTime: 30_000,
-    refetchOnWindowFocus: false,
-  });
   
   // View mode toggle (persist in localStorage)
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
@@ -384,10 +360,10 @@ export default function ProductionOverviewPage() {
       try {
         return JSON.parse(saved);
       } catch {
-        return DEFAULT_BOARD_COLUMN_VISIBILITY;
+        return {};
       }
     }
-    return DEFAULT_BOARD_COLUMN_VISIBILITY;
+    return {};
   });
 
   const saveBoardColumnVisibility = (newConfig: BoardColumnVisibility) => {
@@ -396,13 +372,13 @@ export default function ProductionOverviewPage() {
   };
 
   const showAllColumns = () => {
-    const allVisible = KANBAN_COLUMNS.reduce((acc, col) => ({ ...acc, [col.id]: true }), {} as BoardColumnVisibility);
+    const allVisible = boardColumns.reduce((acc, col) => ({ ...acc, [col.id]: true }), {} as BoardColumnVisibility);
     saveBoardColumnVisibility(allVisible);
   };
 
   const hiddenColumnCount = useMemo(() => {
-    return Object.values(boardColumnVisibility).filter(v => !v).length;
-  }, [boardColumnVisibility]);
+    return boardColumns.filter((column) => boardColumnVisibility[column.id] === false).length;
+  }, [boardColumnVisibility, boardColumns]);
 
   // Board sorting state
   const [boardSort, setBoardSort] = useState<BoardSortConfig>(() => {
@@ -486,8 +462,8 @@ export default function ProductionOverviewPage() {
 
   // Calculate column width when fit mode is enabled
   const visibleColumnsCount = useMemo(() => {
-    return KANBAN_COLUMNS.filter(col => boardColumnVisibility[col.id] !== false).length;
-  }, [boardColumnVisibility]);
+    return boardColumns.filter(col => boardColumnVisibility[col.id] !== false).length;
+  }, [boardColumnVisibility, boardColumns]);
 
   const totalVisibleGapWidth = useMemo(() => {
     return BOARD_GAP * Math.max(visibleColumnsCount - 1, 0);
@@ -621,6 +597,13 @@ export default function ProductionOverviewPage() {
     );
   };
 
+  const visibleProductionJobs = useMemo(
+    () => searchOnlyProduction && searchQuery
+      ? jobs.filter((job) => matchesSearchQuery(job, searchQuery))
+      : jobs,
+    [jobs, searchOnlyProduction, searchQuery],
+  );
+
   // Column configuration state (persist in localStorage)
   const [columns, setColumns] = useState<ColumnConfig[]>(() => {
     const saved = localStorage.getItem("productionOverviewColumns");
@@ -701,6 +684,7 @@ export default function ProductionOverviewPage() {
 
   // Query client for optimistic updates
   const queryClient = useQueryClient();
+  const { toast } = useToast();
   
   // Track in-flight mutations to prevent duplicates
   const inFlightMutations = useRef<Set<string>>(new Set());
@@ -728,7 +712,7 @@ export default function ProductionOverviewPage() {
     setActiveJobId(event.active.id as string);
   };
 
-  const handleDragEnd = (event: DragEndEvent) => {
+  const handleDragEnd = async (event: DragEndEvent) => {
     const { active, over } = event;
     setActiveJobId(null);
 
@@ -744,14 +728,14 @@ export default function ProductionOverviewPage() {
     let targetColumnId: string | null = null;
     
     // Check if dropped directly on a column
-    const targetColumn = KANBAN_COLUMNS.find(col => col.id === overId);
+    const targetColumn = boardColumns.find(col => col.id === overId);
     if (targetColumn) {
       targetColumnId = targetColumn.id;
     } else {
       // If dropped over another job card, infer column from that card
       const targetJob = jobs.find(j => j.id === overId);
       if (targetJob) {
-        targetColumnId = getJobColumn(targetJob);
+        targetColumnId = resolveProductionOverviewJobColumn(targetJob);
       }
     }
     
@@ -767,23 +751,20 @@ export default function ProductionOverviewPage() {
       return;
     }
     
-    const currentColumn = getJobColumn(job);
+    const currentColumn = resolveProductionOverviewJobColumn(job);
     if (currentColumn === targetColumnId) {
       if (import.meta.env.DEV) console.debug('[DnD] No change needed - same column', { jobId, column: currentColumn });
       return;
     }
     
-    // Determine status and stepKey based on target column
-    const column = KANBAN_COLUMNS.find(col => col.id === targetColumnId)!;
-    let targetStatus: "queued" | "in_progress" | "done";
-    let targetStepKey: string | null = column.stepKey;
-    
-    if (targetColumnId === "queued") {
-      targetStatus = "queued";
-    } else if (targetColumnId === "production_complete") {
-      targetStatus = "done";
-    } else {
-      targetStatus = "in_progress";
+    const column = boardColumns.find(col => col.id === targetColumnId);
+    if (!column || column.fallback) {
+      toast({
+        title: "Station unavailable",
+        description: "Inactive or unassigned station columns are display-only. Choose an active production station.",
+        variant: "destructive",
+      });
+      return;
     }
     
     // Prevent duplicate in-flight mutations for the same job
@@ -792,104 +773,47 @@ export default function ProductionOverviewPage() {
       return;
     }
     
-    if (import.meta.env.DEV) {
-      console.debug('[DnD] Initiating column change', {
-        jobId,
-        fromColumn: currentColumn,
-        toColumn: targetColumnId,
-        fromStatus: job.status,
-        toStatus: targetStatus,
-        fromStepKey: job.stepKey,
-        toStepKey: targetStepKey,
-      });
-    }
-
-    // Mark mutation as in-flight
     inFlightMutations.current.add(jobId);
 
-    // OPTIMISTIC UPDATE: update all production job list queries (any filters)
-    const rollback = queryClient.getQueriesData<ProductionJobListItem[]>({
-      queryKey: ["/api/production/jobs"],
-    });
-
-    queryClient.setQueriesData<ProductionJobListItem[]>(
-      { queryKey: ["/api/production/jobs"] },
-      (old) => {
-        // Shape-safe update: handle array, envelope, or undefined
-        if (!old) return old;
-        
-        // Case 1: Direct array (expected shape)
-        if (Array.isArray(old)) {
-          return old.map((j) =>
-            j.id === jobId ? { ...j, status: targetStatus, stepKey: targetStepKey } : j
-          );
-        }
-        
-        // Case 2: Envelope { success, data: array }
-        if (typeof old === 'object' && old !== null && 'data' in old && Array.isArray((old as any).data)) {
-          return {
-            ...(old as object),
-            data: (old as any).data.map((j: ProductionJobListItem) =>
-              j.id === jobId ? { ...j, status: targetStatus, stepKey: targetStepKey } : j
-            ),
-          } as any;
-        }
-        
-        // Case 3: Unknown shape - log warning and return unchanged (fail-soft)
-        if (process.env.NODE_ENV === 'development') {
-          console.warn('[ProductionOverview] Unexpected cache shape in optimistic update:', {
-            type: typeof old,
-            keys: typeof old === 'object' && old !== null ? Object.keys(old) : [],
-            isArray: Array.isArray(old),
-          });
-        }
-        return old;
-      }
-    );
-
-    // MUTATION: Call API directly
-    fetch(`/api/production/jobs/${jobId}/status`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: targetStatus, stepKey: targetStepKey }),
-      credentials: "include",
-    })
-      .then(async (res) => {
-        const json = await res.json().catch(() => ({}));
-        if (!res.ok) throw new Error(json.error || "Failed to update status");
-        return json.data;
-      })
-      .then(() => {
-        // Success - invalidate queries
-        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
-        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs", jobId] });
-      })
-      .catch((error) => {
-        // Error - rollback optimistic update
-        console.error('[DnD] Status update failed:', error);
-        for (const [queryKey, data] of rollback) {
-          queryClient.setQueryData(queryKey as any, data);
-        }
-      })
-      .finally(() => {
-        // Clear in-flight flag
-        inFlightMutations.current.delete(jobId);
+    try {
+      const isCompletion = targetColumnId === PRODUCTION_COMPLETE_COLUMN_ID;
+      const response = await fetch(
+        isCompletion
+          ? `/api/production/jobs/${jobId}/complete`
+          : `/api/production/jobs/${jobId}/routing`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(isCompletion
+            ? { skipProduction: job.status === "queued" }
+            : {
+                stationKey: column.stationKey,
+                stepKey: defaultStepKeyForProductionStation(column.stationKey!),
+                reason: "Production Overview manual station move",
+              }),
+        },
+      );
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || result.message || "Failed to move production job");
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs", jobId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
+      ]);
+    } catch (error) {
+      toast({
+        title: "Production move failed",
+        description: error instanceof Error ? error.message : "The job stayed in its current station.",
+        variant: "destructive",
       });
+    } finally {
+      inFlightMutations.current.delete(jobId);
+    }
   };
 
-  const jobs = useMemo(() => allJobs ?? [], [allJobs]);
-
   const groupJobsByColumn = (inputJobs: ProductionJobListItem[]) => {
-    const grouped = new Map<string, ProductionJobListItem[]>();
-    KANBAN_COLUMNS.forEach((col) => grouped.set(col.id, []));
-
-    inputJobs.forEach((job) => {
-      const columnId = getJobColumn(job);
-      const column = grouped.get(columnId);
-      if (column) {
-        column.push(job);
-      }
-    });
+    const grouped = groupProductionOverviewJobsByColumn(boardColumns, inputJobs);
 
     grouped.forEach((columnJobs, columnId) => {
       grouped.set(columnId, sortBoardJobs(columnJobs));
@@ -898,20 +822,6 @@ export default function ProductionOverviewPage() {
     return grouped;
   };
 
-  const designCounts = useMemo(() => {
-    let needsDesign = 0;
-    let inDesign = 0;
-
-    designQueue.forEach((item) => {
-      if (item.designStatus === "in_design") {
-        inDesign += 1;
-      } else {
-        needsDesign += 1;
-      }
-    });
-
-    return { needsDesign, inDesign, total: designQueue.length };
-  }, [designQueue]);
 
   // DEV-only: log sample preview URLs once
   const devLoggedSample = useRef(false);
@@ -933,7 +843,7 @@ export default function ProductionOverviewPage() {
 
   // Sort jobs for list view
   const sortedJobs = useMemo(() => {
-    const sorted = [...jobs];
+    const sorted = [...visibleProductionJobs];
     sorted.sort((a, b) => {
       let comparison = 0;
       
@@ -976,37 +886,12 @@ export default function ProductionOverviewPage() {
       return sort.direction === "asc" ? comparison : -comparison;
     });
     return sorted;
-  }, [jobs, sort.field, sort.direction]);
-
-  // Helper: Determine which column a job belongs to (SAFE fallback guaranteed)
-  const getJobColumn = (job: ProductionJobListItem): string => {
-    // Normalize stepKey to known column IDs
-    const stepKey = job.stepKey || job.stationKey;
-    if (stepKey) {
-      const normalizedKey = stepKey.toLowerCase().trim();
-      // Match to known column IDs
-      const knownColumns = ["queued", "prepress", "printing", "finishing", "fulfillment", "production_complete"];
-      if (knownColumns.includes(normalizedKey)) {
-        return normalizedKey;
-      }
-    }
-    
-    // Fallback based on status (guaranteed assignment)
-    if (job.status === "queued") return "queued";
-    if (job.status === "done") return "production_complete";
-    // Default to printing for in_progress jobs without stepKey
-    return "printing";
-  };
-
-  const allJobsByStatus = useMemo(() => groupJobsByColumn(jobs), [jobs, boardSort]);
+  }, [visibleProductionJobs, sort.field, sort.direction]);
 
   // Group jobs by column (using stepKey-based routing)
   const jobsByStatus = useMemo(() => {
     // Apply search filter if production-only mode
-    const filteredJobs = searchOnlyProduction && searchQuery 
-      ? jobs.filter(job => matchesSearchQuery(job, searchQuery))
-      : jobs;
-    const grouped = groupJobsByColumn(filteredJobs);
+    const grouped = groupJobsByColumn(visibleProductionJobs);
     
     // Dev logging
     if (import.meta.env.DEV) {
@@ -1015,84 +900,40 @@ export default function ProductionOverviewPage() {
         counts[columnId] = jobs.length;
       });
       console.log('[ProductionBoard] Job grouping:', { 
-        total: filteredJobs.length, 
+        total: visibleProductionJobs.length,
         byColumn: counts,
         searchActive: searchOnlyProduction && !!searchQuery,
       });
     }
     
     return grouped;
-  }, [jobs, searchQuery, searchOnlyProduction, boardSort]);
+  }, [visibleProductionJobs, searchQuery, searchOnlyProduction, boardColumns, boardSort]);
 
   const operationalAreaCards = useMemo<OperationalAreaCard[]>(() => {
-    const proofingCounts = proofingQueueData?.counts;
-
-    return [
-      {
-        id: "design",
-        label: "Design",
-        count: isDesignQueueLoading ? null : designCounts.total,
-        detail: designQueueError
-          ? "Unable to load design queue"
-          : `${designCounts.needsDesign} needs design • ${designCounts.inDesign} in design`,
-        href: ROUTES.production.design,
-        kind: "queue",
-      },
-      {
-        id: "proofing",
-        label: "Proofing",
-        count: isProofingQueueLoading ? null : (proofingCounts?.all ?? 0),
-        detail: proofingQueueError
-          ? "Unable to load proofing queue"
-          : `${proofingCounts?.awaitingApproval ?? 0} awaiting approval • ${proofingCounts?.revisionRequested ?? 0} revisions • ${proofingCounts?.awaitingSend ?? 0} awaiting send`,
-        href: ROUTES.production.proofing,
-        kind: "queue",
-      },
-      {
-        id: "prepress",
-        label: "Prepress",
-        count: allJobsByStatus.get("prepress")?.length ?? 0,
-        detail: "Active production jobs",
-        href: ROUTES.production.prepress,
-        kind: "jobs",
-      },
-      {
-        id: "printing",
-        label: "Printing",
-        count: allJobsByStatus.get("printing")?.length ?? 0,
-        detail: "Active production jobs",
-        kind: "jobs",
-      },
-      {
-        id: "finishing",
-        label: "Finishing",
-        count: allJobsByStatus.get("finishing")?.length ?? 0,
-        detail: "Active production jobs",
-        kind: "jobs",
-      },
-      {
-        id: "fulfillment",
-        label: "Fulfillment",
-        count: allJobsByStatus.get("fulfillment")?.length ?? 0,
-        detail: "Active production jobs",
-        kind: "jobs",
-      },
-      {
-        id: "production_complete",
-        label: "Production Complete",
-        count: allJobsByStatus.get("production_complete")?.length ?? 0,
-        detail: "Completed jobs",
-        kind: "jobs",
-      },
-    ];
+    const hrefByStation: Record<string, string> = {
+      design: ROUTES.production.design,
+      proofing: ROUTES.production.proofing,
+      prepress: ROUTES.production.prepress,
+      flatbed: ROUTES.production.flatbed,
+      roll: ROUTES.production.roll,
+    };
+    return boardColumns.map((column) => {
+      const columnJobs = jobsByStatus.get(column.id) ?? [];
+      const queued = columnJobs.filter((job) => job.status === "queued").length;
+      const active = columnJobs.filter((job) => job.status === "in_progress" || job.status === "paused").length;
+      return {
+        id: column.id,
+        label: column.label,
+        count: stationsLoading ? null : columnJobs.length,
+        detail: column.terminal ? "Completed jobs" : `${queued} queued / ${active} active`,
+        href: column.stationKey ? hrefByStation[column.stationKey] : undefined,
+        kind: "jobs" as const,
+      };
+    });
   }, [
-    allJobsByStatus,
-    designCounts,
-    designQueueError,
-    isDesignQueueLoading,
-    isProofingQueueLoading,
-    proofingQueueData,
-    proofingQueueError,
+    jobsByStatus,
+    boardColumns,
+    stationsLoading,
   ]);
 
   const activeJob = activeJobId ? jobs.find(j => j.id === activeJobId) : null;
@@ -1338,7 +1179,7 @@ export default function ProductionOverviewPage() {
                       )}
                     </div>
                     <div className="space-y-2">
-                      {KANBAN_COLUMNS.map((column) => (
+                      {boardColumns.map((column) => (
                         <div key={column.id} className="flex items-center justify-between">
                           <Label htmlFor={`col-${column.id}`} className="text-sm cursor-pointer">
                             {column.label}
@@ -1515,7 +1356,7 @@ export default function ProductionOverviewPage() {
               <div className="flex items-center gap-2">
                 <Search className="w-4 h-4 text-blue-600 dark:text-blue-400" />
                 <span className="text-sm text-blue-900 dark:text-blue-100">
-                  Showing {jobs.filter(j => matchesSearchQuery(j, searchQuery)).length} matching jobs
+                  Showing {visibleProductionJobs.length} matching jobs
                 </span>
               </div>
               <Button variant="ghost" size="sm" onClick={clearSearch} className="h-8">
@@ -1534,7 +1375,7 @@ export default function ProductionOverviewPage() {
                 className="flex gap-4 pb-4"
                 style={boardTrackWidth ? { width: `${boardTrackWidth}px` } : undefined}
               >
-                {KANBAN_COLUMNS.filter(col => boardColumnVisibility[col.id] !== false).map(column => {
+                {boardColumns.filter(col => boardColumnVisibility[col.id] !== false).map(column => {
                   const columnJobs = jobsByStatus.get(column.id) ?? [];
                   return (
                     <KanbanColumn
@@ -1561,6 +1402,7 @@ export default function ProductionOverviewPage() {
                   onArtworkClick={openArtworkModal}
                   showThumbnails={showThumbnails}
                   isDragOverlay
+                  stationLabel={boardColumns.find((column) => column.id === resolveProductionOverviewJobColumn(activeJob))?.label}
                   documentNumberDisplayMode={productionNumberDisplayMode}
                 />
               )}
@@ -1745,7 +1587,7 @@ function KanbanColumn({
   documentNumberDisplayMode,
   width = DEFAULT_COLUMN_WIDTH,
 }: {
-  column: typeof KANBAN_COLUMNS[number];
+  column: ProductionOverviewBoardColumn;
   jobs: ProductionJobListItem[];
   boardCardConfig: BoardCardConfig;
   onArtworkClick: (job: ProductionJobListItem) => void;
@@ -1786,6 +1628,7 @@ function KanbanColumn({
               isExpanded={isCardExpanded(job.id)}
               toggleExpanded={() => toggleCardExpanded(job.id)}
               documentNumberDisplayMode={documentNumberDisplayMode}
+              stationLabel={column.label}
             />
           ))
         )}
@@ -2057,6 +1900,7 @@ function JobCard({
   isExpanded = true,
   toggleExpanded,
   documentNumberDisplayMode,
+  stationLabel,
 }: { 
   job: ProductionJobListItem; 
   boardCardConfig: BoardCardConfig;
@@ -2066,6 +1910,7 @@ function JobCard({
   isExpanded?: boolean;
   toggleExpanded?: () => void;
   documentNumberDisplayMode: ProductionDocumentNumberDisplayMode;
+  stationLabel?: string;
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: job.id,
@@ -2254,7 +2099,7 @@ function JobCard({
               </div>
               <div className="text-sm font-medium flex items-center gap-1.5">
                 <div className="w-1.5 h-1.5 rounded-full bg-blue-500" />
-                <span className="capitalize">{job.stationKey}</span>
+                <span>{stationLabel || job.stationKey}</span>
                 <RoutingReasonAffordance
                   routingReason={job.routingReason}
                   idempotencyNote={job.idempotencyNote}
@@ -2323,10 +2168,16 @@ function JobCard({
                 Due Today
               </Badge>
             )}
-            {/* Show PRIORITY badge for demo - can be made conditional later */}
-            <Badge variant="default" className="text-[10px] px-2 py-0.5 font-semibold uppercase bg-blue-600">
-              Priority
-            </Badge>
+            {String(job.order.priority || "").toLowerCase() !== "normal" && String(job.order.priority || "").trim() ? (
+              <Badge variant="default" className="text-[10px] px-2 py-0.5 font-semibold uppercase bg-blue-600">
+                {job.order.priority}
+              </Badge>
+            ) : null}
+            {isProofApprovalRoutingBlocked(job.routingReason) ? (
+              <Badge variant="outline" className="text-[10px] px-2 py-0.5 font-semibold uppercase">
+                Proof approval needed
+              </Badge>
+            ) : null}
           </div>
         </div>
 
