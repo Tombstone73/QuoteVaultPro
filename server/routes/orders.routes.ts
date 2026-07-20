@@ -140,6 +140,7 @@ import { generatePackingSlipHtmlForOrder } from "../services/packingSlipService"
 import { getFileUploadNamingPolicy } from "../prepressFileService";
 import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
 import { generateOrderPdfBytes, orderPdfFilename, OrderPdfEligibilityError } from "../lib/orderPdf";
+import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineItemCreationPolicy";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -6168,6 +6169,7 @@ export async function registerOrderRoutes(
             const {
                 pbv2ExplicitSelections,
                 pbv2Env,
+                duplicateSourceLineItemId,
                 pbv2TreeVersionId: _ignoredTreeVersionId,
                 pbv2SnapshotJson: _ignoredSnapshot,
                 pricedAt: _ignoredPricedAt,
@@ -6203,6 +6205,23 @@ export async function registerOrderRoutes(
             if (!order) return res.status(404).json({ message: "Order not found" });
             if (isCanceledOrder(order)) {
                 return res.status(409).json({ message: "Cannot add line items to a cancelled order.", code: "ORDER_CANCELLED" });
+            }
+
+            if (duplicateSourceLineItemId) {
+                const [sourceLineItem] = await db
+                    .select({ id: orderLineItems.id })
+                    .from(orderLineItems)
+                    .where(and(
+                        eq(orderLineItems.id, String(duplicateSourceLineItemId)),
+                        eq(orderLineItems.orderId, String(lineItemData.orderId)),
+                    ))
+                    .limit(1);
+                if (!sourceLineItem) {
+                    return res.status(404).json({
+                        message: "The source line item could not be found on this order.",
+                        code: "DUPLICATE_SOURCE_NOT_FOUND",
+                    });
+                }
             }
 
             // Server-authoritative pricing using PricingService
@@ -6351,7 +6370,12 @@ export async function registerOrderRoutes(
                     .where(eq(products.id, String(created.productId)))
                     .limit(1);
 
-                if (!routing.isServiceFee && ptRow?.sendToProductionDefault === true && created.workflowState === "ready_for_production") {
+                if (shouldAutoScheduleCreatedOrderLineItem({
+                    duplicateSourceLineItemId,
+                    isServiceFee: routing.isServiceFee,
+                    sendToProductionDefault: ptRow?.sendToProductionDefault === true,
+                    workflowState: created.workflowState,
+                })) {
                     const { scheduleOrderLineItemsForProduction } = await import('../services/productionScheduling');
                     const { loadProductionLineItemStatusRulesForOrganization, appendEvent } = await import('../productionHelpers');
                     const scheduleResult = await scheduleOrderLineItemsForProduction({
@@ -6401,7 +6425,11 @@ export async function registerOrderRoutes(
             }
             if ((error as any)?.statusCode) return res.status((error as any).statusCode).json({ message: (error as any).message });
             console.error('[ORDER_LINE_ITEM_CREATE] Error:', error);
-            res.status(500).json({ message: "Failed to create order line item" });
+            res.status(500).json({
+                message: (req.body as any)?.duplicateSourceLineItemId
+                    ? "Unable to duplicate this line item. Its saved product or option configuration could not be recreated."
+                    : "Failed to create order line item",
+            });
         }
     });
 

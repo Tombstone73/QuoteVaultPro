@@ -3947,6 +3947,10 @@ export const insertOrderLineItemSchema = createInsertSchema(orderLineItems).omit
           .optional(),
       );
   })(),
+  // Request-only duplication context. The create route validates this source
+  // line belongs to the same order and uses it to suppress generated workflow
+  // side effects (production scheduling, proof state, reservations).
+  duplicateSourceLineItemId: z.string().uuid().optional(),
 });
 
 export type OrderLineItemComponent = typeof orderLineItemComponents.$inferSelect;

@@ -866,16 +866,18 @@ export function useCreateOrderLineItem(orderId: string) {
         credentials: "include",
       });
       if (!response.ok) {
-        const error = await response.json();
-        throw new Error(error.message || "Failed to create line item");
+        const error = await response.json().catch(() => null);
+        throw new Error(error?.message || "Failed to create line item");
       }
       return response.json();
     },
-    onSuccess: () => {
+    onSuccess: (_created: any, variables: any) => {
       invalidateOrderOperationalQueries(queryClient, orderId);
       toast({
-        title: "Success",
-        description: "Line item added successfully",
+        title: variables?.duplicateSourceLineItemId ? "Item duplicated" : "Success",
+        description: variables?.duplicateSourceLineItemId
+          ? "Commercial details were copied. Artwork remains on the original item."
+          : "Line item added successfully",
       });
     },
     onError: (error: Error) => {

@@ -88,6 +88,7 @@ import {
 } from "@shared/lineItemPriceOverrides";
 import {
   buildProductReplacementDraft,
+  buildOrderLineItemDuplicatePayload,
   buildSavedSnapshotAfterLineItemSave,
   hydrateExpandedOrderLineItemOptionState,
   hydratePersistedArtworkSideIntent,
@@ -2417,34 +2418,14 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const handleDuplicateItem = async (item: OrderLineItem) => {
     try {
-      const payload: any = {
-        orderId,
-        productId: item.productId,
-        productVariantId: item.productVariantId,
-        description: item.description,
-        width: item.width ? Number.parseFloat(item.width) : null,
-        height: item.height ? Number.parseFloat(item.height) : null,
-        quantity: item.quantity,
-        unitPrice: item.unitPrice,
-        totalPrice: item.totalPrice,
-        status: item.status || "new",
-        requiresDesign: Boolean((item as any).requiresDesign),
-        requiresPrepress: Boolean((item as any).requiresPrepress),
-        requiresProofApproval: Boolean((item as any).requiresProofApproval),
-        sortOrder: (item as any).sortOrder ?? 0,
-        specsJson: item.specsJson || null,
-      };
-
+      const payload = buildOrderLineItemDuplicatePayload(item);
       await createLineItem.mutateAsync(payload);
       if (onAfterLineItemsChange) {
         await onAfterLineItemsChange();
       }
-    } catch (err: any) {
-      toast({
-        title: "Error",
-        description: err?.message || "Failed to duplicate item",
-        variant: "destructive",
-      });
+    } catch {
+      // useCreateOrderLineItem owns the error toast so a failed duplicate is
+      // reported once with the backend's specific validation message.
     }
   };
 
