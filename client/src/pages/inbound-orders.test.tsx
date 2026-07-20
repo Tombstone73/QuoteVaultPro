@@ -577,6 +577,7 @@ function renderPage() {
       </QueryClientProvider>,
     );
   });
+  return queryClient;
 }
 
 function labeledControl(labelText: string, selector: string) {
@@ -6095,6 +6096,7 @@ describe("InboundOrdersPage", () => {
           success: true,
           data: {
             orderId: "order_1",
+            orderNumber: "1001",
             inboundOrderId: "inbound_1",
             convertedAt: "2026-06-09T12:30:00.000Z",
             alreadyConverted: false,
@@ -6112,7 +6114,9 @@ describe("InboundOrdersPage", () => {
     });
 
     try {
-      renderPage();
+      const queryClient = renderPage();
+      const invalidateQueriesSpy = jest.spyOn(queryClient, "invalidateQueries");
+      const setQueryDataSpy = jest.spyOn(queryClient, "setQueryData");
       await waitForText("Phase 4: Create draft order from reviewed inbound record.");
 
       const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
@@ -6124,18 +6128,34 @@ describe("InboundOrdersPage", () => {
       await act(async () => {
         Simulate.click(createDraftButton!);
       });
-      await waitForText("Open created order");
+      await waitForText("Open order 1001");
 
       expect(confirmSpy).toHaveBeenCalled();
       expect(apiFetchMock).toHaveBeenCalledWith(
         "/api/inbound-orders/inbound_1/convert-to-order",
         expect.objectContaining({ method: "POST", body: JSON.stringify({}) }),
       );
-      expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({ title: "Draft order created" }));
+      expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
+        title: "Draft order created",
+        description: expect.stringContaining("Order 1001"),
+      }));
+      expect(setQueryDataSpy).toHaveBeenCalledWith(
+        ["orders", "detail", "order_1"],
+        expect.objectContaining({ id: "order_1", orderNumber: "1001" }),
+      );
+      expect(invalidateQueriesSpy).toHaveBeenCalledWith({ queryKey: ["orders", "list"] });
+      expect(container.querySelector("a[href='/orders/order_1']")?.textContent).toContain("Open order 1001");
       expect(container.querySelector("a[href='/orders/order_1']")).toBeTruthy();
       await waitForText("No inbound records");
 
-      const convertedFilter = Array.from(container.querySelectorAll("button")).find((button) => (
+      act(() => {
+        (container.querySelector("[aria-label='Open queue filters']") as HTMLButtonElement).click();
+      });
+      await waitForCondition(
+        () => Boolean(document.body.querySelector("[data-testid='inbound-queue-filters-popover']")),
+        "converted queue filters",
+      );
+      const convertedFilter = Array.from(document.body.querySelectorAll("button")).find((button) => (
         button.textContent?.includes("Converted")
       ));
       act(() => {
@@ -6202,6 +6222,11 @@ describe("InboundOrdersPage", () => {
       ));
       expect(retryButton?.disabled).toBe(false);
       expect(confirmSpy).toHaveBeenCalled();
+      expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
+        title: "Draft order was not created",
+        variant: "destructive",
+      }));
+      expect(mockToast).not.toHaveBeenCalledWith(expect.objectContaining({ title: "Draft order created" }));
     } finally {
       confirmSpy.mockRestore();
     }

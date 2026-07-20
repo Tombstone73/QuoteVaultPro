@@ -768,6 +768,7 @@ export type InboundOrderConvertToOrderResponse = {
   success: boolean;
   data: {
     orderId: string;
+    orderNumber: string;
     inboundOrderId: string;
     convertedAt: string;
     alreadyConverted?: boolean;
