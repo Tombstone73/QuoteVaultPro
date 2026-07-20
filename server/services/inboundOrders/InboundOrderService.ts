@@ -3964,6 +3964,54 @@ export class InboundOrderService {
     // structured conversion metadata respectively.
     const listLabel = "Created from inbound review";
 
+    const pricedLineItems: InboundQuoteDraftLineInput[] = [];
+    for (const lineItem of preview.lineItemsToConvert) {
+      const optionSelections = this.normalizePbv2Selections(
+        getPathValue(lineItem.snapshotJson, "optionSelectionsJson"),
+      );
+      const pbv2TreeVersionId = stringFromUnknown(
+        getPathValue(lineItem.snapshotJson, "pbv2TreeVersionId"),
+      );
+      let pricing;
+      try {
+        pricing = await this.priceLineItemFn({
+          organizationId: args.organizationId,
+          productId: lineItem.productId,
+          quantity: lineItem.quantity,
+          widthIn: lineItem.width,
+          heightIn: lineItem.height,
+          pbv2ExplicitSelections: optionSelections.selected,
+          pbv2TreeVersionIdOverride: pbv2TreeVersionId ?? undefined,
+        });
+      } catch (error) {
+        throw new InboundOrderTransitionError(
+          `${lineItem.productName}: ${error instanceof Error ? error.message : "pricing failed before quote creation"}`,
+        );
+      }
+      if (!pricing || !Number.isFinite(pricing.lineTotalCents) || pricing.lineTotalCents < 0) {
+        throw new InboundOrderTransitionError(
+          `${lineItem.productName}: pricing did not return a valid line total before quote creation.`,
+        );
+      }
+      pricedLineItems.push({
+        ...lineItem,
+        pricing: {
+          lineTotalCents: Math.round(pricing.lineTotalCents),
+          pbv2TreeVersionId: pricing.pbv2TreeVersionId,
+          pbv2SnapshotJson: pricing.pbv2SnapshotJson,
+          optionSelectionsJson: optionSelections,
+          selectedOptions: pricing.pbv2SnapshotJson.selectedOptions ?? [],
+          breakdown: {
+            baseCents: pricing.breakdown.baseCents,
+            optionsCents: pricing.breakdown.optionsCents,
+            totalCents: pricing.breakdown.totalCents,
+            pricingMethod: pricing.breakdown.pricingMethod ?? "pbv2",
+            nestingDetails: pricing.breakdown.nestingDetails,
+          },
+        },
+      });
+    }
+
     const result = await this.repository.createQuoteDraftFromInboundReview(args.organizationId, {
       inboundRecordId: args.inboundRecordId,
       actorUserId: args.actorUserId,
@@ -3977,7 +4025,7 @@ export class InboundOrderService {
       listLabel,
       snapshotId: latestReviewSnapshot.id,
       snapshotVersion: latestReviewSnapshot.snapshotVersion,
-      lineItems: preview.lineItemsToConvert,
+      lineItems: pricedLineItems,
       skippedLineItems: preview.skippedLineItems,
       conversionMetadata,
     });
