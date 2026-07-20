@@ -8,6 +8,7 @@ describe("buildDuplicatedProductInsert", () => {
       id: "prod_1",
       organizationId: "org_1",
       name: "Banner",
+      shopName: "Banner",
       description: "Desc",
       productTypeId: null,
       pricingFormula: "sqft * p * q",
@@ -58,6 +59,7 @@ describe("buildDuplicatedProductInsert", () => {
     expect((original.pricingProfileConfig as any).nested.a).toBe(1);
     expect(original.thumbnailUrls).toEqual(["a.png"]);
     expect((dup as any).pricingEngine).toBe("formulaLibrary");
+    expect(dup.shopName).toBe("Banner");
     expect((dup as any).requiresProofApproval).toBe(true);
   });
 

@@ -441,12 +441,15 @@ export function resolveLineItemMaterialDisplayLabel(args: {
 
 export function resolveLineItemMediaLabel(args: {
   lineItem?: any;
+  productShopName?: string | null;
   materialName?: string | null;
   materialById?: MaterialDisplayLookup | null;
   primaryMaterialName?: string | null;
   productPrimaryMaterialId?: string | null;
   treeJson?: unknown;
 }): string {
+  const shopName = cleanString(args.productShopName);
+  if (shopName) return shopName;
   const label = resolveLineItemMaterialDisplayLabel(args);
   return label || "Not specified";
 }
@@ -762,9 +765,10 @@ const isPrepressProductLabelEnhancer = (row: ProductionDisplayOptionRow): boolea
  */
 export function resolvePrepressJobSpecificationsDisplay(args: {
   productName?: string | null;
+  productShopName?: string | null;
   optionRows?: ProductionDisplayOptionRow[] | null;
 }): PrepressJobSpecificationsDisplay {
-  const productName = cleanString(args.productName) || "—";
+  const productName = cleanString(args.productShopName) || cleanString(args.productName) || "—";
   const dedupedByKey = new Map<string, ProductionDisplayOptionRow>();
 
   for (const row of args.optionRows ?? []) {
@@ -811,6 +815,7 @@ export function resolveLineItemProductionDisplayData(args: {
   treeJson?: any;
   materialName?: string | null;
   primaryMaterialName?: string | null;
+  productShopName?: string | null;
 }): LineItemProductionDisplayData {
   const lineItem = args.lineItem ?? {};
   const rawPriority = cleanString(lineItem.priority);
@@ -838,6 +843,7 @@ export function resolveLineItemProductionDisplayData(args: {
   return {
     mediaLabel: resolveLineItemMediaLabel({
       lineItem,
+      productShopName: args.productShopName,
       materialName: args.materialName,
       primaryMaterialName: args.primaryMaterialName,
     }),

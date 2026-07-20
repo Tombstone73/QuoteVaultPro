@@ -53,6 +53,7 @@ import { normalizeProductionStationKey } from "@shared/productionStations";
 import {
   buildPrepressOptionRows,
   extractFinishingBullets,
+  resolvePrepressJobSpecificationsDisplay,
   type ProductionDisplayOptionRow,
 } from "./flatStockNesting.shared";
 import {
@@ -1049,11 +1050,13 @@ export function registerProductionJobsRoutes(
       const productIds = Array.from(new Set(
         lineItemRows.map((li) => li.productId).filter((value): value is string => typeof value === "string" && !!value.trim()),
       ));
-      const productById = new Map<string, { pricingProfileConfig: unknown; sheetWidth: unknown; sheetHeight: unknown; materialType: unknown }>();
+      const productById = new Map<string, { name: string; shopName: string | null; pricingProfileConfig: unknown; sheetWidth: unknown; sheetHeight: unknown; materialType: unknown }>();
       if (productIds.length > 0) {
         const productRows = await db
           .select({
             id: products.id,
+            name: products.name,
+            shopName: products.shopName,
             pricingProfileConfig: products.pricingProfileConfig,
             sheetWidth: products.sheetWidth,
             sheetHeight: products.sheetHeight,
@@ -1073,6 +1076,8 @@ export function registerProductionJobsRoutes(
           width: any;
           height: any;
           productId: string | null;
+          productFormalName: string | null;
+          productShopName: string | null;
           pricingProfileConfig: unknown;
           sheetWidth: unknown;
           sheetHeight: unknown;
@@ -1100,6 +1105,8 @@ export function registerProductionJobsRoutes(
           width: any;
           height: any;
           productId: string | null;
+          productFormalName: string | null;
+          productShopName: string | null;
           pricingProfileConfig: unknown;
           sheetWidth: unknown;
           sheetHeight: unknown;
@@ -1126,6 +1133,8 @@ export function registerProductionJobsRoutes(
           width: li.width,
           height: li.height,
           productId: li.productId ?? null,
+          productFormalName: li.productId ? productById.get(li.productId)?.name ?? null : null,
+          productShopName: li.productId ? productById.get(li.productId)?.shopName ?? null : null,
           pricingProfileConfig: li.productId ? productById.get(li.productId)?.pricingProfileConfig ?? null : null,
           sheetWidth: li.productId ? productById.get(li.productId)?.sheetWidth ?? null : null,
           sheetHeight: li.productId ? productById.get(li.productId)?.sheetHeight ?? null : null,
@@ -1486,6 +1495,13 @@ export function registerProductionJobsRoutes(
         // Job description: Prefer line item description, fallback to "Job #{id}"
         const jobDescription = String(primaryLineItem?.description || "").trim() || `Job #${row.id.slice(-8)}`;
         const lineItemDisplay = buildLineItemProductionDisplay(primaryLineItem);
+        if (primaryLineItem?.productShopName) {
+          media = resolvePrepressJobSpecificationsDisplay({
+            productName: primaryLineItem.productFormalName ?? primaryLineItem.description,
+            productShopName: primaryLineItem.productShopName,
+            optionRows: lineItemDisplay.optionRows,
+          }).productLabel;
+        }
         if (primaryLineItem) {
           (primaryLineItem as any).optionSelectionsJson = {
             ...((primaryLineItem as any).optionSelectionsJson ?? {}),
@@ -1653,6 +1669,7 @@ export function registerProductionJobsRoutes(
             const orderNumber = String(j.order?.orderNumber ?? "").toLowerCase();
             const customerName = String(j.order?.customerName ?? "").toLowerCase();
             const desc = String(j.order?.lineItems?.primary?.description ?? j.jobDescription ?? "").toLowerCase();
+            const formalProductName = String(j.order?.lineItems?.primary?.productFormalName ?? "").toLowerCase();
             const media = String(j.media ?? j.mediaLabel ?? j.order?.lineItems?.primary?.materialName ?? "").toLowerCase();
             const jobNumber = String(j.id ?? "").toLowerCase();
             const poNumber = String(j.order?.poNumber ?? j.poNumber ?? "").toLowerCase();
@@ -1667,6 +1684,7 @@ export function registerProductionJobsRoutes(
               poNumber.includes(q) ||
               customerName.includes(q) ||
               desc.includes(q) ||
+              formalProductName.includes(q) ||
               media.includes(q) ||
               notesText.toLowerCase().includes(q) ||
               fileNames.toLowerCase().includes(q);
@@ -1986,11 +2004,13 @@ export function registerProductionJobsRoutes(
       const productIds = Array.from(new Set(
         lineItemRows.map((li) => li.productId).filter((value): value is string => typeof value === "string" && !!value.trim()),
       ));
-      const productById = new Map<string, { pricingProfileConfig: unknown; sheetWidth: unknown; sheetHeight: unknown; materialType: unknown }>();
+      const productById = new Map<string, { name: string; shopName: string | null; pricingProfileConfig: unknown; sheetWidth: unknown; sheetHeight: unknown; materialType: unknown }>();
       if (productIds.length > 0) {
         const productRows = await db
           .select({
             id: products.id,
+            name: products.name,
+            shopName: products.shopName,
             pricingProfileConfig: products.pricingProfileConfig,
             sheetWidth: products.sheetWidth,
             sheetHeight: products.sheetHeight,
@@ -2008,6 +2028,8 @@ export function registerProductionJobsRoutes(
         width: li.width,
         height: li.height,
         productId: li.productId ?? null,
+        productFormalName: li.productId ? productById.get(li.productId)?.name ?? null : null,
+        productShopName: li.productId ? productById.get(li.productId)?.shopName ?? null : null,
         pricingProfileConfig: li.productId ? productById.get(li.productId)?.pricingProfileConfig ?? null : null,
         sheetWidth: li.productId ? productById.get(li.productId)?.sheetWidth ?? null : null,
         sheetHeight: li.productId ? productById.get(li.productId)?.sheetHeight ?? null : null,
@@ -2272,6 +2294,13 @@ export function registerProductionJobsRoutes(
       const jobDescription = String(primaryLineItem?.description || "").trim() || `Job #${job.id.slice(-8)}`;
       const config = await getProductionConfigForOrganization(organizationId);
       const lineItemDisplay = buildLineItemProductionDisplay(primaryLineItem);
+      if (primaryLineItem.productShopName) {
+        media = resolvePrepressJobSpecificationsDisplay({
+          productName: primaryLineItem.productFormalName ?? primaryLineItem.description,
+          productShopName: primaryLineItem.productShopName,
+          optionRows: lineItemDisplay.optionRows,
+        }).productLabel;
+      }
       (primaryLineItem as any).optionSelectionsJson = {
         ...((primaryLineItem as any).optionSelectionsJson ?? {}),
         lamination: lineItemDisplay.lamination.label,
@@ -2331,6 +2360,13 @@ export function registerProductionJobsRoutes(
         let rowMedia = String(li?.materialName || "").trim();
         if (!rowMedia) rowMedia = String(li?.description || "").trim();
         if (!rowMedia) rowMedia = "—";
+        if (li?.productShopName) {
+          rowMedia = resolvePrepressJobSpecificationsDisplay({
+            productName: li.productFormalName ?? li.description,
+            productShopName: li.productShopName,
+            optionRows: buildLineItemProductionDisplay(li).optionRows,
+          }).productLabel;
+        }
 
         const rowWidth = li?.width;
         const rowHeight = li?.height;

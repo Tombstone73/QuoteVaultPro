@@ -934,8 +934,10 @@ export function registerPrepressQueueRoutes(
           requiresProofApproval: orderLineItems.requiresProofApproval,
           approvedProofVersionId: orderLineItems.approvedProofVersionId,
           description: orderLineItems.description,
+          productFormalName: products.name,
           productType: orderLineItems.productType,
           productTypeId: products.productTypeId,
+          productShopName: products.shopName,
           productPrimaryMaterialId: products.primaryMaterialId,
           pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
           pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
@@ -1294,10 +1296,12 @@ export function registerPrepressQueueRoutes(
           lineItem: { ...item, lineItemId: item.lineItemId },
           treeJson,
           materialName: item.materialName ?? null,
+          productShopName: item.productShopName ?? null,
           primaryMaterialName: item.productPrimaryMaterialId ? productPrimaryMaterialNameById.get(item.productPrimaryMaterialId) ?? null : null,
         });
         const specificationsDisplay = resolvePrepressJobSpecificationsDisplay({
-          productName: item.description,
+          productName: item.productFormalName ?? item.description,
+          productShopName: item.productShopName ?? null,
           optionRows: displayData.optionRows,
         });
         const finishingBullets = specificationsDisplay.optionRows
@@ -1342,12 +1346,13 @@ export function registerPrepressQueueRoutes(
           jobNumber: item.orderNumber,
           customerName: item.customerName ?? "—",
           productName: specificationsDisplay.productLabel,
+          formalProductName: item.productFormalName ?? item.description,
           printType: item.productType ?? null,
           suggestedProductionDestination: destination.suggested,
           selectedProductionDestination: destination.selected,
           destinationOverrideActive: destination.overrideActive,
           productionDestinationLabel: getProductionStationLabel(destination.selected),
-          media: displayData.mediaLabel,
+          media: item.productShopName ? specificationsDisplay.productLabel : displayData.mediaLabel,
           dueDate: item.dueDate ?? null,
           status: item.status,
           workflowState: item.workflowState,
@@ -1434,6 +1439,7 @@ export function registerPrepressQueueRoutes(
               item.orderId,
               item.customerName,
               item.productName,
+              item.formalProductName,
               item.productionDestinationLabel,
               item.media,
               item.lineItemId,
@@ -1972,7 +1978,9 @@ export function registerPrepressQueueRoutes(
           priority: orders.priority,
           customerName: customers.companyName,
           materialName: materials.name,
+          productFormalName: products.name,
           productPrimaryMaterialId: products.primaryMaterialId,
+          productShopName: products.shopName,
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
@@ -2006,10 +2014,12 @@ export function registerPrepressQueueRoutes(
         lineItem: { ...li, priority: row.priority },
         treeJson: treeVersion?.treeJson,
         materialName: row.materialName ?? null,
+        productShopName: row.productShopName ?? null,
         primaryMaterialName: primaryMaterial?.name ?? null,
       });
       const specificationsDisplay = resolvePrepressJobSpecificationsDisplay({
-        productName: li.description,
+        productName: row.productFormalName ?? li.description,
+        productShopName: row.productShopName ?? null,
         optionRows: displayData.optionRows,
       });
       const printSides = resolveProductionSides(li);
@@ -2059,7 +2069,7 @@ export function registerPrepressQueueRoutes(
           width,
           height,
           sqFootage: computedSqFt ?? (li.sqft != null ? Number(li.sqft) : null),
-          media: displayData.mediaLabel,
+          media: row.productShopName ? specificationsDisplay.productLabel : displayData.mediaLabel,
           printType: li.productType,
           productionDestination: getProductionStationLabel(selectedDestination),
           suggestedProductionDestination: getProductionStationLabel(suggestedDestination),

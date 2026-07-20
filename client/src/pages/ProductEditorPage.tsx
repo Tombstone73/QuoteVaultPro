@@ -209,6 +209,7 @@ const ProductEditorPage = () => {
     resolver: zodResolver(insertProductSchema),
     defaultValues: {
       name: "",
+      shopName: null,
       description: "",
       aiParsingDescription: null,
       aiParsingDescriptionLinkedToDescription: false,
@@ -331,6 +332,7 @@ const ProductEditorPage = () => {
       
       const nextValues: ProductFormData = {
         name: product.name,
+        shopName: product.shopName || null,
         description: product.description || "",
         aiParsingDescription: product.aiParsingDescription || null,
         aiParsingDescriptionLinkedToDescription: product.aiParsingDescriptionLinkedToDescription ?? false,

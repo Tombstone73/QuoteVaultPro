@@ -27,6 +27,21 @@ export type SheetProductionLayout = {
   orientation: SheetYieldOrientation;
 };
 
+/** Explains that print passes are sheet impressions derived from sheets and sides. */
+export function describeProductionPrintPasses(input: {
+  sheetsToPrint: number;
+  printPasses: number;
+  sides: ProductionSides;
+}): string {
+  if (input.sides === "Double-sided") {
+    return `Double-sided job: ${input.sheetsToPrint} sheets \u00d7 2 sides (front + back)`;
+  }
+  if (input.sides === "Single-sided") {
+    return `Single-sided job: ${input.sheetsToPrint} sheet${input.sheetsToPrint === 1 ? "" : "s"}`;
+  }
+  return `${input.printPasses} sheet impression${input.printPasses === 1 ? "" : "s"}`;
+}
+
 const asRecord = (value: unknown): Record<string, unknown> | null =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 

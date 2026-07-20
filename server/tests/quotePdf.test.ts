@@ -234,6 +234,23 @@ describe("quote PDF generation", () => {
     expect(getQuotePdfEligibility({ ...validDraftQuote, status: "pending" }).eligible).toBe(true);
   });
 
+  test("customer quote PDF keeps the formal product name", async () => {
+    const bytes = await generateQuotePdfBytes({
+      quote: {
+        ...validDraftQuote,
+        lineItems: [{
+          ...validDraftQuote.lineItems[0],
+          productName: "ACM / Dibond / Max Metal / Aluminum Composite Material",
+          shopName: "ACM",
+        }],
+      },
+      organization: { name: "Titan Graphics", settings: { currency: "USD" } },
+    });
+
+    const text = extractDecodedPdfContent(bytes);
+    expect(text).toContain("ACM / Dibond / Max Metal / Aluminum Composite Material");
+  });
+
   test("includes quantity-only lines and derives PDF totals from effective overrides", async () => {
     const priceOverride = (
       mode: "override_unit_after_margin" | "override_total_after_margin",

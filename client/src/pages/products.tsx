@@ -190,6 +190,7 @@ export default function ProductsPage() {
     resolver: zodResolver(insertProductSchema),
     defaultValues: {
       name: "",
+      shopName: null,
       description: "",
       aiParsingDescription: null,
       aiParsingDescriptionLinkedToDescription: false,
@@ -590,6 +591,20 @@ export default function ProductsPage() {
                           className={fieldState.error ? "border-destructive" : ""}
                         />
                       </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={addProductForm.control}
+                  name="shopName"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Shop name</FormLabel>
+                      <FormControl>
+                        <Input placeholder="e.g., ACM" {...field} value={field.value || ""} />
+                      </FormControl>
+                      <FormDescription>Short internal name shown on production screens.</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
@@ -1368,6 +1383,20 @@ export default function ProductsPage() {
                           className={fieldState.error ? "border-destructive" : ""}
                         />
                       </FormControl>
+                      <FormMessage />
+                    </FormItem>
+                  )}
+                />
+                <FormField
+                  control={editProductForm.control}
+                  name="shopName"
+                  render={({ field }) => (
+                    <FormItem>
+                      <FormLabel>Shop name</FormLabel>
+                      <FormControl>
+                        <Input placeholder="e.g., ACM" {...field} value={field.value || ""} />
+                      </FormControl>
+                      <FormDescription>Short internal name shown on production screens.</FormDescription>
                       <FormMessage />
                     </FormItem>
                   )}
