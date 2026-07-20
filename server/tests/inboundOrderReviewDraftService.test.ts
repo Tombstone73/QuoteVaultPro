@@ -3060,6 +3060,37 @@ describe("InboundOrderService editable review draft", () => {
     });
   });
 
+  test("fails conversion when the durable inbound-to-order link is not persisted", async () => {
+    const { repo, getRecord } = makeRepository();
+    const orderRepo = makeOrderRepository();
+    (repo as any).transaction = jest.fn(async (callback: any) => callback({}, repo));
+    (orderRepo as any).withExecutor = jest.fn(() => orderRepo);
+    (repo.markInboundOrderConvertedToOrder as jest.Mock).mockResolvedValueOnce(null);
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+    await prepareReadyDraft(service, {
+      lineItem: {
+        optionSelectionsJson: completePbv2Selections(),
+        pbv2TreeVersionId: "tree_pvc",
+      },
+    });
+
+    await expect(service.convertInboundReviewDraftToOrder({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toThrow("inbound conversion link could not be persisted");
+
+    expect(orderRepo.createOrderAuditLog).not.toHaveBeenCalled();
+    expect(repo.markInboundOrderConversionFailed).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+    }));
+    expect(getRecord()).toMatchObject({
+      createdOrderId: null,
+      reviewOutcome: "order_conversion_failed",
+    });
+  });
+
   test("returns existing order on repeated conversion without creating a duplicate", async () => {
     const { repo } = makeRepository(inboundRecord({
       status: "submitted",

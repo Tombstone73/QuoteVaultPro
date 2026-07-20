@@ -129,6 +129,11 @@ type ClientInboundOrderParseAttempt = NonNullable<InboundOrderDraftPreviewRespon
 type ClientInboundOrderDraftPreviewResponse = InboundOrderDraftPreviewResponse;
 type ClientInboundOrderReviewDraftResponse = InboundOrderReviewDraftResponse;
 type ReviewDraftFormState = InboundOrderReviewDraftSaveRequest;
+
+type DraftOrderConversionAttempt = {
+  dirty: boolean;
+  blockers: string[];
+};
 type ClientInboundOrderFile = ClientInboundOrderDetailResponse["data"]["files"][number];
 
 type ClientInboundOrderParseResponse = Omit<InboundOrderParseResponse, "data"> & {
@@ -6429,7 +6434,7 @@ function CleanOrderWorkstation({
   onSave: (draft: ReviewDraftFormState) => Promise<void>;
   onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
   onReopen: () => Promise<void>;
-  onConvert: () => Promise<void>;
+  onConvert: (attempt: DraftOrderConversionAttempt) => Promise<void>;
   onConvertQuote: () => Promise<void>;
   onReject: () => void;
   onQueueAction: (action: InboundQueueCleanupAction) => void;
@@ -6646,7 +6651,12 @@ function CleanOrderWorkstation({
     ...unresolvedPricingIssues,
     ...validationErrors,
   ].filter(Boolean) as string[];
-  const canCreateDraftOrder = selectedRecord.status === "ready" && reviewDraft.status === "ready_to_convert" && validationErrors.length === 0;
+  const draftOrderBlockers = cleanUniqueItems([
+    ...minimumConversionIssues,
+    selectedRecord.status !== "ready" ? "Mark this inbound record ready before creating a draft order." : "",
+    reviewDraft.status !== "ready_to_convert" ? "Mark the review draft ready before creating a draft order." : "",
+  ]);
+  const canCreateDraftOrder = !dirty && draftOrderBlockers.length === 0;
   const quoteBlockers = [
     !form.reviewedCustomerJson.selectedCustomerId ? "Assign a permanent customer before creating a draft quote." : null,
     form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
@@ -7069,7 +7079,14 @@ function CleanOrderWorkstation({
             {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             Convert to Draft Quote
           </Button>
-          <Button type="button" size="sm" className="h-8 px-2 text-xs" onClick={() => { void onConvert().catch(() => undefined); }} disabled={!canCreateDraftOrder || isConverting}>
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 px-2 text-xs"
+            onClick={() => { void onConvert({ dirty, blockers: draftOrderBlockers }).catch(() => undefined); }}
+            disabled={actionPending}
+            title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : (dirty ? "Save the current edits before conversion." : draftOrderBlockers[0])}
+          >
             {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             Convert to Draft Order
           </Button>
@@ -7689,7 +7706,7 @@ function DraftBuilderPanel({
   onMarkReady: (draft: ReviewDraftFormState, dirty: boolean) => Promise<void>;
   onReopen: () => Promise<void>;
   onRefreshFromLatestParse: () => Promise<void>;
-  onConvert: () => Promise<void>;
+  onConvert: (attempt: DraftOrderConversionAttempt) => Promise<void>;
   onParse?: () => void;
   isRejecting?: boolean;
   isCleaningUp?: boolean;
@@ -7872,9 +7889,12 @@ function DraftBuilderPanel({
   const unsupportedRequests = form.unsupportedRequestsJson ?? [];
   const convertedOrderId = selectedRecord.createdOrderId ?? null;
   const hasConvertedOrder = Boolean(convertedOrderId);
-  const canCreateDraftOrder = selectedRecord.status === "ready"
-    && reviewDraft.status === "ready_to_convert"
-    && validationErrors.length === 0;
+  const draftOrderBlockers = cleanUniqueItems([
+    ...validationErrors,
+    selectedRecord.status !== "ready" ? "Mark this inbound record ready before creating a draft order." : "",
+    reviewDraft.status !== "ready_to_convert" ? "Mark the review draft ready before creating a draft order." : "",
+  ]);
+  const canCreateDraftOrder = !dirty && draftOrderBlockers.length === 0;
   const updateForm = (patch: Partial<ReviewDraftFormState>) => {
     setForm((current) => current ? { ...current, ...patch } : current);
   };
@@ -9539,9 +9559,9 @@ function DraftBuilderPanel({
                 type="button"
                 size="sm"
                 className="h-8 px-2 text-xs"
-                onClick={() => { void onConvert().catch(() => undefined); }}
-                disabled={!canCreateDraftOrder || actionPending}
-                title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : "Mark the inbound draft ready and resolve validation errors first."}
+                onClick={() => { void onConvert({ dirty, blockers: draftOrderBlockers }).catch(() => undefined); }}
+                disabled={actionPending}
+                title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : (dirty ? "Save the current edits before conversion." : draftOrderBlockers[0])}
               >
                 {isConverting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                 {isConverting ? "Creating..." : isOperationalMode ? (
@@ -10761,8 +10781,34 @@ export default function InboundOrdersPage() {
       artworkAssignments: Object.entries(attachArtworkAssignments).map(([fileId, assignment]) => ({ fileId, ...assignment })),
     });
   };
-  const convertSelectedRecordToOrder = async () => {
-    if (!selectedId || convertToOrderMutation.isPending) return;
+  const convertSelectedRecordToOrder = async ({ dirty, blockers }: DraftOrderConversionAttempt) => {
+    if (!selectedId) {
+      toast({
+        title: "Draft order was not created",
+        description: "Select an inbound record before creating a draft order.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (convertToOrderMutation.isPending) return;
+    if (dirty) {
+      toast({
+        title: "Save changes before conversion",
+        description: reviewDraftQuery.data?.data.status === "ready_to_convert"
+          ? "Reopen the ready draft, save the current edits, and mark it ready again before creating the order."
+          : "Save the current inbound draft edits, then mark the draft ready before creating the order.",
+        variant: "destructive",
+      });
+      return;
+    }
+    if (blockers.length > 0) {
+      toast({
+        title: "Draft order is not ready",
+        description: blockers.slice(0, 3).join(" "),
+        variant: "destructive",
+      });
+      return;
+    }
     const confirmed = window.confirm("Create a draft order from this reviewed inbound record? This will create a real order but will not release production, create proofs, invoices, fulfillment, or payments.");
     if (!confirmed) return;
     await convertToOrderMutation.mutateAsync(selectedId);
