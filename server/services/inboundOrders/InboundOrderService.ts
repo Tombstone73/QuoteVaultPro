@@ -3797,6 +3797,9 @@ export class InboundOrderService {
           actorUserId: args.actorUserId,
         });
         const order = await orderRepository.createOrder(args.organizationId, orderInput);
+        if (!order?.id || !order.orderNumber || order.organizationId !== args.organizationId) {
+          throw new InboundOrderTransitionError("Draft order creation did not return a valid tenant-scoped order.", 500);
+        }
 
         await this.materializeInboundArtworkForOrder({
           organizationId: args.organizationId,
@@ -3816,7 +3819,7 @@ export class InboundOrderService {
           orderLineItemId: String(lineItem.id),
         }));
 
-        await conversionRepository.markInboundOrderConvertedToOrder({
+        const convertedInbound = await conversionRepository.markInboundOrderConvertedToOrder({
           organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
           actorUserId: args.actorUserId,
@@ -3824,6 +3827,9 @@ export class InboundOrderService {
           orderNumber: order.orderNumber ?? null,
           lineItemLinks,
         });
+        if (!convertedInbound || convertedInbound.createdOrderId !== order.id) {
+          throw new InboundOrderTransitionError("Draft order was created but the inbound conversion link could not be persisted.", 500);
+        }
 
         await orderRepository.createOrderAuditLog({
           orderId: order.id,

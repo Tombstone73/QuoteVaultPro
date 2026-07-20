@@ -997,8 +997,18 @@ describe("InboundOrdersPage", () => {
     });
 
     renderPage();
-    await waitForText("All trust statuses");
-    const trustFilter = container.querySelector("select[aria-label='Sender trust filter']") as HTMLSelectElement;
+    await waitForCondition(
+      () => Boolean(container.querySelector("button[aria-label='Open queue filters']")),
+      "queue filter button",
+    );
+    act(() => {
+      Simulate.click(container.querySelector("button[aria-label='Open queue filters']") as HTMLButtonElement);
+    });
+    await waitForCondition(
+      () => Boolean(document.body.querySelector("select[aria-label='Sender trust filter']")),
+      "sender trust filter",
+    );
+    const trustFilter = document.body.querySelector("select[aria-label='Sender trust filter']") as HTMLSelectElement;
 
     act(() => {
       trustFilter.value = "pending_attachment_trust";
@@ -3761,7 +3771,7 @@ describe("InboundOrdersPage", () => {
     ), "duplicated line removed");
   });
 
-  test("shows missing conversion reasons and disables conversion when minimum fields are absent", async () => {
+  test("shows a blocking toast when draft-order conversion requirements are missing", async () => {
     const parsed = parsedDraft({ lineItems: [], missingDecisions: [] });
     const review = reviewDraft(parsed, {
       reviewedCustomerJson: {
@@ -3781,8 +3791,20 @@ describe("InboundOrdersPage", () => {
 
     const orderButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Convert to Draft Order")) as HTMLButtonElement;
     const quoteButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Convert to Draft Quote")) as HTMLButtonElement;
-    expect(orderButton.disabled).toBe(true);
+    expect(orderButton.disabled).toBe(false);
     expect(quoteButton.disabled).toBe(true);
+    await act(async () => {
+      Simulate.click(orderButton);
+    });
+    expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Draft order is not ready",
+      description: expect.stringContaining("Select a customer candidate or mark the customer unresolved."),
+      variant: "destructive",
+    }));
+    expect(apiFetchMock).not.toHaveBeenCalledWith(
+      "/api/inbound-orders/inbound_1/convert-to-order",
+      expect.anything(),
+    );
   });
 
   test("staff edits survive operational/debug view toggles and save with draft payload", async () => {
@@ -4827,7 +4849,7 @@ describe("InboundOrdersPage", () => {
       button.textContent?.includes("Create Draft Order")
     ));
     expect(phaseFourButton).toBeTruthy();
-    expect(phaseFourButton?.disabled).toBe(true);
+    expect(phaseFourButton?.disabled).toBe(false);
   });
 
   test("shows parse loading and error states", async () => {
@@ -5296,7 +5318,7 @@ describe("InboundOrdersPage", () => {
     const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.textContent?.includes("Create Draft Order")
     ));
-    expect(createDraftButton?.disabled).toBe(true);
+    expect(createDraftButton?.disabled).toBe(false);
   });
 
   test("automatically applies the latest parse to stale editable review controls", async () => {
@@ -6099,7 +6121,14 @@ describe("InboundOrdersPage", () => {
       expect(rejectBody).toEqual({ reason: "Spam" });
       expect(promptSpy).toHaveBeenCalled();
 
-      const rejectedFilter = Array.from(container.querySelectorAll("button")).find((button) => (
+      act(() => {
+        Simulate.click(container.querySelector("button[aria-label='Open queue filters']") as HTMLButtonElement);
+      });
+      await waitForCondition(
+        () => Boolean(document.body.querySelector("[data-testid='inbound-queue-filters-popover']")),
+        "rejected queue filters",
+      );
+      const rejectedFilter = Array.from(document.body.querySelectorAll("button")).find((button) => (
         button.textContent?.includes("Rejected")
       ));
       act(() => {
@@ -6294,7 +6323,7 @@ describe("InboundOrdersPage", () => {
     }
   });
 
-  test("edits and saves review draft fields without enabling order creation", async () => {
+  test("edits and saves review draft fields while keeping conversion visibly blocked", async () => {
     const row = record();
     const draft = parsedDraft();
     const attempt = parseAttempt({ parsedDraft: draft, confidence: 82, warnings: draft.globalWarnings });
@@ -6408,6 +6437,13 @@ describe("InboundOrdersPage", () => {
     const orderCreationButton = Array.from(container.querySelectorAll("button")).find((button) => (
       button.textContent?.includes("Create Draft Order")
     ));
-    expect(orderCreationButton?.disabled).toBe(true);
+    expect(orderCreationButton?.disabled).toBe(false);
+    await act(async () => {
+      Simulate.click(orderCreationButton!);
+    });
+    expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
+      title: "Draft order is not ready",
+      variant: "destructive",
+    }));
   });
 });
