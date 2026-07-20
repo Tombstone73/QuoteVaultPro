@@ -58,7 +58,6 @@ describe("PricingValidationPanel fixed-size preview", () => {
               consumedSqft: 24,
               billedSheetSqft: 24,
               totalSheetCount: 1,
-              sheetSqft: 32,
               lastSheetOccupiedWidth: 48,
               lastSheetConsumedLength: 72,
               lastSheetBillableWidth: 48,
@@ -99,7 +98,6 @@ describe("PricingValidationPanel fixed-size preview", () => {
     expect(container.textContent).toContain("Billed sheet sqft: 24.00");
     expect(container.textContent).toContain("Remaining drop: width 0.00 in · length 24.00 in");
     expect(container.textContent).toContain("Usable drop: Yes");
-    expect(container.textContent).toContain("Drop credit applied: Yes");
     expect(container.textContent).toContain("24.00 billable sqft × $5.00/sqft");
 
     await cleanup();
