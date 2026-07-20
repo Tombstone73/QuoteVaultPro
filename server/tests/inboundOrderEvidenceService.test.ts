@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from "@jest/globals";
 import archiver from "archiver";
 
 import {
+  extractPurchaseOrderFields,
   extractMachineReadableWordText,
   inboundOrderEvidenceService,
 } from "../services/inboundOrders/InboundOrderEvidenceService";
@@ -130,6 +131,19 @@ function inboundFile(overrides: Partial<InboundOrderFile> = {}): InboundOrderFil
 }
 
 describe("InboundOrderEvidenceService attachment evidence", () => {
+  test.each([
+    "Qnty 1, 96 x 48",
+    "Qty 1, 96 x 48",
+    "Quantity 1, 96 x 48",
+    "QTY: 1, 96 x 48",
+    "Qnty: 1, 96 x 48",
+  ])("extracts abbreviated quantity from %s", (text) => {
+    const summary = extractPurchaseOrderFields({ text });
+
+    expect(summary.quantity).toBe(1);
+    expect(summary.fieldSources.quantity?.sourceText).toMatch(/(?:qnty|qty|quantity)\s*:?\s*1/i);
+  });
+
   test("extracts readable text from Word document buffers", async () => {
     const buffer = await createDocxBuffer([
       "Purchase Order 151900",
