@@ -56,6 +56,10 @@ import {
 } from "@shared/inboundOrderPbv2Options";
 import { resolveProductionSides } from "@shared/productionHydration";
 import {
+  hasUsableInboundLinePrice,
+  resolveInboundLineEffectivePricing,
+} from "@shared/inboundOrderPricing";
+import {
   inboundOrdersRepository,
   type InboundOrdersRepository,
   type CreateInboundOrderEventValues,
@@ -745,15 +749,28 @@ function firstPoPricingForLine(
 function preservePricingResolution(
   previous: InboundOrderLinePricingReview | null | undefined,
   next: InboundOrderLinePricingReview,
+  quantity: number,
 ): InboundOrderLinePricingReview {
-  if (!previous?.acknowledged || !previous.resolution) return next;
+  const withOverride = {
+    ...next,
+    priceOverrideMode: previous?.priceOverrideMode ?? null,
+    priceOverrideValueCents: previous?.priceOverrideValueCents ?? null,
+    priceOverrideSource: previous?.priceOverrideSource ?? null,
+  };
+  const effective = resolveInboundLineEffectivePricing(withOverride, quantity);
+  const withEffective = {
+    ...withOverride,
+    effectiveUnitPriceCents: effective.effectiveUnitPriceCents,
+    effectiveTotalCents: effective.effectiveTotalCents,
+  };
+  if (!previous?.acknowledged || !previous.resolution) return withEffective;
   const sameComparison = previous.poPriceCents === next.poPriceCents
     && previous.systemPriceCents === next.systemPriceCents
     && previous.differenceCents === next.differenceCents
     && previous.comparisonType === next.comparisonType;
-  if (!sameComparison) return next;
+  if (!sameComparison) return withEffective;
   return {
-    ...next,
+    ...withEffective,
     status: next.status === "mismatch" ? "resolved" : next.status,
     acknowledged: true,
     resolution: previous.resolution,
@@ -764,7 +781,11 @@ function preservePricingResolution(
 function pricingReviewAuditSummary(payload: InboundOrderReviewDraftPayload): Record<string, unknown> {
   const reviews = payload.reviewedLineItemsJson
     .map((lineItem, index) => ({ index, productName: lineItem.productName ?? lineItem.sourceText ?? null, review: lineItem.pricingReviewJson }))
-    .filter((entry) => entry.review && entry.review.status !== "not_available");
+    .filter((entry) => entry.review && (
+      entry.review.status !== "not_available"
+      || entry.review.systemPriceCents !== null
+      || entry.review.priceOverrideMode !== null
+    ));
   return {
     total: reviews.length,
     mismatches: reviews.filter((entry) => entry.review?.status === "mismatch").length,
@@ -777,6 +798,9 @@ function pricingReviewAuditSummary(payload: InboundOrderReviewDraftPayload): Rec
       resolution: entry.review?.resolution ?? null,
       poPriceCents: entry.review?.poPriceCents ?? null,
       systemPriceCents: entry.review?.systemPriceCents ?? null,
+      effectiveTotalCents: entry.review?.effectiveTotalCents ?? null,
+      priceOverrideMode: entry.review?.priceOverrideMode ?? null,
+      priceOverrideSource: entry.review?.priceOverrideSource ?? null,
       differenceCents: entry.review?.differenceCents ?? null,
     })),
   };
@@ -3979,7 +4003,9 @@ export class InboundOrderService {
       const pbv2TreeVersionId = stringFromUnknown(
         getPathValue(lineItem.snapshotJson, "pbv2TreeVersionId"),
       );
-      let pricing;
+      const pricingReview = asRecord(getPathValue(lineItem.snapshotJson, "pricingReviewJson")) as InboundOrderLinePricingReview | null;
+      let pricing: Awaited<ReturnType<typeof priceLineItem>> | null = null;
+      let pricingError: unknown = null;
       try {
         pricing = await this.priceLineItemFn({
           organizationId: args.organizationId,
@@ -3991,30 +4017,44 @@ export class InboundOrderService {
           pbv2TreeVersionIdOverride: pbv2TreeVersionId ?? undefined,
         });
       } catch (error) {
+        pricingError = error;
+      }
+      const calculatedLineTotalCents = pricing && Number.isFinite(pricing.lineTotalCents)
+        ? Math.max(0, Math.round(pricing.lineTotalCents))
+        : 0;
+      const effectivePricing = resolveInboundLineEffectivePricing({
+        ...(pricingReview ?? {}),
+        systemPriceCents: calculatedLineTotalCents,
+      }, lineItem.quantity);
+      if (effectivePricing.effectiveTotalCents <= 0) {
         throw new InboundOrderTransitionError(
-          `${lineItem.productName}: ${error instanceof Error ? error.message : "pricing failed before quote creation"}`,
+          `${lineItem.productName}: pricing did not return a valid line total and no valid override was supplied.${pricingError instanceof Error ? ` ${pricingError.message}` : ""}`,
         );
       }
-      if (!pricing || !Number.isFinite(pricing.lineTotalCents) || pricing.lineTotalCents < 0) {
-        throw new InboundOrderTransitionError(
-          `${lineItem.productName}: pricing did not return a valid line total before quote creation.`,
-        );
-      }
+      const pbv2SnapshotJson = pricing?.pbv2SnapshotJson ?? {
+        pricingSystem: "manual_override",
+        selectedOptions: [],
+        pricing: { totalCents: calculatedLineTotalCents },
+      };
       pricedLineItems.push({
         ...lineItem,
         pricing: {
-          lineTotalCents: Math.round(pricing.lineTotalCents),
-          pbv2TreeVersionId: pricing.pbv2TreeVersionId,
-          pbv2SnapshotJson: pricing.pbv2SnapshotJson,
+          lineTotalCents: effectivePricing.effectiveTotalCents,
+          calculatedLineTotalCents,
+          pbv2TreeVersionId: pricing?.pbv2TreeVersionId ?? pbv2TreeVersionId,
+          pbv2SnapshotJson,
           optionSelectionsJson: optionSelections,
-          selectedOptions: pricing.pbv2SnapshotJson.selectedOptions ?? [],
+          selectedOptions: pbv2SnapshotJson.selectedOptions ?? [],
           breakdown: {
-            baseCents: pricing.breakdown.baseCents,
-            optionsCents: pricing.breakdown.optionsCents,
-            totalCents: pricing.breakdown.totalCents,
-            pricingMethod: pricing.breakdown.pricingMethod ?? "pbv2",
-            nestingDetails: pricing.breakdown.nestingDetails,
+            baseCents: pricing?.breakdown.baseCents ?? calculatedLineTotalCents,
+            optionsCents: pricing?.breakdown.optionsCents ?? 0,
+            totalCents: effectivePricing.effectiveTotalCents,
+            pricingMethod: pricing?.breakdown.pricingMethod ?? "manual_override",
+            nestingDetails: pricing?.breakdown.nestingDetails,
           },
+          priceOverrideMode: effectivePricing.priceOverrideMode as "override_unit_after_margin" | "override_total_after_margin" | null,
+          priceOverrideValueCents: effectivePricing.priceOverrideValueCents,
+          priceOverrideSource: pricingReview?.priceOverrideSource ?? null,
         },
       });
     }
@@ -4483,7 +4523,7 @@ export class InboundOrderService {
       const staffLinks = existingLineItem.artworkLinks.filter((link) => (
         link.source === "staff_selected" || link.source === "staff_removed"
       ));
-      const pricingReviewJson = existingLineItem.pricingReviewJson?.acknowledged
+      const pricingReviewJson = existingLineItem.pricingReviewJson?.acknowledged || existingLineItem.pricingReviewJson?.priceOverrideMode
         ? preservePricingResolution(existingLineItem.pricingReviewJson, lineItem.pricingReviewJson ?? {
           status: "not_available",
           message: null,
@@ -4502,7 +4542,12 @@ export class InboundOrderService {
           sourceEvidence: [],
           alternatePricingNotes: [],
           evaluatedAt: null,
-        })
+          priceOverrideMode: null,
+          priceOverrideValueCents: null,
+          priceOverrideSource: null,
+          effectiveUnitPriceCents: null,
+          effectiveTotalCents: null,
+        }, lineItem.quantity ?? 1)
         : lineItem.pricingReviewJson;
       if (staffLinks.length === 0) return { ...lineItem, pricingReviewJson };
       const staffKeys = new Set(staffLinks.map((link) => artworkLinkKey(link)));
@@ -4567,9 +4612,14 @@ export class InboundOrderService {
         sourceEvidence: poPricing?.sourceEvidence ?? [],
         alternatePricingNotes: poPricing?.pricing.alternatePricingNotes ?? [],
         evaluatedAt: new Date().toISOString(),
+        priceOverrideMode: null,
+        priceOverrideValueCents: null,
+        priceOverrideSource: null,
+        effectiveUnitPriceCents: null,
+        effectiveTotalCents: null,
       };
 
-      if (poPricing && lineItem.selectedProductId && lineItem.quantity) {
+      if (lineItem.selectedProductId && lineItem.quantity) {
         try {
           const pricing = await this.priceLineItemFn({
             organizationId: args.organizationId,
@@ -4582,11 +4632,16 @@ export class InboundOrderService {
           });
           const systemPriceCents = Number.isFinite(pricing.lineTotalCents) ? Math.round(pricing.lineTotalCents) : null;
           const systemUnitPriceCents = systemPriceCents != null && quantity > 0 ? Math.round(systemPriceCents / quantity) : null;
+          nextReview = {
+            ...nextReview,
+            systemPriceCents,
+            systemUnitPriceCents,
+          };
           const comparisons = [
-            { type: "total" as const, po: poPricing.pricing.totalPriceCents, system: systemPriceCents },
-            { type: "extended" as const, po: poPricing.pricing.extendedPriceCents, system: systemPriceCents },
-            { type: "approved" as const, po: poPricing.pricing.approvedPriceCents, system: systemPriceCents },
-            { type: "unit" as const, po: poPricing.pricing.unitPriceCents, system: systemUnitPriceCents },
+            { type: "total" as const, po: poPricing?.pricing.totalPriceCents, system: systemPriceCents },
+            { type: "extended" as const, po: poPricing?.pricing.extendedPriceCents, system: systemPriceCents },
+            { type: "approved" as const, po: poPricing?.pricing.approvedPriceCents, system: systemPriceCents },
+            { type: "unit" as const, po: poPricing?.pricing.unitPriceCents, system: systemUnitPriceCents },
           ]
             .filter((comparison): comparison is {
               type: "total" | "extended" | "approved" | "unit";
@@ -4618,14 +4673,16 @@ export class InboundOrderService {
         } catch {
           nextReview = {
             ...nextReview,
-            message: "System pricing unavailable for PO price comparison.",
+            message: poPricing
+              ? "System pricing unavailable for PO price comparison."
+              : "System pricing unavailable. Enter a valid pricing override before conversion.",
           };
         }
       }
 
       reviewedLineItemsJson.push({
         ...lineItem,
-        pricingReviewJson: preservePricingResolution(lineItem.pricingReviewJson, nextReview),
+        pricingReviewJson: preservePricingResolution(lineItem.pricingReviewJson, nextReview, quantity),
       });
     }
 
@@ -5250,6 +5307,9 @@ export class InboundOrderService {
       if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
         errors.push(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`);
       }
+      if (!hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)) {
+        errors.push(`${label}: system pricing is unavailable or zero. Enter a valid unit or total price override before conversion.`);
+      }
       if (!hasCompleteDoubleSidedArtwork(lineItem)) {
         errors.push(`${label}: assign Back artwork or choose the same artwork for both sides.`);
       }
@@ -5412,21 +5472,39 @@ export class InboundOrderService {
       const lineItem = payload.reviewedLineItemsJson[index];
       const description = lineItem.productName || lineItem.sourceText || `Inbound reviewed item ${index + 1}`;
       const selections = this.normalizePbv2Selections(lineItem.optionSelectionsJson);
-      const pricing = await this.priceLineItemFn({
-        organizationId: detail.record.organizationId,
-        productId: lineItem.selectedProductId!,
-        quantity: lineItem.quantity ?? 1,
-        widthIn: lineItem.width ?? undefined,
-        heightIn: lineItem.height ?? undefined,
-        pbv2ExplicitSelections: selections.selected,
-        pbv2TreeVersionIdOverride: lineItem.pbv2TreeVersionId ?? undefined,
-      });
-      if (!Number.isFinite(pricing.lineTotalCents) || pricing.lineTotalCents <= 0) {
+      let pricing: Awaited<ReturnType<typeof priceLineItem>> | null = null;
+      let pricingError: unknown = null;
+      try {
+        pricing = await this.priceLineItemFn({
+          organizationId: detail.record.organizationId,
+          productId: lineItem.selectedProductId!,
+          quantity: lineItem.quantity ?? 1,
+          widthIn: lineItem.width ?? undefined,
+          heightIn: lineItem.height ?? undefined,
+          pbv2ExplicitSelections: selections.selected,
+          pbv2TreeVersionIdOverride: lineItem.pbv2TreeVersionId ?? undefined,
+        });
+      } catch (error) {
+        pricingError = error;
+      }
+      const currentSystemTotalCents = pricing && Number.isFinite(pricing.lineTotalCents)
+        ? Math.max(0, Math.round(pricing.lineTotalCents))
+        : 0;
+      const effectivePricing = resolveInboundLineEffectivePricing({
+        ...lineItem.pricingReviewJson,
+        systemPriceCents: currentSystemTotalCents,
+      }, lineItem.quantity);
+      if (effectivePricing.effectiveTotalCents <= 0) {
         throw new InboundOrderConversionValidationError(
           "Inbound review draft is not ready for order conversion.",
-          [`${description}: pricing could not calculate a non-zero total. Review required product options before conversion.`],
+          [`${description}: pricing could not calculate a non-zero total and no valid override was supplied.${pricingError instanceof Error ? ` ${pricingError.message}` : ""}`],
         );
       }
+      const pbv2SnapshotJson = pricing?.pbv2SnapshotJson ?? {
+        pricingSystem: "manual_override",
+        selectedOptions: [],
+        pricing: { totalCents: currentSystemTotalCents },
+      };
 
       lineItems.push({
         productId: lineItem.selectedProductId!,
@@ -5437,8 +5515,8 @@ export class InboundOrderService {
         height: lineItem.height ?? null,
         quantity: lineItem.quantity ?? 1,
         sqft: null,
-        unitPrice: pricing.lineTotalCents / 100 / (lineItem.quantity ?? 1),
-        totalPrice: pricing.lineTotalCents / 100,
+        unitPrice: effectivePricing.effectiveUnitPriceCents / 100,
+        totalPrice: effectivePricing.effectiveTotalCents / 100,
         status: "new",
         workflowState: "new",
         requiresDesign: false,
@@ -5467,10 +5545,16 @@ export class InboundOrderService {
           },
           staffReviewedDraft: lineItem,
         },
-        pbv2TreeVersionId: pricing.pbv2TreeVersionId,
+        pbv2TreeVersionId: pricing?.pbv2TreeVersionId ?? lineItem.pbv2TreeVersionId,
         optionSelectionsJson: selections,
-        pbv2SnapshotJson: pricing.pbv2SnapshotJson,
-        selectedOptions: pricing.pbv2SnapshotJson.selectedOptions ?? [],
+        pbv2SnapshotJson,
+        selectedOptions: pbv2SnapshotJson.selectedOptions ?? [],
+        priceOverrideMode: effectivePricing.priceOverrideMode,
+        priceOverrideValueCents: effectivePricing.priceOverrideValueCents,
+        overridePriceCents: effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null,
+        overrideReason: effectivePricing.hasPriceOverride
+          ? lineItem.pricingReviewJson?.priceOverrideSource === "po" ? "Inbound PO price override" : "Inbound staff price override"
+          : null,
         materialUsages: [],
         sortOrder: index,
         taxAmount: 0,
@@ -5644,6 +5728,9 @@ export class InboundOrderService {
       if (lineItem.pricingReviewJson?.status === "mismatch" && (!lineItem.pricingReviewJson.acknowledged || !lineItem.pricingReviewJson.resolution)) {
         errors.push(`${label}: PO price differs from system price. Acknowledge or resolve pricing before conversion.`);
       }
+      if (!hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)) {
+        errors.push(`${label}: system pricing is unavailable or zero. Enter a valid unit or total price override before conversion.`);
+      }
       if (!hasCompleteDoubleSidedArtwork(lineItem)) {
         errors.push(`${label}: assign Back artwork or choose the same artwork for both sides.`);
       }
@@ -5796,7 +5883,11 @@ export class InboundOrderService {
         continue;
       }
 
-      if (!width || !height) {
+      const reviewedLineItem = reviewedPayload?.reviewedLineItemsJson[index] ?? null;
+      const requiresDimensions = reviewedLineItem
+        ? this.lineItemRequiresDimensions(reviewedLineItem)
+        : true;
+      if (requiresDimensions && (!width || !height)) {
         skippedLineItems.push({
           index,
           sourceLineItemId,
@@ -5826,8 +5917,11 @@ export class InboundOrderService {
         productName: productName ?? "Inbound review item",
         description: stringFromUnknown(draft.description) ?? stringFromUnknown(draft.sourceText) ?? sourceLineItem?.description ?? null,
         productType: stringFromUnknown(draft.productType),
-        width,
-        height,
+        // Quote line dimensions are currently non-null in the persisted schema.
+        // Quantity-only/service lines use neutral compatibility dimensions; their
+        // measurement mode keeps these values out of order entry and pricing.
+        width: width ?? 1,
+        height: height ?? 1,
         quantity,
         notes: stringFromUnknown(draft.notes),
         artworkFileIds: reviewedPayload?.reviewedLineItemsJson[index]?.artworkLinks

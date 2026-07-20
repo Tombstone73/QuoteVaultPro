@@ -1346,7 +1346,7 @@ describe("InboundOrderService editable review draft", () => {
 
   test("treats classified artwork assigned to a line item as the readiness source of truth", async () => {
     const { repo, getRecord } = makeRepository();
-    const service = new InboundOrderService(repo as any);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
     const initialized = await service.getReviewDraft({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -1429,7 +1429,7 @@ describe("InboundOrderService editable review draft", () => {
       ],
     });
     const { repo } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: missingQuantityDraft }));
-    const service = new InboundOrderService(repo as any);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
     const initialized = await service.getReviewDraft({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -1482,7 +1482,7 @@ describe("InboundOrderService editable review draft", () => {
       }],
     });
     const { repo, getRecord } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: missingQuantityDraft }));
-    const service = new InboundOrderService(repo as any);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
     const initialized = await service.getReviewDraft({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -1545,7 +1545,7 @@ describe("InboundOrderService editable review draft", () => {
       }],
     });
     const { repo, getRecord } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: missingSizeDraft }));
-    const service = new InboundOrderService(repo as any);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
     const initialized = await service.getReviewDraft({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -1619,7 +1619,7 @@ describe("InboundOrderService editable review draft", () => {
       ],
     });
     const { repo } = makeRepository(inboundRecord(), parseAttempt({ parsedDraft: multiLineDraft }));
-    const service = new InboundOrderService(repo as any);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
     const initialized = await service.getReviewDraft({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -1726,7 +1726,7 @@ describe("InboundOrderService editable review draft", () => {
 
   test("marks decisions for a removed trailing line obsolete and allows the remaining complete line to become ready", async () => {
     const { repo } = makeRepository();
-    const service = new InboundOrderService(repo as any);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
     const initialized = await service.getReviewDraft({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -1809,6 +1809,25 @@ describe("InboundOrderService editable review draft", () => {
       differenceCents: 0,
     });
     expect(draft.validationErrors.join("\n")).not.toContain("PO price differs from system price");
+  });
+
+  test("hydrates system pricing for inbound lines even when no PO price was detected", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+
+    const draft = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(draft.reviewedLineItemsJson[0].pricingReviewJson).toMatchObject({
+      systemPriceCents: 4500,
+      systemUnitPriceCents: 1500,
+      effectiveTotalCents: 4500,
+      effectiveUnitPriceCents: 1500,
+      priceOverrideMode: null,
+    });
   });
 
   test("PO total mismatch blocks mark ready until staff resolves it", async () => {
@@ -1941,7 +1960,7 @@ describe("InboundOrderService editable review draft", () => {
 
   test("marks ready after required decisions are acknowledged", async () => {
     const { repo, getRecord } = makeRepository();
-    const service = new InboundOrderService(repo as any);
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
     const initialized = await service.getReviewDraft({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
@@ -2440,6 +2459,47 @@ describe("InboundOrderService editable review draft", () => {
     ))).toBe(true);
   });
 
+  test("carries a reviewed total price override into quote conversion when system pricing is unavailable", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+    await prepareReadyDraft(service, {
+      lineItem: {
+        pricingReviewJson: {
+          priceOverrideMode: "override_total_after_margin",
+          priceOverrideValueCents: 5000,
+          priceOverrideSource: "staff",
+        },
+      },
+    });
+    mockPriceLineItem.mockRejectedValueOnce(new Error("Required product option is unavailable"));
+    (repo.createQuoteDraftFromInboundReview as any).mockResolvedValue({
+      quote: {
+        id: "quote_override",
+        quoteNumber: 1003,
+        status: "draft",
+        totalPrice: "50.00",
+        createdAt: new Date("2026-06-09T12:30:00.000Z"),
+      },
+      lineItems: [{ id: "quote_line_override" }],
+      skippedLineItems: [],
+    });
+
+    await service.createQuoteDraftFromInbound({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    const conversionInput = (repo.createQuoteDraftFromInboundReview as any).mock.calls[0][1];
+    expect(conversionInput.lineItems[0].pricing).toMatchObject({
+      calculatedLineTotalCents: 0,
+      lineTotalCents: 5000,
+      priceOverrideMode: "override_total_after_margin",
+      priceOverrideValueCents: 5000,
+      priceOverrideSource: "staff",
+    });
+  });
+
   test("blocks order conversion when inbound is not ready or draft is missing", async () => {
     const notReadyRepo = makeRepository().repo;
     const notReadyService = new InboundOrderService(notReadyRepo as any, makeOrderRepository() as any, mockPriceLineItem);
@@ -2604,12 +2664,6 @@ describe("InboundOrderService editable review draft", () => {
   });
 
   test("conversion blocks when pricing cannot calculate a non-zero total", async () => {
-    mockPriceLineItem.mockResolvedValueOnce({
-      pbv2TreeVersionId: "tree_pvc",
-      lineTotalCents: 0,
-      breakdown: { baseCents: 0, optionsCents: 0, totalCents: 0 },
-      pbv2SnapshotJson: { pricingSystem: "pbv2", selectedOptions: [], pricing: { totalCents: 0 } },
-    } as any);
     const { repo } = makeRepository();
     const orderRepo = makeOrderRepository();
     const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
@@ -2619,15 +2673,57 @@ describe("InboundOrderService editable review draft", () => {
         pbv2TreeVersionId: "tree_pvc",
       },
     });
+    mockPriceLineItem.mockResolvedValueOnce({
+      pbv2TreeVersionId: "tree_pvc",
+      lineTotalCents: 0,
+      breakdown: { baseCents: 0, optionsCents: 0, totalCents: 0 },
+      pbv2SnapshotJson: { pricingSystem: "pbv2", selectedOptions: [], pricing: { totalCents: 0 } },
+    } as any);
 
     await expect(service.convertInboundReviewDraftToOrder({
       organizationId: "org_1",
       inboundRecordId: "inbound_1",
       actorUserId: "user_1",
     })).rejects.toMatchObject({
-      errors: expect.arrayContaining(["PVC: pricing could not calculate a non-zero total. Review required product options before conversion."]),
+      errors: expect.arrayContaining(["PVC: system pricing is unavailable or zero. Enter a valid unit or total price override before conversion."]),
     });
     expect(orderRepo.createOrder).not.toHaveBeenCalled();
+  });
+
+  test("carries a reviewed unit price override into draft order conversion", async () => {
+    const { repo } = makeRepository();
+    const orderRepo = makeOrderRepository();
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+    await prepareReadyDraft(service, {
+      lineItem: {
+        optionSelectionsJson: completePbv2Selections(),
+        pbv2TreeVersionId: "tree_pvc",
+        pricingReviewJson: {
+          priceOverrideMode: "override_unit_after_margin",
+          priceOverrideValueCents: 2000,
+          priceOverrideSource: "po",
+        },
+      },
+    });
+    mockPriceLineItem.mockRejectedValue(new Error("PBV2 price is unavailable"));
+
+    await service.convertInboundReviewDraftToOrder({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(orderRepo.createOrder).toHaveBeenCalledWith("org_1", expect.objectContaining({
+      lineItems: [expect.objectContaining({
+        quantity: 3,
+        unitPrice: 20,
+        totalPrice: 60,
+        priceOverrideMode: "override_unit_after_margin",
+        priceOverrideValueCents: 2000,
+        overridePriceCents: 6000,
+        overrideReason: "Inbound PO price override",
+      })],
+    }));
   });
 
   test("creates a draft order from a ready inbound review and marks inbound converted", async () => {
