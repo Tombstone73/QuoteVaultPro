@@ -95,6 +95,7 @@ import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { getMissingInboundPbv2RequiredOptions } from "@shared/inboundOrderPbv2Options";
 import {
   getInboundPoPriceSuggestion,
+  hasUsableInboundLinePrice,
   resolveInboundLineEffectivePricing,
   type InboundPriceOverrideMode,
 } from "@shared/inboundOrderPricing";
@@ -2645,6 +2646,28 @@ function hasValidLineItemDimensions(
     && typeof lineItem.height === "number"
     && Number.isFinite(lineItem.height)
     && lineItem.height > 0;
+}
+
+function pricingValidationErrorIsStillBlocking(
+  error: string,
+  reviewedLineItemsJson: ReviewDraftFormState["reviewedLineItemsJson"],
+): boolean | null {
+  if (!/system pricing is unavailable|valid unit or total price override|price(?: is)? needed/i.test(error)) return null;
+  const lineMatch = error.match(/line\s+(\d+)/i);
+  if (lineMatch) {
+    const lineItem = reviewedLineItemsJson[Number(lineMatch[1]) - 1];
+    return !lineItem || !hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity);
+  }
+  const matchingLineItem = reviewedLineItemsJson.find((lineItem) => {
+    const label = lineItem.productName || lineItem.sourceText;
+    return Boolean(label && error.toLowerCase().startsWith(`${label.toLowerCase()}:`));
+  });
+  if (matchingLineItem) {
+    return !hasUsableInboundLinePrice(matchingLineItem.pricingReviewJson, matchingLineItem.quantity);
+  }
+  return !reviewedLineItemsJson.every((lineItem) => (
+    hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)
+  ));
 }
 
 function artworkDecisionIsResolvedByAssignment(
@@ -6658,6 +6681,8 @@ function CleanOrderWorkstation({
       if (lineMatch) return !hasValidLineItemDimensions(form.reviewedLineItemsJson[Number(lineMatch[1]) - 1]);
       return !form.reviewedLineItemsJson.every(hasValidLineItemDimensions);
     }
+    const pricingStillBlocking = pricingValidationErrorIsStillBlocking(error, form.reviewedLineItemsJson);
+    if (pricingStillBlocking !== null) return pricingStillBlocking;
     if (!/quantity/i.test(error)) return true;
     const lineMatch = error.match(/line\s+(\d+)/i);
     if (lineMatch) return !hasValidLineItemQuantity(form.reviewedLineItemsJson[Number(lineMatch[1]) - 1]);
@@ -7474,6 +7499,22 @@ function PricingReviewCard({
   quantity: number | null;
   onChange: (review: NonNullable<ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"]>) => void;
 }) {
+  const initialOverrideCents = review?.priceOverrideValueCents ?? null;
+  const overrideInputRef = useRef<HTMLInputElement>(null);
+  const overrideCentsRef = useRef<number | null>(initialOverrideCents);
+  const [overrideAmountText, setOverrideAmountText] = useState(() => (
+    initialOverrideCents != null && initialOverrideCents > 0
+      ? (initialOverrideCents / 100).toFixed(2)
+      : ""
+  ));
+  useEffect(() => {
+    const nextCents = review?.priceOverrideValueCents ?? null;
+    if (overrideCentsRef.current === nextCents) return;
+    overrideCentsRef.current = nextCents;
+    if (document.activeElement !== overrideInputRef.current) {
+      setOverrideAmountText(nextCents != null && nextCents > 0 ? (nextCents / 100).toFixed(2) : "");
+    }
+  }, [review?.priceOverrideValueCents]);
   if (!review) return null;
   const quantity = Math.max(1, quantityValue ?? 1);
   const effective = resolveInboundLineEffectivePricing(review, quantity);
@@ -7507,6 +7548,8 @@ function PricingReviewCard({
   });
   const applyPoSuggestion = () => {
     if (!poSuggestion) return;
+    overrideCentsRef.current = poSuggestion.valueCents;
+    setOverrideAmountText((poSuggestion.valueCents / 100).toFixed(2));
     applyChange({
       ...review,
       status: hasMismatch ? "resolved" : review.status,
@@ -7590,16 +7633,21 @@ function PricingReviewCard({
           onChange={(event) => {
             const mode = (trimToNull(event.target.value) as InboundPriceOverrideMode | null);
             if (!mode) {
+              overrideCentsRef.current = null;
+              setOverrideAmountText("");
               clearOverride();
               return;
             }
             const suggestedValue = poSuggestion?.mode === mode ? poSuggestion.valueCents : null;
+            const nextValueCents = review.priceOverrideMode === mode
+              ? review.priceOverrideValueCents
+              : suggestedValue;
+            overrideCentsRef.current = nextValueCents;
+            setOverrideAmountText(nextValueCents != null && nextValueCents > 0 ? (nextValueCents / 100).toFixed(2) : "");
             applyChange({
               ...review,
               priceOverrideMode: mode,
-              priceOverrideValueCents: review.priceOverrideMode === mode
-                ? review.priceOverrideValueCents
-                : suggestedValue,
+              priceOverrideValueCents: nextValueCents,
               priceOverrideSource: "staff",
               resolution: "pricing_exception",
               acknowledged: Boolean(suggestedValue && suggestedValue > 0),
@@ -7612,23 +7660,34 @@ function PricingReviewCard({
           <option value="override_total_after_margin">Total price override</option>
         </select>
         <Input
+          ref={overrideInputRef}
           aria-label="Inbound price override amount"
           type="number"
           min="0"
           step="0.01"
           disabled={!review.priceOverrideMode}
-          value={review.priceOverrideValueCents == null ? "" : (review.priceOverrideValueCents / 100).toFixed(2)}
+          value={overrideAmountText}
           onChange={(event) => {
-            const value = trimToNull(event.target.value);
-            const valueCents = value == null ? null : Math.max(0, Math.round(Number(value) * 100));
+            const nextText = event.target.value;
+            setOverrideAmountText(nextText);
+            const value = trimToNull(nextText);
+            const parsedValue = value == null ? null : Number(value);
+            const valueCents = parsedValue == null || !Number.isFinite(parsedValue)
+              ? null
+              : Math.max(0, Math.round(parsedValue * 100));
+            overrideCentsRef.current = valueCents;
             applyChange({
               ...review,
-              priceOverrideValueCents: Number.isFinite(valueCents) ? valueCents : null,
+              priceOverrideValueCents: valueCents,
               priceOverrideSource: "staff",
               resolution: "pricing_exception",
               acknowledged: valueCents !== null && valueCents > 0,
               status: hasMismatch && valueCents !== null && valueCents > 0 ? "resolved" : review.status,
             });
+          }}
+          onBlur={() => {
+            const valueCents = overrideCentsRef.current;
+            setOverrideAmountText(valueCents != null && valueCents > 0 ? (valueCents / 100).toFixed(2) : "");
           }}
           placeholder="0.00"
         />
@@ -7919,7 +7978,9 @@ function DraftBuilderPanel({
   );
   const productCatalogOptions = (productSearchQuery.data?.data ?? []).map(productToReviewOption);
   const actionPending = isSaving || isMarkingReady || isReopening || isRefreshingFromLatestParse || isConverting;
-  const validationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
+  const validationErrors = (markReadyError?.errors ?? reviewDraft.validationErrors ?? []).filter((error) => (
+    pricingValidationErrorIsStillBlocking(error, form.reviewedLineItemsJson) ?? true
+  ));
   const conversionErrors = convertError?.errors ?? [];
   const unsupportedRequests = form.unsupportedRequestsJson ?? [];
   const convertedOrderId = selectedRecord.createdOrderId ?? null;

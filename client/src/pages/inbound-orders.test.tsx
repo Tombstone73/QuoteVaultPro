@@ -4090,13 +4090,16 @@ describe("InboundOrdersPage", () => {
     await waitForText("$45.00 total");
 
     const overrideMode = container.querySelector("select[aria-label='Inbound price override mode']") as HTMLSelectElement;
+    const overrideAmount = container.querySelector("input[aria-label='Inbound price override amount']") as HTMLInputElement;
+    expect(overrideAmount.disabled).toBe(true);
     act(() => {
       Simulate.change(overrideMode, { target: { value: "override_unit_after_margin" } } as any);
     });
-    const overrideAmount = container.querySelector("input[aria-label='Inbound price override amount']") as HTMLInputElement;
+    expect(overrideAmount.disabled).toBe(false);
     act(() => {
       Simulate.change(overrideAmount, { target: { value: "20.00" } } as any);
     });
+    expect(overrideAmount.value).toBe("20.00");
     await waitForText("$60.00 total");
 
     const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
@@ -4110,6 +4113,73 @@ describe("InboundOrdersPage", () => {
       priceOverrideSource: "staff",
       effectiveUnitPriceCents: 2000,
       effectiveTotalCents: 6000,
+    });
+  });
+
+  test("accepts a total override and clears a stale price-needed blocker when system pricing is unavailable", async () => {
+    const parsed = parsedDraft({
+      lineItems: [{
+        ...parsedDraft().lineItems[0],
+        quantity: null,
+        quantitySource: null,
+        pricingReviewJson: {
+          status: "not_available",
+          message: "PBV2 pricing failed",
+          acknowledged: false,
+          resolution: null,
+          resolutionNote: null,
+          poPriceCents: null,
+          poUnitPriceCents: null,
+          poExtendedPriceCents: null,
+          poRushFeesCents: null,
+          poTotalPriceCents: null,
+          systemPriceCents: 0,
+          systemUnitPriceCents: 0,
+          differenceCents: null,
+          comparisonType: null,
+          sourceEvidence: [],
+          alternatePricingNotes: [],
+          evaluatedAt: "2026-06-09T12:05:00.000Z",
+          priceOverrideMode: null,
+          priceOverrideValueCents: 0,
+          priceOverrideSource: null,
+          effectiveUnitPriceCents: 0,
+          effectiveTotalCents: 0,
+        },
+      }],
+    });
+    const review = reviewDraft(parsed, {
+      validationErrors: ["Banner: system pricing is unavailable or zero. Enter a valid unit or total price override before conversion."],
+    });
+    const { getSavedBody } = setupParsedInboundReview({ parsed, review });
+
+    renderPage();
+    await waitForText("System pricing is unavailable. Enter a unit or total override before conversion.");
+
+    const overrideMode = container.querySelector("select[aria-label='Inbound price override mode']") as HTMLSelectElement;
+    const overrideAmount = container.querySelector("input[aria-label='Inbound price override amount']") as HTMLInputElement;
+    expect(overrideAmount.disabled).toBe(true);
+    act(() => {
+      Simulate.change(overrideMode, { target: { value: "override_total_after_margin" } } as any);
+    });
+    expect(overrideAmount.disabled).toBe(false);
+    act(() => {
+      Simulate.change(overrideAmount, { target: { value: "30.00" } } as any);
+    });
+    expect(overrideAmount.value).toBe("30.00");
+    await waitForText("$30.00 total");
+    await waitForCondition(() => !container.textContent?.includes("system pricing is unavailable or zero"), "stale price blocker cleared");
+
+    const saveButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Save Draft")) as HTMLButtonElement;
+    await act(async () => {
+      Simulate.click(saveButton);
+    });
+    await waitForCondition(() => Boolean(getSavedBody()), "manual total override saved");
+    expect(getSavedBody().reviewedLineItemsJson[0].pricingReviewJson).toMatchObject({
+      priceOverrideMode: "override_total_after_margin",
+      priceOverrideValueCents: 3000,
+      priceOverrideSource: "staff",
+      effectiveTotalCents: 3000,
     });
   });
 

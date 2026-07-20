@@ -274,7 +274,7 @@ function extractPurchaseOrderPricing(text: string, sourceDocument: string | null
 
 function extractQuantity(text: string): number | null {
   return numberValue(firstMatch(text, [
-    /\bqty\.?\s*[:#]?\s*(\d+(?:,\d{3})*)\b/i,
+    /\b(?:qty|qnty)\.?\s*[:#]?\s*(\d+(?:,\d{3})*)\b/i,
     /\bquantity\s*[:#]?\s*(\d+(?:,\d{3})*)\b/i,
     /^\s*(\d+(?:,\d{3})*)\s+(?:[A-Z0-9.]+\s+){0,4}(?:signs?|banners?|posters?|decals?|stickers?|prints?)\b/im,
     /\b(\d+(?:,\d{3})*)\s+(?:[A-Z0-9.]+\s+){0,4}(?:signs?|banners?|posters?|decals?|stickers?|prints?)\b/i,
@@ -283,7 +283,7 @@ function extractQuantity(text: string): number | null {
 
 function extractQuantityWithSource(text: string): { value: number; sourceText: string } | null {
   const matched = firstMatchWithSource(text, [
-    /\bqty\.?\s*[:#]?\s*(\d+(?:,\d{3})*)\b/i,
+    /\b(?:qty|qnty)\.?\s*[:#]?\s*(\d+(?:,\d{3})*)\b/i,
     /\bquantity\s*[:#]?\s*(\d+(?:,\d{3})*)\b/i,
     /^\s*(\d+(?:,\d{3})*)\s+(?:[A-Z0-9.]+\s+){0,4}(?:signs?|banners?|posters?|decals?|stickers?|prints?)\b/im,
     /\b(\d+(?:,\d{3})*)\s+(?:[A-Z0-9.]+\s+){0,4}(?:signs?|banners?|posters?|decals?|stickers?|prints?)\b/i,
