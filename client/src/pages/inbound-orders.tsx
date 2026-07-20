@@ -9451,6 +9451,7 @@ export default function InboundOrdersPage() {
   const [parseCompletedWithoutDraftRecordId, setParseCompletedWithoutDraftRecordId] = useState<string | null>(null);
   const [parseCompletedWithoutDraftMessage, setParseCompletedWithoutDraftMessage] = useState<string | null>(null);
   const [lastConvertedOrderId, setLastConvertedOrderId] = useState<string | null>(null);
+  const [lastConvertedOrderNumber, setLastConvertedOrderNumber] = useState<string | null>(null);
   const [reviewDraftDirtyByRecordId, setReviewDraftDirtyByRecordId] = useState<Record<string, boolean>>({});
   const [sourceChangedByRecordId, setSourceChangedByRecordId] = useState<Record<string, boolean>>({});
   const [cleanForm, setCleanForm] = useState<ReviewDraftFormState | null>(null);
@@ -10153,29 +10154,64 @@ export default function InboundOrdersPage() {
   });
 
   const convertToOrderMutation = useMutation({
-    mutationFn: (recordId: string) => (
-      postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/convert-to-order`, {})
-    ),
+    mutationFn: async (recordId: string) => {
+      const response = await postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/convert-to-order`, {});
+      const orderId = response?.data?.orderId;
+      const orderNumber = response?.data?.orderNumber;
+      const returnedOrderId = response?.data?.order && typeof response.data.order === "object"
+        ? String((response.data.order as { id?: unknown }).id ?? "")
+        : "";
+      const returnedOrderNumber = response?.data?.order && typeof response.data.order === "object"
+        ? String((response.data.order as { orderNumber?: unknown }).orderNumber ?? "")
+        : "";
+      if (
+        response.success !== true
+        || typeof orderId !== "string"
+        || orderId.trim().length === 0
+        || typeof orderNumber !== "string"
+        || orderNumber.trim().length === 0
+        || returnedOrderId !== orderId
+        || returnedOrderNumber !== orderNumber
+      ) {
+        throw new Error("Draft order creation did not return a valid persisted order. Please retry or contact support.");
+      }
+      return response;
+    },
     onSuccess: async (response, recordId) => {
       const orderId = response.data.orderId;
+      const orderNumber = response.data.orderNumber;
       setLastConvertedOrderId(orderId);
+      setLastConvertedOrderNumber(orderNumber);
+      if (response.data.order && typeof response.data.order === "object") {
+        queryClient.setQueryData(["orders", "detail", orderId], response.data.order);
+      }
       if (response.data.inbound) {
         queryClient.setQueryData(["/api/inbound-orders", recordId], {
           success: true,
           data: response.data.inbound as any,
         } satisfies ClientInboundOrderDetailResponse);
       }
-      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] });
-      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] }),
+        queryClient.invalidateQueries({ queryKey: ["orders", "list"] }),
+      ]);
       toast({
         title: response.data.alreadyConverted ? "Draft order already exists" : "Draft order created",
-        description: "Draft order created. Proofs, production, invoices, and fulfillment were not started.",
+        description: `Order ${orderNumber} is ready to open. Proofs, production, invoices, and fulfillment were not started.`,
       });
       if (queueFilters.statusGroup === "converted") {
         setSelectedId(recordId);
       } else {
         setSelectedId(null);
       }
+    },
+    onError: (error: Error) => {
+      toast({
+        title: "Draft order was not created",
+        description: error.message,
+        variant: "destructive",
+      });
     },
   });
 
@@ -10812,7 +10848,7 @@ export default function InboundOrdersPage() {
             <AlertTitle>Draft order created</AlertTitle>
             <AlertDescription>
               <a className="font-medium text-primary underline" href={`/orders/${lastConvertedOrderId}`}>
-                Open created order
+                Open order {lastConvertedOrderNumber ?? lastConvertedOrderId}
               </a>
             </AlertDescription>
           </Alert>

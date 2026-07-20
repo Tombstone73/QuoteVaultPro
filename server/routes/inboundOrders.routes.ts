@@ -2169,6 +2169,7 @@ export function registerInboundOrderRoutes(
         success: true,
         data: {
           orderId: result.orderId,
+          orderNumber: result.orderNumber,
           inboundOrderId: result.inboundOrderId,
           convertedAt: result.convertedAt,
           alreadyConverted: Boolean(result.alreadyConverted),

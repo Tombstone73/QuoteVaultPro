@@ -2032,6 +2032,7 @@ describe("inbound order routes", () => {
     const convertedAt = "2026-06-09T12:30:00.000Z";
     service.convertInboundReviewDraftToOrder.mockResolvedValue({
       orderId: "order_1",
+      orderNumber: "1001",
       inboundOrderId: "inbound_1",
       convertedAt,
       order: {
@@ -2061,6 +2062,7 @@ describe("inbound order routes", () => {
     expect(response.body.success).toBe(true);
     expect(response.body.data).toMatchObject({
       orderId: "order_1",
+      orderNumber: "1001",
       inboundOrderId: "inbound_1",
       convertedAt,
       alreadyConverted: false,

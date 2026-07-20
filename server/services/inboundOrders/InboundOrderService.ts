@@ -442,6 +442,7 @@ export type CreateQuoteDraftFromInboundResult = {
 
 export type ConvertInboundReviewDraftToOrderResult = {
   orderId: string;
+  orderNumber: string;
   inboundOrderId: string;
   convertedAt: string;
   order: OrderWithRelations;
@@ -3723,6 +3724,7 @@ export class InboundOrderService {
       }
       return {
         orderId: existingOrder.id,
+        orderNumber: existingOrder.orderNumber,
         inboundOrderId: detail.record.id,
         convertedAt: formatInboundDate(detail.record.submittedAt ?? detail.record.updatedAt) ?? new Date().toISOString(),
         order: existingOrder,
@@ -3847,6 +3849,7 @@ export class InboundOrderService {
           }
           return {
             orderId: existingOrder.id,
+            orderNumber: existingOrder.orderNumber,
             inboundOrderId: latest.record.id,
             convertedAt: formatInboundDate(latest.record.submittedAt ?? latest.record.updatedAt) ?? new Date().toISOString(),
             order: existingOrder,
@@ -3868,6 +3871,7 @@ export class InboundOrderService {
 
       return {
         orderId: order.id,
+        orderNumber: order.orderNumber,
         inboundOrderId: args.inboundRecordId,
         convertedAt: formatInboundDate(inbound.record.submittedAt ?? inbound.record.updatedAt) ?? new Date().toISOString(),
         order,

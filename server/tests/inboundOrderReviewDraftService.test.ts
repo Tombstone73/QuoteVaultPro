@@ -2691,6 +2691,8 @@ describe("InboundOrderService editable review draft", () => {
     });
 
     expect(result.orderId).toBe("order_1");
+    expect(result.orderNumber).toBe("1001");
+    expect(result.order).toMatchObject({ organizationId: "org_1", state: "open" });
     expect(result.inbound.record.createdOrderId).toBe("order_1");
     expect(getRecord()).toMatchObject({
       status: "submitted",
@@ -2912,6 +2914,56 @@ describe("InboundOrderService editable review draft", () => {
     }));
   });
 
+  test("does not mark inbound converted when transactional artwork materialization fails", async () => {
+    const { repo, getRecord } = makeRepository();
+    const orderRepo = makeOrderRepository();
+    const artwork = inboundFile({
+      id: "file_artwork_failure",
+      fileRecordId: "file_record_artwork_failure",
+      sourceFilename: "artwork.pdf",
+    });
+    (repo.listFiles as jest.Mock).mockResolvedValue([artwork]);
+    (repo as any).transaction = jest.fn(async (callback: any) => callback({}, repo));
+    (orderRepo as any).withExecutor = jest.fn(() => orderRepo);
+    (orderRepo.createOrderAttachment as jest.Mock).mockRejectedValue(new Error("Attachment materialization failed"));
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+    await prepareReadyDraft(service, {
+      lineItem: {
+        optionSelectionsJson: completePbv2Selections(),
+        pbv2TreeVersionId: "tree_pvc",
+        artworkLinks: [{
+          fileId: artwork.id,
+          fileRecordId: artwork.fileRecordId,
+          filename: artwork.sourceFilename,
+          mimeType: artwork.mimeType,
+          sizeBytes: artwork.sizeBytes,
+          role: "artwork",
+          source: "staff_selected",
+          confidence: 100,
+          reason: "Staff selected artwork attachment for this line item.",
+        }],
+      },
+    });
+
+    await expect(service.convertInboundReviewDraftToOrder({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toThrow("Attachment materialization failed");
+
+    expect((repo as any).transaction).toHaveBeenCalledTimes(1);
+    expect(repo.markInboundOrderConvertedToOrder).not.toHaveBeenCalled();
+    expect(repo.markInboundOrderConversionFailed).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      message: "Attachment materialization failed",
+    }));
+    expect(getRecord()).toMatchObject({
+      createdOrderId: null,
+      reviewOutcome: "order_conversion_failed",
+    });
+  });
+
   test("returns existing order on repeated conversion without creating a duplicate", async () => {
     const { repo } = makeRepository(inboundRecord({
       status: "submitted",
@@ -2929,6 +2981,7 @@ describe("InboundOrderService editable review draft", () => {
 
     expect(result.alreadyConverted).toBe(true);
     expect(result.orderId).toBe("order_1");
+    expect(result.orderNumber).toBe("1001");
     expect(orderRepo.createOrder).not.toHaveBeenCalled();
   });
 
