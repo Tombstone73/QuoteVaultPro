@@ -791,6 +791,11 @@ export default function PrepressProductionPageV2() {
         refreshPrepressQueue(),
         refreshPrepressNavigationCount(),
         queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+        queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
+        queryClient.invalidateQueries({ predicate: (query) => {
+          const key = query.queryKey;
+          return Array.isArray(key) && key[0] === "/api/orders";
+        } }),
       ]);
       toast({
         title: failures.length > 0 ? "Print-ready action partially completed" : "Selected lines are print-ready",

@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 import {
   calculateSheetProductionLayout,
   describeProductionPrintPasses,
+  resolveLineItemProductionArtwork,
   resolveProductionArtworkSideReadiness,
   resolveProductionArtworkSides,
   resolveProductionPreviewUrl,
@@ -47,6 +48,24 @@ describe("production print passes", () => {
 });
 
 describe("production artwork hydration", () => {
+  test("uses the promoted file ID per line and never leaks another line's order thumbnail", () => {
+    const orderArtwork = [
+      { id: "party", fileRecordId: "record-party", side: "both", thumbnailUrl: "/party.png" },
+      { id: "line-3", fileRecordId: "record-line-3", side: "front", thumbnailUrl: "/line-3.png" },
+    ];
+
+    expect(resolveLineItemProductionArtwork({
+      lineItemArtwork: [],
+      orderArtwork,
+      productionFileRecordIds: ["record-line-3"],
+    })).toEqual([orderArtwork[1]]);
+    expect(resolveLineItemProductionArtwork({
+      lineItemArtwork: [],
+      orderArtwork,
+      productionFileRecordIds: [],
+    })).toEqual([]);
+  });
+
   test("prefers an explicit thumbnail URL over every other preview candidate", () => {
     expect(resolveProductionPreviewUrl({
       thumbnailUrl: "/objects/thumbs/front.jpg",

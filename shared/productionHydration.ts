@@ -18,6 +18,34 @@ export type ProductionArtworkAssignment = {
   side?: string | null;
 };
 
+/**
+ * Resolves artwork for a line-specific production job. A promoted final file's
+ * stable file-record ID is authoritative; order-level artwork is considered only
+ * when it matches that exact ID. This prevents another line's representative
+ * order thumbnail from leaking into the current production job.
+ */
+export function resolveLineItemProductionArtwork<T extends ProductionArtworkAssignment>(input: {
+  lineItemArtwork?: T[] | null;
+  orderArtwork?: T[] | null;
+  productionFileRecordIds?: Array<string | null | undefined> | null;
+}): T[] {
+  const direct = Array.isArray(input.lineItemArtwork) ? input.lineItemArtwork : [];
+  const order = Array.isArray(input.orderArtwork) ? input.orderArtwork : [];
+  const productionIds = new Set((input.productionFileRecordIds ?? [])
+    .filter((id): id is string => typeof id === "string" && id.trim().length > 0));
+  const candidateMap = new Map<string, T>();
+  for (const candidate of [...direct, ...order]) {
+    const identity = candidate.fileRecordId || candidate.id;
+    if (identity && !candidateMap.has(identity)) candidateMap.set(identity, candidate);
+  }
+  if (productionIds.size > 0) {
+    return Array.from(candidateMap.values()).filter((candidate) =>
+      !!candidate.fileRecordId && productionIds.has(candidate.fileRecordId),
+    );
+  }
+  return direct;
+}
+
 export type SheetProductionLayout = {
   sheetWidthIn: number;
   sheetHeightIn: number;
