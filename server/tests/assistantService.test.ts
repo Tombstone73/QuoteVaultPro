@@ -5,6 +5,8 @@ let AssistantService: any;
 let AssistantServiceError: any;
 let ASSISTANT_UNAVAILABLE_REPLY: string;
 let resolveAssistantCapabilityQuestion: any;
+let assistantCapabilityCommandPermissions: any;
+let assistantCapabilityCommandDescriptions: any;
 
 beforeAll(async () => {
   const module = await import("../services/assistant/assistantService");
@@ -12,6 +14,9 @@ beforeAll(async () => {
   AssistantServiceError = module.AssistantServiceError;
   ASSISTANT_UNAVAILABLE_REPLY = module.ASSISTANT_UNAVAILABLE_REPLY;
   resolveAssistantCapabilityQuestion = module.resolveAssistantCapabilityQuestion;
+  const capabilities = await import("../services/assistant/assistantCapabilities");
+  assistantCapabilityCommandPermissions = capabilities.assistantCapabilityCommandPermissions;
+  assistantCapabilityCommandDescriptions = capabilities.assistantCapabilityCommandDescriptions;
 });
 
 const scope = { organizationId: "org_1", userId: "user_1" };
@@ -80,18 +85,23 @@ describe("AssistantService", () => {
     }));
   });
 
-  test("reports only the two reviewed commands and the actor-permitted subset", async () => {
+  test("reports all reviewed commands and only the actor-permitted subset", async () => {
     resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true });
     const service = new AssistantService(makeRepo(), resolver);
 
     const capability = await service.getCapabilities(scope, {
       ...actor,
-      permissions: ["assistant.quotes.add_internal_note", "assistant.products.create_inactive_draft"],
+      permissions: [
+        "assistant.quotes.add_internal_note",
+        "assistant.products.create_inactive_draft",
+        "assistant.products.update_inactive_draft",
+      ],
     });
 
     expect(capability.productionCommandsEnabled).toEqual([
       "quotes.add_internal_note",
       "products.create_inactive_draft",
+      "products.update_inactive_draft",
     ]);
     expect(capability.productionCommandsPermittedForUser).toEqual(capability.productionCommandsEnabled);
     expect(capability).toMatchObject({
@@ -108,16 +118,31 @@ describe("AssistantService", () => {
     expect((await service.getCapabilities(scope, { ...actor, permissions: ["assistant.diagnostics.view"] })).diagnosticsEnabled).toBe(true);
   });
 
+  test("keeps reviewed command permissions and capability wording explicit for inactive-draft updates", () => {
+    expect(assistantCapabilityCommandPermissions["products.update_inactive_draft"])
+      .toBe("assistant.products.update_inactive_draft");
+    expect(assistantCapabilityCommandDescriptions["products.update_inactive_draft"])
+      .toBe("update an inactive product draft after your confirmation");
+    expect(assistantCapabilityCommandPermissions["products.update_inactive_draft"])
+      .not.toBe(assistantCapabilityCommandPermissions["products.create_inactive_draft"]);
+  });
+
   test("answers capability questions locally from the server capability summary", async () => {
     resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true });
     const service = new AssistantService(makeRepo(), resolver);
     const capability = await service.getCapabilities(scope, {
       ...actor,
-      permissions: ["assistant.quotes.add_internal_note", "assistant.products.create_inactive_draft"],
+      permissions: [
+        "assistant.quotes.add_internal_note",
+        "assistant.products.create_inactive_draft",
+        "assistant.products.update_inactive_draft",
+      ],
     });
 
     expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
       .toContain("help create an inactive product draft after your confirmation");
+    expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
+      .toContain("update an inactive product draft after your confirmation");
     expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
       .not.toMatch(/GO actions|tool names|read-only result/i);
     expect(resolveAssistantCapabilityQuestion("What can't you do yet?", capability)?.response)

@@ -10,7 +10,18 @@ jest.unstable_mockModule("../storage/assistant.repo", () => ({
 }));
 jest.unstable_mockModule("../services/assistant/assistantCapabilities", () => ({
   OrganizationAssistantCapabilityResolver: class {},
-  assistantCapabilityProductionCommands: ["quotes.add_internal_note", "products.create_inactive_draft"],
+  assistantCapabilityProductionCommands: ["quotes.add_internal_note", "products.create_inactive_draft", "products.update_inactive_draft"],
+  assistantCapabilityCommandPermissions: {
+    "quotes.add_internal_note": "assistant.quotes.add_internal_note",
+    "products.create_inactive_draft": "assistant.products.create_inactive_draft",
+    "products.update_inactive_draft": "assistant.products.update_inactive_draft",
+  },
+  assistantCapabilityCommandDescriptions: {
+    "quotes.add_internal_note": "add an internal quote note after your confirmation",
+    "products.create_inactive_draft": "help create an inactive product draft after your confirmation",
+    "products.update_inactive_draft": "update an inactive product draft after your confirmation",
+  },
+  isAssistantCapabilityProductionCommand: (value: string) => ["quotes.add_internal_note", "products.create_inactive_draft", "products.update_inactive_draft"].includes(value),
   assistantCapabilityReadTools: [
     "search.global",
     "customers.get_summary",

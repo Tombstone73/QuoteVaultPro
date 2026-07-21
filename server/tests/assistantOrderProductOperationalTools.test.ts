@@ -19,7 +19,7 @@ const invocation = { organizationId: "org-a", userId: "user-a", context, correla
 function repo() {
   return {
     getOrder: jest.fn(async (organizationId: string) => (organizationId === "org-a" ? {
-      order: { id: "order-1", orderNumber: "16309", displayNumber: null, status: "in_production", state: "open", canonicalState: null, statusPillValue: null, dueDate: null, fulfillmentStatus: "pending", updatedAt: capturedAt, customerId: "customer-1", customerName: "OTB Graphics" },
+      order: { id: "order-1", orderNumber: "16309", displayNumber: null, status: "in_production", state: "open", canonicalState: null, statusPillValue: null, dueDate: "2026-07-22T00:00:00.000Z", fulfillmentStatus: "pending", updatedAt: capturedAt, customerId: "customer-1", customerName: "OTB Graphics" },
       lineItems: [{ id: "line-1", description: "Yard signs", productName: "Economy Yard Sign Stakes", quantity: 5, status: "new", workflowState: "new", requiresDesign: true, designStatus: "pending", requiresProofApproval: true, approvedProofVersionId: null, requiresPrepress: true, sortOrder: 0 }],
       production: [{ id: "job-1", stationKey: "flatbed", stepKey: "prepress", status: "queued", updatedAt: capturedAt }],
       invoices: [{ id: "invoice-1", displayNumber: "INV-1", invoiceNumber: 1, status: "draft", updatedAt: capturedAt }],
@@ -81,6 +81,7 @@ describe("assistant order/product/operational tools", () => {
       orderNumber: "16309",
       customer: "OTB Graphics",
       status: "in_production",
+      dueDate: "2026-07-22T00:00:00.000Z",
       sourceLink: { href: "/orders/order-1" },
     });
     expect(result.sourceLinks).toEqual([expect.objectContaining({ href: "/orders/order-1" })]);
@@ -107,6 +108,44 @@ describe("assistant order/product/operational tools", () => {
       ...invocation,
       context: { ...context, entityId: "not a safe id" } as any,
     }, {})).rejects.toThrow();
+  });
+
+  test("navigation resolves customer, quote, and product context only through their validated detail routes", async () => {
+    const tools = createOrderProductOperationalTools({
+      repository: repo(),
+      now: fixedNow,
+      getCustomerContext: jest.fn(async (organizationId) => organizationId === "org-a" ? {
+        id: "customer-1", companyName: "OTB Graphics", isActive: true, status: "active", route: "/customers/customer-1", freshness: capturedAt, contacts: [], recentActivity: [],
+      } : null),
+      getQuoteContext: jest.fn(async (organizationId) => organizationId === "org-a" ? {
+        id: "quote-1", displayNumber: "Q-1042", quoteNumber: 1042, customerName: "OTB Graphics",
+      } : null),
+    });
+
+    const customer = await tools.navigationGetCurrentContext.execute({ ...invocation, context: { ...context, route: "/customers/customer-1", entityType: "customer", entityId: "customer-1" } }, {});
+    expect(customer.data.currentRecord).toMatchObject({ entityType: "customer", customerName: "OTB Graphics", sourceLink: { href: "/customers/customer-1" } });
+
+    const quote = await tools.navigationGetCurrentContext.execute({ ...invocation, context: { ...context, route: "/quotes/quote-1", entityType: "quote", entityId: "quote-1" } }, {});
+    expect(quote.data.currentRecord).toMatchObject({ entityType: "quote", quoteNumber: "Q-1042", sourceLink: { href: "/quotes/quote-1" } });
+
+    const product = await tools.navigationGetCurrentContext.execute({ ...invocation, context: { ...context, route: "/products/product-1/edit", entityType: "product", entityId: "product-1" } }, {});
+    expect(product.data.currentRecord).toMatchObject({ entityType: "product", productName: "Economy Yard Sign Stakes", active: true, sourceLink: { href: "/products/product-1/edit" } });
+
+    const mismatchedProduct = await tools.navigationGetCurrentContext.execute({ ...invocation, context: { ...context, route: "/products/product-1", entityType: "product", entityId: "product-1" } }, {});
+    expect(mismatchedProduct.data.currentRecord).toBeNull();
+  });
+
+  test("navigation context hides customer and quote IDs that do not resolve within the tenant", async () => {
+    const tools = createOrderProductOperationalTools({
+      repository: repo(),
+      now: fixedNow,
+      getCustomerContext: async () => null,
+      getQuoteContext: async () => null,
+    });
+    const customer = await tools.navigationGetCurrentContext.execute({ ...invocation, context: { ...context, route: "/customers/customer-1", entityType: "customer", entityId: "customer-1" } }, {});
+    const quote = await tools.navigationGetCurrentContext.execute({ ...invocation, context: { ...context, route: "/quotes/quote-1", entityType: "quote", entityId: "quote-1" } }, {});
+    expect(customer.data).toMatchObject({ entityType: null, entityId: null, currentRecord: null });
+    expect(quote.data).toMatchObject({ entityType: null, entityId: null, currentRecord: null });
   });
 
   test("navigation adapter uses the generic workspace link only without a resolved record", async () => {
