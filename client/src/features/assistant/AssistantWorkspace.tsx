@@ -3,28 +3,46 @@ import { Bot, Expand, Maximize2, MessageSquarePlus, Minus, PanelBottom, PanelLef
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCreateAssistantConversation, useSendAssistantTurn } from "@/hooks/useAssistantApi";
+import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSendAssistantTurn } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
 import type { AssistantStructuredCard } from "@shared/assistantContracts";
-import { AssistantPlanCard, toAssistantPlanCardModel } from "./AssistantPlanCard";
+import { AssistantPlanCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 
 function ResultCards({
   cards,
   context,
   onCancelPlan,
+  onConfirmPlan,
+  onCreatePlan,
+  executionPlans,
   cancellingPlanId,
+  confirmingPlanId,
 }: {
   cards: AssistantStructuredCard[];
   context: AssistantContextEnvelope;
   onCancelPlan: (planId: string, expectedPlanVersion: number) => Promise<unknown>;
+  onConfirmPlan: (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => Promise<unknown>;
+  onCreatePlan: (turnId: string) => Promise<unknown>;
+  executionPlans: Record<string, { turnId: string; plan: unknown; confirmationToken: string | null }>;
   cancellingPlanId?: string;
+  confirmingPlanId?: string;
 }) {
   if (!cards.length) return null;
   return <div className="mt-2 space-y-2">{cards.map((card, index) => {
+    const proposal = toAssistantQuoteNoteProposal(card);
+    if (proposal) {
+      const created = executionPlans[proposal.turnId];
+      if (created) {
+        const planCard = { kind: "action_plan", title: proposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
+        const plan = toAssistantPlanCardModel(planCard);
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
+      }
+      return <AssistantQuoteNoteProposalCard key={`proposal-${proposal.turnId}-${index}`} proposal={proposal} onCreatePlan={onCreatePlan} />;
+    }
     const plan = toAssistantPlanCardModel(card);
-    if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} cancelling={cancellingPlanId === plan.id} />;
+    if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} />;
     if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source") return null;
     return <section key={`${card.kind}-${index}`} className="rounded-md border bg-background/70 p-2 text-xs">
       <p className="font-medium">{card.title}</p><p className="mt-0.5 text-muted-foreground">{card.summary}</p>
@@ -82,7 +100,7 @@ function PresentationControls() {
 }
 
 function ConversationContent() {
-  const { capabilities, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft } = useAssistantWorkspace();
+  const { capabilities, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft, executionPlans, saveExecutionPlan, updateExecutionPlan } = useAssistantWorkspace();
   const enabled = Boolean(capabilities?.enabled && capabilities.conversationsEnabled);
   const toolsEnabled = Boolean(capabilities?.toolsEnabled);
   const conversations = useAssistantConversations(enabled);
@@ -90,6 +108,8 @@ function ConversationContent() {
   const detail = useAssistantConversation(activeConversationId, enabled);
   const sendTurn = useSendAssistantTurn();
   const cancelPlan = useCancelAssistantPlan();
+  const confirmPlan = useConfirmAssistantQuoteInternalNote();
+  const createExecutionPlan = useCreateAssistantExecutionPlan();
 
   React.useEffect(() => {
     if (!activeConversationId && conversations.data?.[0]) setActiveConversationId(conversations.data[0].id);
@@ -113,6 +133,19 @@ function ConversationContent() {
     }
     await sendTurn.mutateAsync({ conversationId, message, context });
     setDraft("");
+  };
+
+  const createPlanFromProposal = async (turnId: string) => {
+    if (!activeConversationId) return;
+    const result = await createExecutionPlan.mutateAsync({ conversationId: activeConversationId, turnId, context });
+    saveExecutionPlan({ turnId, plan: result.plan, confirmationToken: result.confirmationToken });
+  };
+
+  const confirmQuoteNotePlan = async (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => {
+    const result = await confirmPlan.mutateAsync(input);
+    const data = result && typeof result === "object" ? result as { plan?: unknown } : null;
+    if (data?.plan) updateExecutionPlan(input.planId, data.plan);
+    return result;
   };
 
   if (!enabled) {
@@ -151,7 +184,7 @@ function ConversationContent() {
             </div>
           ) : detail.data?.messages?.map((message) => (
             <div key={message.id} className={cn("max-w-[88%] rounded-lg px-3 py-2 text-sm", message.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-muted")}>
-              {message.content}{message.role !== "user" ? <ResultCards cards={message.structuredCards ?? []} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} /> : null}
+              {message.content}{message.role !== "user" ? <ResultCards cards={message.structuredCards ?? []} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} /> : null}
             </div>
           ))}
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">Your message was not sent. You can try again.</p> : null}

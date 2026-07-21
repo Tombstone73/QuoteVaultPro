@@ -102,3 +102,61 @@ export function useCancelAssistantPlan() {
     },
   });
 }
+
+export type AssistantCreatedExecutionPlan = {
+  plan: unknown;
+  confirmationToken: string;
+};
+
+/** Creates a server-resolved plan from a trusted assistant turn; no command name is accepted. */
+export function useCreateAssistantExecutionPlan() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      conversationId,
+      turnId,
+      context,
+    }: {
+      conversationId: string;
+      turnId: string;
+      context: AssistantContextEnvelope;
+    }): Promise<AssistantCreatedExecutionPlan> => {
+      const response = await apiRequest("POST", `/api/assistant/conversations/${encodeURIComponent(conversationId)}/plans`, { turnId, context });
+      return unwrap<AssistantCreatedExecutionPlan>(await response.json());
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: conversationsKey });
+    },
+  });
+}
+
+/**
+ * The only production confirmation UI path. It posts an opaque, server-issued
+ * token to the plan-bound confirmation endpoint; chat text is never involved.
+ */
+export function useConfirmAssistantQuoteInternalNote() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      planId,
+      expectedPlanVersion,
+      confirmationToken,
+      context,
+    }: {
+      planId: string;
+      expectedPlanVersion: number;
+      confirmationToken: string;
+      context: AssistantContextEnvelope;
+    }): Promise<{ plan?: unknown }> => {
+      const response = await apiRequest("POST", `/api/assistant/plans/${encodeURIComponent(planId)}/confirmations`, {
+        expectedPlanVersion,
+        confirmationToken,
+        context,
+      });
+      return unwrap<{ plan?: unknown }>(await response.json());
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: conversationsKey });
+    },
+  });
+}

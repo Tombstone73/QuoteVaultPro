@@ -3808,6 +3808,32 @@ export const orderInternalNotes = pgTable("order_internal_notes", {
   index("order_internal_notes_org_order_idx").on(table.organizationId, table.orderId),
 ]);
 
+/**
+ * Canonical internal-only quote note ledger. This table intentionally has no
+ * update/delete fields or customer-facing visibility flag: notes are
+ * append-only staff records, not shipping instructions or portal content.
+ */
+export const quoteInternalNotes = pgTable("quote_internal_notes", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id")
+    .notNull()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  quoteId: varchar("quote_id")
+    .notNull()
+    .references(() => quotes.id, { onDelete: "cascade" }),
+  noteText: text("note_text").notNull(),
+  source: varchar("source", { length: 32 }).notNull().default("manual"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  assistantConversationId: varchar("assistant_conversation_id").references(() => aiConversations.id, { onDelete: "set null" }),
+  assistantPlanId: varchar("assistant_plan_id").references(() => aiExecutionPlans.id, { onDelete: "set null" }),
+  assistantExecutionId: varchar("assistant_execution_id"),
+  domainAuditId: varchar("domain_audit_id").references(() => auditLogs.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("quote_internal_notes_org_quote_created_idx").on(table.organizationId, table.quoteId, table.createdAt),
+  uniqueIndex("quote_internal_notes_assistant_plan_unique").on(table.assistantPlanId).where(sql`${table.assistantPlanId} IS NOT NULL`),
+]);
+
 export const orderLineItemNotes = pgTable("order_line_item_notes", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id")
@@ -4053,9 +4079,27 @@ export const insertOrderLineItemNoteSchema = createInsertSchema(orderLineItemNot
   noteText: z.string().trim().min(1).max(4000),
 });
 
+export const insertQuoteInternalNoteSchema = createInsertSchema(quoteInternalNotes).omit({
+  id: true,
+  organizationId: true,
+  quoteId: true,
+  createdByUserId: true,
+  source: true,
+  assistantConversationId: true,
+  assistantPlanId: true,
+  assistantExecutionId: true,
+  domainAuditId: true,
+  createdAt: true,
+}).extend({
+  noteText: z.string().trim().min(1).max(4000),
+});
+
 export type OrderInternalNote = typeof orderInternalNotes.$inferSelect;
 export type InsertOrderInternalNote = typeof orderInternalNotes.$inferInsert;
 export type CreateOrderInternalNote = z.infer<typeof insertOrderInternalNoteSchema>;
+export type QuoteInternalNote = typeof quoteInternalNotes.$inferSelect;
+export type InsertQuoteInternalNote = typeof quoteInternalNotes.$inferInsert;
+export type CreateQuoteInternalNote = z.infer<typeof insertQuoteInternalNoteSchema>;
 export type OrderLineItemNote = typeof orderLineItemNotes.$inferSelect;
 export type InsertOrderLineItemNote = typeof orderLineItemNotes.$inferInsert;
 export type CreateOrderLineItemNote = z.infer<typeof insertOrderLineItemNoteSchema>;

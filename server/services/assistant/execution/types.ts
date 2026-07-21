@@ -42,6 +42,15 @@ export interface ExecutionPlanPreview {
   sideEffects: readonly string[];
   affectedRecords: readonly ExecutionAffectedRecord[];
   missingInformation?: readonly string[];
+  /** Safe presentation details for the sole Stage 4 quote-note command. */
+  quoteInternalNote?: {
+    quoteId: string;
+    quoteNumber: string;
+    customerName: string | null;
+    noteText: string;
+    sourceLink: { label: string; href: string; entityType: "quote"; entityId: string };
+    unchanged: readonly string[];
+  };
 }
 
 export interface ExecutionPlanRecord {

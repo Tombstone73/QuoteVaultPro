@@ -48,6 +48,9 @@ type WorkspaceContextValue = {
   setActiveConversationId: React.Dispatch<React.SetStateAction<string | null>>;
   draft: string;
   setDraft: React.Dispatch<React.SetStateAction<string>>;
+  executionPlans: Record<string, { turnId: string; plan: unknown; confirmationToken: string | null }>;
+  saveExecutionPlan: (entry: { turnId: string; plan: unknown; confirmationToken: string | null }) => void;
+  updateExecutionPlan: (planId: string, plan: unknown) => void;
 };
 
 const AssistantWorkspaceContext = React.createContext<WorkspaceContextValue | null>(null);
@@ -74,6 +77,10 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
   // remain part of the single workspace engine.
   const [activeConversationId, setActiveConversationId] = React.useState<string | null>(null);
   const [draft, setDraft] = React.useState("");
+  // Plan state is intentionally owned above floating/docked/fullscreen
+  // renderers. Confirmation tokens are ephemeral and never persisted to local
+  // storage or the assistant message history.
+  const [executionPlans, setExecutionPlans] = React.useState<WorkspaceContextValue["executionPlans"]>({});
 
   React.useEffect(() => {
     setContext(buildAssistantContext(location.pathname));
@@ -131,6 +138,16 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [minimize, presentation, toggle]);
 
+  const saveExecutionPlan = React.useCallback((entry: { turnId: string; plan: unknown; confirmationToken: string | null }) => {
+    setExecutionPlans((current) => ({ ...current, [entry.turnId]: entry }));
+  }, []);
+  const updateExecutionPlan = React.useCallback((planId: string, plan: unknown) => {
+    setExecutionPlans((current) => Object.fromEntries(Object.entries(current).map(([turnId, entry]) => {
+      const candidate = entry.plan && typeof entry.plan === "object" ? entry.plan as { id?: unknown } : null;
+      return candidate?.id === planId ? [turnId, { ...entry, plan, confirmationToken: null }] : [turnId, entry];
+    })));
+  }, []);
+
   const value = React.useMemo<WorkspaceContextValue>(() => ({
     capabilities: capabilityQuery.data,
     capabilityError: capabilityQuery.error instanceof Error ? capabilityQuery.error.message : undefined,
@@ -151,7 +168,10 @@ export function AssistantWorkspaceProvider({ children }: { children: React.React
     setActiveConversationId,
     draft,
     setDraft,
-  }), [activeConversationId, capabilityQuery.data, capabilityQuery.error, capabilityQuery.isLoading, context, draft, isMobile, layout, minimize, persistLayout, presentation, priorPresentation, setPresentation, toggle, location.pathname]);
+    executionPlans,
+    saveExecutionPlan,
+    updateExecutionPlan,
+  }), [activeConversationId, capabilityQuery.data, capabilityQuery.error, capabilityQuery.isLoading, context, draft, executionPlans, isMobile, layout, minimize, persistLayout, presentation, priorPresentation, saveExecutionPlan, setPresentation, toggle, updateExecutionPlan, location.pathname]);
 
   return <AssistantWorkspaceContext.Provider value={value}>{children}</AssistantWorkspaceContext.Provider>;
 }

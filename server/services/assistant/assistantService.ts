@@ -10,6 +10,7 @@ import { AssistantOrchestrationService, type AssistantToolExecutionAudit } from 
 import { AssistantPlanningError, ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
+import { resolveQuoteInternalNoteIntent } from "./execution/quoteInternalNoteIntent";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
@@ -133,7 +134,7 @@ export class AssistantService {
       enabled: resolved.enabled,
       conversationsEnabled: resolved.enabled,
       toolsEnabled: Boolean(resolved.enabled && resolved.toolsEnabled),
-      writeActionsEnabled: false,
+      writeActionsEnabled: Boolean(resolved.enabled && resolved.toolsEnabled),
       externalResearchEnabled: false,
       assistantVersion: "stage-2",
       unavailableReason: resolved.unavailableReason ?? (resolved.enabled ? null : "The assistant is disabled for this organization."),
@@ -198,6 +199,38 @@ export class AssistantService {
     let cards: AssistantResultCard[] = [];
     const audits: AssistantToolExecutionAudit[] = [];
     try {
+      // This runs before the read-only provider planner and is intentionally
+      // narrower than a general write classifier. It can only propose the one
+      // server-registered quote-note action; execution still requires a
+      // server-created plan, confirmation token, reauthorization, and domain
+      // service revalidation.
+      const quoteNoteIntent = resolveQuoteInternalNoteIntent(request.message, request.context);
+      if (quoteNoteIntent.kind === "resolved") {
+        response = "I can prepare an internal-only quote note preview. Review it and use the dedicated GO control to continue.";
+        cards = [{
+          kind: "action_proposal",
+          title: "Prepare internal quote note",
+          summary: response,
+          sourceLinks: [],
+          plan: {
+            action: "quotes.add_internal_note",
+            preview: {
+              quoteId: quoteNoteIntent.quoteId ?? null,
+              quoteNumber: quoteNoteIntent.expectedQuoteNumber ?? null,
+              noteText: quoteNoteIntent.noteText,
+              quotePath: quoteNoteIntent.quoteId ? `/quotes/${quoteNoteIntent.quoteId}` : null,
+              unchangedItems: ["Pricing", "Quote status", "Customer-facing notes", "Order state", "Production", "Invoice", "Payment"],
+            },
+          },
+        }];
+        provider = "local_policy";
+        model = "stage-4-quote-note-intent";
+      } else if (quoteNoteIntent.kind === "clarification") {
+        response = quoteNoteIntent.message;
+        cards = [{ kind: "missing_information", title: "Quote note needs clarification", summary: response, sourceLinks: [] }];
+        provider = "local_policy";
+        model = "stage-4-quote-note-intent";
+      } else {
       const planned = await this.planner.plan({ organizationId: scope.organizationId, message: request.message, context: request.context });
       provider = planned.provider;
       model = planned.model;
@@ -219,6 +252,7 @@ export class AssistantService {
         const rendered = renderToolResults(executed.executions);
         response = rendered.response;
         cards = rendered.cards;
+      }
       }
     } catch (error) {
       status = "failed";

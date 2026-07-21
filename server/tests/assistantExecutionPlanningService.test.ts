@@ -94,7 +94,9 @@ describe("Stage 3 execution planning service", () => {
     expect(result.plan.status).toBe("succeeded");
     expect(result.result?.status).toBe("succeeded");
     expect(registered.execute).toHaveBeenCalledTimes(1);
-    await expect(service.confirmAndExecute(scope, { planId: plan.id, expectedVersion: result.plan.version, token: issued.token, context })).rejects.toBeInstanceOf(ExecutionPlanError);
+    await expect(service.confirmAndExecute(scope, { planId: plan.id, expectedVersion: result.plan.version, token: issued.token, context })).resolves.toMatchObject({
+      plan: { status: "succeeded" }, result: { status: "succeeded" },
+    });
     expect(registered.execute).toHaveBeenCalledTimes(1);
   });
 

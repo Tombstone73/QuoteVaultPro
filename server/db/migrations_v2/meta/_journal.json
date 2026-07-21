@@ -855,6 +855,13 @@
       "when": 1785628800000,
       "tag": "0126_assistant_execution_safety_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 127,
+      "version": "7",
+      "when": 1785715200000,
+      "tag": "0127_quote_internal_notes",
+      "breakpoints": true
     }
   ]
 }

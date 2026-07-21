@@ -55,13 +55,23 @@ function conversationDetail(row: any) {
       id: message.id,
       role: message.role,
       content: message.content,
-      structuredCards: message.structuredCards ?? [],
+      structuredCards: withTurnBoundProposals(message.structuredCards, message.turnId),
       provider: message.provider ?? null,
       model: message.model ?? null,
       correlationId: message.correlationId ?? null,
       createdAt: message.createdAt instanceof Date ? message.createdAt.toISOString() : message.createdAt,
     })),
   };
+}
+
+/** The turn ID is persisted separately from its safe display card. Supplying it
+ * only in this authenticated response lets the browser ask for a plan without
+ * ever choosing the command or embedding a token in conversation history. */
+function withTurnBoundProposals(cards: unknown, turnId: string | null) {
+  if (!Array.isArray(cards)) return [];
+  return cards.map((card: any) => card?.kind === "action_proposal" && card?.plan && turnId
+    ? { ...card, proposal: { ...card.plan, turnId } }
+    : card);
 }
 
 function sendError(res: Response, error: unknown) {
@@ -190,7 +200,7 @@ export function registerAssistantRoutes(
             id: result.assistantMessage.id,
             role: result.assistantMessage.role,
             content: result.assistantMessage.content,
-            structuredCards: result.assistantMessage.structuredCards ?? [],
+            structuredCards: withTurnBoundProposals(result.assistantMessage.structuredCards, result.turnId),
             provider: result.assistantMessage.provider ?? null,
             model: result.assistantMessage.model ?? null,
             correlationId: result.correlationId,

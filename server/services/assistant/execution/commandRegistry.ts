@@ -4,11 +4,12 @@ import { z, type ZodTypeAny } from "zod";
 /**
  * This is intentionally separate from the Stage 2 read-only tool registry.
  * A command is a future, explicitly reviewed mutation boundary; it is never a
- * route, repository, SQL, or HTTP wrapper.  Stage 3 ships an empty production
- * registry, so no assistant-originated business mutation can occur.
+ * route, repository, SQL, or HTTP wrapper.  Production registration is an
+ * explicit composition step, never dynamic model or request input.
  */
 
 export const assistantCommandRiskValues = ["low", "moderate", "high", "critical"] as const;
+export const assistantCommandModeValues = ["write"] as const;
 export const assistantCommandIdempotencyPolicyValues = [
   "server_generated_required",
   "server_generated_with_request_hash",
@@ -17,15 +18,16 @@ export const assistantCommandTransactionPolicyValues = ["required", "best_effort
 export const assistantCommandPartialFailurePolicyValues = ["forbid", "record_and_stop"] as const;
 
 export type AssistantCommandRisk = (typeof assistantCommandRiskValues)[number];
+export type AssistantCommandMode = (typeof assistantCommandModeValues)[number];
 export type AssistantCommandIdempotencyPolicy = (typeof assistantCommandIdempotencyPolicyValues)[number];
 export type AssistantCommandTransactionPolicy = (typeof assistantCommandTransactionPolicyValues)[number];
 export type AssistantCommandPartialFailurePolicy = (typeof assistantCommandPartialFailurePolicyValues)[number];
 
-export const assistantCommandRuntimeValues = ["production", "test"] as const;
+export const assistantCommandRuntimeValues = ["development", "production", "test"] as const;
 export type AssistantCommandRuntime = (typeof assistantCommandRuntimeValues)[number];
 
-/** There are deliberately no production names in Stage 3. */
-export const assistantProductionCommandAllowlist = [] as const;
+/** The complete production write-command allowlist for Stage 4. */
+export const assistantProductionCommandAllowlist = ["quotes.add_internal_note"] as const;
 /** The only injected command name accepted by the isolated test registry. */
 export const assistantTestCommandAllowlist = ["test.assistant.synthetic_command"] as const;
 export type AssistantTestCommandName = (typeof assistantTestCommandAllowlist)[number];
@@ -53,6 +55,7 @@ export interface AssistantCommandDefinition<TInput = unknown, TPreview = unknown
   name: string;
   version: string;
   domain: string;
+  mode: AssistantCommandMode;
   description: string;
   risk: AssistantCommandRisk;
   requiredCapability: string;
@@ -62,6 +65,7 @@ export interface AssistantCommandDefinition<TInput = unknown, TPreview = unknown
   resultSchema: ZodTypeAny;
   maxAffectedRecords: number;
   bulkAllowed: boolean;
+  confirmationRequired: true;
   reauthenticationRequired: boolean;
   confirmationExpiresInMs: number;
   idempotencyPolicy: AssistantCommandIdempotencyPolicy;
@@ -88,7 +92,7 @@ export type AssistantTestCommandDefinition<TInput = unknown, TPreview = unknown,
 export class AssistantCommandRegistryError extends Error {
   constructor(
     message: string,
-    readonly code: "COMMAND_NOT_REGISTERED" | "TEST_COMMAND_FORBIDDEN" | "INVALID_COMMAND_DEFINITION" | "IDEMPOTENCY_KEY_INVALID",
+    readonly code: "COMMAND_NOT_REGISTERED" | "TEST_COMMAND_FORBIDDEN" | "PRODUCTION_COMMAND_FORBIDDEN" | "INVALID_COMMAND_DEFINITION" | "IDEMPOTENCY_KEY_INVALID",
   ) {
     super(message);
     this.name = "AssistantCommandRegistryError";
@@ -108,6 +112,9 @@ function validateDefinition(definition: AssistantCommandDefinition): void {
   }
   if (!definition.domain.trim() || !definition.description.trim() || !definition.requiredCapability.trim() || !definition.auditCategory.trim()) {
     throw new AssistantCommandRegistryError("Command metadata must be explicit and non-empty.", "INVALID_COMMAND_DEFINITION");
+  }
+  if (definition.mode !== "write" || definition.confirmationRequired !== true) {
+    throw new AssistantCommandRegistryError("Assistant commands must explicitly be confirmed write commands.", "INVALID_COMMAND_DEFINITION");
   }
   if (!Number.isInteger(definition.maxAffectedRecords) || definition.maxAffectedRecords < 1 || definition.maxAffectedRecords > 100) {
     throw new AssistantCommandRegistryError("Command maxAffectedRecords must be a bounded positive integer.", "INVALID_COMMAND_DEFINITION");
@@ -151,10 +158,16 @@ export class AssistantCommandRegistry {
     this.commands = registered;
   }
 
-  static production(): AssistantCommandRegistry {
-    // Do not add a fallback command here.  Stage 3's safety property is that
-    // the normal process has zero command adapters reachable from the registry.
-    return new AssistantCommandRegistry([]);
+  static production(commands: readonly AssistantCommandDefinition[] = []): AssistantCommandRegistry {
+    for (const command of commands) {
+      if (!assistantProductionCommandAllowlist.includes(command.name as (typeof assistantProductionCommandAllowlist)[number])) {
+        throw new AssistantCommandRegistryError("Only the static production command allowlist may be registered.", "PRODUCTION_COMMAND_FORBIDDEN");
+      }
+      if (command.testOnly || !command.devEnabled || !command.mainEnabled) {
+        throw new AssistantCommandRegistryError("Production commands must be non-test-only and explicitly enabled for DEV and MAIN.", "PRODUCTION_COMMAND_FORBIDDEN");
+      }
+    }
+    return new AssistantCommandRegistry(commands);
   }
 
   static forTests(commands: readonly AssistantTestCommandDefinition[]): AssistantCommandRegistry {
@@ -188,6 +201,7 @@ export class AssistantCommandRegistry {
     const command = this.commands.get(name);
     if (!command) return false;
     if (runtime === "production") return !command.testOnly && command.mainEnabled;
+    if (runtime === "development") return !command.testOnly && command.devEnabled;
     return command.testOnly || command.devEnabled;
   }
 
@@ -199,8 +213,18 @@ export class AssistantCommandRegistry {
   }
 }
 
-/** Authoritative normal-runtime registry: it must remain empty in Stage 3. */
+/**
+ * Safe default before application composition injects the canonical quote-note
+ * service. This deliberately executes nothing by itself.
+ */
 export const assistantProductionCommandRegistry = AssistantCommandRegistry.production();
+
+/** Application composition must pass exactly the reviewed command definition. */
+export function createProductionAssistantCommandRegistry(
+  command: AssistantCommandDefinition,
+): AssistantCommandRegistry {
+  return AssistantCommandRegistry.production([command]);
+}
 
 const idempotencyKeySchema = z.string().regex(/^aicmd_[a-f0-9-]{36}$/i).max(64);
 
