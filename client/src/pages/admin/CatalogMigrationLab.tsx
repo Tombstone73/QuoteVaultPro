@@ -1210,6 +1210,26 @@ function repairActionText(action: ProductIntakeAiDiagnostic["repairActions"][num
   return `${action.path}: ${action.reason}${action.confidenceImpact ? ` (${action.confidenceImpact})` : ""}`;
 }
 
+function hasProductIntakeDraftAnswer(question: ProductIntakeQuestion, value: unknown): boolean {
+  if (value == null) return false;
+  if (question.questionType === "boolean") return typeof value === "boolean";
+  if (question.questionType === "number") return typeof value === "number" && Number.isFinite(value);
+  if (question.questionType === "multiselect") return Array.isArray(value) && value.length > 0;
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+export function buildProductIntakeAnswerPatchPayload(
+  questions: ProductIntakeQuestion[],
+  answerDrafts: Record<string, unknown>,
+) {
+  return questions.flatMap((question) => {
+    const answer = answerDrafts[question.questionKey];
+    return hasProductIntakeDraftAnswer(question, answer)
+      ? [{ questionId: question.id, questionKey: question.questionKey, answer }]
+      : [];
+  });
+}
+
 export type ProductIntakeSamplePricingRow = {
   optionLabel: string;
   choiceLabel: string;
@@ -1825,11 +1845,7 @@ export default function CatalogMigrationLab() {
     mutationFn: async () => {
       if (!intakeSessionDetail) throw new Error("No intake session is selected.");
       const response = await apiRequest("PATCH", `/api/admin/product-intake-wizard/sessions/${intakeSessionDetail.session.id}/answers`, {
-        answers: intakeSessionDetail.questions.map((question) => ({
-          questionId: question.id,
-          questionKey: question.questionKey,
-          answer: answerDrafts[question.questionKey] ?? null,
-        })),
+        answers: buildProductIntakeAnswerPatchPayload(intakeSessionDetail.questions, answerDrafts),
       });
       const json = await response.json();
       if (!json?.success) throw new Error(json?.message ?? "Failed to save answers");

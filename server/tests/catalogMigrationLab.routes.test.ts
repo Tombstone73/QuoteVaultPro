@@ -19,6 +19,7 @@ import {
   createDbProductIntakeSessionStore,
   generateProductIntakeQuestions,
   ProductIntakeSessionError,
+  resolveProductIntakeAnswersForPersistence,
   resolveProductIntakeSessionStatus,
   type ProductIntakeSessionStore,
 } from "../services/productIntakeWizard/productIntakeSessionService";
@@ -130,11 +131,8 @@ function makeMemoryProductIntakeSessionStore(): ProductIntakeSessionStore {
       const detail = details.find((row) => row.session.organizationId === organizationId && row.session.id === sessionId);
       if (!detail) return null;
       const now = new Date().toISOString();
-      for (const incoming of answers) {
-        const question = detail.questions.find((candidate) =>
-          (incoming.questionId && candidate.id === incoming.questionId) || (incoming.questionKey && candidate.questionKey === incoming.questionKey),
-        );
-        if (!question) continue;
+      const resolvedAnswers = resolveProductIntakeAnswersForPersistence({ questions: detail.questions, answers });
+      for (const { question, answer } of resolvedAnswers) {
         const existing = detail.answers.find((answer) => answer.questionKey === question.questionKey);
         const answerRow: ProductIntakeAnswer = {
           id: existing?.id ?? `a_${++answerSeq}`,
@@ -142,9 +140,9 @@ function makeMemoryProductIntakeSessionStore(): ProductIntakeSessionStore {
           sessionId,
           questionId: question.id,
           questionKey: question.questionKey,
-          answer: incoming.answer ?? null,
+          answer,
           answeredByUserId: userId,
-          answeredAt: incoming.answer == null ? null : now,
+          answeredAt: now,
           createdAt: existing?.createdAt ?? now,
           updatedAt: now,
         };
@@ -938,6 +936,54 @@ describe("Catalog Migration Lab routes", () => {
     const abandoned = await request(app).post(`/api/admin/product-intake-wizard/sessions/${sessionId}/abandon`);
     expect(abandoned.status).toBe(200);
     expect(abandoned.body.data.session.status).toBe("abandoned");
+  });
+
+  test("product intake answer route accepts partial blanks and preserves prior answers", async () => {
+    const store = makeMemoryProductIntakeSessionStore();
+    const app = buildApp({}, store);
+    const created = await request(app)
+      .post("/api/admin/product-intake-wizard/analyze")
+      .send({ sourceType: "text_description", description: "Foam board signs with optional grommets" });
+    const sessionId = created.body.data.sessionId;
+    const requiredQuestions = created.body.data.questions.filter((question: ProductIntakeQuestion) => question.required);
+    expect(requiredQuestions.length).toBeGreaterThan(1);
+
+    const first = requiredQuestions[0];
+    const second = requiredQuestions[1];
+    const answerFor = (question: ProductIntakeQuestion, label: string): unknown => {
+      if (question.questionType === "boolean") return true;
+      if (question.questionType === "number") return 1;
+      if (question.questionType === "multiselect") return [question.options?.[0]?.value ?? label];
+      if (question.questionType === "select") return String(question.options?.[0]?.value ?? label);
+      return label;
+    };
+    const firstAnswer = answerFor(first, "First saved answer");
+    const secondAnswer = answerFor(second, "Second saved answer");
+    const firstSave = await request(app)
+      .patch(`/api/admin/product-intake-wizard/sessions/${sessionId}/answers`)
+      .send({ answers: [
+        { questionId: first.id, answer: firstAnswer },
+        { questionId: second.id },
+      ] });
+
+    expect(firstSave.status).toBe(200);
+    expect(firstSave.body.data.answers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ questionId: first.id, answer: firstAnswer }),
+    ]));
+    expect(firstSave.body.data.readiness.canCreateDraft).toBe(false);
+
+    const secondSave = await request(app)
+      .patch(`/api/admin/product-intake-wizard/sessions/${sessionId}/answers`)
+      .send({ answers: [
+        { questionId: first.id, answer: "" },
+        { questionId: second.id, answer: secondAnswer },
+      ] });
+
+    expect(secondSave.status).toBe(200);
+    expect(secondSave.body.data.answers).toEqual(expect.arrayContaining([
+      expect.objectContaining({ questionId: first.id, answer: firstAnswer }),
+      expect.objectContaining({ questionId: second.id, answer: secondAnswer }),
+    ]));
   });
 
   test("product intake create-draft transitions only ready sessions to draft_created", async () => {
