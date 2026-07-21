@@ -54,6 +54,7 @@ let ProductIntakeAiDiagnosticsPanel: typeof import("./CatalogMigrationLab").Prod
 let ProductIntakeQualityMetrics: typeof import("./CatalogMigrationLab").ProductIntakeQualityMetrics;
 let IntakeBriefView: typeof import("./CatalogMigrationLab").IntakeBriefView;
 let buildProductIntakeSamplePricingRows: typeof import("./CatalogMigrationLab").buildProductIntakeSamplePricingRows;
+let buildProductIntakeAnswerPatchPayload: typeof import("./CatalogMigrationLab").buildProductIntakeAnswerPatchPayload;
 let CatalogMigrationLab: typeof import("./CatalogMigrationLab").default;
 
 beforeAll(async () => {
@@ -67,6 +68,7 @@ beforeAll(async () => {
   ProductIntakeQualityMetrics = module.ProductIntakeQualityMetrics;
   IntakeBriefView = module.IntakeBriefView;
   buildProductIntakeSamplePricingRows = module.buildProductIntakeSamplePricingRows;
+  buildProductIntakeAnswerPatchPayload = module.buildProductIntakeAnswerPatchPayload;
   CatalogMigrationLab = module.default;
 });
 
@@ -282,6 +284,19 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
 }
 
 describe("Product Intake session UI", () => {
+  test("partial guided answers omit blank controls while preserving typed values", () => {
+    expect(buildProductIntakeAnswerPatchPayload(questions, {
+      "choose-pricing-model": "square_foot",
+      "required-finishing": [],
+      "confirm-required": false,
+      "minimum-quantity": null,
+      material: "   ",
+    })).toEqual([
+      { questionId: "q_select", questionKey: "choose-pricing-model", answer: "square_foot" },
+      { questionId: "q_bool", questionKey: "confirm-required", answer: false },
+    ]);
+  });
+
   test("AI Product Builder route exposes the guided generator without migration-only controls", async () => {
     queryClientMock.apiRequest.mockImplementation(async (...args: unknown[]) => {
       const [method, url] = args as [string, string];

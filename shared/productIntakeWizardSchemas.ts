@@ -450,7 +450,9 @@ export const productIntakeDraftLinkResponseSchema = z.object({
 export const productIntakeAnswerPatchItemSchema = z.object({
   questionId: z.string().min(1).optional(),
   questionKey: z.string().min(1).optional(),
-  answer: z.unknown().nullable(),
+  // Blank browser controls may omit `answer` or serialize it as undefined.
+  // Normalize that state to null so partial guided-answer submissions remain valid.
+  answer: z.preprocess((value) => value == null ? null : value, z.unknown().nullable()),
 }).superRefine((value, ctx) => {
   if (!value.questionId && !value.questionKey) {
     ctx.addIssue({
@@ -462,7 +464,7 @@ export const productIntakeAnswerPatchItemSchema = z.object({
 });
 
 export const productIntakeAnswersPatchRequestSchema = z.object({
-  answers: z.array(productIntakeAnswerPatchItemSchema).min(1),
+  answers: z.array(productIntakeAnswerPatchItemSchema).default([]),
 });
 
 export const productIntakeSessionListQuerySchema = z.object({

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 import {
   productIntakeAnswerSchema,
+  productIntakeAnswersPatchRequestSchema,
   productIntakeQuestionSchema,
   productIntakeSessionSchema,
   type ProductIntakeAnswer,
@@ -12,6 +13,7 @@ import {
   computeProductIntakeReadiness,
   generateProductIntakeQuestions,
   recalculateProductIntakeConfidence,
+  resolveProductIntakeAnswersForPersistence,
   resolveProductIntakeSessionStatus,
 } from "../services/productIntakeWizard/productIntakeSessionService";
 
@@ -102,9 +104,92 @@ describe("Product Intake session schemas", () => {
     expect(question.questionType).toBe("text");
     expect(answer.answer).toBe("3/16 White Foam Board");
   });
+
+  test("accepts partial answer payloads with omitted, undefined, null, and empty answer lists", () => {
+    expect(productIntakeAnswersPatchRequestSchema.parse({
+      answers: [
+        { questionKey: "material", answer: "3/16 Foam Board" },
+        { questionKey: "pricing" },
+        { questionKey: "finishing", answer: undefined },
+        { questionKey: "routing", answer: null },
+      ],
+    })).toEqual({
+      answers: [
+        { questionKey: "material", answer: "3/16 Foam Board" },
+        { questionKey: "pricing", answer: null },
+        { questionKey: "finishing", answer: null },
+        { questionKey: "routing", answer: null },
+      ],
+    });
+    expect(productIntakeAnswersPatchRequestSchema.parse({ answers: [] })).toEqual({ answers: [] });
+  });
 });
 
 describe("Product Intake question generation", () => {
+  test("persists valid partial answers and leaves blank required context for readiness", () => {
+    const partialQuestions: ProductIntakeQuestion[] = [
+      {
+        id: "q_material",
+        organizationId: "org_1",
+        sessionId: "sess_1",
+        questionKey: "material",
+        questionType: "text",
+        label: "Material",
+        helpText: null,
+        required: true,
+        options: null,
+        defaultValue: null,
+        sourcePath: null,
+        confidence: null,
+        sortOrder: 1,
+        createdAt: "2026-06-05T00:00:00.000Z",
+      },
+      {
+        id: "q_pricing",
+        organizationId: "org_1",
+        sessionId: "sess_1",
+        questionKey: "pricing",
+        questionType: "text",
+        label: "Pricing",
+        helpText: null,
+        required: true,
+        options: null,
+        defaultValue: null,
+        sourcePath: null,
+        confidence: null,
+        sortOrder: 2,
+        createdAt: "2026-06-05T00:00:00.000Z",
+      },
+    ];
+
+    const resolved = resolveProductIntakeAnswersForPersistence({
+      questions: partialQuestions,
+      answers: [
+        { questionId: "q_material", answer: "3/16 Foam Board" },
+        { questionId: "q_pricing", answer: "   " },
+      ],
+    });
+
+    expect(resolved).toEqual([{ question: partialQuestions[0], answer: "3/16 Foam Board" }]);
+    const readiness = computeProductIntakeReadiness({
+      session: session(),
+      questions: partialQuestions,
+      answers: [{
+        id: "a_material",
+        organizationId: "org_1",
+        sessionId: "sess_1",
+        questionId: "q_material",
+        questionKey: "material",
+        answer: "3/16 Foam Board",
+        answeredByUserId: "user_1",
+        answeredAt: "2026-06-05T00:00:00.000Z",
+        createdAt: "2026-06-05T00:00:00.000Z",
+        updatedAt: "2026-06-05T00:00:00.000Z",
+      }],
+    });
+    expect(readiness).toMatchObject({ unansweredRequiredCount: 1, answeredCount: 1, canCreateDraft: false });
+  });
+
   test("creates meaningful questions from missing decisions and low-confidence setup", () => {
     const questions = generateProductIntakeQuestions(brief({
       materialAnalysis: { detectedMaterialReferences: [], likelyMaterialMatches: [], confidence: 20, evidence: [] },

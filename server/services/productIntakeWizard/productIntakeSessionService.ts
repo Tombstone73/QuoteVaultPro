@@ -648,6 +648,32 @@ function validateAnswerValue(question: ProductIntakeQuestion, value: unknown) {
   }
 }
 
+export function resolveProductIntakeAnswersForPersistence(args: {
+  questions: ProductIntakeQuestion[];
+  answers: ProductIntakeAnswerPatchItem[];
+}): Array<{ question: ProductIntakeQuestion; answer: unknown }> {
+  const questionsById = new Map(args.questions.map((question) => [question.id, question]));
+  const questionsByKey = new Map(args.questions.map((question) => [question.questionKey, question]));
+  const resolved: Array<{ question: ProductIntakeQuestion; answer: unknown }> = [];
+
+  for (const incoming of args.answers) {
+    const question = incoming.questionId
+      ? questionsById.get(incoming.questionId)
+      : questionsByKey.get(incoming.questionKey ?? "");
+    if (!question) {
+      throw new ProductIntakeSessionError(404, "Question not found for this intake session.", "QUESTION_NOT_FOUND");
+    }
+
+    // Blank answers are intentionally ignored. Readiness continues to report
+    // required context as missing, while previously saved answers stay intact.
+    if (!hasAnswerValue(question, incoming.answer)) continue;
+    validateAnswerValue(question, incoming.answer);
+    resolved.push({ question, answer: incoming.answer });
+  }
+
+  return resolved;
+}
+
 export function computeProductIntakeReadiness(args: {
   session: ProductIntakeSession;
   questions: ProductIntakeQuestion[];
@@ -971,34 +997,24 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
         throw new ProductIntakeSessionError(409, "Abandoned intake sessions cannot be answered.", "SESSION_ABANDONED");
       }
 
-      const questionsById = new Map(detail.questions.map((question) => [question.id, question]));
-      const questionsByKey = new Map(detail.questions.map((question) => [question.questionKey, question]));
       const now = new Date();
-      for (const answer of args.answers) {
-        const question = answer.questionId ? questionsById.get(answer.questionId) : questionsByKey.get(answer.questionKey ?? "");
-        if (!question) {
-          throw new ProductIntakeSessionError(404, "Question not found for this intake session.", "QUESTION_NOT_FOUND");
-        }
-        validateAnswerValue(question, answer.answer);
-        if (question.required && !hasAnswerValue(question, answer.answer)) {
-          throw new ProductIntakeSessionError(400, `Answer for "${question.label}" is required.`, "REQUIRED_ANSWER_MISSING");
-        }
-
+      const resolvedAnswers = resolveProductIntakeAnswersForPersistence({ questions: detail.questions, answers: args.answers });
+      for (const { question, answer } of resolvedAnswers) {
         await database.insert(productIntakeAnswers).values({
           organizationId: args.organizationId,
           sessionId: args.sessionId,
           questionId: question.id,
           questionKey: question.questionKey,
-          answerJson: answer.answer as any,
+          answerJson: answer as any,
           answeredByUserId: args.userId,
-          answeredAt: hasAnswerValue(question, answer.answer) ? now : null,
+          answeredAt: now,
         }).onConflictDoUpdate({
           target: [productIntakeAnswers.sessionId, productIntakeAnswers.questionKey],
           set: {
             questionId: question.id,
-            answerJson: answer.answer as any,
+            answerJson: answer as any,
             answeredByUserId: args.userId,
-            answeredAt: hasAnswerValue(question, answer.answer) ? now : null,
+            answeredAt: now,
             updatedAt: now,
           },
         });
