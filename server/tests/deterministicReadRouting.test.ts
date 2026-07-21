@@ -48,8 +48,37 @@ describe("resolveDeterministicReadPlan", () => {
     },
   );
 
+  test.each([
+    "What is blocking this order?",
+    "Why is this order blocked?",
+    "What still needs to happen on this order?",
+    "What is preventing fulfillment?",
+    "What is preventing billing?",
+    "What is the production status?",
+    "What is the artwork status?",
+  ])("routes %s through the tenant-scoped current-order summary", (message) => {
+    expect(resolveDeterministicReadPlan(message, {
+      contextVersion: "v1", route: "/orders/order_1", pageTitle: "Order details", entityType: "order", entityId: "order_1",
+      selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-21T12:00:00.000Z", unsavedChanges: false,
+    })).toMatchObject({
+      toolCalls: [{ toolName: "orders.get_summary", arguments: { orderId: "order_1" } }],
+    });
+  });
+
+  test("does not use current-order routing without validated order context", () => {
+    expect(resolveDeterministicReadPlan("What is blocking this order?")).toBeNull();
+    expect(resolveDeterministicReadPlan("What is blocking this order?", {
+      contextVersion: "v1", route: "/customers/customer_1", pageTitle: "Customer", entityType: "customer", entityId: "customer_1",
+      selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-21T12:00:00.000Z", unsavedChanges: false,
+    })).toBeNull();
+  });
+
   test("does not turn free text or mutation requests into deterministic execution", () => {
     expect(resolveDeterministicReadPlan("Update order 20002")).toBeNull();
-    expect(resolveDeterministicReadPlan("Find order a very long identifier that has spaces")).toBeNull();
+    expect(resolveDeterministicReadPlan("Find order a very long identifier that has spaces")).toMatchObject({
+      selectedSkill: "deterministic_invalid_order_lookup",
+      toolCalls: [],
+      clarificationRequired: true,
+    });
   });
 });

@@ -9,6 +9,7 @@ import { getRequestOrganizationId } from "../tenantContext";
 import {
   AssistantService,
   AssistantServiceError,
+  responsePresentationForCards,
   type AssistantActor,
 } from "../services/assistant/assistantService";
 import { OrganizationAssistantCapabilityResolver } from "../services/assistant/assistantCapabilities";
@@ -58,16 +59,25 @@ function conversationSummary(row: any) {
 function conversationDetail(row: any) {
   return {
     ...conversationSummary(row),
-    messages: row.messages.map((message: any) => ({
-      id: message.id,
-      role: message.role,
-      content: message.content,
-      structuredCards: withTurnBoundProposals(message.structuredCards, message.turnId),
-      provider: message.provider ?? null,
-      model: message.model ?? null,
-      correlationId: message.correlationId ?? null,
-      createdAt: message.createdAt instanceof Date ? message.createdAt.toISOString() : message.createdAt,
-    })),
+    messages: row.messages.map((message: any) => messageDto(message)),
+  };
+}
+
+function messageDto(message: any, turnId = message.turnId) {
+  const rawCards = Array.isArray(message.structuredCards) ? message.structuredCards : [];
+  return {
+    id: message.id,
+    role: message.role,
+    content: message.content,
+    // Older persisted turns may contain the legacy metadata marker. It is
+    // intentionally read only to derive the server-owned presentation then
+    // stripped before the browser receives its visible card collection.
+    presentation: responsePresentationForCards(rawCards),
+    structuredCards: withTurnBoundProposals(rawCards.filter((card: any) => card?.kind !== "response_presentation"), turnId),
+    provider: message.provider ?? null,
+    model: message.model ?? null,
+    correlationId: message.correlationId ?? null,
+    createdAt: message.createdAt instanceof Date ? message.createdAt.toISOString() : message.createdAt,
   };
 }
 
@@ -204,18 +214,7 @@ export function registerAssistantRoutes(
         data: {
           turnId: result.turnId,
           correlationId: result.correlationId,
-          message: {
-            id: result.assistantMessage.id,
-            role: result.assistantMessage.role,
-            content: result.assistantMessage.content,
-            structuredCards: withTurnBoundProposals(result.assistantMessage.structuredCards, result.turnId),
-            provider: result.assistantMessage.provider ?? null,
-            model: result.assistantMessage.model ?? null,
-            correlationId: result.correlationId,
-            createdAt: result.assistantMessage.createdAt instanceof Date
-              ? result.assistantMessage.createdAt.toISOString()
-              : result.assistantMessage.createdAt,
-          },
+          message: { ...messageDto(result.assistantMessage, result.turnId), correlationId: result.correlationId },
           status: result.status,
           usage: {
             correlationId: result.correlationId,
