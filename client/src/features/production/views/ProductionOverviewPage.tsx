@@ -91,6 +91,7 @@ import { resolveProductionOverviewDueDate } from "./productionOverviewCalendarMo
 import {
   MIN_PRODUCTION_OVERVIEW_COLUMN_WIDTH,
   ProductionBoardScrollArea,
+  calculateProductionBoardLayout,
   productionOverviewBoardMinimumWidth,
 } from "./ProductionBoardScrollArea";
 import {
@@ -432,7 +433,6 @@ export default function ProductionOverviewPage() {
     return saved !== "false";
   });
   const [boardViewportWidth, setBoardViewportWidth] = useState<number>(0);
-  const boardViewportRef = useRef<HTMLDivElement>(null);
 
   const toggleFitColumns = () => {
     const newValue = !fitColumns;
@@ -446,73 +446,23 @@ export default function ProductionOverviewPage() {
     localStorage.setItem("titan.production.overview.showThumbnails", String(nextValue));
   };
 
-  // Measure the visible board viewport width so fit-columns uses the actual
-  // usable content area instead of the flex track's content width.
-  useEffect(() => {
-    const viewport = boardViewportRef.current;
-    if (!viewport) return;
-
-    const measureViewport = () => {
-      const nextWidth = Math.floor(viewport.clientWidth || viewport.getBoundingClientRect().width || 0);
-      setBoardViewportWidth((prev) => (prev === nextWidth ? prev : nextWidth));
-    };
-
-    measureViewport();
-
-    const resizeObserver = new ResizeObserver((entries) => {
-      for (const entry of entries) {
-        const nextWidth = Math.floor(entry.contentRect.width || viewport.clientWidth || 0);
-        setBoardViewportWidth((prev) => (prev === nextWidth ? prev : nextWidth));
-        
-        if (process.env.NODE_ENV === 'development') {
-          console.log('[ProductionBoard] Viewport resize detected:', { nextWidth, fitColumns });
-        }
-      }
-    });
-
-    resizeObserver.observe(viewport);
-
-    return () => {
-      resizeObserver.disconnect();
-    };
-  }, [fitColumns, viewMode]);
-
   // Calculate column width when fit mode is enabled
   const visibleColumnsCount = useMemo(() => {
     return boardColumns.filter(col => boardColumnVisibility[col.id] !== false).length;
   }, [boardColumnVisibility, boardColumns]);
 
-  const totalVisibleGapWidth = useMemo(() => {
-    return BOARD_GAP * Math.max(visibleColumnsCount - 1, 0);
-  }, [visibleColumnsCount]);
-
   const minimumBoardWidth = useMemo(() => {
     return productionOverviewBoardMinimumWidth(visibleColumnsCount, BOARD_GAP);
   }, [visibleColumnsCount]);
 
-  const calculatedColumnWidth = useMemo(() => {
-    if (!fitColumns || visibleColumnsCount === 0 || boardViewportWidth === 0) {
-      return DEFAULT_COLUMN_WIDTH;
-    }
-
-    const availableWidth = Math.max(boardViewportWidth - totalVisibleGapWidth, 0);
-    const fittedWidth = Math.floor(availableWidth / visibleColumnsCount);
-
-    if (boardViewportWidth >= minimumBoardWidth) {
-      return Math.max(fittedWidth, MIN_COLUMN_WIDTH);
-    }
-
-    return MIN_COLUMN_WIDTH;
-  }, [fitColumns, visibleColumnsCount, boardViewportWidth, totalVisibleGapWidth, minimumBoardWidth]);
-
-  const boardTrackWidth = useMemo(() => {
-    if (!fitColumns || visibleColumnsCount === 0) {
-      return undefined;
-    }
-
-    const fittedTrackWidth = (calculatedColumnWidth * visibleColumnsCount) + totalVisibleGapWidth;
-    return Math.max(boardViewportWidth, fittedTrackWidth);
-  }, [fitColumns, visibleColumnsCount, calculatedColumnWidth, totalVisibleGapWidth, boardViewportWidth]);
+  const boardLayout = useMemo(() => calculateProductionBoardLayout({
+    containerWidth: boardViewportWidth,
+    columnCount: visibleColumnsCount,
+    fitColumns,
+    minimumColumnWidth: MIN_COLUMN_WIDTH,
+    normalColumnWidth: DEFAULT_COLUMN_WIDTH,
+    gap: BOARD_GAP,
+  }), [boardViewportWidth, fitColumns, visibleColumnsCount]);
 
   const resetBoardCardConfig = () => {
     saveBoardCardConfig(DEFAULT_BOARD_CARD_CONFIG);
@@ -1006,7 +956,7 @@ export default function ProductionOverviewPage() {
   }
 
   return (
-    <div className="min-w-0 max-w-full overflow-x-hidden px-4 py-4 md:px-6 space-y-4">
+    <div className="w-full min-w-0 max-w-full self-stretch px-4 py-4 md:px-6 space-y-4">
       {/* Header with view toggle and controls */}
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
@@ -1238,7 +1188,7 @@ export default function ProductionOverviewPage() {
                       className="gap-2 h-9"
                     >
                       <Maximize2 className="w-4 h-4" />
-                      Fit Columns
+                      {fitColumns ? "Fit: On" : "Fit Columns"}
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
@@ -1469,7 +1419,11 @@ export default function ProductionOverviewPage() {
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
           >
-            <ProductionBoardScrollArea ref={boardViewportRef} minimumWidth={minimumBoardWidth} trackWidth={boardTrackWidth}>
+            <ProductionBoardScrollArea
+              minimumWidth={minimumBoardWidth}
+              trackWidth={boardLayout.trackWidth}
+              onViewportWidthChange={setBoardViewportWidth}
+            >
                 {boardColumns.filter(col => boardColumnVisibility[col.id] !== false).map(column => {
                   const columnJobs = jobsByStatus.get(column.id) ?? [];
                   return (
@@ -1483,7 +1437,7 @@ export default function ProductionOverviewPage() {
                       isCardExpanded={isCardExpanded}
                       toggleCardExpanded={toggleCardExpanded}
                       documentNumberDisplayMode={productionNumberDisplayMode}
-                      width={fitColumns ? calculatedColumnWidth : DEFAULT_COLUMN_WIDTH}
+                      width={boardLayout.columnWidth}
                     />
                   );
                 })}
