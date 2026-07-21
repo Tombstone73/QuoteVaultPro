@@ -103,7 +103,9 @@ describe("AssistantService", () => {
       activeProductEditingEnabled: false,
       externalResearchEnabled: false,
       mcpEnabled: false,
+      diagnosticsEnabled: false,
     });
+    expect((await service.getCapabilities(scope, { ...actor, permissions: ["assistant.diagnostics.view"] })).diagnosticsEnabled).toBe(true);
   });
 
   test("answers capability questions locally from the server capability summary", async () => {
@@ -115,7 +117,9 @@ describe("AssistantService", () => {
     });
 
     expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
-      .toContain("create one inactive product draft after a preview and dedicated confirmation");
+      .toContain("help create an inactive product draft after your confirmation");
+    expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
+      .not.toMatch(/GO actions|tool names|read-only result/i);
     expect(resolveAssistantCapabilityQuestion("What can't you do yet?", capability)?.response)
       .toContain("product activation remains disabled");
     expect(resolveAssistantCapabilityQuestion("Find order 20002", capability)).toBeNull();

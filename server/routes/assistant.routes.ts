@@ -37,7 +37,7 @@ function buildActor(req: Request, userId: string): AssistantActor {
         "assistant.internal_staff",
         "catalog.read",
         "assistant.quotes.add_internal_note",
-        ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft"] : []),
+        ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.diagnostics.view"] : []),
       ];
     })(),
   };

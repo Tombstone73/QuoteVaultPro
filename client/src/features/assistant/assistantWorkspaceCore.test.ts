@@ -29,6 +29,11 @@ describe("assistant workspace core", () => {
     expect(resolveAssistantPresentation(true, "dock_bottom")).toBe("dock_bottom");
   });
 
+  it.each(["floating", "dock_left", "dock_right", "dock_bottom", "minimized", "fullscreen"] as const)("keeps %s presentation deterministic across desktop and mobile", (presentation) => {
+    expect(resolveAssistantPresentation(false, presentation)).toBe(presentation);
+    expect(resolveAssistantPresentation(true, presentation)).toBe(["floating", "dock_left", "dock_right"].includes(presentation) ? "fullscreen" : presentation);
+  });
+
   it("preserves the draft and selected conversation while presentation changes", () => {
     expect(preserveConversationState({ activeConversationId: "conversation-1", draft: "Keep this draft" }, {})).toEqual({ activeConversationId: "conversation-1", draft: "Keep this draft" });
   });
