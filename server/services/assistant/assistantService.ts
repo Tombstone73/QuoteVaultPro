@@ -11,6 +11,7 @@ import { AssistantPlanningError, ConfiguredAssistantPlanner, type AssistantPlann
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { resolveQuoteInternalNoteIntent } from "./execution/quoteInternalNoteIntent";
+import { productManagementSkillService } from "./productManagementSkill";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
@@ -119,6 +120,21 @@ function titleFromMessage(message: string): string {
   return normalized.slice(0, 96) || "New conversation";
 }
 
+/** Conversation cards are presentation-only, but their server-created intake
+ * session reference lets a later plain-language reply continue the canonical
+ * Product Intake state rather than reconstructing a product from chat text. */
+function activeProductIntakeSession(messages: AssistantMessageRecord[]): string | null {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    for (const card of [...(message.structuredCards ?? [])].reverse()) {
+      const candidate = card as { kind?: unknown; details?: { sessionId?: unknown }; plan?: { action?: unknown; intakeSessionId?: unknown } };
+      if (candidate.kind === "action_proposal" && candidate.plan?.action === "products.create_inactive_draft" && typeof candidate.plan.intakeSessionId === "string") return candidate.plan.intakeSessionId;
+      if (candidate.kind === "product_intake_summary" && typeof candidate.details?.sessionId === "string") return candidate.details.sessionId;
+    }
+  }
+  return null;
+}
+
 export class AssistantService {
   constructor(
     private readonly repo: AssistantRepository,
@@ -204,6 +220,20 @@ export class AssistantService {
       // server-registered quote-note action; execution still requires a
       // server-created plan, confirmation token, reauthorization, and domain
       // service revalidation.
+      const conversation = await this.repo.getConversation({ ...scope, conversationId });
+      if (!conversation) throw this.notFound();
+      const productManagement = await productManagementSkillService.respond({
+        organizationId: scope.organizationId,
+        userId: actor.userId,
+        message: request.message,
+        activeSessionId: activeProductIntakeSession(conversation.messages),
+      });
+      if (productManagement.handled) {
+        response = productManagement.response;
+        cards = productManagement.cards as AssistantResultCard[];
+        provider = "local_product_intake";
+        model = "product-management-skill-v1";
+      } else {
       const quoteNoteIntent = resolveQuoteInternalNoteIntent(request.message, request.context);
       if (quoteNoteIntent.kind === "resolved") {
         response = "I can prepare an internal-only quote note preview. Review it and use the dedicated GO control to continue.";
@@ -252,6 +282,7 @@ export class AssistantService {
         const rendered = renderToolResults(executed.executions);
         response = rendered.response;
         cards = rendered.cards;
+      }
       }
       }
     } catch (error) {

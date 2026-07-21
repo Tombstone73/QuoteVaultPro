@@ -337,6 +337,17 @@ export const assistantStage2CardKindValues = [
   "execution_result",
   "stale_plan",
   "action_proposal",
+  "product_intake_summary",
+  "product_missing_information",
+  "product_comparison",
+  "product_material_selection",
+  "product_options_summary",
+  "product_pricing_summary",
+  "product_routing_summary",
+  "product_validation_errors",
+  "product_validation_warnings",
+  "product_draft_preview",
+  "product_draft_created",
 ] as const;
 export const assistantStage2StructuredCardSchema = z.object({
   kind: z.enum(assistantStage2CardKindValues),
@@ -349,6 +360,9 @@ export const assistantStage2StructuredCardSchema = z.object({
   // bounded presentation payload so conversation history never becomes an
   // authority for execution.
   plan: z.record(z.unknown()).optional(),
+  /** Bounded, server-produced presentation data for a Product Intake session.
+   * It is deliberately never an execution input. */
+  details: z.record(z.unknown()).optional(),
   cancellationAvailable: z.boolean().optional(),
 }).strict();
 /** Stage 2 extends (rather than replaces) the persisted Stage 1 card union. */
@@ -473,6 +487,14 @@ export const assistantExecutionPreviewSchema = z.object({
     customerName: z.string().trim().min(1).max(255).nullable(),
     noteText: z.string().trim().min(1).max(4_000),
     sourceLink: assistantSourceLinkSchema,
+    unchanged: z.array(z.string().trim().min(1).max(120)).min(1).max(10),
+  }).strict().optional(),
+  productInactiveDraft: z.object({
+    intakeSessionId: assistantSafeIdentifierSchema,
+    proposalFingerprint: z.string().trim().length(64).regex(/^[a-f0-9]+$/i),
+    productName: z.string().trim().min(1).max(255),
+    sourceLink: assistantSourceLinkSchema,
+    warnings: z.array(z.string().trim().min(1).max(1_000)).max(50),
     unchanged: z.array(z.string().trim().min(1).max(120)).min(1).max(10),
   }).strict().optional(),
 }).strict();

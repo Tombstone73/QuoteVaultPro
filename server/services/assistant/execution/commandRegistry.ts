@@ -27,7 +27,10 @@ export const assistantCommandRuntimeValues = ["development", "production", "test
 export type AssistantCommandRuntime = (typeof assistantCommandRuntimeValues)[number];
 
 /** The complete production write-command allowlist for Stage 4. */
-export const assistantProductionCommandAllowlist = ["quotes.add_internal_note"] as const;
+export const assistantProductionCommandAllowlist = [
+  "quotes.add_internal_note",
+  "products.create_inactive_draft",
+] as const;
 /** The only injected command name accepted by the isolated test registry. */
 export const assistantTestCommandAllowlist = ["test.assistant.synthetic_command"] as const;
 export type AssistantTestCommandName = (typeof assistantTestCommandAllowlist)[number];
@@ -74,6 +77,8 @@ export interface AssistantCommandDefinition<TInput = unknown, TPreview = unknown
   partialFailurePolicy: AssistantCommandPartialFailurePolicy;
   auditCategory: string;
   undoSupport: "none" | "metadata_only" | "compensating_command";
+  /** A command may support safe domain-specific abandonment without implying deletion or rollback. */
+  abandonmentPolicy: "none" | "session_abandonment_only";
   /** Test-only registrations are excluded from every normal runtime. */
   testOnly: boolean;
   devEnabled: boolean;
@@ -221,9 +226,9 @@ export const assistantProductionCommandRegistry = AssistantCommandRegistry.produ
 
 /** Application composition must pass exactly the reviewed command definition. */
 export function createProductionAssistantCommandRegistry(
-  command: AssistantCommandDefinition,
+  ...commands: AssistantCommandDefinition[]
 ): AssistantCommandRegistry {
-  return AssistantCommandRegistry.production([command]);
+  return AssistantCommandRegistry.production(commands);
 }
 
 const idempotencyKeySchema = z.string().regex(/^aicmd_[a-f0-9-]{36}$/i).max(64);

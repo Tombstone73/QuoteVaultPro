@@ -51,6 +51,15 @@ export interface ExecutionPlanPreview {
     sourceLink: { label: string; href: string; entityType: "quote"; entityId: string };
     unchanged: readonly string[];
   };
+  /** Safe presentation details for the sole Stage 5 inactive-draft command. */
+  productInactiveDraft?: {
+    intakeSessionId: string;
+    proposalFingerprint: string;
+    productName: string;
+    sourceLink: { label: string; href: string };
+    warnings: readonly string[];
+    unchanged: readonly string[];
+  };
 }
 
 export interface ExecutionPlanRecord {
@@ -104,6 +113,8 @@ export interface ExecutionCommandResult {
   status: "succeeded" | "partially_failed" | "failed";
   summary: string;
   steps: readonly ExecutionStepResult[];
+  /** Bounded post-execution presentation data. This never feeds another command. */
+  details?: { productDraft?: { id: string; name: string; sourceLink: string } };
 }
 
 export interface ExecutionCommandDefinition {

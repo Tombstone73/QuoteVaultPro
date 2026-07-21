@@ -10,13 +10,16 @@ import { getRequestOrganizationId } from "../tenantContext";
 import { DrizzleAssistantExecutionRepository } from "../storage/assistantExecution.repo";
 import { DrizzleAssistantRepository } from "../storage/assistant.repo";
 import { ExecutionPlanError, ExecutionPlanningService } from "../services/assistant/execution";
-import type { ExecutionActorScope, ExecutionPlanRecord } from "../services/assistant/execution/types";
+import type { ExecutionActorScope, ExecutionCommandDefinition, ExecutionPlanRecord } from "../services/assistant/execution/types";
 import { createProductionAssistantCommandRegistry } from "../services/assistant/execution/commandRegistry";
 import { createQuoteInternalNoteCommandDefinition } from "../services/assistant/execution/quoteInternalNoteCommand";
 import { createQuoteInternalNoteExecutionCommand } from "../services/assistant/execution/quoteInternalNoteExecutionCommand";
 import { quoteInternalNoteCommandName } from "../services/assistant/execution/quoteInternalNoteCommand";
 import { resolveQuoteInternalNoteIntent } from "../services/assistant/execution/quoteInternalNoteIntent";
 import { quoteInternalNotesService } from "../services/quoteInternalNotesService";
+import { createProductInactiveDraftCommandDefinition } from "../services/assistant/execution/productInactiveDraftCommand";
+import { createProductInactiveDraftCanonicalService, createProductInactiveDraftExecutionCommand } from "../services/assistant/execution/productInactiveDraftExecutionCommand";
+import { productInactiveDraftCommandName } from "../services/assistant/execution/productInactiveDraftCommand";
 
 function userId(req: Request): string | null {
   const user = req.user as { id?: unknown; claims?: { sub?: unknown } } | undefined;
@@ -27,10 +30,11 @@ function userId(req: Request): string | null {
 function scope(req: Request): ExecutionActorScope {
   const id = userId(req);
   if (!id) throw new ExecutionPlanError("AUTH_REQUIRED", "Unauthorized.");
-  const internal = ["owner", "admin", "manager", "member", "employee"].includes(String(req.orgRole ?? "").toLowerCase());
+  const role = String(req.orgRole ?? "").toLowerCase();
+  const internal = ["owner", "admin", "manager", "member", "employee"].includes(role);
   return {
     organizationId: getRequestOrganizationId(req), userId: id,
-    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note"] : [],
+    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft"] : [])] : [],
     environment: process.env.NODE_ENV || "development",
   };
 }
@@ -39,6 +43,7 @@ function planDto(plan: ExecutionPlanRecord, executionStarted = false): Assistant
   const status = plan.status as AssistantExecutionPlan["status"];
   const cancellationAvailable = ["draft", "resolving", "awaiting_input", "preview_ready", "awaiting_confirmation", "confirmed"].includes(status);
   const quoteInternalNote = plan.preview.quoteInternalNote;
+  const productInactiveDraft = plan.preview.productInactiveDraft;
   return {
     id: plan.id, conversationId: plan.conversationId, turnId: plan.turnId ?? null, action: plan.normalizedAction,
     commandVersion: plan.commandVersion, status, riskLevel: plan.riskLevel as AssistantExecutionPlan["riskLevel"],
@@ -47,12 +52,13 @@ function planDto(plan: ExecutionPlanRecord, executionStarted = false): Assistant
       affectedEntities: plan.affectedRecords.map((record) => ({
         entityType: record.entityType as any,
         entityId: record.entityId,
-        label: quoteInternalNote?.quoteId === record.entityId ? `Quote ${quoteInternalNote.quoteNumber}` : `${record.entityType} ${record.entityId}`,
-        ...(quoteInternalNote?.quoteId === record.entityId ? { sourceLink: quoteInternalNote.sourceLink } : {}),
+        label: quoteInternalNote?.quoteId === record.entityId ? `Quote ${quoteInternalNote.quoteNumber}` : productInactiveDraft?.intakeSessionId === record.entityId ? `Product Intake: ${productInactiveDraft.productName}` : `${record.entityType} ${record.entityId}`,
+        ...(quoteInternalNote?.quoteId === record.entityId ? { sourceLink: quoteInternalNote.sourceLink } : productInactiveDraft?.intakeSessionId === record.entityId ? { sourceLink: productInactiveDraft.sourceLink } : {}),
       })),
       sideEffects: plan.preview.sideEffects.map((description) => ({ label: "Planned side effect", description, affectedRecordCount: plan.affectedRecords.length, reversible: false })),
       undo: { available: false, label: null, expiresAt: null },
       ...(quoteInternalNote ? { quoteInternalNote: { ...quoteInternalNote, unchanged: [...quoteInternalNote.unchanged] } } : {}),
+      ...(productInactiveDraft ? { productInactiveDraft: { ...productInactiveDraft, warnings: [...productInactiveDraft.warnings], unchanged: [...productInactiveDraft.unchanged] } } : {}),
     },
     missingInformation: (plan.preview.missingInformation ?? []).map((label) => ({ field: label, label, description: label })),
     // Execution state comes only from the server-created plan and its stored
@@ -83,13 +89,21 @@ export interface AssistantExecutionRouteDependencies {
 }
 
 function createProductionExecutionService(): ExecutionPlanningService {
+  const productService = createProductInactiveDraftCanonicalService();
   const metadataRegistry = createProductionAssistantCommandRegistry(
     createQuoteInternalNoteCommandDefinition(quoteInternalNotesService),
+    createProductInactiveDraftCommandDefinition(productService),
   );
-  const executionCommand = createQuoteInternalNoteExecutionCommand(quoteInternalNotesService);
+  const executionCommands = new Map<string, ExecutionCommandDefinition>([
+    [quoteInternalNoteCommandName, createQuoteInternalNoteExecutionCommand(quoteInternalNotesService)],
+    [productInactiveDraftCommandName, createProductInactiveDraftExecutionCommand(productService)],
+  ]);
   const executionRegistry = {
-    get: (name: string) => metadataRegistry.has(name) ? executionCommand : undefined,
-    list: () => metadataRegistry.list().map(() => executionCommand),
+    get: (name: string) => metadataRegistry.has(name) ? executionCommands.get(name) : undefined,
+    list: () => metadataRegistry.list().flatMap((command) => {
+      const execution = executionCommands.get(command.name);
+      return execution ? [execution] : [];
+    }),
   };
   return new ExecutionPlanningService(
     new DrizzleAssistantExecutionRepository(),
@@ -116,7 +130,22 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
         conversationId: req.params.conversationId,
       });
       const userMessage = conversation?.messages.find((message) => message.turnId === input.turnId && message.role === "user");
-      if (!userMessage) throw new ExecutionPlanError("PLAN_PROPOSAL_NOT_FOUND", "The proposed action is no longer available.");
+      const assistantMessage = conversation?.messages.find((message) => message.turnId === input.turnId && message.role === "assistant");
+      if (!userMessage || !assistantMessage) throw new ExecutionPlanError("PLAN_PROPOSAL_NOT_FOUND", "The proposed action is no longer available.");
+      const productProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === productInactiveDraftCommandName)?.plan
+        : null;
+      if (productProposal && typeof productProposal.intakeSessionId === "string" && typeof productProposal.proposalFingerprint === "string") {
+        const plan = await service.createPlan(actor, {
+          conversationId: req.params.conversationId,
+          turnId: input.turnId,
+          commandName: productInactiveDraftCommandName,
+          arguments: { intakeSessionId: productProposal.intakeSessionId, proposalFingerprint: productProposal.proposalFingerprint },
+          context: input.context,
+        });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
       const intent = resolveQuoteInternalNoteIntent(userMessage.content, input.context);
       if (intent.kind !== "resolved") throw new ExecutionPlanError("PLAN_CLARIFICATION_REQUIRED", "The quote note needs clarification before a plan can be created.");
       const resolved = await quoteInternalNotesService.resolveQuoteReference({
@@ -162,7 +191,7 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
     try {
       const input = assistantConfirmationRequestSchema.parse(req.body ?? {});
       const result = await service.confirmAndExecute(scope(req), { planId: req.params.planId, expectedVersion: input.expectedPlanVersion, token: input.confirmationToken, context: input.context });
-      return res.json({ success: true, data: { plan: planDto(result.plan, Boolean(result.result)), accepted: true, executionStarted: Boolean(result.result) } });
+      return res.json({ success: true, data: { plan: planDto(result.plan, Boolean(result.result)), result: result.result ?? null, accepted: true, executionStarted: Boolean(result.result) } });
     } catch (error) { return safeError(res, error); }
   };
   app.post("/api/assistant/plans/:planId/confirmations", ...guarded, confirm);
