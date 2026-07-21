@@ -12,6 +12,11 @@ import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { resolveQuoteInternalNoteIntent } from "./execution/quoteInternalNoteIntent";
 import { productManagementSkillService } from "./productManagementSkill";
+import {
+  assistantCapabilityProductionCommands,
+  assistantCapabilityReadTools,
+} from "./assistantCapabilities";
+import { resolveDeterministicReadPlan } from "./deterministicReadRouting";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
@@ -108,7 +113,60 @@ export interface AssistantRepository {
 }
 
 export interface AssistantCapabilityResolver {
-  getCapabilities(organizationId: string): Promise<{ enabled: boolean; toolsEnabled?: boolean; unavailableReason?: string | null }>;
+  getCapabilities(organizationId: string): Promise<{ enabled: boolean; toolsEnabled?: boolean; providerConfigured?: boolean; unavailableReason?: string | null }>;
+}
+
+type AssistantCapabilitySummary = Awaited<ReturnType<AssistantService["getCapabilities"]>>;
+
+function hasPermission(actor: AssistantActor | undefined, permission: string): boolean {
+  return Boolean(actor?.permissions?.includes(permission));
+}
+
+/** Returns a local-only reply for the two capability questions that must never
+ * depend on provider planning. The response derives entirely from the same
+ * server summary used by the capability endpoint and composer. */
+export function resolveAssistantCapabilityQuestion(
+  message: string,
+  capability: AssistantCapabilitySummary,
+): { response: string; title: string } | null {
+  const normalized = message.trim().toLowerCase().replace(/[’']/g, "'").replace(/\s+/g, " ");
+  const asksAvailable = /^(?:what|which) (?:can|do) (?:you|the assistant) (?:currently )?do\??$/.test(normalized)
+    || /^(?:what are )?(?:your|the assistant's) capabilities\??$/.test(normalized);
+  const asksUnavailable = /^(?:what|which) (?:can't|cannot) (?:you|the assistant) (?:currently )?do(?: yet)?\??$/.test(normalized)
+    || /^(?:what|which) (?:can|do) (?:you|the assistant) (?:not|not yet) (?:currently )?do\??$/.test(normalized)
+    || /^(?:what are )?(?:your|the assistant's) limitations\??$/.test(normalized);
+  if (!asksAvailable && !asksUnavailable) return null;
+
+  if (asksAvailable) {
+    if (!capability.readToolsEnabled) {
+      return { title: "Assistant capabilities", response: capability.unavailableReason ?? "Business lookups are currently unavailable." };
+    }
+    const actions: string[] = [
+      "search for customers, orders, products, quotes, invoices, and production jobs",
+      "summarize customers, orders, and products",
+      "show operational summaries and the current workspace context",
+    ];
+    if (capability.productionCommandsPermittedForUser.includes("quotes.add_internal_note")) actions.push("add an internal quote note after a preview and dedicated confirmation");
+    if (capability.productionCommandsPermittedForUser.includes("products.create_inactive_draft")) actions.push("create one inactive product draft after a preview and dedicated confirmation");
+    if (capability.productionCommandsEnabled.length && !capability.productionCommandsPermittedForUser.length) {
+      actions.push("show available confirmed actions, although your current role is not permitted to plan them");
+    }
+    return { title: "Assistant capabilities", response: `I can ${actions.join("; ")}.` };
+  }
+
+  const limits = [
+    "product activation remains disabled",
+    "active-product editing remains disabled",
+    "external research remains disabled",
+    "MCP integrations remain disabled",
+  ];
+  if (!capability.readToolsEnabled) limits.unshift(capability.unavailableReason ?? "business lookups are currently unavailable");
+  if (capability.productionCommandsEnabled.length && !capability.productionCommandsPermittedForUser.length) {
+    limits.unshift("confirmed actions are enabled for this organization, but your current role is not permitted to use them");
+  } else if (!capability.productionCommandsEnabled.length) {
+    limits.unshift("confirmed actions are unavailable because the assistant provider or organization setting is disabled");
+  }
+  return { title: "Assistant limitations", response: `I can't ${limits.join("; ")}.` };
 }
 
 export function toIso(value: Date | string): string {
@@ -145,15 +203,39 @@ export class AssistantService {
       (audit) => new AssistantOrchestrationService(createStage2AssistantToolAdapters(), audit),
   ) {}
 
-  async getCapabilities(scope: AssistantScope) {
+  async getCapabilities(scope: AssistantScope, actor?: AssistantActor) {
     const resolved = await this.capabilities.getCapabilities(scope.organizationId);
+    const providerConfigured = Boolean(resolved.enabled && (resolved.providerConfigured ?? resolved.toolsEnabled));
+    const readToolsEnabled = Boolean(resolved.enabled && resolved.toolsEnabled);
+    const writeFrameworkEnabled = readToolsEnabled;
+    const productionCommandsEnabled = writeFrameworkEnabled ? [...assistantCapabilityProductionCommands] : [];
+    const productionCommandsPermittedForUser = productionCommandsEnabled.filter((command) =>
+      command === "quotes.add_internal_note"
+        ? hasPermission(actor, "assistant.quotes.add_internal_note")
+        : hasPermission(actor, "assistant.products.create_inactive_draft"),
+    );
+    const writeActionsEnabled = productionCommandsPermittedForUser.length > 0;
     return {
       enabled: resolved.enabled,
       conversationsEnabled: resolved.enabled,
-      toolsEnabled: Boolean(resolved.enabled && resolved.toolsEnabled),
-      writeActionsEnabled: Boolean(resolved.enabled && resolved.toolsEnabled),
+      toolsEnabled: readToolsEnabled,
+      providerConfigured,
+      readToolsEnabled,
+      registeredReadTools: readToolsEnabled ? [...assistantCapabilityReadTools] : [],
+      writeFrameworkEnabled,
+      writeActionsEnabled,
+      productionCommandsEnabled,
+      productionCommandsPermittedForUser,
       externalResearchEnabled: false,
-      assistantVersion: "stage-2",
+      mcpEnabled: false,
+      productActivationEnabled: false,
+      activeProductEditingEnabled: false,
+      composerHelperText: !readToolsEnabled
+        ? (resolved.unavailableReason ?? "Business questions are unavailable until AI configuration is complete.")
+        : writeActionsEnabled
+          ? "Business lookups and confirmed actions are enabled. Changes require preview and the dedicated GO button. External research is disabled."
+          : "Business lookups are enabled. Write actions and external research are disabled.",
+      assistantVersion: "stage-5",
       unavailableReason: resolved.unavailableReason ?? (resolved.enabled ? null : "The assistant is disabled for this organization."),
       actorScope: scope,
     };
@@ -188,7 +270,7 @@ export class AssistantService {
     // Routes validate this too; retain a service boundary so future callers
     // cannot persist arbitrary context, form data, or identity fields.
     const request = assistantTurnRequestSchema.parse(data);
-    const capability = await this.getCapabilities(scope);
+    const capability = await this.getCapabilities(scope, actor);
     if (!capability.conversationsEnabled) {
       throw new AssistantServiceError(
         "ASSISTANT_DISABLED",
@@ -216,6 +298,13 @@ export class AssistantService {
     let cards: AssistantResultCard[] = [];
     const audits: AssistantToolExecutionAudit[] = [];
     try {
+      const capabilityReply = resolveAssistantCapabilityQuestion(request.message, capability);
+      if (capabilityReply) {
+        response = capabilityReply.response;
+        cards = [{ kind: "tool_warning", title: capabilityReply.title, summary: response, sourceLinks: [] }];
+        provider = "local_policy";
+        model = "assistant-capabilities-v1";
+      } else {
       // This runs before the read-only provider planner and is intentionally
       // narrower than a general write classifier. It can only propose the one
       // server-registered quote-note action; execution still requires a
@@ -230,8 +319,25 @@ export class AssistantService {
         activeSessionId: activeProductIntakeSession(conversation.messages),
       });
       if (productManagement.handled) {
-        response = productManagement.response;
-        cards = productManagement.cards as AssistantResultCard[];
+        const containsDeferredDraftUpdate = productManagement.cards.some((card) =>
+          card.kind === "action_proposal" && card.plan?.action === "products.update_inactive_draft",
+        );
+        // The Stage 6 editor remains independently implemented, but this
+        // stabilization deployment composes only the two reviewed Stage 4/5
+        // commands. Never emit a GO-able proposal for a deferred command.
+        if (containsDeferredDraftUpdate) {
+          response = "Inactive-draft editing is not enabled in this environment. No changes were made.";
+          cards = [{
+            kind: "tool_warning",
+            title: "Inactive-draft editing unavailable",
+            summary: response,
+            sourceLinks: [],
+            toolStatus: "permission_denied",
+          }];
+        } else {
+          response = productManagement.response;
+          cards = productManagement.cards as AssistantResultCard[];
+        }
         provider = "local_product_intake";
         model = "product-management-skill-v1";
       } else {
@@ -262,7 +368,15 @@ export class AssistantService {
         provider = "local_policy";
         model = "stage-4-quote-note-intent";
       } else {
-      const planned = await this.planner.plan({ organizationId: scope.organizationId, message: request.message, context: request.context });
+      // Exact, read-only lookups and current-context questions must not depend
+      // on a provider producing a valid JSON plan. The selected plan still
+      // traverses the same registry and orchestration enforcement as a
+      // provider plan, including tenant scope, permissions, limits, audits,
+      // timeouts, and result schemas.
+      const deterministicPlan = resolveDeterministicReadPlan(request.message);
+      const planned = deterministicPlan
+        ? { plan: deterministicPlan, provider: "local_policy", model: "deterministic-read-routing-v1", metadata: { route: "exact_read" } }
+        : await this.planner.plan({ organizationId: scope.organizationId, message: request.message, context: request.context });
       provider = planned.provider;
       model = planned.model;
       if (planned.plan.intent === "unsupported_write") {
@@ -283,6 +397,7 @@ export class AssistantService {
         const rendered = renderToolResults(executed.executions);
         response = rendered.response;
         cards = rendered.cards;
+      }
       }
       }
       }
@@ -374,7 +489,20 @@ function summaryForTool(toolName: string, data: any): string {
   if (toolName === "orders.get_summary") return `Order: ${data.order?.label ?? "record"}.`;
   if (toolName === "products.get_summary") return `Product: ${data.product?.label ?? "record"}.`;
   if (toolName === "reports.operational_summary") return `${data.metrics?.length ?? 0} operational counters.`;
-  if (toolName === "navigation.get_current_context") return `Current page: ${data.pageTitle ?? "workspace"}.`;
+  if (toolName === "navigation.get_current_context") {
+    const record = data.currentRecord as {
+      entityType?: string; orderNumber?: string; entityId?: string; customer?: string; status?: string;
+    } | undefined;
+    if (!record) return `Current page: ${data.pageTitle ?? "workspace"}.`;
+    const entity = record.entityType ? `${record.entityType[0]!.toUpperCase()}${record.entityType.slice(1)}` : "Record";
+    const identifier = record.orderNumber ? ` ${record.orderNumber}` : record.entityId ? ` ${record.entityId}` : "";
+    return [
+      `Current page: ${data.pageTitle ?? "workspace"}.`,
+      `Entity: ${entity}${identifier}.`,
+      record.customer ? `Customer: ${record.customer}.` : null,
+      record.status ? `Status: ${record.status}.` : null,
+    ].filter(Boolean).join(" ");
+  }
   return "Read-only result available.";
 }
 

@@ -43,25 +43,31 @@ describe("assistant contracts", () => {
   });
 
   test("capabilities make all Stage 1 tool and write flags false", () => {
-    expect(assistantCapabilitySchema.parse({
+    const base = {
       enabled: true,
       conversationsEnabled: true,
       toolsEnabled: false,
+      providerConfigured: false,
+      readToolsEnabled: false,
+      registeredReadTools: [],
+      writeFrameworkEnabled: false,
       writeActionsEnabled: false,
+      productionCommandsEnabled: [],
+      productionCommandsPermittedForUser: [],
       externalResearchEnabled: false,
+      mcpEnabled: false,
+      productActivationEnabled: false,
+      activeProductEditingEnabled: false,
+      composerHelperText: "Business questions are unavailable.",
       assistantVersion: "v1",
       unavailableReason: null,
       actorScope: { organizationId: "org_1", userId: "user_1" },
-    }).toolsEnabled).toBe(false);
+    } as const;
+    expect(assistantCapabilitySchema.parse(base).toolsEnabled).toBe(false);
 
     expect(() => assistantCapabilitySchema.parse({
-      enabled: true,
-      conversationsEnabled: true,
-      toolsEnabled: true,
-      writeActionsEnabled: false,
-      externalResearchEnabled: false,
-      assistantVersion: "v1",
-      unavailableReason: null,
+      ...base,
+      externalResearchEnabled: true,
     })).toThrow();
   });
 });

@@ -208,7 +208,7 @@ function ConversationContent() {
             <Input id="assistant-message" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} maxLength={8_000} disabled={sendTurn.isPending || !toolsEnabled} />
             <Button type="submit" size="icon" disabled={!draft.trim() || sendTurn.isPending || !toolsEnabled} aria-label="Send message"><Send className="h-4 w-4" /></Button>
           </div>
-          <p className="mt-2 text-[11px] text-muted-foreground">{toolsEnabled ? "Read-only business lookups only. Write actions and external research are disabled." : (capabilities?.unavailableReason || "Business questions are unavailable until AI configuration is complete.")}</p>
+          <p className="mt-2 text-[11px] text-muted-foreground">{capabilities?.composerHelperText || capabilities?.unavailableReason || "Business questions are unavailable until AI configuration is complete."}</p>
         </form>
       </section>
     </div>
