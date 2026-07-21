@@ -7,6 +7,7 @@ import { Menu, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { RuntimeSafetyWarning } from "@/components/runtime/RuntimeSafetyWarning";
+import { AssistantDock, AssistantOverlay, AssistantWorkspaceProvider, useAssistantWorkspace } from "@/features/assistant";
 
 // DIAGNOSTIC: Error boundary to catch route render errors
 class RouteErrorBoundary extends Component<
@@ -41,6 +42,10 @@ class RouteErrorBoundary extends Component<
 }
 
 export function AppLayout() {
+  return <AssistantWorkspaceProvider><InternalAppLayout /></AssistantWorkspaceProvider>;
+}
+
+function InternalAppLayout() {
   const location = useLocation();
   const [isSidebarCollapsed, setIsSidebarCollapsed] = useState(false);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
@@ -115,20 +120,22 @@ export function AppLayout() {
         />
         {showRuntimeSafetyWarning ? <RuntimeSafetyWarning /> : null}
 
-        {/* Scrollable page content */}
-        <main
-          className="flex min-h-0 flex-1 flex-col overflow-y-auto bg-background"
-          style={{
-            ["--titan-order-right-col" as any]: orderRightCol,
-          }}
-        >
-          <div className="flex min-h-full w-full flex-1 flex-col">
-            <RouteErrorBoundary key={location.pathname}>
-              <Outlet />
-            </RouteErrorBoundary>
-          </div>
-        </main>
+        <AssistantAppContent locationPath={location.pathname} orderRightCol={orderRightCol} />
+        <AssistantOverlay />
       </div>
     </div>
   );
+}
+
+function AssistantAppContent({ locationPath, orderRightCol }: { locationPath: string; orderRightCol: string }) {
+  const { presentation, capabilities } = useAssistantWorkspace();
+  const docked = Boolean(capabilities?.enabled && capabilities.conversationsEnabled) && (presentation === "dock_left" || presentation === "dock_right" || presentation === "dock_bottom");
+  const main = (
+    <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-background" style={{ ["--titan-order-right-col" as any]: orderRightCol }}>
+      <div className="flex min-h-full w-full flex-1 flex-col"><RouteErrorBoundary key={locationPath}><Outlet /></RouteErrorBoundary></div>
+    </main>
+  );
+  if (!docked) return main;
+  if (presentation === "dock_bottom") return <div className="flex min-h-0 flex-1 flex-col">{main}<AssistantDock side="bottom" /></div>;
+  return <div className="flex min-h-0 flex-1">{presentation === "dock_left" ? <AssistantDock side="left" /> : null}{main}{presentation === "dock_right" ? <AssistantDock side="right" /> : null}</div>;
 }

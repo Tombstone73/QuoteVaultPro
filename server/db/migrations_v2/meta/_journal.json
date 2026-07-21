@@ -834,6 +834,13 @@
       "when": 1785369600000,
       "tag": "0123_product_shop_name",
       "breakpoints": true
+    },
+    {
+      "idx": 124,
+      "version": "7",
+      "when": 1785456000000,
+      "tag": "0124_assistant_platform_foundation",
+      "breakpoints": true
     }
   ]
 }

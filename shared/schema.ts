@@ -58,6 +58,17 @@ import {
   type AiMode,
   type AiProvider,
 } from "./aiFoundationContracts";
+import {
+  assistantConversationStatusValues,
+  assistantMessageRoleValues,
+  assistantToolExecutionStatusValues,
+  assistantTurnStatusValues,
+  type AssistantContextEnvelope,
+  type AssistantConversationStatus,
+  type AssistantMessageRole,
+  type AssistantStructuredCard,
+  type AssistantTurnStatus,
+} from "./assistantContracts";
 
 // ============================================================
 // DOWNLOAD INTENT (Future-proofing for preflight/print variants)
@@ -7363,6 +7374,154 @@ export const insertAiUsageSchema = createInsertSchema(aiUsage, {
 
 export type AiUsage = typeof aiUsage.$inferSelect;
 export type InsertAiUsage = typeof aiUsage.$inferInsert;
+
+// Assistant platform foundation: tenant-scoped internal workspace records.
+export const aiConversations = pgTable("ai_conversations", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  title: varchar("title", { length: 240 }).notNull().default("New conversation"),
+  status: text("status").$type<AssistantConversationStatus>().notNull().default("active"),
+  lastMessagePreview: varchar("last_message_preview", { length: 240 }),
+  lastActivityAt: timestamp("last_activity_at", { withTimezone: true }).defaultNow().notNull(),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_conversations_org_user_activity_idx").on(table.orgId, table.userId, table.lastActivityAt),
+  index("ai_conversations_org_status_activity_idx").on(table.orgId, table.status, table.lastActivityAt),
+]);
+
+export const aiTurns = pgTable("ai_turns", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+  status: text("status").$type<AssistantTurnStatus>().notNull().default("pending"),
+  clientRequestId: varchar("client_request_id", { length: 128 }),
+  correlationId: varchar("correlation_id", { length: 128 }).notNull(),
+  provider: varchar("provider", { length: 80 }),
+  model: varchar("model", { length: 160 }),
+  mode: varchar("mode", { length: 64 }),
+  promptVersion: varchar("prompt_version", { length: 64 }),
+  errorCode: varchar("error_code", { length: 120 }),
+  errorMessage: varchar("error_message", { length: 500 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_turns_org_conversation_created_idx").on(table.orgId, table.conversationId, table.createdAt),
+  index("ai_turns_org_status_created_idx").on(table.orgId, table.status, table.createdAt),
+  index("ai_turns_correlation_id_idx").on(table.correlationId),
+]);
+
+export const aiMessages = pgTable("ai_messages", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  turnId: varchar("turn_id").references(() => aiTurns.id, { onDelete: "cascade" }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  role: text("role").$type<AssistantMessageRole>().notNull(),
+  sequence: integer("sequence").notNull(),
+  content: text("content").notNull(),
+  contentFormat: varchar("content_format", { length: 32 }).notNull().default("plain_text"),
+  structuredCards: jsonb("structured_cards").$type<AssistantStructuredCard[]>().notNull().default(sql.raw("'[]'::jsonb")),
+  provider: varchar("provider", { length: 80 }),
+  model: varchar("model", { length: 160 }),
+  correlationId: varchar("correlation_id", { length: 128 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("ai_messages_conversation_sequence_uidx").on(table.conversationId, table.sequence),
+  index("ai_messages_org_conversation_created_idx").on(table.orgId, table.conversationId, table.createdAt),
+  index("ai_messages_turn_id_idx").on(table.turnId),
+]);
+
+export const aiContextSnapshots = pgTable("ai_context_snapshots", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  turnId: varchar("turn_id").notNull().references(() => aiTurns.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+  contextVersion: varchar("context_version", { length: 32 }).notNull(),
+  sanitizedContext: jsonb("sanitized_context").$type<AssistantContextEnvelope>().notNull(),
+  contextHash: varchar("context_hash", { length: 128 }).notNull(),
+  capturedAt: timestamp("captured_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_context_snapshots_org_conversation_created_idx").on(table.orgId, table.conversationId, table.createdAt),
+  index("ai_context_snapshots_turn_id_idx").on(table.turnId),
+]);
+
+export const aiToolExecutions = pgTable("ai_tool_executions", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  turnId: varchar("turn_id").notNull().references(() => aiTurns.id, { onDelete: "cascade" }),
+  toolName: varchar("tool_name", { length: 120 }).notNull(),
+  toolVersion: varchar("tool_version", { length: 64 }).notNull(),
+  status: text("status").$type<(typeof assistantToolExecutionStatusValues)[number]>().notNull().default("not_run"),
+  redactedArguments: jsonb("redacted_arguments").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  redactedResult: jsonb("redacted_result").$type<Record<string, unknown>>(),
+  sourceIds: jsonb("source_ids").$type<string[]>().notNull().default(sql.raw("'[]'::jsonb")),
+  correlationId: varchar("correlation_id", { length: 128 }).notNull(),
+  errorCode: varchar("error_code", { length: 120 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+}, (table) => [
+  index("ai_tool_executions_org_turn_created_idx").on(table.orgId, table.turnId, table.createdAt),
+  index("ai_tool_executions_org_status_created_idx").on(table.orgId, table.status, table.createdAt),
+  index("ai_tool_executions_correlation_id_idx").on(table.correlationId),
+]);
+
+export const aiAuditEvents = pgTable("ai_audit_events", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").references(() => aiConversations.id, { onDelete: "set null" }),
+  turnId: varchar("turn_id").references(() => aiTurns.id, { onDelete: "set null" }),
+  toolExecutionId: varchar("tool_execution_id").references(() => aiToolExecutions.id, { onDelete: "set null" }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  sourceAuditLogId: varchar("source_audit_log_id").references(() => auditLogs.id, { onDelete: "set null" }),
+  eventType: varchar("event_type", { length: 120 }).notNull(),
+  status: varchar("status", { length: 64 }).notNull(),
+  inputHash: varchar("input_hash", { length: 128 }),
+  correlationId: varchar("correlation_id", { length: 128 }).notNull(),
+  metadata: jsonb("metadata").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_audit_events_org_created_idx").on(table.orgId, table.createdAt),
+  index("ai_audit_events_org_conversation_created_idx").on(table.orgId, table.conversationId, table.createdAt),
+  index("ai_audit_events_turn_id_idx").on(table.turnId),
+  index("ai_audit_events_correlation_id_idx").on(table.correlationId),
+]);
+
+export const insertAiConversationSchema = createInsertSchema(aiConversations, {
+  status: z.enum(assistantConversationStatusValues),
+}).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertAiTurnSchema = createInsertSchema(aiTurns, {
+  status: z.enum(assistantTurnStatusValues),
+}).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertAiMessageSchema = createInsertSchema(aiMessages, {
+  role: z.enum(assistantMessageRoleValues),
+}).omit({ id: true, createdAt: true });
+export const insertAiContextSnapshotSchema = createInsertSchema(aiContextSnapshots).omit({ id: true, createdAt: true });
+export const insertAiToolExecutionSchema = createInsertSchema(aiToolExecutions, {
+  status: z.enum(assistantToolExecutionStatusValues),
+}).omit({ id: true, createdAt: true });
+export const insertAiAuditEventSchema = createInsertSchema(aiAuditEvents).omit({ id: true, createdAt: true });
+
+export type AiConversation = typeof aiConversations.$inferSelect;
+export type InsertAiConversation = typeof aiConversations.$inferInsert;
+export type AiTurn = typeof aiTurns.$inferSelect;
+export type InsertAiTurn = typeof aiTurns.$inferInsert;
+export type AiMessage = typeof aiMessages.$inferSelect;
+export type InsertAiMessage = typeof aiMessages.$inferInsert;
+export type AiContextSnapshot = typeof aiContextSnapshots.$inferSelect;
+export type InsertAiContextSnapshot = typeof aiContextSnapshots.$inferInsert;
+export type AiToolExecution = typeof aiToolExecutions.$inferSelect;
+export type InsertAiToolExecution = typeof aiToolExecutions.$inferInsert;
+export type AiAuditEvent = typeof aiAuditEvents.$inferSelect;
+export type InsertAiAuditEvent = typeof aiAuditEvents.$inferInsert;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // BUG REPORT NOTES — admin-only internal notes per bug report
