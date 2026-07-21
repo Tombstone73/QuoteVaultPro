@@ -22,6 +22,13 @@ import {
   productInactiveDraftCommandResultSchema,
   productInactiveDraftCommandVersion,
 } from "../services/assistant/execution/productInactiveDraftCommand";
+import {
+  createProductInactiveDraftUpdateCommandDefinition,
+  productInactiveDraftUpdateCommandInputSchema,
+  productInactiveDraftUpdateCommandName,
+  productInactiveDraftUpdateCommandResultSchema,
+  productInactiveDraftUpdateCommandVersion,
+} from "../services/assistant/execution/productInactiveDraftUpdateCommand";
 
 const inputSchema = z.object({ recordId: z.string().uuid() }).strict();
 const resultSchema = z.object({ changed: z.literal(true) }).strict();
@@ -155,6 +162,86 @@ describe("assistant command registry", () => {
       { organizationId: "org_1", actorUserId: "user_1", planId: "plan_2", idempotencyKey: "aicmd_123e4567-e89b-12d3-a456-426614174001", correlationId: "corr_2", signal: new AbortController().signal },
     )).resolves.toMatchObject({ product: { active: false } });
     expect(receivedInput).toMatchObject({ intakeSessionId: "session_1", proposalFingerprint, organizationId: "org_1", actorUserId: "user_1", assistantPlanId: "plan_2" });
+    expect(receivedInput).not.toHaveProperty("active");
+  });
+
+  it("registers exactly three reviewed production commands including the fingerprint-only inactive draft update", async () => {
+    let receivedInput: Record<string, unknown> | undefined;
+    const proposalFingerprint = "b".repeat(64);
+    const updateService = {
+      updateInactiveDraft: async (input: Record<string, unknown>) => {
+        receivedInput = input;
+        return productInactiveDraftUpdateCommandResultSchema.parse({
+          product: { id: "product_1", name: "13 oz Banner", active: false, sourceLink: "/products/product_1" },
+          productIntakeSession: { id: "session_1", sourceLink: "/admin/catalog-migration-lab/session_1" },
+          pbv2DraftTreeVersionId: "tree_2",
+          readiness: "not_ready",
+          domainAuditReference: "audit_3",
+        });
+      },
+    };
+    const quoteService = { addInternalNote: async () => quoteInternalNoteCommandResultSchema.parse({
+      quote: { id: "quote_1", displayNumber: "Q-1042", sourceLink: "/quotes/quote_1" },
+      note: { id: "note_1", content: "Internal note", createdAt: "2026-07-21T00:00:00.000Z", classification: "internal_only" },
+    }) };
+    const createService = { createInactiveDraft: async () => productInactiveDraftCommandResultSchema.parse({
+      product: { id: "product_2", name: "13 oz Banner", active: false, sourceLink: "/products/product_2" },
+      intakeSession: { id: "session_2", status: "draft_created", sourceLink: "/admin/catalog-migration-lab/session_2" },
+      pbv2DraftTreeVersionId: "tree_1",
+    }) };
+    const updateCommand = createProductInactiveDraftUpdateCommandDefinition(updateService);
+    const registry = createProductionAssistantCommandRegistry(
+      createQuoteInternalNoteCommandDefinition(quoteService),
+      createProductInactiveDraftCommandDefinition(createService),
+      updateCommand,
+    );
+
+    expect(registry.list()).toHaveLength(3);
+    expect(registry.list().map((command) => command.name)).toEqual([
+      quoteInternalNoteCommandName,
+      productInactiveDraftCommandName,
+      productInactiveDraftUpdateCommandName,
+    ]);
+    expect(updateCommand).toMatchObject({
+      name: productInactiveDraftUpdateCommandName,
+      version: productInactiveDraftUpdateCommandVersion,
+      domain: "products",
+      mode: "write",
+      risk: "high",
+      requiredCapability: "assistant.products.update_inactive_draft",
+      allowedRoles: ["owner", "admin"],
+      maxAffectedRecords: 1,
+      bulkAllowed: false,
+      confirmationRequired: true,
+      reauthenticationRequired: true,
+      recordFingerprintStrategy: "updated_at_and_critical_fields",
+      transactionPolicy: "required",
+      partialFailurePolicy: "forbid",
+    });
+    expect(() => productInactiveDraftUpdateCommandInputSchema.parse({
+      productIntakeSessionId: "session_1",
+      proposalFingerprint,
+      patch: { basePricing: { isActive: true } },
+    })).toThrow();
+    expect(() => productInactiveDraftUpdateCommandInputSchema.parse({
+      productIntakeSessionId: "session_1", proposalFingerprint,
+      patch: { basePricing: { minimumChargeCents: 1500 } }, active: true,
+    })).toThrow();
+    await expect(updateCommand.adapter.execute(
+      productInactiveDraftUpdateCommandInputSchema.parse({
+        productIntakeSessionId: "session_1", proposalFingerprint,
+        patch: { basePricing: { minimumChargeCents: 1500 } },
+      }),
+      { organizationId: "org_1", actorUserId: "user_1", planId: "plan_3", idempotencyKey: "aicmd_123e4567-e89b-12d3-a456-426614174002", correlationId: "corr_3", signal: new AbortController().signal },
+    )).resolves.toMatchObject({ product: { active: false }, readiness: "not_ready" });
+    expect(receivedInput).toMatchObject({
+      productIntakeSessionId: "session_1",
+      proposalFingerprint,
+      patch: { basePricing: { minimumChargeCents: 1500 } },
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      assistantPlanId: "plan_3",
+    });
     expect(receivedInput).not.toHaveProperty("active");
   });
 });

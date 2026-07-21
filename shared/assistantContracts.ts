@@ -348,6 +348,13 @@ export const assistantStage2CardKindValues = [
   "product_validation_warnings",
   "product_draft_preview",
   "product_draft_created",
+  "product_draft_snapshot",
+  "product_draft_changes",
+  "product_draft_update_preview",
+  "product_draft_updated",
+  "product_draft_update_failed",
+  "product_draft_update_unsupported",
+  "product_active_product_unsupported",
 ] as const;
 export const assistantStage2StructuredCardSchema = z.object({
   kind: z.enum(assistantStage2CardKindValues),
@@ -495,6 +502,18 @@ export const assistantExecutionPreviewSchema = z.object({
     productName: z.string().trim().min(1).max(255),
     sourceLink: assistantSourceLinkSchema,
     warnings: z.array(z.string().trim().min(1).max(1_000)).max(50),
+    unchanged: z.array(z.string().trim().min(1).max(120)).min(1).max(10),
+  }).strict().optional(),
+  productInactiveDraftUpdate: z.object({
+    productId: assistantSafeIdentifierSchema,
+    productName: z.string().trim().min(1).max(255),
+    sessionId: assistantSafeIdentifierSchema,
+    editorLink: z.string().trim().startsWith("/"),
+    changes: z.array(z.object({ field: z.string().trim().min(1).max(160), before: z.union([z.string(), z.number(), z.boolean(), z.null()]), after: z.union([z.string(), z.number(), z.boolean(), z.null()]) }).strict()).min(1).max(30),
+    readinessBefore: z.string().trim().min(1).max(120),
+    expectedReadinessAfter: z.string().trim().min(1).max(120),
+    warnings: z.array(z.string().trim().min(1).max(1_000)).max(50),
+    validationErrors: z.array(z.string().trim().min(1).max(1_000)).max(50),
     unchanged: z.array(z.string().trim().min(1).max(120)).min(1).max(10),
   }).strict().optional(),
 }).strict();

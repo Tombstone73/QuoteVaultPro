@@ -3,6 +3,8 @@ export * from "./executionPlanningService";
 export * from "./intentDetection";
 export * from "./productInactiveDraftCommand";
 export * from "./productInactiveDraftExecutionCommand";
+export * from "./productInactiveDraftUpdateCommand";
+export * from "./productInactiveDraftUpdateExecutionCommand";
 export * from "./quoteInternalNoteCommand";
 export * from "./quoteInternalNoteExecutionCommand";
 export * from "./stateMachine";

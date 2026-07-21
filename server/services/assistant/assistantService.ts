@@ -129,6 +129,7 @@ function activeProductIntakeSession(messages: AssistantMessageRecord[]): string 
     for (const card of [...(message.structuredCards ?? [])].reverse()) {
       const candidate = card as { kind?: unknown; details?: { sessionId?: unknown }; plan?: { action?: unknown; intakeSessionId?: unknown } };
       if (candidate.kind === "action_proposal" && candidate.plan?.action === "products.create_inactive_draft" && typeof candidate.plan.intakeSessionId === "string") return candidate.plan.intakeSessionId;
+      if (candidate.kind === "action_proposal" && candidate.plan?.action === "products.update_inactive_draft" && typeof candidate.plan.intakeSessionId === "string") return candidate.plan.intakeSessionId;
       if (candidate.kind === "product_intake_summary" && typeof candidate.details?.sessionId === "string") return candidate.details.sessionId;
     }
   }

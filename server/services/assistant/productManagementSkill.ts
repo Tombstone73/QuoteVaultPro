@@ -13,14 +13,15 @@ import {
 } from "../productIntakeWizard/productIntakeBriefService";
 import { createDbProductIntakeSessionStore, type ProductIntakeSessionStore } from "../productIntakeWizard/productIntakeSessionService";
 import { assistantProductIntakeAdapter } from "./productIntakeAdapter";
+import { inactiveProductDraftUpdateService, InactiveProductDraftUpdateError, type InactiveProductDraftPatch } from "./inactiveProductDraftUpdateService";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
   version: "v1",
-  purpose: "Conversationally prepare one validated inactive product draft using the existing Product Intake workflow.",
+  purpose: "Conversationally create or continue one validated inactive product draft using the existing Product Intake workflow.",
   allowedReadDomains: ["products", "product_categories", "pbv2_definitions", "pricing_methods", "materials", "production_routing", "option_definitions", "formula_library_metadata"],
-  allowedCommands: ["products.create_inactive_draft@v1"],
-  requiredPermissions: ["assistant.products.create_inactive_draft"],
+  allowedCommands: ["products.create_inactive_draft@v1", "products.update_inactive_draft@v1"],
+  requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft"],
   requiredContext: ["organization", "authenticated_internal_actor", "conversation"],
   confirmationPolicy: "dedicated_plan_confirmation",
   maximumProductScope: 1,
@@ -33,7 +34,7 @@ export const productManagementSkill = Object.freeze({
 });
 
 export type ProductManagementCard = {
-  kind: "product_intake_summary" | "product_missing_information" | "product_material_selection" | "product_options_summary" | "product_pricing_summary" | "product_routing_summary" | "product_validation_errors" | "product_validation_warnings" | "product_draft_preview" | "action_proposal";
+  kind: "product_intake_summary" | "product_missing_information" | "product_material_selection" | "product_options_summary" | "product_pricing_summary" | "product_routing_summary" | "product_validation_errors" | "product_validation_warnings" | "product_draft_preview" | "product_draft_snapshot" | "product_draft_update_preview" | "product_draft_update_unsupported" | "product_active_product_unsupported" | "action_proposal";
   title: string;
   summary: string;
   sourceLinks: Array<{ label: string; href: string }>;
@@ -62,7 +63,31 @@ function isProductIntent(message: string): boolean {
 }
 
 function isUnsupportedProductMutation(message: string): boolean {
-  return /\b(activate|publish|edit|update)\b[\s\S]{0,80}\b(active\s+product|product)\b/i.test(message);
+  return /\b(activate|publish)\b/i.test(message) || /\b(edit|update|change)\b[\s\S]{0,80}\bactive\s+product\b/i.test(message);
+}
+
+function cents(value: string): number | null {
+  const number = Number(value.replace(/[$,]/g, ""));
+  return Number.isFinite(number) && number >= 0 && number <= 100_000 ? Math.round(number * 100) : null;
+}
+
+function pricingPatchFromMessage(message: string): InactiveProductDraftPatch | null {
+  const basePricing: NonNullable<InactiveProductDraftPatch["basePricing"]> = {};
+  const minimum = message.match(/(?:minimum\s+charge|min(?:imum)?\s+price)\s*(?:to|at|of|=)?\s*\$?([0-9]+(?:\.[0-9]{1,2})?)/i);
+  const perSqft = message.match(/(?:per\s*(?:square\s*foot|sq\s*ft)|square\s*foot\s*(?:rate|price))\s*(?:to|at|of|=)?\s*\$?([0-9]+(?:\.[0-9]{1,2})?)/i);
+  const perPiece = message.match(/(?:per\s*piece|piece\s*(?:rate|price))\s*(?:to|at|of|=)?\s*\$?([0-9]+(?:\.[0-9]{1,2})?)/i);
+  if (minimum) { const value = cents(minimum[1]); if (value !== null) basePricing.minimumChargeCents = value; }
+  if (perSqft) { const value = cents(perSqft[1]); if (value !== null) basePricing.perSqftCents = value; }
+  if (perPiece) { const value = cents(perPiece[1]); if (value !== null) basePricing.perPieceCents = value; }
+  return Object.keys(basePricing).length ? { basePricing } : null;
+}
+
+function money(centsValue: number | null | undefined): string {
+  return centsValue == null ? "Not set" : `$${(centsValue / 100).toFixed(2)}`;
+}
+
+function unsupportedDraftChange(message: string): boolean {
+  return /\b(option|grommet|hem|pole\s*pocket|single[-\s]?sided|double[-\s]?sided|material|route|routing|prepress|station|default)\b/i.test(message);
 }
 
 function answerFor(question: ProductIntakeSessionDetail["questions"][number], message: string): ProductIntakeAnswerPatchItem | null {
@@ -117,6 +142,28 @@ export class ProductManagementSkillService {
     if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation, publication, and active-product editing are not available through the assistant. I can prepare a new inactive draft instead.", cards: [{ kind: "product_validation_errors", title: "Unsupported product action", summary: "Only a new inactive product draft can be proposed.", sourceLinks: [], details: { errors: ["Activation, publication, and active-product editing are disabled."] } }] };
     if (input.activeSessionId) {
       const existing = await this.deps.sessions.getSessionDetail(input.organizationId, input.activeSessionId);
+      if (existing?.session.status === "draft_created") {
+        try {
+          const snapshot = await inactiveProductDraftUpdateService.loadSnapshot({ organizationId: input.organizationId, sessionId: existing.session.id });
+          const snapshotCard: ProductManagementCard = { kind: "product_draft_snapshot", title: "Current inactive draft", summary: `Loaded the current inactive draft for ${snapshot.productName}.`, sourceLinks: [{ label: "Open existing product editor", href: snapshot.editorLink }], details: { productName: snapshot.productName, draftStatus: "inactive_draft", editorPath: snapshot.editorLink, fields: { "PBV2 status": snapshot.pbv2Status, "Readiness": snapshot.readiness.status, "Base rate / sq ft": money(snapshot.pricingBase.perSqftCents), "Base rate / piece": money(snapshot.pricingBase.perPieceCents), "Minimum charge": money(snapshot.pricingBase.minimumChargeCents) }, warnings: snapshot.readiness.warnings, validationErrors: snapshot.readiness.findings } };
+          if (/\b(what\s+is\s+missing|show\s+(?:me\s+)?(?:what\s+is\s+)?missing|validation|readiness)\b/i.test(input.message)) return { handled: true, response: snapshot.readiness.findings.length ? "Here are the current server-derived draft readiness blockers." : "The inactive draft has no current server-derived readiness blockers.", cards: [snapshotCard] };
+          const patch = pricingPatchFromMessage(input.message);
+          if (patch) {
+            const proposal = await inactiveProductDraftUpdateService.buildProposal({ organizationId: input.organizationId, sessionId: existing.session.id, patch });
+            const changes = (Object.keys(patch.basePricing) as Array<keyof typeof patch.basePricing>).map((key) => ({
+              field: key === "minimumChargeCents" ? "Minimum charge" : key === "perSqftCents" ? "Base rate per square foot" : "Base rate per piece",
+              before: money(proposal.before.pricingBase[key]), after: money(patch.basePricing[key]),
+            }));
+            const preview: ProductManagementCard = { kind: "product_draft_update_preview", title: "Proposed inactive-draft pricing update", summary: "This is a server-built before-and-after preview. The product remains inactive and its PBV2 tree remains DRAFT.", sourceLinks: [{ label: "Open existing product editor", href: proposal.before.editorLink }], details: { productName: proposal.before.productName, draftStatus: "inactive_draft", editorPath: proposal.before.editorLink, changes, warnings: proposal.before.readiness.warnings, validationErrors: proposal.before.readiness.findings, unsupportedReasons: ["Options, defaults, materials, and routing are not edited through the assistant in this milestone."] } };
+            return { handled: true, response: "I prepared a precise inactive-draft pricing patch. Review the before-and-after values and create a dedicated confirmation plan.", cards: [snapshotCard, preview, { kind: "action_proposal", title: "Update inactive product draft", summary: "Review the server-generated plan and use its dedicated GO control to apply this pricing patch once.", sourceLinks: [], plan: { action: "products.update_inactive_draft", productIntakeSessionId: existing.session.id, intakeSessionId: existing.session.id, proposalFingerprint: proposal.fingerprint, patch } }] };
+          }
+          if (unsupportedDraftChange(input.message)) return { handled: true, response: "That draft change is not available through the assistant because there is not yet a narrow canonical patch service for it. Use the existing editor for this precision change.", cards: [snapshotCard, { kind: "product_draft_update_unsupported", title: "Draft change requires the existing editor", summary: "The assistant only supports the canonical transactional base-pricing patch for inactive drafts in this milestone.", sourceLinks: [{ label: "Open existing product editor", href: snapshot.editorLink }], details: { editorPath: snapshot.editorLink, unsupportedReasons: ["Options/defaults, materials, and routing do not have a safe assistant-facing canonical update service yet."] } }] };
+          return { handled: true, response: "I loaded this inactive draft. Specify a base rate per square foot, base rate per piece, or minimum charge to prepare a safe pricing update; other draft changes remain available in the existing editor.", cards: [snapshotCard] };
+        } catch (error) {
+          const message = error instanceof InactiveProductDraftUpdateError ? error.message : "This product draft is not eligible for conversational editing.";
+          return { handled: true, response: message, cards: [{ kind: "product_active_product_unsupported", title: "Draft editing unavailable", summary: message, sourceLinks: [], details: { unsupportedReasons: ["Only organization-owned inactive Product Intake drafts with a PBV2 DRAFT tree are eligible."] } }] };
+        }
+      }
       if (existing && !["draft_created", "abandoned"].includes(existing.session.status)) {
         const next = existing.questions.find((question) => question.required && !existing.answers.some((answer) => answer.questionKey === question.questionKey && answer.answer !== null));
         const answer = next ? answerFor(next, input.message) : null;
