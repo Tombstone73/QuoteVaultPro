@@ -29,10 +29,18 @@ async function parsePrepressResponse(response: Response, fallbackMessage: string
   return data;
 }
 
-export async function requestCompletePrepressSession(sessionId: string, fetchFn: typeof fetch = fetch) {
+export async function requestCompletePrepressSession(
+  sessionId: string,
+  fetchFn: typeof fetch = fetch,
+  options: { useExistingArtworkAsPrintFile?: boolean } = {},
+) {
   const response = await fetchFn(`/api/prepress/session/${sessionId}/complete`, {
     method: "POST",
+    headers: { "Content-Type": "application/json" },
     credentials: "include",
+    body: JSON.stringify({
+      useExistingArtworkAsPrintFile: options.useExistingArtworkAsPrintFile === true,
+    }),
   });
   return parsePrepressResponse(response, "Failed to complete prepress");
 }
@@ -53,6 +61,14 @@ export async function requestReleasePrepressLineItem(lineItemId: string, fetchFn
     credentials: "include",
   });
   return parsePrepressResponse(response, "Failed to release to production");
+}
+
+export async function requestPromotePrepressArtwork(lineItemId: string, fetchFn: typeof fetch = fetch) {
+  const response = await fetchFn(`/api/prepress/line-item/${lineItemId}/use-artwork-as-print-file`, {
+    method: "POST",
+    credentials: "include",
+  });
+  return parsePrepressResponse(response, "Failed to use artwork as the print file");
 }
 
 export function canCompleteAndReleasePrepress(input: {
@@ -115,6 +131,7 @@ export async function markPrepressItemsPrintReady(
     try {
       let sessionId = item.sessionId ?? null;
       let completionResponse: any = null;
+      const promotionResponse = await requestPromotePrepressArtwork(item.lineItemId, fetchFn);
 
       if (!item.hasCompletedSession) {
         if (!sessionId) {
@@ -134,14 +151,14 @@ export async function markPrepressItemsPrintReady(
           lineItemId: item.lineItemId,
           status: "released",
           message: "Existing artwork promoted, prepress completed, and line released.",
-          finalFileId: completionResponse?.data?.finalFileId ?? null,
+          finalFileId: promotionResponse?.data?.finalFileId ?? completionResponse?.data?.finalFileId ?? null,
         });
       } else {
         results.push({
           lineItemId: item.lineItemId,
           status: "completed",
           message: "Existing artwork promoted and prepress completed.",
-          finalFileId: completionResponse?.data?.finalFileId ?? null,
+          finalFileId: promotionResponse?.data?.finalFileId ?? completionResponse?.data?.finalFileId ?? null,
         });
       }
     } catch (error) {

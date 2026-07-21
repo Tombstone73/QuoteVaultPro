@@ -1141,7 +1141,6 @@ export function registerPrepressQueueRoutes(
         firstFinalMimeType: string | null;
       }>();
       for (const pf of previewFiles) {
-        const isImage = !!pf.mimeType?.startsWith("image/");
         const bucket = previewCandidatesByLineItem.get(pf.lineItemId) || {
           originalImageId: null,
           originalImageFileRecordId: null,
@@ -1153,13 +1152,13 @@ export function registerPrepressQueueRoutes(
 
         if (pf.role === "original") {
           if (!bucket.firstOriginalMimeType) bucket.firstOriginalMimeType = pf.mimeType || null;
-          if (isImage && !bucket.originalImageId) {
+          if (!bucket.originalImageId) {
             bucket.originalImageId = pf.id;
             bucket.originalImageFileRecordId = pf.fileRecordId ?? null;
           }
         } else if (pf.role === "final") {
           if (!bucket.firstFinalMimeType) bucket.firstFinalMimeType = pf.mimeType || null;
-          if (isImage && !bucket.finalImageId) {
+          if (!bucket.finalImageId) {
             bucket.finalImageId = pf.id;
             bucket.finalImageFileRecordId = pf.fileRecordId ?? null;
           }
@@ -1168,15 +1167,17 @@ export function registerPrepressQueueRoutes(
       }
 
       for (const [lineItemId, candidate] of Array.from(previewCandidatesByLineItem.entries())) {
-        const thumbFileId = candidate.originalImageId || candidate.finalImageId || null;
-        const thumbFileRecordId = candidate.originalImageFileRecordId || candidate.finalImageFileRecordId || null;
+        // Once Prepress promotes artwork, the line-specific final relation is
+        // authoritative. Its fileRecordId points to the exact selected source.
+        const thumbFileId = candidate.finalImageId || candidate.originalImageId || null;
+        const thumbFileRecordId = candidate.finalImageFileRecordId || candidate.originalImageFileRecordId || null;
         const thumbSelectionReason: 'original_fallback' | 'final_fallback' | 'none' =
-          candidate.originalImageId ? 'original_fallback' :
           candidate.finalImageId ? 'final_fallback' :
+          candidate.originalImageId ? 'original_fallback' :
           'none';
         const thumbCandidateMimeType =
-          candidate.originalImageId ? candidate.firstOriginalMimeType :
           candidate.finalImageId ? candidate.firstFinalMimeType :
+          candidate.originalImageId ? candidate.firstOriginalMimeType :
           (candidate.firstOriginalMimeType || candidate.firstFinalMimeType || null);
 
         const thumbnailAccess = thumbFileRecordId
@@ -1230,7 +1231,6 @@ export function registerPrepressQueueRoutes(
 
           // Map by line item (prefer) or by order id (fallback)
           const fallbackByLineItem = new Map<string, string>();
-          const fallbackByOrder = new Map<string, string>();
           const fallbackLogOnce = createRequestLogOnce();
           const enrichedFallbackAttachments = await Promise.all(
             fallbackAttachments.map((att) => enrichAttachmentWithUrls(att, { logOnce: fallbackLogOnce })),
@@ -1248,17 +1248,13 @@ export function registerPrepressQueueRoutes(
               if (!fallbackByLineItem.has(att.orderLineItemId)) {
                 fallbackByLineItem.set(att.orderLineItemId, thumbUrl);
               }
-            } else if (!fallbackByOrder.has(att.orderId)) {
-              fallbackByOrder.set(att.orderId, thumbUrl);
             }
           }
 
           for (const item of queueItems) {
             if (firstPreviewByLineItem.has(item.lineItemId) && firstPreviewByLineItem.get(item.lineItemId)?.thumbFileId !== null) continue;
             const thumbUrl =
-              fallbackByLineItem.get(item.lineItemId) ??
-              fallbackByOrder.get(item.orderId) ??
-              null;
+              fallbackByLineItem.get(item.lineItemId) ?? null;
             if (thumbUrl) {
               firstPreviewByLineItem.set(item.lineItemId, {
                 thumbFileId: null,
@@ -2644,6 +2640,7 @@ export function registerPrepressQueueRoutes(
           lineItemId: session.lineItemId,
           prepressSessionId: session.id,
           createdByUserId: userId,
+          forcePromoteArtwork: req.body?.useExistingArtworkAsPrintFile === true,
         });
 
         if (!finalArtwork) {
@@ -2694,6 +2691,7 @@ export function registerPrepressQueueRoutes(
           metadata: {
             finalArtworkSource: finalArtwork.source,
             finalFileId: finalArtwork.file.id,
+            finalFileIds: finalArtwork.files.map((file) => file.id),
             createdFinalFile: finalArtwork.created,
           },
         });
@@ -2723,6 +2721,7 @@ export function registerPrepressQueueRoutes(
           completedAt: new Date(),
           finalArtworkSource: finalArtwork.source,
           finalFileId: finalArtwork.file.id,
+          finalFileIds: finalArtwork.files.map((file) => file.id),
           createdFinalFile: finalArtwork.created,
         };
       });
@@ -2737,6 +2736,67 @@ export function registerPrepressQueueRoutes(
         message: error?.message || "Unknown error",
       });
       res.status(status).json({ error: error?.message || "Failed to complete session" });
+    }
+  });
+
+  // POST /api/prepress/line-item/:lineItemId/use-artwork-as-print-file
+  // Explicit print-ready promotion. The service resolves source artwork by
+  // stable line-item assignment IDs and fails closed for ambiguous multi-art.
+  app.post("/api/prepress/line-item/:lineItemId/use-artwork-as-print-file", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+      const lineItemId = String(req.params.lineItemId || "");
+
+      const [lineItem] = await db
+        .select({ id: orderLineItems.id, orderId: orderLineItems.orderId })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(eq(orderLineItems.id, lineItemId), eq(orders.organizationId, organizationId)))
+        .limit(1);
+      if (!lineItem) return res.status(404).json({ error: "Line item not found" });
+
+      const [latestSession] = await db
+        .select({ id: prepressSessions.id })
+        .from(prepressSessions)
+        .where(and(
+          eq(prepressSessions.organizationId, organizationId),
+          eq(prepressSessions.lineItemId, lineItemId),
+        ))
+        .orderBy(desc(prepressSessions.updatedAt), desc(prepressSessions.startedAt))
+        .limit(1);
+
+      const promoted = await prepressFileService.ensureFinalArtworkForLineItem({
+        organizationId,
+        orderId: lineItem.orderId,
+        lineItemId,
+        prepressSessionId: latestSession?.id ?? null,
+        createdByUserId: userId,
+        forcePromoteArtwork: true,
+      });
+      if (!promoted) {
+        return res.status(400).json({ error: "No usable assigned artwork is available for this line item." });
+      }
+      return res.json({
+        success: true,
+        data: {
+          lineItemId,
+          finalFileId: promoted.file.id,
+          finalFileIds: promoted.files.map((file) => file.id),
+          source: promoted.source,
+          created: promoted.created,
+        },
+      });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Prepress] Error promoting assigned artwork:", {
+        lineItemId: req.params.lineItemId,
+        message: error?.message || "Unknown error",
+      });
+      return res.status(status).json({ error: error?.message || "Failed to use artwork as the print file" });
     }
   });
 

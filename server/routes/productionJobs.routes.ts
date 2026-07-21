@@ -59,6 +59,7 @@ import {
 } from "./flatStockNesting.shared";
 import {
   calculateSheetProductionLayout,
+  resolveLineItemProductionArtwork,
   resolveProductionArtworkSides,
   resolveProductionPreviewUrl,
   resolveProductionSides,
@@ -1025,6 +1026,29 @@ export function registerProductionJobsRoutes(
         ),
       );
 
+      const activeFinalFileRows = productionLineItemIds.length > 0
+        ? await db
+            .select({
+              lineItemId: lineItemFiles.lineItemId,
+              fileRecordId: lineItemFiles.fileRecordId,
+            })
+            .from(lineItemFiles)
+            .where(and(
+              eq(lineItemFiles.organizationId, organizationId),
+              inArray(lineItemFiles.lineItemId, productionLineItemIds),
+              eq(lineItemFiles.role, "final"),
+              eq(lineItemFiles.status, "active"),
+            ))
+            .orderBy(desc(lineItemFiles.createdAt))
+        : [];
+      const finalFileRecordIdsByLineItem = new Map<string, string[]>();
+      for (const file of activeFinalFileRows) {
+        if (!file.fileRecordId) continue;
+        const current = finalFileRecordIdsByLineItem.get(file.lineItemId) ?? [];
+        if (!current.includes(file.fileRecordId)) current.push(file.fileRecordId);
+        finalFileRecordIdsByLineItem.set(file.lineItemId, current);
+      }
+
       // Query strategy: Fetch line items by order ID (for context) OR by explicit line item ID
       // This handles both normal cases (line items belong to order) and edge cases
       // (orphaned/reassigned line items that production_jobs still references)
@@ -1480,7 +1504,11 @@ export function registerProductionJobsRoutes(
         const totalQuantity = orderLineItemsList.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0);
 
         const artwork = row.lineItemId
-          ? artworkByLineItemId.get(row.lineItemId) ?? artworkByOrderId.get(row.orderId) ?? []
+          ? resolveLineItemProductionArtwork({
+              lineItemArtwork: artworkByLineItemId.get(row.lineItemId) ?? [],
+              orderArtwork: artworkByOrderId.get(row.orderId) ?? [],
+              productionFileRecordIds: finalFileRecordIdsByLineItem.get(row.lineItemId) ?? [],
+            })
           : artworkByOrderId.get(row.orderId) ?? [];
 
         // DEV: Log when production job has no artwork
@@ -2239,7 +2267,7 @@ export function registerProductionJobsRoutes(
         }
       }
 
-      const artwork = byLineItem.get(lineItemId) ?? byOrder;
+      const lineItemArtwork = byLineItem.get(lineItemId) ?? [];
       const finalFileRows = await db
         .select({
           id: lineItemFiles.id,
@@ -2263,6 +2291,12 @@ export function registerProductionJobsRoutes(
           ),
         )
         .orderBy(desc(lineItemFiles.createdAt));
+
+      const artwork = resolveLineItemProductionArtwork({
+        lineItemArtwork,
+        orderArtwork: byOrder,
+        productionFileRecordIds: finalFileRows.map((file) => file.fileRecordId),
+      });
 
       const productionFileLogOnce = createRequestLogOnce();
       const productionFiles = await Promise.all(
@@ -2299,6 +2333,7 @@ export function registerProductionJobsRoutes(
           };
         }),
       );
+
       const sidesSet = new Set<string>();
       for (const a of artwork) {
         const s = (a.side || "").toLowerCase();

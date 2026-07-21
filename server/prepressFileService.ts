@@ -44,6 +44,7 @@ import { storageApplicationService } from "./services/storage/StorageApplication
 import { assetPreviewGenerator } from "./services/assets/AssetPreviewGenerator";
 import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
 import { storagePlacementRepository } from "./storage/storagePlacement.repo";
+import { resolveProductionSides } from "@shared/productionHydration";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
@@ -128,9 +129,77 @@ export function mergeArtworkSidesIntoPrepressFiles<T extends Record<string, any>
 
 export type EnsuredFinalArtworkResult = {
   file: LineItemFile;
+  files: LineItemFile[];
   source: "existing_final" | "line_item_original" | "order_attachment";
   created: boolean;
 };
+
+export type PrintReadyArtworkCandidate = {
+  id: string;
+  fileRecordId?: string | null;
+  aliasIds?: string[];
+  side?: string | null;
+};
+
+function record(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? value as Record<string, unknown>
+    : null;
+}
+
+function candidateMatchesId(candidate: PrintReadyArtworkCandidate, fileId: string): boolean {
+  return candidate.id === fileId
+    || candidate.fileRecordId === fileId
+    || candidate.aliasIds?.includes(fileId) === true;
+}
+
+/**
+ * Resolves print-ready source files from stable assignment IDs/side metadata.
+ * Multiple unassigned files are deliberately rejected: upload order, filename,
+ * and `isPrimary` are not safe production-artwork signals.
+ */
+export function resolvePrintReadyArtworkCandidates<T extends PrintReadyArtworkCandidate>(args: {
+  lineItem: unknown;
+  candidates: T[];
+}): T[] {
+  const candidates = args.candidates;
+  if (candidates.length <= 1) return candidates;
+
+  const lineItem = record(args.lineItem) ?? {};
+  const specs = record(lineItem.specsJson);
+  const assignment = record(specs?.artworkSideAssignment);
+  const assignedCandidate = (value: unknown): T | null => typeof value === "string" && value.trim()
+    ? candidates.find((candidate) => candidateMatchesId(candidate, value.trim())) ?? null
+    : null;
+  const side = (candidate: T) => String(candidate.side ?? "").trim().toLowerCase();
+  const both = assignedCandidate(assignment?.bothFileId)
+    ?? assignedCandidate(assignment?.sharedFileId)
+    ?? candidates.find((candidate) => side(candidate) === "both")
+    ?? null;
+  const front = assignedCandidate(assignment?.frontFileId)
+    ?? assignedCandidate(assignment?.fileId)
+    ?? candidates.find((candidate) => side(candidate) === "front")
+    ?? null;
+  const back = assignedCandidate(assignment?.backFileId)
+    ?? candidates.find((candidate) => side(candidate) === "back")
+    ?? null;
+  if (both) return [both];
+
+  if (resolveProductionSides(lineItem) === "Double-sided") {
+    if (assignment?.useSameArtworkBothSides === true && front) return [front];
+    if (front && back) return front.id === back.id ? [front] : [front, back];
+    throw Object.assign(
+      new Error("This double-sided line needs explicit Front and Back artwork, or one file assigned as Both, before using artwork as the print file."),
+      { statusCode: 409, code: "PRINT_READY_ARTWORK_SIDES_INCOMPLETE" },
+    );
+  }
+  if (front && !back) return [front];
+
+  throw Object.assign(
+    new Error("This line has multiple artwork files. Assign the production artwork as Front, Back, or Both before using artwork as the print file."),
+    { statusCode: 409, code: "PRINT_READY_ARTWORK_AMBIGUOUS" },
+  );
+}
 const MAX_FILE_SIZE_MB = 250;
 const MAX_FILE_SIZE_BYTES = MAX_FILE_SIZE_MB * 1024 * 1024;
 
@@ -1026,12 +1095,13 @@ export async function ensureFinalArtworkForLineItem(params: {
   lineItemId: string;
   prepressSessionId?: string | null;
   createdByUserId: string;
+  forcePromoteArtwork?: boolean;
 }): Promise<EnsuredFinalArtworkResult | null> {
-  const { organizationId, orderId, lineItemId, prepressSessionId, createdByUserId } = params;
+  const { organizationId, orderId, lineItemId, prepressSessionId, createdByUserId, forcePromoteArtwork = false } = params;
   const namingPolicy = await getFileUploadNamingPolicy(organizationId);
   const defaultFinalTag = namingPolicy.prepressFileLabelMode === "required" ? "final_print" : null;
 
-  const [existingFinal] = await db
+  const existingFinals = await db
     .select()
     .from(lineItemFiles)
     .where(
@@ -1042,18 +1112,36 @@ export async function ensureFinalArtworkForLineItem(params: {
         eq(lineItemFiles.status, "active"),
       ),
     )
-    .orderBy(desc(lineItemFiles.createdAt))
-    .limit(1);
+    .orderBy(desc(lineItemFiles.createdAt));
 
-  if (existingFinal) {
+  if (existingFinals[0] && !forcePromoteArtwork) {
     return {
-      file: existingFinal,
+      file: existingFinals[0],
+      files: existingFinals,
       source: "existing_final",
       created: false,
     };
   }
 
-  const [existingOriginal] = await db
+  const [lineItem] = await db
+    .select({
+      id: orderLineItems.id,
+      optionSelectionsJson: orderLineItems.optionSelectionsJson,
+      pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
+      selectedOptions: orderLineItems.selectedOptions,
+      specsJson: orderLineItems.specsJson,
+    })
+    .from(orderLineItems)
+    .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+    .where(and(
+      eq(orderLineItems.id, lineItemId),
+      eq(orders.id, orderId),
+      eq(orders.organizationId, organizationId),
+    ))
+    .limit(1);
+  if (!lineItem) return null;
+
+  const existingOriginals = await db
     .select()
     .from(lineItemFiles)
     .where(
@@ -1064,26 +1152,7 @@ export async function ensureFinalArtworkForLineItem(params: {
         eq(lineItemFiles.status, "active"),
       ),
     )
-    .orderBy(desc(lineItemFiles.createdAt))
-    .limit(1);
-
-  if (existingOriginal) {
-    const [clonedFinal] = await db.insert(lineItemFiles).values(buildPromotedFinalFileLink({
-      organizationId,
-      orderId,
-      lineItemId,
-      prepressSessionId: prepressSessionId || existingOriginal.prepressSessionId || null,
-      tag: defaultFinalTag,
-      createdByUserId,
-      source: existingOriginal,
-    })).returning();
-
-    return {
-      file: clonedFinal,
-      source: "line_item_original",
-      created: true,
-    };
-  }
+    .orderBy(desc(lineItemFiles.createdAt));
 
   const attachmentCandidates = await db
     .select({
@@ -1097,6 +1166,7 @@ export async function ensureFinalArtworkForLineItem(params: {
       sizeBytes: orderAttachments.sizeBytes,
       fileSize: orderAttachments.fileSize,
       role: orderAttachments.role,
+      side: orderAttachments.side,
       isPrimary: orderAttachments.isPrimary,
       createdAt: orderAttachments.createdAt,
     })
@@ -1107,54 +1177,131 @@ export async function ensureFinalArtworkForLineItem(params: {
   // The print-ready fast path is deliberately limited to customer artwork.
   // Proof/reference documents remain visible in Prepress but must never become
   // a production file merely because no final file exists.
-  const eligibleAttachment = attachmentCandidates.find((candidate) => candidate.role === "artwork");
+  const artworkAttachments = attachmentCandidates.filter((candidate) => candidate.role === "artwork");
+  type InternalCandidate = PrintReadyArtworkCandidate & {
+    source: "line_item_original" | "order_attachment";
+    original?: typeof existingOriginals[number];
+    attachment?: typeof artworkAttachments[number];
+  };
+  const candidates: InternalCandidate[] = [];
+  const matchedAttachmentIds = new Set<string>();
 
-  if (!eligibleAttachment) {
-    return null;
+  for (const original of existingOriginals) {
+    const matches = original.fileRecordId
+      ? artworkAttachments.filter((attachment) => attachment.fileRecordId === original.fileRecordId)
+      : [];
+    matches.forEach((attachment) => matchedAttachmentIds.add(attachment.id));
+    const sides = new Set(matches.map((attachment) => String(attachment.side ?? "na").toLowerCase()));
+    const side = sides.has("both") || (sides.has("front") && sides.has("back"))
+      ? "both"
+      : sides.has("front")
+        ? "front"
+        : sides.has("back")
+          ? "back"
+          : "na";
+    candidates.push({
+      id: original.id,
+      fileRecordId: original.fileRecordId,
+      aliasIds: matches.map((attachment) => attachment.id),
+      side,
+      source: "line_item_original",
+      original,
+    });
   }
 
-  const resolvedOriginal = await resolveOriginalFileAccess({
-    id: eligibleAttachment.id,
-    fileRecordId: eligibleAttachment.fileRecordId,
-    fileName: eligibleAttachment.fileName,
-    originalFilename: eligibleAttachment.originalFilename,
-    mimeType: eligibleAttachment.mimeType,
-    fileUrl: eligibleAttachment.fileUrl,
-    fileKey: eligibleAttachment.relativePath,
-  });
-
-  const resolvedStoragePath =
-    resolvedOriginal.objectPath ||
-    eligibleAttachment.relativePath ||
-    eligibleAttachment.fileUrl ||
-    null;
-
-  if (resolvedOriginal.availabilityStatus !== "available" || !resolvedStoragePath) {
-    return null;
+  for (const attachment of artworkAttachments) {
+    if (matchedAttachmentIds.has(attachment.id)) continue;
+    candidates.push({
+      id: attachment.id,
+      fileRecordId: attachment.fileRecordId,
+      side: attachment.side,
+      source: "order_attachment",
+      attachment,
+    });
   }
 
-  const [clonedAttachmentFinal] = await db.insert(lineItemFiles).values(buildPromotedFinalFileLink({
-    organizationId,
-    orderId,
-    lineItemId,
-    prepressSessionId: prepressSessionId || null,
-    tag: defaultFinalTag,
-    createdByUserId,
-    source: {
-      fileRecordId: eligibleAttachment.fileRecordId || null,
-      storageBucket: null,
-      storagePath: resolvedStoragePath,
-      storageKey: resolvedStoragePath,
-      originalFilename: eligibleAttachment.originalFilename || eligibleAttachment.fileName || `artwork-${eligibleAttachment.id}`,
-      mimeType: eligibleAttachment.mimeType || resolvedOriginal.mimeType || "application/octet-stream",
-      sizeBytes: Math.max(0, Number(eligibleAttachment.sizeBytes ?? eligibleAttachment.fileSize ?? 0)),
-    },
-  })).returning();
+  const selectedCandidates = resolvePrintReadyArtworkCandidates({ lineItem, candidates });
+  if (selectedCandidates.length === 0) return null;
 
+  const selectedFileRecordIds = new Set(selectedCandidates
+    .map((candidate) => candidate.fileRecordId)
+    .filter((id): id is string => typeof id === "string" && id.length > 0));
+  const matchingExistingFinals = existingFinals.filter((file) =>
+    file.fileRecordId && selectedFileRecordIds.has(file.fileRecordId),
+  );
+  const matchedRecordIds = new Set(matchingExistingFinals
+    .map((file) => file.fileRecordId)
+    .filter((id): id is string => typeof id === "string" && id.length > 0));
+  const candidatesToCreate = selectedCandidates.filter((candidate) =>
+    !candidate.fileRecordId || !matchedRecordIds.has(candidate.fileRecordId),
+  );
+
+  const preparedSources: Array<{ candidate: InternalCandidate; source: PromotableArtworkFile }> = [];
+  for (const candidate of candidatesToCreate) {
+    let source: PromotableArtworkFile;
+    if (candidate.source === "line_item_original" && candidate.original) {
+      source = candidate.original;
+    } else if (candidate.attachment) {
+      const attachment = candidate.attachment;
+      const resolvedOriginal = await resolveOriginalFileAccess({
+        id: attachment.id,
+        fileRecordId: attachment.fileRecordId,
+        fileName: attachment.fileName,
+        originalFilename: attachment.originalFilename,
+        mimeType: attachment.mimeType,
+        fileUrl: attachment.fileUrl,
+        fileKey: attachment.relativePath,
+      });
+      const resolvedStoragePath = resolvedOriginal.objectPath || attachment.relativePath || attachment.fileUrl || null;
+      if (resolvedOriginal.availabilityStatus !== "available" || !resolvedStoragePath) return null;
+      source = {
+        fileRecordId: attachment.fileRecordId || null,
+        storageBucket: null,
+        storagePath: resolvedStoragePath,
+        storageKey: resolvedStoragePath,
+        originalFilename: attachment.originalFilename || attachment.fileName || `artwork-${attachment.id}`,
+        mimeType: attachment.mimeType || resolvedOriginal.mimeType || "application/octet-stream",
+        sizeBytes: Math.max(0, Number(attachment.sizeBytes ?? attachment.fileSize ?? 0)),
+      };
+    } else {
+      continue;
+    }
+
+    preparedSources.push({ candidate, source });
+  }
+
+  const createdFiles: LineItemFile[] = [];
+  for (const { candidate, source } of preparedSources) {
+    const [created] = await db.insert(lineItemFiles).values(buildPromotedFinalFileLink({
+      organizationId,
+      orderId,
+      lineItemId,
+      prepressSessionId: prepressSessionId || candidate.original?.prepressSessionId || null,
+      tag: defaultFinalTag,
+      createdByUserId,
+      source,
+    })).returning();
+    createdFiles.push(created);
+  }
+
+  if (forcePromoteArtwork) {
+    const staleFinalIds = existingFinals
+      .filter((file) => !file.fileRecordId || !selectedFileRecordIds.has(file.fileRecordId))
+      .map((file) => file.id);
+    for (const staleFinalId of staleFinalIds) {
+      await db.update(lineItemFiles)
+        .set({ status: "superseded" })
+        .where(and(eq(lineItemFiles.id, staleFinalId), eq(lineItemFiles.organizationId, organizationId)));
+    }
+  }
+
+  const finalFiles = [...matchingExistingFinals, ...createdFiles];
+  if (finalFiles.length === 0) return null;
   return {
-    file: clonedAttachmentFinal,
-    source: "order_attachment",
-    created: true,
+    file: finalFiles[0],
+    files: finalFiles,
+    source: createdFiles.length === 0 ? "existing_final" : selectedCandidates[0].source,
+    created: createdFiles.length > 0,
   };
 }
 

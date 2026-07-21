@@ -83,6 +83,13 @@ describe("Prepress complete and release action", () => {
     expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/start", expect.objectContaining({ method: "POST" }));
     expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/session-created/complete", expect.objectContaining({ method: "POST" }));
     expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/session-2/complete", expect.objectContaining({ method: "POST" }));
+    expect(fetchFn).toHaveBeenCalledWith("/api/prepress/line-item/line-1/use-artwork-as-print-file", expect.objectContaining({ method: "POST" }));
+    expect(fetchFn).toHaveBeenCalledWith("/api/prepress/line-item/line-2/use-artwork-as-print-file", expect.objectContaining({ method: "POST" }));
+    const completionCalls = (fetchFn as unknown as jest.Mock).mock.calls.filter(([url]) => String(url).endsWith("/complete"));
+    expect(completionCalls).toHaveLength(2);
+    for (const [, request] of completionCalls) {
+      expect(JSON.parse(String(request.body))).toEqual({ useExistingArtworkAsPrintFile: false });
+    }
   });
 
   test("reports proof-blocked lines without preventing safe selected lines", async () => {
@@ -103,7 +110,7 @@ describe("Prepress complete and release action", () => {
       expect.objectContaining({ lineItemId: "line-proof", status: "failed", message: "Awaiting proof approval" }),
       expect.objectContaining({ lineItemId: "line-safe", status: "completed" }),
     ]));
-    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 
   test("can complete and release selected print-ready lines", async () => {
@@ -114,6 +121,6 @@ describe("Prepress complete and release action", () => {
     ], { fetchFn, releaseToProduction: true });
 
     expect(result.status).toBe("released");
-    expect(fetchFn).toHaveBeenNthCalledWith(2, "/api/prepress/line-item/line-1/send-to-print", expect.any(Object));
+    expect(fetchFn).toHaveBeenNthCalledWith(3, "/api/prepress/line-item/line-1/send-to-print", expect.any(Object));
   });
 });

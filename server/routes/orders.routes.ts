@@ -7,6 +7,7 @@ import {
     orderAttachments,
     orderAuditLog,
     orderLineItems,
+    lineItemFiles,
     assetLinks,
     assets,
     assetVariants,
@@ -3722,6 +3723,54 @@ export async function registerOrderRoutes(
             const out: Record<string, { thumbUrls: string[]; thumbCount: number }> = {};
             for (const id of lineItemIds) out[String(id)] = { thumbUrls: [], thumbCount: 0 };
 
+            const activeFinalRows = await db
+                .select({
+                    lineItemId: lineItemFiles.lineItemId,
+                    fileRecordId: lineItemFiles.fileRecordId,
+                })
+                .from(lineItemFiles)
+                .where(and(
+                    eq(lineItemFiles.organizationId, organizationId),
+                    inArray(lineItemFiles.lineItemId, lineItemIds),
+                    eq(lineItemFiles.role, 'final'),
+                    eq(lineItemFiles.status, 'active'),
+                ));
+            const finalRecordIdsByLineItem = new Map<string, Set<string>>();
+            for (const finalFile of activeFinalRows) {
+                if (!finalFile.fileRecordId) continue;
+                const ids = finalRecordIdsByLineItem.get(finalFile.lineItemId) ?? new Set<string>();
+                ids.add(finalFile.fileRecordId);
+                finalRecordIdsByLineItem.set(finalFile.lineItemId, ids);
+            }
+
+            // A promoted final relation points at the original fileRecordId. Use
+            // that stable identity to keep the Order header thumbnail aligned
+            // with Prepress and Production, even when the source attachment is
+            // stored at order scope.
+            if (finalRecordIdsByLineItem.size > 0) {
+                const attachmentRows = await db
+                    .select()
+                    .from(orderAttachments)
+                    .where(and(eq(orderAttachments.orderId, orderId), eq(orderAttachments.role, 'artwork')))
+                    .orderBy(desc(orderAttachments.createdAt));
+                const logOnce = createRequestLogOnce();
+                const enrichedAttachments = await Promise.all(
+                    attachmentRows.map((attachment) => enrichAttachmentWithUrls(attachment, { logOnce })),
+                );
+                for (const [lineItemId, finalRecordIds] of Array.from(finalRecordIdsByLineItem.entries())) {
+                    const matching = enrichedAttachments.filter((attachment) =>
+                        !!attachment.fileRecordId && finalRecordIds.has(attachment.fileRecordId),
+                    );
+                    const urls = matching
+                        .map((attachment) =>
+                            attachment.previewThumbnailUrl ?? attachment.thumbnailUrl ?? attachment.thumbUrl ?? attachment.previewUrl ?? null,
+                        )
+                        .filter((url): url is string => typeof url === 'string' && url.length > 0);
+                    out[lineItemId].thumbUrls = Array.from(new Set(urls)).slice(0, 3);
+                    out[lineItemId].thumbCount = finalRecordIds.size;
+                }
+            }
+
             // 2) Fetch all asset links for these line items (batched)
             const linkRows = await db
                 .select({
@@ -3792,6 +3841,10 @@ export async function registerOrderRoutes(
 
                 const raw = assetsById.get(assetId);
                 if (!raw) continue;
+                const selectedFinalIds = finalRecordIdsByLineItem.get(lineItemId);
+                if (selectedFinalIds?.size && (!raw.fileRecordId || !selectedFinalIds.has(String(raw.fileRecordId)))) {
+                    continue;
+                }
                 const enriched = await enrichAssetPreviewUrls(raw);
 
                 // Use the same priority as client getThumbSrc (previewThumbnailUrl, thumbnailUrl, thumbUrl, previewUrl, pages[0].thumbUrl)
@@ -3815,7 +3868,7 @@ export async function registerOrderRoutes(
 
             assetIdsByLineItem.forEach((set, lineItemId) => {
                 if (!out[lineItemId]) out[lineItemId] = { thumbUrls: [], thumbCount: 0 };
-                out[lineItemId].thumbCount = set.size;
+                if (!finalRecordIdsByLineItem.has(lineItemId)) out[lineItemId].thumbCount = set.size;
             });
 
             return res.json({ success: true, data: out });
