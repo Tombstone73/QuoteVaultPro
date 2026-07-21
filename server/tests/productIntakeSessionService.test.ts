@@ -272,6 +272,49 @@ describe("Product Intake question generation", () => {
     expect(materialQuestion?.options?.map((option) => option.value)).toEqual(["mat_040", "mat_030"]);
   });
 
+  test("asks product-local custom option follow-ups and blocks incomplete requested pricing", () => {
+    const questions = generateProductIntakeQuestions(brief({
+      requiredOptions: [{
+        label: "Rounded Corners",
+        normalizedGroup: "rounded_corners",
+        required: false,
+        confidence: 88,
+        sampleValues: ["No", "Yes"],
+        sourcePaths: ["$.source_text"],
+        templateMatches: [{
+          templateId: "tpl_rounded",
+          name: "Rounded Corners",
+          slug: "rounded-corners",
+          category: "finishing",
+          score: 0.75,
+          recommendation: "review_required",
+          matchedSignals: ["Rounded Corners"],
+          evidence: [],
+        }],
+        evidence: [],
+        source: "product_specific",
+        selectionMode: "single",
+        pricingRequired: true,
+        choices: [
+          { value: "no", label: "No", pricing: { mode: "none" } },
+          { value: "yes", label: "Yes", pricing: { mode: "add_flat", amount: null } },
+        ],
+      }],
+    }));
+
+    const byKey = new Map(questions.map((question) => [question.questionKey, question]));
+    expect(byKey.get("custom-option-rounded-corners-required")?.defaultValue).toBe(false);
+    expect(byKey.get("custom-option-rounded-corners-selection-mode")?.defaultValue).toBe("single");
+    expect(byKey.get("custom-option-rounded-corners-choices")?.defaultValue).toBe("No, Yes");
+    expect(byKey.get("custom-option-rounded-corners-pricing-model")?.required).toBe(true);
+    expect(byKey.get("custom-option-rounded-corners-pricing-values")?.required).toBe(true);
+    expect(byKey.get("custom-option-rounded-corners-weight")).toBeTruthy();
+    expect(byKey.get("custom-option-rounded-corners-routing")).toBeTruthy();
+    expect(byKey.get("custom-option-rounded-corners-proof")).toBeTruthy();
+    expect(questions.find((question) => question.questionKey.startsWith("review-template-"))?.defaultValue).toBe("product_specific");
+    expect(resolveProductIntakeSessionStatus(brief(), questions)).toBe("needs_answers");
+  });
+
   test("marks high-confidence sessions without questions ready for draft", () => {
     expect(resolveProductIntakeSessionStatus(brief({ overallConfidence: 90 }), [])).toBe("ready_for_draft");
     expect(resolveProductIntakeSessionStatus(brief({ overallConfidence: 60 }), [])).toBe("analyzed");

@@ -22,6 +22,7 @@ import type {
   ProductIntakeAiReadiness,
   ProductIntakeAiRun,
   ProductIntakeBrief,
+  ProductIntakeOptionChoice,
   ProductIntakeQuestion,
   ProductIntakeReadiness,
   ProductIntakeSession,
@@ -1341,17 +1342,42 @@ function IntakeBriefView({ brief }: { brief: ProductIntakeBrief }) {
               ) : (options as ProductIntakeBrief["requiredOptions"]).map((option) => (
                 <div key={`${title}-${option.normalizedGroup}`} className="rounded border p-3 text-sm">
                   <div className="flex items-center justify-between gap-3">
-                    <div className="font-medium">{option.normalizedGroup}</div>
+                    <div>
+                      <div className="font-medium">{option.label}</div>
+                      <div className="text-xs text-muted-foreground">
+                        {option.source === "reusable_template" ? "Reusable template selected" : "Product-specific option"}
+                        {` · ${option.selectionMode === "multi" ? "Multi-select" : "Single select"}`}
+                        {` · ${option.required ? "Required" : "Optional"}`}
+                      </div>
+                    </div>
                     <ConfidenceBadge value={option.confidence} />
                   </div>
-                  <div className="mt-1 text-xs text-muted-foreground">{option.sampleValues.join(", ") || "No sample values"}</div>
+                  <div className="mt-2 space-y-1 text-xs">
+                    {(option.choices?.length ? option.choices : option.sampleValues.map((label) => ({ value: label, label }))).map((choice) => {
+                      const pricing = (choice as ProductIntakeOptionChoice).pricing;
+                      return (
+                        <div key={`${option.normalizedGroup}-${choice.value}`} className="flex items-center justify-between gap-3 rounded bg-muted/40 px-2 py-1">
+                          <span>{choice.label}</span>
+                          {pricing?.mode && pricing.mode !== "none" ? (
+                            <span className="text-muted-foreground">
+                              {pricing.mode.replace(/_/g, " ")}{pricing.amount != null ? `: ${pricing.mode === "add_percent" ? `${pricing.amount}%` : `$${Number(pricing.amount).toFixed(2)}`}` : " · price needed"}
+                            </span>
+                          ) : <span className="text-muted-foreground">No price change</span>}
+                        </div>
+                      );
+                    })}
+                    {!(option.choices?.length || option.sampleValues.length) && <div className="text-muted-foreground">Choices required before draft creation.</div>}
+                  </div>
                   {option.templateMatches.length > 0 && (
-                    <div className="mt-2 flex flex-wrap gap-2">
+                    <div className="mt-2 space-y-1">
+                      <div className="text-xs text-muted-foreground">Optional template suggestions</div>
+                      <div className="flex flex-wrap gap-2">
                       {option.templateMatches.map((match) => (
-                        <Badge key={match.templateId} variant={match.recommendation === "suggest_reuse" ? "default" : "outline"}>
+                        <Badge key={match.templateId} variant="outline">
                           {match.name} {Math.round(match.score * 100)}%
                         </Badge>
                       ))}
+                      </div>
                     </div>
                   )}
                 </div>

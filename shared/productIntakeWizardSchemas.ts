@@ -59,6 +59,30 @@ export const productIntakeTemplateMatchSchema = z.object({
   evidence: z.array(productIntakeEvidenceSchema),
 });
 
+export const productIntakeOptionPricingModeValues = [
+  "none",
+  "set_per_sqft",
+  "set_per_piece",
+  "add_flat",
+  "add_per_piece",
+  "add_per_sqft",
+  "add_percent",
+  "add_per_grommet",
+] as const;
+
+export const productIntakeOptionChoiceSchema = z.object({
+  value: z.string().min(1),
+  label: z.string().min(1),
+  pricing: z.object({
+    mode: z.enum(productIntakeOptionPricingModeValues),
+    amount: z.number().nonnegative().nullable().optional(),
+    label: z.string().nullable().optional(),
+  }).optional(),
+  weightOz: z.number().nonnegative().nullable().optional(),
+  workflowTags: z.array(z.string().min(1)).optional(),
+  requiresProof: z.boolean().nullable().optional(),
+});
+
 export const productIntakeOptionSchema = z.object({
   label: z.string().min(1),
   normalizedGroup: z.string().min(1),
@@ -68,6 +92,16 @@ export const productIntakeOptionSchema = z.object({
   sourcePaths: z.array(z.string().min(1)),
   templateMatches: z.array(productIntakeTemplateMatchSchema).default([]),
   evidence: z.array(productIntakeEvidenceSchema),
+  // Product Intake options are product-local by default. Template matches are
+  // suggestions only; reuse must be selected explicitly.
+  source: z.enum(["product_specific", "reusable_template"]).optional(),
+  reuseTemplateId: z.string().min(1).nullable().optional(),
+  selectionMode: z.enum(["single", "multi"]).optional(),
+  choices: z.array(productIntakeOptionChoiceSchema).optional(),
+  pricingRequired: z.boolean().optional(),
+  affectsWeight: z.boolean().optional(),
+  affectsRouting: z.boolean().optional(),
+  affectsProof: z.boolean().optional(),
 });
 
 export const productIntakeMissingDecisionSchema = z.object({
@@ -597,6 +631,7 @@ export const productIntakeWizardAnalyzeResponseSchema = z.union([
 export type ProductIntakeSourceType = z.infer<typeof productIntakeWizardAnalyzeRequestSchema>["sourceType"];
 export type ProductIntakeEvidence = z.infer<typeof productIntakeEvidenceSchema>;
 export type ProductIntakeTemplateMatch = z.infer<typeof productIntakeTemplateMatchSchema>;
+export type ProductIntakeOptionChoice = z.infer<typeof productIntakeOptionChoiceSchema>;
 export type ProductIntakeOption = z.infer<typeof productIntakeOptionSchema>;
 export type ProductIntakeBrief = z.infer<typeof productIntakeBriefSchema>;
 export type ProductIntakeQuestion = z.infer<typeof productIntakeQuestionSchema>;

@@ -148,6 +148,7 @@ type TextDescriptionSignals = {
   sides: string[];
   printOptions: string[];
   finishingOptions: string[];
+  customOptions: Array<{ label: string; choices: string[] }>;
   quantityBasedPricing: boolean;
   proofSignals: string[];
   routingSignals: string[];
@@ -205,6 +206,21 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   if (/white\s+ink/i.test(description)) finishingOptions.push("White Ink");
   if (/contour[\s-]?cut/i.test(description) && !/\bcontour\s+cutting\b[\s\S]{0,120}\b(?:no|yes)\b/i.test(description)) finishingOptions.push("Contour Cut");
 
+  const customOptions = Array.from(description.matchAll(/\badd\s+([a-z][a-z0-9 &\/-]{1,60}?)(?=\s+(?:options?|choices?|with|priced|pricing|as)\b|\s*[:;,\.\n]|$)/gi))
+    .map((match) => {
+      const rawLabel = String(match[1] ?? "").trim().replace(/\s+(?:option|options)$/i, "");
+      if (!rawLabel || /^(?:a|an|the|any other custom)$/i.test(rawLabel)) return null;
+      const label = titleCaseProductName(rawLabel);
+      const tail = description.slice((match.index ?? 0) + match[0].length, (match.index ?? 0) + match[0].length + 180);
+      const colonChoices = tail.match(/^\s*(?:options?|choices?)?\s*:\s*([^\.\n]+)/i)?.[1]
+        ?.split(/[,;|]+/)
+        .map((choice) => choice.trim())
+        .filter(Boolean) ?? [];
+      const booleanModifier = /contour|grommet|rounded|laminat|installation|mount|hem|pocket|corner/i.test(label);
+      return { label, choices: colonChoices.length > 0 ? colonChoices : booleanModifier ? ["No", "Yes"] : [] };
+    })
+    .filter(Boolean) as Array<{ label: string; choices: string[] }>;
+
   const proofSignals: string[] = [];
   if (/proof\s+(required|needed|mandatory)|requires?\s+proof/i.test(description)) proofSignals.push("Proof required");
 
@@ -245,6 +261,7 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
     sides: unique(sides),
     printOptions: unique(printOptions),
     finishingOptions: unique(finishingOptions),
+    customOptions: customOptions.filter((entry, index) => customOptions.findIndex((candidate) => normalizeText(candidate.label) === normalizeText(entry.label)) === index),
     quantityBasedPricing,
     proofSignals,
     routingSignals,
@@ -317,6 +334,8 @@ function textOptionGroup(args: {
     sourcePaths: [args.sourcePath],
     templateMatches,
     evidence: [evidence(args.sourcePath, args.label, args.sampleValues.join(", "), args.reason)],
+    source: "product_specific" as const,
+    selectionMode: "single" as const,
   };
 }
 
@@ -736,6 +755,19 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       templates: input.templates,
       reason: "An optional finishing choice was stated in the text description.",
     })),
+    ...textSignals.customOptions
+      .filter((custom) => ![...textRequiredOptions, ...textSignals.finishingOptions.map((label) => ({ label }))]
+        .some((existing) => normalizeText(existing.label) === normalizeText(custom.label)))
+      .map((custom) => textOptionGroup({
+        label: custom.label,
+        normalizedGroup: custom.label,
+        required: false,
+        sampleValues: custom.choices,
+        sourcePath: `$.description.custom_options.${normalizeText(custom.label).replace(/\s+/g, "_")}`,
+        confidence: custom.choices.length > 0 ? 82 : 68,
+        templates: input.templates,
+        reason: "The description explicitly asked Product Intake to add this product-specific option.",
+      })),
   ].filter(Boolean) as ReturnType<typeof textOptionGroup>[] : [];
   const requiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions];
   const optionalOptions = [...analyzerOptionalOptions, ...textOptionalOptions];
@@ -1006,7 +1038,36 @@ function optionGroupFromAi(args: {
   values: string[];
   sourcePath: string;
   confidence?: unknown;
+  record?: Record<string, any> | null;
 }) {
+  const record = args.record ?? {};
+  const rawChoices = Array.isArray(record.choices) ? record.choices : [];
+  const choices = rawChoices.map((entry: unknown, index: number) => {
+    const choice = asRecord(entry);
+    if (!choice) return null;
+    const label = String(choice.label ?? choice.name ?? choice.value ?? "").trim();
+    if (!label) return null;
+    const generatedValue = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || `choice_${index + 1}`;
+    const value = String(choice.value ?? generatedValue);
+    const pricingRecord = asRecord(choice.pricing ?? choice.pricingImpact ?? choice.price);
+    const amount = pricingRecord?.amount == null ? null : Number(pricingRecord.amount);
+    const pricingMode = ["none", "set_per_sqft", "set_per_piece", "add_flat", "add_per_piece", "add_per_sqft", "add_percent", "add_per_grommet"]
+      .includes(String(pricingRecord?.mode)) ? String(pricingRecord?.mode) : "none";
+    return {
+      value,
+      label,
+      ...(pricingRecord ? {
+        pricing: {
+          mode: pricingMode,
+          ...(Number.isFinite(amount) ? { amount } : { amount: null }),
+          ...(typeof pricingRecord.label === "string" ? { label: pricingRecord.label } : {}),
+        },
+      } : {}),
+      ...(Number.isFinite(Number(choice.weightOz)) ? { weightOz: Number(choice.weightOz) } : {}),
+      ...(Array.isArray(choice.workflowTags) ? { workflowTags: choice.workflowTags.map(String).filter(Boolean) } : {}),
+      ...(typeof choice.requiresProof === "boolean" ? { requiresProof: choice.requiresProof } : {}),
+    };
+  }).filter(Boolean);
   return {
     label: args.label,
     normalizedGroup: args.label,
@@ -1016,6 +1077,14 @@ function optionGroupFromAi(args: {
     sourcePaths: [args.sourcePath],
     templateMatches: [],
     evidence: [evidence(args.sourcePath, args.label, args.values.join(", ") || args.label, "AI option shape normalized for intake review.")],
+    source: record.source === "reusable_template" ? "reusable_template" : "product_specific",
+    ...(typeof record.reuseTemplateId === "string" && record.reuseTemplateId.trim() ? { reuseTemplateId: record.reuseTemplateId.trim() } : {}),
+    selectionMode: record.selectionMode === "multi" ? "multi" : "single",
+    ...(choices.length > 0 ? { choices } : {}),
+    ...(typeof record.pricingRequired === "boolean" ? { pricingRequired: record.pricingRequired } : {}),
+    ...(typeof record.affectsWeight === "boolean" ? { affectsWeight: record.affectsWeight } : {}),
+    ...(typeof record.affectsRouting === "boolean" ? { affectsRouting: record.affectsRouting } : {}),
+    ...(typeof record.affectsProof === "boolean" ? { affectsProof: record.affectsProof } : {}),
   };
 }
 
@@ -1031,7 +1100,7 @@ function normalizeAiOptionGroups(value: unknown, required: boolean, sourcePath: 
       const label = String(record.normalizedGroup ?? record.label ?? record.name ?? "").trim();
       if (!label) return null;
       const values = normalizeOptionArray(record.sampleValues ?? record.values ?? record.options ?? label);
-      return optionGroupFromAi({ label, required: typeof record.required === "boolean" ? record.required : required, values, sourcePath, confidence: record.confidence });
+      return optionGroupFromAi({ label, required: typeof record.required === "boolean" ? record.required : required, values, sourcePath, confidence: record.confidence, record });
     })
     .filter(Boolean) as ProductIntakeBrief["requiredOptions"];
 }
@@ -1424,7 +1493,11 @@ function promptForBrief(input: ProductIntakeBriefInput, deterministicBrief: Prod
       "Set workflowState to REVIEW_READY, source to live_ai, and fallbackReason to null when returning a validated AI brief.",
       "Phase 1 is read-only: do not create products, trees, templates, or publish actions.",
       "Every major conclusion needs source-path evidence; if evidence is weak, lower confidence and add a missing decision.",
-      "Only include template matches with score >= 0.65. score >= 0.85 means suggest_reuse; 0.65-0.84 means review_required.",
+      "Create product-specific option groups and choices whenever the user requests them, even when no existing option template matches. Never omit a requested custom option.",
+      "Existing templates are suggestions only. Do not set source=reusable_template or reuseTemplateId unless the user explicitly asks to reuse that template.",
+      "Do not create global reusable templates. New generated options stay product-specific.",
+      "For every new option, identify required/optional, single/multi select, choices, pricing behavior, weight, workflow routing tags, and proof impact. Add a missing decision when required details or requested pricing are incomplete.",
+      "Only include template matches with score >= 0.65. score >= 0.85 means suggest_reuse; 0.65-0.84 means review_required, but a match never requires reuse.",
       "Use $.source_text for text descriptions when no JSON path exists.",
     ].join(" "),
     user: [
@@ -1434,7 +1507,8 @@ function promptForBrief(input: ProductIntakeBriefInput, deterministicBrief: Prod
       "- conclusion fields are objects: { \"value\": string|null, \"confidence\": 0-100, \"evidence\": ProductIntakeEvidence[] }.",
       "- behavior fields are objects: { \"behavior\": string, \"confidence\": 0-100, \"notes\"?: string, \"evidence\": ProductIntakeEvidence[] }.",
       "- ProductIntakeEvidence is: { \"sourcePath\": string, \"label\": string, \"value\": string|null, \"reason\": string }.",
-      "- option fields are arrays of: { \"label\": string, \"normalizedGroup\": string, \"required\": boolean, \"confidence\": 0-100, \"sampleValues\": string[], \"sourcePaths\": string[], \"templateMatches\": ProductIntakeTemplateMatch[], \"evidence\": ProductIntakeEvidence[] }.",
+      `- option fields are arrays of: { "label": string, "normalizedGroup": string, "required": boolean, "confidence": 0-100, "sampleValues": string[], "sourcePaths": string[], "templateMatches": ProductIntakeTemplateMatch[], "evidence": ProductIntakeEvidence[], "source"?: "product_specific"|"reusable_template", "reuseTemplateId"?: string|null, "selectionMode"?: "single"|"multi", "pricingRequired"?: boolean, "affectsWeight"?: boolean, "affectsRouting"?: boolean, "affectsProof"?: boolean, "choices"?: [{ "value": string, "label": string, "pricing"?: { "mode": "none"|"set_per_sqft"|"set_per_piece"|"add_flat"|"add_per_piece"|"add_per_sqft"|"add_percent"|"add_per_grommet", "amount"?: number|null }, "weightOz"?: number|null, "workflowTags"?: string[], "requiresProof"?: boolean|null }] }.` ,
+      "- Pricing amounts are dollar values (or percentage points for add_percent). Use set_per_sqft for thickness/material choices that establish the square-foot rate.",
       "- templateMatches, missingDecisions, redundantFields, draftWarnings, sourceEvidence, requiredOptions, and optionalOptions must always be arrays, even when empty.",
       "",
       "Valid output example:",
