@@ -25,12 +25,23 @@ export const assistantTurnStatusValues = [
 ] as const;
 export const assistantMessageRoleValues = ["user", "assistant", "system"] as const;
 export const assistantToolExecutionStatusValues = ["not_run", "succeeded", "failed", "disabled"] as const;
+export const assistantToolNameValues = [
+  "search.global",
+  "customers.get_summary",
+  "orders.get_summary",
+  "products.get_summary",
+  "reports.operational_summary",
+  "navigation.get_current_context",
+] as const;
+export const assistantPlannerIntentValues = ["lookup", "operational_summary", "navigation", "unsupported_write", "clarification"] as const;
 
 export type AssistantContextVersion = (typeof assistantContextVersionValues)[number];
 export type AssistantPresentationMode = (typeof assistantPresentationModeValues)[number];
 export type AssistantConversationStatus = (typeof assistantConversationStatusValues)[number];
 export type AssistantTurnStatus = (typeof assistantTurnStatusValues)[number];
 export type AssistantMessageRole = (typeof assistantMessageRoleValues)[number];
+export type AssistantToolName = (typeof assistantToolNameValues)[number];
+export type AssistantPlannerIntent = (typeof assistantPlannerIntentValues)[number];
 
 const assistantIsoDateTimeSchema = z.string().datetime({ offset: true });
 export const assistantSafeIdentifierSchema = z.string()
@@ -47,7 +58,7 @@ export const assistantActorScopeSchema = z.object({
 export const assistantCapabilitySchema = z.object({
   enabled: z.boolean(),
   conversationsEnabled: z.boolean(),
-  toolsEnabled: z.literal(false),
+  toolsEnabled: z.boolean(),
   writeActionsEnabled: z.literal(false),
   externalResearchEnabled: z.literal(false),
   assistantVersion: z.string().trim().min(1).max(64),
@@ -128,8 +139,166 @@ export const assistantSourceLinkSchema = z.object({
   entityId: assistantSafeIdentifierSchema.optional(),
   capturedAt: assistantIsoDateTimeSchema.optional(),
 }).strict();
+export type AssistantSourceLink = z.infer<typeof assistantSourceLinkSchema>;
 
-export const assistantStructuredCardSchema = z.discriminatedUnion("kind", [
+/** A reduced, presentation-safe provenance object required for every Stage 2
+ * business result.  It deliberately never accepts external URLs. */
+export const assistantResultProvenanceSchema = z.object({
+  sourceLinks: z.array(assistantSourceLinkSchema).max(10),
+  freshness: z.object({
+    capturedAt: assistantIsoDateTimeSchema,
+    label: z.string().trim().min(1).max(120).optional(),
+  }).strict(),
+}).strict();
+export type AssistantResultProvenance = z.infer<typeof assistantResultProvenanceSchema>;
+
+export const assistantToolResultStatusValues = [
+  "succeeded",
+  "not_found",
+  "permission_denied",
+  "partial",
+  "failed",
+] as const;
+export type AssistantToolResultStatus = (typeof assistantToolResultStatusValues)[number];
+
+export const assistantToolResultEnvelopeSchema = z.object({
+  status: z.enum(assistantToolResultStatusValues),
+  data: z.unknown(),
+  provenance: assistantResultProvenanceSchema.optional(),
+  warning: z.string().trim().min(1).max(500).optional(),
+}).strict().superRefine((result, ctx) => {
+  if ((result.status === "succeeded" || result.status === "partial") && !result.provenance) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["provenance"],
+      message: "Successful business tool results require provenance.",
+    });
+  }
+});
+export type AssistantToolResultEnvelope = z.infer<typeof assistantToolResultEnvelopeSchema>;
+
+export const assistantGlobalSearchInputSchema = z.object({
+  query: z.string().trim().min(1).max(160),
+  limit: z.number().int().min(1).max(20).optional(),
+}).strict();
+export const assistantEntitySummarySchema = z.object({
+  entityType: z.enum(assistantEntityTypeValues),
+  recordId: assistantSafeIdentifierSchema,
+  label: z.string().trim().min(1).max(240),
+  secondaryDescription: z.string().trim().min(1).max(500).optional(),
+  status: z.string().trim().min(1).max(120).optional(),
+  sourceLink: assistantSourceLinkSchema,
+  freshness: assistantIsoDateTimeSchema,
+}).strict();
+export const assistantGlobalSearchResultSchema = z.object({
+  matches: z.array(assistantEntitySummarySchema).max(100),
+}).strict();
+
+export const assistantCustomerSummaryInputSchema = z.object({
+  customerId: assistantSafeIdentifierSchema,
+}).strict();
+export const assistantCustomerSummaryResultSchema = z.object({
+  customer: assistantEntitySummarySchema,
+  active: z.boolean().optional(),
+  pricingClassification: z.string().trim().min(1).max(160).optional(),
+  taxStatus: z.string().trim().min(1).max(160).optional(),
+  contactSummary: z.array(z.object({
+    name: z.string().trim().min(1).max(240),
+    email: z.string().trim().email().max(320).optional(),
+    phone: z.string().trim().min(1).max(80).optional(),
+  }).strict()).max(10).optional(),
+  recentRecords: z.array(assistantEntitySummarySchema).max(10).optional(),
+  openBalanceSummary: z.object({
+    label: z.string().trim().min(1).max(160),
+    amount: z.number().finite(),
+  }).strict().optional(),
+}).strict();
+
+export const assistantOrderSummaryInputSchema = z.object({
+  orderId: assistantSafeIdentifierSchema.optional(),
+  orderNumber: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(),
+}).strict().refine((value) => Boolean(value.orderId || value.orderNumber), {
+  message: "orderId or orderNumber is required",
+});
+export const assistantOrderSummaryResultSchema = z.object({
+  order: assistantEntitySummarySchema,
+  customer: assistantEntitySummarySchema.optional(),
+  dueDate: assistantIsoDateTimeSchema.optional(),
+  lineItemSummary: z.string().trim().min(1).max(1_000).optional(),
+  artworkState: z.string().trim().min(1).max(160).optional(),
+  productionState: z.string().trim().min(1).max(160).optional(),
+  fulfillmentState: z.string().trim().min(1).max(160).optional(),
+  invoice: assistantEntitySummarySchema.optional(),
+  blockingIssues: z.array(z.string().trim().min(1).max(300)).max(10).optional(),
+}).strict();
+
+export const assistantProductSummaryInputSchema = z.object({
+  productId: assistantSafeIdentifierSchema.optional(),
+  query: z.string().trim().min(1).max(160).optional(),
+}).strict().refine((value) => Boolean(value.productId || value.query), {
+  message: "productId or query is required",
+});
+export const assistantProductSummaryResultSchema = z.object({
+  product: assistantEntitySummarySchema,
+  active: z.boolean().optional(),
+  category: z.string().trim().min(1).max(160).optional(),
+  pricingMethod: z.string().trim().min(1).max(160).optional(),
+  pbv2Summary: z.string().trim().min(1).max(500).optional(),
+  materialSummary: z.array(z.string().trim().min(1).max(240)).max(20).optional(),
+  optionSummary: z.string().trim().min(1).max(1_000).optional(),
+  productionRoutingSummary: z.string().trim().min(1).max(1_000).optional(),
+}).strict();
+
+export const assistantOperationalSummaryInputSchema = z.object({
+  timezone: z.string().trim().min(1).max(80).optional(),
+  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+}).strict();
+export const assistantOperationalMetricSchema = z.object({
+  key: z.string().trim().min(1).max(80).regex(/^[a-z0-9_]+$/),
+  label: z.string().trim().min(1).max(160),
+  value: z.number().int().nonnegative(),
+  definition: z.string().trim().min(1).max(500),
+  sourceLink: assistantSourceLinkSchema.optional(),
+}).strict();
+export const assistantOperationalSummaryResultSchema = z.object({
+  metrics: z.array(assistantOperationalMetricSchema).min(1).max(20),
+  appliedDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  timezone: z.string().trim().min(1).max(80),
+}).strict();
+
+export const assistantNavigationCurrentContextInputSchema = z.object({}).strict();
+export const assistantNavigationCurrentContextResultSchema = z.object({
+  route: z.string().trim().min(1).max(512).startsWith("/"),
+  pageTitle: z.string().trim().min(1).max(240),
+  entityType: z.enum(assistantEntityTypeValues).optional(),
+  entityId: assistantSafeIdentifierSchema.optional(),
+  selectedCount: z.number().int().nonnegative().max(25),
+  unsavedChanges: z.boolean(),
+  contextFreshness: assistantIsoDateTimeSchema,
+}).strict();
+
+export const assistantPlannerToolCallSchema = z.object({
+  toolName: z.enum(assistantToolNameValues),
+  arguments: z.record(z.unknown()),
+}).strict();
+export const assistantProviderPlanSchema = z.object({
+  intent: z.enum(assistantPlannerIntentValues),
+  selectedSkill: z.string().trim().min(1).max(120).nullable(),
+  toolCalls: z.array(assistantPlannerToolCallSchema).max(5),
+  clarificationRequired: z.boolean(),
+  clarificationQuestion: z.string().trim().min(1).max(500).nullable(),
+  responseStyle: z.enum(["concise", "standard"]).default("standard"),
+}).strict().superRefine((plan, ctx) => {
+  if (plan.clarificationRequired && !plan.clarificationQuestion) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["clarificationQuestion"], message: "Clarification question is required." });
+  }
+  if (plan.intent === "unsupported_write" && plan.toolCalls.length > 0) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["toolCalls"], message: "Write intent cannot invoke tools." });
+  }
+});
+export type AssistantProviderPlan = z.infer<typeof assistantProviderPlanSchema>;
+
+const assistantStage1StructuredCardSchema = z.discriminatedUnion("kind", [
   z.object({
     kind: z.literal("notice"),
     title: z.string().trim().min(1).max(160),
@@ -147,6 +316,32 @@ export const assistantStructuredCardSchema = z.discriminatedUnion("kind", [
     status: z.enum(assistantToolExecutionStatusValues),
     detail: z.string().trim().min(1).max(1_000).optional(),
   }).strict(),
+]);
+export const assistantStage2CardKindValues = [
+  "search_results",
+  "customer_summary",
+  "order_summary",
+  "product_summary",
+  "operational_metrics",
+  "current_context",
+  "tool_warning",
+  "partial_result",
+  "permission_denied",
+  "not_found",
+  "provider_unavailable",
+] as const;
+export const assistantStage2StructuredCardSchema = z.object({
+  kind: z.enum(assistantStage2CardKindValues),
+  title: z.string().trim().min(1).max(160),
+  summary: z.string().trim().min(1).max(2_000),
+  freshness: assistantIsoDateTimeSchema.optional(),
+  sourceLinks: z.array(assistantSourceLinkSchema).max(10).default([]),
+  toolStatus: z.enum(assistantToolResultStatusValues).optional(),
+}).strict();
+/** Stage 2 extends (rather than replaces) the persisted Stage 1 card union. */
+export const assistantStructuredCardSchema = z.union([
+  assistantStage1StructuredCardSchema,
+  assistantStage2StructuredCardSchema,
 ]);
 export type AssistantStructuredCard = z.infer<typeof assistantStructuredCardSchema>;
 

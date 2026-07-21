@@ -21,6 +21,7 @@ export type AiSettingsDraft = {
   featureReviewEnabled: boolean;
   duplicateDetectionEnabled: boolean;
   orderParsingEnabled: boolean;
+  assistantEnabled: boolean;
   monthlyUsageLimit: string;
 };
 
@@ -56,6 +57,7 @@ export function buildAiSettingsPayload(draft: AiSettingsDraft) {
     featureReviewEnabled: draft.mode !== "disabled" && draft.featureReviewEnabled,
     duplicateDetectionEnabled: draft.mode !== "disabled" && draft.duplicateDetectionEnabled,
     orderParsingEnabled: draft.mode !== "disabled" && draft.orderParsingEnabled,
+    assistantEnabled: draft.mode !== "disabled" && draft.assistantEnabled,
     monthlyUsageLimit: draft.monthlyUsageLimit.trim() ? Number(draft.monthlyUsageLimit) : null,
   };
 }
@@ -88,6 +90,7 @@ function draftFromSettings(settings: SafeAiSettingsDto | undefined): AiSettingsD
     featureReviewEnabled: settings?.features.featureReview ?? false,
     duplicateDetectionEnabled: settings?.features.duplicateDetection ?? false,
     orderParsingEnabled: settings?.features.orderParsing ?? false,
+    assistantEnabled: settings?.features.assistant ?? true,
     monthlyUsageLimit: settings?.monthlyUsageLimit == null ? "" : String(settings.monthlyUsageLimit),
   };
 }
@@ -251,6 +254,12 @@ export default function AiSettingsPage() {
               checked={draft.orderParsingEnabled}
               disabled={disabled}
               onChange={(checked) => setDraft((current) => ({ ...current, orderParsingEnabled: checked }))}
+            />
+            <FeatureToggle
+              label="PrintersHero Assistant"
+              checked={draft.assistantEnabled}
+              disabled={disabled}
+              onChange={(checked) => setDraft((current) => ({ ...current, assistantEnabled: checked }))}
             />
           </div>
 

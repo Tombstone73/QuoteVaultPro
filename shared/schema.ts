@@ -7289,6 +7289,7 @@ export const organizationAiSettings = pgTable("organization_ai_settings", {
   customerSupportEnabled: boolean("customer_support_enabled").notNull().default(false),
   inventoryRecommendationsEnabled: boolean("inventory_recommendations_enabled").notNull().default(false),
   productionAssistanceEnabled: boolean("production_assistance_enabled").notNull().default(false),
+  assistantEnabled: boolean("assistant_enabled").notNull().default(true),
   monthlyUsageLimit: integer("monthly_usage_limit"),
   includedMonthlyCreditsCents: integer("included_monthly_credits_cents"),
   overageEnabled: boolean("overage_enabled").notNull().default(false),

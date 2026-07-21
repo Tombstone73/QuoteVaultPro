@@ -6,9 +6,10 @@ import {
   aiContextSnapshots,
   aiConversations,
   aiMessages,
+  aiToolExecutions,
   aiTurns,
 } from "@shared/schema";
-import type { AssistantContextEnvelope } from "@shared/assistantContracts";
+import type { AssistantContextEnvelope, AssistantStructuredCard } from "@shared/assistantContracts";
 import type {
   AssistantConversationDetailRecord,
   AssistantConversationRecord,
@@ -122,6 +123,22 @@ export class DrizzleAssistantRepository implements AssistantRepository {
     clientRequestId?: string;
     response: string;
     correlationId: string;
+    status?: "responded" | "failed";
+    structuredCards?: AssistantStructuredCard[];
+    provider?: string | null;
+    model?: string | null;
+    mode?: string;
+    promptVersion?: string;
+    errorCode?: string | null;
+    errorMessage?: string | null;
+    toolExecutions?: Array<{
+      toolName: string;
+      toolVersion: string;
+      status: "succeeded" | "failed" | "disabled";
+      errorCode?: string;
+      auditStatus: string;
+      durationMs: number;
+    }>;
   }): Promise<AssistantTurnResult | null> {
     const created = await db.transaction(async (tx) => {
       const [conversation] = await tx
@@ -143,11 +160,15 @@ export class DrizzleAssistantRepository implements AssistantRepository {
           orgId: input.organizationId,
           conversationId: conversation.id,
           userId: input.userId,
-          status: "responded",
+          status: input.status ?? "responded",
           clientRequestId: input.clientRequestId,
           correlationId: input.correlationId,
-          mode: "stage_1_foundation",
-          promptVersion: "assistant-stage-1",
+          provider: input.provider ?? null,
+          model: input.model ?? null,
+          mode: input.mode ?? "stage_2_read_only",
+          promptVersion: input.promptVersion ?? "assistant-stage-2-planner-v1",
+          errorCode: input.errorCode ?? null,
+          errorMessage: input.errorMessage ?? null,
           startedAt: now,
           completedAt: now,
         })
@@ -182,6 +203,9 @@ export class DrizzleAssistantRepository implements AssistantRepository {
           role: "assistant",
           sequence: nextSequence + 1,
           content: input.response,
+          structuredCards: input.structuredCards ?? [],
+          provider: input.provider ?? null,
+          model: input.model ?? null,
           correlationId: input.correlationId,
         })
         .returning();
@@ -208,6 +232,34 @@ export class DrizzleAssistantRepository implements AssistantRepository {
         })
         .where(conversationPredicate(input, conversation.id));
 
+      for (const execution of input.toolExecutions ?? []) {
+        const [toolExecution] = await tx.insert(aiToolExecutions).values({
+          orgId: input.organizationId,
+          conversationId: conversation.id,
+          turnId: turn.id,
+          toolName: execution.toolName,
+          toolVersion: execution.toolVersion,
+          status: execution.status,
+          redactedArguments: {},
+          redactedResult: {},
+          sourceIds: [],
+          correlationId: input.correlationId,
+          errorCode: execution.errorCode ?? null,
+          completedAt: now,
+        }).returning();
+        await tx.insert(aiAuditEvents).values({
+          orgId: input.organizationId,
+          conversationId: conversation.id,
+          turnId: turn.id,
+          toolExecutionId: toolExecution?.id ?? null,
+          actorUserId: input.actor.userId,
+          eventType: "assistant_tool_executed",
+          status: execution.auditStatus,
+          correlationId: input.correlationId,
+          metadata: { toolName: execution.toolName, toolVersion: execution.toolVersion, durationMs: execution.durationMs, errorCode: execution.errorCode ?? null },
+        });
+      }
+
       // The audit row is part of the same transaction as the turn and snapshot,
       // so no successful turn can exist without correlation metadata.
       await tx.insert(aiAuditEvents).values({
@@ -216,17 +268,17 @@ export class DrizzleAssistantRepository implements AssistantRepository {
         turnId: turn.id,
         actorUserId: input.actor.userId,
         eventType: "assistant_turn_created",
-        status: "responded",
+        status: input.status ?? "responded",
         inputHash: hash(`${input.message}\n${contextJson}`),
         correlationId: input.correlationId,
         metadata: {
           contextVersion: input.context.contextVersion,
-          toolsEnabled: false,
+          toolsEnabled: true,
           writeActionsEnabled: false,
         },
       });
 
-      return { turnId: turn.id, correlationId: turn.correlationId, userMessage, assistantMessage };
+      return { turnId: turn.id, correlationId: turn.correlationId, status: turn.status === "failed" ? "failed" as const : "responded" as const, userMessage, assistantMessage };
     });
     if (!created) return null;
 
@@ -235,6 +287,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
     return {
       turnId: created.turnId,
       correlationId: created.correlationId,
+      status: created.status,
       conversation,
       userMessage: toMessage(created.userMessage),
       assistantMessage: toMessage(created.assistantMessage),

@@ -69,6 +69,7 @@ export class AiSettingsService {
     if (patch.customerSupportEnabled !== undefined) update.customerSupportEnabled = patch.customerSupportEnabled;
     if (patch.inventoryRecommendationsEnabled !== undefined) update.inventoryRecommendationsEnabled = patch.inventoryRecommendationsEnabled;
     if (patch.productionAssistanceEnabled !== undefined) update.productionAssistanceEnabled = patch.productionAssistanceEnabled;
+    if (patch.assistantEnabled !== undefined) update.assistantEnabled = patch.assistantEnabled;
     if (patch.monthlyUsageLimit !== undefined) update.monthlyUsageLimit = patch.monthlyUsageLimit;
 
     if (patch.clearApiKey || patch.mode === "disabled" || patch.mode === "printershero_managed") {
@@ -101,6 +102,7 @@ export class AiSettingsService {
       update.customerSupportEnabled = false;
       update.inventoryRecommendationsEnabled = false;
       update.productionAssistanceEnabled = false;
+      update.assistantEnabled = false;
     }
 
     return update;
