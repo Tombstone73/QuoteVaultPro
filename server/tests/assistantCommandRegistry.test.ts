@@ -165,7 +165,7 @@ describe("assistant command registry", () => {
     expect(receivedInput).not.toHaveProperty("active");
   });
 
-  it("keeps the inactive draft update command outside the live production registry", async () => {
+  it("registers exactly three reviewed production commands including the fingerprint-only inactive draft update", async () => {
     let receivedInput: Record<string, unknown> | undefined;
     const proposalFingerprint = "b".repeat(64);
     const updateService = {
@@ -190,11 +190,17 @@ describe("assistant command registry", () => {
       pbv2DraftTreeVersionId: "tree_1",
     }) };
     const updateCommand = createProductInactiveDraftUpdateCommandDefinition(updateService);
-    expect(() => createProductionAssistantCommandRegistry(
+    const registry = createProductionAssistantCommandRegistry(
       createQuoteInternalNoteCommandDefinition(quoteService),
       createProductInactiveDraftCommandDefinition(createService),
       updateCommand,
-    )).toThrow("Only the static production command allowlist may be registered.");
+    );
+    expect(registry.list()).toHaveLength(3);
+    expect(registry.list().map((command) => command.name)).toEqual([
+      quoteInternalNoteCommandName,
+      productInactiveDraftCommandName,
+      productInactiveDraftUpdateCommandName,
+    ]);
     expect(updateCommand).toMatchObject({
       name: productInactiveDraftUpdateCommandName,
       version: productInactiveDraftUpdateCommandVersion,

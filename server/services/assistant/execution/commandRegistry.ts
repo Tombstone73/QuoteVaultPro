@@ -27,13 +27,13 @@ export const assistantCommandRuntimeValues = ["development", "production", "test
 export type AssistantCommandRuntime = (typeof assistantCommandRuntimeValues)[number];
 
 /**
- * The complete production write-command allowlist for the currently live
- * stabilization baseline. Draft editing remains implemented separately, but
- * is intentionally not composed into this deployment surface yet.
+ * The complete production write-command allowlist. Every entry is a reviewed,
+ * confirmation-bound canonical command; there is no dynamic registration.
  */
 export const assistantProductionCommandAllowlist = [
   "quotes.add_internal_note",
   "products.create_inactive_draft",
+  "products.update_inactive_draft",
 ] as const;
 /** The only injected command name accepted by the isolated test registry. */
 export const assistantTestCommandAllowlist = ["test.assistant.synthetic_command"] as const;

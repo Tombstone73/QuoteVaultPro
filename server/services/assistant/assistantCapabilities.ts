@@ -11,6 +11,28 @@ import { assistantProductionCommandAllowlist } from "./execution/commandRegistry
  */
 export const assistantCapabilityProductionCommands = assistantProductionCommandAllowlist;
 
+/** Capability reporting deliberately mirrors the command registry allowlist,
+ * but permissions and presentation stay explicit per reviewed command. This
+ * lets a later composition enable a reviewed command without a fall-through
+ * permission or a misleading generic action claim. */
+export const assistantCapabilityCommandPermissions = {
+  "quotes.add_internal_note": "assistant.quotes.add_internal_note",
+  "products.create_inactive_draft": "assistant.products.create_inactive_draft",
+  "products.update_inactive_draft": "assistant.products.update_inactive_draft",
+} as const;
+
+export const assistantCapabilityCommandDescriptions = {
+  "quotes.add_internal_note": "add an internal quote note after your confirmation",
+  "products.create_inactive_draft": "help create an inactive product draft after your confirmation",
+  "products.update_inactive_draft": "update an inactive product draft after your confirmation",
+} as const;
+
+export type AssistantCapabilityProductionCommand = keyof typeof assistantCapabilityCommandPermissions;
+
+export function isAssistantCapabilityProductionCommand(value: string): value is AssistantCapabilityProductionCommand {
+  return Object.prototype.hasOwnProperty.call(assistantCapabilityCommandPermissions, value);
+}
+
 export const assistantCapabilityReadTools = [
   "search.global",
   "customers.get_summary",

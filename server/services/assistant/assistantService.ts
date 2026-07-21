@@ -14,10 +14,13 @@ import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredPro
 import { resolveQuoteInternalNoteIntent } from "./execution/quoteInternalNoteIntent";
 import { productManagementSkillService } from "./productManagementSkill";
 import {
+  assistantCapabilityCommandDescriptions,
+  assistantCapabilityCommandPermissions,
   assistantCapabilityProductionCommands,
   assistantCapabilityReadTools,
+  isAssistantCapabilityProductionCommand,
 } from "./assistantCapabilities";
-import { resolveDeterministicReadPlan } from "./deterministicReadRouting";
+import { deterministicSearchTarget, resolveDeterministicReadPlan } from "./deterministicReadRouting";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
@@ -143,8 +146,9 @@ export function resolveAssistantCapabilityQuestion(
       return { title: "Assistant capabilities", response: capability.unavailableReason ?? "Business lookups are currently unavailable." };
     }
     const confirmedActions: string[] = [];
-    if (capability.productionCommandsPermittedForUser.includes("quotes.add_internal_note")) confirmedActions.push("add an internal quote note after your confirmation");
-    if (capability.productionCommandsPermittedForUser.includes("products.create_inactive_draft")) confirmedActions.push("help create an inactive product draft after your confirmation");
+    for (const command of capability.productionCommandsPermittedForUser) {
+      if (isAssistantCapabilityProductionCommand(command)) confirmedActions.push(assistantCapabilityCommandDescriptions[command]);
+    }
     const actionSentence = confirmedActions.length
       ? ` I can also ${confirmedActions.join(" and ")}.`
       : capability.productionCommandsEnabled.length
@@ -209,9 +213,8 @@ export class AssistantService {
     const writeFrameworkEnabled = readToolsEnabled;
     const productionCommandsEnabled = writeFrameworkEnabled ? [...assistantCapabilityProductionCommands] : [];
     const productionCommandsPermittedForUser = productionCommandsEnabled.filter((command) =>
-      command === "quotes.add_internal_note"
-        ? hasPermission(actor, "assistant.quotes.add_internal_note")
-        : hasPermission(actor, "assistant.products.create_inactive_draft"),
+      isAssistantCapabilityProductionCommand(command)
+      && hasPermission(actor, assistantCapabilityCommandPermissions[command]),
     );
     const writeActionsEnabled = productionCommandsPermittedForUser.length > 0;
     return {
@@ -319,25 +322,8 @@ export class AssistantService {
         activeSessionId: activeProductIntakeSession(conversation.messages),
       });
       if (productManagement.handled) {
-        const containsDeferredDraftUpdate = productManagement.cards.some((card) =>
-          card.kind === "action_proposal" && card.plan?.action === "products.update_inactive_draft",
-        );
-        // The Stage 6 editor remains independently implemented, but this
-        // stabilization deployment composes only the two reviewed Stage 4/5
-        // commands. Never emit a GO-able proposal for a deferred command.
-        if (containsDeferredDraftUpdate) {
-          response = "Inactive-draft editing is not enabled in this environment. No changes were made.";
-          cards = [{
-            kind: "tool_warning",
-            title: "Inactive-draft editing unavailable",
-            summary: response,
-            sourceLinks: [],
-            toolStatus: "permission_denied",
-          }];
-        } else {
-          response = productManagement.response;
-          cards = productManagement.cards as AssistantResultCard[];
-        }
+        response = productManagement.response;
+        cards = productManagement.cards as AssistantResultCard[];
         provider = "local_product_intake";
         model = "product-management-skill-v1";
       } else {
@@ -394,7 +380,7 @@ export class AssistantService {
           context: request.context,
           correlationId,
         });
-        const rendered = renderToolResults(executed.executions);
+        const rendered = renderToolResults(executed.executions, deterministicPlan ? deterministicSearchTarget(deterministicPlan) : null);
         response = rendered.response;
         cards = rendered.cards;
       }
@@ -460,7 +446,10 @@ export class AssistantService {
   }
 }
 
-function renderToolResults(executions: Array<{ toolName: string; status: string; result?: any; warning?: string }>) {
+function renderToolResults(
+  executions: Array<{ toolName: string; status: string; result?: any; warning?: string }>,
+  exactSearchTarget: import("./deterministicReadRouting").DeterministicSearchTarget | null = null,
+) {
   const cards: AssistantResultCard[] = [];
   for (const execution of executions) {
     if (!execution.result) {
@@ -470,6 +459,44 @@ function renderToolResults(executions: Array<{ toolName: string; status: string;
     const result = execution.result;
     if (result.status === "not_found") {
       cards.push({ kind: "not_found", title: execution.toolName, summary: "No matching record was found.", sourceLinks: [], toolStatus: "not_found" });
+      continue;
+    }
+    if (execution.toolName === "search.global" && exactSearchTarget) {
+      const exactMatches = exactSearchMatches(result.data?.matches, exactSearchTarget);
+      const entityLabel = exactSearchTarget.entityType;
+      if (!exactMatches.length) {
+        cards.push({ kind: "not_found", title: `No matching ${entityLabel}`, summary: `I couldn't find a matching ${entityLabel}.`, sourceLinks: [], toolStatus: "not_found" });
+        continue;
+      }
+      const filteredResult = {
+        ...result,
+        data: { ...result.data, matches: exactMatches },
+        provenance: result.provenance
+          ? { ...result.provenance, sourceLinks: result.provenance.sourceLinks.filter((link: { entityId?: string; href?: string }) => exactMatches.some((match: { recordId: string; sourceLink?: { href?: string } }) => match.recordId === link.entityId || match.sourceLink?.href === link.href)) }
+          : undefined,
+      };
+      if (exactMatches.length > 1) {
+        cards.push({
+          kind: "search_results",
+          title: `Multiple matching ${entityLabel}s`,
+          summary: `I found multiple ${entityLabel}s with that exact name. Please choose one from the results.`,
+          freshness: filteredResult.provenance?.freshness.capturedAt,
+          sourceLinks: filteredResult.provenance?.sourceLinks ?? [],
+          toolStatus: result.status,
+          details: filteredResult.data,
+        });
+        continue;
+      }
+      const match = exactMatches[0]!;
+      cards.push({
+        kind: "search_results",
+        title: `${entityLabel[0]!.toUpperCase()}${entityLabel.slice(1)} found`,
+        summary: `I found ${match.label}${match.status ? `, currently ${match.status}` : ""}.`,
+        freshness: filteredResult.provenance?.freshness.capturedAt,
+        sourceLinks: filteredResult.provenance?.sourceLinks ?? [],
+        toolStatus: result.status,
+        details: filteredResult.data,
+      });
       continue;
     }
     const names: Record<string, AssistantResultCard["kind"]> = {
@@ -482,6 +509,24 @@ function renderToolResults(executions: Array<{ toolName: string; status: string;
   if (!cards.length) return { response: "I need a little more detail to find the right information.", cards };
   const completed = cards.filter((card) => !["tool_warning", "permission_denied", "not_found"].includes(card.kind));
   return { response: completed.length ? completed.map((card) => card.summary).join(" ") : cards[0]!.summary, cards };
+}
+
+function exactSearchMatches(matches: unknown, target: import("./deterministicReadRouting").DeterministicSearchTarget) {
+  if (!Array.isArray(matches)) return [];
+  const normalizedTarget = normalizeExactLookupValue(target.query);
+  return matches.filter((match): match is { entityType: string; recordId: string; label: string; status?: string } => {
+    if (!match || typeof match !== "object") return false;
+    const candidate = match as { entityType?: unknown; label?: unknown };
+    if (candidate.entityType !== target.entityType || typeof candidate.label !== "string") return false;
+    const normalizedLabel = normalizeExactLookupValue(candidate.label);
+    return target.entityType === "quote"
+      ? normalizedLabel === normalizedTarget || normalizedLabel === `quote ${normalizedTarget}`
+      : normalizedLabel === normalizedTarget;
+  });
+}
+
+function normalizeExactLookupValue(value: string): string {
+  return value.trim().toLocaleLowerCase("en-US").replace(/\s+/g, " ");
 }
 
 function summaryForTool(toolName: string, data: any): string {
@@ -498,14 +543,34 @@ function summaryForTool(toolName: string, data: any): string {
   if (toolName === "reports.operational_summary") return "Here's the current operational picture.";
   if (toolName === "navigation.get_current_context") {
     const record = data.currentRecord as {
-      entityType?: string; orderNumber?: string; entityId?: string; customer?: string; status?: string;
+      entityType?: string; orderNumber?: string; entityId?: string; customer?: string; customerName?: string;
+      quoteNumber?: string; productName?: string; active?: boolean; status?: string; dueDate?: string;
     } | undefined;
     if (!record) return `You're on the ${data.pageTitle ?? "current workspace"} page.`;
-    const entity = record.entityType ? `${record.entityType[0]!.toUpperCase()}${record.entityType.slice(1)}` : "record";
-    const identifier = record.orderNumber ? ` ${record.orderNumber}` : record.entityId ? ` ${record.entityId}` : "";
-    return `You're viewing ${entity}${identifier}${record.customer ? ` for ${record.customer}` : ""}. It is currently ${record.status ?? "available"}.`;
+    if (record.entityType === "order") {
+      const dueDate = record.dueDate ? ` and due ${formatAssistantDate(record.dueDate)}` : "";
+      return `You're viewing Order ${record.orderNumber ?? record.entityId ?? ""}${record.customer ? ` for ${record.customer}` : ""}. It is currently ${record.status ?? "available"}${dueDate}.`;
+    }
+    if (record.entityType === "customer") return `You're viewing customer ${record.customerName ?? record.entityId ?? ""}${record.status ? `, currently ${record.status}` : ""}.`;
+    if (record.entityType === "quote") return `You're viewing Quote ${record.quoteNumber ?? record.entityId ?? ""}${record.customer ? ` for ${record.customer}` : ""}${record.status ? `, currently ${record.status}` : ""}.`;
+    if (record.entityType === "product") return `You're viewing ${record.productName ?? "this product"}. It is currently ${record.active ? "active" : "inactive"}.`;
+    return `You're viewing the ${data.pageTitle ?? "current"} page.`;
   }
   return "Here’s what I found.";
+}
+
+function formatAssistantDate(value: string): string {
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
+  const date = dateOnly
+    ? new Date(Date.UTC(Number(dateOnly[1]), Number(dateOnly[2]) - 1, Number(dateOnly[3])))
+    : new Date(value);
+  return Number.isNaN(date.getTime())
+    ? value
+    : date.toLocaleDateString("en-US", {
+      ...(dateOnly ? { timeZone: "UTC" } : {}),
+      month: "long",
+      day: "numeric",
+    });
 }
 
 function withResponsePresentation(

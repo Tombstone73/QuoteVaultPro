@@ -72,12 +72,14 @@ export const assistantCapabilitySchema = z.object({
   productionCommandsEnabled: z.array(z.enum([
     "quotes.add_internal_note",
     "products.create_inactive_draft",
-  ])).max(2),
+    "products.update_inactive_draft",
+  ])).max(3),
   /** Subset of enabled commands that this authenticated actor may plan. */
   productionCommandsPermittedForUser: z.array(z.enum([
     "quotes.add_internal_note",
     "products.create_inactive_draft",
-  ])).max(2),
+    "products.update_inactive_draft",
+  ])).max(3),
   externalResearchEnabled: z.literal(false),
   mcpEnabled: z.literal(false),
   productActivationEnabled: z.literal(false),
@@ -307,21 +309,46 @@ export const assistantOperationalSummaryResultSchema = z.object({
 export const assistantNavigationCurrentContextInputSchema = z.object({}).strict();
 /** A current-record summary is always server-resolved.  The UI context only
  * nominates a record; it never supplies record attributes or source links. */
-export const assistantCurrentContextOrderSchema = z.object({
-  entityType: z.literal("order"),
+const assistantCurrentContextRecordBaseSchema = z.object({
   entityId: assistantSafeIdentifierSchema,
+  sourceLink: assistantSourceLinkSchema,
+  freshness: assistantIsoDateTimeSchema,
+}).strict();
+
+export const assistantCurrentContextOrderSchema = assistantCurrentContextRecordBaseSchema.extend({
+  entityType: z.literal("order"),
   orderNumber: z.string().trim().min(1).max(64),
   customer: z.string().trim().min(1).max(240),
   status: z.string().trim().min(1).max(120),
-  sourceLink: assistantSourceLinkSchema,
-  freshness: assistantIsoDateTimeSchema,
+  dueDate: assistantIsoDateTimeSchema.optional(),
+}).strict();
+export const assistantCurrentContextCustomerSchema = assistantCurrentContextRecordBaseSchema.extend({
+  entityType: z.literal("customer"),
+  customerName: z.string().trim().min(1).max(240),
+  status: z.string().trim().min(1).max(120).optional(),
+}).strict();
+export const assistantCurrentContextQuoteSchema = assistantCurrentContextRecordBaseSchema.extend({
+  entityType: z.literal("quote"),
+  quoteNumber: z.string().trim().min(1).max(64),
+  customer: z.string().trim().min(1).max(240).optional(),
+  status: z.string().trim().min(1).max(120).optional(),
+}).strict();
+export const assistantCurrentContextProductSchema = assistantCurrentContextRecordBaseSchema.extend({
+  entityType: z.literal("product"),
+  productName: z.string().trim().min(1).max(255),
+  active: z.boolean(),
 }).strict();
 export const assistantNavigationCurrentContextResultSchema = z.object({
   route: z.string().trim().min(1).max(512).startsWith("/"),
   pageTitle: z.string().trim().min(1).max(240),
   entityType: z.enum(assistantEntityTypeValues).optional(),
   entityId: assistantSafeIdentifierSchema.optional(),
-  currentRecord: assistantCurrentContextOrderSchema.optional(),
+  currentRecord: z.discriminatedUnion("entityType", [
+    assistantCurrentContextOrderSchema,
+    assistantCurrentContextCustomerSchema,
+    assistantCurrentContextQuoteSchema,
+    assistantCurrentContextProductSchema,
+  ]).optional(),
   selectedCount: z.number().int().nonnegative().max(25),
   unsavedChanges: z.boolean(),
   contextFreshness: assistantIsoDateTimeSchema,

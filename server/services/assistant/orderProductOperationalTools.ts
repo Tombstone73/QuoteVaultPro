@@ -15,6 +15,11 @@ import {
 } from "@shared/assistantContracts";
 import type { OperationalSummary } from "../operationalSummary";
 import { AssistantOrderProductRepository } from "../../storage/assistantOrderProduct.repo";
+import {
+  DrizzleAssistantSearchCustomerRepository,
+  type AssistantCustomerSummaryRecord,
+} from "../../storage/assistantSearchCustomer.repo";
+import { QuoteInternalNotesRepository, type QuoteInternalReference } from "../../storage/quoteInternalNotes.repo";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
 
 const identifierSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/);
@@ -123,15 +128,43 @@ export const currentContextToolResultSchema = toolEnvelopeSchema(z.object({
   pageTitle: z.string().min(1),
   entityType: z.string().nullable(),
   entityId: identifierSchema.nullable(),
-  currentRecord: z.object({
-    entityType: z.literal("order"),
-    entityId: identifierSchema,
-    orderNumber: z.string().min(1).max(64),
-    customer: z.string().min(1).max(240),
-    status: z.string().min(1).max(120),
-    sourceLink: sourceLinkSchema,
-    freshness: isoDateSchema,
-  }).strict().nullable(),
+  currentRecord: z.discriminatedUnion("entityType", [
+    z.object({
+      entityType: z.literal("order"),
+      entityId: identifierSchema,
+      orderNumber: z.string().min(1).max(64),
+      customer: z.string().min(1).max(240),
+      status: z.string().min(1).max(120),
+      dueDate: isoDateSchema.optional(),
+      sourceLink: sourceLinkSchema,
+      freshness: isoDateSchema,
+    }).strict(),
+    z.object({
+      entityType: z.literal("customer"),
+      entityId: identifierSchema,
+      customerName: z.string().min(1).max(240),
+      status: z.string().min(1).max(120).optional(),
+      sourceLink: sourceLinkSchema,
+      freshness: isoDateSchema,
+    }).strict(),
+    z.object({
+      entityType: z.literal("quote"),
+      entityId: identifierSchema,
+      quoteNumber: z.string().min(1).max(64),
+      customer: z.string().min(1).max(240).optional(),
+      status: z.string().min(1).max(120).optional(),
+      sourceLink: sourceLinkSchema,
+      freshness: isoDateSchema,
+    }).strict(),
+    z.object({
+      entityType: z.literal("product"),
+      entityId: identifierSchema,
+      productName: z.string().min(1).max(255),
+      active: z.boolean(),
+      sourceLink: sourceLinkSchema,
+      freshness: isoDateSchema,
+    }).strict(),
+  ]).nullable(),
   selectedCount: z.number().int().nonnegative().max(25),
   unsavedChanges: z.boolean(),
   capturedAt: isoDateSchema,
@@ -163,6 +196,8 @@ type Tool<TInput extends z.ZodTypeAny, TResult extends z.ZodTypeAny> = {
 
 export interface AssistantOrderProductToolDependencies {
   repository?: Pick<AssistantOrderProductRepository, "getOrder" | "getProduct">;
+  getCustomerContext?: (organizationId: string, customerId: string) => Promise<AssistantCustomerSummaryRecord | null>;
+  getQuoteContext?: (organizationId: string, quoteId: string) => Promise<QuoteInternalReference | null>;
   getOperationalSummary?: (organizationId: string) => Promise<OperationalSummary>;
   now?: () => Date;
   timezone?: string;
@@ -183,6 +218,12 @@ function notFoundFreshness(now: Date) {
 
 export function createOrderProductOperationalTools(deps: AssistantOrderProductToolDependencies = {}) {
   const repository = deps.repository ?? new AssistantOrderProductRepository();
+  const customerRepository = new DrizzleAssistantSearchCustomerRepository();
+  const quoteRepository = new QuoteInternalNotesRepository();
+  const getCustomerContext = deps.getCustomerContext ?? ((organizationId, customerId) =>
+    customerRepository.getCustomerSummary(organizationId, customerId, 1));
+  const getQuoteContext = deps.getQuoteContext ?? ((organizationId, quoteId) =>
+    quoteRepository.resolveReference(organizationId, { quoteId }));
   // Keep the canonical service behind a lazy boundary. This lets isolated tool
   // tests inject a deterministic summary without loading unrelated production
   // preview/image dependencies, while production still calls the one
@@ -283,24 +324,14 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       currentContextToolInputSchema.parse(rawInput);
       const context = assistantContextEnvelopeSchema.parse(invocation.context);
       const retrievedAt = now();
-      const order = await resolveCurrentOrderContext(repository, invocation.organizationId, context);
-      const freshness = order ? toIso(order.order.updatedAt) ?? retrievedAt.toISOString() : retrievedAt.toISOString();
-      const number = order ? order.order.displayNumber ?? order.order.orderNumber : null;
-      const currentRecord = order && number ? {
-        entityType: "order" as const,
-        entityId: order.order.id,
-        orderNumber: number,
-        customer: order.order.customerName,
-        status: order.order.status,
-        sourceLink: {
-          label: `Order ${number}`,
-          href: `/orders/${order.order.id}`,
-          entityType: "order" as const,
-          entityId: order.order.id,
-          capturedAt: freshness,
-        },
-        freshness,
-      } : null;
+      const currentRecord = await resolveCurrentRecordContext({
+        repository,
+        getCustomerContext,
+        getQuoteContext,
+        organizationId: invocation.organizationId,
+        context,
+        retrievedAt: retrievedAt.toISOString(),
+      });
       return currentContextToolResultSchema.parse({
         status: "ok",
         // Do not echo a nominated ID as a current record.  The entity fields
@@ -438,18 +469,89 @@ export function createStage2OrderProductToolAdapters(
 
 /** The browser route is only a nomination.  Treat it as an order context only
  * when its route shape and ID agree, then re-fetch using the trusted tenant. */
-async function resolveCurrentOrderContext(
-  repository: Pick<AssistantOrderProductRepository, "getOrder">,
-  organizationId: string,
-  context: AssistantContextEnvelope,
-) {
-  if (context.entityType !== "order" || !context.entityId || !isOrderDetailRoute(context.route, context.entityId)) return null;
-  return repository.getOrder(organizationId, { orderId: context.entityId });
+type CurrentContextRecord = z.infer<typeof currentContextToolResultSchema>["data"]["currentRecord"];
+
+async function resolveCurrentRecordContext(input: {
+  repository: Pick<AssistantOrderProductRepository, "getOrder" | "getProduct">;
+  getCustomerContext: (organizationId: string, customerId: string) => Promise<AssistantCustomerSummaryRecord | null>;
+  getQuoteContext: (organizationId: string, quoteId: string) => Promise<QuoteInternalReference | null>;
+  organizationId: string;
+  context: AssistantContextEnvelope;
+  retrievedAt: string;
+}): Promise<CurrentContextRecord> {
+  const { context, organizationId, retrievedAt } = input;
+  if (!context.entityType || !context.entityId || !isDetailRoute(context.route, context.entityType, context.entityId)) return null;
+
+  if (context.entityType === "order") {
+    const record = await input.repository.getOrder(organizationId, { orderId: context.entityId });
+    if (!record) return null;
+    const orderNumber = record.order.displayNumber ?? record.order.orderNumber;
+    const freshness = toIso(record.order.updatedAt) ?? retrievedAt;
+    const dueDate = toIso(record.order.dueDate);
+    return {
+      entityType: "order",
+      entityId: record.order.id,
+      orderNumber,
+      customer: record.order.customerName,
+      status: record.order.status,
+      ...(dueDate ? { dueDate } : {}),
+      sourceLink: { label: `Order ${orderNumber}`, href: `/orders/${record.order.id}`, entityType: "order", entityId: record.order.id, capturedAt: freshness },
+      freshness,
+    };
+  }
+
+  if (context.entityType === "customer") {
+    const record = await input.getCustomerContext(organizationId, context.entityId);
+    if (!record) return null;
+    const freshness = toIso(record.freshness) ?? retrievedAt;
+    return {
+      entityType: "customer",
+      entityId: record.id,
+      customerName: record.companyName,
+      ...(record.status ? { status: record.status } : {}),
+      sourceLink: { label: record.companyName, href: `/customers/${record.id}`, entityType: "customer", entityId: record.id, capturedAt: freshness },
+      freshness,
+    };
+  }
+
+  if (context.entityType === "quote") {
+    const record = await input.getQuoteContext(organizationId, context.entityId);
+    if (!record) return null;
+    const quoteNumber = record.displayNumber ?? (record.quoteNumber === null ? null : String(record.quoteNumber));
+    if (!quoteNumber) return null;
+    return {
+      entityType: "quote",
+      entityId: record.id,
+      quoteNumber,
+      ...(record.customerName ? { customer: record.customerName } : {}),
+      sourceLink: { label: `Quote ${quoteNumber}`, href: `/quotes/${record.id}`, entityType: "quote", entityId: record.id, capturedAt: retrievedAt },
+      freshness: retrievedAt,
+    };
+  }
+
+  if (context.entityType === "product") {
+    const record = await input.repository.getProduct(organizationId, { productId: context.entityId });
+    if (!record) return null;
+    const freshness = toIso(record.product.updatedAt) ?? retrievedAt;
+    return {
+      entityType: "product",
+      entityId: record.product.id,
+      productName: record.product.name,
+      active: record.product.isActive,
+      sourceLink: { label: record.product.name, href: `/products/${record.product.id}/edit`, entityType: "product", entityId: record.product.id, capturedAt: freshness },
+      freshness,
+    };
+  }
+
+  return null;
 }
 
-function isOrderDetailRoute(route: string, orderId: string): boolean {
+function isDetailRoute(route: string, entityType: AssistantContextEnvelope["entityType"], entityId: string): boolean {
   const segments = route.split("/").filter(Boolean);
-  return segments.length === 2 && segments[0] === "orders" && segments[1] === orderId;
+  if (entityType === "product") return segments.length === 3 && segments[0] === "products" && segments[1] === entityId && segments[2] === "edit";
+  if (entityType === "quote") return (segments.length === 2 || (segments.length === 3 && segments[2] === "edit")) && segments[0] === "quotes" && segments[1] === entityId;
+  if (entityType === "customer") return segments.length === 2 && segments[0] === "customers" && segments[1] === entityId;
+  return entityType === "order" && segments.length === 2 && segments[0] === "orders" && segments[1] === entityId;
 }
 
 // Kept as a descriptive alias for direct module consumers while the integration
