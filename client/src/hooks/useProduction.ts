@@ -140,6 +140,10 @@ export type ProductionFileSummary = {
 export type ProductionJobListItem = {
   id: string;
   lineNumber?: number | null;
+  // Effective production due date. A future/tenant line-level due date takes
+  // precedence over the order date in overview planning views.
+  lineItemDueDate?: string | null;
+  dueDate?: string | null;
   view: string;
   stationKey?: string | null;
   stepKey?: string | null;

@@ -66,6 +66,7 @@ import {
 } from "@shared/productionHydration";
 import { sortFinalProductionFiles } from "@shared/productionFileHydration";
 import { resolveProductionCompletionRoute } from "../services/productionCompletionRouting";
+import { resolveLineItemProductionDueDate } from "../services/productionDueDate";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -1513,6 +1514,7 @@ export function registerProductionJobsRoutes(
         const size = (width && height) ? `${width} × ${height}` : "—";
 
         const qty = Number(primaryLineItem?.quantity ?? 0) || 0;
+        const lineItemDueDate = resolveLineItemProductionDueDate(primaryLineItem?.specsJson);
         // The persisted PBV2 selection is authoritative; an artwork count cannot tell us print intent.
         const resolvedPrintSides = resolveProductionSides(primaryLineItem);
         const sheetConfiguration = resolveSheetConfiguration(primaryLineItem ?? {});
@@ -1597,7 +1599,8 @@ export function registerProductionJobsRoutes(
           displayNumber: row.displayNumber,
           numberCore: row.numberCore,
           customerName: String(row.customerName ?? "—"),
-          dueDate: row.dueDate ?? null,
+          lineItemDueDate,
+          dueDate: lineItemDueDate ?? row.dueDate ?? null,
           stationKey: String(row.stationKey ?? ""),
           stepKey: String(row.stepKey ?? ""),
           routingReason: typeof routingReasonRaw === "string" && routingReasonRaw.trim() ? String(routingReasonRaw) : null,

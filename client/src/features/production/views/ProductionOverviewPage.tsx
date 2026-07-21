@@ -25,8 +25,6 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { 
-  LayoutGrid, 
-  List, 
   FileText, 
   ArrowUp, 
   ArrowDown, 
@@ -41,6 +39,7 @@ import {
   EyeOff,
   Maximize2,
   Info,
+  SlidersHorizontal,
 } from "lucide-react";
 import { 
   useProductionJobs, 
@@ -83,11 +82,23 @@ import {
   type ProductionOverviewBoardColumn,
   buildProductionOverviewColumns,
   defaultStepKeyForProductionStation,
+  filterProductionOverviewJobs,
   groupProductionOverviewJobsByColumn,
   resolveProductionOverviewJobColumn,
 } from "./productionOverviewBoard";
+import { ProductionOverviewCalendar } from "./ProductionOverviewCalendar";
+import { resolveProductionOverviewDueDate } from "./productionOverviewCalendarModel";
+import {
+  MIN_PRODUCTION_OVERVIEW_COLUMN_WIDTH,
+  ProductionBoardScrollArea,
+  productionOverviewBoardMinimumWidth,
+} from "./ProductionBoardScrollArea";
+import {
+  ProductionOverviewViewSwitcher,
+  type ProductionOverviewViewMode,
+} from "./ProductionOverviewViewSwitcher";
 
-type ViewMode = "board" | "list";
+type ViewMode = ProductionOverviewViewMode;
 
 // Column configuration with visibility, order, and width management
 type ColumnId = "artwork" | "dueDate" | "customer" | "orderNumber" | "jobDescription" | "media" | "qty" | "sides" | "status" | "station";
@@ -120,7 +131,7 @@ const DEFAULT_COLUMNS: ColumnConfig[] = [
 ];
 
 // Column width constraints for fit mode
-const MIN_COLUMN_WIDTH = 320;
+const MIN_COLUMN_WIDTH = MIN_PRODUCTION_OVERVIEW_COLUMN_WIDTH;
 const DEFAULT_COLUMN_WIDTH = 420;
 const BOARD_GAP = 16; // gap-4 = 16px
 
@@ -279,6 +290,7 @@ function buildDownloadUrl(fileUrl: string, fileName: string): string {
 }
 
 export default function ProductionOverviewPage() {
+  const navigate = useNavigate();
   // Fetch ALL production jobs (no station/status filter for overview)
   // This shows jobs across all production modules (flatbed, roll, apparel)
   const { data: allJobs, isLoading, error } = useProductionJobs({});
@@ -294,8 +306,9 @@ export default function ProductionOverviewPage() {
   // View mode toggle (persist in localStorage)
   const [viewMode, setViewMode] = useState<ViewMode>(() => {
     const saved = localStorage.getItem("productionOverviewViewMode");
-    return (saved === "board" || saved === "list") ? saved : "board";
+    return (saved === "board" || saved === "calendar" || saved === "list") ? saved : "board";
   });
+  const [calendarMonth, setCalendarMonth] = useState(() => new Date());
 
   const handleViewModeChange = (mode: ViewMode) => {
     setViewMode(mode);
@@ -401,6 +414,10 @@ export default function ProductionOverviewPage() {
   // Search state
   const [searchQuery, setSearchQuery] = useState("");
   const [searchOnlyProduction, setSearchOnlyProduction] = useState(true);
+  const [stationFilter, setStationFilter] = useState("all");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [priorityFilter, setPriorityFilter] = useState("all");
+  const [assigneeFilter, setAssigneeFilter] = useState("all");
   const [globalSearchResults, setGlobalSearchResults] = useState<GlobalSearchResults | null>(null);
   const [isSearching, setIsSearching] = useState(false);
   const searchTimeoutRef = useRef<NodeJS.Timeout>();
@@ -470,8 +487,8 @@ export default function ProductionOverviewPage() {
   }, [visibleColumnsCount]);
 
   const minimumBoardWidth = useMemo(() => {
-    return (visibleColumnsCount * MIN_COLUMN_WIDTH) + totalVisibleGapWidth;
-  }, [totalVisibleGapWidth, visibleColumnsCount]);
+    return productionOverviewBoardMinimumWidth(visibleColumnsCount, BOARD_GAP);
+  }, [visibleColumnsCount]);
 
   const calculatedColumnWidth = useMemo(() => {
     if (!fitColumns || visibleColumnsCount === 0 || boardViewportWidth === 0) {
@@ -550,8 +567,10 @@ export default function ProductionOverviewPage() {
       
       switch (boardSort.key) {
         case "dueDate": {
-          const aDate = a.order.dueDate ? parseISO(a.order.dueDate).getTime() : Number.POSITIVE_INFINITY;
-          const bDate = b.order.dueDate ? parseISO(b.order.dueDate).getTime() : Number.POSITIVE_INFINITY;
+          const aDueDate = resolveProductionOverviewDueDate(a);
+          const bDueDate = resolveProductionOverviewDueDate(b);
+          const aDate = aDueDate ? parseISO(aDueDate).getTime() : Number.POSITIVE_INFINITY;
+          const bDate = bDueDate ? parseISO(bDueDate).getTime() : Number.POSITIVE_INFINITY;
           comparison = aDate - bDate;
           break;
         }
@@ -586,7 +605,7 @@ export default function ProductionOverviewPage() {
     return (
       (job.order.customerName || "").toLowerCase().includes(lowerQuery) ||
       documentNumberMatchesSearch({
-        query: searchQuery,
+        query,
         displayNumber: job.order.displayNumber,
         numberCore: job.order.numberCore,
         legacyNumber: job.order.orderNumber,
@@ -598,11 +617,27 @@ export default function ProductionOverviewPage() {
   };
 
   const visibleProductionJobs = useMemo(
-    () => searchOnlyProduction && searchQuery
-      ? jobs.filter((job) => matchesSearchQuery(job, searchQuery))
-      : jobs,
-    [jobs, searchOnlyProduction, searchQuery],
+    () => filterProductionOverviewJobs(jobs, {
+      search: searchOnlyProduction ? searchQuery : "",
+      stationKey: stationFilter,
+      status: statusFilter,
+      priority: priorityFilter,
+      assignee: assigneeFilter,
+    }, matchesSearchQuery),
+    [jobs, searchOnlyProduction, searchQuery, stationFilter, statusFilter, priorityFilter, assigneeFilter],
   );
+
+  const assigneeOptions = useMemo(() => Array.from(new Set(
+    jobs.map((job) => String(job.assignedPrinterName ?? job.assignedTo ?? "").trim()).filter(Boolean),
+  )).sort((left, right) => left.localeCompare(right)), [jobs]);
+
+  const stationLabelByKey = useMemo(() => new Map(
+    boardColumns
+      .filter((column): column is ProductionOverviewBoardColumn & { stationKey: string } => !!column.stationKey)
+      .map((column) => [column.stationKey, column.label]),
+  ), [boardColumns]);
+
+  const hasActiveOverviewFilters = stationFilter !== "all" || statusFilter !== "all" || priorityFilter !== "all" || assigneeFilter !== "all";
 
   // Column configuration state (persist in localStorage)
   const [columns, setColumns] = useState<ColumnConfig[]>(() => {
@@ -849,8 +884,10 @@ export default function ProductionOverviewPage() {
       
       switch (sort.field) {
         case "dueDate": {
-          const aDate = a.order.dueDate ? parseISO(a.order.dueDate).getTime() : Number.POSITIVE_INFINITY;
-          const bDate = b.order.dueDate ? parseISO(b.order.dueDate).getTime() : Number.POSITIVE_INFINITY;
+          const aDueDate = resolveProductionOverviewDueDate(a);
+          const bDueDate = resolveProductionOverviewDueDate(b);
+          const aDate = aDueDate ? parseISO(aDueDate).getTime() : Number.POSITIVE_INFINITY;
+          const bDate = bDueDate ? parseISO(bDueDate).getTime() : Number.POSITIVE_INFINITY;
           comparison = aDate - bDate;
           break;
         }
@@ -969,7 +1006,7 @@ export default function ProductionOverviewPage() {
   }
 
   return (
-    <div className="px-4 md:px-6 py-4 space-y-4">
+    <div className="min-w-0 max-w-full overflow-x-hidden px-4 py-4 md:px-6 space-y-4">
       {/* Header with view toggle and controls */}
       <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
@@ -1060,27 +1097,89 @@ export default function ProductionOverviewPage() {
             </Label>
           </div>
 
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button variant={hasActiveOverviewFilters ? "secondary" : "outline"} size="sm" className="h-9 gap-2">
+                <SlidersHorizontal className="h-4 w-4" />
+                Filters
+                {hasActiveOverviewFilters ? <Badge variant="secondary" className="ml-1 h-5 px-1.5">Active</Badge> : null}
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-[320px] space-y-4">
+              <div className="flex items-center justify-between gap-3">
+                <div className="font-medium">Production filters</div>
+                {hasActiveOverviewFilters ? (
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="h-7"
+                    onClick={() => {
+                      setStationFilter("all");
+                      setStatusFilter("all");
+                      setPriorityFilter("all");
+                      setAssigneeFilter("all");
+                    }}
+                  >
+                    Clear
+                  </Button>
+                ) : null}
+              </div>
+              <div className="grid gap-3">
+                <div className="space-y-1.5">
+                  <Label>Station / stage</Label>
+                  <Select value={stationFilter} onValueChange={setStationFilter}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All stations</SelectItem>
+                      {boardColumns.filter((column) => column.stationKey).map((column) => (
+                        <SelectItem key={column.id} value={column.stationKey!}>{column.label}</SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Status</Label>
+                  <Select value={statusFilter} onValueChange={setStatusFilter}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All statuses</SelectItem>
+                      <SelectItem value="queued">Queued</SelectItem>
+                      <SelectItem value="in_progress">In progress</SelectItem>
+                      <SelectItem value="paused">Paused</SelectItem>
+                      <SelectItem value="done">Complete</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Priority</Label>
+                  <Select value={priorityFilter} onValueChange={setPriorityFilter}>
+                    <SelectTrigger><SelectValue /></SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="all">All priorities</SelectItem>
+                      <SelectItem value="rush">Rush</SelectItem>
+                      <SelectItem value="normal">Normal</SelectItem>
+                      <SelectItem value="low">Low</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+                {assigneeOptions.length ? (
+                  <div className="space-y-1.5">
+                    <Label>Operator / machine</Label>
+                    <Select value={assigneeFilter} onValueChange={setAssigneeFilter}>
+                      <SelectTrigger><SelectValue /></SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All operators / machines</SelectItem>
+                        {assigneeOptions.map((assignee) => <SelectItem key={assignee} value={assignee}>{assignee}</SelectItem>)}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                ) : null}
+              </div>
+            </PopoverContent>
+          </Popover>
+
           {/* View mode toggle */}
-          <div className="flex items-center gap-1 border rounded-md p-1">
-            <Button
-              variant={viewMode === "board" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => handleViewModeChange("board")}
-              className="h-8"
-            >
-              <LayoutGrid className="w-4 h-4 mr-1.5" />
-              Board
-            </Button>
-            <Button
-              variant={viewMode === "list" ? "secondary" : "ghost"}
-              size="sm"
-              onClick={() => handleViewModeChange("list")}
-              className="h-8"
-            >
-              <List className="w-4 h-4 mr-1.5" />
-              List
-            </Button>
-          </div>
+          <ProductionOverviewViewSwitcher value={viewMode} onChange={handleViewModeChange} />
 
           {/* Board-specific controls */}
           {viewMode === "board" && (
@@ -1143,7 +1242,7 @@ export default function ProductionOverviewPage() {
                     </Button>
                   </TooltipTrigger>
                   <TooltipContent>
-                    <p>Fit all columns to screen width</p>
+                    <p>Fit columns when space allows; otherwise keep them readable and scroll horizontally</p>
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
@@ -1370,11 +1469,7 @@ export default function ProductionOverviewPage() {
             onDragStart={handleDragStart}
             onDragEnd={handleDragEnd}
           >
-            <div ref={boardViewportRef} className="overflow-x-auto">
-              <div
-                className="flex gap-4 pb-4"
-                style={boardTrackWidth ? { width: `${boardTrackWidth}px` } : undefined}
-              >
+            <ProductionBoardScrollArea ref={boardViewportRef} minimumWidth={minimumBoardWidth} trackWidth={boardTrackWidth}>
                 {boardColumns.filter(col => boardColumnVisibility[col.id] !== false).map(column => {
                   const columnJobs = jobsByStatus.get(column.id) ?? [];
                   return (
@@ -1392,8 +1487,7 @@ export default function ProductionOverviewPage() {
                     />
                   );
                 })}
-              </div>
-            </div>
+            </ProductionBoardScrollArea>
             <DragOverlay>
               {activeJob && (
                 <JobCard
@@ -1409,6 +1503,17 @@ export default function ProductionOverviewPage() {
             </DragOverlay>
           </DndContext>
         </>
+      )}
+
+      {viewMode === "calendar" && (
+        <ProductionOverviewCalendar
+          jobs={visibleProductionJobs}
+          month={calendarMonth}
+          onMonthChange={setCalendarMonth}
+          onOpenJob={(jobId) => navigate(`/production/jobs/${jobId}`)}
+          stationLabels={stationLabelByKey}
+          documentNumberDisplayMode={productionNumberDisplayMode}
+        />
       )}
 
       {/* List view */}
@@ -1602,7 +1707,7 @@ function KanbanColumn({
   return (
     <Card 
       className="flex flex-col flex-shrink-0" 
-      style={{ width: `${width}px`, flex: `0 0 ${width}px` }}
+      style={{ width: `${width}px`, minWidth: `${MIN_COLUMN_WIDTH}px`, flex: `0 0 ${Math.max(width, MIN_COLUMN_WIDTH)}px` }}
     >
       <CardHeader className="pb-3">
         <CardTitle className="text-sm font-medium flex items-center justify-between">
@@ -1918,7 +2023,8 @@ function JobCard({
   const navigate = useNavigate();
   const updateStatus = useUpdateProductionJobStatus(job.id);
   const sides = job.sides || "single";
-  const urgency = computeUrgency(job.order.dueDate);
+  const dueDate = resolveProductionOverviewDueDate(job);
+  const urgency = computeUrgency(dueDate);
   const customerId = job.order.customerId;
   const orderId = job.order.id;
   const orderNumberLabel = getProductionOrderNumber(job, documentNumberDisplayMode);
@@ -2037,13 +2143,13 @@ function JobCard({
             {/* Material + Due Date compact row */}
             <div className="flex items-center justify-between text-xs text-muted-foreground">
               <span>{job.media || "—"}</span>
-              {job.order.dueDate ? (
+              {dueDate ? (
                 <span className={cn(
                   "font-medium",
                   urgency === 'overdue' && "text-red-500",
                   urgency === 'due_today' && "text-amber-500"
                 )}>
-                  {format(parseISO(job.order.dueDate), "MMM d")}
+                  {format(parseISO(dueDate), "MMM d")}
                 </span>
               ) : (
                 <span>—</span>
@@ -2115,14 +2221,14 @@ function JobCard({
               <div className="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider mb-1">
                 Due Date
               </div>
-              {job.order.dueDate ? (
+              {dueDate ? (
                 <div className={cn(
                   "text-sm font-semibold",
                   urgency === 'overdue' && "text-red-500",
                   urgency === 'due_today' && "text-amber-500",
                   urgency === 'normal' && "text-foreground"
                 )}>
-                  {format(parseISO(job.order.dueDate), "EEEE, h:mmaaa").replace("AM", "AM").replace("PM", "PM")}
+                  {format(parseISO(dueDate), "EEEE, h:mmaaa").replace("AM", "AM").replace("PM", "PM")}
                 </div>
               ) : (
                 <div className="text-sm text-muted-foreground">
@@ -2214,7 +2320,8 @@ function JobRow({
   const navigate = useNavigate();
   const updateStatus = useUpdateProductionJobStatus(job.id);
   const sides = job.sides || "single";
-  const isDueOverdue = job.order.dueDate ? isPast(parseISO(job.order.dueDate)) : false;
+  const dueDate = resolveProductionOverviewDueDate(job);
+  const isDueOverdue = dueDate ? isPast(parseISO(dueDate)) : false;
   const customerId = job.order.customerId;
   const orderId = job.order.id;
   const orderNumberLabel = getProductionOrderNumber(job, documentNumberDisplayMode);
@@ -2243,12 +2350,12 @@ function JobRow({
         );
       
       case "dueDate":
-        return job.order.dueDate ? (
+        return dueDate ? (
           <Badge 
             variant={isDueOverdue ? "destructive" : "secondary"}
             className="text-xs"
           >
-            {format(parseISO(job.order.dueDate), "MMM d, yyyy")}
+            {format(parseISO(dueDate), "MMM d, yyyy")}
           </Badge>
         ) : (
           <span className="text-muted-foreground text-xs">—</span>
