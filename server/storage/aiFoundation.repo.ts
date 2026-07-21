@@ -32,6 +32,7 @@ export interface AiSettingsUpdateData {
   customerSupportEnabled?: boolean;
   inventoryRecommendationsEnabled?: boolean;
   productionAssistanceEnabled?: boolean;
+  assistantEnabled?: boolean;
   monthlyUsageLimit?: number | null;
 }
 
@@ -53,6 +54,7 @@ export function toAiFeatureFlags(row: OrganizationAiSettings | null | undefined)
     customerSupport: row.customerSupportEnabled,
     inventoryRecommendations: row.inventoryRecommendationsEnabled,
     productionAssistance: row.productionAssistanceEnabled,
+    assistant: row.assistantEnabled,
   };
 }
 

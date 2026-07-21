@@ -3,13 +3,13 @@ import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
 
 let AssistantService: any;
 let AssistantServiceError: any;
-let ASSISTANT_FOUNDATION_REPLY: string;
+let ASSISTANT_UNAVAILABLE_REPLY: string;
 
 beforeAll(async () => {
   const module = await import("../services/assistant/assistantService");
   AssistantService = module.AssistantService;
   AssistantServiceError = module.AssistantServiceError;
-  ASSISTANT_FOUNDATION_REPLY = module.ASSISTANT_FOUNDATION_REPLY;
+  ASSISTANT_UNAVAILABLE_REPLY = module.ASSISTANT_UNAVAILABLE_REPLY;
 });
 
 const scope = { organizationId: "org_1", userId: "user_1" };
@@ -65,7 +65,7 @@ describe("AssistantService", () => {
     resolver = { getCapabilities: jest.fn(async () => ({ enabled: true })) };
   });
 
-  test("only advertises the Stage 1 no-tools capability set", async () => {
+  test("advertises disabled tools when no compatible provider is available", async () => {
     const service = new AssistantService(makeRepo(), resolver);
 
     await expect(service.getCapabilities(scope)).resolves.toEqual(expect.objectContaining({
@@ -98,7 +98,7 @@ describe("AssistantService", () => {
     expect(repo.createFoundationTurn).not.toHaveBeenCalled();
   });
 
-  test("persists the fixed foundation response without invoking a provider or domain tool", async () => {
+  test("persists a provider-unavailable turn without invoking a domain tool", async () => {
     const repo = makeRepo();
     const service = new AssistantService(repo, resolver);
 
@@ -108,10 +108,10 @@ describe("AssistantService", () => {
       ...scope,
       message: "What orders are late?",
       context,
-      response: ASSISTANT_FOUNDATION_REPLY,
+      response: ASSISTANT_UNAVAILABLE_REPLY,
       correlationId: expect.any(String),
     }));
-    expect(result.assistantMessage.content).toBe(ASSISTANT_FOUNDATION_REPLY);
+    expect(result.assistantMessage.content).toBe(ASSISTANT_UNAVAILABLE_REPLY);
   });
 
   test("context contract rejects oversized selected-record scope", () => {

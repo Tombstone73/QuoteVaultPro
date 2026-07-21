@@ -13,6 +13,7 @@ describe("AI settings payload", () => {
       featureReviewEnabled: false,
       duplicateDetectionEnabled: false,
       orderParsingEnabled: false,
+      assistantEnabled: true,
       monthlyUsageLimit: "",
     };
 
@@ -21,6 +22,7 @@ describe("AI settings payload", () => {
       isEnabled: true,
       bugReviewEnabled: true,
       triageBriefEnabled: true,
+      assistantEnabled: true,
     }));
     expect(JSON.stringify(buildAiSettingsPayload(draft))).not.toContain("titanos_managed");
   });
@@ -36,6 +38,7 @@ describe("AI settings payload", () => {
       featureReviewEnabled: true,
       duplicateDetectionEnabled: false,
       orderParsingEnabled: false,
+      assistantEnabled: false,
       monthlyUsageLimit: "",
     };
 

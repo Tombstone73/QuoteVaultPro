@@ -60,6 +60,8 @@ function featureEnabled(features: AiFeatureFlags, feature: AiFeature): boolean {
       return features.inventoryRecommendations;
     case "production_assistance":
       return features.productionAssistance;
+    case "assistant":
+      return features.assistant;
     default:
       return false;
   }

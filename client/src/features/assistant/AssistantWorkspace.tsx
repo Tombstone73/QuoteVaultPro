@@ -6,6 +6,19 @@ import { cn } from "@/lib/utils";
 import { useAssistantConversation, useAssistantConversations, useCreateAssistantConversation, useSendAssistantTurn } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
+import type { AssistantStructuredCard } from "@shared/assistantContracts";
+
+function ResultCards({ cards }: { cards: AssistantStructuredCard[] }) {
+  if (!cards.length) return null;
+  return <div className="mt-2 space-y-2">{cards.map((card, index) => {
+    if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source") return null;
+    return <section key={`${card.kind}-${index}`} className="rounded-md border bg-background/70 p-2 text-xs">
+      <p className="font-medium">{card.title}</p><p className="mt-0.5 text-muted-foreground">{card.summary}</p>
+      {card.sourceLinks.length ? <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1">{card.sourceLinks.map((source) => <a key={`${source.href}-${source.label}`} className="text-primary underline-offset-2 hover:underline" href={source.href}>{source.label}</a>)}</div> : null}
+      {card.freshness ? <p className="mt-1 text-[10px] text-muted-foreground">Updated {new Date(card.freshness).toLocaleString()}</p> : null}
+    </section>;
+  })}</div>;
+}
 
 export function AssistantLauncher() {
   const { capabilities, capabilityError, capabilityLoading, toggle } = useAssistantWorkspace();
@@ -57,6 +70,7 @@ function PresentationControls() {
 function ConversationContent() {
   const { capabilities, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft } = useAssistantWorkspace();
   const enabled = Boolean(capabilities?.enabled && capabilities.conversationsEnabled);
+  const toolsEnabled = Boolean(capabilities?.toolsEnabled);
   const conversations = useAssistantConversations(enabled);
   const createConversation = useCreateAssistantConversation();
   const detail = useAssistantConversation(activeConversationId, enabled);
@@ -75,7 +89,7 @@ function ConversationContent() {
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
     const message = draft.trim();
-    if (!message || sendTurn.isPending) return;
+    if (!message || sendTurn.isPending || !toolsEnabled) return;
     let conversationId = activeConversationId;
     if (!conversationId) {
       const conversation = await createConversation.mutateAsync();
@@ -118,20 +132,22 @@ function ConversationContent() {
             <div className="mx-auto mt-8 max-w-sm text-center">
               <Bot className="mx-auto mb-3 h-8 w-8 text-primary" />
               <h3 className="text-sm font-medium">PrintersHero assistant</h3>
-              <p className="mt-1 text-sm text-muted-foreground">The workspace is connected. Business-data tools are not enabled yet.</p>
+              <p className="mt-1 text-sm text-muted-foreground">Ask a read-only question about your current PrintersHero workspace.</p>
             </div>
           ) : detail.data?.messages?.map((message) => (
-            <div key={message.id} className={cn("max-w-[88%] rounded-lg px-3 py-2 text-sm", message.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-muted")}>{message.content}</div>
+            <div key={message.id} className={cn("max-w-[88%] rounded-lg px-3 py-2 text-sm", message.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-muted")}>
+              {message.content}{message.role !== "user" ? <ResultCards cards={message.structuredCards ?? []} /> : null}
+            </div>
           ))}
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">Your message was not sent. You can try again.</p> : null}
         </div>
         <form className="border-t p-3" onSubmit={(event) => void submit(event)}>
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
           <div className="flex gap-2">
-            <Input id="assistant-message" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder="Ask about this workspace…" maxLength={8_000} disabled={sendTurn.isPending} />
-            <Button type="submit" size="icon" disabled={!draft.trim() || sendTurn.isPending} aria-label="Send message"><Send className="h-4 w-4" /></Button>
+            <Input id="assistant-message" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} maxLength={8_000} disabled={sendTurn.isPending || !toolsEnabled} />
+            <Button type="submit" size="icon" disabled={!draft.trim() || sendTurn.isPending || !toolsEnabled} aria-label="Send message"><Send className="h-4 w-4" /></Button>
           </div>
-          <p className="mt-2 text-[11px] text-muted-foreground">Business-data tools and write actions are not enabled.</p>
+          <p className="mt-2 text-[11px] text-muted-foreground">{toolsEnabled ? "Read-only business lookups only. Write actions and external research are disabled." : (capabilities?.unavailableReason || "Business questions are unavailable until AI configuration is complete.")}</p>
         </form>
       </section>
     </div>

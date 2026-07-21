@@ -28,6 +28,11 @@ function buildActor(req: Request, userId: string): AssistantActor {
     email: typeof email === "string" ? email : null,
     ipAddress: req.ip ?? null,
     userAgent: req.get("user-agent") ?? null,
+    // tenantContext has already excluded customer-portal identities. Do not
+    // consume any permission claim or request body field here.
+    permissions: ["owner", "admin", "manager", "member"].includes(String(req.orgRole ?? "").toLowerCase())
+      ? ["assistant.internal_staff", "catalog.read"]
+      : [],
   };
 }
 
@@ -185,15 +190,15 @@ export function registerAssistantRoutes(
             id: result.assistantMessage.id,
             role: result.assistantMessage.role,
             content: result.assistantMessage.content,
-            structuredCards: [],
-            provider: null,
-            model: null,
+            structuredCards: result.assistantMessage.structuredCards ?? [],
+            provider: result.assistantMessage.provider ?? null,
+            model: result.assistantMessage.model ?? null,
             correlationId: result.correlationId,
             createdAt: result.assistantMessage.createdAt instanceof Date
               ? result.assistantMessage.createdAt.toISOString()
               : result.assistantMessage.createdAt,
           },
-          status: "responded",
+          status: result.status,
           usage: {
             correlationId: result.correlationId,
             conversationId: result.conversation.id,

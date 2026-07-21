@@ -1,0 +1,464 @@
+import { z } from "zod";
+import {
+  assistantContextEnvelopeSchema,
+  assistantNavigationCurrentContextInputSchema,
+  assistantNavigationCurrentContextResultSchema,
+  assistantOperationalSummaryInputSchema,
+  assistantOperationalSummaryResultSchema,
+  assistantOrderSummaryInputSchema,
+  assistantOrderSummaryResultSchema,
+  assistantProductSummaryInputSchema,
+  assistantProductSummaryResultSchema,
+  assistantSourceLinkSchema,
+  type AssistantContextEnvelope,
+  type AssistantToolResultEnvelope,
+} from "@shared/assistantContracts";
+import type { OperationalSummary } from "../operationalSummary";
+import { AssistantOrderProductRepository } from "../../storage/assistantOrderProduct.repo";
+import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
+
+const identifierSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/);
+const isoDateSchema = z.string().datetime({ offset: true });
+const freshnessSchema = z.object({ retrievedAt: isoDateSchema }).strict();
+const sourceLinkSchema = assistantSourceLinkSchema;
+
+export const orderSummaryToolInputSchema = z.object({
+  orderId: identifierSchema.optional(),
+  orderNumber: z.string().trim().min(1).max(64).optional(),
+}).strict().refine((value) => Boolean(value.orderId || value.orderNumber), {
+  message: "An order ID or order number is required",
+});
+
+export const productSummaryToolInputSchema = z.object({
+  productId: identifierSchema.optional(),
+  query: z.string().trim().min(1).max(160).optional(),
+}).strict().refine((value) => Boolean(value.productId || value.query), {
+  message: "A product ID or product name is required",
+});
+
+export const operationalSummaryToolInputSchema = z.object({}).strict();
+export const currentContextToolInputSchema = z.object({}).strict();
+
+const toolEnvelopeSchema = <T extends z.ZodTypeAny>(data: T) => z.object({
+  status: z.enum(["ok", "not_found"]),
+  data,
+  sourceLinks: z.array(sourceLinkSchema).max(10),
+  freshness: freshnessSchema,
+  warning: z.string().trim().min(1).max(300).optional(),
+}).strict();
+
+export const orderSummaryToolResultSchema = toolEnvelopeSchema(z.object({
+  order: z.object({
+    id: identifierSchema,
+    number: z.string().min(1),
+    customerId: identifierSchema,
+    customer: z.string().min(1),
+    status: z.string().min(1),
+    state: z.string().min(1),
+    statusPill: z.string().nullable(),
+    dueDate: z.string().nullable(),
+    fulfillmentStatus: z.string().min(1),
+  }).nullable(),
+  lineItems: z.array(z.object({
+    id: identifierSchema,
+    description: z.string().min(1).max(500),
+    productName: z.string().nullable(),
+    quantity: z.number().int().nonnegative(),
+    status: z.string().min(1),
+    workflowState: z.string().min(1),
+  }).strict()).max(25),
+  artwork: z.object({ required: z.number().int().nonnegative(), awaitingDesign: z.number().int().nonnegative() }).strict(),
+  proof: z.object({ required: z.number().int().nonnegative(), awaitingApproval: z.number().int().nonnegative() }).strict(),
+  prepress: z.object({ required: z.number().int().nonnegative(), pending: z.number().int().nonnegative() }).strict(),
+  productionJobs: z.array(z.object({
+    id: identifierSchema,
+    stationKey: z.string().min(1),
+    stepKey: z.string().min(1),
+    status: z.string().min(1),
+  }).strict()).max(25),
+  invoices: z.array(z.object({
+    id: identifierSchema,
+    number: z.string().min(1),
+    status: z.string().min(1),
+  }).strict()).max(5).optional(),
+  blockingIssues: z.array(z.string().min(1).max(160)).max(3),
+}).strict());
+
+export const productSummaryToolResultSchema = toolEnvelopeSchema(z.object({
+  product: z.object({
+    id: identifierSchema,
+    name: z.string().min(1).max(255),
+    active: z.boolean(),
+    category: z.string().nullable(),
+    pricingMethod: z.string().min(1),
+  }).nullable(),
+  pbv2: z.array(z.object({
+    id: identifierSchema,
+    status: z.string().min(1),
+    schemaVersion: z.number().int().positive(),
+    publishedAt: z.string().nullable(),
+  }).strict()).max(5),
+  materials: z.array(z.object({ id: identifierSchema, name: z.string().min(1), sku: z.string().nullable() }).strict()).max(20),
+  options: z.array(z.object({ id: identifierSchema, name: z.string().min(1), type: z.string().min(1), active: z.boolean() }).strict()).max(25),
+  productionRouting: z.object({
+    requiresProductionJob: z.boolean(),
+    requiresProofApproval: z.boolean(),
+    artworkPolicy: z.string().min(1),
+  }).nullable(),
+}).strict());
+
+export const operationalSummaryToolResultSchema = toolEnvelopeSchema(z.object({
+  timezone: z.string().min(1),
+  metrics: z.array(z.object({
+    key: z.string().min(1),
+    label: z.string().min(1),
+    value: z.number().int().nonnegative(),
+    definition: z.string().min(1),
+    href: z.string().startsWith("/").optional(),
+  }).strict()).min(1).max(12),
+}).strict());
+
+export const currentContextToolResultSchema = toolEnvelopeSchema(z.object({
+  route: z.string().startsWith("/"),
+  pageTitle: z.string().min(1),
+  entityType: z.string().nullable(),
+  entityId: identifierSchema.nullable(),
+  selectedCount: z.number().int().nonnegative().max(25),
+  unsavedChanges: z.boolean(),
+  capturedAt: isoDateSchema,
+}).strict());
+
+export type AssistantToolTrustedInvocation = {
+  organizationId: string;
+  userId: string;
+  permissions?: readonly string[];
+  context: AssistantContextEnvelope;
+  correlationId: string;
+  signal?: AbortSignal;
+};
+
+type ToolDefinition<TInput extends z.ZodTypeAny, TResult extends z.ZodTypeAny> = {
+  name: "orders.get_summary" | "products.get_summary" | "reports.operational_summary" | "navigation.get_current_context";
+  version: "stage-2";
+  readOnly: true;
+  inputSchema: TInput;
+  resultSchema: TResult;
+  maximumResultCount: number;
+  timeoutMs: number;
+};
+
+type Tool<TInput extends z.ZodTypeAny, TResult extends z.ZodTypeAny> = {
+  definition: ToolDefinition<TInput, TResult>;
+  execute(invocation: AssistantToolTrustedInvocation, input: z.input<TInput>): Promise<z.output<TResult>>;
+};
+
+export interface AssistantOrderProductToolDependencies {
+  repository?: Pick<AssistantOrderProductRepository, "getOrder" | "getProduct">;
+  getOperationalSummary?: (organizationId: string) => Promise<OperationalSummary>;
+  now?: () => Date;
+  timezone?: string;
+}
+
+function toIso(value: Date | string | null | undefined): string | null {
+  if (!value) return null;
+  return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
+}
+
+function canViewFinance(permissions: readonly string[] | undefined): boolean {
+  return Boolean(permissions?.some((permission) => ["finance:read", "finance", "admin"].includes(permission)));
+}
+
+function notFoundFreshness(now: Date) {
+  return { retrievedAt: now.toISOString() };
+}
+
+export function createOrderProductOperationalTools(deps: AssistantOrderProductToolDependencies = {}) {
+  const repository = deps.repository ?? new AssistantOrderProductRepository();
+  // Keep the canonical service behind a lazy boundary. This lets isolated tool
+  // tests inject a deterministic summary without loading unrelated production
+  // preview/image dependencies, while production still calls the one
+  // authoritative aggregation service.
+  const getOperationalSummary = deps.getOperationalSummary ?? (async (organizationId: string) => {
+    const { computeOperationalSummary } = await import("../operationalSummary");
+    return computeOperationalSummary(organizationId);
+  });
+  const now = deps.now ?? (() => new Date());
+  const timezone = deps.timezone ?? "America/New_York";
+
+  const ordersGetSummary: Tool<typeof orderSummaryToolInputSchema, typeof orderSummaryToolResultSchema> = {
+    definition: { name: "orders.get_summary", version: "stage-2", readOnly: true, inputSchema: orderSummaryToolInputSchema, resultSchema: orderSummaryToolResultSchema, maximumResultCount: 25, timeoutMs: 5_000 },
+    async execute(invocation, rawInput) {
+      const input = orderSummaryToolInputSchema.parse(rawInput);
+      const record = await repository.getOrder(invocation.organizationId, input);
+      const retrievedAt = now();
+      if (!record) return orderSummaryToolResultSchema.parse({
+        status: "not_found", data: emptyOrderSummary(), sourceLinks: [], freshness: notFoundFreshness(retrievedAt),
+      });
+
+      const awaitingDesign = record.lineItems.filter((line) => line.requiresDesign && !["complete", "completed"].includes(String(line.designStatus ?? "").toLowerCase())).length;
+      const awaitingProof = record.lineItems.filter((line) => line.requiresProofApproval && !line.approvedProofVersionId).length;
+      const pendingPrepress = record.lineItems.filter((line) => line.requiresPrepress && !["complete", "completed"].includes(line.workflowState.toLowerCase())).length;
+      const blockingIssues = [
+        awaitingDesign > 0 ? `${awaitingDesign} line item${awaitingDesign === 1 ? "" : "s"} awaiting design.` : null,
+        awaitingProof > 0 ? `${awaitingProof} line item${awaitingProof === 1 ? "" : "s"} awaiting proof approval.` : null,
+        pendingPrepress > 0 ? `${pendingPrepress} line item${pendingPrepress === 1 ? "" : "s"} pending prepress.` : null,
+      ].filter((value): value is string => Boolean(value));
+      const number = record.order.displayNumber ?? record.order.orderNumber;
+      const result = {
+        status: "ok" as const,
+        data: {
+          order: {
+            id: record.order.id, number, customerId: record.order.customerId, customer: record.order.customerName,
+            status: record.order.status, state: record.order.canonicalState ?? record.order.state,
+            statusPill: record.order.statusPillValue ?? null, dueDate: toIso(record.order.dueDate),
+            fulfillmentStatus: record.order.fulfillmentStatus,
+          },
+          lineItems: record.lineItems.map((line) => ({ id: line.id, description: line.description.slice(0, 500), productName: line.productName ?? null, quantity: line.quantity, status: line.status, workflowState: line.workflowState })),
+          artwork: { required: record.lineItems.filter((line) => line.requiresDesign).length, awaitingDesign },
+          proof: { required: record.lineItems.filter((line) => line.requiresProofApproval).length, awaitingApproval: awaitingProof },
+          prepress: { required: record.lineItems.filter((line) => line.requiresPrepress).length, pending: pendingPrepress },
+          productionJobs: record.production.map((job) => ({ id: job.id, stationKey: job.stationKey, stepKey: job.stepKey, status: job.status })),
+          ...(canViewFinance(invocation.permissions) ? { invoices: record.invoices.map((invoice) => ({ id: invoice.id, number: invoice.displayNumber ?? String(invoice.invoiceNumber), status: invoice.status })) } : {}),
+          blockingIssues,
+        },
+        sourceLinks: [{ label: `Order ${number}`, href: `/orders/${record.order.id}`, entityType: "order" as const, entityId: record.order.id, capturedAt: toIso(record.order.updatedAt) ?? retrievedAt.toISOString() }],
+        freshness: { retrievedAt: retrievedAt.toISOString() },
+      };
+      return orderSummaryToolResultSchema.parse(result);
+    },
+  };
+
+  const productsGetSummary: Tool<typeof productSummaryToolInputSchema, typeof productSummaryToolResultSchema> = {
+    definition: { name: "products.get_summary", version: "stage-2", readOnly: true, inputSchema: productSummaryToolInputSchema, resultSchema: productSummaryToolResultSchema, maximumResultCount: 25, timeoutMs: 5_000 },
+    async execute(invocation, rawInput) {
+      const input = productSummaryToolInputSchema.parse(rawInput);
+      const record = await repository.getProduct(invocation.organizationId, input);
+      const retrievedAt = now();
+      if (!record) return productSummaryToolResultSchema.parse({
+        status: "not_found", data: emptyProductSummary(), sourceLinks: [], freshness: notFoundFreshness(retrievedAt),
+      });
+      const pricingMethod = record.product.pricingProfileKey ?? record.product.pricingEngine ?? record.product.pricingMode;
+      return productSummaryToolResultSchema.parse({
+        status: "ok",
+        data: {
+          product: { id: record.product.id, name: record.product.name, active: record.product.isActive, category: record.product.category ?? null, pricingMethod },
+          pbv2: record.versions.map((version) => ({ id: version.id, status: version.status, schemaVersion: version.schemaVersion, publishedAt: toIso(version.publishedAt) })),
+          materials: record.materials.map((material) => ({ id: material.id, name: material.name, sku: material.sku ?? null })),
+          options: record.options.map((option) => ({ id: option.id, name: option.name, type: option.type, active: option.isActive })),
+          productionRouting: { requiresProductionJob: record.product.requiresProductionJob, requiresProofApproval: record.product.requiresProofApproval, artworkPolicy: record.product.artworkPolicy },
+        },
+        sourceLinks: [{ label: record.product.name, href: `/products/${record.product.id}/edit`, entityType: "product", entityId: record.product.id, capturedAt: toIso(record.product.updatedAt) ?? retrievedAt.toISOString() }],
+        freshness: { retrievedAt: retrievedAt.toISOString() },
+      });
+    },
+  };
+
+  const reportsOperationalSummary: Tool<typeof operationalSummaryToolInputSchema, typeof operationalSummaryToolResultSchema> = {
+    definition: { name: "reports.operational_summary", version: "stage-2", readOnly: true, inputSchema: operationalSummaryToolInputSchema, resultSchema: operationalSummaryToolResultSchema, maximumResultCount: 10, timeoutMs: 5_000 },
+    async execute(invocation, rawInput) {
+      operationalSummaryToolInputSchema.parse(rawInput);
+      const summary = await getOperationalSummary(invocation.organizationId);
+      const retrievedAt = now();
+      return operationalSummaryToolResultSchema.parse({
+        status: "ok",
+        data: { timezone, metrics: operationalMetrics(summary) },
+        sourceLinks: [{ label: "Production overview", href: "/production", capturedAt: retrievedAt.toISOString() }],
+        freshness: { retrievedAt: retrievedAt.toISOString() },
+      });
+    },
+  };
+
+  const navigationGetCurrentContext: Tool<typeof currentContextToolInputSchema, typeof currentContextToolResultSchema> = {
+    definition: { name: "navigation.get_current_context", version: "stage-2", readOnly: true, inputSchema: currentContextToolInputSchema, resultSchema: currentContextToolResultSchema, maximumResultCount: 1, timeoutMs: 1_000 },
+    async execute(invocation, rawInput) {
+      currentContextToolInputSchema.parse(rawInput);
+      const context = assistantContextEnvelopeSchema.parse(invocation.context);
+      const retrievedAt = now();
+      return currentContextToolResultSchema.parse({
+        status: "ok",
+        data: { route: context.route, pageTitle: context.pageTitle, entityType: context.entityType ?? null, entityId: context.entityId ?? null, selectedCount: context.selectedRecordIds.length, unsavedChanges: context.unsavedChanges, capturedAt: context.capturedAt },
+        sourceLinks: [], freshness: { retrievedAt: retrievedAt.toISOString() },
+      });
+    },
+  };
+
+  return { ordersGetSummary, productsGetSummary, reportsOperationalSummary, navigationGetCurrentContext };
+}
+
+/**
+ * Registry-compatible wrappers around the local, fully typed adapters above.
+ * The registry owns policy and authorization; these wrappers only translate
+ * reduced canonical records into the shared Stage 2 response contracts.
+ */
+export function createStage2OrderProductToolAdapters(
+  deps: AssistantOrderProductToolDependencies = {},
+): AssistantToolAdapters {
+  const tools = createOrderProductOperationalTools(deps);
+  const toInvocation = (context: AssistantTrustedToolContext): AssistantToolTrustedInvocation => ({
+    organizationId: context.scope.organizationId,
+    userId: context.scope.userId,
+    permissions: context.permissions,
+    context: context.context,
+    correlationId: context.correlationId,
+    signal: context.signal,
+  });
+
+  return {
+    "orders.get_summary": {
+      async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        const input = assistantOrderSummaryInputSchema.parse(rawInput);
+        const result = await tools.ordersGetSummary.execute(toInvocation(context), input);
+        if (result.status === "not_found" || !result.data.order) return { status: "not_found", data: null };
+        const order = result.data.order;
+        const freshness = result.freshness.retrievedAt;
+        const sourceLink = result.sourceLinks[0]!;
+        const invoice = result.data.invoices?.[0];
+        const data = assistantOrderSummaryResultSchema.parse({
+          order: entitySummary("order", order.id, `Order ${order.number}`, order.status, sourceLink, freshness, order.state),
+          customer: entitySummary("customer", order.customerId, order.customer, undefined, {
+            label: order.customer, href: `/customers/${order.customerId}`, entityType: "customer", entityId: order.customerId, capturedAt: freshness,
+          }, freshness),
+          ...(order.dueDate ? { dueDate: order.dueDate } : {}),
+          lineItemSummary: `${result.data.lineItems.length} line item${result.data.lineItems.length === 1 ? "" : "s"}.`,
+          artworkState: `${result.data.artwork.awaitingDesign} awaiting design of ${result.data.artwork.required} requiring design.`,
+          productionState: `${result.data.productionJobs.length} production job${result.data.productionJobs.length === 1 ? "" : "s"}; ${result.data.prepress.pending} pending prepress.`,
+          fulfillmentState: order.fulfillmentStatus,
+          ...(invoice ? { invoice: entitySummary("invoice", invoice.id, `Invoice ${invoice.number}`, invoice.status, { label: `Invoice ${invoice.number}`, href: `/invoices/${invoice.id}`, entityType: "invoice", entityId: invoice.id, capturedAt: freshness }, freshness) } : {}),
+          ...(result.data.blockingIssues.length ? { blockingIssues: result.data.blockingIssues } : {}),
+        });
+        return succeeded(data, result.sourceLinks, freshness);
+      },
+    },
+    "products.get_summary": {
+      async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        const input = assistantProductSummaryInputSchema.parse(rawInput);
+        const result = await tools.productsGetSummary.execute(toInvocation(context), input);
+        if (result.status === "not_found" || !result.data.product) return { status: "not_found", data: null };
+        const product = result.data.product;
+        const freshness = result.freshness.retrievedAt;
+        const sourceLink = result.sourceLinks[0]!;
+        const data = assistantProductSummaryResultSchema.parse({
+          product: entitySummary("product", product.id, product.name, product.active ? "active" : "inactive", sourceLink, freshness, product.category ?? undefined),
+          active: product.active,
+          ...(product.category ? { category: product.category } : {}),
+          pricingMethod: product.pricingMethod,
+          ...(result.data.pbv2.length ? { pbv2Summary: result.data.pbv2.map((version) => `v${version.schemaVersion} ${version.status}`).join(", ") } : {}),
+          ...(result.data.materials.length ? { materialSummary: result.data.materials.map((material) => material.sku ? `${material.name} (${material.sku})` : material.name) } : {}),
+          ...(result.data.options.length ? { optionSummary: `${result.data.options.length} option${result.data.options.length === 1 ? "" : "s"}; ${result.data.options.filter((option) => option.active).length} active.` } : {}),
+          productionRoutingSummary: `${result.data.productionRouting?.requiresProductionJob ? "Requires" : "Does not require"} a production job; ${result.data.productionRouting?.requiresProofApproval ? "proof approval required" : "proof approval not required"}; artwork ${result.data.productionRouting?.artworkPolicy ?? "not configured"}.`,
+        });
+        return succeeded(data, result.sourceLinks, freshness);
+      },
+    },
+    "reports.operational_summary": {
+      async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        const input = assistantOperationalSummaryInputSchema.parse(rawInput);
+        const result = await tools.reportsOperationalSummary.execute(toInvocation(context), {});
+        const freshness = result.freshness.retrievedAt;
+        const data = assistantOperationalSummaryResultSchema.parse({
+          metrics: result.data.metrics.map((metric) => ({
+            key: metric.key,
+            label: metric.label,
+            value: metric.value,
+            definition: metric.definition,
+            ...(metric.href ? { sourceLink: { label: metric.label, href: metric.href, capturedAt: freshness } } : {}),
+          })),
+          // The canonical service supplies a current snapshot, not a historical
+          // report. A requested date is deliberately not treated as a filter.
+          appliedDate: currentDateInTimezone(input.timezone ?? result.data.timezone, freshness),
+          timezone: input.timezone ?? result.data.timezone,
+        });
+        return succeeded(data, result.sourceLinks, freshness, input.date ? "The canonical operational summary is a current snapshot; it does not apply a historical date filter." : undefined);
+      },
+    },
+    "navigation.get_current_context": {
+      async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        assistantNavigationCurrentContextInputSchema.parse(rawInput);
+        const result = await tools.navigationGetCurrentContext.execute(toInvocation(context), {});
+        const data = assistantNavigationCurrentContextResultSchema.parse({
+          route: result.data.route,
+          pageTitle: result.data.pageTitle,
+          ...(result.data.entityType ? { entityType: result.data.entityType } : {}),
+          ...(result.data.entityId ? { entityId: result.data.entityId } : {}),
+          selectedCount: result.data.selectedCount,
+          unsavedChanges: result.data.unsavedChanges,
+          contextFreshness: result.data.capturedAt,
+        });
+        // Navigation has no record to fetch. Use a fixed application route for
+        // provenance instead of echoing a potentially misleading contextual URL.
+        return succeeded(data, [{ label: "Current PrintersHero workspace", href: "/", capturedAt: result.freshness.retrievedAt }], result.freshness.retrievedAt);
+      },
+    },
+  };
+}
+
+// Kept as a descriptive alias for direct module consumers while the integration
+// point uses the Stage 2 naming convention above.
+export const createAssistantOrderProductToolAdapters = createStage2OrderProductToolAdapters;
+
+function entitySummary(
+  entityType: "customer" | "order" | "product" | "invoice",
+  recordId: string,
+  label: string,
+  status: string | undefined,
+  sourceLink: z.infer<typeof sourceLinkSchema>,
+  freshness: string,
+  secondaryDescription?: string,
+) {
+  return {
+    entityType,
+    recordId,
+    label,
+    ...(secondaryDescription ? { secondaryDescription } : {}),
+    ...(status ? { status } : {}),
+    sourceLink,
+    freshness,
+  };
+}
+
+function succeeded(data: unknown, sourceLinks: z.infer<typeof sourceLinkSchema>[], freshness: string, warning?: string): AssistantToolResultEnvelope {
+  return {
+    status: "succeeded",
+    data,
+    provenance: { sourceLinks, freshness: { capturedAt: freshness } },
+    ...(warning ? { warning } : {}),
+  };
+}
+
+function currentDateInTimezone(timezone: string, freshness: string): string {
+  try {
+    const parts = new Intl.DateTimeFormat("en-US", { timeZone: timezone, year: "numeric", month: "2-digit", day: "2-digit" })
+      .formatToParts(new Date(freshness));
+    const part = (type: "year" | "month" | "day") => parts.find((value) => value.type === type)?.value;
+    const year = part("year");
+    const month = part("month");
+    const day = part("day");
+    if (year && month && day) return `${year}-${month}-${day}`;
+  } catch {
+    // Fall through to the ISO timestamp below.
+  }
+  return freshness.slice(0, 10);
+}
+
+function emptyOrderSummary() {
+  return { order: null, lineItems: [], artwork: { required: 0, awaitingDesign: 0 }, proof: { required: 0, awaitingApproval: 0 }, prepress: { required: 0, pending: 0 }, productionJobs: [], blockingIssues: [] };
+}
+
+function emptyProductSummary() {
+  return { product: null, pbv2: [], materials: [], options: [], productionRouting: null };
+}
+
+function operationalMetrics(summary: OperationalSummary) {
+  return [
+    { key: "inbound_orders", label: "Inbound orders needing review", value: summary.inboundOrders, definition: "Inbound orders in received, processing, or needs-review status.", href: "/inbound-orders" },
+    { key: "production_overview", label: "Production overview", value: summary.overview, definition: "Open orders currently represented by the canonical production overview.", href: "/production" },
+    { key: "design", label: "Jobs in design", value: summary.design, definition: "Canonical design-queue count.", href: "/production/design" },
+    { key: "proofing", label: "Jobs waiting on proof", value: summary.proofing, definition: "Proof queue items awaiting send, revision, or an active proof.", href: "/production/proofing" },
+    { key: "prepress", label: "Jobs in prepress", value: summary.prepress, definition: "Eligible line items in the default prepress view.", href: "/production/prepress" },
+    { key: "flatbed", label: "Flatbed jobs", value: summary.flatbed, definition: "Visible queued, in-progress, or paused flatbed jobs.", href: "/production/flatbed" },
+    { key: "roll", label: "Roll jobs", value: summary.roll, definition: "Visible queued, in-progress, or paused roll jobs.", href: "/production/roll" },
+    { key: "fulfillment", label: "Ready for fulfillment", value: summary.fulfillment, definition: "Orders in the canonical fulfillment queue.", href: "/fulfillment" },
+    { key: "invoices_pending_send", label: "Invoices pending send", value: summary.invoices.pendingSend, definition: "Draft invoices pending send or retry handling.", href: "/invoices" },
+    { key: "invoices_unpaid", label: "Unpaid invoices", value: summary.invoices.unpaid, definition: "Billed, sent, partially paid, or overdue invoices.", href: "/invoices" },
+  ];
+}

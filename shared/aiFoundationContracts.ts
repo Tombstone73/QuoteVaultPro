@@ -12,6 +12,7 @@ export const aiFeatureValues = [
   "customer_support",
   "inventory_recommendations",
   "production_assistance",
+  "assistant",
 ] as const;
 
 export type AiMode = (typeof aiModeValues)[number];
@@ -36,6 +37,7 @@ export const aiFeatureFlagsSchema = z.object({
   customerSupport: z.boolean(),
   inventoryRecommendations: z.boolean(),
   productionAssistance: z.boolean(),
+  assistant: z.boolean(),
 });
 
 export type AiFeatureFlags = z.infer<typeof aiFeatureFlagsSchema>;
@@ -56,6 +58,7 @@ export const aiSettingsUpdateSchema = z.object({
   customerSupportEnabled: z.boolean().optional(),
   inventoryRecommendationsEnabled: z.boolean().optional(),
   productionAssistanceEnabled: z.boolean().optional(),
+  assistantEnabled: z.boolean().optional(),
   monthlyUsageLimit: z.number().int().positive().nullable().optional(),
 }).strict();
 
@@ -102,4 +105,5 @@ export const defaultAiFeatureFlags: AiFeatureFlags = {
   customerSupport: false,
   inventoryRecommendations: false,
   productionAssistance: false,
+  assistant: false,
 };
