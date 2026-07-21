@@ -31,6 +31,10 @@ import { PRICING_PROFILES, type PricingProfileKey, type FlatGoodsConfig, getProf
 import React from "react";
 import { optionsHaveInvalidChoices } from "@/lib/optionChoiceValidation";
 import { MediaLibraryTab } from "@/components/admin-settings";
+import { AiProductBuilderEntryButton } from "@/components/products/AiProductBuilderEntryButton";
+import { useAuth } from "@/hooks/useAuth";
+import { canUseProductPlanning } from "@/lib/productPlanningAccess";
+import { ROUTES } from "@/config/routes";
 
 
 // Required field indicator component
@@ -165,6 +169,7 @@ interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
 
 export default function ProductsPage() {
   const { toast } = useToast();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const [searchTerm, setSearchTerm] = useState("");
   const [isAddDialogOpen, setIsAddDialogOpen] = useState(false);
@@ -420,6 +425,10 @@ export default function ProductsPage() {
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <AiProductBuilderEntryButton
+            canAccess={canUseProductPlanning(user)}
+            onOpen={() => navigate(ROUTES.admin.aiProductBuilder)}
+          />
           <Button variant="outline" onClick={() => navigate("/admin/products/import-export")}>
             <FileJson className="h-4 w-4 mr-2" />
             Import / Export

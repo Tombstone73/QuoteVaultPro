@@ -52,6 +52,8 @@ let ProductIntakeSessionSummary: typeof import("./CatalogMigrationLab").ProductI
 let ProductIntakeSessionsList: typeof import("./CatalogMigrationLab").ProductIntakeSessionsList;
 let ProductIntakeAiDiagnosticsPanel: typeof import("./CatalogMigrationLab").ProductIntakeAiDiagnosticsPanel;
 let ProductIntakeQualityMetrics: typeof import("./CatalogMigrationLab").ProductIntakeQualityMetrics;
+let IntakeBriefView: typeof import("./CatalogMigrationLab").IntakeBriefView;
+let buildProductIntakeSamplePricingRows: typeof import("./CatalogMigrationLab").buildProductIntakeSamplePricingRows;
 let CatalogMigrationLab: typeof import("./CatalogMigrationLab").default;
 
 beforeAll(async () => {
@@ -63,6 +65,8 @@ beforeAll(async () => {
   ProductIntakeSessionsList = module.ProductIntakeSessionsList;
   ProductIntakeAiDiagnosticsPanel = module.ProductIntakeAiDiagnosticsPanel;
   ProductIntakeQualityMetrics = module.ProductIntakeQualityMetrics;
+  IntakeBriefView = module.IntakeBriefView;
+  buildProductIntakeSamplePricingRows = module.buildProductIntakeSamplePricingRows;
   CatalogMigrationLab = module.default;
 });
 
@@ -256,7 +260,7 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-async function renderCatalogMigrationLabPage() {
+async function renderCatalogMigrationLabPage(initialEntry = "/admin/catalog-migration-lab") {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -264,7 +268,9 @@ async function renderCatalogMigrationLabPage() {
   await act(async () => {
     root.render(
       <QueryClientProvider client={queryClient}>
-        <CatalogMigrationLab />
+        <MemoryRouter initialEntries={[initialEntry]}>
+          <CatalogMigrationLab />
+        </MemoryRouter>
       </QueryClientProvider>,
     );
   });
@@ -276,6 +282,66 @@ function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
 }
 
 describe("Product Intake session UI", () => {
+  test("AI Product Builder route exposes the guided generator without migration-only controls", async () => {
+    queryClientMock.apiRequest.mockImplementation(async (...args: unknown[]) => {
+      const [method, url] = args as [string, string];
+      if (method === "GET" && url === "/api/admin/product-intake-wizard/sessions") {
+        return jsonResponse({ success: true, data: { sessions: [] } });
+      }
+      if (isAiReadinessRequest(method, url)) {
+        return jsonResponse({ success: true, data: aiReadiness() });
+      }
+      throw new Error(`Unexpected request ${method} ${url}`);
+    });
+
+    const { container, root } = await renderCatalogMigrationLabPage("/admin/catalog-migration-lab?mode=ai-product-builder");
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+
+    expect(container.textContent).toContain("AI Product Builder");
+    expect(container.textContent).toContain("Generate Product with AI");
+    expect(container.textContent).toContain("Start AI Product Builder");
+    expect(container.textContent).toContain("New options stay local to this product");
+    expect(container.textContent).not.toContain("InfoFlo JSON Analyzer");
+    act(() => root.unmount());
+    document.body.innerHTML = "";
+  });
+
+  test("generated product preview includes custom choices and sample pricing impacts", () => {
+    const brief = session().brief;
+    const customBrief = {
+      ...brief,
+      requiredOptions: [{
+        label: "Thickness",
+        normalizedGroup: "thickness",
+        required: true,
+        confidence: 95,
+        sampleValues: ["0.020 in"],
+        sourcePaths: ["$.description"],
+        templateMatches: [],
+        evidence: [],
+        source: "product_specific" as const,
+        selectionMode: "single" as const,
+        choices: [{ value: "020", label: "0.020 in", pricing: { mode: "set_per_sqft" as const, amount: 4.5 } }],
+      }],
+    };
+
+    const rows = buildProductIntakeSamplePricingRows(customBrief);
+    expect(rows).toEqual([expect.objectContaining({
+      optionLabel: "Thickness",
+      choiceLabel: "0.020 in",
+      calculation: "$4.50/sq ft × 6 sq ft = $27.00",
+      complete: true,
+    })]);
+
+    const html = renderToStaticMarkup(<IntakeBriefView brief={customBrief} />);
+    expect(html).toContain("Sample Pricing Preview");
+    expect(html).toContain("Thickness");
+    expect(html).toContain("0.020 in");
+    expect(html).toContain("Product-specific option");
+  });
+
   test("session summary renders status, source, confidence, and readiness", () => {
     const html = renderToStaticMarkup(<ProductIntakeSessionSummary session={session()} readiness={readiness} />);
 

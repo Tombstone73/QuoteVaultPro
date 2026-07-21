@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery } from "@tanstack/react-query";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import {
   AlertTriangle,
   Brain,
@@ -33,6 +33,7 @@ import type {
 import { apiRequest } from "@/lib/queryClient";
 import { useAuth } from "@/hooks/useAuth";
 import { canUsePlatformTools } from "@/lib/platformAccess";
+import { canUseProductPlanning } from "@/lib/productPlanningAccess";
 import { useToast } from "@/hooks/use-toast";
 import NotFound from "@/pages/not-found";
 import { Badge } from "@/components/ui/badge";
@@ -1209,7 +1210,50 @@ function repairActionText(action: ProductIntakeAiDiagnostic["repairActions"][num
   return `${action.path}: ${action.reason}${action.confidenceImpact ? ` (${action.confidenceImpact})` : ""}`;
 }
 
-function IntakeBriefView({ brief }: { brief: ProductIntakeBrief }) {
+export type ProductIntakeSamplePricingRow = {
+  optionLabel: string;
+  choiceLabel: string;
+  calculation: string;
+  complete: boolean;
+};
+
+export function buildProductIntakeSamplePricingRows(brief: ProductIntakeBrief): ProductIntakeSamplePricingRow[] {
+  const sampleAreaSqft = 6; // 24 x 36 inches
+  const sampleQuantity = 1;
+  const sampleGrommets = 4;
+
+  return [...brief.requiredOptions, ...brief.optionalOptions].flatMap((option) => {
+    const choices = option.choices ?? [];
+    return choices
+      .filter((choice) => choice.pricing?.mode && choice.pricing.mode !== "none")
+      .map((choice) => {
+        const mode = choice.pricing?.mode;
+        const amount = choice.pricing?.amount;
+        if (amount == null || !Number.isFinite(amount)) {
+          return {
+            optionLabel: option.label,
+            choiceLabel: choice.label,
+            calculation: "Pricing answer required",
+            complete: false,
+          };
+        }
+
+        const dollars = Number(amount);
+        const calculation = mode === "set_per_sqft" || mode === "add_per_sqft"
+          ? `$${dollars.toFixed(2)}/sq ft × ${sampleAreaSqft} sq ft = $${(dollars * sampleAreaSqft).toFixed(2)}`
+          : mode === "set_per_piece" || mode === "add_per_piece"
+            ? `$${dollars.toFixed(2)}/piece × ${sampleQuantity} = $${(dollars * sampleQuantity).toFixed(2)}`
+            : mode === "add_per_grommet"
+              ? `$${dollars.toFixed(2)}/grommet × ${sampleGrommets} = $${(dollars * sampleGrommets).toFixed(2)}`
+              : mode === "add_percent"
+                ? `Adds ${dollars.toFixed(2)}% to the current base price`
+                : `Adds $${dollars.toFixed(2)} to the line`;
+        return { optionLabel: option.label, choiceLabel: choice.label, calculation, complete: true };
+      });
+  });
+}
+
+export function IntakeBriefView({ brief }: { brief: ProductIntakeBrief }) {
   const sourceHint = brief.aiRepair?.accepted
     ? "Live AI repaired"
     : brief.source === "live_ai"
@@ -1387,6 +1431,30 @@ function IntakeBriefView({ brief }: { brief: ProductIntakeBrief }) {
         ))}
       </div>
 
+      <Card data-testid="ai-product-sample-pricing-preview">
+        <CardHeader>
+          <CardTitle className="text-base">Sample Pricing Preview</CardTitle>
+          <CardDescription>
+            Illustrative 24 × 36 in, quantity 1 pricing impacts from generated product-specific choices. Final PBV2 pricing is validated again in the draft builder.
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          {buildProductIntakeSamplePricingRows(brief).length === 0 ? (
+            <div className="rounded border border-amber-500/30 bg-amber-500/5 p-3 text-muted-foreground">
+              No complete custom-option pricing is available yet. Answer the pricing questions before creating the draft.
+            </div>
+          ) : buildProductIntakeSamplePricingRows(brief).map((row) => (
+            <div key={`${row.optionLabel}-${row.choiceLabel}`} className="flex flex-wrap items-center justify-between gap-3 rounded border p-3">
+              <div>
+                <div className="font-medium">{row.optionLabel}: {row.choiceLabel}</div>
+                <div className="text-xs text-muted-foreground">{row.calculation}</div>
+              </div>
+              <Badge variant={row.complete ? "outline" : "destructive"}>{row.complete ? "Preview" : "Blocked"}</Badge>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
       <Card>
         <CardHeader><CardTitle className="text-base">Suggested Template Matches</CardTitle></CardHeader>
         <CardContent className="overflow-auto">
@@ -1465,6 +1533,8 @@ function IntakeBriefView({ brief }: { brief: ProductIntakeBrief }) {
 export default function CatalogMigrationLab() {
   const { toast } = useToast();
   const { user, isLoading } = useAuth();
+  const [searchParams] = useSearchParams();
+  const aiProductBuilderMode = searchParams.get("mode") === "ai-product-builder";
   const [uploadedJsonText, setUploadedJsonText] = useState("");
   const [pastedJsonText, setPastedJsonText] = useState("");
   const [sampleJsonText, setSampleJsonText] = useState("");
@@ -1493,6 +1563,7 @@ export default function CatalogMigrationLab() {
   const [migrationSort, setMigrationSort] = useState<"confidence" | "category" | "template" | "routing" | "complexity">("confidence");
   const [analysisTab, setAnalysisTab] = useState("overview");
   const canAccessPlatformTools = canUsePlatformTools(user);
+  const canAccessProductBuilder = canUseProductPlanning(user);
 
   const analyzerSource = useMemo(
     () => resolveCatalogMigrationAnalyzerSource({ activeSource, uploadedJsonText, pastedJsonText, sampleJsonText }),
@@ -1539,7 +1610,7 @@ export default function CatalogMigrationLab() {
   }, [analysis]);
   const sessionsQuery = useQuery({
     queryKey: ["/api/admin/product-intake-wizard/sessions"],
-    enabled: canAccessPlatformTools && !isLoading,
+    enabled: canAccessProductBuilder && !isLoading,
     queryFn: async () => {
       const response = await apiRequest("GET", "/api/admin/product-intake-wizard/sessions");
       const json = await response.json();
@@ -1549,7 +1620,7 @@ export default function CatalogMigrationLab() {
   });
   const aiReadinessQuery = useQuery({
     queryKey: ["/api/admin/product-intake-wizard/ai-readiness"],
-    enabled: canAccessPlatformTools && !isLoading,
+    enabled: canAccessProductBuilder && !isLoading,
     queryFn: async () => {
       const response = await apiRequest("GET", "/api/admin/product-intake-wizard/ai-readiness");
       const json = await response.json();
@@ -1961,7 +2032,7 @@ export default function CatalogMigrationLab() {
     return <div className="p-6 text-sm text-muted-foreground">Loading...</div>;
   }
 
-  if (!canAccessPlatformTools) {
+  if (!canAccessProductBuilder) {
     return <NotFound />;
   }
 
@@ -1970,15 +2041,23 @@ export default function CatalogMigrationLab() {
       <div className="flex flex-wrap items-start justify-between gap-4">
         <div>
           <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-2xl font-semibold">Catalog Migration Lab</h1>
-            <Badge variant="outline">Experimental</Badge>
+            <h1 className="text-2xl font-semibold" data-testid="ai-product-builder-heading">
+              {aiProductBuilderMode ? "AI Product Builder" : "Catalog Migration Lab"}
+            </h1>
+            <Badge variant="outline">{aiProductBuilderMode ? "PBV2" : "Experimental"}</Badge>
             <Badge variant="secondary">Review-first</Badge>
           </div>
           <p className="mt-2 text-sm text-muted-foreground">
-            Analyze an InfoFlo JSON product catalog export, collect missing decisions, and create inactive product drafts for human review.
+            {aiProductBuilderMode
+              ? "Describe a configurable product in plain English, review generated product-specific options and pricing, then create an inactive PBV2 draft."
+              : "Analyze an InfoFlo JSON product catalog export, collect missing decisions, and create inactive product drafts for human review."}
           </p>
         </div>
-        {analysis && (
+        {aiProductBuilderMode ? (
+          <Button variant="outline" asChild>
+            <Link to={ROUTES.products.list}>Back to Products</Link>
+          </Button>
+        ) : analysis && (
           <Button
             variant="outline"
             className="gap-2"
@@ -2003,7 +2082,7 @@ export default function CatalogMigrationLab() {
         </CardContent>
       </Card>
 
-      <Card>
+      {!aiProductBuilderMode && <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <FlaskConical className="h-4 w-4" />
@@ -2093,16 +2172,18 @@ export default function CatalogMigrationLab() {
             {analyzeMutation.isPending ? "Analyzing..." : "Run Analyzer"}
           </Button>
         </CardContent>
-      </Card>
+      </Card>}
 
-      <Card>
+      <Card data-testid="ai-product-builder-workflow">
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Brain className="h-4 w-4" />
-            Product Intake Brief
+            {aiProductBuilderMode ? "Generate Product with AI" : "Product Intake Brief"}
           </CardTitle>
           <CardDescription>
-            Converts the active JSON source or a short product description into a saved review session with follow-up questions.
+            {aiProductBuilderMode
+              ? "Describe the product, dimensions, choices, and pricing in your own words. New options stay local to this product unless you explicitly choose a reusable template."
+              : "Converts the active JSON source or a short product description into a saved review session with follow-up questions."}
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
@@ -2110,13 +2191,15 @@ export default function CatalogMigrationLab() {
             value={productDescription}
             onChange={(event) => setProductDescription(event.target.value)}
             rows={4}
-            placeholder="Foam board signs with optional grommets"
+            placeholder={aiProductBuilderMode
+              ? "Create Polystyrene Signs with five thicknesses priced per square foot, single/double-sided printing, contour cutting, and grommets. Width, height, and quantity are required."
+              : "Foam board signs with optional grommets"}
             disabled={intakeMutation.isPending}
           />
           <div className="flex flex-wrap items-center gap-3">
             <Button className="gap-2" disabled={!canGenerateIntake} onClick={startIntakeAnalysis}>
               {intakeMutation.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <Brain className="h-4 w-4" />}
-              {intakeMutation.isPending ? "Generating..." : "Generate Intake Brief"}
+              {intakeMutation.isPending ? "Generating..." : aiProductBuilderMode ? "Start AI Product Builder" : "Generate Intake Brief"}
             </Button>
             {intakeMutation.isPending && (
               <Button type="button" variant="outline" onClick={cancelIntakeAnalysis}>
@@ -2152,7 +2235,7 @@ export default function CatalogMigrationLab() {
         onBulkDelete={(mode, sessionIds) => bulkDeleteSessionsMutation.mutate({ mode, sessionIds })}
       />
 
-      {canAccessPlatformTools && (
+      {canAccessPlatformTools && !aiProductBuilderMode && (
         <ProductIntakeAiDiagnosticsPanel
           diagnostics={diagnosticsQuery.data ?? []}
           isLoading={diagnosticsQuery.isLoading}
