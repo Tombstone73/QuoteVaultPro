@@ -7,6 +7,7 @@ import type { ProductIntakeBrief } from "../../shared/productIntakeWizardSchemas
 import {
   buildProductIntakeDraftTree,
   buildProductIntakeProductValues,
+  validateProductIntakeCustomOptions,
 } from "../services/productIntakeWizard/productIntakeDraftService";
 import { evaluatePricingPreviewFromTree } from "../services/pricing/PricingService";
 
@@ -963,10 +964,10 @@ describe("Product Intake draft service", () => {
         pricingAnalysis: { behavior: "formula", confidence: 92, notes: "Sticker-style adjusted rounded square-foot formula", evidence: [] },
         requiredOptions: [
           option("Laminate", { normalizedGroup: "laminate", sampleValues: ["Glossy", "Matte"] }),
-          option("Contour Cutting", { normalizedGroup: "contour_cutting", sampleValues: ["No", "Yes"] }),
+          option("Contour Cutting", { normalizedGroup: "contour_cutting", sampleValues: ["No", "Yes"], source: "reusable_template", reuseTemplateId: "tpl_contour" }),
         ],
         optionalOptions: [
-          option("Weed and Tape", { normalizedGroup: "weed_and_tape", required: false, sampleValues: ["No", "Yes"] }),
+          option("Weed and Tape", { normalizedGroup: "weed_and_tape", required: false, sampleValues: ["No", "Yes"], source: "reusable_template", reuseTemplateId: "tpl_weed" }),
         ],
         templateMatches: [
           { templateId: "tpl_contour", name: "Contour Cutting", slug: "contour-cutting", category: "cutting", score: 0.96, recommendation: "suggest_reuse", matchedSignals: [], evidence: [] },
@@ -1242,11 +1243,13 @@ describe("Product Intake draft service", () => {
     }
   });
 
-  test("reuses suggested templates without creating template records", () => {
+  test("reuses explicitly selected templates without creating template records", () => {
     const templateBrief = brief({
       requiredOptions: [option("Printed Sides", {
         normalizedGroup: "printed_sides",
         sampleValues: ["Single Sided", "Double Sided"],
+        source: "reusable_template",
+        reuseTemplateId: "tpl_printed_sides",
         templateMatches: [{
           templateId: "tpl_printed_sides",
           name: "Printed Sides",
@@ -1464,5 +1467,103 @@ describe("Product Intake draft service", () => {
         sourcePaths: ["$.pricing.quantity_tiers"],
       }),
     ]));
+  });
+
+  test("builds a Polystyrene product with brand-new product-specific priced options", () => {
+    const productSpecific = (label: string, normalizedGroup: string, choices: ProductIntakeBrief["requiredOptions"][number]["choices"]) => option(label, {
+      normalizedGroup,
+      source: "product_specific",
+      selectionMode: "single",
+      pricingRequired: true,
+      sampleValues: choices?.map((choice) => choice.label) ?? [],
+      choices,
+      templateMatches: [],
+    });
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        productIdentity: {
+          likelyProductName: { value: "Polystyrene Signs", confidence: 96, evidence: [] },
+          category: { value: "Rigid Signs", confidence: 90, evidence: [] },
+          productType: { value: "Polystyrene", confidence: 90, evidence: [] },
+        },
+        requiredOptions: [
+          productSpecific("Thickness", "thickness", [
+            { value: "020", label: ".020", pricing: { mode: "set_per_sqft", amount: 3.5 } },
+            { value: "030", label: ".030", pricing: { mode: "set_per_sqft", amount: 4 } },
+            { value: "040", label: ".040", pricing: { mode: "set_per_sqft", amount: 4.5 } },
+            { value: "060", label: ".060", pricing: { mode: "set_per_sqft", amount: 5.5 } },
+            { value: "080", label: ".080", pricing: { mode: "set_per_sqft", amount: 6.5 } },
+          ]),
+          productSpecific("Print Sides", "printed_sides", [
+            { value: "single_sided", label: "Single-Sided", pricing: { mode: "none" } },
+            { value: "double_sided", label: "Double-Sided", pricing: { mode: "add_percent", amount: 25 } },
+          ]),
+          productSpecific("Contour Cutting", "contour_cutting", [
+            { value: "no", label: "No", pricing: { mode: "none" } },
+            { value: "yes", label: "Yes", pricing: { mode: "add_percent", amount: 10 } },
+          ]),
+          productSpecific("Grommets", "grommets", [
+            { value: "none", label: "None", pricing: { mode: "none" } },
+            { value: "corners", label: "Corners", pricing: { mode: "add_per_piece", amount: 1 } },
+          ]),
+        ],
+        optionalOptions: [],
+        templateMatches: [],
+      }),
+      sessionId: "sess_polystyrene_custom",
+      productName: "Polystyrene Signs",
+      userId: "user_1",
+      templates: [],
+    });
+
+    expect(inputNode(tree, "thickness")?.choices).toHaveLength(5);
+    expect(inputNode(tree, "printed_sides")?.choices.map((choice: any) => choice.label)).toEqual(["Single-Sided", "Double-Sided"]);
+    expect(inputNode(tree, "contour_cutting")).toBeTruthy();
+    expect(inputNode(tree, "grommets")).toBeTruthy();
+    expect(nodes(tree).some((node) => node.sourceTemplateId)).toBe(false);
+
+    const pricedTree = {
+      ...tree,
+      meta: { ...tree.meta, pricingV2: { base: { perSqftCents: 100 } } },
+    };
+    const preview = evaluatePricingPreviewFromTree({
+      treeJson: pricedTree,
+      widthIn: 12,
+      heightIn: 12,
+      quantity: 1,
+      pbv2ExplicitSelections: {
+        thickness: { value: "040" },
+        printed_sides: { value: "double_sided" },
+        contour_cutting: { value: "yes" },
+        grommets: { value: "corners" },
+      },
+      debug: true,
+    });
+    expect(preview.totalPrice).toBeCloseTo(7.08, 2);
+  });
+
+  test("blocks incomplete product-specific option pricing until valid answers are supplied", () => {
+    const intakeBrief = brief({
+      requiredOptions: [option("Lamination", {
+        normalizedGroup: "lamination",
+        source: "product_specific",
+        selectionMode: "single",
+        pricingRequired: true,
+        sampleValues: ["None", "Gloss"],
+        choices: [
+          { value: "none", label: "None", pricing: { mode: "none" } },
+          { value: "gloss", label: "Gloss", pricing: { mode: "add_per_sqft", amount: null } },
+        ],
+      })],
+      optionalOptions: [],
+    });
+
+    expect(validateProductIntakeCustomOptions(intakeBrief)).toEqual([
+      "Lamination: pricing is required for Gloss.",
+    ]);
+    expect(validateProductIntakeCustomOptions(intakeBrief, [
+      { questionKey: "custom-option-lamination-pricing-model", answer: "add_per_sqft" },
+      { questionKey: "custom-option-lamination-pricing-values", answer: "Gloss=1.25" },
+    ])).toEqual([]);
   });
 });

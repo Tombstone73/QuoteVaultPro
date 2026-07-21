@@ -18,9 +18,16 @@ import {
   type ProductIntakeMatrixDraft,
   type ProductIntakeMatrixReadiness,
   type ProductIntakeOption,
+  type ProductIntakeOptionChoice,
   type ProductIntakeSession,
 } from "@shared/productIntakeWizardSchemas";
-import { validateOptionTreeV2, type OptionTreeV2, type PricingV2Tier } from "@shared/optionTreeV2";
+import {
+  validateOptionTreeV2,
+  type ChoicePricingOverride,
+  type OptionTreeV2,
+  type PricingImpact,
+  type PricingV2Tier,
+} from "@shared/optionTreeV2";
 import type { Pbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 import type { ProductOptionRule } from "@shared/productOptionRules";
@@ -553,19 +560,151 @@ function uniqueKey(base: string, used: Set<string>): string {
 }
 
 const TRUE_CONDITION = { op: "EXISTS", value: { op: "literal", value: true } };
-const PRODUCT_INTAKE_TEMPLATE_REUSE_THRESHOLD = 0.85;
 
-function optionChoices(option: ProductIntakeOption): Array<{ value: string; label: string; sortOrder: number }> {
+type ProductIntakeDraftChoice = {
+  value: string;
+  label: string;
+  sortOrder: number;
+  pricingImpact?: PricingImpact[];
+  pricingOverride?: ChoicePricingOverride;
+  weightOz?: number;
+  workflowTags?: string[];
+};
+
+function customOptionPrefix(option: ProductIntakeOption): string {
+  return `custom-option-${safeKey(option.normalizedGroup || option.label, "option").replace(/_/g, "-")}`;
+}
+
+function parseChoiceAnswer(value: unknown): string[] {
+  if (Array.isArray(value)) return value.map(String).map((entry) => entry.trim()).filter(Boolean);
+  if (typeof value !== "string") return [];
+  return value.split(/[,;\n]+/).map((entry) => entry.trim()).filter(Boolean);
+}
+
+function parseChoicePrices(value: unknown): Map<string, number> {
+  const prices = new Map<string, number>();
+  for (const entry of parseChoiceAnswer(value)) {
+    const match = entry.match(/^(.+?)\s*=\s*\$?\s*(-?\d+(?:\.\d+)?)\s*%?$/);
+    if (!match) continue;
+    const amount = Number(match[2]);
+    if (!Number.isFinite(amount) || amount < 0) continue;
+    prices.set(safeKey(match[1], "choice"), amount);
+  }
+  return prices;
+}
+
+function pricingForChoice(args: {
+  choice: ProductIntakeOptionChoice;
+  modeOverride?: string | null;
+  amountOverride?: number;
+}): Pick<ProductIntakeDraftChoice, "pricingImpact" | "pricingOverride"> {
+  const pricing = args.choice.pricing;
+  const mode = args.amountOverride !== undefined
+    ? args.modeOverride ?? pricing?.mode ?? "none"
+    : pricing?.mode ?? "none";
+  const amount = args.amountOverride ?? pricing?.amount;
+  if (mode === "none" || amount == null || !Number.isFinite(Number(amount))) return {};
+  const cents = Math.round(Number(amount) * 100);
+  const label = pricing?.label ?? `${args.choice.label} pricing`;
+  if (mode === "set_per_sqft") {
+    return { pricingOverride: { mode: "set_base_rate", amount: cents, unit: "perSqft", appliesTo: "area", label } };
+  }
+  if (mode === "set_per_piece") {
+    return { pricingOverride: { mode: "set_base_rate", amount: cents, unit: "perPiece", appliesTo: "quantity", label } };
+  }
+  if (mode === "add_flat") return { pricingImpact: [{ mode: "addFlat", amountCents: cents, label }] };
+  if (mode === "add_per_piece") return { pricingImpact: [{ mode: "addPerQty", amountCents: cents, label }] };
+  if (mode === "add_per_grommet") {
+    const statedCount = Number(args.choice.label.match(/\b(\d+)\b/)?.[1] ?? NaN);
+    const grommetCount = Number.isFinite(statedCount) && statedCount > 0
+      ? statedCount
+      : /corners?/i.test(args.choice.label)
+        ? 4
+        : 1;
+    return { pricingImpact: [{ mode: "addPerQty", amountCents: cents * grommetCount, label }] };
+  }
+  if (mode === "add_per_sqft") return { pricingImpact: [{ mode: "addPerSqft", amountCents: cents, label }] };
+  if (mode === "add_percent") return { pricingImpact: [{ mode: "addPercent", percent: Number(amount), basis: "base", label }] };
+  return {};
+}
+
+function optionChoices(option: ProductIntakeOption, answers: ProductIntakeAnswerLike[] = []): ProductIntakeDraftChoice[] {
+  const answerByKey = new Map(answers.map((answer) => [answer.questionKey, answer.answer]));
+  const prefix = customOptionPrefix(option);
+  const answeredChoices = parseChoiceAnswer(answerByKey.get(`${prefix}-choices`));
+  const sourceChoices: ProductIntakeOptionChoice[] = answeredChoices.length > 0
+    ? answeredChoices.map((label) => option.choices?.find((choice) => safeKey(choice.label, "choice") === safeKey(label, "choice")) ?? ({ value: safeKey(label, "choice"), label }))
+    : option.choices?.length
+      ? option.choices
+      : option.sampleValues.map((label) => ({
+      value: safeKey(label, "choice"),
+      label,
+    }));
+  const pricingModeAnswer = typeof answerByKey.get(`${prefix}-pricing-model`) === "string"
+    ? String(answerByKey.get(`${prefix}-pricing-model`))
+    : null;
+  const priceAnswers = parseChoicePrices(answerByKey.get(`${prefix}-pricing-values`));
+  const affectsRouting = typeof answerByKey.get(`${prefix}-routing`) === "boolean"
+    ? Boolean(answerByKey.get(`${prefix}-routing`))
+    : option.affectsRouting === true;
+  const affectsProof = typeof answerByKey.get(`${prefix}-proof`) === "boolean"
+    ? Boolean(answerByKey.get(`${prefix}-proof`))
+    : option.affectsProof === true;
   const seen = new Set<string>();
-  return option.sampleValues
-    .map((value) => compactText(value, ""))
-    .filter(Boolean)
-    .map((label) => {
-      const value = safeKey(label, "choice");
+  return sourceChoices
+    .map((choice) => ({ ...choice, label: compactText(choice.label, "") }))
+    .filter((choice) => Boolean(choice.label))
+    .map((choice) => {
+      const value = safeKey(choice.value || choice.label, "choice");
       const uniqueValue = uniqueKey(value, seen);
-      return { value: uniqueValue, label, sortOrder: seen.size - 1 };
+      const inactiveChoice = /^(?:no|none|not_applicable|n_a|standard|included)$/i.test(value);
+      const workflowTags = unique([
+        ...(choice.workflowTags ?? []),
+        ...(choice.requiresProof || (affectsProof && !inactiveChoice) ? ["requires_proof"] : []),
+        ...(affectsRouting && !inactiveChoice ? [`routing:${safeKey(option.normalizedGroup || option.label, "custom_option")}`] : []),
+      ]);
+      return {
+        value: uniqueValue,
+        label: choice.label,
+        sortOrder: seen.size - 1,
+        ...pricingForChoice({
+          choice,
+          modeOverride: pricingModeAnswer,
+          amountOverride: priceAnswers.get(safeKey(choice.label, "choice")),
+        }),
+        ...(Number.isFinite(choice.weightOz) ? { weightOz: Number(choice.weightOz) } : {}),
+        ...(workflowTags.length > 0 ? { workflowTags } : {}),
+      };
     })
     .slice(0, 30);
+}
+
+export function validateProductIntakeCustomOptions(
+  brief: ProductIntakeBrief,
+  answers: ProductIntakeAnswerLike[] = [],
+): string[] {
+  const errors: string[] = [];
+  for (const option of [...brief.requiredOptions, ...brief.optionalOptions]) {
+    if (option.source === "reusable_template" && option.reuseTemplateId) continue;
+    const choices = optionChoices(option, answers);
+    if (choices.length === 0) {
+      errors.push(`${option.label}: add at least one choice.`);
+      continue;
+    }
+    if (option.pricingRequired !== true) continue;
+    const explicitNoChange = new Set((option.choices ?? [])
+      .filter((choice) => choice.pricing?.mode === "none")
+      .map((choice) => safeKey(choice.label, "choice")));
+    const missing = choices.filter((choice) =>
+      !explicitNoChange.has(safeKey(choice.label, "choice")) &&
+      !choice.pricingOverride &&
+      !(choice.pricingImpact?.length),
+    );
+    if (missing.length > 0) {
+      errors.push(`${option.label}: pricing is required for ${missing.map((choice) => choice.label).join(", ")}.`);
+    }
+  }
+  return errors;
 }
 
 type MatrixTierCandidate = {
@@ -997,9 +1136,9 @@ function addQuestionNode(args: {
   tree: OptionTreeV2;
   key: string;
   label: string;
-  inputType: "boolean" | "select" | "number" | "dimension";
+  inputType: "boolean" | "select" | "multiselect" | "number" | "dimension";
   required: boolean;
-  choices?: Array<{ value: string; label: string; sortOrder?: number; pricingImpact?: any[] }>;
+  choices?: ProductIntakeDraftChoice[];
   usedNodeIds: Set<string>;
   usedEdgeIds: Set<string>;
   groupKey: DraftGroupKey;
@@ -1020,7 +1159,7 @@ function addQuestionNode(args: {
       required: args.required,
       selectionKey: args.key,
       valueType: args.inputType === "boolean" ? "BOOLEAN" : args.inputType === "number" || args.inputType === "dimension" ? "NUMBER" : "ENUM",
-      ...(args.inputType === "select" ? { constraints: { select: { allowEmpty: !args.required } } } : {}),
+      ...(args.inputType === "select" || args.inputType === "multiselect" ? { constraints: { select: { allowEmpty: !args.required } } } : {}),
       ...(args.inputType === "number" ? { constraints: { number: { min: 1, step: 1, integerOnly: true } } } : {}),
     },
     ...(args.choices && args.choices.length > 0 ? { choices: args.choices } : {}),
@@ -1268,19 +1407,16 @@ function pricingModeForBrief(brief: ProductIntakeBrief): "area" | "quantity" | "
   return "area";
 }
 
-function isReusableTemplateMatch(match: ProductIntakeBrief["templateMatches"][number]): boolean {
-  return match.recommendation === "suggest_reuse" && match.score >= PRODUCT_INTAKE_TEMPLATE_REUSE_THRESHOLD;
-}
-
-function collectTemplateIds(brief: ProductIntakeBrief): string[] {
+function collectTemplateIds(brief: ProductIntakeBrief, answers: ProductIntakeAnswerLike[] = []): string[] {
   const ids = new Set<string>();
-  const collect = (matches: ProductIntakeBrief["templateMatches"]) => {
-    for (const match of matches) {
-      if (isReusableTemplateMatch(match)) ids.add(match.templateId);
+  const answerByKey = new Map(answers.map((answer) => [answer.questionKey, answer.answer]));
+  for (const option of [...brief.requiredOptions, ...brief.optionalOptions]) {
+    if (option.source === "reusable_template" && option.reuseTemplateId) ids.add(option.reuseTemplateId);
+    for (const match of option.templateMatches) {
+      const answerKey = `review-template-${safeKey(option.normalizedGroup, "option").replace(/_/g, "-")}-${safeKey(match.templateId, "template").replace(/_/g, "-")}`;
+      if (answerByKey.get(answerKey) === "reuse") ids.add(match.templateId);
     }
-  };
-  collect(brief.templateMatches);
-  for (const option of [...brief.requiredOptions, ...brief.optionalOptions]) collect(option.templateMatches);
+  }
   return Array.from(ids).slice(0, 20);
 }
 
@@ -1297,7 +1433,8 @@ function applyTemplateMatches(tree: OptionTreeV2, templates: ProductIntakeDraftT
 }
 
 function optionUsesReusedTemplate(option: ProductIntakeOption, reusedTemplateIds: Set<string>): boolean {
-  return option.templateMatches.some((match) => isReusableTemplateMatch(match) && reusedTemplateIds.has(match.templateId));
+  return Boolean(option.reuseTemplateId && reusedTemplateIds.has(option.reuseTemplateId)) ||
+    option.templateMatches.some((match) => reusedTemplateIds.has(match.templateId));
 }
 
 function classifyOptionGroup(option: ProductIntakeOption): DraftGroupKey {
@@ -1610,8 +1747,12 @@ export function buildProductIntakeDraftTree(args: {
     },
   };
 
-  const requestedTemplateCount = collectTemplateIds(args.brief).length;
-  const templateResult = applyTemplateMatches(tree, args.templates ?? []);
+  const requestedTemplateCount = collectTemplateIds(args.brief, args.answers).length;
+  const requestedTemplateIds = new Set(collectTemplateIds(args.brief, args.answers));
+  const templateResult = applyTemplateMatches(
+    tree,
+    (args.templates ?? []).filter((template) => requestedTemplateIds.has(template.id)),
+  );
   tree = templateResult.tree;
   const reusedTemplateIds = templateResult.reusedTemplateIds;
   usedNodeIds.clear();
@@ -1623,7 +1764,7 @@ export function buildProductIntakeDraftTree(args: {
 
   let sortOrder = tree.rootNodeIds.length + 1;
   if (sizeMode === "fixed_dropdown" && sizeOption && hasMultipleSelectableFixedSizeChoices(sizeOption)) {
-    const choices = optionChoices(sizeOption);
+    const choices = optionChoices(sizeOption, args.answers);
     addQuestionNode({
       tree,
       key: "size",
@@ -1670,13 +1811,21 @@ export function buildProductIntakeDraftTree(args: {
       continue;
     }
     const key = safeKey(option.normalizedGroup || option.label, "option");
-    const choices = optionChoices(option);
+    const answerByKey = new Map((args.answers ?? []).map((answer) => [answer.questionKey, answer.answer]));
+    const optionPrefix = customOptionPrefix(option);
+    const requiredAnswer = answerByKey.get(`${optionPrefix}-required`);
+    const selectionModeAnswer = answerByKey.get(`${optionPrefix}-selection-mode`);
+    const resolvedRequired = typeof requiredAnswer === "boolean" ? requiredAnswer : option.required;
+    const resolvedSelectionMode = selectionModeAnswer === "multi" || selectionModeAnswer === "single"
+      ? selectionModeAnswer
+      : option.selectionMode ?? "single";
+    const choices = optionChoices(option, args.answers);
     addQuestionNode({
       tree,
       key,
       label: compactText(option.label, option.normalizedGroup),
-      inputType: choices.length > 0 ? "select" : "boolean",
-      required: option.required,
+      inputType: choices.length > 0 ? (resolvedSelectionMode === "multi" ? "multiselect" : "select") : "boolean",
+      required: resolvedRequired,
       choices: choices.length > 0 ? choices : undefined,
       usedNodeIds,
       usedEdgeIds,
@@ -1867,7 +2016,15 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
             eq(productIntakeAnswers.organizationId, organizationId),
             eq(productIntakeAnswers.sessionId, sessionId),
           ));
-        const templateIds = collectTemplateIds(brief);
+        const customOptionErrors = validateProductIntakeCustomOptions(brief, answerRows);
+        if (customOptionErrors.length > 0) {
+          throw new ProductIntakeSessionError(
+            409,
+            `Complete generated option setup before creating the PBV2 draft: ${customOptionErrors.join(" ")}`,
+            "INCOMPLETE_CUSTOM_OPTIONS",
+          );
+        }
+        const templateIds = collectTemplateIds(brief, answerRows);
         const templateRows = templateIds.length > 0
           ? await tx
             .select({ id: pbv2OptionGroupTemplates.id, templateTree: pbv2OptionGroupTemplates.templateTree })

@@ -172,6 +172,28 @@ describe("Product Intake Brief service", () => {
     expect(brief.missingDecisions.some((decision) => decision.id === "select-material")).toBe(true);
   });
 
+  test("keeps arbitrary requested options product-specific when no template exists", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: {
+        sourceType: "text_description",
+        description: "Polystyrene Signs. Add installation options: Customer installs, Shop installs. Add rounded corners.",
+      },
+      analyzer: null,
+      templates: [],
+      provider: null,
+    });
+
+    const installation = brief.optionalOptions.find((option) => option.normalizedGroup === "Installation");
+    expect(installation).toMatchObject({
+      source: "product_specific",
+      selectionMode: "single",
+      sampleValues: ["Customer installs", "Shop installs"],
+      templateMatches: [],
+    });
+    expect(brief.optionalOptions.find((option) => option.normalizedGroup.toLowerCase() === "rounded corners")).toBeTruthy();
+  });
+
   test("extracts rigid styrene product structure from realistic text", async () => {
     const brief = await generateProductIntakeBrief({
       orgId: "org_1",

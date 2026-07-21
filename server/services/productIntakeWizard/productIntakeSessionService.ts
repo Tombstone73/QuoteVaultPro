@@ -405,6 +405,125 @@ function ruleDecisionQuestions(brief: ProductIntakeBrief): NewQuestion[] {
   }];
 }
 
+function customOptionQuestions(brief: ProductIntakeBrief): NewQuestion[] {
+  const questions: NewQuestion[] = [];
+  const allOptions = [...brief.requiredOptions, ...brief.optionalOptions];
+  allOptions.forEach((optionGroup, optionIndex) => {
+    // A template match is only a suggestion. Unless reuse was explicitly
+    // selected, this is a normal product-local option that the wizard owns.
+    if (optionGroup.source === "reusable_template" && optionGroup.reuseTemplateId) return;
+    const optionKey = normalizeKey(optionGroup.normalizedGroup || optionGroup.label);
+    const prefix = `custom-option-${optionKey}`;
+    const sourcePath = optionGroup.sourcePaths[0] ?? firstEvidencePath(optionGroup.evidence);
+    const structuredChoices = optionGroup.choices ?? [];
+    const legacyChoices = optionGroup.sampleValues
+      .map((value) => value.trim())
+      .filter((value) => value && normalizeKey(value) !== optionKey);
+    const choices = structuredChoices.length > 0 ? structuredChoices.map((choice) => choice.label) : legacyChoices;
+    const pricedChoices = structuredChoices.filter((choice) => {
+      const pricing = choice.pricing;
+      return pricing && pricing.mode !== "none" && Number.isFinite(pricing.amount) && Number(pricing.amount) >= 0;
+    });
+    const completedPricingChoices = structuredChoices.filter((choice) => {
+      const pricing = choice.pricing;
+      return pricing?.mode === "none" || Boolean(pricing && Number.isFinite(pricing.amount) && Number(pricing.amount) >= 0);
+    });
+    const pricingIncomplete = optionGroup.pricingRequired === true && completedPricingChoices.length < Math.max(structuredChoices.length, choices.length);
+    const sortBase = 130 + optionIndex * 10;
+
+    questions.push({
+      questionKey: `${prefix}-required`,
+      questionType: "boolean",
+      label: `Is ${optionGroup.label} required?`,
+      helpText: "Product-specific option. This does not create or require a global option template.",
+      required: false,
+      options: null,
+      defaultValue: optionGroup.required,
+      sourcePath,
+      confidence: optionGroup.confidence,
+      sortOrder: sortBase,
+    });
+    questions.push({
+      questionKey: `${prefix}-selection-mode`,
+      questionType: "select",
+      label: `How should ${optionGroup.label} be selected?`,
+      helpText: "Choose whether staff/customers select one choice or multiple choices.",
+      required: false,
+      options: [option("Single select", "single"), option("Multi-select", "multi")],
+      defaultValue: optionGroup.selectionMode ?? "single",
+      sourcePath,
+      confidence: optionGroup.confidence,
+      sortOrder: sortBase + 1,
+    });
+    questions.push({
+      questionKey: `${prefix}-choices`,
+      questionType: "text",
+      label: `What choices should ${optionGroup.label} have?`,
+      helpText: "Enter comma-separated choices. New choices stay attached to this product only.",
+      required: choices.length === 0,
+      options: null,
+      defaultValue: choices.length > 0 ? choices.join(", ") : null,
+      sourcePath,
+      confidence: optionGroup.confidence,
+      sortOrder: sortBase + 2,
+    });
+    questions.push({
+      questionKey: `${prefix}-pricing-model`,
+      questionType: "select",
+      label: `How does ${optionGroup.label} affect price?`,
+      helpText: "Use set-per-square-foot for material/thickness rates; modifiers may add flat, per-piece, per-square-foot, percent, or per-grommet charges.",
+      required: pricingIncomplete,
+      options: [
+        ...(!pricingIncomplete ? [option("No price change", "none")] : []),
+        option("Set price per square foot", "set_per_sqft"),
+        option("Set price per piece", "set_per_piece"),
+        option("Add flat fee", "add_flat"),
+        option("Add per piece", "add_per_piece"),
+        option("Add per square foot", "add_per_sqft"),
+        option("Percent increase", "add_percent"),
+        option("Per grommet", "add_per_grommet"),
+      ],
+      defaultValue: structuredChoices.find((choice) => choice.pricing?.mode && choice.pricing.mode !== "none")?.pricing?.mode ?? "none",
+      sourcePath,
+      confidence: optionGroup.confidence,
+      sortOrder: sortBase + 3,
+    });
+    questions.push({
+      questionKey: `${prefix}-pricing-values`,
+      questionType: "text",
+      label: `What price applies to each ${optionGroup.label} choice?`,
+      helpText: "Enter Choice=Amount pairs, for example 5mm=4.50, 10mm=6.25. Amounts are dollars; percent uses percentage points.",
+      required: pricingIncomplete,
+      options: null,
+      defaultValue: pricedChoices.length > 0
+        ? pricedChoices.map((choice) => `${choice.label}=${choice.pricing?.amount}`).join(", ")
+        : null,
+      sourcePath,
+      confidence: optionGroup.confidence,
+      sortOrder: sortBase + 4,
+    });
+    for (const [suffix, label, defaultValue] of [
+      ["weight", `Does ${optionGroup.label} affect weight?`, optionGroup.affectsWeight ?? false],
+      ["routing", `Does ${optionGroup.label} affect production routing?`, optionGroup.affectsRouting ?? false],
+      ["proof", `Does ${optionGroup.label} affect proofing?`, optionGroup.affectsProof ?? false],
+    ] as const) {
+      questions.push({
+        questionKey: `${prefix}-${suffix}`,
+        questionType: "boolean",
+        label,
+        helpText: "This preserves operational intent on the generated PBV2 choices for staff review.",
+        required: false,
+        options: null,
+        defaultValue,
+        sourcePath,
+        confidence: optionGroup.confidence,
+        sortOrder: sortBase + (suffix === "weight" ? 5 : suffix === "routing" ? 6 : 7),
+      });
+    }
+  });
+  return questions;
+}
+
 function needsWorkflowFollowUp(brief: ProductIntakeBrief): boolean {
   return brief.draftWarnings.some((warning) => {
     const text = `${warning.code} ${warning.message}`;
@@ -442,6 +561,7 @@ export function generateProductIntakeQuestions(brief: ProductIntakeBrief): NewQu
   formulaDecisionQuestions(brief).forEach(push);
   matrixDecisionQuestions(brief).forEach(push);
   ruleDecisionQuestions(brief).forEach(push);
+  customOptionQuestions(brief).forEach(push);
 
   for (const optionGroup of [...brief.requiredOptions, ...brief.optionalOptions]) {
     if (optionGroup.confidence < 65) {
@@ -460,15 +580,14 @@ export function generateProductIntakeQuestions(brief: ProductIntakeBrief): NewQu
     }
 
     for (const match of optionGroup.templateMatches) {
-      if (match.recommendation !== "review_required") continue;
       push({
         questionKey: `review-template-${normalizeKey(optionGroup.normalizedGroup)}-${normalizeKey(match.templateId)}`,
         questionType: "select",
-        label: `Reuse template "${match.name}" for ${optionGroup.normalizedGroup}?`,
-        helpText: "The template match was below the automatic reuse threshold and needs human review.",
+        label: `Use suggested template "${match.name}" for ${optionGroup.normalizedGroup}?`,
+        helpText: "Template reuse is optional. Keep product-specific to generate choices only for this product.",
         required: false,
-        options: [option("Reuse existing template", "reuse"), option("Create a new mapping later", "new_later"), option("Not applicable", "not_applicable")],
-        defaultValue: "reuse",
+        options: [option("Keep product-specific", "product_specific"), option("Reuse existing template", "reuse"), option("Not applicable", "not_applicable")],
+        defaultValue: "product_specific",
         sourcePath: firstEvidencePath(match.evidence) ?? optionGroup.sourcePaths[0] ?? null,
         confidence: Math.round(match.score * 100),
         sortOrder: 90 + questions.length,
@@ -516,6 +635,16 @@ function validateAnswerValue(question: ProductIntakeQuestion, value: unknown) {
   }
   if ((question.questionType === "select" || question.questionType === "text") && typeof value !== "string") {
     throw new ProductIntakeSessionError(400, `Answer for "${question.label}" must be text.`, "INVALID_ANSWER");
+  }
+  if (question.questionKey.endsWith("-pricing-values") && typeof value === "string" && value.trim()) {
+    const entries = value.split(/[,;\n]+/).map((entry) => entry.trim()).filter(Boolean);
+    if (entries.length === 0 || entries.some((entry) => !/^.+?\s*=\s*\$?\s*\d+(?:\.\d+)?\s*%?$/.test(entry))) {
+      throw new ProductIntakeSessionError(
+        400,
+        `Answer for "${question.label}" must use Choice=Amount pairs (for example, 5mm=4.50).`,
+        "INVALID_OPTION_PRICING",
+      );
+    }
   }
 }
 
