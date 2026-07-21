@@ -10,6 +10,15 @@ jest.unstable_mockModule("../storage/assistant.repo", () => ({
 }));
 jest.unstable_mockModule("../services/assistant/assistantCapabilities", () => ({
   OrganizationAssistantCapabilityResolver: class {},
+  assistantCapabilityProductionCommands: ["quotes.add_internal_note", "products.create_inactive_draft"],
+  assistantCapabilityReadTools: [
+    "search.global",
+    "customers.get_summary",
+    "orders.get_summary",
+    "products.get_summary",
+    "reports.operational_summary",
+    "navigation.get_current_context",
+  ],
 }));
 
 let registerAssistantRoutes: any;

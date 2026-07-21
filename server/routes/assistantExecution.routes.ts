@@ -20,8 +20,6 @@ import { quoteInternalNotesService } from "../services/quoteInternalNotesService
 import { createProductInactiveDraftCommandDefinition } from "../services/assistant/execution/productInactiveDraftCommand";
 import { createProductInactiveDraftCanonicalService, createProductInactiveDraftExecutionCommand } from "../services/assistant/execution/productInactiveDraftExecutionCommand";
 import { productInactiveDraftCommandName } from "../services/assistant/execution/productInactiveDraftCommand";
-import { createProductInactiveDraftUpdateCommandDefinition, productInactiveDraftUpdateCommandName } from "../services/assistant/execution/productInactiveDraftUpdateCommand";
-import { createProductInactiveDraftUpdateCanonicalService, createProductInactiveDraftUpdateExecutionCommand } from "../services/assistant/execution/productInactiveDraftUpdateExecutionCommand";
 
 function userId(req: Request): string | null {
   const user = req.user as { id?: unknown; claims?: { sub?: unknown } } | undefined;
@@ -36,7 +34,7 @@ function scope(req: Request): ExecutionActorScope {
   const internal = ["owner", "admin", "manager", "member", "employee"].includes(role);
   return {
     organizationId: getRequestOrganizationId(req), userId: id,
-    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft"] : [])] : [],
+    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft"] : [])] : [],
     environment: process.env.NODE_ENV || "development",
   };
 }
@@ -46,7 +44,6 @@ function planDto(plan: ExecutionPlanRecord, executionStarted = false): Assistant
   const cancellationAvailable = ["draft", "resolving", "awaiting_input", "preview_ready", "awaiting_confirmation", "confirmed"].includes(status);
   const quoteInternalNote = plan.preview.quoteInternalNote;
   const productInactiveDraft = plan.preview.productInactiveDraft;
-  const productInactiveDraftUpdate = plan.preview.productInactiveDraftUpdate;
   return {
     id: plan.id, conversationId: plan.conversationId, turnId: plan.turnId ?? null, action: plan.normalizedAction,
     commandVersion: plan.commandVersion, status, riskLevel: plan.riskLevel as AssistantExecutionPlan["riskLevel"],
@@ -55,14 +52,13 @@ function planDto(plan: ExecutionPlanRecord, executionStarted = false): Assistant
       affectedEntities: plan.affectedRecords.map((record) => ({
         entityType: record.entityType as any,
         entityId: record.entityId,
-        label: quoteInternalNote?.quoteId === record.entityId ? `Quote ${quoteInternalNote.quoteNumber}` : productInactiveDraft?.intakeSessionId === record.entityId ? `Product Intake: ${productInactiveDraft.productName}` : productInactiveDraftUpdate?.productId === record.entityId ? `Inactive draft: ${productInactiveDraftUpdate.productName}` : `${record.entityType} ${record.entityId}`,
-        ...(quoteInternalNote?.quoteId === record.entityId ? { sourceLink: quoteInternalNote.sourceLink } : productInactiveDraft?.intakeSessionId === record.entityId ? { sourceLink: productInactiveDraft.sourceLink } : productInactiveDraftUpdate?.productId === record.entityId ? { sourceLink: { label: "Open inactive draft", href: productInactiveDraftUpdate.editorLink, entityType: "product" as const, entityId: productInactiveDraftUpdate.productId } } : {}),
+        label: quoteInternalNote?.quoteId === record.entityId ? `Quote ${quoteInternalNote.quoteNumber}` : productInactiveDraft?.intakeSessionId === record.entityId ? `Product Intake: ${productInactiveDraft.productName}` : `${record.entityType} ${record.entityId}`,
+        ...(quoteInternalNote?.quoteId === record.entityId ? { sourceLink: quoteInternalNote.sourceLink } : productInactiveDraft?.intakeSessionId === record.entityId ? { sourceLink: productInactiveDraft.sourceLink } : {}),
       })),
       sideEffects: plan.preview.sideEffects.map((description) => ({ label: "Planned side effect", description, affectedRecordCount: plan.affectedRecords.length, reversible: false })),
       undo: { available: false, label: null, expiresAt: null },
       ...(quoteInternalNote ? { quoteInternalNote: { ...quoteInternalNote, unchanged: [...quoteInternalNote.unchanged] } } : {}),
       ...(productInactiveDraft ? { productInactiveDraft: { ...productInactiveDraft, warnings: [...productInactiveDraft.warnings], unchanged: [...productInactiveDraft.unchanged] } } : {}),
-      ...(productInactiveDraftUpdate ? { productInactiveDraftUpdate: { ...productInactiveDraftUpdate, changes: productInactiveDraftUpdate.changes.map((change) => ({ ...change })), warnings: [...productInactiveDraftUpdate.warnings], validationErrors: [...productInactiveDraftUpdate.validationErrors], unchanged: [...productInactiveDraftUpdate.unchanged] } } : {}),
     },
     missingInformation: (plan.preview.missingInformation ?? []).map((label) => ({ field: label, label, description: label })),
     // Execution state comes only from the server-created plan and its stored
@@ -94,16 +90,13 @@ export interface AssistantExecutionRouteDependencies {
 
 function createProductionExecutionService(): ExecutionPlanningService {
   const productService = createProductInactiveDraftCanonicalService();
-  const productUpdateService = createProductInactiveDraftUpdateCanonicalService();
   const metadataRegistry = createProductionAssistantCommandRegistry(
     createQuoteInternalNoteCommandDefinition(quoteInternalNotesService),
     createProductInactiveDraftCommandDefinition(productService),
-    createProductInactiveDraftUpdateCommandDefinition(productUpdateService),
   );
   const executionCommands = new Map<string, ExecutionCommandDefinition>([
     [quoteInternalNoteCommandName, createQuoteInternalNoteExecutionCommand(quoteInternalNotesService)],
     [productInactiveDraftCommandName, createProductInactiveDraftExecutionCommand(productService)],
-    [productInactiveDraftUpdateCommandName, createProductInactiveDraftUpdateExecutionCommand(productUpdateService)],
   ]);
   const executionRegistry = {
     get: (name: string) => metadataRegistry.has(name) ? executionCommands.get(name) : undefined,
@@ -142,14 +135,6 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       const productProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === productInactiveDraftCommandName)?.plan
         : null;
-      const productUpdateProposal = Array.isArray(assistantMessage.structuredCards)
-        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === productInactiveDraftUpdateCommandName)?.plan
-        : null;
-      if (productUpdateProposal && typeof productUpdateProposal.productIntakeSessionId === "string" && typeof productUpdateProposal.proposalFingerprint === "string" && productUpdateProposal.patch && typeof productUpdateProposal.patch === "object") {
-        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: productInactiveDraftUpdateCommandName, arguments: { productIntakeSessionId: productUpdateProposal.productIntakeSessionId, proposalFingerprint: productUpdateProposal.proposalFingerprint, patch: productUpdateProposal.patch }, context: input.context });
-        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
-        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
-      }
       if (productProposal && typeof productProposal.intakeSessionId === "string" && typeof productProposal.proposalFingerprint === "string") {
         const plan = await service.createPlan(actor, {
           conversationId: req.params.conversationId,

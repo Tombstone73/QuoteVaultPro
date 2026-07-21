@@ -75,7 +75,56 @@ describe("assistant order/product/operational tools", () => {
     const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow });
     const result = await tools.navigationGetCurrentContext.execute(invocation, {});
     expect(result.data).toMatchObject({ route: "/orders/order-1", entityId: "order-1", selectedCount: 1 });
+    expect(result.data.currentRecord).toMatchObject({
+      entityType: "order",
+      entityId: "order-1",
+      orderNumber: "16309",
+      customer: "OTB Graphics",
+      status: "in_production",
+      sourceLink: { href: "/orders/order-1" },
+    });
+    expect(result.sourceLinks).toEqual([expect.objectContaining({ href: "/orders/order-1" })]);
     await expect(tools.navigationGetCurrentContext.execute({ ...invocation, context: { ...context, route: "https://unsafe.example" } as any }, {})).rejects.toThrow();
+  });
+
+  test("navigation context never discloses another tenant's nominated order", async () => {
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow });
+    const result = await tools.navigationGetCurrentContext.execute({ ...invocation, organizationId: "org-b" }, {});
+
+    expect(result.data).toMatchObject({ pageTitle: "Order 16309", entityType: null, entityId: null, currentRecord: null });
+    expect(result.sourceLinks).toEqual([]);
+  });
+
+  test("navigation context treats mismatched routes and invalid identifiers as page-only context", async () => {
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow });
+    const mismatchedRoute = await tools.navigationGetCurrentContext.execute({
+      ...invocation,
+      context: { ...context, route: "/quotes/order-1" },
+    }, {});
+    expect(mismatchedRoute.data).toMatchObject({ entityType: null, entityId: null, currentRecord: null });
+
+    await expect(tools.navigationGetCurrentContext.execute({
+      ...invocation,
+      context: { ...context, entityId: "not a safe id" } as any,
+    }, {})).rejects.toThrow();
+  });
+
+  test("navigation adapter uses the generic workspace link only without a resolved record", async () => {
+    const adapters = createAssistantOrderProductToolAdapters({ repository: repo(), now: fixedNow });
+    const result = await adapters["navigation.get_current_context"]!.execute({}, {
+      scope: { organizationId: "org-a", userId: "user-a" },
+      actor: { userId: "user-a", email: null },
+      permissions: ["assistant.internal_staff"],
+      context: { ...context, route: "/orders", entityType: "unknown", entityId: undefined },
+      correlationId: "correlation-1",
+      signal: new AbortController().signal,
+    });
+
+    expect(result.status).toBe("succeeded");
+    expect(result.provenance?.sourceLinks).toEqual([
+      expect.objectContaining({ label: "Current PrintersHero workspace", href: "/" }),
+    ]);
+    expect((result.data as any).currentRecord).toBeUndefined();
   });
 
   test("registry-compatible wrapper emits the shared envelope with server-derived links", async () => {
@@ -93,5 +142,22 @@ describe("assistant order/product/operational tools", () => {
       expect.objectContaining({ href: "/orders/order-1" }),
     ]));
     expect((result.data as any).customer.sourceLink.href).toBe("/customers/customer-1");
+  });
+
+  test("navigation adapter exposes the canonical order source instead of the generic workspace", async () => {
+    const adapters = createAssistantOrderProductToolAdapters({ repository: repo(), now: fixedNow });
+    const result = await adapters["navigation.get_current_context"]!.execute({}, {
+      scope: { organizationId: "org-a", userId: "user-a" },
+      actor: { userId: "user-a", email: null },
+      permissions: ["assistant.internal_staff"],
+      context,
+      correlationId: "correlation-1",
+      signal: new AbortController().signal,
+    });
+
+    expect(result.provenance?.sourceLinks).toEqual([
+      expect.objectContaining({ label: "Order 16309", href: "/orders/order-1" }),
+    ]);
+    expect((result.data as any).currentRecord).toMatchObject({ orderNumber: "16309", entityId: "order-1" });
   });
 });

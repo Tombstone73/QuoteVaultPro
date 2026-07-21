@@ -123,6 +123,15 @@ export const currentContextToolResultSchema = toolEnvelopeSchema(z.object({
   pageTitle: z.string().min(1),
   entityType: z.string().nullable(),
   entityId: identifierSchema.nullable(),
+  currentRecord: z.object({
+    entityType: z.literal("order"),
+    entityId: identifierSchema,
+    orderNumber: z.string().min(1).max(64),
+    customer: z.string().min(1).max(240),
+    status: z.string().min(1).max(120),
+    sourceLink: sourceLinkSchema,
+    freshness: isoDateSchema,
+  }).strict().nullable(),
   selectedCount: z.number().int().nonnegative().max(25),
   unsavedChanges: z.boolean(),
   capturedAt: isoDateSchema,
@@ -274,10 +283,40 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       currentContextToolInputSchema.parse(rawInput);
       const context = assistantContextEnvelopeSchema.parse(invocation.context);
       const retrievedAt = now();
+      const order = await resolveCurrentOrderContext(repository, invocation.organizationId, context);
+      const freshness = order ? toIso(order.order.updatedAt) ?? retrievedAt.toISOString() : retrievedAt.toISOString();
+      const number = order ? order.order.displayNumber ?? order.order.orderNumber : null;
+      const currentRecord = order && number ? {
+        entityType: "order" as const,
+        entityId: order.order.id,
+        orderNumber: number,
+        customer: order.order.customerName,
+        status: order.order.status,
+        sourceLink: {
+          label: `Order ${number}`,
+          href: `/orders/${order.order.id}`,
+          entityType: "order" as const,
+          entityId: order.order.id,
+          capturedAt: freshness,
+        },
+        freshness,
+      } : null;
       return currentContextToolResultSchema.parse({
         status: "ok",
-        data: { route: context.route, pageTitle: context.pageTitle, entityType: context.entityType ?? null, entityId: context.entityId ?? null, selectedCount: context.selectedRecordIds.length, unsavedChanges: context.unsavedChanges, capturedAt: context.capturedAt },
-        sourceLinks: [], freshness: { retrievedAt: retrievedAt.toISOString() },
+        // Do not echo a nominated ID as a current record.  The entity fields
+        // are populated only after the same tenant-scoped lookup that backs
+        // the source link succeeds.
+        data: {
+          route: context.route,
+          pageTitle: context.pageTitle,
+          entityType: currentRecord?.entityType ?? null,
+          entityId: currentRecord?.entityId ?? null,
+          currentRecord,
+          selectedCount: context.selectedRecordIds.length,
+          unsavedChanges: context.unsavedChanges,
+          capturedAt: context.capturedAt,
+        },
+        sourceLinks: currentRecord ? [currentRecord.sourceLink] : [], freshness: { retrievedAt: retrievedAt.toISOString() },
       });
     },
   };
@@ -380,16 +419,37 @@ export function createStage2OrderProductToolAdapters(
           pageTitle: result.data.pageTitle,
           ...(result.data.entityType ? { entityType: result.data.entityType } : {}),
           ...(result.data.entityId ? { entityId: result.data.entityId } : {}),
+          ...(result.data.currentRecord ? { currentRecord: result.data.currentRecord } : {}),
           selectedCount: result.data.selectedCount,
           unsavedChanges: result.data.unsavedChanges,
           contextFreshness: result.data.capturedAt,
         });
-        // Navigation has no record to fetch. Use a fixed application route for
-        // provenance instead of echoing a potentially misleading contextual URL.
-        return succeeded(data, [{ label: "Current PrintersHero workspace", href: "/", capturedAt: result.freshness.retrievedAt }], result.freshness.retrievedAt);
+        // A record source exists only after tenant-scoped resolution. Fall back
+        // to the fixed workspace source for page-only, missing, or inaccessible
+        // context without echoing a user-supplied route as a record link.
+        const sourceLinks = result.sourceLinks.length
+          ? result.sourceLinks
+          : [{ label: "Current PrintersHero workspace", href: "/", capturedAt: result.freshness.retrievedAt }];
+        return succeeded(data, sourceLinks, result.freshness.retrievedAt);
       },
     },
   };
+}
+
+/** The browser route is only a nomination.  Treat it as an order context only
+ * when its route shape and ID agree, then re-fetch using the trusted tenant. */
+async function resolveCurrentOrderContext(
+  repository: Pick<AssistantOrderProductRepository, "getOrder">,
+  organizationId: string,
+  context: AssistantContextEnvelope,
+) {
+  if (context.entityType !== "order" || !context.entityId || !isOrderDetailRoute(context.route, context.entityId)) return null;
+  return repository.getOrder(organizationId, { orderId: context.entityId });
+}
+
+function isOrderDetailRoute(route: string, orderId: string): boolean {
+  const segments = route.split("/").filter(Boolean);
+  return segments.length === 2 && segments[0] === "orders" && segments[1] === orderId;
 }
 
 // Kept as a descriptive alias for direct module consumers while the integration

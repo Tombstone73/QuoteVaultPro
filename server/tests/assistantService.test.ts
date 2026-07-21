@@ -4,12 +4,14 @@ import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
 let AssistantService: any;
 let AssistantServiceError: any;
 let ASSISTANT_UNAVAILABLE_REPLY: string;
+let resolveAssistantCapabilityQuestion: any;
 
 beforeAll(async () => {
   const module = await import("../services/assistant/assistantService");
   AssistantService = module.AssistantService;
   AssistantServiceError = module.AssistantServiceError;
   ASSISTANT_UNAVAILABLE_REPLY = module.ASSISTANT_UNAVAILABLE_REPLY;
+  resolveAssistantCapabilityQuestion = module.resolveAssistantCapabilityQuestion;
 });
 
 const scope = { organizationId: "org_1", userId: "user_1" };
@@ -76,6 +78,58 @@ describe("AssistantService", () => {
       externalResearchEnabled: false,
       actorScope: scope,
     }));
+  });
+
+  test("reports only the two reviewed commands and the actor-permitted subset", async () => {
+    resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true });
+    const service = new AssistantService(makeRepo(), resolver);
+
+    const capability = await service.getCapabilities(scope, {
+      ...actor,
+      permissions: ["assistant.quotes.add_internal_note", "assistant.products.create_inactive_draft"],
+    });
+
+    expect(capability.productionCommandsEnabled).toEqual([
+      "quotes.add_internal_note",
+      "products.create_inactive_draft",
+    ]);
+    expect(capability.productionCommandsPermittedForUser).toEqual(capability.productionCommandsEnabled);
+    expect(capability).toMatchObject({
+      providerConfigured: true,
+      readToolsEnabled: true,
+      writeFrameworkEnabled: true,
+      writeActionsEnabled: true,
+      productActivationEnabled: false,
+      activeProductEditingEnabled: false,
+      externalResearchEnabled: false,
+      mcpEnabled: false,
+    });
+  });
+
+  test("answers capability questions locally from the server capability summary", async () => {
+    resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true });
+    const service = new AssistantService(makeRepo(), resolver);
+    const capability = await service.getCapabilities(scope, {
+      ...actor,
+      permissions: ["assistant.quotes.add_internal_note", "assistant.products.create_inactive_draft"],
+    });
+
+    expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
+      .toContain("create one inactive product draft after a preview and dedicated confirmation");
+    expect(resolveAssistantCapabilityQuestion("What can't you do yet?", capability)?.response)
+      .toContain("product activation remains disabled");
+    expect(resolveAssistantCapabilityQuestion("Find order 20002", capability)).toBeNull();
+  });
+
+  test("explains missing write permission without advertising a read-only organization as mutable", async () => {
+    resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true });
+    const service = new AssistantService(makeRepo(), resolver);
+    const capability = await service.getCapabilities(scope, { ...actor, permissions: ["catalog.read"] });
+
+    expect(capability.writeActionsEnabled).toBe(false);
+    expect(capability.composerHelperText).toBe("Business lookups are enabled. Write actions and external research are disabled.");
+    expect(resolveAssistantCapabilityQuestion("What can't you do yet?", capability)?.response)
+      .toContain("your current role is not permitted");
   });
 
   test("uses both organization and user scope when loading a conversation", async () => {

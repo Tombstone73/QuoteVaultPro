@@ -124,11 +124,11 @@ export class ConfiguredAssistantPlanner implements AssistantPlanner {
     try {
       parsedJson = JSON.parse(response.rawText);
     } catch {
-      throw new AssistantPlanningError("provider_invalid_response", "The AI provider returned an invalid planning response. Please retry.", true);
+      throw new AssistantPlanningError("provider_invalid_response", "I couldn't safely interpret that request. Nothing was changed. Please retry.", true);
     }
     const parsedPlan = assistantProviderPlanSchema.safeParse(parsedJson);
     if (!parsedPlan.success) {
-      throw new AssistantPlanningError("provider_invalid_response", "The AI provider returned an unsafe planning response. Please retry.", true);
+      throw new AssistantPlanningError("provider_invalid_response", "I couldn't safely interpret that request. Nothing was changed. Please retry.", true);
     }
     return {
       plan: parsedPlan.data,

@@ -59,10 +59,31 @@ export const assistantCapabilitySchema = z.object({
   enabled: z.boolean(),
   conversationsEnabled: z.boolean(),
   toolsEnabled: z.boolean(),
+  /** True only when the configured provider can serve the internal assistant. */
+  providerConfigured: z.boolean(),
+  readToolsEnabled: z.boolean(),
+  registeredReadTools: z.array(z.enum(assistantToolNameValues)).max(10),
+  /** Whether the reviewed confirmation framework is available to this organization. */
+  writeFrameworkEnabled: z.boolean(),
   // Stage 4 enables a server-owned, explicitly allowlisted write action. The
   // capability is informational only; it never grants browser authorization.
   writeActionsEnabled: z.boolean(),
+  /** Reviewed production commands enabled for this organization, never client supplied. */
+  productionCommandsEnabled: z.array(z.enum([
+    "quotes.add_internal_note",
+    "products.create_inactive_draft",
+  ])).max(2),
+  /** Subset of enabled commands that this authenticated actor may plan. */
+  productionCommandsPermittedForUser: z.array(z.enum([
+    "quotes.add_internal_note",
+    "products.create_inactive_draft",
+  ])).max(2),
   externalResearchEnabled: z.literal(false),
+  mcpEnabled: z.literal(false),
+  productActivationEnabled: z.literal(false),
+  activeProductEditingEnabled: z.literal(false),
+  /** Presentation text derived from this exact server object. */
+  composerHelperText: z.string().trim().min(1).max(240),
   assistantVersion: z.string().trim().min(1).max(64),
   unavailableReason: z.string().trim().min(1).max(240).nullable(),
   // Returned only to the authenticated internal actor. It lets the UI safely
@@ -269,11 +290,23 @@ export const assistantOperationalSummaryResultSchema = z.object({
 }).strict();
 
 export const assistantNavigationCurrentContextInputSchema = z.object({}).strict();
+/** A current-record summary is always server-resolved.  The UI context only
+ * nominates a record; it never supplies record attributes or source links. */
+export const assistantCurrentContextOrderSchema = z.object({
+  entityType: z.literal("order"),
+  entityId: assistantSafeIdentifierSchema,
+  orderNumber: z.string().trim().min(1).max(64),
+  customer: z.string().trim().min(1).max(240),
+  status: z.string().trim().min(1).max(120),
+  sourceLink: assistantSourceLinkSchema,
+  freshness: assistantIsoDateTimeSchema,
+}).strict();
 export const assistantNavigationCurrentContextResultSchema = z.object({
   route: z.string().trim().min(1).max(512).startsWith("/"),
   pageTitle: z.string().trim().min(1).max(240),
   entityType: z.enum(assistantEntityTypeValues).optional(),
   entityId: assistantSafeIdentifierSchema.optional(),
+  currentRecord: assistantCurrentContextOrderSchema.optional(),
   selectedCount: z.number().int().nonnegative().max(25),
   unsavedChanges: z.boolean(),
   contextFreshness: assistantIsoDateTimeSchema,

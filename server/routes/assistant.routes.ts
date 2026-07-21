@@ -30,9 +30,16 @@ function buildActor(req: Request, userId: string): AssistantActor {
     userAgent: req.get("user-agent") ?? null,
     // tenantContext has already excluded customer-portal identities. Do not
     // consume any permission claim or request body field here.
-    permissions: ["owner", "admin", "manager", "member"].includes(String(req.orgRole ?? "").toLowerCase())
-      ? ["assistant.internal_staff", "catalog.read"]
-      : [],
+    permissions: (() => {
+      const role = String(req.orgRole ?? "").toLowerCase();
+      if (!["owner", "admin", "manager", "member", "employee"].includes(role)) return [];
+      return [
+        "assistant.internal_staff",
+        "catalog.read",
+        "assistant.quotes.add_internal_note",
+        ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft"] : []),
+      ];
+    })(),
   };
 }
 
@@ -140,7 +147,8 @@ export function registerAssistantRoutes(
 
   app.get("/api/assistant/capabilities", ...guarded, async (req, res) => {
     try {
-      const data = await service.getCapabilities(resolveScope(req));
+      const resolvedScope = resolveScope(req);
+      const data = await service.getCapabilities(resolvedScope, buildActor(req, resolvedScope.userId));
       return res.json({ success: true, data });
     } catch (error) {
       return sendError(res, error);
