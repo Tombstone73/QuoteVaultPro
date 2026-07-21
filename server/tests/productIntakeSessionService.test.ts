@@ -190,6 +190,59 @@ describe("Product Intake question generation", () => {
     expect(readiness).toMatchObject({ unansweredRequiredCount: 1, answeredCount: 1, canCreateDraft: false });
   });
 
+  test("normalizes yes/no per-grommet pricing answers and exposes a separate default-choice question", () => {
+    const questions = generateProductIntakeQuestions(brief({
+      optionalOptions: [{
+        label: "Grommets",
+        normalizedGroup: "Grommets",
+        required: false,
+        confidence: 90,
+        sampleValues: ["no", "yes"],
+        sourcePaths: ["$.description.grommets"],
+        templateMatches: [],
+        evidence: [],
+        source: "product_specific",
+        selectionMode: "single",
+        choices: [
+          { value: "no", label: "no (default option)", pricing: { mode: "none" } },
+          { value: "yes", label: "yes", pricing: { mode: "add_per_grommet", amount: null } },
+        ],
+        pricingRequired: true,
+        defaultChoice: "no",
+      }],
+    }));
+    const pricingQuestion = questions.find((question) => question.questionKey === "custom-option-grommets-pricing-values");
+    const defaultQuestion = questions.find((question) => question.questionKey === "custom-option-grommets-default-choice");
+
+    expect(pricingQuestion?.options).toEqual([{ label: "no", value: "no" }, { label: "yes", value: "yes" }]);
+    expect(pricingQuestion?.helpText).toContain("no=0, yes=0.25");
+    expect(defaultQuestion).toMatchObject({ defaultValue: "no", options: [{ label: "no", value: "no" }, { label: "yes", value: "yes" }] });
+  });
+
+  test("keeps ambiguous pricing answers behind the strict validation boundary", () => {
+    const pricingQuestion: ProductIntakeQuestion = {
+      id: "q_grommets_pricing",
+      organizationId: "org_1",
+      sessionId: "sess_1",
+      questionKey: "custom-option-grommets-pricing-values",
+      questionType: "text",
+      label: "What price applies to each Grommets choice?",
+      helpText: null,
+      required: true,
+      options: [{ label: "no", value: "no" }, { label: "yes", value: "yes" }],
+      defaultValue: null,
+      sourcePath: null,
+      confidence: null,
+      sortOrder: 1,
+      createdAt: "2026-06-05T00:00:00.000Z",
+    };
+
+    expect(() => resolveProductIntakeAnswersForPersistence({
+      questions: [pricingQuestion],
+      answers: [{ questionKey: pricingQuestion.questionKey, answer: "make yes cost more" }],
+    })).toThrow(/Choice=Amount pair per choice/);
+  });
+
   test("creates meaningful questions from missing decisions and low-confidence setup", () => {
     const questions = generateProductIntakeQuestions(brief({
       materialAnalysis: { detectedMaterialReferences: [], likelyMaterialMatches: [], confidence: 20, evidence: [] },

@@ -18,6 +18,7 @@ import { parseAiJsonObject } from "../ai/bugReviewValidator";
 import { createConfiguredAiProvider } from "../ai/providers/configuredProvider";
 import { AiProviderTimeoutError, AiProviderUnavailableError, type AiProviderAdapter } from "../ai/providers/AiProviderAdapter";
 import type { ProductIntakeAiDiagnosticsStore } from "./productIntakeDiagnosticsService";
+import { normalizeChoiceLabels, stripDefaultChoiceAnnotation } from "./productIntakeOptionHelpers";
 
 export type ProductIntakeTemplateReference = {
   id: string;
@@ -318,10 +319,13 @@ function textOptionGroup(args: {
   confidence: number;
   templates: ProductIntakeTemplateReference[];
   reason: string;
+  defaultChoice?: string | null;
 }) {
+  const normalizedChoices = normalizeChoiceLabels(args.sampleValues);
+  const explicitDefaultChoice = args.defaultChoice ? stripDefaultChoiceAnnotation(args.defaultChoice).label : null;
   const templateMatches = matchOptionTemplates({
     optionLabel: args.normalizedGroup,
-    sampleValues: args.sampleValues,
+    sampleValues: normalizedChoices.labels,
     sourcePaths: [args.sourcePath],
     templates: args.templates,
   });
@@ -330,12 +334,13 @@ function textOptionGroup(args: {
     normalizedGroup: args.normalizedGroup,
     required: args.required,
     confidence: clampConfidence(args.confidence),
-    sampleValues: args.sampleValues,
+    sampleValues: normalizedChoices.labels,
     sourcePaths: [args.sourcePath],
     templateMatches,
     evidence: [evidence(args.sourcePath, args.label, args.sampleValues.join(", "), args.reason)],
     source: "product_specific" as const,
     selectionMode: "single" as const,
+    ...(explicitDefaultChoice || normalizedChoices.defaultChoice ? { defaultChoice: explicitDefaultChoice ?? normalizedChoices.defaultChoice } : {}),
   };
 }
 
@@ -1045,10 +1050,12 @@ function optionGroupFromAi(args: {
   const choices = rawChoices.map((entry: unknown, index: number) => {
     const choice = asRecord(entry);
     if (!choice) return null;
-    const label = String(choice.label ?? choice.name ?? choice.value ?? "").trim();
+    const parsedLabel = stripDefaultChoiceAnnotation(choice.label ?? choice.name ?? choice.value ?? "");
+    const label = parsedLabel.label;
     if (!label) return null;
     const generatedValue = label.toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "") || `choice_${index + 1}`;
-    const value = String(choice.value ?? generatedValue);
+    const parsedValue = stripDefaultChoiceAnnotation(choice.value ?? generatedValue).label;
+    const value = parsedValue || generatedValue;
     const pricingRecord = asRecord(choice.pricing ?? choice.pricingImpact ?? choice.price);
     const amount = pricingRecord?.amount == null ? null : Number(pricingRecord.amount);
     const pricingMode = ["none", "set_per_sqft", "set_per_piece", "add_flat", "add_per_piece", "add_per_sqft", "add_percent", "add_per_grommet"]
@@ -1081,6 +1088,11 @@ function optionGroupFromAi(args: {
     ...(typeof record.reuseTemplateId === "string" && record.reuseTemplateId.trim() ? { reuseTemplateId: record.reuseTemplateId.trim() } : {}),
     selectionMode: record.selectionMode === "multi" ? "multi" : "single",
     ...(choices.length > 0 ? { choices } : {}),
+    ...(() => {
+      const parsedDefault = stripDefaultChoiceAnnotation(record.defaultChoice ?? record.defaultValue ?? record.default);
+      const matchedDefault = choices.find((choice: any) => parsedDefault.label && choice.label.toLowerCase() === parsedDefault.label.toLowerCase());
+      return matchedDefault ? { defaultChoice: matchedDefault.label } : {};
+    })(),
     ...(typeof record.pricingRequired === "boolean" ? { pricingRequired: record.pricingRequired } : {}),
     ...(typeof record.affectsWeight === "boolean" ? { affectsWeight: record.affectsWeight } : {}),
     ...(typeof record.affectsRouting === "boolean" ? { affectsRouting: record.affectsRouting } : {}),

@@ -33,6 +33,7 @@ import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMat
 import type { ProductOptionRule } from "@shared/productOptionRules";
 import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
 import { db as defaultDb } from "../../db";
+import { normalizeChoicePricingAnswer, stripDefaultChoiceAnnotation } from "./productIntakeOptionHelpers";
 import { ProductIntakeSessionError } from "./productIntakeSessionService";
 
 export type ProductIntakeDraftTemplateRow = {
@@ -576,14 +577,15 @@ function customOptionPrefix(option: ProductIntakeOption): string {
 }
 
 function parseChoiceAnswer(value: unknown): string[] {
-  if (Array.isArray(value)) return value.map(String).map((entry) => entry.trim()).filter(Boolean);
+  if (Array.isArray(value)) return value.map(String).map((entry) => stripDefaultChoiceAnnotation(entry).label).filter(Boolean);
   if (typeof value !== "string") return [];
-  return value.split(/[,;\n]+/).map((entry) => entry.trim()).filter(Boolean);
+  return value.split(/[,;\n]+/).map((entry) => stripDefaultChoiceAnnotation(entry).label).filter(Boolean);
 }
 
-function parseChoicePrices(value: unknown): Map<string, number> {
+function parseChoicePrices(value: unknown, choiceLabels: string[] = []): Map<string, number> {
   const prices = new Map<string, number>();
-  for (const entry of parseChoiceAnswer(value)) {
+  const normalizedValue = normalizeChoicePricingAnswer(value, choiceLabels);
+  for (const entry of parseChoiceAnswer(normalizedValue)) {
     const match = entry.match(/^(.+?)\s*=\s*\$?\s*(-?\d+(?:\.\d+)?)\s*%?$/);
     if (!match) continue;
     const amount = Number(match[2]);
@@ -643,7 +645,8 @@ function optionChoices(option: ProductIntakeOption, answers: ProductIntakeAnswer
   const pricingModeAnswer = typeof answerByKey.get(`${prefix}-pricing-model`) === "string"
     ? String(answerByKey.get(`${prefix}-pricing-model`))
     : null;
-  const priceAnswers = parseChoicePrices(answerByKey.get(`${prefix}-pricing-values`));
+  const choiceLabels = sourceChoices.map((choice) => stripDefaultChoiceAnnotation(choice.label).label).filter(Boolean);
+  const priceAnswers = parseChoicePrices(answerByKey.get(`${prefix}-pricing-values`), choiceLabels);
   const affectsRouting = typeof answerByKey.get(`${prefix}-routing`) === "boolean"
     ? Boolean(answerByKey.get(`${prefix}-routing`))
     : option.affectsRouting === true;
@@ -652,7 +655,11 @@ function optionChoices(option: ProductIntakeOption, answers: ProductIntakeAnswer
     : option.affectsProof === true;
   const seen = new Set<string>();
   return sourceChoices
-    .map((choice) => ({ ...choice, label: compactText(choice.label, "") }))
+    .map((choice) => ({
+      ...choice,
+      label: compactText(stripDefaultChoiceAnnotation(choice.label).label, ""),
+      value: stripDefaultChoiceAnnotation(choice.value).label || choice.value,
+    }))
     .filter((choice) => Boolean(choice.label))
     .map((choice) => {
       const value = safeKey(choice.value || choice.label, "choice");
@@ -677,6 +684,17 @@ function optionChoices(option: ProductIntakeOption, answers: ProductIntakeAnswer
       };
     })
     .slice(0, 30);
+}
+
+function defaultChoiceValue(option: ProductIntakeOption, answers: ProductIntakeAnswerLike[] = [], choices: ProductIntakeDraftChoice[]): string | null {
+  const answerByKey = new Map(answers.map((answer) => [answer.questionKey, answer.answer]));
+  const prefix = customOptionPrefix(option);
+  const raw = answerByKey.get(`${prefix}-default-choice`) ?? option.defaultChoice;
+  const parsed = stripDefaultChoiceAnnotation(raw);
+  if (!parsed.label) return null;
+  return choices.find((choice) =>
+    choice.label.toLowerCase() === parsed.label.toLowerCase() || choice.value.toLowerCase() === parsed.label.toLowerCase(),
+  )?.value ?? null;
 }
 
 export function validateProductIntakeCustomOptions(
@@ -1138,6 +1156,7 @@ function addQuestionNode(args: {
   label: string;
   inputType: "boolean" | "select" | "multiselect" | "number" | "dimension";
   required: boolean;
+  defaultValue?: unknown;
   choices?: ProductIntakeDraftChoice[];
   usedNodeIds: Set<string>;
   usedEdgeIds: Set<string>;
@@ -1159,6 +1178,7 @@ function addQuestionNode(args: {
       required: args.required,
       selectionKey: args.key,
       valueType: args.inputType === "boolean" ? "BOOLEAN" : args.inputType === "number" || args.inputType === "dimension" ? "NUMBER" : "ENUM",
+      ...(args.defaultValue !== undefined && args.defaultValue !== null ? { defaultValue: args.defaultValue } : {}),
       ...(args.inputType === "select" || args.inputType === "multiselect" ? { constraints: { select: { allowEmpty: !args.required } } } : {}),
       ...(args.inputType === "number" ? { constraints: { number: { min: 1, step: 1, integerOnly: true } } } : {}),
     },
@@ -1820,6 +1840,7 @@ export function buildProductIntakeDraftTree(args: {
       ? selectionModeAnswer
       : option.selectionMode ?? "single";
     const choices = optionChoices(option, args.answers);
+    const defaultValue = defaultChoiceValue(option, args.answers, choices);
     addQuestionNode({
       tree,
       key,
@@ -1827,6 +1848,7 @@ export function buildProductIntakeDraftTree(args: {
       inputType: choices.length > 0 ? (resolvedSelectionMode === "multi" ? "multiselect" : "select") : "boolean",
       required: resolvedRequired,
       choices: choices.length > 0 ? choices : undefined,
+      defaultValue,
       usedNodeIds,
       usedEdgeIds,
       groupKey: classifyOptionGroup(option),
