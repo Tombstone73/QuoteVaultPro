@@ -97,6 +97,7 @@ export const productIntakeOptionSchema = z.object({
   source: z.enum(["product_specific", "reusable_template"]).optional(),
   reuseTemplateId: z.string().min(1).nullable().optional(),
   selectionMode: z.enum(["single", "multi"]).optional(),
+  defaultChoice: z.string().min(1).nullable().optional(),
   choices: z.array(productIntakeOptionChoiceSchema).optional(),
   pricingRequired: z.boolean().optional(),
   affectsWeight: z.boolean().optional(),

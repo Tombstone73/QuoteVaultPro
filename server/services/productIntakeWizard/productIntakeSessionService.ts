@@ -27,6 +27,7 @@ import {
 } from "@shared/productIntakeWizardSchemas";
 import type { CatalogMigrationLabAnalyzerResult } from "@shared/catalogMigrationLabSchemas";
 import { db as defaultDb } from "../../db";
+import { choicePricingExample, normalizeChoicePricingAnswer, stripDefaultChoiceAnnotation } from "./productIntakeOptionHelpers";
 
 type NewQuestion = Omit<ProductIntakeQuestion, "id" | "organizationId" | "sessionId" | "createdAt">;
 
@@ -419,7 +420,9 @@ function customOptionQuestions(brief: ProductIntakeBrief): NewQuestion[] {
     const legacyChoices = optionGroup.sampleValues
       .map((value) => value.trim())
       .filter((value) => value && normalizeKey(value) !== optionKey);
-    const choices = structuredChoices.length > 0 ? structuredChoices.map((choice) => choice.label) : legacyChoices;
+    const choices = structuredChoices.length > 0
+      ? structuredChoices.map((choice) => stripDefaultChoiceAnnotation(choice.label).label).filter(Boolean)
+      : legacyChoices.map((choice) => stripDefaultChoiceAnnotation(choice).label).filter(Boolean);
     const pricedChoices = structuredChoices.filter((choice) => {
       const pricing = choice.pricing;
       return pricing && pricing.mode !== "none" && Number.isFinite(pricing.amount) && Number(pricing.amount) >= 0;
@@ -492,15 +495,27 @@ function customOptionQuestions(brief: ProductIntakeBrief): NewQuestion[] {
       questionKey: `${prefix}-pricing-values`,
       questionType: "text",
       label: `What price applies to each ${optionGroup.label} choice?`,
-      helpText: "Enter Choice=Amount pairs, for example 5mm=4.50, 10mm=6.25. Amounts are dollars; percent uses percentage points.",
+      helpText: `Enter one pair per choice, for example ${choicePricingExample(choices)}. Amounts are dollars; percent uses percentage points. For a yes/no per-grommet price, “.25 per grommet” is accepted and becomes no=0, yes=0.25.`,
       required: pricingIncomplete,
-      options: null,
+      options: choices.map((choice) => ({ label: choice, value: choice })),
       defaultValue: pricedChoices.length > 0
         ? pricedChoices.map((choice) => `${choice.label}=${choice.pricing?.amount}`).join(", ")
         : null,
       sourcePath,
       confidence: optionGroup.confidence,
       sortOrder: sortBase + 4,
+    });
+    questions.push({
+      questionKey: `${prefix}-default-choice`,
+      questionType: "select",
+      label: `Which ${optionGroup.label} choice should be selected by default?`,
+      helpText: "This controls the initial selection only; it does not become part of the customer-facing choice label.",
+      required: false,
+      options: choices.map((choice) => ({ label: choice, value: choice })),
+      defaultValue: optionGroup.defaultChoice ?? null,
+      sourcePath,
+      confidence: optionGroup.confidence,
+      sortOrder: sortBase + 5,
     });
     for (const [suffix, label, defaultValue] of [
       ["weight", `Does ${optionGroup.label} affect weight?`, optionGroup.affectsWeight ?? false],
@@ -517,7 +532,7 @@ function customOptionQuestions(brief: ProductIntakeBrief): NewQuestion[] {
         defaultValue,
         sourcePath,
         confidence: optionGroup.confidence,
-        sortOrder: sortBase + (suffix === "weight" ? 5 : suffix === "routing" ? 6 : 7),
+        sortOrder: sortBase + (suffix === "weight" ? 6 : suffix === "routing" ? 7 : 8),
       });
     }
   });
@@ -641,7 +656,7 @@ function validateAnswerValue(question: ProductIntakeQuestion, value: unknown) {
     if (entries.length === 0 || entries.some((entry) => !/^.+?\s*=\s*\$?\s*\d+(?:\.\d+)?\s*%?$/.test(entry))) {
       throw new ProductIntakeSessionError(
         400,
-        `Answer for "${question.label}" must use Choice=Amount pairs (for example, 5mm=4.50).`,
+        `Answer for "${question.label}" must use one Choice=Amount pair per choice (for example, ${choicePricingExample((question.options ?? []).map((choice) => String(choice.label)))}). Natural-language shortcuts are only supported for obvious yes/no per-unit pricing.`,
         "INVALID_OPTION_PRICING",
       );
     }
@@ -667,8 +682,12 @@ export function resolveProductIntakeAnswersForPersistence(args: {
     // Blank answers are intentionally ignored. Readiness continues to report
     // required context as missing, while previously saved answers stay intact.
     if (!hasAnswerValue(question, incoming.answer)) continue;
-    validateAnswerValue(question, incoming.answer);
-    resolved.push({ question, answer: incoming.answer });
+    const choiceLabels = (question.options ?? []).map((choice) => String(choice.label));
+    const normalizedAnswer = question.questionKey.endsWith("-pricing-values")
+      ? normalizeChoicePricingAnswer(incoming.answer, choiceLabels)
+      : incoming.answer;
+    validateAnswerValue(question, normalizedAnswer);
+    resolved.push({ question, answer: normalizedAnswer });
   }
 
   return resolved;

@@ -1542,6 +1542,39 @@ describe("Product Intake draft service", () => {
     expect(preview.totalPrice).toBeCloseTo(7.08, 2);
   });
 
+  test("keeps generated default choices separate from cleaned customer-facing labels", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        requiredOptions: [],
+        optionalOptions: [option("Grommets", {
+          normalizedGroup: "grommets",
+          required: false,
+          source: "product_specific",
+          selectionMode: "single",
+          pricingRequired: true,
+          choices: [
+            { value: "no (default option)", label: "no (default option)", pricing: { mode: "none" } },
+            { value: "yes", label: "yes", pricing: { mode: "add_per_grommet", amount: null } },
+          ],
+        })],
+      }),
+      answers: [
+        { questionKey: "custom-option-grommets-pricing-model", answer: "add_per_grommet" },
+        { questionKey: "custom-option-grommets-pricing-values", answer: ".25 per grommet" },
+        { questionKey: "custom-option-grommets-default-choice", answer: "no" },
+      ],
+      sessionId: "sess_grommets_default",
+      productName: "Grommet Signs",
+      userId: "user_1",
+    });
+
+    const grommetNode = inputNode(tree, "grommets");
+    expect(grommetNode?.choices?.map((choice: any) => choice.label)).toEqual(["no", "yes"]);
+    expect(grommetNode?.choices?.map((choice: any) => choice.value)).toEqual(["no", "yes"]);
+    expect(grommetNode?.input?.defaultValue).toBe("no");
+    expect(grommetNode?.choices?.some((choice: any) => /default option/i.test(choice.label))).toBe(false);
+  });
+
   test("blocks incomplete product-specific option pricing until valid answers are supplied", () => {
     const intakeBrief = brief({
       requiredOptions: [option("Lamination", {
