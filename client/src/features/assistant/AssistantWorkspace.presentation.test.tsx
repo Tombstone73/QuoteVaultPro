@@ -15,7 +15,7 @@ const context = {
   selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-21T12:00:00.000Z", unsavedChanges: false,
 } as const;
 
-function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string } = {}) {
+function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any } = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -28,21 +28,20 @@ describe("Assistant workspace presentation", () => {
 
   test("keeps current-record answers conversational and hides the tool name", () => {
     const { container, root } = render([
-      { kind: "response_presentation", title: "Response presentation", summary: "Server metadata", sourceLinks: [], presentation: "conversational" },
       { kind: "current_context", title: "navigation.get_current_context", summary: "You're viewing Order ORD-20003 for T3 Signs.", sourceLinks: [{ label: "View order", href: "/orders/order_1" }] },
-    ]);
+    ], { presentation: "conversational" });
     expect(container.textContent).toContain("View order");
     expect(container.textContent).not.toContain("navigation.get_current_context");
+    expect(container.textContent).not.toContain("Response presentation");
     act(() => root.unmount());
   });
 
   test("renders search results as compact rows while retaining server presentation metadata", () => {
     const cards = [
-      { kind: "response_presentation", title: "Response presentation", summary: "Server metadata", sourceLinks: [], presentation: "collection" },
       { kind: "search_results", title: "search.global", summary: "I found one matching record.", sourceLinks: [], details: { matches: [{ label: "Order ORD-20003", status: "In Production", sourceLink: { label: "Order ORD-20003", href: "/orders/order_1" } }] } },
     ];
-    const { container, root } = render(cards);
-    expect(responsePresentationForCards(cards as any)).toBe("collection");
+    const { container, root } = render(cards, { presentation: "collection" });
+    expect(responsePresentationForCards("collection")).toBe("collection");
     expect(container.textContent).toContain("Order ORD-20003");
     expect(container.textContent).not.toContain("search.global");
     act(() => root.unmount());
@@ -50,16 +49,15 @@ describe("Assistant workspace presentation", () => {
 
   test("keeps diagnostic tool names and correlation IDs behind authorized disclosure", () => {
     const cards = [
-      { kind: "response_presentation", title: "Response presentation", summary: "Server metadata", sourceLinks: [], presentation: "diagnostic" },
       { kind: "provider_unavailable", title: "navigation.get_current_context", summary: "I couldn't safely interpret that request.", sourceLinks: [], toolStatus: "failed" },
     ];
-    const normal = render(cards);
+    const normal = render(cards, { presentation: "diagnostic" });
     expect(normal.container.textContent).not.toContain("navigation.get_current_context");
     expect(normal.container.textContent).not.toContain("corr_123");
     act(() => normal.root.unmount());
 
-    const authorized = render(cards, { diagnosticsEnabled: true, correlationId: "corr_123" });
-    expect(authorized.container.textContent).toContain("Diagnostics");
+    const authorized = render(cards, { diagnosticsEnabled: true, correlationId: "corr_123", presentation: "diagnostic" });
+    expect(authorized.container.textContent).toContain("Show diagnostics");
     const button = authorized.container.querySelector("button") as HTMLButtonElement;
     act(() => button.click());
     expect(authorized.container.textContent).toContain("navigation.get_current_context");

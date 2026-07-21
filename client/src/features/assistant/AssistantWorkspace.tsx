@@ -8,6 +8,7 @@ import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
 import type { AssistantStructuredCard } from "@shared/assistantContracts";
+import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
 
@@ -30,9 +31,7 @@ function diagnosticStatus(card: AssistantStructuredCard): string | null {
   return "toolStatus" in card && card.toolStatus ? card.toolStatus : "status" in card ? card.status : null;
 }
 
-export function responsePresentationForCards(cards: AssistantStructuredCard[]): AssistantResponsePresentation {
-  const metadata = cards.find((card) => card.kind === "response_presentation");
-  const presentation = metadata && "presentation" in metadata ? metadata.presentation : undefined;
+export function responsePresentationForCards(presentation: AssistantResponsePresentation | undefined): AssistantResponsePresentation {
   return presentation === "collection" || presentation === "record_summary" || presentation === "analytical" || presentation === "proposed_action" || presentation === "execution_result" || presentation === "diagnostic"
     ? presentation
     : "conversational";
@@ -56,7 +55,7 @@ function CollectionRows({ details, sources }: { details: unknown; sources: Array
   });
   const visible = rows.length ? rows : sources.map((source) => ({ href: source.href, label: source.label, secondary: null, status: null }));
   if (!visible.length) return null;
-  return <div className="mt-3 divide-y rounded-lg border border-border/70 bg-card/40">{visible.slice(0, 10).map((row) => <a key={`${row.href}-${row.label}`} href={row.href} className="block px-3 py-2.5 text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="font-medium text-foreground">{row.label}</span>{row.secondary ? <span className="ml-2 text-muted-foreground">{row.secondary}</span> : null}{row.status ? <span className="ml-2 text-xs text-muted-foreground">{row.status}</span> : null}</a>)}</div>;
+  return <div className="mt-3 divide-y rounded-lg border border-border/60 bg-card/30">{visible.slice(0, 10).map((row) => <a key={`${row.href}-${row.label}`} href={row.href} className="block px-3 py-2.5 text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="font-medium text-foreground">{row.label}</span>{row.secondary ? <span className="ml-2 text-muted-foreground">{row.secondary}</span> : null}{row.status ? <span className="ml-2 text-xs text-muted-foreground">{formatAssistantDisplayValue(row.status)}</span> : null}</a>)}</div>;
 }
 
 function AnalyticalDetails({ details }: { details: unknown }) {
@@ -81,6 +80,7 @@ export function ResultCards({
   confirmingPlanId,
   diagnosticsEnabled = false,
   correlationId = null,
+  presentation: serverPresentation,
   onRetry,
 }: {
   cards: AssistantStructuredCard[];
@@ -93,11 +93,13 @@ export function ResultCards({
   confirmingPlanId?: string;
   diagnosticsEnabled?: boolean;
   correlationId?: string | null;
+  presentation?: AssistantResponsePresentation;
   onRetry?: () => void;
 }) {
   const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false);
-  const presentation = responsePresentationForCards(cards);
-  const visibleCards = cards.filter((card) => card.kind !== "response_presentation");
+  const presentation = responsePresentationForCards(serverPresentation);
+  // Defense in depth for turns persisted before the response-contract fix.
+  const visibleCards = cards.filter((card) => (card as { kind: string }).kind !== "response_presentation");
   if (!visibleCards.length) return null;
   const diagnosticCards = visibleCards.filter((card) => ["tool_warning", "provider_unavailable", "permission_denied", "not_found", "partial_result"].includes(card.kind));
   return <div className="mt-3 space-y-3">{visibleCards.map((card, index) => {
@@ -128,7 +130,7 @@ export function ResultCards({
     if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source" || diagnosticCards.includes(card)) return null;
     if (presentation === "collection" && card.kind === "search_results") return <CollectionRows key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (presentation === "analytical" && card.kind === "operational_metrics") return <AnalyticalDetails key={`${card.kind}-${index}`} details={card.details} />;
-    if (["current_context", "customer_summary", "order_summary", "product_summary"].includes(card.kind)) return <SourceActions key={`${card.kind}-${index}`} sources={card.sourceLinks} />;
+    if (["conversational", "record_summary"].includes(presentation) && ["current_context", "customer_summary", "order_summary", "product_summary"].includes(card.kind)) return <SourceActions key={`${card.kind}-${index}`} sources={card.sourceLinks} />;
     return <section key={`${card.kind}-${index}`} className="rounded-xl border border-border/70 bg-card/45 px-3 py-3 text-sm shadow-sm">
       <p className="font-medium text-foreground">{card.title}</p>
       <SourceActions sources={card.sourceLinks} />
@@ -136,7 +138,7 @@ export function ResultCards({
     </section>;
   })}
   {presentation === "diagnostic" && onRetry ? <Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button> : null}
-  {diagnosticsEnabled && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => setDiagnosticsOpen((open) => !open)} aria-expanded={diagnosticsOpen}>Diagnostics</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/70 bg-muted/30 p-2 text-xs text-muted-foreground"><p>Correlation ID: {correlationId ?? "Unavailable"}</p>{diagnosticCards.map((card, index) => <p key={`${diagnosticLabel(card)}-${index}`} className="mt-1">Tool: {diagnosticLabel(card)}{diagnosticStatus(card) ? ` (${diagnosticStatus(card)})` : ""}</p>)}</div> : null}</div> : null}
+  {diagnosticsEnabled && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => setDiagnosticsOpen((open) => !open)} aria-expanded={diagnosticsOpen}>{diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"}</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground"><p>Correlation ID: {correlationId ?? "Unavailable"}</p>{diagnosticCards.map((card, index) => <p key={`${diagnosticLabel(card)}-${index}`} className="mt-1">Tool: {diagnosticLabel(card)}{diagnosticStatus(card) ? ` (${formatAssistantDisplayValue(diagnosticStatus(card))})` : ""}</p>)}</div> : null}</div> : null}
   </div>;
 }
 
@@ -279,7 +281,7 @@ function ConversationContent() {
           ) : messages.map((message, index) => {
             const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
             if (message.role === "user") return <article key={message.id} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
-            return <article key={message.id} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            return <article key={message.id} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Your message wasn’t sent. Try again.</p> : null}
         </div>

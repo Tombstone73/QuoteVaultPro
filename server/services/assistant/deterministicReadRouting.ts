@@ -1,10 +1,14 @@
-import { assistantProviderPlanSchema, type AssistantProviderPlan } from "@shared/assistantContracts";
+import { assistantContextEnvelopeSchema, assistantProviderPlanSchema, type AssistantContextEnvelope, type AssistantProviderPlan } from "@shared/assistantContracts";
 
 type DeterministicLookupKind = "order" | "quote" | "product" | "customer";
 
 export interface DeterministicSearchTarget {
   entityType: Exclude<DeterministicLookupKind, "order">;
   query: string;
+}
+
+export interface DeterministicOrderLookupTarget {
+  orderNumber: string;
 }
 
 /**
@@ -25,6 +29,20 @@ function readNavigationQuestion(message: string): boolean {
   return /\b(?:what|which)\s+(?:page|screen|record)\s+(?:am\s+i|are\s+we)\s+(?:currently\s+)?(?:viewing|on)\b/i.test(message)
     || /\bwhat(?:'s| is)\s+(?:the\s+)?current(?:ly)?\s+(?:open\s+)?(?:page|screen|record)\b/i.test(message)
     || /^(?:please\s+)?summari[sz]e\s+(?:this|the current)\s+(?:order|product|customer)\??$/i.test(message);
+}
+
+function currentOrderQuestion(message: string): boolean {
+  return /^(?:what(?:'s| is) blocking this order|why is this order blocked|what still needs to happen on this order|what is preventing (?:fulfillment|billing)|summari[sz]e this order|what is the production status|what is the artwork status)\??$/i.test(message);
+}
+
+function currentOrderBlockingQuestion(message: string): boolean {
+  return /^(?:what(?:'s| is) blocking this order|why is this order blocked|what still needs to happen on this order|what is preventing (?:fulfillment|billing))\??$/i.test(message);
+}
+
+function currentOrderId(context: AssistantContextEnvelope | undefined): string | null {
+  if (!context || context.entityType !== "order" || !context.entityId) return null;
+  if (!/^\/orders\/[A-Za-z0-9_-]{1,128}$/.test(context.route)) return null;
+  return context.entityId;
 }
 
 /**
@@ -58,8 +76,27 @@ export function deterministicSearchTarget(planValue: AssistantProviderPlan): Det
   return { entityType: match[1]! as DeterministicSearchTarget["entityType"], query };
 }
 
-export function resolveDeterministicReadPlan(message: string): AssistantProviderPlan | null {
+export function deterministicOrderLookupTarget(planValue: AssistantProviderPlan): DeterministicOrderLookupTarget | null {
+  const call = planValue.selectedSkill === "deterministic_order_lookup" ? planValue.toolCalls[0] : null;
+  return call?.toolName === "orders.get_summary" && typeof call.arguments.orderNumber === "string"
+    ? { orderNumber: call.arguments.orderNumber }
+    : null;
+}
+
+export function resolveDeterministicReadPlan(message: string, rawContext?: AssistantContextEnvelope): AssistantProviderPlan | null {
   const normalized = normalizedMessage(message);
+  const context = rawContext ? assistantContextEnvelopeSchema.parse(rawContext) : undefined;
+  const orderId = currentOrderQuestion(normalized) ? currentOrderId(context) : null;
+  if (orderId) {
+    return plan({
+      intent: "lookup",
+      selectedSkill: currentOrderBlockingQuestion(normalized) ? "deterministic_current_order_blocking" : "deterministic_current_order_summary",
+      toolCalls: [{ toolName: "orders.get_summary", arguments: { orderId } }],
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      responseStyle: "concise",
+    });
+  }
   if (readNavigationQuestion(normalized)) {
     return plan({
       intent: "navigation",
@@ -76,7 +113,16 @@ export function resolveDeterministicReadPlan(message: string): AssistantProvider
   if (lookup.kind === "order") {
     // An order number is a deliberately narrow identifier and the adapter
     // re-fetches it under the trusted tenant scope.
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(lookup.value)) return null;
+    if (!/^[A-Za-z0-9_-]{1,64}$/.test(lookup.value)) {
+      return plan({
+        intent: "clarification",
+        selectedSkill: "deterministic_invalid_order_lookup",
+        toolCalls: [],
+        clarificationRequired: true,
+        clarificationQuestion: "Please enter a valid order number using letters, numbers, hyphens, or underscores.",
+        responseStyle: "concise",
+      });
+    }
     return plan({
       intent: "lookup",
       selectedSkill: "deterministic_order_lookup",

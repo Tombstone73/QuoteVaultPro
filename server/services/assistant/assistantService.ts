@@ -6,6 +6,7 @@ import type {
   AssistantUpdateConversationRequest,
   AssistantTurnRequest,
 } from "@shared/assistantContracts";
+import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { assistantTurnRequestSchema } from "@shared/assistantContracts";
 import { AssistantOrchestrationService, type AssistantToolExecutionAudit } from "./orchestration";
 import { AssistantPlanningError, ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
@@ -20,7 +21,7 @@ import {
   assistantCapabilityReadTools,
   isAssistantCapabilityProductionCommand,
 } from "./assistantCapabilities";
-import { deterministicSearchTarget, resolveDeterministicReadPlan } from "./deterministicReadRouting";
+import { deterministicOrderLookupTarget, deterministicSearchTarget, resolveDeterministicReadPlan } from "./deterministicReadRouting";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
@@ -68,6 +69,7 @@ export interface AssistantMessageRecord {
   turnId: string | null;
   role: "user" | "assistant" | "system";
   content: string;
+  presentation?: AssistantResponsePresentation;
   structuredCards?: unknown[];
   provider?: string | null;
   model?: string | null;
@@ -103,6 +105,7 @@ export interface AssistantRepository {
     correlationId: string;
     status?: "responded" | "failed";
     structuredCards?: AssistantStructuredCard[];
+    presentation?: AssistantResponsePresentation;
     provider?: string | null;
     model?: string | null;
     mode?: string;
@@ -236,7 +239,7 @@ export class AssistantService {
       composerHelperText: !readToolsEnabled
         ? (resolved.unavailableReason ?? "Business questions are unavailable until AI configuration is complete.")
         : writeActionsEnabled
-          ? "Business lookups and confirmed actions are enabled. Changes require preview and the dedicated GO button. External research is disabled."
+          ? "Business lookups and confirmed actions are enabled. Changes require a preview and the dedicated GO button. External research is disabled."
           : "Business lookups are enabled. Write actions and external research are disabled.",
       assistantVersion: "stage-5",
       unavailableReason: resolved.unavailableReason ?? (resolved.enabled ? null : "The assistant is disabled for this organization."),
@@ -359,7 +362,7 @@ export class AssistantService {
       // traverses the same registry and orchestration enforcement as a
       // provider plan, including tenant scope, permissions, limits, audits,
       // timeouts, and result schemas.
-      const deterministicPlan = resolveDeterministicReadPlan(request.message);
+      const deterministicPlan = resolveDeterministicReadPlan(request.message, request.context);
       const planned = deterministicPlan
         ? { plan: deterministicPlan, provider: "local_policy", model: "deterministic-read-routing-v1", metadata: { route: "exact_read" } }
         : await this.planner.plan({ organizationId: scope.organizationId, message: request.message, context: request.context });
@@ -380,7 +383,12 @@ export class AssistantService {
           context: request.context,
           correlationId,
         });
-        const rendered = renderToolResults(executed.executions, deterministicPlan ? deterministicSearchTarget(deterministicPlan) : null);
+        const rendered = renderToolResults(
+          executed.executions,
+          deterministicPlan ? deterministicSearchTarget(deterministicPlan) : null,
+          deterministicPlan ? deterministicOrderLookupTarget(deterministicPlan) : null,
+          deterministicPlan?.selectedSkill === "deterministic_current_order_blocking",
+        );
         response = rendered.response;
         cards = rendered.cards;
       }
@@ -403,7 +411,7 @@ export class AssistantService {
       response,
       correlationId,
       status,
-      structuredCards: withResponsePresentation(cards, status === "failed" ? "diagnostic" : undefined),
+      structuredCards: cards,
       provider,
       model,
       mode: "stage_2_read_only",
@@ -437,7 +445,7 @@ export class AssistantService {
       ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message,
       context: input.request.context, clientRequestId: input.request.clientRequestId, response: input.response,
       correlationId: input.correlationId, status: input.status,
-      structuredCards: withResponsePresentation(input.structuredCards, input.status === "failed" ? "diagnostic" : undefined),
+      structuredCards: input.structuredCards,
       provider: null, model: null, mode: "stage_2_read_only", promptVersion: "assistant-stage-2-planner-v1",
       errorCode: input.errorCode ?? null, errorMessage: input.status === "failed" ? input.response : null,
     });
@@ -449,16 +457,24 @@ export class AssistantService {
 function renderToolResults(
   executions: Array<{ toolName: string; status: string; result?: any; warning?: string }>,
   exactSearchTarget: import("./deterministicReadRouting").DeterministicSearchTarget | null = null,
+  exactOrderLookup: import("./deterministicReadRouting").DeterministicOrderLookupTarget | null = null,
+  currentOrderSummary = false,
 ) {
   const cards: AssistantResultCard[] = [];
   for (const execution of executions) {
     if (!execution.result) {
-      cards.push({ kind: execution.status === "permission_denied" ? "permission_denied" : "tool_warning", title: execution.toolName, summary: execution.warning ?? "The lookup could not be completed.", sourceLinks: [], toolStatus: execution.status === "rejected" ? "failed" : execution.status as any });
+      const permissionDenied = execution.status === "permission_denied";
+      const summary = permissionDenied
+        ? "You don't have permission to view that order."
+        : exactOrderLookup
+          ? "I couldn't complete that lookup right now. Nothing was changed. Please retry."
+          : execution.warning ?? "The lookup could not be completed.";
+      cards.push({ kind: permissionDenied ? "permission_denied" : "tool_warning", title: execution.toolName, summary, sourceLinks: [], toolStatus: execution.status === "rejected" ? "failed" : execution.status as any });
       continue;
     }
     const result = execution.result;
     if (result.status === "not_found") {
-      cards.push({ kind: "not_found", title: execution.toolName, summary: "No matching record was found.", sourceLinks: [], toolStatus: "not_found" });
+      cards.push({ kind: "not_found", title: execution.toolName, summary: exactOrderLookup ? `I couldn't find order ${exactOrderLookup.orderNumber} in the current organization.` : "No matching record was found.", sourceLinks: [], toolStatus: "not_found" });
       continue;
     }
     if (execution.toolName === "search.global" && exactSearchTarget) {
@@ -503,7 +519,7 @@ function renderToolResults(
       "search.global": "search_results", "customers.get_summary": "customer_summary", "orders.get_summary": "order_summary",
       "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context",
     };
-    const summary = summaryForTool(execution.toolName, result.data);
+    const summary = summaryForTool(execution.toolName, result.data, { exactOrderLookup, currentOrderSummary });
     cards.push({ kind: names[execution.toolName] ?? "partial_result", title: execution.toolName, summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: result.data });
   }
   if (!cards.length) return { response: "I need a little more detail to find the right information.", cards };
@@ -529,15 +545,26 @@ function normalizeExactLookupValue(value: string): string {
   return value.trim().toLocaleLowerCase("en-US").replace(/\s+/g, " ");
 }
 
-function summaryForTool(toolName: string, data: any): string {
+function summaryForTool(toolName: string, data: any, options: { exactOrderLookup: import("./deterministicReadRouting").DeterministicOrderLookupTarget | null; currentOrderSummary: boolean }): string {
   if (toolName === "search.global") {
     const count = data.matches?.length ?? 0;
     return count ? `I found ${count} matching ${count === 1 ? "record" : "records"}.` : "I couldn't find a matching record.";
   }
-  if (toolName === "customers.get_summary") return `You're looking at ${data.customer?.label ?? "this customer"}${data.customer?.status ? `, currently ${data.customer.status}` : ""}.`;
+  if (toolName === "customers.get_summary") return `You're looking at ${data.customer?.label ?? "this customer"}${data.customer?.status ? `, currently ${formatAssistantDisplayValue(data.customer.status)}` : ""}.`;
   if (toolName === "orders.get_summary") {
     const order = data.order;
-    return `${order?.label ?? "This order"} is currently ${order?.status ?? "available"}${data.dueDate ? ` and due ${new Date(data.dueDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}.`;
+    if (options.exactOrderLookup && order) {
+      const orderLabel = order.label ?? order.number ?? options.exactOrderLookup.orderNumber;
+      const displayOrder = /^order\b/i.test(orderLabel) ? orderLabel : `Order ${orderLabel}`;
+      return `I found ${displayOrder}${data.customer?.label ? ` for ${data.customer.label}` : ""}.`;
+    }
+    if (options.currentOrderSummary) {
+      const blockers = Array.isArray(data.blockingIssues) ? data.blockingIssues : [];
+      return blockers.length
+        ? `${order?.label ?? "This order"} is currently ${formatAssistantDisplayValue(order?.status)}. ${blockers.join(" ")}`
+        : `I can see ${order?.label ?? "this order"}'s current status, but the system does not expose a reliable blocking reason yet.`;
+    }
+    return `${order?.label ?? "This order"} is currently ${formatAssistantDisplayValue(order?.status)}${data.dueDate ? ` and due ${new Date(data.dueDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}.`;
   }
   if (toolName === "products.get_summary") return `${data.product?.label ?? "This product"} is ${data.active === false ? "inactive" : data.product?.status ?? "available"}${data.category ? ` in ${data.category}` : ""}.`;
   if (toolName === "reports.operational_summary") return "Here's the current operational picture.";
@@ -549,10 +576,10 @@ function summaryForTool(toolName: string, data: any): string {
     if (!record) return `You're on the ${data.pageTitle ?? "current workspace"} page.`;
     if (record.entityType === "order") {
       const dueDate = record.dueDate ? ` and due ${formatAssistantDate(record.dueDate)}` : "";
-      return `You're viewing Order ${record.orderNumber ?? record.entityId ?? ""}${record.customer ? ` for ${record.customer}` : ""}. It is currently ${record.status ?? "available"}${dueDate}.`;
+      return `You're viewing Order ${record.orderNumber ?? record.entityId ?? ""}${record.customer ? ` for ${record.customer}` : ""}. It is currently ${formatAssistantDisplayValue(record.status)}${dueDate}.`;
     }
-    if (record.entityType === "customer") return `You're viewing customer ${record.customerName ?? record.entityId ?? ""}${record.status ? `, currently ${record.status}` : ""}.`;
-    if (record.entityType === "quote") return `You're viewing Quote ${record.quoteNumber ?? record.entityId ?? ""}${record.customer ? ` for ${record.customer}` : ""}${record.status ? `, currently ${record.status}` : ""}.`;
+    if (record.entityType === "customer") return `You're viewing customer ${record.customerName ?? record.entityId ?? ""}${record.status ? `, currently ${formatAssistantDisplayValue(record.status)}` : ""}.`;
+    if (record.entityType === "quote") return `You're viewing Quote ${record.quoteNumber ?? record.entityId ?? ""}${record.customer ? ` for ${record.customer}` : ""}${record.status ? `, currently ${formatAssistantDisplayValue(record.status)}` : ""}.`;
     if (record.entityType === "product") return `You're viewing ${record.productName ?? "this product"}. It is currently ${record.active ? "active" : "inactive"}.`;
     return `You're viewing the ${data.pageTitle ?? "current"} page.`;
   }
@@ -573,27 +600,18 @@ function formatAssistantDate(value: string): string {
     });
 }
 
-function withResponsePresentation(
-  cards: AssistantResultCard[],
-  forced?: AssistantResponsePresentation,
-): AssistantStructuredCard[] {
-  const kinds = new Set(cards.map((card) => card.kind));
-  const presentation = forced
-    ?? (kinds.has("action_plan") || kinds.has("action_proposal") ? "proposed_action"
+export function responsePresentationForCards(cards: readonly unknown[]): AssistantResponsePresentation {
+  const legacyPresentation = cards.find((card): card is { kind: string; presentation?: AssistantResponsePresentation } => Boolean(card && typeof card === "object" && (card as { kind?: unknown }).kind === "response_presentation"));
+  if (legacyPresentation?.presentation) return legacyPresentation.presentation;
+  const visibleCards = cards.filter((card): card is { kind: string } => Boolean(card && typeof card === "object" && typeof (card as { kind?: unknown }).kind === "string" && (card as { kind: string }).kind !== "response_presentation"));
+  const kinds = new Set(visibleCards.map((card) => card.kind));
+  return kinds.has("action_plan") || kinds.has("action_proposal") ? "proposed_action"
       : kinds.has("execution_result") ? "execution_result"
         : kinds.has("operational_metrics") ? "analytical"
           : kinds.has("search_results") ? "collection"
             : kinds.has("order_summary") || kinds.has("customer_summary") || kinds.has("product_summary") ? "record_summary"
               : kinds.has("provider_unavailable") || kinds.has("tool_warning") || kinds.has("permission_denied") ? "diagnostic"
-                : "conversational");
-  const metadata: AssistantResultCard = {
-    kind: "response_presentation",
-    title: "Response presentation",
-    summary: "Server-provided presentation metadata.",
-    sourceLinks: [],
-    presentation,
-  };
-  return [metadata, ...cards].slice(0, 20);
+                : "conversational";
 }
 
 export { titleFromMessage };

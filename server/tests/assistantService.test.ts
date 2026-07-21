@@ -104,6 +104,7 @@ describe("AssistantService", () => {
       "products.update_inactive_draft",
     ]);
     expect(capability.productionCommandsPermittedForUser).toEqual(capability.productionCommandsEnabled);
+    expect(capability.composerHelperText).toBe("Business lookups and confirmed actions are enabled. Changes require a preview and the dedicated GO button. External research is disabled.");
     expect(capability).toMatchObject({
       providerConfigured: true,
       readToolsEnabled: true,

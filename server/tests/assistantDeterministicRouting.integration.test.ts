@@ -58,11 +58,8 @@ describe("AssistantService deterministic read routing", () => {
       toolCalls: [{ toolName: "orders.get_summary", arguments: { orderNumber: "20002" } }],
     }), expect.objectContaining({ scope, actor: { userId: actor.userId, email: actor.email } }));
     expect(repository.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({
-      response: "Order 20002 is currently available.",
-      structuredCards: expect.arrayContaining([
-        expect.objectContaining({ kind: "response_presentation", presentation: "record_summary" }),
-        expect.objectContaining({ kind: "order_summary", sourceLinks: [{ label: "Order 20002", href: "/orders/order_1" }] }),
-      ]),
+      response: "I found Order 20002.",
+      structuredCards: [expect.objectContaining({ kind: "order_summary", sourceLinks: [{ label: "Order 20002", href: "/orders/order_1" }] })],
     }));
   });
 
@@ -93,10 +90,7 @@ describe("AssistantService deterministic read routing", () => {
     expect(planner.plan).not.toHaveBeenCalled();
     expect(repository.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({
       response: "You're viewing Order ORD-20003 for T3 Signs. It is currently In Production and due July 22.",
-      structuredCards: expect.arrayContaining([
-        expect.objectContaining({ kind: "response_presentation", presentation: "conversational" }),
-        expect.objectContaining({ kind: "current_context", title: "navigation.get_current_context" }),
-      ]),
+      structuredCards: [expect.objectContaining({ kind: "current_context", title: "navigation.get_current_context" })],
     }));
   });
 

@@ -156,6 +156,28 @@ describe("assistant routes", () => {
     expect(service.getConversation).toHaveBeenCalledWith({ organizationId: "org_1", userId: "user_1" }, "conversation_other_user");
   });
 
+  test("keeps server presentation metadata out of the visible card collection", async () => {
+    const service = buildService();
+    service.getConversation.mockResolvedValue({
+      ...conversation,
+      messages: [{
+        id: "message_2", conversationId: conversation.id, turnId: "turn_1", role: "assistant", content: "You're viewing Order ORD-20003.", createdAt: new Date(NOW),
+        structuredCards: [
+          { kind: "response_presentation", title: "Response presentation", summary: "Server metadata", sourceLinks: [], presentation: "conversational" },
+          { kind: "current_context", title: "navigation.get_current_context", summary: "You're viewing Order ORD-20003.", sourceLinks: [] },
+        ],
+      }],
+    });
+    const { app } = buildApp(service);
+
+    const response = await request(app).get("/api/assistant/conversations/conversation_1").expect(200);
+
+    expect(response.body.data.messages[0]).toEqual(expect.objectContaining({ presentation: "conversational" }));
+    expect(response.body.data.messages[0].structuredCards).toEqual([
+      expect.objectContaining({ kind: "current_context" }),
+    ]);
+  });
+
   test("ignores untrusted organization identity in a turn payload", async () => {
     const service = buildService();
     const { app } = buildApp(service);

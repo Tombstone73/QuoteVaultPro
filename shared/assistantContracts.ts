@@ -395,7 +395,6 @@ const assistantStage1StructuredCardSchema = z.discriminatedUnion("kind", [
   }).strict(),
 ]);
 export const assistantStage2CardKindValues = [
-  "response_presentation",
   "search_results",
   "customer_summary",
   "order_summary",
@@ -447,8 +446,6 @@ export const assistantStage2StructuredCardSchema = z.object({
    * It is deliberately never an execution input. */
   details: z.record(z.unknown()).optional(),
   cancellationAvailable: z.boolean().optional(),
-  /** Invisible turn-level presentation metadata, never a business input. */
-  presentation: z.enum(assistantResponsePresentationValues).optional(),
 }).strict();
 /** Stage 2 extends (rather than replaces) the persisted Stage 1 card union. */
 export const assistantStructuredCardSchema = z.union([
@@ -474,6 +471,8 @@ export const assistantMessageSchema = z.object({
   id: assistantSafeIdentifierSchema,
   role: z.enum(assistantMessageRoleValues),
   content: z.string().max(8_000),
+  /** Server-derived rendering intent; this is metadata, not a visible card. */
+  presentation: z.enum(assistantResponsePresentationValues).optional(),
   structuredCards: z.array(assistantStructuredCardSchema).max(20).default([]),
   provider: z.string().trim().min(1).max(80).nullable(),
   model: z.string().trim().min(1).max(160).nullable(),
