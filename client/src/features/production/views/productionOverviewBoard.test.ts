@@ -2,6 +2,7 @@ import { describe, expect, it } from "@jest/globals";
 import {
   PRODUCTION_COMPLETE_COLUMN_ID,
   buildProductionOverviewColumns,
+  filterProductionOverviewJobs,
   groupProductionOverviewJobsByColumn,
   productionOverviewStationColumnId,
   resolveProductionOverviewJobColumn,
@@ -67,5 +68,20 @@ describe("Production Overview station board", () => {
     expect(grouped.get("station:flatbed")).toHaveLength(2);
     expect(grouped.get("station:roll")).toHaveLength(1);
     expect(grouped.get(PRODUCTION_COMPLETE_COLUMN_ID)).toHaveLength(1);
+  });
+
+  it("composes search with station, status, priority, and assignee filters", () => {
+    const jobs = [
+      { id: "match", stationKey: "flatbed", status: "queued", assignedPrinterName: "Alice", order: { priority: "rush" }, text: "ACM sign" },
+      { id: "wrong-station", stationKey: "roll", status: "queued", assignedPrinterName: "Alice", order: { priority: "rush" }, text: "ACM banner" },
+      { id: "wrong-search", stationKey: "flatbed", status: "queued", assignedPrinterName: "Alice", order: { priority: "rush" }, text: "Coroplast" },
+    ];
+    expect(filterProductionOverviewJobs(jobs, {
+      search: "acm",
+      stationKey: "flatbed",
+      status: "queued",
+      priority: "rush",
+      assignee: "Alice",
+    }, (entry, query) => entry.text.toLowerCase().includes(query.toLowerCase())).map((entry) => entry.id)).toEqual(["match"]);
   });
 });

@@ -132,6 +132,35 @@ export function groupProductionOverviewJobsByColumn<T extends ProductionOverview
   return grouped;
 }
 
+export type ProductionOverviewFilters = {
+  search?: string;
+  stationKey?: string;
+  status?: string;
+  priority?: string;
+  assignee?: string;
+};
+
+export function filterProductionOverviewJobs<T extends ProductionOverviewBoardJob & {
+  assignedPrinterName?: string | null;
+  assignedTo?: string | null;
+  order: { priority?: string | null };
+}>(
+  jobs: readonly T[],
+  filters: ProductionOverviewFilters,
+  matchesSearch: (job: T, query: string) => boolean,
+): T[] {
+  return jobs.filter((job) => {
+    const query = String(filters.search ?? "").trim();
+    if (query && !matchesSearch(job, query)) return false;
+    if (filters.stationKey && filters.stationKey !== "all" && String(job.stationKey ?? "") !== filters.stationKey) return false;
+    if (filters.status && filters.status !== "all" && job.status !== filters.status) return false;
+    if (filters.priority && filters.priority !== "all" && String(job.order.priority ?? "normal").toLowerCase() !== filters.priority) return false;
+    const assignee = String(job.assignedPrinterName ?? job.assignedTo ?? "");
+    if (filters.assignee && filters.assignee !== "all" && assignee !== filters.assignee) return false;
+    return true;
+  });
+}
+
 export function defaultStepKeyForProductionStation(stationKey: string): string {
   const key = normalizeProductionOverviewStationKey(stationKey);
   if (key === "flatbed" || key === "roll" || key === "wide_roll" || key === "print") return "print";
