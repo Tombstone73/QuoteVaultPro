@@ -28,6 +28,7 @@ import { registerBugReportRoutes } from "./routes/bugReports";
 import { registerAiReviewRoutes } from "./routes/aiReviews.routes";
 import { registerAiTriageBriefRoutes } from "./routes/aiTriageBriefs.routes";
 import { registerAiFoundationRoutes } from "./routes/aiFoundation.routes";
+import { registerAssistantRoutes } from "./routes/assistant.routes";
 import { registerProofingRoutes } from "./routes/proofing.routes";
 import { registerPortalProofRoutes } from "./routes/portalProof.routes";
 import { registerProductionConfigRoutes } from "./routes/productionConfig.routes";
@@ -505,6 +506,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Company Settings routes extracted to ./routes/companySettings.routes.ts (do NOT re-add here)
   registerCompanySettingsRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
   registerAiFoundationRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
+  registerAssistantRoutes(app, { isAuthenticated, tenantContext });
   registerCustomerRelationsRoutes(app, { isAuthenticated, tenantContext, isAdmin });
 
   // Customers + Enterprise Import Jobs routes extracted to ./routes/customers.routes.ts and ./routes/importJobs.routes.ts (do NOT re-add here)

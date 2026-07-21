@@ -21,6 +21,7 @@ import { GlobalSearchOverlay } from "./GlobalSearchOverlay";
 import { OrgSwitcher } from "@/components/OrgSwitcher";
 import { isProd, getEnvLabel } from "@/lib/appEnv";
 import { RuntimeEnvironmentBadge } from "@/components/runtime/RuntimeEnvironmentBadge";
+import { AssistantLauncher } from "@/features/assistant";
 
 // ============================================================
 // ROUTE TITLE MAPPING
@@ -327,6 +328,8 @@ export function TitanTopBar({ onMenuClick, showMenuButton = false }: TitanTopBar
         >
           <Bell className="h-4 w-4" />
         </Button>
+
+        <AssistantLauncher />
 
         {/* User Menu */}
         <DropdownMenu>
