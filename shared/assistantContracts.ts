@@ -329,6 +329,11 @@ export const assistantStage2CardKindValues = [
   "permission_denied",
   "not_found",
   "provider_unavailable",
+  "action_plan",
+  "missing_information",
+  "execution_progress",
+  "execution_result",
+  "stale_plan",
 ] as const;
 export const assistantStage2StructuredCardSchema = z.object({
   kind: z.enum(assistantStage2CardKindValues),
@@ -337,6 +342,11 @@ export const assistantStage2StructuredCardSchema = z.object({
   freshness: assistantIsoDateTimeSchema.optional(),
   sourceLinks: z.array(assistantSourceLinkSchema).max(10).default([]),
   toolStatus: z.enum(assistantToolResultStatusValues).optional(),
+  // The exact execution-plan API contract is declared below. Cards keep a
+  // bounded presentation payload so conversation history never becomes an
+  // authority for execution.
+  plan: z.record(z.unknown()).optional(),
+  cancellationAvailable: z.boolean().optional(),
 }).strict();
 /** Stage 2 extends (rather than replaces) the persisted Stage 1 card union. */
 export const assistantStructuredCardSchema = z.union([
@@ -414,12 +424,137 @@ export const assistantTurnResponseSchema = z.object({
 }).strict();
 export type AssistantTurnResponse = z.infer<typeof assistantTurnResponseSchema>;
 
+// Stage 3 controlled-action framework. These contracts intentionally model a
+// proposed server-owned plan, never a browser- or model-authorized command.
+export const assistantExecutionPlanStatusValues = [
+  "draft", "resolving", "awaiting_input", "preview_ready", "awaiting_confirmation", "confirmed",
+  "revalidating", "executing", "succeeded", "partially_failed", "failed", "cancelled", "expired", "invalidated",
+] as const;
+export const assistantExecutionRiskValues = ["low", "moderate", "high", "critical"] as const;
+export const assistantExecutionStepStatusValues = ["pending", "running", "succeeded", "failed", "skipped", "blocked"] as const;
+export const assistantIdempotencyStatusValues = ["locked", "completed", "failed", "unknown", "expired"] as const;
+export type AssistantExecutionPlanStatus = (typeof assistantExecutionPlanStatusValues)[number];
+
+export const assistantAffectedEntityReferenceSchema = z.object({
+  entityType: z.enum(assistantEntityTypeValues),
+  entityId: assistantSafeIdentifierSchema,
+  label: z.string().trim().min(1).max(240),
+  sourceLink: assistantSourceLinkSchema.optional(),
+}).strict();
+export const assistantExpectedRecordFingerprintSchema = z.object({
+  entityType: z.enum(assistantEntityTypeValues),
+  entityId: assistantSafeIdentifierSchema,
+  fingerprint: z.string().trim().min(32).max(128).regex(/^[a-f0-9]+$/i),
+  strategy: z.enum(["record_version", "updated_at_fields", "canonical_hash"]),
+}).strict();
+export const assistantSideEffectSummarySchema = z.object({
+  label: z.string().trim().min(1).max(240),
+  description: z.string().trim().min(1).max(1_000),
+  affectedRecordCount: z.number().int().nonnegative().max(100),
+  reversible: z.boolean(),
+}).strict();
+export const assistantUndoAvailabilitySchema = z.object({
+  available: z.boolean(),
+  label: z.string().trim().min(1).max(240).nullable(),
+  expiresAt: assistantIsoDateTimeSchema.nullable(),
+}).strict();
+export const assistantExecutionPreviewSchema = z.object({
+  title: z.string().trim().min(1).max(240),
+  summary: z.string().trim().min(1).max(2_000),
+  affectedEntities: z.array(assistantAffectedEntityReferenceSchema).max(100),
+  sideEffects: z.array(assistantSideEffectSummarySchema).max(30),
+  undo: assistantUndoAvailabilitySchema,
+}).strict();
+export const assistantMissingInformationSchema = z.object({
+  field: z.string().trim().min(1).max(120),
+  label: z.string().trim().min(1).max(240),
+  description: z.string().trim().min(1).max(500),
+}).strict();
+export const assistantExecutionStepResultSchema = z.object({
+  id: assistantSafeIdentifierSchema,
+  commandName: z.string().trim().min(1).max(120),
+  status: z.enum(assistantExecutionStepStatusValues),
+  summary: z.string().trim().min(1).max(1_000).nullable(),
+  errorCode: z.string().trim().min(1).max(120).nullable(),
+  startedAt: assistantIsoDateTimeSchema.nullable(),
+  completedAt: assistantIsoDateTimeSchema.nullable(),
+}).strict();
+export const assistantExecutionPlanSchema = z.object({
+  id: assistantSafeIdentifierSchema,
+  conversationId: assistantSafeIdentifierSchema,
+  turnId: assistantSafeIdentifierSchema.nullable(),
+  action: z.string().trim().min(1).max(120),
+  commandVersion: z.string().trim().min(1).max(64),
+  status: z.enum(assistantExecutionPlanStatusValues),
+  riskLevel: z.enum(assistantExecutionRiskValues),
+  planVersion: z.number().int().positive(),
+  contextVersion: z.enum(assistantContextVersionValues),
+  preview: assistantExecutionPreviewSchema,
+  missingInformation: z.array(assistantMissingInformationSchema).max(20),
+  executable: z.boolean(),
+  confirmationAvailable: z.boolean(),
+  cancellationAvailable: z.boolean(),
+  expiresAt: assistantIsoDateTimeSchema,
+  staleReason: z.string().trim().min(1).max(500).nullable(),
+  failureSummary: z.string().trim().min(1).max(1_000).nullable(),
+  steps: z.array(assistantExecutionStepResultSchema).max(20),
+  correlationId: assistantSafeIdentifierSchema,
+  createdAt: assistantIsoDateTimeSchema,
+  updatedAt: assistantIsoDateTimeSchema,
+}).strict();
+export type AssistantExecutionPlan = z.infer<typeof assistantExecutionPlanSchema>;
+
+export const assistantCreateExecutionPlanRequestSchema = z.object({
+  turnId: assistantSafeIdentifierSchema.optional(),
+  context: assistantContextEnvelopeSchema,
+}).strict();
+export const assistantCancelExecutionPlanRequestSchema = z.object({
+  expectedPlanVersion: z.number().int().positive(),
+}).strict();
+export const assistantConfirmationRequestSchema = z.object({
+  confirmationToken: z.string().trim().min(32).max(256),
+  expectedPlanVersion: z.number().int().positive(),
+  context: assistantContextEnvelopeSchema,
+}).strict();
+export const assistantConfirmationResponseSchema = z.object({
+  plan: assistantExecutionPlanSchema,
+  accepted: z.boolean(),
+  executionStarted: z.boolean(),
+}).strict();
+export const assistantPartialFailureResultSchema = z.object({
+  planId: assistantSafeIdentifierSchema,
+  succeededStepIds: z.array(assistantSafeIdentifierSchema).max(20),
+  failedStepIds: z.array(assistantSafeIdentifierSchema).max(20),
+  summary: z.string().trim().min(1).max(1_000),
+}).strict();
+export const assistantIdempotencyResultSchema = z.object({
+  status: z.enum(assistantIdempotencyStatusValues),
+  reused: z.boolean(),
+  resultReference: assistantSafeIdentifierSchema.nullable(),
+}).strict();
+
+export const assistantStage3StructuredCardSchema = z.object({
+  kind: z.enum(["action_plan", "missing_information", "execution_progress", "execution_result", "stale_plan"]),
+  title: z.string().trim().min(1).max(160),
+  summary: z.string().trim().min(1).max(2_000),
+  plan: assistantExecutionPlanSchema,
+}).strict();
+export type AssistantStage3StructuredCard = z.infer<typeof assistantStage3StructuredCardSchema>;
+
 export const assistantErrorCodeValues = [
   "assistant_unavailable",
   "assistant_disabled",
   "conversation_not_found",
   "context_invalid",
   "turn_failed",
+  "plan_not_found",
+  "plan_stale",
+  "plan_permission_changed",
+  "plan_record_changed",
+  "confirmation_invalid",
+  "confirmation_expired",
+  "confirmation_used",
+  "plan_transition_invalid",
 ] as const;
 
 export const assistantErrorResponseSchema = z.object({

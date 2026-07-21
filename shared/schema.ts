@@ -60,11 +60,15 @@ import {
 } from "./aiFoundationContracts";
 import {
   assistantConversationStatusValues,
+  assistantExecutionPlanStatusValues,
+  assistantExecutionStepStatusValues,
+  assistantIdempotencyStatusValues,
   assistantMessageRoleValues,
   assistantToolExecutionStatusValues,
   assistantTurnStatusValues,
   type AssistantContextEnvelope,
   type AssistantConversationStatus,
+  type AssistantExecutionPlanStatus,
   type AssistantMessageRole,
   type AssistantStructuredCard,
   type AssistantTurnStatus,
@@ -7496,6 +7500,116 @@ export const aiAuditEvents = pgTable("ai_audit_events", {
   index("ai_audit_events_correlation_id_idx").on(table.correlationId),
 ]);
 
+// Stage 3: durable, server-authoritative action-planning safety records.
+// They model proposed work only; command implementations remain code-defined.
+export const aiExecutionPlans = pgTable("ai_execution_plans", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  turnId: varchar("turn_id").references(() => aiTurns.id, { onDelete: "set null" }),
+  contextSnapshotId: varchar("context_snapshot_id").references(() => aiContextSnapshots.id, { onDelete: "set null" }),
+  action: varchar("action", { length: 120 }).notNull(),
+  commandVersion: varchar("command_version", { length: 64 }).notNull(),
+  sanitizedArguments: jsonb("sanitized_arguments").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  planHash: varchar("plan_hash", { length: 128 }).notNull(),
+  contextHash: varchar("context_hash", { length: 128 }).notNull(),
+  permissionSnapshot: jsonb("permission_snapshot").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  policyVersion: varchar("policy_version", { length: 64 }).notNull(),
+  riskLevel: varchar("risk_level", { length: 32 }).notNull(),
+  affectedEntities: jsonb("affected_entities").$type<Array<Record<string, unknown>>>().notNull().default(sql.raw("'[]'::jsonb")),
+  expectedFingerprints: jsonb("expected_fingerprints").$type<Array<Record<string, unknown>>>().notNull().default(sql.raw("'[]'::jsonb")),
+  preview: jsonb("preview").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  sideEffects: jsonb("side_effects").$type<Array<Record<string, unknown>>>().notNull().default(sql.raw("'[]'::jsonb")),
+  status: text("status").$type<AssistantExecutionPlanStatus>().notNull().default("draft"),
+  planVersion: integer("plan_version").notNull().default(1),
+  environment: varchar("environment", { length: 64 }).notNull(),
+  failureSummary: varchar("failure_summary", { length: 1000 }),
+  partialFailure: jsonb("partial_failure").$type<Record<string, unknown> | null>(),
+  undoMetadata: jsonb("undo_metadata").$type<Record<string, unknown> | null>(),
+  correlationId: varchar("correlation_id", { length: 128 }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  failedAt: timestamp("failed_at", { withTimezone: true }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  expiredAt: timestamp("expired_at", { withTimezone: true }),
+  invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_execution_plans_org_user_created_idx").on(table.orgId, table.userId, table.createdAt),
+  index("ai_execution_plans_org_conversation_created_idx").on(table.orgId, table.conversationId, table.createdAt),
+  index("ai_execution_plans_org_status_expires_idx").on(table.orgId, table.status, table.expiresAt),
+  index("ai_execution_plans_correlation_id_idx").on(table.correlationId),
+]);
+
+export const aiConfirmations = pgTable("ai_confirmations", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  planId: varchar("plan_id").notNull().references(() => aiExecutionPlans.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  tokenHash: varchar("token_hash", { length: 128 }).notNull(),
+  status: varchar("status", { length: 32 }).notNull().default("issued"),
+  confirmationMethod: varchar("confirmation_method", { length: 64 }).notNull().default("dedicated_api"),
+  requestCorrelationId: varchar("request_correlation_id", { length: 128 }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }),
+  usedAt: timestamp("used_at", { withTimezone: true }),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  invalidatedAt: timestamp("invalidated_at", { withTimezone: true }),
+  invalidatedReason: varchar("invalidated_reason", { length: 500 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("ai_confirmations_token_hash_uidx").on(table.tokenHash),
+  index("ai_confirmations_org_user_plan_idx").on(table.orgId, table.userId, table.planId),
+  index("ai_confirmations_plan_expires_idx").on(table.planId, table.expiresAt),
+]);
+
+export const aiExecutionSteps = pgTable("ai_execution_steps", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  planId: varchar("plan_id").notNull().references(() => aiExecutionPlans.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sequence: integer("sequence").notNull(),
+  commandName: varchar("command_name", { length: 120 }).notNull(),
+  commandVersion: varchar("command_version", { length: 64 }).notNull(),
+  status: text("status").$type<(typeof assistantExecutionStepStatusValues)[number]>().notNull().default("pending"),
+  sanitizedInput: jsonb("sanitized_input").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  resultSummary: jsonb("result_summary").$type<Record<string, unknown> | null>(),
+  errorCode: varchar("error_code", { length: 120 }),
+  domainAuditReferences: jsonb("domain_audit_references").$type<string[]>().notNull().default(sql.raw("'[]'::jsonb")),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("ai_execution_steps_plan_sequence_uidx").on(table.planId, table.sequence),
+  index("ai_execution_steps_org_plan_status_idx").on(table.orgId, table.planId, table.status),
+]);
+
+export const aiIdempotencyRecords = pgTable("ai_idempotency_records", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  actorUserId: varchar("actor_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  commandName: varchar("command_name", { length: 120 }).notNull(),
+  commandVersion: varchar("command_version", { length: 64 }).notNull(),
+  idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+  planId: varchar("plan_id").notNull().references(() => aiExecutionPlans.id, { onDelete: "cascade" }),
+  requestHash: varchar("request_hash", { length: 128 }).notNull(),
+  status: text("status").$type<(typeof assistantIdempotencyStatusValues)[number]>().notNull().default("locked"),
+  resultReference: varchar("result_reference", { length: 128 }),
+  resultSummary: jsonb("result_summary").$type<Record<string, unknown> | null>(),
+  errorReference: varchar("error_reference", { length: 128 }),
+  lockedAt: timestamp("locked_at", { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("ai_idempotency_records_scope_key_uidx").on(table.orgId, table.actorUserId, table.commandName, table.commandVersion, table.idempotencyKey),
+  index("ai_idempotency_records_org_plan_idx").on(table.orgId, table.planId),
+  index("ai_idempotency_records_status_expiry_idx").on(table.status, table.expiresAt),
+]);
+
 export const insertAiConversationSchema = createInsertSchema(aiConversations, {
   status: z.enum(assistantConversationStatusValues),
 }).omit({ id: true, createdAt: true, updatedAt: true });
@@ -7510,6 +7624,10 @@ export const insertAiToolExecutionSchema = createInsertSchema(aiToolExecutions, 
   status: z.enum(assistantToolExecutionStatusValues),
 }).omit({ id: true, createdAt: true });
 export const insertAiAuditEventSchema = createInsertSchema(aiAuditEvents).omit({ id: true, createdAt: true });
+export const insertAiExecutionPlanSchema = createInsertSchema(aiExecutionPlans).omit({ id: true, createdAt: true, updatedAt: true });
+export const insertAiConfirmationSchema = createInsertSchema(aiConfirmations).omit({ id: true, createdAt: true });
+export const insertAiExecutionStepSchema = createInsertSchema(aiExecutionSteps).omit({ id: true, createdAt: true });
+export const insertAiIdempotencyRecordSchema = createInsertSchema(aiIdempotencyRecords).omit({ id: true, createdAt: true });
 
 export type AiConversation = typeof aiConversations.$inferSelect;
 export type InsertAiConversation = typeof aiConversations.$inferInsert;
@@ -7523,6 +7641,14 @@ export type AiToolExecution = typeof aiToolExecutions.$inferSelect;
 export type InsertAiToolExecution = typeof aiToolExecutions.$inferInsert;
 export type AiAuditEvent = typeof aiAuditEvents.$inferSelect;
 export type InsertAiAuditEvent = typeof aiAuditEvents.$inferInsert;
+export type AiExecutionPlan = typeof aiExecutionPlans.$inferSelect;
+export type InsertAiExecutionPlan = typeof aiExecutionPlans.$inferInsert;
+export type AiConfirmation = typeof aiConfirmations.$inferSelect;
+export type InsertAiConfirmation = typeof aiConfirmations.$inferInsert;
+export type AiExecutionStep = typeof aiExecutionSteps.$inferSelect;
+export type InsertAiExecutionStep = typeof aiExecutionSteps.$inferInsert;
+export type AiIdempotencyRecord = typeof aiIdempotencyRecords.$inferSelect;
+export type InsertAiIdempotencyRecord = typeof aiIdempotencyRecords.$inferInsert;
 
 // ──────────────────────────────────────────────────────────────────────────────
 // BUG REPORT NOTES — admin-only internal notes per bug report
