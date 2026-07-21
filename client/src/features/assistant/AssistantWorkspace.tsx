@@ -8,7 +8,8 @@ import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
 import type { AssistantStructuredCard } from "@shared/assistantContracts";
-import { AssistantPlanCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
+import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
+import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
 
 function ResultCards({
   cards,
@@ -31,6 +32,18 @@ function ResultCards({
 }) {
   if (!cards.length) return null;
   return <div className="mt-2 space-y-2">{cards.map((card, index) => {
+    const productCard = toAssistantProductManagementCard(card);
+    if (productCard) return <AssistantProductManagementCardView key={`product-${productCard.kind}-${index}`} card={productCard} />;
+    const productProposal = toAssistantProductDraftProposal(card);
+    if (productProposal) {
+      const created = executionPlans[productProposal.turnId];
+      if (created) {
+        const planCard = { kind: "action_plan", title: productProposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
+        const plan = toAssistantPlanCardModel(planCard);
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
+      }
+      return <AssistantProductDraftProposalCard key={`proposal-${productProposal.turnId}-${index}`} proposal={productProposal} onCreatePlan={onCreatePlan} />;
+    }
     const proposal = toAssistantQuoteNoteProposal(card);
     if (proposal) {
       const created = executionPlans[proposal.turnId];
@@ -143,8 +156,8 @@ function ConversationContent() {
 
   const confirmQuoteNotePlan = async (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => {
     const result = await confirmPlan.mutateAsync(input);
-    const data = result && typeof result === "object" ? result as { plan?: unknown } : null;
-    if (data?.plan) updateExecutionPlan(input.planId, data.plan);
+    const data = result && typeof result === "object" ? result as { plan?: unknown; result?: unknown } : null;
+    if (data?.plan) updateExecutionPlan(input.planId, data.result ? { ...(data.plan as object), executionResult: data.result } : data.plan);
     return result;
   };
 

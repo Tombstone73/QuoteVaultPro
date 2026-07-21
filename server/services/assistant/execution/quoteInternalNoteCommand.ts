@@ -134,6 +134,7 @@ export function createQuoteInternalNoteCommandDefinition(
     partialFailurePolicy: "forbid",
     auditCategory: "assistant_quote_internal_note",
     undoSupport: "metadata_only",
+    abandonmentPolicy: "none",
     testOnly: false,
     devEnabled: true,
     mainEnabled: true,

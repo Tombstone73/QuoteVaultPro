@@ -150,4 +150,25 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).toContain("Internal note added to Quote Q-1042.");
     expect(Array.from(container.querySelectorAll<HTMLAnchorElement>("a[href='/quotes/quote-1042']")).some((link) => link.textContent === "Quote Q-1042")).toBe(true);
   });
+
+  it("allows a dedicated confirmation only for a server-ready inactive product-draft plan", () => {
+    const productPlan = {
+      kind: "action_plan",
+      title: "Create Banner draft",
+      plan: {
+        id: "plan-product-1", action: "products.create_inactive_draft", status: "awaiting_confirmation", planVersion: 1,
+        riskLevel: "high", confirmationAvailable: true, confirmationToken: "server-token", expiresAt: "2030-01-01T00:10:00.000Z",
+        preview: { summary: "One inactive Banner draft will be created." }, missingInformation: [], cancellationAvailable: true, steps: [],
+      },
+    };
+    const confirmed = jest.fn();
+    const onConfirm: NonNullable<React.ComponentProps<typeof AssistantPlanCard>["onConfirm"]> = (input) => { confirmed(input); };
+    act(() => root.render(<AssistantPlanCard card={productPlan} context={buildSafeAssistantContext("/products", "Products")} onConfirm={onConfirm} />));
+    expect(container.textContent).toContain("cannot activate, publish, or modify an active product");
+    expect(container.textContent).not.toMatch(/Activate|Publish/);
+    const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: create inactive product draft']");
+    expect(go).not.toBeNull();
+    act(() => go?.click());
+    expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan-product-1", expectedPlanVersion: 1, confirmationToken: "server-token" }));
+  });
 });

@@ -147,13 +147,13 @@ export function useConfirmAssistantQuoteInternalNote() {
       expectedPlanVersion: number;
       confirmationToken: string;
       context: AssistantContextEnvelope;
-    }): Promise<{ plan?: unknown }> => {
+    }): Promise<{ plan?: unknown; result?: unknown }> => {
       const response = await apiRequest("POST", `/api/assistant/plans/${encodeURIComponent(planId)}/confirmations`, {
         expectedPlanVersion,
         confirmationToken,
         context,
       });
-      return unwrap<{ plan?: unknown }>(await response.json());
+      return unwrap<{ plan?: unknown; result?: unknown }>(await response.json());
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: conversationsKey });
