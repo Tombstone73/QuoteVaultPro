@@ -203,6 +203,7 @@ export const ROUTES = {
     productTypes: "/admin/product-types",
     bugReports: "/admin/bug-reports",
     catalogMigrationLab: "/admin/catalog-migration-lab",
+    aiProductBuilder: "/admin/catalog-migration-lab?mode=ai-product-builder",
     productIntakeReview: (sessionId: string) => `/admin/product-intake/sessions/${sessionId}/review`,
     pricingAudit: "/admin/pricing-audit",
     materialsImportExport: "/admin/materials/import-export",
