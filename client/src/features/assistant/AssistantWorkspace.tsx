@@ -3,14 +3,28 @@ import { Bot, Expand, Maximize2, MessageSquarePlus, Minus, PanelBottom, PanelLef
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useAssistantConversation, useAssistantConversations, useCreateAssistantConversation, useSendAssistantTurn } from "@/hooks/useAssistantApi";
+import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCreateAssistantConversation, useSendAssistantTurn } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
+import type { AssistantContextEnvelope } from "./types";
 import type { AssistantStructuredCard } from "@shared/assistantContracts";
+import { AssistantPlanCard, toAssistantPlanCardModel } from "./AssistantPlanCard";
 
-function ResultCards({ cards }: { cards: AssistantStructuredCard[] }) {
+function ResultCards({
+  cards,
+  context,
+  onCancelPlan,
+  cancellingPlanId,
+}: {
+  cards: AssistantStructuredCard[];
+  context: AssistantContextEnvelope;
+  onCancelPlan: (planId: string, expectedPlanVersion: number) => Promise<unknown>;
+  cancellingPlanId?: string;
+}) {
   if (!cards.length) return null;
   return <div className="mt-2 space-y-2">{cards.map((card, index) => {
+    const plan = toAssistantPlanCardModel(card);
+    if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} cancelling={cancellingPlanId === plan.id} />;
     if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source") return null;
     return <section key={`${card.kind}-${index}`} className="rounded-md border bg-background/70 p-2 text-xs">
       <p className="font-medium">{card.title}</p><p className="mt-0.5 text-muted-foreground">{card.summary}</p>
@@ -75,6 +89,7 @@ function ConversationContent() {
   const createConversation = useCreateAssistantConversation();
   const detail = useAssistantConversation(activeConversationId, enabled);
   const sendTurn = useSendAssistantTurn();
+  const cancelPlan = useCancelAssistantPlan();
 
   React.useEffect(() => {
     if (!activeConversationId && conversations.data?.[0]) setActiveConversationId(conversations.data[0].id);
@@ -136,7 +151,7 @@ function ConversationContent() {
             </div>
           ) : detail.data?.messages?.map((message) => (
             <div key={message.id} className={cn("max-w-[88%] rounded-lg px-3 py-2 text-sm", message.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-muted")}>
-              {message.content}{message.role !== "user" ? <ResultCards cards={message.structuredCards ?? []} /> : null}
+              {message.content}{message.role !== "user" ? <ResultCards cards={message.structuredCards ?? []} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} /> : null}
             </div>
           ))}
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">Your message was not sent. You can try again.</p> : null}

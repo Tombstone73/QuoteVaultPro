@@ -85,3 +85,20 @@ export function useSendAssistantTurn() {
     },
   });
 }
+
+/**
+ * Cancelling a server-created plan is separate from confirming or executing it.
+ * The client deliberately exposes no confirmation/execution mutation here.
+ */
+export function useCancelAssistantPlan() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ planId, expectedPlanVersion }: { planId: string; expectedPlanVersion: number }): Promise<unknown> => {
+      const response = await apiRequest("POST", `/api/assistant/plans/${encodeURIComponent(planId)}/cancel`, { expectedPlanVersion });
+      return response.json();
+    },
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: conversationsKey });
+    },
+  });
+}
