@@ -93,6 +93,8 @@ export type ProductIntakeDraftReviewService = {
     };
     userId: string | null;
     userName?: string | null;
+    /** Optional server-derived optimistic-concurrency guard for assistant plans. */
+    expectedDraftUpdatedAt?: string;
   }): Promise<ProductIntakeDraftReview>;
   getDraftLinkForProduct(args: { organizationId: string; productId: string }): Promise<{
     sessionId: string;
@@ -377,7 +379,7 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
       return buildReview(database, args.organizationId, args.sessionId);
     },
 
-    async updateDraftPricing({ organizationId, sessionId, base, userId, userName }) {
+    async updateDraftPricing({ organizationId, sessionId, base, userId, userName, expectedDraftUpdatedAt }) {
       await database.transaction(async (tx: any) => {
         const [session] = await tx
           .select({
@@ -394,6 +396,15 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
           throw new ProductIntakeSessionError(409, "Create the Product Intake draft before editing draft pricing.", "INTAKE_DRAFT_NOT_CREATED");
         }
 
+        const [product] = await tx
+          .select({ id: products.id, isActive: products.isActive, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+          .from(products)
+          .where(and(eq(products.organizationId, organizationId), eq(products.id, session.createdProductId)))
+          .limit(1);
+        if (!product || product.isActive || product.pbv2ActiveTreeVersionId) {
+          throw new ProductIntakeSessionError(409, "Only an inactive Product Intake draft without an active PBV2 tree can be edited.", "INACTIVE_DRAFT_REQUIRED");
+        }
+
         const [tree] = await tx
           .select()
           .from(pbv2TreeVersions)
@@ -406,6 +417,9 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
         if (!tree) throw new ProductIntakeSessionError(404, "PBV2 draft tree not found.", "PBV2_TREE_NOT_FOUND");
         if (tree.status !== "DRAFT") {
           throw new ProductIntakeSessionError(409, "Only PBV2 DRAFT trees can be edited from Product Intake.", "PBV2_NOT_DRAFT");
+        }
+        if (expectedDraftUpdatedAt && new Date(tree.updatedAt).toISOString() !== new Date(expectedDraftUpdatedAt).toISOString()) {
+          throw new ProductIntakeSessionError(409, "The PBV2 draft changed; reload the draft before applying this update.", "DRAFT_STALE");
         }
 
         const treeJson = tree.treeJson && typeof tree.treeJson === "object" ? { ...(tree.treeJson as any) } : {};
@@ -462,18 +476,24 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
           },
         };
 
-        await tx
+        const updateConditions = [
+          eq(pbv2TreeVersions.organizationId, organizationId),
+          eq(pbv2TreeVersions.id, tree.id),
+          eq(pbv2TreeVersions.status, "DRAFT"),
+          ...(expectedDraftUpdatedAt ? [eq(pbv2TreeVersions.updatedAt, new Date(expectedDraftUpdatedAt))] : []),
+        ];
+        const updatedRows = await tx
           .update(pbv2TreeVersions)
           .set({
             treeJson: updatedTreeJson,
             updatedByUserId: userId,
             updatedAt: new Date(),
           })
-          .where(and(
-            eq(pbv2TreeVersions.organizationId, organizationId),
-            eq(pbv2TreeVersions.id, tree.id),
-            eq(pbv2TreeVersions.status, "DRAFT"),
-          ));
+          .where(and(...updateConditions))
+          .returning({ id: pbv2TreeVersions.id });
+        if (updatedRows.length !== 1) {
+          throw new ProductIntakeSessionError(409, "The PBV2 draft changed; reload the draft before applying this update.", "DRAFT_STALE");
+        }
 
         await tx.insert(auditLogs).values({
           organizationId,

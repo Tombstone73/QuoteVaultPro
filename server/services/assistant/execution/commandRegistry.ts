@@ -26,10 +26,11 @@ export type AssistantCommandPartialFailurePolicy = (typeof assistantCommandParti
 export const assistantCommandRuntimeValues = ["development", "production", "test"] as const;
 export type AssistantCommandRuntime = (typeof assistantCommandRuntimeValues)[number];
 
-/** The complete production write-command allowlist for Stage 4. */
+/** The complete production write-command allowlist for Stage 6. */
 export const assistantProductionCommandAllowlist = [
   "quotes.add_internal_note",
   "products.create_inactive_draft",
+  "products.update_inactive_draft",
 ] as const;
 /** The only injected command name accepted by the isolated test registry. */
 export const assistantTestCommandAllowlist = ["test.assistant.synthetic_command"] as const;

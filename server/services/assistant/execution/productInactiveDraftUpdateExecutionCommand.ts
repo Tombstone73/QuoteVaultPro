@@ -1,0 +1,84 @@
+import { ExecutionPlanError } from "./types";
+import type { ExecutionCommandDefinition, ExecutionCommandResult, ExecutionPlanPreview } from "./types";
+import {
+  createProductInactiveDraftUpdateCommandDefinition,
+  productInactiveDraftUpdateCommandInputSchema,
+  productInactiveDraftUpdateCommandName,
+  type ProductInactiveDraftUpdateCanonicalService,
+  type ProductInactiveDraftUpdateCommandInput,
+} from "./productInactiveDraftUpdateCommand";
+import { inactiveProductDraftUpdateService, type InactiveProductDraftPatch, type InactiveProductDraftUpdateService } from "../inactiveProductDraftUpdateService";
+
+export interface ProductInactiveDraftUpdatePlanningService extends ProductInactiveDraftUpdateCanonicalService {
+  buildProposal(input: { organizationId: string; sessionId: string; patch: InactiveProductDraftPatch }): ReturnType<InactiveProductDraftUpdateService["buildProposal"]>;
+  revalidateProposal(input: { organizationId: string; sessionId: string; patch: InactiveProductDraftPatch; expectedFingerprint: string }): ReturnType<InactiveProductDraftUpdateService["revalidateProposal"]>;
+}
+
+export function createProductInactiveDraftUpdateCanonicalService(
+  service: InactiveProductDraftUpdateService = inactiveProductDraftUpdateService,
+): ProductInactiveDraftUpdatePlanningService {
+  return {
+    buildProposal: ({ organizationId, sessionId, patch }) => service.buildProposal({ organizationId, sessionId, patch }),
+    revalidateProposal: ({ organizationId, sessionId, patch, expectedFingerprint }) => service.revalidateProposal({ organizationId, sessionId, patch, expectedFingerprint }),
+    async updateInactiveDraft(input) {
+      const patch = { basePricing: input.patch.basePricing };
+      const updated = await service.updateInactiveProductDraft({ organizationId: input.organizationId, sessionId: input.productIntakeSessionId, patch, expectedFingerprint: input.proposalFingerprint, userId: input.actorUserId });
+      return {
+        product: { id: updated.productId, name: updated.productName, active: false, sourceLink: `/products/${updated.productId}` },
+        productIntakeSession: { id: updated.sessionId, sourceLink: updated.editorLink },
+        pbv2DraftTreeVersionId: updated.pbv2TreeVersionId,
+        readiness: updated.readiness.status === "ready" ? "ready" as const : "not_ready" as const,
+      };
+    },
+  };
+}
+
+const unchanged = ["product_activation", "active_product_modification", "quote_or_order_pricing", "inventory_adjustment", "production_job_creation", "customer_facing_catalog_change"] as const;
+
+function changes(input: ProductInactiveDraftUpdateCommandInput, before: Awaited<ReturnType<InactiveProductDraftUpdateService["buildProposal"]>>["before"]) {
+  return (Object.keys(input.patch.basePricing) as Array<keyof ProductInactiveDraftUpdateCommandInput["patch"]["basePricing"]>).map((key) => ({
+    field: key === "perSqftCents" ? "Base rate per square foot" : key === "perPieceCents" ? "Base rate per piece" : "Minimum charge",
+    before: before.pricingBase[key] ?? null,
+    after: input.patch.basePricing[key] ?? null,
+  }));
+}
+
+export function createProductInactiveDraftUpdateExecutionCommand(service: ProductInactiveDraftUpdatePlanningService): ExecutionCommandDefinition {
+  const command = createProductInactiveDraftUpdateCommandDefinition(service);
+  return {
+    name: command.name, version: command.version, testOnly: false, riskLevel: command.risk,
+    confirmationTtlMs: command.confirmationExpiresInMs, maxAffectedRecords: command.maxAffectedRecords,
+    requiredPermissions: [command.requiredCapability],
+    async buildPreview({ scope, arguments: rawArguments }) {
+      const input = productInactiveDraftUpdateCommandInputSchema.parse(rawArguments);
+      const validation = await service.revalidateProposal({ organizationId: scope.organizationId, sessionId: input.productIntakeSessionId, patch: { basePricing: input.patch.basePricing }, expectedFingerprint: input.proposalFingerprint });
+      if (!validation.valid) throw new ExecutionPlanError(validation.code, validation.summary);
+      const { before, fingerprint } = validation.proposal;
+      const preview: ExecutionPlanPreview = {
+        title: `Update inactive draft: ${before.productName}`,
+        summary: "Apply the displayed base-pricing patch to one inactive Product Intake draft. Activation and publication remain disabled.",
+        sideEffects: ["Updates the validated PBV2 DRAFT base-pricing metadata."],
+        affectedRecords: [{ entityType: "product", entityId: before.productId, fingerprint }],
+        productInactiveDraftUpdate: {
+          productId: before.productId, productName: before.productName, sessionId: before.sessionId, editorLink: before.editorLink,
+          changes: changes(input, before), readinessBefore: before.readiness.status, expectedReadinessAfter: "unknown",
+          warnings: before.readiness.warnings, validationErrors: before.readiness.findings, unchanged,
+        },
+      };
+      if (before.readiness.findings.length) preview.missingInformation = before.readiness.findings;
+      return { arguments: { ...input, proposalFingerprint: fingerprint }, preview };
+    },
+    async revalidate({ plan, scope }) {
+      const input = productInactiveDraftUpdateCommandInputSchema.parse(plan.sanitizedArguments);
+      const record = plan.affectedRecords[0];
+      const validation = await service.revalidateProposal({ organizationId: scope.organizationId, sessionId: input.productIntakeSessionId, patch: { basePricing: input.patch.basePricing }, expectedFingerprint: input.proposalFingerprint });
+      if (!validation.valid || !record || record.entityId !== (validation.valid ? validation.proposal.before.productId : record.entityId) || record.fingerprint !== input.proposalFingerprint) return { valid: false as const, code: validation.valid ? "INACTIVE_DRAFT_STALE" : validation.code, summary: validation.valid ? "The inactive draft changed." : validation.summary };
+      return { valid: true as const };
+    },
+    async execute({ plan, scope }): Promise<ExecutionCommandResult> {
+      const input = productInactiveDraftUpdateCommandInputSchema.parse(plan.sanitizedArguments);
+      const result = await command.adapter.execute(input, { organizationId: scope.organizationId, actorUserId: scope.userId, planId: plan.id, idempotencyKey: plan.idempotencyKey, correlationId: plan.correlationId, signal: new AbortController().signal });
+      return { status: "succeeded", summary: `Inactive draft ${result.product.name} was updated. Activation and publication remain unavailable in the assistant.`, details: { productDraft: { id: result.product.id, name: result.product.name, sourceLink: result.product.sourceLink } }, steps: [{ commandName: `${productInactiveDraftUpdateCommandName}@${command.version}`, status: "succeeded", summary: `Updated validated base-pricing fields on PBV2 DRAFT ${result.pbv2DraftTreeVersionId ?? ""}.` }] };
+    },
+  };
+}

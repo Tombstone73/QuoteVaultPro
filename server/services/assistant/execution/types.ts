@@ -60,6 +60,18 @@ export interface ExecutionPlanPreview {
     warnings: readonly string[];
     unchanged: readonly string[];
   };
+  productInactiveDraftUpdate?: {
+    productId: string;
+    productName: string;
+    sessionId: string;
+    editorLink: string;
+    changes: readonly { field: string; before: string | number | boolean | null; after: string | number | boolean | null }[];
+    readinessBefore: string;
+    expectedReadinessAfter: string;
+    warnings: readonly string[];
+    validationErrors: readonly string[];
+    unchanged: readonly string[];
+  };
 }
 
 export interface ExecutionPlanRecord {

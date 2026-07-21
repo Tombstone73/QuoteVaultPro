@@ -171,4 +171,37 @@ describe("AssistantPlanCard", () => {
     act(() => go?.click());
     expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan-product-1", expectedPlanVersion: 1, confirmationToken: "server-token" }));
   });
+
+  it("renders an exact inactive-draft update preview and blocks GO for server validation errors", () => {
+    const updatePlan = {
+      kind: "action_plan",
+      title: "Update Banner draft",
+      plan: {
+        id: "plan-product-update-1", action: "products.update_inactive_draft", status: "awaiting_confirmation", planVersion: 2,
+        riskLevel: "high", confirmationAvailable: true, confirmationToken: "server-token", expiresAt: "2030-01-01T00:10:00.000Z",
+        preview: { summary: "One inactive Banner draft will be updated.", productDraftUpdate: {
+          productName: "Banner", draftStatus: "Inactive draft", editorPath: "/admin/products/banner-draft",
+          changes: [{ field: "Minimum charge", before: "$10", after: "$15" }, { field: "Base rate", before: "$0.85/sq ft", after: "$0.95/sq ft" }],
+          warnings: ["Existing square-foot pricing remains in use."], unchangedAreas: ["Activation", "Inventory", "Production jobs"],
+        } }, missingInformation: [], cancellationAvailable: true, steps: [],
+      },
+    };
+    const confirmed = jest.fn();
+    act(() => root.render(<AssistantPlanCard card={updatePlan} context={buildSafeAssistantContext("/products/banner-draft", "Product")} onConfirm={(input) => { void confirmed(input); }} />));
+    expect(container.textContent).toContain("Minimum charge");
+    expect(container.textContent).toContain("$10");
+    expect(container.textContent).toContain("$15");
+    expect(container.textContent).toContain("Existing square-foot pricing remains in use.");
+    expect(container.textContent).toContain("Explicitly unchanged");
+    const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: update inactive product draft']");
+    expect(go).not.toBeNull();
+    act(() => go?.click());
+    expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan-product-update-1", expectedPlanVersion: 2 }));
+
+    const invalid = { ...updatePlan, plan: { ...updatePlan.plan, preview: { ...updatePlan.plan.preview, productDraftUpdate: { ...updatePlan.plan.preview.productDraftUpdate, validationErrors: ["Default choice must reference an existing option."] } } } };
+    act(() => root.render(<AssistantPlanCard card={invalid} context={buildSafeAssistantContext("/products/banner-draft", "Product")} onConfirm={(input) => { void confirmed(input); }} />));
+    expect(container.textContent).toContain("Default choice must reference an existing option.");
+    expect(container.textContent).toContain("Resolve validation errors before this draft update can be confirmed.");
+    expect(container.querySelector("button[aria-label='GO: update inactive product draft']")).toBeNull();
+  });
 });

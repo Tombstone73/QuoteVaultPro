@@ -55,4 +55,15 @@ describe("AssistantProductManagementCards", () => {
     const unsafe = toAssistantProductManagementCard({ kind: "product_draft_created", title: "Draft created", details: { reviewUrl: "https://outside.example/draft" } })!;
     expect(unsafe.editorPath).toBeNull();
   });
+
+  it("renders active-product and unsupported draft requests as editor-only guidance", () => {
+    const active = toAssistantProductManagementCard({ kind: "product_active_product_unsupported", title: "Active product", details: { editorPath: "/admin/products/live-banner" } })!;
+    const unsupported = toAssistantProductManagementCard({ kind: "product_draft_update_unsupported", title: "Option update", details: { editorPath: "/admin/products/draft-1", unsupportedReasons: ["Option, material, and routing changes are not available through the assistant."] } })!;
+    act(() => root.render(<><AssistantProductManagementCardView card={active} /><AssistantProductManagementCardView card={unsupported} /></>));
+    expect(container.textContent).toContain("Conversational editing is available only for inactive drafts");
+    expect(container.textContent).toContain("not available through the assistant");
+    expect(container.textContent).toContain("Option, material, and routing changes are not available through the assistant.");
+    expect(container.querySelector("button")).toBeNull();
+    expect(container.querySelector<HTMLAnchorElement>("a[href='/admin/products/live-banner']")?.textContent).toContain("existing editor");
+  });
 });

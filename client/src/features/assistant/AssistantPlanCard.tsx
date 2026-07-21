@@ -27,6 +27,15 @@ export type AssistantPlanCardModel = {
     quotePath: string | null;
     unchangedItems: string[];
   } | null;
+  productDraftUpdate: {
+    productName: string | null;
+    draftStatus: string | null;
+    editorPath: string | null;
+    changes: Array<{ label: string; before: string | null; after: string | null }>;
+    validationErrors: string[];
+    warnings: string[];
+    unchangedAreas: string[];
+  } | null;
   affectedEntities: Array<{ id: string; type: string; label: string; href: string | null }>;
   sideEffects: string[];
   missingInformation: string[];
@@ -142,6 +151,31 @@ function toQuoteInternalNote(action: string | null, preview: UnknownRecord | nul
   };
 }
 
+function toProductDraftUpdate(action: string | null, preview: UnknownRecord | null): AssistantPlanCardModel["productDraftUpdate"] {
+  if (action !== "products.update_inactive_draft" || !preview) return null;
+  const value = asRecord(preview.productDraftUpdate) ?? asRecord(preview.productDraft) ?? preview;
+  const changeValues = value.changes ?? value.beforeAfter ?? value.patchChanges ?? value.fieldChanges;
+  const changes = Array.isArray(changeValues) ? changeValues.slice(0, 30).flatMap((item) => {
+    const change = asRecord(item);
+    if (!change) return [];
+    const label = asText(change.label) ?? asText(change.field) ?? asText(change.name);
+    if (!label) return [];
+    const before = asText(change.before) ?? asText(change.previous) ?? asText(change.oldValue);
+    const after = asText(change.after) ?? asText(change.next) ?? asText(change.newValue);
+    return before || after ? [{ label, before, after }] : [];
+  }) : [];
+  const editorPath = asText(value.editorPath) ?? asText(value.reviewUrl) ?? asText(value.sourceLink) ?? asText(preview.editorPath);
+  return {
+    productName: asText(value.productName) ?? asText(value.name),
+    draftStatus: asText(value.draftStatus) ?? asText(value.status),
+    editorPath: editorPath?.startsWith("/") ? editorPath : null,
+    changes,
+    validationErrors: asTextList(value.validationErrors ?? value.errors),
+    warnings: asTextList(value.warnings ?? value.validationWarnings),
+    unchangedAreas: asTextList(value.unchangedAreas ?? value.unchangedFields ?? value.unchanged),
+  };
+}
+
 export type AssistantQuoteNoteProposal = {
   turnId: string;
   title: string;
@@ -153,6 +187,7 @@ export type AssistantProductDraftProposal = {
   turnId: string;
   title: string;
   summary: string | null;
+  action: "products.create_inactive_draft" | "products.update_inactive_draft";
 };
 
 /** A product proposal carries only opaque, server-produced session references.
@@ -161,10 +196,14 @@ export function toAssistantProductDraftProposal(card: unknown): AssistantProduct
   const record = asRecord(card);
   if (!record || asText(record.kind) !== "action_proposal") return null;
   const proposal = asRecord(record.proposal) ?? asRecord(record.plan) ?? record;
-  if (asText(proposal.action) !== "products.create_inactive_draft") return null;
+  const action = asText(proposal.action);
+  if (action !== "products.create_inactive_draft" && action !== "products.update_inactive_draft") return null;
   const turnId = asText(proposal.turnId) ?? asText(record.turnId);
-  if (!turnId || !asText(proposal.intakeSessionId) || !asText(proposal.proposalFingerprint)) return null;
-  return { turnId, title: asText(record.title) ?? "Create inactive product draft", summary: asText(record.summary) };
+  const hasBoundReference = action === "products.create_inactive_draft"
+    ? Boolean(asText(proposal.intakeSessionId) && asText(proposal.proposalFingerprint))
+    : Boolean((asText(proposal.intakeSessionId) || asText(proposal.draftReference) || asText(proposal.productDraftId)) && asText(proposal.proposalFingerprint));
+  if (!turnId || !hasBoundReference) return null;
+  return { turnId, title: asText(record.title) ?? (action === "products.update_inactive_draft" ? "Update inactive product draft" : "Create inactive product draft"), summary: asText(record.summary), action };
 }
 
 /** A proposal is display-only until the browser asks the server to create a plan. */
@@ -214,6 +253,7 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
     confirmationToken: asText(plan.confirmationToken) ?? asText(cardRecord.confirmationToken) ?? asText(confirmation?.token),
     preview: asText(plan.preview) ?? asText(cardRecord.preview) ?? getTextFromObject(previewRecord, ["summary", "description", "title"]),
     quoteInternalNote: toQuoteInternalNote(action, previewRecord),
+    productDraftUpdate: toProductDraftUpdate(action, previewRecord),
     affectedEntities: toAffectedEntities(plan.affectedEntities ?? plan.affectedRecords ?? previewRecord?.affectedEntities ?? cardRecord.affectedEntities),
     sideEffects: toSideEffects(plan.sideEffects ?? previewRecord?.sideEffects ?? cardRecord.sideEffects),
     missingInformation: missing,
@@ -230,7 +270,7 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
     canCancel: plan.canCancel === true || plan.cancellationAvailable === true || cardRecord.cancellationAvailable === true,
     steps: toSteps(plan.steps ?? cardRecord.steps ?? cardRecord.executionSteps),
     partialFailureSummary: asText(plan.partialFailureSummary) ?? asText(plan.failureSummary) ?? asText(cardRecord.partialFailureSummary) ?? asText(cardRecord.failureSummary),
-    productDraftResult: productDraftRecord ? { name: asText(productDraftRecord.name) ?? "Inactive product draft", href: (() => { const href = asText(productDraftRecord.sourceLink); return href?.startsWith("/") ? href : null; })() } : null,
+    productDraftResult: productDraftRecord ? { name: asText(productDraftRecord.name) ?? "Inactive product draft", href: (() => { const href = asText(productDraftRecord.sourceLink) ?? asText(productDraftRecord.editorPath) ?? asText(productDraftRecord.reviewUrl); return href?.startsWith("/") ? href : null; })() } : null,
   };
 }
 
@@ -288,6 +328,18 @@ function QuoteInternalNotePreview({ note }: { note: NonNullable<AssistantPlanCar
   </div>;
 }
 
+function ProductDraftUpdatePreview({ update }: { update: NonNullable<AssistantPlanCardModel["productDraftUpdate"]> }) {
+  return <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3">
+    <p className="font-semibold">Inactive draft update</p>
+    <p className="mt-1 text-muted-foreground">This is an exact before-and-after preview. It cannot activate or publish the product.</p>
+    {update.productName || update.draftStatus ? <p className="mt-2">{update.productName ? <><span className="font-medium">Draft: </span>{update.editorPath ? <a className="text-primary underline-offset-2 hover:underline" href={update.editorPath}>{update.productName}</a> : update.productName}</> : null}{update.draftStatus ? <span className="text-muted-foreground"> · {update.draftStatus}</span> : null}</p> : null}
+    {update.changes.length ? <div className="mt-3 overflow-x-auto"><table className="w-full min-w-[28rem] border-collapse text-left"><thead className="text-muted-foreground"><tr><th className="border-b p-1 font-medium">Field</th><th className="border-b p-1 font-medium">Before</th><th className="border-b p-1 font-medium">After</th></tr></thead><tbody>{update.changes.map((change) => <tr key={`${change.label}-${change.before}-${change.after}`}><th className="border-b p-1 align-top font-medium">{change.label}</th><td className="border-b p-1 align-top">{change.before ?? "Unchanged / not set"}</td><td className="border-b p-1 align-top">{change.after ?? "Cleared"}</td></tr>)}</tbody></table></div> : null}
+    {update.validationErrors.length ? <div className="mt-3 rounded border border-destructive/30 bg-destructive/5 p-2"><p className="font-medium">Validation errors</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{update.validationErrors.map((error) => <li key={error}>{error}</li>)}</ul></div> : null}
+    {update.warnings.length ? <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/10 p-2"><p className="font-medium">Warnings</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{update.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div> : null}
+    {update.unchangedAreas.length ? <div className="mt-3"><p className="font-medium">Explicitly unchanged</p><ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted-foreground">{update.unchangedAreas.map((area) => <li key={area}>{area}</li>)}</ul></div> : null}
+  </div>;
+}
+
 export function AssistantQuoteNoteProposalCard({
   proposal,
   onCreatePlan,
@@ -307,11 +359,12 @@ export function AssistantQuoteNoteProposalCard({
 }
 
 export function AssistantProductDraftProposalCard({ proposal, onCreatePlan, creating }: { proposal: AssistantProductDraftProposal; onCreatePlan: (turnId: string) => Promise<unknown> | void; creating?: boolean }) {
+  const updating = proposal.action === "products.update_inactive_draft";
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Product draft proposal: ${proposal.title}`}>
     <p className="font-semibold">{proposal.title}</p>
     {proposal.summary ? <p className="mt-1 text-muted-foreground">{proposal.summary}</p> : null}
     <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This prepares one inactive product draft only. Activation, publication, active-product edits, inventory, quotes, orders, and production jobs are excluded. Sending “GO” in chat does not confirm it.</p>
-    <div className="mt-2"><Button type="button" size="sm" disabled={creating} onClick={() => void onCreatePlan(proposal.turnId)}>{creating ? "Preparing plan…" : "Review inactive-draft plan"}</Button></div>
+    <div className="mt-2"><Button type="button" size="sm" disabled={creating} onClick={() => void onCreatePlan(proposal.turnId)}>{creating ? "Preparing plan…" : updating ? "Review draft-update plan" : "Review inactive-draft plan"}</Button></div>
   </section>;
 }
 
@@ -334,8 +387,9 @@ export function AssistantPlanCard({
   if (!plan) return null;
   const staleForContext = isPlanStaleForContext(plan, context);
   const canCancel = Boolean(onCancel && plan.planVersion && plan.canCancel && !TERMINAL_STATUSES.has(plan.status));
-  const isProductDraft = plan.action === "products.create_inactive_draft";
-  const hasConfirmableDraft = Boolean(plan.quoteInternalNote?.noteText || (isProductDraft && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary));
+  const isProductDraft = plan.action === "products.create_inactive_draft" || plan.action === "products.update_inactive_draft";
+  const isProductDraftUpdate = plan.action === "products.update_inactive_draft";
+  const hasConfirmableDraft = Boolean(plan.quoteInternalNote?.noteText || (isProductDraft && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && (!isProductDraftUpdate || Boolean(plan.productDraftUpdate && plan.productDraftUpdate.changes.length > 0 && plan.productDraftUpdate.validationErrors.length === 0))));
   const canConfirm = Boolean(
     onConfirm
     && hasConfirmableDraft
@@ -354,7 +408,7 @@ export function AssistantPlanCard({
       void onConfirm({ planId: plan.id, expectedPlanVersion: plan.planVersion, confirmationToken: plan.confirmationToken, context });
     }
   };
-  const actionLabel = plan.quoteInternalNote ? "Add internal quote note" : isProductDraft ? "Create inactive product draft" : "Proposed action";
+  const actionLabel = plan.quoteInternalNote ? "Add internal quote note" : isProductDraftUpdate ? "Update inactive product draft" : isProductDraft ? "Create inactive product draft" : "Proposed action";
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Execution plan: ${plan.title}`}>
     <div className="flex items-start justify-between gap-3">
       <div><p className="font-semibold">{plan.title}</p>{plan.action ? <p className="mt-0.5 text-muted-foreground">Action: {actionLabel}</p> : null}</div>
@@ -363,8 +417,9 @@ export function AssistantPlanCard({
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground"><span>Status: {plan.status}</span><PlanExpiration expiresAt={plan.expiresAt} /></div>
     {plan.preview ? <p className="mt-2">{plan.preview}</p> : null}
     {plan.quoteInternalNote ? <QuoteInternalNotePreview note={plan.quoteInternalNote} /> : null}
+    {plan.productDraftUpdate ? <ProductDraftUpdatePreview update={plan.productDraftUpdate} /> : null}
     {plan.quoteInternalNote && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Internal note added to {plan.quoteInternalNote.quotePath && plan.quoteInternalNote.quoteNumber ? <a className="text-primary underline-offset-2 hover:underline" href={plan.quoteInternalNote.quotePath}>Quote {plan.quoteInternalNote.quoteNumber}</a> : (plan.quoteInternalNote.quoteNumber ? `Quote ${plan.quoteInternalNote.quoteNumber}` : "the quote")}.</p> : null}
-    {isProductDraft && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Inactive product draft created. {plan.productDraftResult?.href ? <a className="text-primary underline-offset-2 hover:underline" href={plan.productDraftResult.href}>Open {plan.productDraftResult.name} in the existing editor</a> : "Activation and publication remain unavailable in the assistant."}</p> : null}
+    {isProductDraft && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Inactive product draft {isProductDraftUpdate ? "updated" : "created"}. {plan.productDraftResult?.href ? <a className="text-primary underline-offset-2 hover:underline" href={plan.productDraftResult.href}>Open {plan.productDraftResult.name} in the existing editor</a> : "Activation and publication remain unavailable in the assistant."}</p> : null}
     {staleForContext || plan.staleReason ? <p className="mt-2 flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-foreground"><CircleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{plan.staleReason || "This preview is stale for the page you are viewing. The server must revalidate it before any future action."}</p> : null}
     {plan.missingInformation.length ? <div className="mt-2"><p className="font-medium">Information still needed</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{plan.missingInformation.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
     {plan.affectedEntities.length ? <div className="mt-2"><p className="font-medium">Affected records</p><ul className="mt-1 space-y-1">{plan.affectedEntities.map((entity) => <li key={`${entity.type}-${entity.id}`}>{entity.href ? <a className="text-primary underline-offset-2 hover:underline" href={entity.href}>{entity.label}</a> : entity.label} <span className="text-muted-foreground">({entity.type})</span></li>)}</ul></div> : null}
@@ -372,8 +427,9 @@ export function AssistantPlanCard({
     {plan.undo ? <p className="mt-2 text-muted-foreground">Undo: {plan.undo.available ? (plan.undo.label || "May be available after execution") : "Not available for this plan"}{plan.undo.expiresAt ? ` (until ${new Date(plan.undo.expiresAt).toLocaleString()})` : ""}</p> : null}
     {plan.steps.length ? <div className="mt-2"><p className="flex items-center gap-1 font-medium"><ListChecks className="h-3.5 w-3.5" aria-hidden="true" />Execution status</p><ul className="mt-1 space-y-1">{plan.steps.map((step) => <li key={step.id}><span className="font-medium">{step.label}</span>: {step.status}{step.detail ? ` — ${step.detail}` : ""}</li>)}</ul></div> : null}
     {plan.partialFailureSummary ? <p className="mt-2 flex items-center gap-1 rounded border border-destructive/30 bg-destructive/5 p-2"><XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{plan.status === "partially_failed" ? "Partial failure" : "Execution issue"}: {plan.partialFailureSummary}</p> : null}
-    {plan.quoteInternalNote ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan adds one internal-only quote note. It does not make any customer-facing or operational change.</p> : isProductDraft ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan creates one inactive product draft only. It cannot activate, publish, or modify an active product.</p> : <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Preview only. Production business write commands are not enabled, and this workspace does not provide a GO or execute control.</p>}
-    {canConfirm ? <div className="mt-2"><Button type="button" size="sm" disabled={confirming} onClick={confirm} aria-label={isProductDraft ? "GO: create inactive product draft" : "GO: add internal quote note"}>{confirming ? "Confirming…" : isProductDraft ? "GO — create inactive draft" : "GO — add internal note"}</Button></div> : null}
+    {plan.quoteInternalNote ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan adds one internal-only quote note. It does not make any customer-facing or operational change.</p> : isProductDraft ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan {isProductDraftUpdate ? "updates" : "creates"} one inactive product draft only. It cannot activate, publish, or modify an active product.</p> : <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Preview only. Production business write commands are not enabled, and this workspace does not provide a GO or execute control.</p>}
+    {isProductDraftUpdate && plan.productDraftUpdate?.validationErrors.length ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2" role="status">Resolve validation errors before this draft update can be confirmed.</p> : null}
+    {canConfirm ? <div className="mt-2"><Button type="button" size="sm" disabled={confirming} onClick={confirm} aria-label={isProductDraftUpdate ? "GO: update inactive product draft" : isProductDraft ? "GO: create inactive product draft" : "GO: add internal quote note"}>{confirming ? "Confirming…" : isProductDraftUpdate ? "GO — update inactive draft" : isProductDraft ? "GO — create inactive draft" : "GO — add internal note"}</Button></div> : null}
     {plan.quoteInternalNote && plan.confirmationAvailable && !plan.confirmationToken && plan.status === "awaiting_confirmation" ? <p className="mt-2 text-muted-foreground" role="status">Confirmation is not ready. Reload this plan before continuing.</p> : null}
     {canCancel ? <div className="mt-2"><Button type="button" size="sm" variant="outline" disabled={cancelling} onClick={cancel}>{cancelling ? "Cancelling plan…" : "Cancel plan"}</Button></div> : null}
   </section>;
