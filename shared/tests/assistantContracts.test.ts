@@ -58,6 +58,7 @@ describe("assistant contracts", () => {
       mcpEnabled: false,
       productActivationEnabled: false,
       activeProductEditingEnabled: false,
+      diagnosticsEnabled: false,
       composerHelperText: "Business questions are unavailable.",
       assistantVersion: "v1",
       unavailableReason: null,

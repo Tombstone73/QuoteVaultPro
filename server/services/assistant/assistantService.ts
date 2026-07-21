@@ -1,6 +1,7 @@
 import type {
   AssistantContextEnvelope,
   AssistantCreateConversationRequest,
+  AssistantResponsePresentation,
   AssistantStructuredCard,
   AssistantUpdateConversationRequest,
   AssistantTurnRequest,
@@ -20,8 +21,8 @@ import { resolveDeterministicReadPlan } from "./deterministicReadRouting";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
-export const ASSISTANT_UNAVAILABLE_REPLY = "Business questions are unavailable until a compatible AI provider is configured.";
-export const ASSISTANT_WRITE_REFUSAL_REPLY = "I can help you look up information, but I cannot make changes or run GO actions.";
+export const ASSISTANT_UNAVAILABLE_REPLY = "I can't answer that until a compatible AI provider is configured.";
+export const ASSISTANT_WRITE_REFUSAL_REPLY = "I can't make that change here. I can still help you look up the record or explain what needs attention.";
 
 export class AssistantServiceError extends Error {
   constructor(
@@ -141,17 +142,15 @@ export function resolveAssistantCapabilityQuestion(
     if (!capability.readToolsEnabled) {
       return { title: "Assistant capabilities", response: capability.unavailableReason ?? "Business lookups are currently unavailable." };
     }
-    const actions: string[] = [
-      "search for customers, orders, products, quotes, invoices, and production jobs",
-      "summarize customers, orders, and products",
-      "show operational summaries and the current workspace context",
-    ];
-    if (capability.productionCommandsPermittedForUser.includes("quotes.add_internal_note")) actions.push("add an internal quote note after a preview and dedicated confirmation");
-    if (capability.productionCommandsPermittedForUser.includes("products.create_inactive_draft")) actions.push("create one inactive product draft after a preview and dedicated confirmation");
-    if (capability.productionCommandsEnabled.length && !capability.productionCommandsPermittedForUser.length) {
-      actions.push("show available confirmed actions, although your current role is not permitted to plan them");
-    }
-    return { title: "Assistant capabilities", response: `I can ${actions.join("; ")}.` };
+    const confirmedActions: string[] = [];
+    if (capability.productionCommandsPermittedForUser.includes("quotes.add_internal_note")) confirmedActions.push("add an internal quote note after your confirmation");
+    if (capability.productionCommandsPermittedForUser.includes("products.create_inactive_draft")) confirmedActions.push("help create an inactive product draft after your confirmation");
+    const actionSentence = confirmedActions.length
+      ? ` I can also ${confirmedActions.join(" and ")}.`
+      : capability.productionCommandsEnabled.length
+        ? " Confirmed changes are available to some roles, but not to your current role."
+        : "";
+    return { title: "Assistant capabilities", response: `I can search your customers, orders, quotes, products, invoices, and production jobs. I can summarize records, show your operational backlog, and explain the current workspace.${actionSentence} I can't activate products, edit active products, perform external research, or make unconfirmed changes yet.` };
   }
 
   const limits = [
@@ -230,6 +229,7 @@ export class AssistantService {
       mcpEnabled: false,
       productActivationEnabled: false,
       activeProductEditingEnabled: false,
+      diagnosticsEnabled: hasPermission(actor, "assistant.diagnostics.view"),
       composerHelperText: !readToolsEnabled
         ? (resolved.unavailableReason ?? "Business questions are unavailable until AI configuration is complete.")
         : writeActionsEnabled
@@ -417,7 +417,7 @@ export class AssistantService {
       response,
       correlationId,
       status,
-      structuredCards: cards,
+      structuredCards: withResponsePresentation(cards, status === "failed" ? "diagnostic" : undefined),
       provider,
       model,
       mode: "stage_2_read_only",
@@ -450,7 +450,8 @@ export class AssistantService {
     const result = await this.repo.createFoundationTurn({
       ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message,
       context: input.request.context, clientRequestId: input.request.clientRequestId, response: input.response,
-      correlationId: input.correlationId, status: input.status, structuredCards: input.structuredCards,
+      correlationId: input.correlationId, status: input.status,
+      structuredCards: withResponsePresentation(input.structuredCards, input.status === "failed" ? "diagnostic" : undefined),
       provider: null, model: null, mode: "stage_2_read_only", promptVersion: "assistant-stage-2-planner-v1",
       errorCode: input.errorCode ?? null, errorMessage: input.status === "failed" ? input.response : null,
     });
@@ -476,34 +477,58 @@ function renderToolResults(executions: Array<{ toolName: string; status: string;
       "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context",
     };
     const summary = summaryForTool(execution.toolName, result.data);
-    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: execution.toolName, summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status });
+    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: execution.toolName, summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: result.data });
   }
   if (!cards.length) return { response: "I need a little more detail to find the right information.", cards };
   const completed = cards.filter((card) => !["tool_warning", "permission_denied", "not_found"].includes(card.kind));
-  return { response: completed.length ? `I found ${completed.length} read-only result${completed.length === 1 ? "" : "s"}.` : cards[0]!.summary, cards };
+  return { response: completed.length ? completed.map((card) => card.summary).join(" ") : cards[0]!.summary, cards };
 }
 
 function summaryForTool(toolName: string, data: any): string {
-  if (toolName === "search.global") return `${data.matches?.length ?? 0} matching record${data.matches?.length === 1 ? "" : "s"}.`;
-  if (toolName === "customers.get_summary") return `Customer: ${data.customer?.label ?? "record"}.`;
-  if (toolName === "orders.get_summary") return `Order: ${data.order?.label ?? "record"}.`;
-  if (toolName === "products.get_summary") return `Product: ${data.product?.label ?? "record"}.`;
-  if (toolName === "reports.operational_summary") return `${data.metrics?.length ?? 0} operational counters.`;
+  if (toolName === "search.global") {
+    const count = data.matches?.length ?? 0;
+    return count ? `I found ${count} matching ${count === 1 ? "record" : "records"}.` : "I couldn't find a matching record.";
+  }
+  if (toolName === "customers.get_summary") return `You're looking at ${data.customer?.label ?? "this customer"}${data.customer?.status ? `, currently ${data.customer.status}` : ""}.`;
+  if (toolName === "orders.get_summary") {
+    const order = data.order;
+    return `${order?.label ?? "This order"} is currently ${order?.status ?? "available"}${data.dueDate ? ` and due ${new Date(data.dueDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}.`;
+  }
+  if (toolName === "products.get_summary") return `${data.product?.label ?? "This product"} is ${data.active === false ? "inactive" : data.product?.status ?? "available"}${data.category ? ` in ${data.category}` : ""}.`;
+  if (toolName === "reports.operational_summary") return "Here's the current operational picture.";
   if (toolName === "navigation.get_current_context") {
     const record = data.currentRecord as {
       entityType?: string; orderNumber?: string; entityId?: string; customer?: string; status?: string;
     } | undefined;
-    if (!record) return `Current page: ${data.pageTitle ?? "workspace"}.`;
-    const entity = record.entityType ? `${record.entityType[0]!.toUpperCase()}${record.entityType.slice(1)}` : "Record";
+    if (!record) return `You're on the ${data.pageTitle ?? "current workspace"} page.`;
+    const entity = record.entityType ? `${record.entityType[0]!.toUpperCase()}${record.entityType.slice(1)}` : "record";
     const identifier = record.orderNumber ? ` ${record.orderNumber}` : record.entityId ? ` ${record.entityId}` : "";
-    return [
-      `Current page: ${data.pageTitle ?? "workspace"}.`,
-      `Entity: ${entity}${identifier}.`,
-      record.customer ? `Customer: ${record.customer}.` : null,
-      record.status ? `Status: ${record.status}.` : null,
-    ].filter(Boolean).join(" ");
+    return `You're viewing ${entity}${identifier}${record.customer ? ` for ${record.customer}` : ""}. It is currently ${record.status ?? "available"}.`;
   }
-  return "Read-only result available.";
+  return "Here’s what I found.";
+}
+
+function withResponsePresentation(
+  cards: AssistantResultCard[],
+  forced?: AssistantResponsePresentation,
+): AssistantStructuredCard[] {
+  const kinds = new Set(cards.map((card) => card.kind));
+  const presentation = forced
+    ?? (kinds.has("action_plan") || kinds.has("action_proposal") ? "proposed_action"
+      : kinds.has("execution_result") ? "execution_result"
+        : kinds.has("operational_metrics") ? "analytical"
+          : kinds.has("search_results") ? "collection"
+            : kinds.has("order_summary") || kinds.has("customer_summary") || kinds.has("product_summary") ? "record_summary"
+              : kinds.has("provider_unavailable") || kinds.has("tool_warning") || kinds.has("permission_denied") ? "diagnostic"
+                : "conversational");
+  const metadata: AssistantResultCard = {
+    kind: "response_presentation",
+    title: "Response presentation",
+    summary: "Server-provided presentation metadata.",
+    sourceLinks: [],
+    presentation,
+  };
+  return [metadata, ...cards].slice(0, 20);
 }
 
 export { titleFromMessage };

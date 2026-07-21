@@ -82,6 +82,8 @@ export const assistantCapabilitySchema = z.object({
   mcpEnabled: z.literal(false),
   productActivationEnabled: z.literal(false),
   activeProductEditingEnabled: z.literal(false),
+  /** Enables expandable implementation details for authorized staff only. */
+  diagnosticsEnabled: z.boolean(),
   /** Presentation text derived from this exact server object. */
   composerHelperText: z.string().trim().min(1).max(240),
   assistantVersion: z.string().trim().min(1).max(64),
@@ -91,6 +93,19 @@ export const assistantCapabilitySchema = z.object({
   actorScope: assistantActorScopeSchema.optional(),
 }).strict();
 export type AssistantCapability = z.infer<typeof assistantCapabilitySchema>;
+
+/** Server-owned display intent for an assistant turn. The browser consumes
+ * this metadata and never infers business meaning from response prose. */
+export const assistantResponsePresentationValues = [
+  "conversational",
+  "collection",
+  "record_summary",
+  "analytical",
+  "proposed_action",
+  "execution_result",
+  "diagnostic",
+] as const;
+export type AssistantResponsePresentation = (typeof assistantResponsePresentationValues)[number];
 
 export const assistantFloatingBoundsSchema = z.object({
   x: z.number().finite().min(0).max(100_000),
@@ -353,6 +368,7 @@ const assistantStage1StructuredCardSchema = z.discriminatedUnion("kind", [
   }).strict(),
 ]);
 export const assistantStage2CardKindValues = [
+  "response_presentation",
   "search_results",
   "customer_summary",
   "order_summary",
@@ -404,6 +420,8 @@ export const assistantStage2StructuredCardSchema = z.object({
    * It is deliberately never an execution input. */
   details: z.record(z.unknown()).optional(),
   cancellationAvailable: z.boolean().optional(),
+  /** Invisible turn-level presentation metadata, never a business input. */
+  presentation: z.enum(assistantResponsePresentationValues).optional(),
 }).strict();
 /** Stage 2 extends (rather than replaces) the persisted Stage 1 card union. */
 export const assistantStructuredCardSchema = z.union([

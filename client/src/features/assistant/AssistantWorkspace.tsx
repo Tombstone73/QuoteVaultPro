@@ -11,7 +11,66 @@ import type { AssistantStructuredCard } from "@shared/assistantContracts";
 import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
 
-function ResultCards({
+type AssistantResponsePresentation = "conversational" | "collection" | "record_summary" | "analytical" | "proposed_action" | "execution_result" | "diagnostic";
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function text(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function diagnosticLabel(card: AssistantStructuredCard): string {
+  if ("title" in card) return card.title;
+  return "toolName" in card ? card.toolName : "Assistant diagnostic";
+}
+
+function diagnosticStatus(card: AssistantStructuredCard): string | null {
+  return "toolStatus" in card && card.toolStatus ? card.toolStatus : "status" in card ? card.status : null;
+}
+
+export function responsePresentationForCards(cards: AssistantStructuredCard[]): AssistantResponsePresentation {
+  const metadata = cards.find((card) => card.kind === "response_presentation");
+  const presentation = metadata && "presentation" in metadata ? metadata.presentation : undefined;
+  return presentation === "collection" || presentation === "record_summary" || presentation === "analytical" || presentation === "proposed_action" || presentation === "execution_result" || presentation === "diagnostic"
+    ? presentation
+    : "conversational";
+}
+
+function SourceActions({ sources }: { sources: Array<{ href: string; label: string }> }) {
+  if (!sources.length) return null;
+  return <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-sm">
+    {sources.map((source) => <a key={`${source.href}-${source.label}`} className="font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={source.href}>{source.label}</a>)}
+  </div>;
+}
+
+function CollectionRows({ details, sources }: { details: unknown; sources: Array<{ href: string; label: string }> }) {
+  const matches = isRecord(details) && Array.isArray(details.matches) ? details.matches : [];
+  const rows = matches.flatMap((match) => {
+    const item = isRecord(match) ? match : null;
+    const link = item && isRecord(item.sourceLink) ? item.sourceLink : null;
+    const href = text(link?.href);
+    const label = text(item?.label) ?? text(link?.label);
+    return href && label ? [{ href, label, secondary: text(item?.secondaryDescription), status: text(item?.status) }] : [];
+  });
+  const visible = rows.length ? rows : sources.map((source) => ({ href: source.href, label: source.label, secondary: null, status: null }));
+  if (!visible.length) return null;
+  return <div className="mt-3 divide-y rounded-lg border border-border/70 bg-card/40">{visible.slice(0, 10).map((row) => <a key={`${row.href}-${row.label}`} href={row.href} className="block px-3 py-2.5 text-sm transition-colors hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="font-medium text-foreground">{row.label}</span>{row.secondary ? <span className="ml-2 text-muted-foreground">{row.secondary}</span> : null}{row.status ? <span className="ml-2 text-xs text-muted-foreground">{row.status}</span> : null}</a>)}</div>;
+}
+
+function AnalyticalDetails({ details }: { details: unknown }) {
+  const metrics = isRecord(details) && Array.isArray(details.metrics) ? details.metrics : [];
+  if (!metrics.length) return null;
+  return <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-3">{metrics.slice(0, 12).flatMap((metric) => {
+    const item = isRecord(metric) ? metric : null;
+    const label = text(item?.label);
+    const value = typeof item?.value === "number" || typeof item?.value === "string" ? String(item.value) : null;
+    return label && value ? [<div key={label} className="rounded-lg border border-border/70 bg-card/40 px-3 py-2"><p className="text-lg font-semibold tabular-nums">{value}</p><p className="text-xs leading-4 text-muted-foreground">{label}</p></div>] : [];
+  })}</div>;
+}
+
+export function ResultCards({
   cards,
   context,
   onCancelPlan,
@@ -20,6 +79,9 @@ function ResultCards({
   executionPlans,
   cancellingPlanId,
   confirmingPlanId,
+  diagnosticsEnabled = false,
+  correlationId = null,
+  onRetry,
 }: {
   cards: AssistantStructuredCard[];
   context: AssistantContextEnvelope;
@@ -29,9 +91,16 @@ function ResultCards({
   executionPlans: Record<string, { turnId: string; plan: unknown; confirmationToken: string | null }>;
   cancellingPlanId?: string;
   confirmingPlanId?: string;
+  diagnosticsEnabled?: boolean;
+  correlationId?: string | null;
+  onRetry?: () => void;
 }) {
-  if (!cards.length) return null;
-  return <div className="mt-2 space-y-2">{cards.map((card, index) => {
+  const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false);
+  const presentation = responsePresentationForCards(cards);
+  const visibleCards = cards.filter((card) => card.kind !== "response_presentation");
+  if (!visibleCards.length) return null;
+  const diagnosticCards = visibleCards.filter((card) => ["tool_warning", "provider_unavailable", "permission_denied", "not_found", "partial_result"].includes(card.kind));
+  return <div className="mt-3 space-y-3">{visibleCards.map((card, index) => {
     const productCard = toAssistantProductManagementCard(card);
     if (productCard) return <AssistantProductManagementCardView key={`product-${productCard.kind}-${index}`} card={productCard} />;
     const productProposal = toAssistantProductDraftProposal(card);
@@ -56,13 +125,19 @@ function ResultCards({
     }
     const plan = toAssistantPlanCardModel(card);
     if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} />;
-    if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source") return null;
-    return <section key={`${card.kind}-${index}`} className="rounded-md border bg-background/70 p-2 text-xs">
-      <p className="font-medium">{card.title}</p><p className="mt-0.5 text-muted-foreground">{card.summary}</p>
-      {card.sourceLinks.length ? <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1">{card.sourceLinks.map((source) => <a key={`${source.href}-${source.label}`} className="text-primary underline-offset-2 hover:underline" href={source.href}>{source.label}</a>)}</div> : null}
-      {card.freshness ? <p className="mt-1 text-[10px] text-muted-foreground">Updated {new Date(card.freshness).toLocaleString()}</p> : null}
+    if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source" || diagnosticCards.includes(card)) return null;
+    if (presentation === "collection" && card.kind === "search_results") return <CollectionRows key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
+    if (presentation === "analytical" && card.kind === "operational_metrics") return <AnalyticalDetails key={`${card.kind}-${index}`} details={card.details} />;
+    if (["current_context", "customer_summary", "order_summary", "product_summary"].includes(card.kind)) return <SourceActions key={`${card.kind}-${index}`} sources={card.sourceLinks} />;
+    return <section key={`${card.kind}-${index}`} className="rounded-xl border border-border/70 bg-card/45 px-3 py-3 text-sm shadow-sm">
+      <p className="font-medium text-foreground">{card.title}</p>
+      <SourceActions sources={card.sourceLinks} />
+      {card.freshness ? <p className="mt-2 text-xs text-muted-foreground">Updated {new Date(card.freshness).toLocaleString()}</p> : null}
     </section>;
-  })}</div>;
+  })}
+  {presentation === "diagnostic" && onRetry ? <Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button> : null}
+  {diagnosticsEnabled && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => setDiagnosticsOpen((open) => !open)} aria-expanded={diagnosticsOpen}>Diagnostics</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/70 bg-muted/30 p-2 text-xs text-muted-foreground"><p>Correlation ID: {correlationId ?? "Unavailable"}</p>{diagnosticCards.map((card, index) => <p key={`${diagnosticLabel(card)}-${index}`} className="mt-1">Tool: {diagnosticLabel(card)}{diagnosticStatus(card) ? ` (${diagnosticStatus(card)})` : ""}</p>)}</div> : null}</div> : null}
+  </div>;
 }
 
 export function AssistantLauncher() {
@@ -161,6 +236,12 @@ function ConversationContent() {
     return result;
   };
 
+  const retry = async (message: string) => {
+    if (!activeConversationId || sendTurn.isPending) return;
+    await sendTurn.mutateAsync({ conversationId: activeConversationId, message, context });
+  };
+  const messages = detail.data?.messages ?? [];
+
   if (!enabled) {
     return <WorkspaceNotice title="Assistant unavailable" description={capabilities?.unavailableReason || "The assistant is not enabled for this organization."} />;
   }
@@ -187,28 +268,28 @@ function ConversationContent() {
             <RefreshCw className="h-3.5 w-3.5" /> Refresh
           </Button>
         </div>
-        <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4" aria-live="polite">
+        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6" aria-live="polite">
           {detail.isLoading ? <p className="text-sm text-muted-foreground">Loading conversation…</p> : null}
-          {!detail.data?.messages?.length && !detail.isLoading ? (
+          {!messages.length && !detail.isLoading ? (
             <div className="mx-auto mt-8 max-w-sm text-center">
               <Bot className="mx-auto mb-3 h-8 w-8 text-primary" />
               <h3 className="text-sm font-medium">PrintersHero assistant</h3>
-              <p className="mt-1 text-sm text-muted-foreground">Ask a read-only question about your current PrintersHero workspace.</p>
+              <p className="mt-1 text-sm leading-6 text-muted-foreground">Ask about the record you’re viewing, your production work, or what needs attention.</p>
             </div>
-          ) : detail.data?.messages?.map((message) => (
-            <div key={message.id} className={cn("max-w-[88%] rounded-lg px-3 py-2 text-sm", message.role === "user" ? "ml-auto bg-primary text-primary-foreground" : "bg-muted")}>
-              {message.content}{message.role !== "user" ? <ResultCards cards={message.structuredCards ?? []} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} /> : null}
-            </div>
-          ))}
-          {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-2 text-xs text-destructive">Your message was not sent. You can try again.</p> : null}
+          ) : messages.map((message, index) => {
+            const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
+            if (message.role === "user") return <article key={message.id} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            return <article key={message.id} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+          })}
+          {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Your message wasn’t sent. Try again.</p> : null}
         </div>
-        <form className="border-t p-3" onSubmit={(event) => void submit(event)}>
+        <form className="border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)}>
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
           <div className="flex gap-2">
             <Input id="assistant-message" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} maxLength={8_000} disabled={sendTurn.isPending || !toolsEnabled} />
             <Button type="submit" size="icon" disabled={!draft.trim() || sendTurn.isPending || !toolsEnabled} aria-label="Send message"><Send className="h-4 w-4" /></Button>
           </div>
-          <p className="mt-2 text-[11px] text-muted-foreground">{capabilities?.composerHelperText || capabilities?.unavailableReason || "Business questions are unavailable until AI configuration is complete."}</p>
+          <p className="mt-2 text-xs leading-5 text-muted-foreground">{capabilities?.composerHelperText || capabilities?.unavailableReason || "Business questions are unavailable until AI configuration is complete."}</p>
         </form>
       </section>
     </div>

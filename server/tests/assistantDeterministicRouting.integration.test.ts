@@ -58,8 +58,45 @@ describe("AssistantService deterministic read routing", () => {
       toolCalls: [{ toolName: "orders.get_summary", arguments: { orderNumber: "20002" } }],
     }), expect.objectContaining({ scope, actor: { userId: actor.userId, email: actor.email } }));
     expect(repository.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({
-      response: "I found 1 read-only result.",
-      structuredCards: [expect.objectContaining({ kind: "order_summary", sourceLinks: [{ label: "Order 20002", href: "/orders/order_1" }] })],
+      response: "Order 20002 is currently available.",
+      structuredCards: expect.arrayContaining([
+        expect.objectContaining({ kind: "response_presentation", presentation: "record_summary" }),
+        expect.objectContaining({ kind: "order_summary", sourceLinks: [{ label: "Order 20002", href: "/orders/order_1" }] }),
+      ]),
+    }));
+  });
+
+  test("formats current-record context as conversational prose without exposing the tool name", async () => {
+    const repository = repo();
+    const planner = { plan: jest.fn() };
+    const executePlan = jest.fn(async () => ({
+      executions: [{
+        toolName: "navigation.get_current_context",
+        status: "succeeded",
+        result: {
+          status: "succeeded",
+          data: {
+            pageTitle: "Order Details",
+            currentRecord: {
+              entityType: "order", entityId: "order_1", orderNumber: "ORD-20003", customer: "T3 Signs", status: "In Production",
+              sourceLink: { label: "View order", href: "/orders/order_1" }, freshness: "2026-07-21T12:00:00.000Z",
+            },
+          },
+          provenance: { sourceLinks: [{ label: "View order", href: "/orders/order_1" }], freshness: { capturedAt: "2026-07-21T12:00:00.000Z" } },
+        },
+      }],
+    }));
+    const service = new AssistantService(repository, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true })) }, planner, () => ({ executePlan }));
+
+    await service.createTurn(scope, "conversation_1", actor, { message: "What record am I currently viewing?", context });
+
+    expect(planner.plan).not.toHaveBeenCalled();
+    expect(repository.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({
+      response: "You're viewing Order ORD-20003 for T3 Signs. It is currently In Production.",
+      structuredCards: expect.arrayContaining([
+        expect.objectContaining({ kind: "response_presentation", presentation: "conversational" }),
+        expect.objectContaining({ kind: "current_context", title: "navigation.get_current_context" }),
+      ]),
     }));
   });
 });
