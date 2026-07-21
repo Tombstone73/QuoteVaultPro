@@ -16,7 +16,17 @@ export type AssistantPlanCardModel = {
   status: string;
   planVersion: number | null;
   riskLevel: string;
+  confirmationAvailable: boolean;
+  confirmationToken: string | null;
   preview: string | null;
+  quoteInternalNote: {
+    quoteId: string | null;
+    quoteNumber: string | null;
+    customerName: string | null;
+    noteText: string | null;
+    quotePath: string | null;
+    unchangedItems: string[];
+  } | null;
   affectedEntities: Array<{ id: string; type: string; label: string; href: string | null }>;
   sideEffects: string[];
   missingInformation: string[];
@@ -115,6 +125,47 @@ function toMissingInformation(value: unknown): string[] {
   }).slice(0, 20);
 }
 
+function toQuoteInternalNote(action: string | null, preview: UnknownRecord | null): AssistantPlanCardModel["quoteInternalNote"] {
+  if (action !== "quotes.add_internal_note" || !preview) return null;
+  const nested = asRecord(preview.quoteInternalNote);
+  const value = nested ?? preview;
+  const sourceLink = asRecord(value.sourceLink);
+  const quotePath = asText(value.quotePath) ?? asText(value.quoteLink) ?? asText(asRecord(value.quote)?.href) ?? asText(sourceLink?.href);
+  return {
+    quoteId: asText(value.quoteId) ?? asText(asRecord(value.quote)?.id),
+    quoteNumber: asText(value.quoteNumber) ?? asText(asRecord(value.quote)?.number),
+    customerName: asText(value.customerName) ?? asText(asRecord(value.customer)?.name),
+    noteText: asText(value.noteText) ?? asText(value.internalNote) ?? asText(value.note),
+    quotePath: quotePath?.startsWith("/") ? quotePath : null,
+    unchangedItems: asTextList(value.unchangedItems ?? value.unchangedFields ?? value.unchanged),
+  };
+}
+
+export type AssistantQuoteNoteProposal = {
+  turnId: string;
+  title: string;
+  summary: string | null;
+  quoteInternalNote: NonNullable<AssistantPlanCardModel["quoteInternalNote"]>;
+};
+
+/** A proposal is display-only until the browser asks the server to create a plan. */
+export function toAssistantQuoteNoteProposal(card: unknown): AssistantQuoteNoteProposal | null {
+  const record = asRecord(card);
+  if (!record || asText(record.kind) !== "action_proposal") return null;
+  const proposal = asRecord(record.proposal) ?? asRecord(record.plan) ?? record;
+  const action = asText(proposal.action) ?? asText(proposal.normalizedAction);
+  const turnId = asText(proposal.turnId) ?? asText(record.turnId);
+  const preview = asRecord(proposal.preview) ?? asRecord(record.preview);
+  const quoteInternalNote = toQuoteInternalNote(action, preview);
+  if (!turnId || !quoteInternalNote?.noteText) return null;
+  return {
+    turnId,
+    title: asText(record.title) ?? "Proposed internal quote note",
+    summary: asText(record.summary) ?? getTextFromObject(preview, ["summary", "description"]),
+    quoteInternalNote,
+  };
+}
+
 /** Converts only known presentation-safe fields from a persisted card. */
 export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel | null {
   const cardRecord = asRecord(card);
@@ -127,14 +178,21 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
   const context = asRecord(plan.contextBinding) ?? asRecord(plan.contextSnapshot) ?? asRecord(cardRecord.contextBinding);
   const missing = toMissingInformation(plan.missingInformation ?? cardRecord.missingInformation ?? cardRecord.missingFields);
   const undo = asRecord(previewRecord?.undo);
+  const action = asText(plan.action) ?? asText(plan.normalizedAction) ?? asText(cardRecord.action);
+  const confirmation = asRecord(plan.confirmation) ?? asRecord(cardRecord.confirmation);
   return {
     id,
     title: asText(cardRecord.title) ?? asText(plan.title) ?? "Proposed action",
-    action: asText(plan.action) ?? asText(plan.normalizedAction) ?? asText(cardRecord.action),
+    action,
     status: asText(plan.status) ?? asText(cardRecord.status) ?? "preview_ready",
     planVersion: asPositiveInteger(plan.planVersion) ?? asPositiveInteger(plan.version),
     riskLevel: asText(plan.riskLevel) ?? asText(cardRecord.riskLevel) ?? "unknown",
+    confirmationAvailable: plan.confirmationAvailable === true || cardRecord.confirmationAvailable === true,
+    // A token is never rendered. It is used only as an opaque, server-issued
+    // credential by the dedicated confirmation request.
+    confirmationToken: asText(plan.confirmationToken) ?? asText(cardRecord.confirmationToken) ?? asText(confirmation?.token),
     preview: asText(plan.preview) ?? asText(cardRecord.preview) ?? getTextFromObject(previewRecord, ["summary", "description", "title"]),
+    quoteInternalNote: toQuoteInternalNote(action, previewRecord),
     affectedEntities: toAffectedEntities(plan.affectedEntities ?? plan.affectedRecords ?? previewRecord?.affectedEntities ?? cardRecord.affectedEntities),
     sideEffects: toSideEffects(plan.sideEffects ?? previewRecord?.sideEffects ?? cardRecord.sideEffects),
     missingInformation: missing,
@@ -150,7 +208,7 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
     // can be cancelled or, critically, that it can execute.
     canCancel: plan.canCancel === true || plan.cancellationAvailable === true || cardRecord.cancellationAvailable === true,
     steps: toSteps(plan.steps ?? cardRecord.steps ?? cardRecord.executionSteps),
-    partialFailureSummary: asText(plan.partialFailureSummary) ?? asText(cardRecord.partialFailureSummary) ?? asText(cardRecord.failureSummary),
+    partialFailureSummary: asText(plan.partialFailureSummary) ?? asText(plan.failureSummary) ?? asText(cardRecord.partialFailureSummary) ?? asText(cardRecord.failureSummary),
   };
 }
 
@@ -191,31 +249,88 @@ function PlanExpiration({ expiresAt }: { expiresAt: string | null }) {
 
 const TERMINAL_STATUSES = new Set(["succeeded", "failed", "partially_failed", "cancelled", "expired", "invalidated"]);
 
+function QuoteInternalNotePreview({ note }: { note: NonNullable<AssistantPlanCardModel["quoteInternalNote"]> }) {
+  return <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3">
+    <p className="font-semibold">Internal quote note</p>
+    <p className="mt-1 text-muted-foreground">Internal staff only. It will not be shown to the customer.</p>
+    <dl className="mt-2 grid gap-1">
+      {note.quoteNumber ? <div><dt className="inline font-medium">Quote: </dt><dd className="inline">{note.quotePath ? <a className="text-primary underline-offset-2 hover:underline" href={note.quotePath}>{note.quoteNumber}</a> : note.quoteNumber}</dd></div> : null}
+      {note.customerName ? <div><dt className="inline font-medium">Customer: </dt><dd className="inline">{note.customerName}</dd></div> : null}
+    </dl>
+    <p className="mt-3 font-medium">Exact internal note</p>
+    <blockquote className="mt-1 whitespace-pre-wrap rounded border bg-background p-2 text-foreground">{note.noteText || "Note text is unavailable; do not confirm this plan."}</blockquote>
+    <p className="mt-3 font-medium">Will not change</p>
+    <ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted-foreground">
+      {(note.unchangedItems.length ? note.unchangedItems : ["Pricing", "Quote status", "Customer-facing notes", "Order state", "Production", "Invoice", "Payment"]).map((item) => <li key={item}>{item}</li>)}
+    </ul>
+  </div>;
+}
+
+export function AssistantQuoteNoteProposalCard({
+  proposal,
+  onCreatePlan,
+  creating,
+}: {
+  proposal: AssistantQuoteNoteProposal;
+  onCreatePlan: (turnId: string) => Promise<unknown> | void;
+  creating?: boolean;
+}) {
+  return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Quote note proposal: ${proposal.title}`}>
+    <p className="font-semibold">{proposal.title}</p>
+    {proposal.summary ? <p className="mt-1 text-muted-foreground">{proposal.summary}</p> : null}
+    <QuoteInternalNotePreview note={proposal.quoteInternalNote} />
+    <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Review this proposed internal-only note before creating a confirmation plan. Sending “GO” in chat does not confirm it.</p>
+    <div className="mt-2"><Button type="button" size="sm" disabled={creating} onClick={() => void onCreatePlan(proposal.turnId)}>{creating ? "Preparing plan…" : "Review internal-note plan"}</Button></div>
+  </section>;
+}
+
 export function AssistantPlanCard({
   card,
   context,
   onCancel,
+  onConfirm,
   cancelling,
+  confirming,
 }: {
   card: unknown;
   context: AssistantContextEnvelope;
   onCancel?: (planId: string, expectedPlanVersion: number) => Promise<unknown> | void;
+  onConfirm?: (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => Promise<unknown> | void;
   cancelling?: boolean;
+  confirming?: boolean;
 }) {
   const plan = toAssistantPlanCardModel(card);
   if (!plan) return null;
   const staleForContext = isPlanStaleForContext(plan, context);
   const canCancel = Boolean(onCancel && plan.planVersion && plan.canCancel && !TERMINAL_STATUSES.has(plan.status));
+  const canConfirm = Boolean(
+    onConfirm
+    && plan.quoteInternalNote?.noteText
+    && plan.planVersion
+    && plan.confirmationAvailable
+    && plan.confirmationToken
+    && plan.status === "awaiting_confirmation"
+    && !staleForContext
+    && !plan.staleReason,
+  );
   const cancel = () => {
     if (onCancel && plan.planVersion) void onCancel(plan.id, plan.planVersion);
   };
+  const confirm = () => {
+    if (onConfirm && plan.planVersion && plan.confirmationToken) {
+      void onConfirm({ planId: plan.id, expectedPlanVersion: plan.planVersion, confirmationToken: plan.confirmationToken, context });
+    }
+  };
+  const actionLabel = plan.quoteInternalNote ? "Add internal quote note" : "Proposed action";
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Execution plan: ${plan.title}`}>
     <div className="flex items-start justify-between gap-3">
-      <div><p className="font-semibold">{plan.title}</p>{plan.action ? <p className="mt-0.5 text-muted-foreground">Action: {plan.action}</p> : null}</div>
+      <div><p className="font-semibold">{plan.title}</p>{plan.action ? <p className="mt-0.5 text-muted-foreground">Action: {actionLabel}</p> : null}</div>
       <RiskIndicator level={plan.riskLevel} />
     </div>
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground"><span>Status: {plan.status}</span><PlanExpiration expiresAt={plan.expiresAt} /></div>
     {plan.preview ? <p className="mt-2">{plan.preview}</p> : null}
+    {plan.quoteInternalNote ? <QuoteInternalNotePreview note={plan.quoteInternalNote} /> : null}
+    {plan.quoteInternalNote && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Internal note added to {plan.quoteInternalNote.quotePath && plan.quoteInternalNote.quoteNumber ? <a className="text-primary underline-offset-2 hover:underline" href={plan.quoteInternalNote.quotePath}>Quote {plan.quoteInternalNote.quoteNumber}</a> : (plan.quoteInternalNote.quoteNumber ? `Quote ${plan.quoteInternalNote.quoteNumber}` : "the quote")}.</p> : null}
     {staleForContext || plan.staleReason ? <p className="mt-2 flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-foreground"><CircleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{plan.staleReason || "This preview is stale for the page you are viewing. The server must revalidate it before any future action."}</p> : null}
     {plan.missingInformation.length ? <div className="mt-2"><p className="font-medium">Information still needed</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{plan.missingInformation.map((item) => <li key={item}>{item}</li>)}</ul></div> : null}
     {plan.affectedEntities.length ? <div className="mt-2"><p className="font-medium">Affected records</p><ul className="mt-1 space-y-1">{plan.affectedEntities.map((entity) => <li key={`${entity.type}-${entity.id}`}>{entity.href ? <a className="text-primary underline-offset-2 hover:underline" href={entity.href}>{entity.label}</a> : entity.label} <span className="text-muted-foreground">({entity.type})</span></li>)}</ul></div> : null}
@@ -223,7 +338,9 @@ export function AssistantPlanCard({
     {plan.undo ? <p className="mt-2 text-muted-foreground">Undo: {plan.undo.available ? (plan.undo.label || "May be available after execution") : "Not available for this plan"}{plan.undo.expiresAt ? ` (until ${new Date(plan.undo.expiresAt).toLocaleString()})` : ""}</p> : null}
     {plan.steps.length ? <div className="mt-2"><p className="flex items-center gap-1 font-medium"><ListChecks className="h-3.5 w-3.5" aria-hidden="true" />Execution status</p><ul className="mt-1 space-y-1">{plan.steps.map((step) => <li key={step.id}><span className="font-medium">{step.label}</span>: {step.status}{step.detail ? ` — ${step.detail}` : ""}</li>)}</ul></div> : null}
     {plan.partialFailureSummary ? <p className="mt-2 flex items-center gap-1 rounded border border-destructive/30 bg-destructive/5 p-2"><XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{plan.status === "partially_failed" ? "Partial failure" : "Execution issue"}: {plan.partialFailureSummary}</p> : null}
-    <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Preview only. Production business write commands are not enabled, and this workspace does not provide a GO or execute control.</p>
+    {plan.quoteInternalNote ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan adds one internal-only quote note. It does not make any customer-facing or operational change.</p> : <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Preview only. Production business write commands are not enabled, and this workspace does not provide a GO or execute control.</p>}
+    {canConfirm ? <div className="mt-2"><Button type="button" size="sm" disabled={confirming} onClick={confirm} aria-label="GO: add internal quote note">{confirming ? "Confirming…" : "GO — add internal note"}</Button></div> : null}
+    {plan.quoteInternalNote && plan.confirmationAvailable && !plan.confirmationToken && plan.status === "awaiting_confirmation" ? <p className="mt-2 text-muted-foreground" role="status">Confirmation is not ready. Reload this plan before continuing.</p> : null}
     {canCancel ? <div className="mt-2"><Button type="button" size="sm" variant="outline" disabled={cancelling} onClick={cancel}>{cancelling ? "Cancelling plan…" : "Cancel plan"}</Button></div> : null}
   </section>;
 }

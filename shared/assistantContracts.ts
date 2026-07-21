@@ -59,7 +59,9 @@ export const assistantCapabilitySchema = z.object({
   enabled: z.boolean(),
   conversationsEnabled: z.boolean(),
   toolsEnabled: z.boolean(),
-  writeActionsEnabled: z.literal(false),
+  // Stage 4 enables a server-owned, explicitly allowlisted write action. The
+  // capability is informational only; it never grants browser authorization.
+  writeActionsEnabled: z.boolean(),
   externalResearchEnabled: z.literal(false),
   assistantVersion: z.string().trim().min(1).max(64),
   unavailableReason: z.string().trim().min(1).max(240).nullable(),
@@ -334,6 +336,7 @@ export const assistantStage2CardKindValues = [
   "execution_progress",
   "execution_result",
   "stale_plan",
+  "action_proposal",
 ] as const;
 export const assistantStage2StructuredCardSchema = z.object({
   kind: z.enum(assistantStage2CardKindValues),
@@ -464,6 +467,14 @@ export const assistantExecutionPreviewSchema = z.object({
   affectedEntities: z.array(assistantAffectedEntityReferenceSchema).max(100),
   sideEffects: z.array(assistantSideEffectSummarySchema).max(30),
   undo: assistantUndoAvailabilitySchema,
+  quoteInternalNote: z.object({
+    quoteId: assistantSafeIdentifierSchema,
+    quoteNumber: z.string().trim().min(1).max(64),
+    customerName: z.string().trim().min(1).max(255).nullable(),
+    noteText: z.string().trim().min(1).max(4_000),
+    sourceLink: assistantSourceLinkSchema,
+    unchanged: z.array(z.string().trim().min(1).max(120)).min(1).max(10),
+  }).strict().optional(),
 }).strict();
 export const assistantMissingInformationSchema = z.object({
   field: z.string().trim().min(1).max(120),

@@ -26,7 +26,7 @@ export class ExecutionPlanningService {
   constructor(
     private readonly repository: ExecutionPlanRepository,
     private readonly registry: ExecutionCommandRegistry,
-    private readonly options: { now?: () => Date; allowTestOnlyExecution?: boolean } = {},
+    private readonly options: { now?: () => Date; allowTestOnlyExecution?: boolean; allowProductionExecution?: boolean } = {},
   ) {}
 
   private now() { return this.options.now?.() ?? new Date(); }
@@ -88,6 +88,13 @@ export class ExecutionPlanningService {
 
   async confirmAndExecute(scope: ExecutionActorScope, input: { planId: string; expectedVersion: number; token: string; context: AssistantContextEnvelope }): Promise<{ plan: ExecutionPlanRecord; result?: ExecutionCommandResult }> {
     let plan = await this.requirePlan(scope, input.planId);
+    // A confirmed plan may be retried by a browser or network intermediary.
+    // Return its durable original result rather than re-running the domain
+    // mutation (or appending a second note).
+    if (plan.status === "succeeded") {
+      const replay = await this.repository.acquireIdempotency({ plan, requestHash: sha256(`${plan.id}:${plan.contextHash}`), now: this.now() });
+      if (replay.kind === "completed") return { plan, result: replay.result };
+    }
     this.assertCurrentVersion(plan, input.expectedVersion);
     plan = await this.expireIfNeeded(plan);
     if (plan.contextHash !== contextHash(input.context)) throw new ExecutionPlanError("CONTEXT_CHANGED", "The plan context changed; create a new plan.");
@@ -114,11 +121,12 @@ export class ExecutionPlanningService {
       const invalidated = await this.transition(plan, "invalidated", validation.code, validation.summary);
       throw new ExecutionPlanError(validation.code, `Plan ${invalidated.id} is stale.`);
     }
-    if (!this.options.allowTestOnlyExecution || !command.testOnly) {
-      await this.repository.recordAudit({ planId: plan.id, correlationId: plan.correlationId, event: "execution_refused", detail: "No production mutation command is enabled." });
+    const executable = command.testOnly ? this.options.allowTestOnlyExecution === true : this.options.allowProductionExecution === true;
+    if (!executable) {
+      await this.repository.recordAudit({ planId: plan.id, correlationId: plan.correlationId, event: "execution_refused", detail: "This command is not enabled in the current runtime." });
       return { plan };
     }
-    const lock = await this.repository.acquireIdempotency({ plan, requestHash: sha256(`${plan.id}:${plan.version}:${plan.contextHash}`), now: this.now() });
+    const lock = await this.repository.acquireIdempotency({ plan, requestHash: sha256(`${plan.id}:${plan.contextHash}`), now: this.now() });
     if (lock.kind === "completed") return { plan, result: lock.result };
     if (lock.kind === "in_progress") throw new ExecutionPlanError("EXECUTION_IN_PROGRESS", "This action is already executing.");
     if (lock.kind === "conflict") throw new ExecutionPlanError("IDEMPOTENCY_CONFLICT", "The idempotency key cannot be reused with a different request.");

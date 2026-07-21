@@ -66,9 +66,9 @@ describe("assistant execution-plan routes", () => {
     expect(fake.getPlan).not.toHaveBeenCalled();
   });
 
-  test("normal runtime reports that no production mutation command is enabled", async () => {
+  test("normal runtime requires a server-created assistant turn rather than a browser command", async () => {
     const response = await request(app(service())).post("/api/assistant/conversations/conversation_1/plans").send({ context }).expect(409);
-    expect(response.body.error.message).toMatch(/not enabled/i);
+    expect(response.body.error.message).toMatch(/proposed assistant turn/i);
   });
 
   test("uses the same safe not-found response for other user and organization plans", async () => {
