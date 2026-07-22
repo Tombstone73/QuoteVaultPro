@@ -32,8 +32,10 @@ export const assistantToolNameValues = [
   "products.get_summary",
   "reports.operational_summary",
   "navigation.get_current_context",
+  "production.get_queue_summary",
+  "operations.get_attention_summary",
 ] as const;
-export const assistantPlannerIntentValues = ["lookup", "operational_summary", "navigation", "unsupported_write", "clarification"] as const;
+export const assistantPlannerIntentValues = ["lookup", "operational_summary", "production_reporting", "navigation", "unsupported_write", "clarification"] as const;
 
 export type AssistantContextVersion = (typeof assistantContextVersionValues)[number];
 export type AssistantPresentationMode = (typeof assistantPresentationModeValues)[number];
@@ -62,7 +64,7 @@ export const assistantCapabilitySchema = z.object({
   /** True only when the configured provider can serve the internal assistant. */
   providerConfigured: z.boolean(),
   readToolsEnabled: z.boolean(),
-  registeredReadTools: z.array(z.enum(assistantToolNameValues)).max(10),
+  registeredReadTools: z.array(z.enum(assistantToolNameValues)).max(12),
   /** Whether the reviewed confirmation framework is available to this organization. */
   writeFrameworkEnabled: z.boolean(),
   // Stage 4 enables a server-owned, explicitly allowlisted write action. The
@@ -327,6 +329,76 @@ export const assistantOperationalSummaryResultSchema = z.object({
   timezone: z.string().trim().min(1).max(80),
 }).strict();
 
+const assistantProductionStationKeySchema = z.string()
+  .trim()
+  .min(1)
+  .max(64)
+  .regex(/^[a-z][a-z0-9_-]*$/i, "Station key contains unsupported characters");
+const assistantProductionDateFilterSchema = z.enum(["overdue", "today", "tomorrow"]);
+export const assistantProductionQueueInputSchema = z.object({
+  stationKey: assistantProductionStationKeySchema.optional(),
+  status: z.enum(["queued", "in_progress", "paused"]).optional(),
+  due: assistantProductionDateFilterSchema.optional(),
+  includeOverdue: z.boolean().optional(),
+  limit: z.number().int().min(1).max(20).optional(),
+}).strict();
+export const assistantProductionUrgentJobSchema = z.object({
+  jobId: assistantSafeIdentifierSchema,
+  orderId: assistantSafeIdentifierSchema,
+  orderNumber: z.string().trim().min(1).max(64),
+  customerName: z.string().trim().min(1).max(240).optional(),
+  label: z.string().trim().min(1).max(300),
+  stationKey: assistantProductionStationKeySchema,
+  stationLabel: z.string().trim().min(1).max(160),
+  status: z.string().trim().min(1).max(120),
+  dueDate: assistantIsoDateTimeSchema.optional(),
+  overdue: z.boolean(),
+  sourceLink: assistantSourceLinkSchema,
+}).strict();
+export const assistantProductionStationSummarySchema = z.object({
+  stationKey: assistantProductionStationKeySchema,
+  stationLabel: z.string().trim().min(1).max(160),
+  active: z.boolean(),
+  activeJobs: z.number().int().nonnegative(),
+  queuedJobs: z.number().int().nonnegative(),
+  inProductionJobs: z.number().int().nonnegative(),
+  overdueJobs: z.number().int().nonnegative(),
+  dueTodayJobs: z.number().int().nonnegative(),
+  dueTomorrowJobs: z.number().int().nonnegative(),
+  earliestDueJob: assistantProductionUrgentJobSchema.optional(),
+  oldestActiveJob: assistantProductionUrgentJobSchema.optional(),
+  boardLink: assistantSourceLinkSchema,
+}).strict();
+export const assistantProductionQueueResultSchema = z.object({
+  stations: z.array(assistantProductionStationSummarySchema).min(1).max(20),
+  urgentJobs: z.array(assistantProductionUrgentJobSchema).max(20),
+  timezone: z.string().trim().min(1).max(80),
+  warnings: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
+}).strict();
+
+export const assistantAttentionCategorySchema = z.object({
+  key: z.enum(["overdue", "due_today", "due_tomorrow", "waiting_artwork", "waiting_proof", "waiting_prepress", "in_production", "ready_for_fulfillment"]),
+  label: z.string().trim().min(1).max(160),
+  count: z.number().int().nonnegative().nullable(),
+  available: z.boolean(),
+  note: z.string().trim().min(1).max(300).optional(),
+}).strict();
+export const assistantAttentionSummaryInputSchema = z.object({
+  filter: z.enum(["today", "tomorrow", "overdue", "waiting_artwork", "waiting_proof", "waiting_prepress", "in_production", "ready_for_fulfillment"]).optional(),
+  dueWithinDays: z.number().int().min(1).max(31).optional(),
+  stationKey: assistantProductionStationKeySchema.optional(),
+  limit: z.number().int().min(1).max(20).optional(),
+}).strict();
+export const assistantAttentionSummaryResultSchema = z.object({
+  totalActiveJobs: z.number().int().nonnegative(),
+  categories: z.array(assistantAttentionCategorySchema).min(1).max(8),
+  mostLoadedStation: assistantProductionStationSummarySchema.optional(),
+  earliestDueJob: assistantProductionUrgentJobSchema.optional(),
+  attentionItems: z.array(assistantProductionUrgentJobSchema).max(20),
+  timezone: z.string().trim().min(1).max(80),
+  warnings: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
+}).strict();
+
 export const assistantNavigationCurrentContextInputSchema = z.object({}).strict();
 /** A current-record summary is always server-resolved.  The UI context only
  * nominates a record; it never supplies record attributes or source links. */
@@ -451,6 +523,10 @@ export const assistantStage2CardKindValues = [
   "product_draft_update_failed",
   "product_draft_update_unsupported",
   "product_active_product_unsupported",
+  "production_queue_summary",
+  "station_comparison",
+  "attention_summary",
+  "urgent_job_list",
 ] as const;
 export const assistantStage2StructuredCardSchema = z.object({
   kind: z.enum(assistantStage2CardKindValues),
@@ -525,9 +601,16 @@ export const assistantCreateConversationRequestSchema = z.object({
 }).strict();
 export type AssistantCreateConversationRequest = z.infer<typeof assistantCreateConversationRequestSchema>;
 
+export const assistantConversationTitleSchema = z.string()
+  .trim()
+  .min(1)
+  .max(240)
+  .refine((value) => !/[\u0000-\u001F\u007F]/.test(value), "Conversation title contains control characters")
+  .refine((value) => !/[<>]/.test(value), "Conversation title cannot contain markup delimiters");
+
 export const assistantUpdateConversationRequestSchema = z.object({
-  title: z.string().trim().min(1).max(240).optional(),
-  status: z.enum(["archived"]).optional(),
+  title: assistantConversationTitleSchema.optional(),
+  status: z.enum(assistantConversationStatusValues).optional(),
 }).strict().refine((value) => value.title !== undefined || value.status !== undefined, {
   message: "At least one conversation update is required",
 });

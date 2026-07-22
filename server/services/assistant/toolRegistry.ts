@@ -8,6 +8,10 @@ import {
   assistantNavigationCurrentContextResultSchema,
   assistantOperationalSummaryInputSchema,
   assistantOperationalSummaryResultSchema,
+  assistantProductionQueueInputSchema,
+  assistantProductionQueueResultSchema,
+  assistantAttentionSummaryInputSchema,
+  assistantAttentionSummaryResultSchema,
   assistantOrderSummaryInputSchema,
   assistantOrderSummaryResultSchema,
   assistantProductSummaryInputSchema,
@@ -149,6 +153,32 @@ const toolMetadata = {
     auditCategory: "assistant_navigation_context",
     modelSummarizationAllowed: true,
   },
+  "production.get_queue_summary": {
+    description: "Return a bounded tenant-scoped production queue for one station or all configured stations.",
+    requiredPermission: "internal_staff",
+    requiredContext: ["trusted_actor"] as const,
+    inputSchema: assistantProductionQueueInputSchema,
+    resultSchema: assistantProductionQueueResultSchema,
+    maxResults: 20,
+    timeoutMs: 5_000,
+    dataClassification: "internal",
+    sourceLinkBehavior: "required",
+    auditCategory: "assistant_production_queue_summary",
+    modelSummarizationAllowed: true,
+  },
+  "operations.get_attention_summary": {
+    description: "Return bounded read-only production deadline and attention categories using canonical operational data.",
+    requiredPermission: "internal_staff",
+    requiredContext: ["trusted_actor"] as const,
+    inputSchema: assistantAttentionSummaryInputSchema,
+    resultSchema: assistantAttentionSummaryResultSchema,
+    maxResults: 20,
+    timeoutMs: 5_000,
+    dataClassification: "internal",
+    sourceLinkBehavior: "required",
+    auditCategory: "assistant_operations_attention_summary",
+    modelSummarizationAllowed: true,
+  },
 } satisfies Record<AssistantToolName, Omit<AssistantToolDefinition, "name" | "version" | "readOnly" | "adapter">>;
 
 export function createAssistantToolRegistry(adapters: AssistantToolAdapters = {}): ReadonlyMap<AssistantToolName, AssistantToolDefinition> {
@@ -170,8 +200,8 @@ export function createAssistantToolRegistry(adapters: AssistantToolAdapters = {}
   return new Map(tools);
 }
 
-/** The authoritative, static Stage 2 allowlist.  Runtime adapters may be
- * injected, but cannot introduce a seventh tool or alter a tool's policy. */
+/** The authoritative, static assistant read-tool allowlist. Runtime adapters
+ * may be injected, but cannot introduce another tool or alter its policy. */
 export const assistantToolRegistry = createAssistantToolRegistry();
 
 const ignoredIdentityArgumentKeys = new Set([

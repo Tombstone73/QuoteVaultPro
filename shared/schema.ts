@@ -4374,6 +4374,21 @@ export const productionStationStepTriggersSchema = z.array(productionStationStep
 
 export type ProductionStationStepTrigger = z.infer<typeof productionStationStepTriggerSchema>;
 
+/** Existing tenant station table from migration 0001_stations.sql. This
+ * projection permits read-only reporting to use the authoritative station
+ * label and active flag without introducing another station definition. */
+export const stations = pgTable("stations", {
+  id: varchar("id").primaryKey(),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  key: varchar("key", { length: 50 }).notNull(),
+  name: varchar("name", { length: 100 }).notNull(),
+  sort: integer("sort").notNull().default(0),
+  active: boolean("active").notNull().default(true),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("stations_organization_key_uidx").on(table.organizationId, table.key),
+]);
+
 export const productionJobs = pgTable("production_jobs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),

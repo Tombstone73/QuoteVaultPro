@@ -10,6 +10,11 @@ import type {
 const capabilitiesKey = ["/api/assistant/capabilities"] as const;
 const conversationsKey = ["/api/assistant/conversations"] as const;
 
+export type AssistantConversationUpdate = {
+  title?: string;
+  status?: "active" | "archived";
+};
+
 function unwrap<T>(payload: T | { data?: T }): T {
   return (payload && typeof payload === "object" && "data" in payload
     ? (payload as { data?: T }).data
@@ -29,13 +34,13 @@ export function useAssistantCapabilities(enabled: boolean) {
   });
 }
 
-export function useAssistantConversations(enabled: boolean) {
+export function useAssistantConversations(enabled: boolean, status: "active" | "archived" = "active") {
   return useQuery({
-    queryKey: conversationsKey,
+    queryKey: [...conversationsKey, status],
     enabled,
     retry: false,
     queryFn: async (): Promise<AssistantConversationSummary[]> => {
-      const response = await apiRequest("GET", "/api/assistant/conversations");
+      const response = await apiRequest("GET", `/api/assistant/conversations${status === "archived" ? "?status=archived" : ""}`);
       const payload = unwrap<AssistantConversationSummary[] | { conversations?: AssistantConversationSummary[] }>(await response.json());
       return Array.isArray(payload) ? payload : payload?.conversations ?? [];
     },
@@ -60,6 +65,37 @@ export function useCreateAssistantConversation() {
     mutationFn: async (): Promise<AssistantConversationDetail> => {
       const response = await apiRequest("POST", "/api/assistant/conversations", {});
       return unwrap<AssistantConversationDetail>(await response.json());
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: conversationsKey }),
+  });
+}
+
+/**
+ * Updates assistant-owned metadata only. Conversation titles and archive state
+ * are never represented as assistant commands or confirmation-plan actions.
+ */
+export function useUpdateAssistantConversation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ conversationId, patch }: { conversationId: string; patch: AssistantConversationUpdate }): Promise<AssistantConversationSummary> => {
+      const response = await apiRequest("PATCH", `/api/assistant/conversations/${encodeURIComponent(conversationId)}`, patch);
+      return unwrap<AssistantConversationSummary>(await response.json());
+    },
+    onMutate: async ({ conversationId, patch }) => {
+      await queryClient.cancelQueries({ queryKey: conversationsKey });
+      const previous = queryClient.getQueriesData<AssistantConversationSummary[]>({ queryKey: conversationsKey });
+      for (const [queryKey, data] of previous) {
+        if (!Array.isArray(data)) continue;
+        queryClient.setQueryData<AssistantConversationSummary[]>(queryKey, patch.status === "archived"
+          ? data.filter((conversation) => conversation.id !== conversationId)
+          : data.map((conversation) => conversation.id === conversationId
+            ? { ...conversation, ...(patch.title !== undefined ? { title: patch.title } : {}), ...(patch.status !== undefined ? { status: patch.status } : {}) }
+            : conversation));
+      }
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      for (const [queryKey, data] of context?.previous ?? []) queryClient.setQueryData(queryKey, data);
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: conversationsKey }),
   });
