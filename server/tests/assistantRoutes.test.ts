@@ -80,7 +80,7 @@ function buildService() {
   };
 }
 
-function buildApp(service: any, options: { authenticated?: boolean; withTenant?: boolean; orgId?: string } = {}) {
+function buildApp(service: any, options: { authenticated?: boolean; withTenant?: boolean; orgId?: string; reportResolutionService?: any } = {}) {
   const app = express();
   app.use(express.json());
   const authenticated = jest.fn((req: any, res: any, next: any) => {
@@ -93,7 +93,10 @@ function buildApp(service: any, options: { authenticated?: boolean; withTenant?:
     req.organizationId = options.orgId ?? "org_1";
     next();
   });
-  registerAssistantRoutes(app, { isAuthenticated: authenticated, tenantContext }, { service });
+  registerAssistantRoutes(app, { isAuthenticated: authenticated, tenantContext }, {
+    service,
+    reportResolutionService: options.reportResolutionService,
+  });
   return { app, authenticated, tenantContext };
 }
 
@@ -225,5 +228,73 @@ describe("assistant routes", () => {
     const response = await request(app).post("/api/assistant/conversations/conversation_1/turns").send(turnBody()).expect(503);
     expect(response.body.error.code).toBe("assistant_disabled");
     expect(service.createTurn).toHaveBeenCalledTimes(1);
+  });
+
+  test("selects an opaque persisted candidate using only authenticated scope and server-derived actor", async () => {
+    const service = buildService();
+    const reportResolutionService = {
+      selectReportResolution: jest.fn(async () => ({
+        resolution: {
+          resolutionId: "resolution_1", conversationId: "conversation_1", version: 3, status: "resumed",
+          expiresAt: "2026-07-22T13:00:00.000Z", candidates: [
+            { candidateId: "candidate_1", companyName: "Bright Signs Marketing", matchReason: "Exact company match", companyLink: { label: "Open company", href: "/customers/customer_1", entityType: "customer", entityId: "customer_1" } },
+            { candidateId: "candidate_2", companyName: "Bright Signs of Ohio", matchReason: "Exact company match", companyLink: { label: "Open company", href: "/customers/customer_2", entityType: "customer", entityId: "customer_2" } },
+          ], cancellationAvailable: false,
+        },
+        continuation: {
+          resolutionId: "resolution_1", version: 3, status: "resumed", turnId: "turn_2", correlationId: "correlation_2",
+          message: { id: "message_3", role: "assistant", content: "Bright Signs Marketing's report is ready.", structuredCards: [], provider: "local", model: "analytics", correlationId: "correlation_2", createdAt: NOW },
+        },
+      })),
+    };
+    const { app } = buildApp(service, { reportResolutionService });
+
+    const response = await request(app)
+      .post("/api/assistant/report-resolutions/resolution_1/select")
+      .send({ candidateId: "candidate_1", expectedVersion: 2 })
+      .expect(200);
+
+    expect(response.body.success).toBe(true);
+    expect(reportResolutionService.selectReportResolution).toHaveBeenCalledWith(
+      { organizationId: "org_1", userId: "user_1" },
+      "resolution_1",
+      expect.objectContaining({ userId: "user_1" }),
+      { candidateId: "candidate_1", expectedVersion: 2 },
+    );
+  });
+
+  test("rejects company ids and identity-shaped selection input before continuation", async () => {
+    const service = buildService();
+    const reportResolutionService = { selectReportResolution: jest.fn() };
+    const { app } = buildApp(service, { reportResolutionService });
+
+    const response = await request(app)
+      .post("/api/assistant/report-resolutions/resolution_1/select")
+      .send({ candidateId: "candidate_1", expectedVersion: 2, companyId: "customer_attacker", organizationId: "org_attacker" })
+      .expect(400);
+
+    expect(response.body.error.code).toBe("context_invalid");
+    expect(reportResolutionService.selectReportResolution).not.toHaveBeenCalled();
+  });
+
+  test("returns the same safe error for tenant/user-hidden report resolutions", async () => {
+    const service = buildService();
+    const reportResolutionService = {
+      selectReportResolution: jest.fn(async () => {
+        throw { code: "REPORT_RESOLUTION_NOT_FOUND" };
+      }),
+    };
+    const { app } = buildApp(service, { reportResolutionService });
+
+    const response = await request(app)
+      .post("/api/assistant/report-resolutions/resolution_other_tenant/select")
+      .send({ candidateId: "candidate_1", expectedVersion: 2 })
+      .expect(404);
+
+    expect(response.body.error).toEqual({
+      code: "report_resolution_not_found",
+      message: "Report selection not found.",
+      retryable: false,
+    });
   });
 });

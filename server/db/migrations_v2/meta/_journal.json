@@ -869,6 +869,13 @@
       "when": 1785801600000,
       "tag": "0128_ai_reports_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 129,
+      "version": "7",
+      "when": 1785888000000,
+      "tag": "0129_ai_report_entity_resolutions",
+      "breakpoints": true
     }
   ]
 }

@@ -5,6 +5,7 @@ import type {
   AssistantContextEnvelope,
   AssistantConversationDetail,
   AssistantConversationSummary,
+  AssistantReportResolutionSelectionResponse,
 } from "@/features/assistant/types";
 
 const capabilitiesKey = ["/api/assistant/capabilities"] as const;
@@ -119,6 +120,46 @@ export function useSendAssistantTurn() {
       queryClient.invalidateQueries({ queryKey: conversationsKey });
       queryClient.invalidateQueries({ queryKey: [...conversationsKey, variables.conversationId] });
     },
+  });
+}
+
+/** Selects an opaque candidate from a server-persisted report-resolution set.
+ * No company ID, report arguments, or plan data ever crosses this boundary. */
+export function useSelectAssistantReportResolution() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({
+      resolutionId,
+      candidateId,
+      expectedVersion,
+    }: {
+      resolutionId: string;
+      candidateId: string;
+      expectedVersion: number;
+    }): Promise<AssistantReportResolutionSelectionResponse> => {
+      const response = await apiRequest("POST", `/api/assistant/report-resolutions/${encodeURIComponent(resolutionId)}/select`, {
+        candidateId,
+        expectedVersion,
+      });
+      return unwrap<AssistantReportResolutionSelectionResponse>(await response.json());
+    },
+    onSuccess: (_result, variables) => {
+      queryClient.invalidateQueries({ queryKey: conversationsKey });
+      // The route is conversation-scoped server-side, so broadly invalidating
+      // assistant conversation details also covers refresh/reopen state.
+      queryClient.invalidateQueries({ queryKey: ["/api/assistant/conversations"] });
+    },
+  });
+}
+
+export function useCancelAssistantReportResolution() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ resolutionId, expectedVersion }: { resolutionId: string; expectedVersion: number }) => {
+      const response = await apiRequest("POST", `/api/assistant/report-resolutions/${encodeURIComponent(resolutionId)}/cancel`, { expectedVersion });
+      return response.json();
+    },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: conversationsKey }),
   });
 }
 

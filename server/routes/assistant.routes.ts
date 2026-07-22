@@ -2,8 +2,13 @@ import type { Express, Request, RequestHandler, Response } from "express";
 import { z } from "zod";
 import {
   assistantCreateConversationRequestSchema,
+  assistantReportResolutionCancelRequestSchema,
+  assistantReportResolutionSelectionRequestSchema,
   assistantUpdateConversationRequestSchema,
   assistantTurnRequestSchema,
+  type AssistantReportResolutionSelectionRequest,
+  type AssistantReportResolutionCancelRequest,
+  type AssistantReportResolutionSelectionResponse,
 } from "@shared/assistantContracts";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
@@ -12,9 +17,13 @@ import {
   responsePresentationForCards,
   responseStateForCards,
   type AssistantActor,
+  type AssistantScope,
 } from "../services/assistant/assistantService";
 import { OrganizationAssistantCapabilityResolver } from "../services/assistant/assistantCapabilities";
 import { DrizzleAssistantRepository } from "../storage/assistant.repo";
+import { AnalyticalCustomerResolutionService } from "../services/assistant/analyticalCustomerResolution";
+import { AssistantAnalyticsReportingRepository } from "../storage/assistantAnalyticsReporting.repo";
+import { assistantReportEntityResolutionsRepository } from "../storage/assistantReportEntityResolutions.repo";
 
 function getUserId(user: unknown): string | null {
   const candidate = user as { id?: unknown; claims?: { sub?: unknown } } | null;
@@ -146,6 +155,68 @@ function withoutUntrustedIdentity(raw: unknown): unknown {
 
 export interface AssistantRouteDependencies {
   service?: AssistantService;
+  /**
+   * Reporting entity selection is intentionally a separate server-owned
+   * continuation boundary.  The route only supplies authenticated scope,
+   * server-derived actor permissions, the resolution path id, and the two
+   * opaque client values; it never receives a company id or report plan.
+   */
+  reportResolutionService?: AssistantReportResolutionSelectionService;
+}
+
+export interface AssistantReportResolutionSelectionService {
+  selectReportResolution(
+    scope: AssistantScope,
+    resolutionId: string,
+    actor: AssistantActor,
+    input: AssistantReportResolutionSelectionRequest,
+  ): Promise<AssistantReportResolutionSelectionResponse>;
+  cancelReportResolution?(
+    scope: AssistantScope,
+    resolutionId: string,
+    actor: AssistantActor,
+    input: AssistantReportResolutionCancelRequest,
+  ): Promise<unknown>;
+}
+
+type ReportResolutionFailureCode =
+  | "REPORT_RESOLUTION_NOT_FOUND"
+  | "REPORT_RESOLUTION_EXPIRED"
+  | "REPORT_RESOLUTION_CANCELLED"
+  | "REPORT_RESOLUTION_STALE"
+  | "REPORT_RESOLUTION_INVALID_CANDIDATE";
+
+/** Safe, stable failures for the resolution route.  Implementations may use
+ * this error or expose the same uppercase code shape; neither path leaks
+ * whether another tenant/user owns a resolution. */
+export class AssistantReportResolutionError extends Error {
+  constructor(readonly code: ReportResolutionFailureCode, message: string) {
+    super(message);
+    this.name = "AssistantReportResolutionError";
+  }
+}
+
+function sendReportResolutionError(res: Response, error: unknown) {
+  const rawCode = error instanceof AssistantReportResolutionError
+    ? error.code
+    : typeof error === "object" && error && "code" in error && typeof (error as { code?: unknown }).code === "string"
+      ? (error as { code: string }).code
+      : null;
+  const code = rawCode === "REPORT_RESOLUTION_STALE_VERSION" || rawCode === "REPORT_RESOLUTION_NOT_PENDING"
+    ? "REPORT_RESOLUTION_STALE"
+    : rawCode;
+  const errors: Record<ReportResolutionFailureCode, { status: number; code: string; message: string }> = {
+    REPORT_RESOLUTION_NOT_FOUND: { status: 404, code: "report_resolution_not_found", message: "Report selection not found." },
+    REPORT_RESOLUTION_EXPIRED: { status: 409, code: "report_resolution_expired", message: "This report selection has expired." },
+    REPORT_RESOLUTION_CANCELLED: { status: 409, code: "report_resolution_cancelled", message: "This report selection is no longer available." },
+    REPORT_RESOLUTION_STALE: { status: 409, code: "report_resolution_stale", message: "This report selection changed. Refresh and try again." },
+    REPORT_RESOLUTION_INVALID_CANDIDATE: { status: 400, code: "report_resolution_invalid_candidate", message: "The selected company is not available for this report." },
+  };
+  if (code && code in errors) {
+    const safe = errors[code as ReportResolutionFailureCode];
+    return res.status(safe.status).json({ error: { code: safe.code, message: safe.message, retryable: false } });
+  }
+  return sendError(res, error);
 }
 
 export function registerAssistantRoutes(
@@ -156,7 +227,19 @@ export function registerAssistantRoutes(
   const service = dependencies.service ?? new AssistantService(
     new DrizzleAssistantRepository(),
     new OrganizationAssistantCapabilityResolver(),
+    undefined,
+    undefined,
+    new AnalyticalCustomerResolutionService(
+      new AssistantAnalyticsReportingRepository(),
+      assistantReportEntityResolutionsRepository,
+    ),
   );
+  // The production assistant service owns the server-only continuation once
+  // Stage 8.2 is installed.  The explicit dependency keeps route tests and
+  // isolated deployments injectable without ever moving continuation inputs
+  // into the browser.
+  const reportResolutionService = dependencies.reportResolutionService
+    ?? (service as unknown as Partial<AssistantReportResolutionSelectionService>);
   const { isAuthenticated, tenantContext } = middleware;
   const guarded: RequestHandler[] = [isAuthenticated, tenantContext];
 
@@ -239,6 +322,42 @@ export function registerAssistantRoutes(
       });
     } catch (error) {
       return sendError(res, error);
+    }
+  });
+
+  app.post("/api/assistant/report-resolutions/:resolutionId/select", ...guarded, async (req, res) => {
+    try {
+      const input = assistantReportResolutionSelectionRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
+      const scope = resolveScope(req);
+      if (typeof reportResolutionService.selectReportResolution !== "function") {
+        // This is only reachable when a deployment has not installed the
+        // persisted-plan continuation integration.  Do not fall back to
+        // planning from chat text or execute an analytical tool here.
+        throw new AssistantServiceError("ASSISTANT_DISABLED", "Report continuation is not available.", 503);
+      }
+      const data = await reportResolutionService.selectReportResolution(
+        scope,
+        req.params.resolutionId,
+        buildActor(req, scope.userId),
+        input,
+      );
+      return res.json({ success: true, data });
+    } catch (error) {
+      return sendReportResolutionError(res, error);
+    }
+  });
+
+  app.post("/api/assistant/report-resolutions/:resolutionId/cancel", ...guarded, async (req, res) => {
+    try {
+      const input = assistantReportResolutionCancelRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
+      const scope = resolveScope(req);
+      if (typeof reportResolutionService.cancelReportResolution !== "function") {
+        throw new AssistantServiceError("ASSISTANT_DISABLED", "Report continuation is not available.", 503);
+      }
+      const data = await reportResolutionService.cancelReportResolution(scope, req.params.resolutionId, buildActor(req, scope.userId), input);
+      return res.json({ success: true, data });
+    } catch (error) {
+      return sendReportResolutionError(res, error);
     }
   });
 }

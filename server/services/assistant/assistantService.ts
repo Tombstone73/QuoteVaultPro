@@ -6,9 +6,11 @@ import type {
   AssistantStructuredCard,
   AssistantUpdateConversationRequest,
   AssistantTurnRequest,
+  AssistantReportResolutionSelectionRequest,
+  AssistantReportResolutionCancelRequest,
 } from "@shared/assistantContracts";
 import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
-import { assistantTurnRequestSchema } from "@shared/assistantContracts";
+import { assistantReportResolutionCancelRequestSchema, assistantReportResolutionSelectionRequestSchema, assistantTurnRequestSchema } from "@shared/assistantContracts";
 import { AssistantOrchestrationService, type AssistantToolExecutionAudit } from "./orchestration";
 import { AssistantPlanningError, ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
@@ -23,6 +25,7 @@ import {
   isAssistantCapabilityProductionCommand,
 } from "./assistantCapabilities";
 import { deterministicOrderLookupTarget, deterministicSearchTarget, resolveDeterministicReadPlan } from "./deterministicReadRouting";
+import { AnalyticalCustomerResolutionService, type PersistedAnalyticalResolution } from "./analyticalCustomerResolution";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
@@ -117,6 +120,25 @@ export interface AssistantRepository {
     errorCode?: string | null;
     errorMessage?: string | null;
     toolExecutions?: Array<{
+      toolName: string; toolVersion: string; status: "succeeded" | "failed" | "disabled";
+      errorCode?: string; auditStatus: string; durationMs: number;
+      failureCategory?: string; failingStep?: string; coreResultSucceeded?: boolean;
+    }>;
+  }): Promise<AssistantTurnResult | null>;
+  /** A continuation writes only the resumed assistant output. It must not add
+   * another user message, and its implementation owns the atomic resolution
+   * transition/result reference with that assistant message. */
+  createReportResolutionContinuation?(input: AssistantScope & {
+    resolutionId: string;
+    actor: AssistantActor;
+    plan: unknown;
+    context: AssistantContextEnvelope;
+    response: string;
+    structuredCards: AssistantStructuredCard[];
+    correlationId: string;
+    provider: string | null;
+    model: string | null;
+    toolExecutions: Array<{
       toolName: string; toolVersion: string; status: "succeeded" | "failed" | "disabled";
       errorCode?: string; auditStatus: string; durationMs: number;
       failureCategory?: string; failingStep?: string; coreResultSucceeded?: boolean;
@@ -228,6 +250,10 @@ export class AssistantService {
     private readonly planner: AssistantPlanner = new ConfiguredAssistantPlanner(new OpenAiCompatibleBugReviewProvider()),
     private readonly createOrchestrator: (audit: (event: AssistantToolExecutionAudit) => void) => AssistantOrchestrationService =
       (audit) => new AssistantOrchestrationService(createStage2AssistantToolAdapters(), audit),
+    /** Installed by the Stage 8.2 composition root once the durable resolution
+     * repository is available. Optional during migration rollout so normal
+     * assistant turns do not depend on an unfinished table. */
+    private readonly reportResolutionService?: AnalyticalCustomerResolutionService,
   ) {}
 
   async getCapabilities(scope: AssistantScope, actor?: AssistantActor) {
@@ -286,6 +312,104 @@ export class AssistantService {
     const conversation = await this.repo.updateConversation({ ...scope, conversationId, patch });
     if (!conversation) throw this.notFound();
     return conversation;
+  }
+
+  /** Server-only selection continuation. The route supplies only opaque
+   * candidateId/version; all company IDs, stored context, and immutable report
+   * properties are recovered from the durable resolution state. */
+  async selectReportResolution(
+    scope: AssistantScope,
+    resolutionId: string,
+    actor: AssistantActor,
+    data: AssistantReportResolutionSelectionRequest,
+  ) {
+    const selection = assistantReportResolutionSelectionRequestSchema.parse(data);
+    if (!this.reportResolutionService || !this.repo.createReportResolutionContinuation) {
+      throw new AssistantServiceError("REPORT_RESOLUTION_UNAVAILABLE", "Report selection is temporarily unavailable.", 503);
+    }
+    const capability = await this.getCapabilities(scope, actor);
+    if (!capability.toolsEnabled) {
+      throw new AssistantServiceError("ASSISTANT_DISABLED", capability.unavailableReason ?? "The assistant is unavailable.", 503);
+    }
+    const persisted = await this.reportResolutionService.findSelection({ ...scope, resolutionId });
+    if (!persisted) {
+      // Do not distinguish another user's/tenant's resolution from an
+      // unknown id. The persisted scope provides the conversation internally.
+      throw new AssistantServiceError("REPORT_RESOLUTION_NOT_FOUND", "That report selection is no longer available.", 404);
+    }
+    const continuation = await this.reportResolutionService.continuePersistedPlan({
+      ...scope, conversationId: persisted.conversationId,
+      resolutionId,
+      candidateId: selection.candidateId,
+      expectedVersion: selection.expectedVersion,
+      execute: async (plan, resolution) => this.executePersistedAnalyticalPlan(scope, resolutionId, actor, plan, resolution),
+    });
+    if (continuation.kind === "rejected") {
+      const status = continuation.code === "not_found" ? 404 : continuation.code === "invalid_candidate" ? 400 : 409;
+      throw new AssistantServiceError(`REPORT_RESOLUTION_${continuation.code.toUpperCase()}`, "That report selection is no longer available.", status);
+    }
+    if (continuation.kind === "failed") {
+      throw new AssistantServiceError("REPORT_RESOLUTION_CONTINUATION_FAILED", continuation.message, 409);
+    }
+    return { result: continuation.result as AssistantTurnResult, replayed: continuation.replayed };
+  }
+
+  async cancelReportResolution(
+    scope: AssistantScope,
+    resolutionId: string,
+    _actor: AssistantActor,
+    data: AssistantReportResolutionCancelRequest,
+  ) {
+    const request = assistantReportResolutionCancelRequestSchema.parse(data);
+    if (!this.reportResolutionService) throw new AssistantServiceError("REPORT_RESOLUTION_UNAVAILABLE", "Report selection is temporarily unavailable.", 503);
+    const cancelled = await this.reportResolutionService.cancelPersistedResolution({ ...scope, resolutionId, expectedVersion: request.expectedVersion });
+    if (!cancelled) throw new AssistantServiceError("REPORT_RESOLUTION_NOT_FOUND", "That report selection is no longer available.", 404);
+    return { resolutionId, cancelled: true };
+  }
+
+  private async executePersistedAnalyticalPlan(
+    scope: AssistantScope,
+    resolutionId: string,
+    actor: AssistantActor,
+    plan: unknown,
+    resolution: PersistedAnalyticalResolution,
+  ): Promise<AssistantTurnResult> {
+    const correlationId = crypto.randomUUID();
+    const audits: AssistantToolExecutionAudit[] = [];
+    const orchestration = this.createOrchestrator((event) => { audits.push(event); });
+    const executed = await orchestration.executePlan(plan, {
+      scope,
+      actor: { userId: actor.userId, email: actor.email },
+      permissions: actor.permissions ?? [],
+      context: resolution.context,
+      correlationId,
+    });
+    const rendered = renderToolResults(executed.executions, null, null, false);
+    const result = await this.repo.createReportResolutionContinuation!({
+      ...scope,
+      resolutionId,
+      actor,
+      plan: executed.plan,
+      context: resolution.context,
+      response: rendered.response,
+      structuredCards: rendered.cards,
+      correlationId,
+      provider: "persisted_analytical_plan",
+      model: "stage-8.2-continuation-v1",
+      toolExecutions: audits.map((audit) => ({
+        toolName: audit.toolName,
+        toolVersion: audit.toolVersion,
+        status: audit.status === "succeeded" || audit.status === "not_found" || audit.status === "partial" ? "succeeded" : audit.status === "rejected" ? "disabled" : "failed",
+        errorCode: audit.failureCode,
+        auditStatus: audit.status,
+        durationMs: audit.durationMs,
+        failureCategory: audit.failureCategory,
+        failingStep: audit.failingStep,
+        coreResultSucceeded: audit.coreResultSucceeded,
+      })),
+    });
+    if (!result) throw this.notFound();
+    return result;
   }
 
   async createTurn(
@@ -391,15 +515,41 @@ export class AssistantService {
         : await this.planner.plan({ organizationId: scope.organizationId, message: request.message, context: request.context });
       provider = planned.provider;
       model = planned.model;
+      let executablePlan = planned.plan;
+      if (this.reportResolutionService && planned.plan.intent === "analytical_reporting" && !planned.plan.clarificationRequired) {
+        const preflight = await this.reportResolutionService.preflight({
+          scope: { ...scope, conversationId },
+          originalUserRequest: request.message,
+          plan: planned.plan,
+          context: request.context,
+        });
+        if (preflight.kind === "awaiting_entity_resolution") {
+          // `pause` writes the user message, assistant card, context snapshot,
+          // and resolution in one transaction. Never call createFoundationTurn
+          // here or a duplicate, independently visible card could be created.
+          return this.readPausedResolutionTurn(scope, conversationId, preflight.resolution);
+        }
+        if (preflight.kind === "persistence_failed") {
+          status = "failed";
+          errorCode = "report_resolution_persistence_failed";
+          response = preflight.message;
+          cards = [{ kind: "provider_unavailable", title: "Company selection unavailable", summary: response, sourceLinks: [], toolStatus: "failed" }];
+        } else if (preflight.kind === "no_match") {
+          response = preflight.message;
+          cards = [{ kind: "not_found", title: "Company not found", summary: response, sourceLinks: [], toolStatus: "not_found" }];
+        } else if (preflight.kind === "continue") {
+          executablePlan = preflight.plan;
+        }
+      }
       if (planned.plan.intent === "unsupported_write") {
         response = ASSISTANT_WRITE_REFUSAL_REPLY;
         cards = [{ kind: "tool_warning", title: "Read-only assistant", summary: response, sourceLinks: [], toolStatus: "permission_denied" }];
       } else if (planned.plan.clarificationRequired) {
         response = planned.plan.clarificationQuestion ?? "Please clarify what you want to look up.";
         cards = [{ kind: "tool_warning", title: "Clarification needed", summary: response, sourceLinks: [] }];
-      } else {
+      } else if (!cards.length) {
         const orchestration = this.createOrchestrator((event) => { audits.push(event); });
-        const executed = await orchestration.executePlan(planned.plan, {
+        const executed = await orchestration.executePlan(executablePlan, {
           scope,
           actor: { userId: actor.userId, email: actor.email },
           permissions: actor.permissions ?? [],
@@ -457,6 +607,34 @@ export class AssistantService {
     if (!result) throw this.notFound();
 
     return result;
+  }
+
+  private async readPausedResolutionTurn(
+    scope: AssistantScope,
+    conversationId: string,
+    resolution: PersistedAnalyticalResolution,
+  ): Promise<AssistantTurnResult> {
+    if (!resolution.sourceTurnId || !resolution.sourceCorrelationId) {
+      // This is a server integration error, not a reason to execute tools or
+      // synthesize a second pause card outside the durable transaction.
+      throw new AssistantServiceError("REPORT_RESOLUTION_PERSISTENCE_INVALID", "The report selection could not be saved safely.", 503);
+    }
+    const conversation = await this.repo.getConversation({ ...scope, conversationId });
+    if (!conversation) throw this.notFound();
+    const messages = conversation.messages.filter((message) => message.turnId === resolution.sourceTurnId);
+    const userMessage = messages.find((message) => message.role === "user");
+    const assistantMessage = messages.find((message) => message.role === "assistant");
+    if (!userMessage || !assistantMessage) {
+      throw new AssistantServiceError("REPORT_RESOLUTION_PERSISTENCE_INVALID", "The report selection could not be saved safely.", 503);
+    }
+    return {
+      turnId: resolution.sourceTurnId,
+      correlationId: resolution.sourceCorrelationId,
+      status: "responded",
+      conversation,
+      userMessage,
+      assistantMessage,
+    };
   }
 
   private notFound(): AssistantServiceError {

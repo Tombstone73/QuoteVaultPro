@@ -7974,6 +7974,57 @@ export const insertLineItemProofVersionSchema = createInsertSchema(lineItemProof
   updatedAt: true,
 });
 
+/**
+ * Server-only resolution lifecycle for an analytical report that cannot safely
+ * choose between multiple customer accounts. The candidate JSON intentionally
+ * keeps the canonical company ID private to the browser; only the persistence
+ * and continuation layers may inspect it.
+ */
+export const aiReportEntityResolutionStatusValues = [
+  "awaiting_entity_resolution",
+  "resolved",
+  "resuming",
+  "resumed",
+  "expired",
+  "cancelled",
+  "failed",
+] as const;
+export type AiReportEntityResolutionStatus = (typeof aiReportEntityResolutionStatusValues)[number];
+
+export const aiReportEntityResolutions = pgTable("ai_report_entity_resolutions", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  sourceTurnId: varchar("source_turn_id").notNull().references(() => aiTurns.id, { onDelete: "cascade" }),
+  sourceMessageId: varchar("source_message_id").references(() => aiMessages.id, { onDelete: "set null" }),
+  contextSnapshotId: varchar("context_snapshot_id").references(() => aiContextSnapshots.id, { onDelete: "set null" }),
+  resolverVersion: varchar("resolver_version", { length: 64 }).notNull(),
+  analyticalPlanVersion: varchar("analytical_plan_version", { length: 64 }).notNull(),
+  originalUserRequest: text("original_user_request").notNull(),
+  unresolvedCustomerReference: text("unresolved_customer_reference").notNull(),
+  validatedPlanJson: jsonb("validated_plan_json").$type<Record<string, unknown>>().notNull(),
+  originalContextJson: jsonb("original_context_json").$type<Record<string, unknown>>().notNull(),
+  candidateSetJson: jsonb("candidate_set_json").$type<Array<Record<string, unknown>>>().notNull(),
+  selectedCandidateId: varchar("selected_candidate_id", { length: 128 }),
+  selectedCompanyId: varchar("selected_company_id"),
+  status: text("status").$type<AiReportEntityResolutionStatus>().notNull().default("awaiting_entity_resolution"),
+  version: integer("version").notNull().default(1),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+  resolvedAt: timestamp("resolved_at", { withTimezone: true }),
+  resumedAt: timestamp("resumed_at", { withTimezone: true }),
+  cancelledAt: timestamp("cancelled_at", { withTimezone: true }),
+  failedAt: timestamp("failed_at", { withTimezone: true }),
+  failureCode: varchar("failure_code", { length: 120 }),
+  continuationResultReference: varchar("continuation_result_reference", { length: 128 }),
+  continuationResultJson: jsonb("continuation_result_json").$type<Record<string, unknown> | null>(),
+}, (table) => [
+  index("ai_report_entity_resolutions_expiry_idx").on(table.expiresAt),
+  index("ai_report_entity_resolutions_active_lookup_idx").on(table.organizationId, table.userId, table.conversationId, table.status, table.expiresAt),
+]);
+
 /** Persisted, validated analytical artifacts. They store a generated data
  * snapshot and declarative report definition, never SQL or executable code. */
 export const aiReports = pgTable("ai_reports", {

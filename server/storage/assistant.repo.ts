@@ -6,6 +6,7 @@ import {
   aiContextSnapshots,
   aiConversations,
   aiMessages,
+  aiReportEntityResolutions,
   aiToolExecutions,
   aiTurns,
 } from "@shared/schema";
@@ -316,6 +317,76 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       conversation,
       userMessage: toMessage(created.userMessage),
       assistantMessage: toMessage(created.assistantMessage),
+    };
+  }
+
+  /** Writes the resumed assistant output and marks the already-claimed report
+   * resolution complete in the same transaction. It intentionally does not
+   * insert another user message. */
+  async createReportResolutionContinuation(input: AssistantScope & {
+    resolutionId: string;
+    actor: { userId: string; email: string | null; ipAddress: string | null; userAgent: string | null };
+    plan: unknown; context: AssistantContextEnvelope; response: string; structuredCards: AssistantStructuredCard[];
+    correlationId: string; provider: string | null; model: string | null;
+    toolExecutions: Array<{ toolName: string; toolVersion: string; status: "succeeded" | "failed" | "disabled"; errorCode?: string; auditStatus: string; durationMs: number; failureCategory?: string; failingStep?: string; coreResultSucceeded?: boolean }>;
+  }): Promise<AssistantTurnResult | null> {
+    const created = await db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${input.resolutionId}))`);
+      const [resolution] = await tx.select().from(aiReportEntityResolutions).where(and(
+        eq(aiReportEntityResolutions.id, input.resolutionId), eq(aiReportEntityResolutions.organizationId, input.organizationId),
+        eq(aiReportEntityResolutions.userId, input.userId), eq(aiReportEntityResolutions.status, "resuming"),
+      )).limit(1);
+      if (!resolution) return null;
+      const [conversation] = await tx.select().from(aiConversations).where(and(
+        eq(aiConversations.id, resolution.conversationId), eq(aiConversations.orgId, input.organizationId),
+        eq(aiConversations.userId, input.userId),
+      )).limit(1);
+      if (!conversation) return null;
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${conversation.id}))`);
+      const now = new Date();
+      const [turn] = await tx.insert(aiTurns).values({
+        orgId: input.organizationId, conversationId: conversation.id, userId: input.userId, status: "responded",
+        correlationId: input.correlationId, provider: input.provider, model: input.model,
+        mode: "stage_8_2_persisted_analytical_continuation", promptVersion: "assistant-stage-8.2-continuation-v1",
+        startedAt: now, completedAt: now,
+      }).returning();
+      if (!turn) throw new Error("Failed to create report continuation turn.");
+      const [sequenceRow] = await tx.select({ sequence: sql<number>`coalesce(max(${aiMessages.sequence}), 0)` })
+        .from(aiMessages).where(and(eq(aiMessages.orgId, input.organizationId), eq(aiMessages.conversationId, conversation.id)));
+      const [assistantMessage] = await tx.insert(aiMessages).values({
+        orgId: input.organizationId, conversationId: conversation.id, turnId: turn.id, actorUserId: input.actor.userId,
+        role: "assistant", sequence: Number(sequenceRow?.sequence ?? 0) + 1, content: input.response,
+        structuredCards: input.structuredCards, provider: input.provider, model: input.model, correlationId: input.correlationId,
+      }).returning();
+      if (!assistantMessage) throw new Error("Failed to create report continuation message.");
+      const contextJson = JSON.stringify(input.context);
+      await tx.insert(aiContextSnapshots).values({
+        orgId: input.organizationId, conversationId: conversation.id, turnId: turn.id, userId: input.userId,
+        contextVersion: input.context.contextVersion, sanitizedContext: input.context, contextHash: hash(contextJson),
+        capturedAt: new Date(input.context.capturedAt),
+      });
+      const [completed] = await tx.update(aiReportEntityResolutions).set({
+        status: "resumed", version: resolution.version + 1, resumedAt: now, updatedAt: now,
+        continuationResultReference: turn.id,
+        continuationResultJson: { turnId: turn.id, correlationId: turn.correlationId },
+      }).where(and(eq(aiReportEntityResolutions.id, resolution.id), eq(aiReportEntityResolutions.status, "resuming"),
+        eq(aiReportEntityResolutions.version, resolution.version))).returning();
+      if (!completed) throw new Error("Report resolution continuation claim was lost.");
+      await tx.update(aiConversations).set({ lastMessagePreview: input.response.slice(0, 240), lastActivityAt: now, updatedAt: now })
+        .where(eq(aiConversations.id, conversation.id));
+      const [sourceUserMessage] = await tx.select().from(aiMessages).where(and(
+        eq(aiMessages.turnId, resolution.sourceTurnId), eq(aiMessages.role, "user"),
+      )).orderBy(asc(aiMessages.sequence)).limit(1);
+      return { turn, assistantMessage, sourceUserMessage };
+    });
+    if (!created) return null;
+    const conversation = await this.getConversation({ organizationId: input.organizationId, userId: input.userId, conversationId: created.turn.conversationId });
+    if (!conversation) return null;
+    const assistantMessage = toMessage(created.assistantMessage);
+    return {
+      turnId: created.turn.id, correlationId: created.turn.correlationId, status: "responded", conversation,
+      userMessage: created.sourceUserMessage ? toMessage(created.sourceUserMessage) : assistantMessage,
+      assistantMessage,
     };
   }
 }
