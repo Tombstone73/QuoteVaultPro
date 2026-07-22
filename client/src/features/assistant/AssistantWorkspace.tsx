@@ -91,6 +91,51 @@ function CustomerProductSalesDetails({ details, sources }: { details: unknown; s
   return <div className="mt-3 space-y-2"><div className="overflow-x-auto rounded-lg border border-border/60 bg-card/30"><table className="w-full text-left text-sm"><thead className="border-b text-xs text-muted-foreground"><tr><th className="px-3 py-2">Product</th><th className="px-3 py-2 text-right">Revenue</th><th className="px-3 py-2 text-right">Qty.</th><th className="px-3 py-2 text-right">Invoices</th></tr></thead><tbody>{rows.slice(0, 25).map((row, index) => <tr key={`${text(row.label) ?? "product"}-${index}`} className="border-b last:border-0"><td className="px-3 py-2 font-medium">{text(row.label) ?? "Unnamed product"}</td><td className="px-3 py-2 text-right tabular-nums">{money(row.revenueCents)}</td><td className="px-3 py-2 text-right tabular-nums">{typeof row.quantity === "number" ? row.quantity : "—"}</td><td className="px-3 py-2 text-right tabular-nums">{typeof row.invoiceCount === "number" ? row.invoiceCount : "—"}</td></tr>)}</tbody></table></div>{Array.isArray(details.warnings) ? <p className="text-xs text-muted-foreground">{details.warnings.filter((warning): warning is string => typeof warning === "string").join(" ")}</p> : null}<SourceActions sources={sources} /></div>;
 }
 
+type AssistantSourceLink = { href: string; label: string };
+
+function sourceLink(value: unknown): AssistantSourceLink | null {
+  if (!isRecord(value)) return null;
+  const href = text(value.href);
+  const label = text(value.label);
+  return href && label ? { href, label } : null;
+}
+
+function numericValue(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function formatQuantity(value: unknown, unit: unknown): string | null {
+  const quantity = numericValue(value);
+  if (quantity === null) return null;
+  const label = text(unit);
+  return `${new Intl.NumberFormat().format(quantity)}${label ? ` ${label}` : ""}`;
+}
+
+function productionLineLabel(item: Record<string, unknown>): string {
+  const sequence = numericValue(item.lineItemSequence) ?? numericValue(item.lineSequence) ?? numericValue(item.displayNumber);
+  const lineIdentity = sequence === null ? null : `Line ${sequence}`;
+  const itemLabel = text(item.lineItemLabel) ?? text(item.productName) ?? text(item.label) ?? "Production item";
+  return lineIdentity ? `${lineIdentity} · ${itemLabel}` : itemLabel;
+}
+
+function productionDueLabel(item: Record<string, unknown>): string | null {
+  const dueState = text(item.dueState);
+  if (dueState) return formatAssistantDisplayValue(dueState);
+  if (item.overdue === true) return "Overdue";
+  const dueDate = text(item.dueDate);
+  if (!dueDate) return null;
+  const parsed = new Date(dueDate);
+  return Number.isNaN(parsed.getTime()) ? `Due ${dueDate}` : `Due ${parsed.toLocaleDateString()}`;
+}
+
+function uniqueLinks(links: Array<AssistantSourceLink | null>): AssistantSourceLink[] {
+  const unique = new Map<string, AssistantSourceLink>();
+  links.forEach((link) => {
+    if (link && !unique.has(link.href)) unique.set(link.href, link);
+  });
+  return Array.from(unique.values());
+}
+
 function ProductionReportingDetails({ details, sources }: { details: unknown; sources: Array<{ href: string; label: string }> }) {
   if (!isRecord(details)) return <SourceActions sources={sources} />;
   const stations = Array.isArray(details.stations) ? details.stations.filter(isRecord) : [];
@@ -98,9 +143,33 @@ function ProductionReportingDetails({ details, sources }: { details: unknown; so
   const urgentJobs = Array.isArray(details.urgentJobs) ? details.urgentJobs.filter(isRecord) : Array.isArray(details.attentionItems) ? details.attentionItems.filter(isRecord) : [];
   const metrics = stations.flatMap((station) => {
     const label = text(station.stationLabel);
-    const count = typeof station.activeJobs === "number" ? station.activeJobs : null;
-    return label && count !== null ? [{ label, value: count, detail: `${typeof station.overdueJobs === "number" ? station.overdueJobs : 0} overdue` }] : [];
+    const activeJobs = numericValue(station.activeJobs);
+    if (!label || activeJobs === null) return [];
+    const lines = numericValue(station.uniqueLineItems) ?? numericValue(station.activeLineItems) ?? numericValue(station.lineItemCount);
+    const orders = numericValue(station.uniqueOrders) ?? numericValue(station.orderCount);
+    const remaining = formatQuantity(station.remainingQuantity ?? station.totalRemainingQuantity, station.quantityUnit);
+    const detail = [
+      `${activeJobs} active ${activeJobs === 1 ? "job" : "jobs"}`,
+      lines === null ? null : `${lines} ${lines === 1 ? "line" : "lines"}`,
+      orders === null ? null : `${orders} ${orders === 1 ? "order" : "orders"}`,
+      remaining ? `${remaining} remaining` : null,
+      typeof station.overdueJobs === "number" ? `${station.overdueJobs} overdue` : null,
+    ].filter(Boolean).join(" · ");
+    return [{ label, value: activeJobs, detail }];
   });
+  const groups = new Map<string, { key: string; items: Record<string, unknown>[] }>();
+  urgentJobs.forEach((item, index) => {
+    const key = text(item.orderId) ?? text(item.orderNumber) ?? text(item.productionJobId) ?? text(item.jobId) ?? `item-${index}`;
+    const group = groups.get(key) ?? { key, items: [] };
+    group.items.push(item);
+    groups.set(key, group);
+  });
+  const orderGroups = Array.from(groups.values());
+  const linkedHrefs = new Set(orderGroups.flatMap((group) => group.items.flatMap((item) => [
+    sourceLink(item.orderSourceLink)?.href,
+    sourceLink(item.productionJobSourceLink)?.href,
+    sourceLink(item.sourceLink)?.href,
+  ].filter((href): href is string => Boolean(href)))));
   return <div className="mt-3 space-y-3">
     {metrics.length ? <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{metrics.slice(0, 12).map((metric) => <div key={metric.label} className="rounded-lg border border-border/70 bg-card/40 px-3 py-2"><p className="text-lg font-semibold tabular-nums">{metric.value}</p><p className="text-xs leading-4 text-muted-foreground">{metric.label}</p><p className="text-[11px] text-muted-foreground">{metric.detail}</p></div>)}</div> : null}
     {categories.length ? <div className="grid grid-cols-2 gap-2">{categories.map((category) => {
@@ -109,18 +178,36 @@ function ProductionReportingDetails({ details, sources }: { details: unknown; so
       const value = typeof category.count === "number" ? String(category.count) : "Unavailable";
       return label ? <div key={label} className="rounded-lg border border-border/70 bg-card/40 px-3 py-2"><p className="font-medium">{value}</p><p className="text-xs text-muted-foreground">{label}{!available ? " — unavailable" : ""}</p></div> : null;
     })}</div> : null}
-    {urgentJobs.length ? <div className="divide-y rounded-lg border border-border/60 bg-card/30">{urgentJobs.slice(0, 10).map((job) => {
-      const link = isRecord(job.sourceLink) ? job.sourceLink : null;
-      const href = text(link?.href);
-      const order = text(job.orderNumber) ? `Order ${text(job.orderNumber)}` : "Production order";
-      const station = text(job.stationLabel);
-      const lineItem = text(job.label);
-      const status = text(job.status);
-      const label = [order, station, lineItem].filter(Boolean).join(" — ");
-      const due = text(job.dueDate);
-      return href ? <a key={`${text(job.jobId) ?? href}-${label}`} href={href} className="block px-3 py-2 text-sm hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="font-medium">{label}</span><span className="ml-2 text-xs text-muted-foreground">{job.overdue === true ? "Overdue" : due ? `Due ${new Date(due).toLocaleDateString()}` : "No due date"}{status ? ` · ${status}` : ""}</span></a> : null;
+    {orderGroups.length ? <div className="space-y-3">{orderGroups.map((group) => {
+      const first = group.items[0]!;
+      const orderNumber = text(first.orderNumber);
+      const customer = text(first.customerName);
+      const due = productionDueLabel(first);
+      const orderLink = uniqueLinks(group.items.map((item) => sourceLink(item.orderSourceLink)))[0] ?? null;
+      return <section key={group.key} className="overflow-hidden rounded-lg border border-border/60 bg-card/30">
+        <div className="flex flex-wrap items-center justify-between gap-x-3 gap-y-1 border-b border-border/60 bg-muted/20 px-3 py-2">
+          <div><p className="font-medium text-sm">{orderNumber ? `Order ${orderNumber}` : "Production order"}{customer ? ` · ${customer}` : ""}</p>{due ? <p className="text-xs text-muted-foreground">{due}</p> : null}</div>
+          {orderLink ? <a href={orderLink.href} className="text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{orderLink.label}</a> : null}
+        </div>
+        <div className="divide-y">{group.items.map((item, index) => {
+          const jobLink = uniqueLinks([sourceLink(item.productionJobSourceLink), sourceLink(item.sourceLink)]).find((link) => link.href !== orderLink?.href) ?? null;
+          const unit = item.quantityUnit;
+          const ordered = formatQuantity(item.orderedQuantity, unit);
+          const completed = formatQuantity(item.completedQuantity, unit);
+          const remaining = formatQuantity(item.remainingQuantity, unit);
+          const progressUnavailable = item.progressAvailable === false || (remaining === null && text(item.progressWarning));
+          const station = text(item.stationLabel);
+          const status = text(item.productionStatus) ?? text(item.status);
+          const reason = text(item.inclusionReason) ?? text(item.reason);
+          return <div key={`${text(item.orderLineItemId) ?? text(item.productionJobId) ?? text(item.jobId) ?? "line"}-${index}`} className="px-3 py-2.5 text-sm">
+            <div className="flex flex-wrap items-start justify-between gap-x-3 gap-y-1"><div className="min-w-0"><p className="font-medium text-foreground">{productionLineLabel(item)}</p><p className="mt-0.5 text-xs text-muted-foreground">{[station, status, productionDueLabel(item)].filter(Boolean).join(" · ") || "Production details unavailable"}</p></div>{jobLink ? <a href={jobLink.href} className="shrink-0 text-xs font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring">{jobLink.label}</a> : null}</div>
+            {progressUnavailable ? <p className="mt-1 text-xs text-muted-foreground">{ordered ? `Ordered: ${ordered} · ` : ""}Print progress unavailable{item.progressWarning ? ` · ${String(item.progressWarning)}` : ""}</p> : (ordered || completed || remaining) ? <p className="mt-1 text-xs text-muted-foreground">{[ordered ? `Ordered: ${ordered}` : null, completed ? `Completed: ${completed}` : null, remaining ? `Remaining: ${remaining}` : null].filter(Boolean).join(" · ")}</p> : null}
+            {reason ? <p className="mt-1 text-xs text-muted-foreground">{reason}</p> : null}
+          </div>;
+        })}</div>
+      </section>;
     })}</div> : null}
-    <SourceActions sources={sources} />
+    <SourceActions sources={sources.filter((source) => !linkedHrefs.has(source.href))} />
   </div>;
 }
 

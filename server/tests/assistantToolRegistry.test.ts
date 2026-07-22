@@ -36,7 +36,7 @@ const successfulSearch = {
 };
 
 describe("assistant tool registry", () => {
-  test("contains only the eight registered read-only tools", () => {
+  test("contains only the registered read-only tools", () => {
     const registry = createAssistantToolRegistry();
     expect([...registry.keys()]).toEqual([
       "search.global",
@@ -47,6 +47,8 @@ describe("assistant tool registry", () => {
       "navigation.get_current_context",
       "production.get_queue_summary",
       "operations.get_attention_summary",
+      "analytics.resolve_customer",
+      "analytics.customer_product_sales",
     ]);
     for (const tool of registry.values()) {
       expect(tool.readOnly).toBe(true);

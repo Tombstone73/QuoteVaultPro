@@ -13,6 +13,7 @@ import {
   type AssistantFulfillmentReadyOrderRecord,
   type AssistantProductionJobRecord,
   type AssistantProductionQueueFilters,
+  type AssistantProductionScopeTotals,
   type AssistantProductionStationRecord,
   type AssistantProductionStationAggregate,
 } from "../../storage/assistantProductionReporting.repo";
@@ -31,7 +32,7 @@ const SAFE_STATION_ROUTES: Record<string, string> = {
 };
 
 export interface AssistantProductionReportingToolDependencies {
-  repository?: Pick<AssistantProductionReportingRepository, "getStations" | "getOrganizationTimezone" | "getStationAggregates" | "listUrgentJobs" | "listReadyForFulfillmentOrders" | "getOldestActiveJob">;
+  repository?: Pick<AssistantProductionReportingRepository, "getStations" | "getOrganizationTimezone" | "getStationAggregates" | "listUrgentJobs" | "listReadyForFulfillmentOrders" | "getOldestActiveJob"> & Partial<Pick<AssistantProductionReportingRepository, "getProductionScopeTotals">>;
   getOperationalSummary?: (organizationId: string) => Promise<OperationalSummary>;
   now?: () => Date;
   /** Test-only fallback when an organization has no configured IANA timezone. */
@@ -84,8 +85,9 @@ function iso(value: Date | string | null | undefined): string | undefined {
   return Number.isNaN(parsed.getTime()) ? undefined : parsed.toISOString();
 }
 
-function displayStatus(value: string): string {
-  const normalized = value.trim().toLowerCase();
+function displayStatus(value: string | null | undefined): string {
+  const normalized = value?.trim().toLowerCase() ?? "";
+  if (!normalized) return "Unspecified";
   if (normalized === "in_progress") return "In production";
   if (normalized === "queued") return "Queued";
   if (normalized === "paused") return "Paused";
@@ -103,22 +105,62 @@ function stationBoardLink(stationKey: string, capturedAt: string) {
   return { label: `View ${label} board`, href: SAFE_STATION_ROUTES[stationKey] ?? "/production", capturedAt };
 }
 
+function dueState(dueDate: string | undefined, dates: AssistantProductionDateWindow): "overdue" | "due_today" | "due_tomorrow" | "future" | "undated" {
+  if (!dueDate) return "undated";
+  const value = new Date(dueDate).getTime();
+  if (value < dates.startOfToday.getTime()) return "overdue";
+  if (value < dates.startOfTomorrow.getTime()) return "due_today";
+  if (value < dates.startOfDayAfterTomorrow.getTime()) return "due_tomorrow";
+  return "future";
+}
+
 function toUrgentJob(row: AssistantProductionJobRecord, dates: AssistantProductionDateWindow, capturedAt: string) {
   const dueDate = iso(row.dueDate);
-  const overdue = Boolean(dueDate && new Date(dueDate).getTime() < dates.startOfToday.getTime());
+  const state = dueState(dueDate, dates);
+  const orderSourceLink = { label: `Order ${row.orderNumber}`, href: `/orders/${row.orderId}`, entityType: "order" as const, entityId: row.orderId, capturedAt };
   return {
     jobId: row.jobId,
     orderId: row.orderId,
     orderNumber: row.orderNumber,
     ...(row.customerName ? { customerName: row.customerName } : {}),
+    ...(row.lineItemId ? { orderLineItemId: row.lineItemId } : { orderLineItemId: null }),
+    ...(row.lineItemSequence ? { lineItemSequence: row.lineItemSequence } : {}),
+    ...(row.lineItemLabel ? { lineItemLabel: row.lineItemLabel } : {}),
+    ...(row.orderedQuantity !== null ? { orderedQuantity: row.orderedQuantity } : { orderedQuantity: null }),
+    productionRequiredQuantity: null,
+    completedQuantity: null,
+    remainingQuantity: null,
+    quantityUnit: row.quantityUnit,
+    progressAvailable: false,
+    progressSource: row.progressSource,
+    progressWarning: row.progressWarning,
     label: row.label?.trim() || "Production job",
     stationKey: row.stationKey,
     stationLabel: stationLabel(row.stationKey),
+    productionStep: displayStatus(row.productionStep),
     status: displayStatus(row.status),
     ...(dueDate ? { dueDate } : {}),
-    overdue,
+    dueState: state,
+    overdue: state === "overdue",
+    inclusionReason: state === "overdue" ? "Overdue production job" : "Active production job",
+    orderSourceLink,
     sourceLink: { label: `Production job for order ${row.orderNumber}`, href: `/production/jobs/${row.jobId}`, entityType: "production_job" as const, entityId: row.jobId, capturedAt },
   };
+}
+
+/** Rows are grouped only for presentation. A job remains an individual item
+ * inside its order; no matching labels, stations, or quantities are merged. */
+function groupJobsByOrder(jobs: ReturnType<typeof toUrgentJob>[]) {
+  const groups = new Map<string, { orderId: string; orderNumber: string; customerName?: string; dueDate?: string; dueState: ReturnType<typeof dueState>; orderSourceLink: ReturnType<typeof toUrgentJob>["orderSourceLink"]; items: ReturnType<typeof toUrgentJob>[] }>();
+  for (const job of jobs) {
+    const existing = groups.get(job.orderId);
+    if (existing) { existing.items.push(job); continue; }
+    groups.set(job.orderId, {
+      orderId: job.orderId, orderNumber: job.orderNumber, ...(job.customerName ? { customerName: job.customerName } : {}),
+      ...(job.dueDate ? { dueDate: job.dueDate } : {}), dueState: job.dueState, orderSourceLink: job.orderSourceLink, items: [job],
+    });
+  }
+  return Array.from(groups.values());
 }
 
 function toAttentionItem(row: AssistantProductionJobRecord, dates: AssistantProductionDateWindow, capturedAt: string, reason: string) {
@@ -142,7 +184,19 @@ function toFulfillmentAttentionItem(row: AssistantFulfillmentReadyOrderRecord, d
 }
 
 function zeroAggregate(stationKey: string): AssistantProductionStationAggregate {
-  return { stationKey, activeJobs: 0, queuedJobs: 0, inProductionJobs: 0, overdueJobs: 0, dueTodayJobs: 0, dueTomorrowJobs: 0 };
+  return {
+    stationKey,
+    activeJobs: 0,
+    activeLineItems: 0,
+    uniqueOrders: 0,
+    progressAvailableJobs: 0,
+    confirmedRemainingQuantity: null,
+    queuedJobs: 0,
+    inProductionJobs: 0,
+    overdueJobs: 0,
+    dueTodayJobs: 0,
+    dueTomorrowJobs: 0,
+  };
 }
 
 function sourceLinksFor(stations: Array<{ boardLink: { label: string; href: string; capturedAt: string } }>, urgentJobs: Array<{ sourceLink: any; orderId: string; orderNumber: string }>, capturedAt: string) {
@@ -192,10 +246,11 @@ export function createAssistantProductionReportingToolAdapters(
       ...(input.due ? { due: input.due } : {}),
       ...(input.includeOverdue !== undefined ? { includeOverdue: input.includeOverdue } : {}),
     };
-    const [aggregates, jobs, oldest] = await Promise.all([
+    const [aggregates, jobs, oldest, totals] = await Promise.all([
       repository.getStationAggregates(context.scope.organizationId, dates, filters),
       repository.listUrgentJobs(context.scope.organizationId, dates, { ...filters, limit: input.limit ?? 10 }),
       repository.getOldestActiveJob(context.scope.organizationId, filters),
+      repository.getProductionScopeTotals?.(context.scope.organizationId, dates, filters) ?? Promise.resolve<AssistantProductionScopeTotals | null>(null),
     ]);
     const aggregateByStation = new Map(aggregates.map((aggregate) => [aggregate.stationKey, aggregate]));
     // The two canonical production boards are shown even when empty, while
@@ -215,6 +270,10 @@ export function createAssistantProductionReportingToolAdapters(
         stationLabel: metadata.name || stationLabel(stationKey),
         active: metadata.active,
         activeJobs: aggregate.activeJobs,
+        uniqueLineItems: aggregate.activeLineItems,
+        uniqueOrders: aggregate.uniqueOrders,
+        remainingQuantity: aggregate.confirmedRemainingQuantity,
+        progressAvailableJobs: aggregate.progressAvailableJobs,
         queuedJobs: aggregate.queuedJobs,
         inProductionJobs: aggregate.inProductionJobs,
         overdueJobs: aggregate.overdueJobs,
@@ -225,10 +284,12 @@ export function createAssistantProductionReportingToolAdapters(
         boardLink: stationBoardLink(stationKey, retrievedAt),
       };
     });
-    const warnings = requestedStation && !aggregateByStation.has(requestedStation.key)
-      ? [`There are no active jobs in ${requestedStation!.name}.`]
-      : [];
-    const data = assistantProductionQueueResultSchema.parse({ stations, urgentJobs, timezone, warnings });
+    const warnings = [
+      ...(requestedStation && !aggregateByStation.has(requestedStation.key) ? [`There are no active jobs in ${requestedStation!.name}.`] : []),
+      ...((totals?.activeJobs ?? aggregates.reduce((sum, aggregate) => sum + aggregate.activeJobs, 0)) > 0 && !(totals?.progressAvailableJobs ?? 0)
+        ? ["Ordered line quantity is available where linked, but completed and remaining print quantity are unavailable because production records do not store authoritative quantity progress."] : []),
+    ];
+    const data = assistantProductionQueueResultSchema.parse({ stations, urgentJobs, orderGroups: groupJobsByOrder(urgentJobs), timezone, warnings });
     return { status: "succeeded", data, provenance: { sourceLinks: sourceLinksFor(stations, urgentJobs, retrievedAt), freshness: { capturedAt: retrievedAt } } };
   };
 
@@ -264,12 +325,13 @@ export function createAssistantProductionReportingToolAdapters(
     // production-job identity. Returning generic jobs here would falsely
     // imply that they matched the requested filter.
     const unavailableItemFilter = attentionFilter === "waiting_artwork" || attentionFilter === "waiting_proof";
-    const [aggregates, jobs, operational] = await Promise.all([
+    const [aggregates, jobs, operational, totals] = await Promise.all([
       repository.getStationAggregates(context.scope.organizationId, dates, productionFilters),
       unavailableItemFilter || requiresFulfillmentRecords
         ? Promise.resolve([])
         : repository.listUrgentJobs(context.scope.organizationId, dates, { ...productionFilters, limit: input.limit ?? 10 }),
       getOperationalSummary(context.scope.organizationId).catch(() => null),
+      repository.getProductionScopeTotals?.(context.scope.organizationId, dates, productionFilters) ?? Promise.resolve<AssistantProductionScopeTotals | null>(null),
     ]);
     const fulfillmentRows = requiresFulfillmentRecords
       ? await repository.listReadyForFulfillmentOrders(context.scope.organizationId, input.limit ?? 10)
@@ -293,6 +355,8 @@ export function createAssistantProductionReportingToolAdapters(
       return [{
       stationKey: aggregate.stationKey, stationLabel: metadata.name || stationLabel(aggregate.stationKey), active: metadata.active,
       activeJobs: aggregate.activeJobs, queuedJobs: aggregate.queuedJobs, inProductionJobs: aggregate.inProductionJobs,
+      uniqueLineItems: aggregate.activeLineItems, uniqueOrders: aggregate.uniqueOrders,
+      remainingQuantity: aggregate.confirmedRemainingQuantity, progressAvailableJobs: aggregate.progressAvailableJobs,
       overdueJobs: aggregate.overdueJobs, dueTodayJobs: aggregate.dueTodayJobs, dueTomorrowJobs: aggregate.dueTomorrowJobs,
       ...(urgentJobs.find((job) => job.stationKey === aggregate.stationKey && job.dueDate) ? { earliestDueJob: urgentJobs.find((job) => job.stationKey === aggregate.stationKey && job.dueDate) } : {}),
       boardLink: stationBoardLink(aggregate.stationKey, retrievedAt),
@@ -316,9 +380,13 @@ export function createAssistantProductionReportingToolAdapters(
     const categoryKey = input.filter ? filterMap[input.filter] : undefined;
     const filteredCategories = categoryKey ? categories.filter((category) => category.key === categoryKey) : categories;
     const data = assistantAttentionSummaryResultSchema.parse({
-      totalActiveJobs: sum("activeJobs"), categories: filteredCategories,
+      totalActiveJobs: totals?.activeJobs ?? sum("activeJobs"),
+      ...(totals ? { totalActiveLineItems: totals.activeLineItems, totalActiveOrders: totals.uniqueOrders, remainingQuantity: totals.confirmedRemainingQuantity, progressAvailableJobs: totals.progressAvailableJobs } : {}),
+      categories: filteredCategories,
       ...(mostLoadedStation ? { mostLoadedStation } : {}), ...(earliestDueJob ? { earliestDueJob } : {}),
-      attentionItems, timezone,
+      attentionItems,
+      ...(!requiresFulfillmentRecords && urgentJobs.length ? { orderGroups: groupJobsByOrder(urgentJobs) } : {}),
+      timezone,
       warnings: [
         ...(operational ? [] : ["Some workflow queue metrics are unavailable; active production-job metrics remain current."]),
         ...(unavailableItemFilter
@@ -328,6 +396,12 @@ export function createAssistantProductionReportingToolAdapters(
           : []),
         ...(requiresFulfillmentRecords && operational && operational.fulfillment > attentionItems.length
           ? [`Showing the first ${attentionItems.length} of ${operational.fulfillment} ready-for-fulfillment orders.`]
+          : []),
+        ...(requiresFulfillmentRecords
+          ? ["Fulfillment readiness is order-workflow based. Print progress cannot be independently verified because production records do not store authoritative completed quantities."]
+          : []),
+        ...((totals?.activeJobs ?? sum("activeJobs")) > 0 && !(totals?.progressAvailableJobs ?? 0)
+          ? ["Completed and remaining print quantities are unavailable for active production jobs because no authoritative quantity-progress source is persisted."]
           : []),
       ],
     });

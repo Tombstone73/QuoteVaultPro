@@ -680,11 +680,17 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
         ? `${leading.stationLabel ?? "That station"} has the largest backlog with ${leading.activeJobs ?? 0} active jobs. Largest backlog means the highest active non-terminal job count; ties use overdue jobs, earliest due work, then station order. ${overview}.`
         : "There aren't any active production stations to compare right now.";
     }
-    const station = stations[0] as { stationLabel?: string; activeJobs?: number; earliestDueJob?: { orderNumber?: string; dueDate?: string }; overdueJobs?: number; dueTodayJobs?: number; queuedJobs?: number; inProductionJobs?: number };
+    const station = stations[0] as { stationLabel?: string; activeJobs?: number; uniqueLineItems?: number; uniqueOrders?: number; remainingQuantity?: number | null; progressAvailableJobs?: number; earliestDueJob?: { orderNumber?: string; dueDate?: string; lineItemSequence?: number }; overdueJobs?: number; dueTodayJobs?: number; queuedJobs?: number; inProductionJobs?: number };
     const label = station.stationLabel ?? "that station";
     if (!station.activeJobs) return `There aren't any active jobs in ${label} right now.`;
-    const earliest = station.earliestDueJob?.orderNumber ? ` The earliest is Order ${station.earliestDueJob.orderNumber}${station.earliestDueJob.dueDate ? `, due ${formatAssistantDate(station.earliestDueJob.dueDate)}` : ""}.` : " I can't reliably determine the earliest due job from the available data.";
-    return `There are ${station.activeJobs} active ${station.activeJobs === 1 ? "job" : "jobs"} in ${label}, with ${station.queuedJobs ?? 0} queued and ${station.inProductionJobs ?? 0} in production.${earliest}${station.overdueJobs ? ` ${station.overdueJobs} ${station.overdueJobs === 1 ? "job is" : "jobs are"} overdue.` : ""}${station.dueTodayJobs ? ` ${station.dueTodayJobs} ${station.dueTodayJobs === 1 ? "is" : "are"} due today.` : ""}`;
+    const scope = typeof station.uniqueLineItems === "number" && typeof station.uniqueOrders === "number"
+      ? `, covering ${station.uniqueLineItems} unique production ${station.uniqueLineItems === 1 ? "line" : "lines"} across ${station.uniqueOrders} ${station.uniqueOrders === 1 ? "order" : "orders"}`
+      : "";
+    const earliest = station.earliestDueJob?.orderNumber ? ` The earliest is${station.earliestDueJob.lineItemSequence ? ` Line ${station.earliestDueJob.lineItemSequence} of` : ""} Order ${station.earliestDueJob.orderNumber}${station.earliestDueJob.dueDate ? `, due ${formatAssistantDate(station.earliestDueJob.dueDate)}` : ""}.` : " I can't reliably determine the earliest due job from the available data.";
+    const progress = station.remainingQuantity !== null && station.remainingQuantity !== undefined
+      ? ` ${station.remainingQuantity} confirmed production units remain.`
+      : " Print progress is unavailable because production records do not store authoritative completed quantities.";
+    return `There are ${station.activeJobs} active ${station.activeJobs === 1 ? "production job" : "production jobs"} in ${label}${scope}, with ${station.queuedJobs ?? 0} queued and ${station.inProductionJobs ?? 0} in production.${earliest}${station.overdueJobs ? ` ${station.overdueJobs} ${station.overdueJobs === 1 ? "job is" : "jobs are"} overdue.` : ""}${station.dueTodayJobs ? ` ${station.dueTodayJobs} ${station.dueTodayJobs === 1 ? "is" : "are"} due today.` : ""}${progress}`;
   }
   if (toolName === "operations.get_attention_summary") {
     const category = Array.isArray(data.categories) ? data.categories[0] as { label?: string; count?: number | null; available?: boolean } | undefined : undefined;
@@ -692,11 +698,15 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
     if (!category.available) return `${category.label ?? "That metric"} isn't reliably available from the current production data.`;
     const count = Number(category.count ?? 0);
     const items = Array.isArray(data.attentionItems) ? data.attentionItems : [];
-    const first = items[0] as { orderNumber?: string; dueDate?: string } | undefined;
-    const lead = count === 0 ? `There are no ${String(category.label ?? "matching items").toLowerCase()} right now.` : `There are ${count} ${String(category.label ?? "matching items").toLowerCase()}.`;
-    const firstDue = first?.orderNumber ? ` The first listed is Order ${first.orderNumber}${first.dueDate ? `, due ${formatAssistantDate(first.dueDate)}` : ""}.` : "";
+    const first = items[0] as { orderNumber?: string; lineItemSequence?: number; dueDate?: string } | undefined;
+    const activeOrders = typeof data.totalActiveOrders === "number" ? ` across ${data.totalActiveOrders} ${data.totalActiveOrders === 1 ? "order" : "orders"}` : "";
+    const progress = data.remainingQuantity !== null && data.remainingQuantity !== undefined
+      ? ` Together they have ${data.remainingQuantity} confirmed production units remaining.`
+      : typeof data.progressAvailableJobs === "number" ? " Print progress is unavailable because production records do not store authoritative completed quantities." : "";
+    const lead = count === 0 ? `There are no ${String(category.label ?? "matching items").toLowerCase()} right now.` : `There are ${count} ${String(category.label ?? "matching items").toLowerCase()}${activeOrders}.`;
+    const firstDue = first?.orderNumber ? ` The first listed is${first.lineItemSequence ? ` Line ${first.lineItemSequence} of` : ""} Order ${first.orderNumber}${first.dueDate ? `, due ${formatAssistantDate(first.dueDate)}` : ""}.` : "";
     const urgency = String(category.label ?? "").toLowerCase().includes("urgent") ? " Urgent work is ordered by overdue due date, then due today, tomorrow, and other active work." : "";
-    return `${lead}${firstDue}${urgency}`;
+    return `${lead}${firstDue}${progress}${urgency}`;
   }
   if (toolName === "navigation.get_current_context") {
     const record = data.currentRecord as {

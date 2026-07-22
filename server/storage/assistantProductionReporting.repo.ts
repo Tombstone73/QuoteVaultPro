@@ -1,6 +1,6 @@
 import { and, asc, eq, isNotNull, notInArray, or, sql } from "drizzle-orm";
 import { db } from "../db";
-import { customers, orderLineItems, orders, organizations, productionJobs, products, stations } from "@shared/schema";
+import { customers, orderLineItems, orders, organizations, productionJobs, stations } from "@shared/schema";
 import { TERMINAL_PRODUCTION_STATUSES } from "@shared/operationalState";
 import { fulfillmentQueueEligibleOrderCondition } from "../services/fulfillment/eligibility";
 
@@ -15,6 +15,24 @@ export type AssistantProductionJobRecord = {
   orderId: string;
   orderNumber: string;
   customerName: string | null;
+  /** A stable, server-derived ordinal within the order. Never a model value. */
+  lineItemId: string | null;
+  lineItemSequence: number | null;
+  lineItemLabel: string | null;
+  orderedQuantity: number | null;
+  /**
+   * There is no persisted production-required quantity on production_jobs or
+   * production_events. Keeping this null prevents line quantity from being
+   * mislabeled as sheets, prints, or another production unit.
+   */
+  productionRequiredQuantity: number | null;
+  completedQuantity: number | null;
+  remainingQuantity: number | null;
+  quantityUnit: string | null;
+  progressAvailable: boolean;
+  progressSource: "unavailable";
+  progressWarning: string;
+  productionStep: string;
   label: string | null;
   stationKey: string;
   status: string;
@@ -26,11 +44,26 @@ export type AssistantProductionJobRecord = {
 export type AssistantProductionStationAggregate = {
   stationKey: string;
   activeJobs: number;
+  activeLineItems: number;
+  uniqueOrders: number;
+  /** Quantity progress is deliberately not synthesized from job status. */
+  progressAvailableJobs: number;
+  confirmedRemainingQuantity: number | null;
   queuedJobs: number;
   inProductionJobs: number;
   overdueJobs: number;
   dueTodayJobs: number;
   dueTomorrowJobs: number;
+};
+
+/** Global counts are queried independently of station aggregates so an order
+ * that has jobs at several stations is never counted twice in a headline. */
+export type AssistantProductionScopeTotals = {
+  activeJobs: number;
+  activeLineItems: number;
+  uniqueOrders: number;
+  progressAvailableJobs: number;
+  confirmedRemainingQuantity: number | null;
 };
 
 export type AssistantProductionDateWindow = {
@@ -73,9 +106,93 @@ function effectiveDueDate() {
   return sql<string | null>`coalesce(${orders.productionDueDate}, ${orders.dueDate}, ${orders.promisedDate})`;
 }
 
+/**
+ * A queue slice may omit earlier or terminal jobs, so a window function over
+ * the reporting result would produce a misleading Line 1. Count against the
+ * full persisted order-line set instead, ordered by the canonical sortOrder
+ * with line ID as the stable tie-breaker.
+ */
+function canonicalLineItemSequence() {
+  return sql<number | null>`case when ${orderLineItems.id} is null then null else (
+    select count(*)
+    from order_line_items as assistant_line_sequence
+    where assistant_line_sequence.order_id = ${orders.id}
+      and (
+        assistant_line_sequence.sort_order < ${orderLineItems.sortOrder}
+        or (
+          assistant_line_sequence.sort_order = ${orderLineItems.sortOrder}
+          and assistant_line_sequence.id <= ${orderLineItems.id}
+        )
+      )
+  ) end`;
+}
+
 function numeric(value: unknown): number {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? parsed : 0;
+}
+
+const PROGRESS_UNAVAILABLE_WARNING = "Completed and remaining production quantity are unavailable because the deployed production job and event records do not store authoritative quantity progress.";
+
+type ProductionJobRow = {
+  jobId: string;
+  orderId: string;
+  orderNumber: string | null;
+  fallbackOrderNumber: string | null;
+  customerName: string | null;
+  lineItemId: string | null;
+  lineItemSequence: number | string | null;
+  lineItemDescription: string | null;
+  orderedQuantity: number | string | null;
+  stationKey: string;
+  stepKey: string;
+  status: string;
+  dueDate: string | null;
+  createdAt: Date | string;
+  updatedAt: Date | string;
+};
+
+/**
+ * Enrichment joins must never change the identity of the production queue.
+ * The only safe deduplication key is the canonical production-job ID. This
+ * intentionally does not merge jobs that share an order, line, label, or
+ * station: those can all legitimately repeat.
+ */
+export function normalizeAssistantProductionJobRows(rows: ProductionJobRow[]): AssistantProductionJobRecord[] {
+  const seen = new Set<string>();
+  return rows.flatMap((row) => {
+    if (!row.jobId || seen.has(row.jobId)) return [];
+    seen.add(row.jobId);
+    const orderedQuantity = row.orderedQuantity === null || row.orderedQuantity === undefined
+      ? null
+      : Number.isFinite(Number(row.orderedQuantity)) ? Number(row.orderedQuantity) : null;
+    return [{
+      jobId: row.jobId,
+      orderId: row.orderId,
+      orderNumber: row.orderNumber ?? row.fallbackOrderNumber ?? "Order",
+      customerName: row.customerName ?? null,
+      lineItemId: row.lineItemId ?? null,
+      lineItemSequence: row.lineItemSequence === null || row.lineItemSequence === undefined ? null : numeric(row.lineItemSequence),
+      // description is the persisted order-line snapshot. It must win over
+      // current product metadata, which may have changed after the sale.
+      lineItemLabel: row.lineItemDescription?.trim() || null,
+      orderedQuantity,
+      productionRequiredQuantity: null,
+      completedQuantity: null,
+      remainingQuantity: null,
+      quantityUnit: null,
+      progressAvailable: false,
+      progressSource: "unavailable",
+      progressWarning: PROGRESS_UNAVAILABLE_WARNING,
+      productionStep: row.stepKey,
+      label: row.lineItemDescription?.trim() || null,
+      stationKey: row.stationKey,
+      status: row.status,
+      dueDate: row.dueDate ?? null,
+      createdAt: row.createdAt,
+      updatedAt: row.updatedAt,
+    }];
+  });
 }
 
 /**
@@ -113,6 +230,8 @@ export class AssistantProductionReportingRepository {
       .select({
         stationKey: productionJobs.stationKey,
         activeJobs: sql<number>`count(*)`,
+        activeLineItems: sql<number>`count(distinct ${productionJobs.lineItemId})`,
+        uniqueOrders: sql<number>`count(distinct ${orders.id})`,
         queuedJobs: sql<number>`count(*) filter (where ${productionJobs.status} = 'queued')`,
         inProductionJobs: sql<number>`count(*) filter (where ${productionJobs.status} = 'in_progress')`,
         overdueJobs: sql<number>`count(*) filter (where ${due} is not null and ${due} < ${dates.startOfToday})`,
@@ -128,12 +247,37 @@ export class AssistantProductionReportingRepository {
     return rows.map((row) => ({
       stationKey: row.stationKey,
       activeJobs: numeric(row.activeJobs),
+      activeLineItems: numeric(row.activeLineItems),
+      uniqueOrders: numeric(row.uniqueOrders),
+      progressAvailableJobs: 0,
+      confirmedRemainingQuantity: null,
       queuedJobs: numeric(row.queuedJobs),
       inProductionJobs: numeric(row.inProductionJobs),
       overdueJobs: numeric(row.overdueJobs),
       dueTodayJobs: numeric(row.dueTodayJobs),
       dueTomorrowJobs: numeric(row.dueTomorrowJobs),
     }));
+  }
+
+  async getProductionScopeTotals(
+    organizationId: string,
+    dates: AssistantProductionDateWindow,
+    filters: AssistantProductionQueueFilters = {},
+  ): Promise<AssistantProductionScopeTotals> {
+    const due = effectiveDueDate();
+    const conditions = this.baseConditions(organizationId, filters);
+    const dueCondition = this.dueCondition(due, dates, filters.due, filters.includeOverdue, filters.dueWithinDays);
+    const [row] = await db.select({
+      activeJobs: sql<number>`count(*)`,
+      activeLineItems: sql<number>`count(distinct ${productionJobs.lineItemId})`,
+      uniqueOrders: sql<number>`count(distinct ${orders.id})`,
+    }).from(productionJobs)
+      .innerJoin(orders, and(eq(orders.id, productionJobs.orderId), eq(orders.organizationId, organizationId)))
+      .where(and(...conditions, dueCondition));
+    return {
+      activeJobs: numeric(row?.activeJobs), activeLineItems: numeric(row?.activeLineItems), uniqueOrders: numeric(row?.uniqueOrders),
+      progressAvailableJobs: 0, confirmedRemainingQuantity: null,
+    };
   }
 
   async listUrgentJobs(
@@ -151,9 +295,12 @@ export class AssistantProductionReportingRepository {
         orderNumber: orders.displayNumber,
         fallbackOrderNumber: orders.orderNumber,
         customerName: customers.companyName,
+        lineItemId: orderLineItems.id,
+        lineItemSequence: canonicalLineItemSequence(),
         lineItemDescription: orderLineItems.description,
-        productName: products.name,
+        orderedQuantity: orderLineItems.quantity,
         stationKey: productionJobs.stationKey,
+        stepKey: productionJobs.stepKey,
         status: productionJobs.status,
         dueDate: due,
         createdAt: productionJobs.createdAt,
@@ -162,8 +309,9 @@ export class AssistantProductionReportingRepository {
       .from(productionJobs)
       .innerJoin(orders, and(eq(orders.id, productionJobs.orderId), eq(orders.organizationId, organizationId)))
       .leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId)))
-      .leftJoin(orderLineItems, eq(orderLineItems.id, productionJobs.lineItemId))
-      .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
+      // The order equality makes a corrupt or cross-order line-item reference
+      // non-enriching instead of allowing it to borrow another order's line.
+      .leftJoin(orderLineItems, and(eq(orderLineItems.id, productionJobs.lineItemId), eq(orderLineItems.orderId, orders.id)))
       .where(and(...conditions, dueCondition))
       // A null due date is explicitly last. Within due jobs, overdue work is
       // first, then earliest deadline, then stable job ID.
@@ -179,18 +327,7 @@ export class AssistantProductionReportingRepository {
       )
       .limit(Math.min(Math.max(1, filters.limit), 20));
 
-    return rows.map((row) => ({
-      jobId: row.jobId,
-      orderId: row.orderId,
-      orderNumber: row.orderNumber ?? row.fallbackOrderNumber,
-      customerName: row.customerName ?? null,
-      label: row.lineItemDescription ?? row.productName ?? null,
-      stationKey: row.stationKey,
-      status: row.status,
-      dueDate: row.dueDate ?? null,
-      createdAt: row.createdAt,
-      updatedAt: row.updatedAt,
-    }));
+    return normalizeAssistantProductionJobRows(rows);
   }
 
   /**
@@ -248,9 +385,12 @@ export class AssistantProductionReportingRepository {
         orderNumber: orders.displayNumber,
         fallbackOrderNumber: orders.orderNumber,
         customerName: customers.companyName,
+        lineItemId: orderLineItems.id,
+        lineItemSequence: canonicalLineItemSequence(),
         lineItemDescription: orderLineItems.description,
-        productName: products.name,
+        orderedQuantity: orderLineItems.quantity,
         stationKey: productionJobs.stationKey,
+        stepKey: productionJobs.stepKey,
         status: productionJobs.status,
         dueDate: effectiveDueDate(),
         createdAt: productionJobs.createdAt,
@@ -259,17 +399,11 @@ export class AssistantProductionReportingRepository {
       .from(productionJobs)
       .innerJoin(orders, and(eq(orders.id, productionJobs.orderId), eq(orders.organizationId, organizationId)))
       .leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId)))
-      .leftJoin(orderLineItems, eq(orderLineItems.id, productionJobs.lineItemId))
-      .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
+      .leftJoin(orderLineItems, and(eq(orderLineItems.id, productionJobs.lineItemId), eq(orderLineItems.orderId, orders.id)))
       .where(and(...this.baseConditions(organizationId, filters)))
       .orderBy(asc(productionJobs.createdAt), asc(productionJobs.id))
       .limit(1);
-    return rows.map((row) => ({
-      jobId: row.jobId, orderId: row.orderId, orderNumber: row.orderNumber ?? row.fallbackOrderNumber,
-      customerName: row.customerName ?? null, label: row.lineItemDescription ?? row.productName ?? null,
-      stationKey: row.stationKey, status: row.status, dueDate: row.dueDate ?? null,
-      createdAt: row.createdAt, updatedAt: row.updatedAt,
-    }));
+    return normalizeAssistantProductionJobRows(rows);
   }
 
   private baseConditions(organizationId: string, filters: Pick<AssistantProductionQueueFilters, "stationKey" | "status">) {

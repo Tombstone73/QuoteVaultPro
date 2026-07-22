@@ -72,6 +72,28 @@ function requestedResultLimit(value: string | undefined): number {
 }
 
 function productionReadPlan(message: string): AssistantProviderPlan | null {
+  const remainingAtStation = /\b(?:how many|what)\s+(?:prints?|units?)\s+(?:are\s+)?(?:left|remaining|remain)\s+(?:in|at)\s+(?:the\s+)?([A-Za-z0-9][A-Za-z0-9 _-]{0,99})\??$/i.exec(message);
+  if (remainingAtStation) {
+    const stationKey = stationReference(remainingAtStation[1]!);
+    if (stationKey) return plan({
+      intent: "production_reporting",
+      selectedSkill: "deterministic_production_station_progress",
+      toolCalls: [{ toolName: "production.get_queue_summary", arguments: { stationKey, limit: 5 } }],
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      responseStyle: "concise",
+    });
+  }
+
+  if (/\b(?:what is still left to print|what(?:'s| is) left to print|remaining production work)\b/i.test(message)) return plan({
+    intent: "production_reporting",
+    selectedSkill: "deterministic_production_remaining_work",
+    toolCalls: [{ toolName: "operations.get_attention_summary", arguments: { filter: "all_attention", limit: 10 } }],
+    clarificationRequired: false,
+    clarificationQuestion: null,
+    responseStyle: "concise",
+  });
+
   if (/\b(?:which station has the largest backlog|which station is busiest|largest backlog|station comparison|compare\s+.+\s+and\s+.+|which board should i work on first|bottleneck)\b/i.test(message)) return plan({
     intent: "production_reporting",
     selectedSkill: "deterministic_production_station_comparison",
