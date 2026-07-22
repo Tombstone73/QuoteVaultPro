@@ -44,6 +44,30 @@ describe("assistant order/product/operational tools", () => {
     expect(result.data.blockingIssues).toHaveLength(3);
   });
 
+  test("keeps the core order summary valid when optional workflow columns are unavailable", async () => {
+    const repository = {
+      getOrder: jest.fn(async () => ({
+        order: {
+          id: "order-20002", orderNumber: "20002", displayNumber: "ORD-20002", status: "fulfillment",
+          dueDate: null, updatedAt: capturedAt, customerId: "customer-1", customerName: "T3 Signs",
+        },
+        lineItems: [], production: [], invoices: [],
+      })),
+      getProduct: repo().getProduct,
+    };
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow });
+
+    const result = await tools.ordersGetSummary.execute(invocation, { orderNumber: "ORD-20002" });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      data: { order: { number: "ORD-20002", customer: "T3 Signs", status: "fulfillment", fulfillmentStatus: "unavailable" } },
+      sourceLinks: [expect.objectContaining({ href: "/orders/order-20002" })],
+      warning: "Some optional workflow details are unavailable for this order.",
+    });
+    expect(() => (tools.ordersGetSummary.definition.resultSchema as any).parse(result)).not.toThrow();
+  });
+
   test.each(["20002", "ORD-20002", "ord-20002", "ORD 20002", "Order 20002."])("normalizes %s before using the tenant-scoped order repository", async (orderNumber) => {
     const repository = repo();
     const tools = createOrderProductOperationalTools({ repository, now: fixedNow });
