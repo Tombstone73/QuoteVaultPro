@@ -3,6 +3,7 @@ import {
   analyticsDateWindow,
   createAssistantAnalyticsReportingToolAdapters,
 } from "../services/assistant/analyticsReportingTools";
+import { normalizeCustomerResolutionCandidates } from "../storage/assistantAnalyticsReporting.repo";
 
 const capturedAt = "2026-07-21T12:00:00.000Z";
 const context = {
@@ -38,6 +39,30 @@ function repository(overrides: Record<string, unknown> = {}) {
 }
 
 describe("assistant analytics reporting tools", () => {
+  test("normalizes a company and several matching contacts into one purchasing entity", () => {
+    const candidates = normalizeCustomerResolutionCandidates([
+      { id: "customer-bright", displayName: "Bright Signs Marketing", updatedAt: capturedAt, resolutionType: "company", contactId: null, contactName: null, explanation: "company" },
+      { id: "customer-bright", displayName: "Bright Signs Marketing", updatedAt: capturedAt, resolutionType: "contact", contactId: "contact-john", contactName: "John Smith", explanation: "contact" },
+      { id: "customer-bright", displayName: "Bright Signs Marketing", updatedAt: capturedAt, resolutionType: "contact", contactId: "contact-jane", contactName: "Jane Doe", explanation: "contact" },
+    ]);
+
+    expect(candidates).toHaveLength(1);
+    expect(candidates[0]).toMatchObject({
+      id: "customer-bright",
+      resolutionType: "company",
+      explanation: expect.stringContaining("2 related contacts"),
+    });
+  });
+
+  test("keeps same-name contacts at different companies ambiguous", () => {
+    const candidates = normalizeCustomerResolutionCandidates([
+      { id: "customer-graphic", displayName: "Graphic Solutions", updatedAt: capturedAt, resolutionType: "contact", contactId: "contact-rick-1", contactName: "Rick Clark", explanation: "contact" },
+      { id: "customer-bright", displayName: "Bright Signs Marketing", updatedAt: capturedAt, resolutionType: "contact", contactId: "contact-rick-2", contactName: "Rick Clark", explanation: "contact" },
+    ]);
+
+    expect(candidates.map((candidate) => candidate.id)).toEqual(["customer-bright", "customer-graphic"]);
+  });
+
   test("resolves an exact tenant customer with an internal source link", async () => {
     const repo = repository();
     const tools = createAssistantAnalyticsReportingToolAdapters({ repository: repo as any, now: () => new Date(capturedAt) });
