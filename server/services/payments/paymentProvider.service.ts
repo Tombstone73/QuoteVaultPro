@@ -40,6 +40,7 @@ export type RecordHostedResultInput = {
   paymentId: string;
   epsTransactionId: string;
   authCode?: string | null;
+  tokenLast4?: string | null;
   approvedAmountCents: number;
   responseCode?: string | null;
   responseMessage?: string | null;
@@ -547,6 +548,8 @@ export async function createHostedSession(input: {
 export async function recordHostedResult(input: RecordHostedResultInput): Promise<ProviderResult & { invoice: Record<string, unknown> | null }> {
   const paymentId = asString(input.paymentId);
   const epsTransactionId = asString(input.epsTransactionId);
+  const authCode = asString(input.authCode);
+  const tokenLast4 = asString(input.tokenLast4);
   const result = input.result;
   const nextStatus = mapHostedResultToPaymentStatus(result);
   const approvedAmountCents = Math.max(0, Math.round(Number(input.approvedAmountCents || 0)));
@@ -556,6 +559,12 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
   }
   if (!epsTransactionId) {
     throw new PaymentProviderError("EPS transaction id is required.", "EPS_TRANSACTION_ID_REQUIRED", 400);
+  }
+  if (result === "approved" && !authCode) {
+    throw new PaymentProviderError("EPS auth code is required for an approved hosted payment.", "EPS_AUTH_CODE_REQUIRED", 400);
+  }
+  if (result === "approved" && !/^\d{4}$/.test(tokenLast4)) {
+    throw new PaymentProviderError("EPS card last four digits are required for an approved hosted payment.", "EPS_LAST4_REQUIRED", 400);
   }
 
   const resultRecord = await db.transaction(async (tx) => {
@@ -614,7 +623,8 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
         amount: formatCentsAsEpsAmount(nextAmountCents),
         amountCents: nextAmountCents,
         providerTransactionId: epsTransactionId,
-        epsAuthCode: asString(input.authCode) || null,
+        epsAuthCode: authCode || null,
+        epsTokenLast4: tokenLast4 || null,
         epsResponseCode: asString(input.responseCode) || null,
         epsResponseMessage: asString(input.responseMessage) || null,
         epsApprovedAmountCents: approvedAmountCents,
@@ -709,7 +719,8 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
     ResponseCode: asString(input.responseCode) || null,
     TransactionID: epsTransactionId,
     ApprovedAmount: formatCentsAsEpsAmount(approvedAmountCents),
-    AuthCode: asString(input.authCode) || null,
+    AuthCode: authCode || null,
+    AccountNum: tokenLast4 || null,
     Method: "creditsale",
   });
 

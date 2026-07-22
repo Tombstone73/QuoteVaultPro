@@ -222,6 +222,7 @@ export default function InvoiceDetailPage() {
   const [epsResult, setEpsResult] = useState<'approved' | 'failed' | 'canceled'>('approved');
   const [epsTransactionId, setEpsTransactionId] = useState('');
   const [epsAuthCode, setEpsAuthCode] = useState('');
+  const [epsTokenLast4, setEpsTokenLast4] = useState('');
   const [epsApprovedAmount, setEpsApprovedAmount] = useState('');
   const [epsResponseCode, setEpsResponseCode] = useState('');
   const [epsResponseMessage, setEpsResponseMessage] = useState('');
@@ -621,6 +622,7 @@ export default function InvoiceDetailPage() {
     setEpsResult('approved');
     setEpsTransactionId('');
     setEpsAuthCode('');
+    setEpsTokenLast4('');
     setEpsApprovedAmount(formatCurrencyFromCents(Number(payment?.amountCents || 0)).replace(/[$,]/g, ''));
     setEpsResponseCode('');
     setEpsResponseMessage('');
@@ -643,6 +645,14 @@ export default function InvoiceDetailPage() {
       toast({ title: 'Approved amount required', description: 'Approved EPS payments must have an amount greater than zero.', variant: 'destructive' });
       return;
     }
+    if (epsResult === 'approved' && !epsAuthCode.trim()) {
+      toast({ title: 'EPS auth code required', description: 'Enter the auth code shown by EPS before recording an approved payment.', variant: 'destructive' });
+      return;
+    }
+    if (epsResult === 'approved' && !/^\d{4}$/.test(epsTokenLast4.trim())) {
+      toast({ title: 'EPS last four digits required', description: 'Enter the four card digits shown by EPS before recording an approved payment.', variant: 'destructive' });
+      return;
+    }
     if (amountMismatch && !epsAmountOverride) {
       toast({ title: 'Amount override required', description: 'Check the override box before recording a different approved amount.', variant: 'destructive' });
       return;
@@ -653,6 +663,7 @@ export default function InvoiceDetailPage() {
         paymentId: selectedEpsPayment.id,
         epsTransactionId: epsTransactionId.trim(),
         authCode: epsAuthCode.trim() || null,
+        tokenLast4: epsTokenLast4.trim() || null,
         approvedAmountCents,
         responseCode: epsResponseCode.trim() || null,
         responseMessage: epsResponseMessage.trim() || null,
@@ -1386,7 +1397,19 @@ export default function InvoiceDetailPage() {
                   id="eps-auth-code"
                   value={epsAuthCode}
                   onChange={(event) => setEpsAuthCode(event.target.value)}
-                  placeholder="Optional"
+                  placeholder={epsResult === 'approved' ? 'Required from EPS portal' : 'Optional'}
+                />
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="eps-token-last4">Card last four digits</Label>
+                <Input
+                  id="eps-token-last4"
+                  inputMode="numeric"
+                  maxLength={4}
+                  value={epsTokenLast4}
+                  onChange={(event) => setEpsTokenLast4(event.target.value.replace(/\D/g, '').slice(0, 4))}
+                  placeholder={epsResult === 'approved' ? 'Required from EPS portal' : 'Optional'}
                 />
               </div>
 
@@ -1449,7 +1472,7 @@ export default function InvoiceDetailPage() {
               </DialogClose>
               <Button
                 onClick={submitEpsHostedResult}
-                disabled={recordEpsHostedResultMutation.isPending || (epsDialogAmountMismatch && !epsAmountOverride)}
+                disabled={recordEpsHostedResultMutation.isPending || (epsDialogAmountMismatch && !epsAmountOverride) || (epsResult === 'approved' && (!epsAuthCode.trim() || !/^\d{4}$/.test(epsTokenLast4.trim())))}
               >
                 {recordEpsHostedResultMutation.isPending ? 'Recording...' : 'Record EPS Result'}
               </Button>

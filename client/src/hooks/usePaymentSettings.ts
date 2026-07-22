@@ -99,6 +99,7 @@ export function useRecordEpsHostedResult() {
       paymentId: string;
       epsTransactionId: string;
       authCode?: string | null;
+      tokenLast4?: string | null;
       approvedAmountCents: number;
       responseCode?: string | null;
       responseMessage?: string | null;
