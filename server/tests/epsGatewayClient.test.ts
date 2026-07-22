@@ -66,19 +66,32 @@ describe("EPS gateway client", () => {
       responseMessage: "PTK Stored",
     });
 
-    expect(
-      normalizeEpsResponse({
-        success: true,
-        message: "PTK Generated",
-        data: { state: "PTK", ptk: "nested-ptk-value" },
-      }),
-    ).toMatchObject({
+    expect(normalizeEpsResponse({
+      success: "true",
+      status: 200,
+      message: "PTK Generated",
+      data: { state: "GENERATED", ptk: "nested-ptk-string" },
+    })).toMatchObject({
       approved: false,
       pending: true,
       status: "pending",
-      ptk: "nested-ptk-value",
+      ptk: "nested-ptk-string",
       responseMessage: "PTK Generated",
     });
+
+    expect(normalizeEpsResponse({
+      success: true,
+      status: 200,
+      message: "PTK Generated",
+      data: { state: "GENERATED", ptk: "nested-ptk-boolean" },
+    })).toMatchObject({ approved: false, pending: true, status: "pending", ptk: "nested-ptk-boolean" });
+
+    expect(normalizeEpsResponse({
+      success: "true",
+      status: 200,
+      message: "PTK Generated",
+      data: { state: "GENERATED" },
+    })).toMatchObject({ approved: true, pending: false, status: "approved", ptk: null });
 
     expect(
       normalizeEpsResponse({
