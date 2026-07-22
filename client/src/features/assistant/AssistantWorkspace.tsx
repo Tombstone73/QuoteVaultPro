@@ -51,9 +51,10 @@ export function responsePresentationForCards(presentation: AssistantResponsePres
 }
 
 function SourceActions({ sources }: { sources: Array<{ href: string; label: string }> }) {
-  if (!sources.length) return null;
+  const uniqueSources = Array.from(new Map(sources.map((source) => [source.href, source])).values());
+  if (!uniqueSources.length) return null;
   return <div className="mt-3 flex flex-wrap gap-x-3 gap-y-1 text-sm">
-    {sources.map((source) => <a key={`${source.href}-${source.label}`} className="font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={source.href}>{source.label}</a>)}
+    {uniqueSources.map((source) => <a key={`${source.href}-${source.label}`} className="font-medium text-primary underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring" href={source.href}>{source.label}</a>)}
   </div>;
 }
 
@@ -103,9 +104,13 @@ function ProductionReportingDetails({ details, sources }: { details: unknown; so
     {urgentJobs.length ? <div className="divide-y rounded-lg border border-border/60 bg-card/30">{urgentJobs.slice(0, 10).map((job) => {
       const link = isRecord(job.sourceLink) ? job.sourceLink : null;
       const href = text(link?.href);
-      const label = text(job.orderNumber) ? `Order ${text(job.orderNumber)}` : text(job.label) ?? "Production job";
+      const order = text(job.orderNumber) ? `Order ${text(job.orderNumber)}` : "Production order";
+      const station = text(job.stationLabel);
+      const lineItem = text(job.label);
+      const status = text(job.status);
+      const label = [order, station, lineItem].filter(Boolean).join(" — ");
       const due = text(job.dueDate);
-      return href ? <a key={href} href={href} className="block px-3 py-2 text-sm hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="font-medium">{label}</span><span className="ml-2 text-xs text-muted-foreground">{job.overdue === true ? "Overdue" : due ? `Due ${new Date(due).toLocaleDateString()}` : "No due date"}</span></a> : null;
+      return href ? <a key={`${text(job.jobId) ?? href}-${label}`} href={href} className="block px-3 py-2 text-sm hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="font-medium">{label}</span><span className="ml-2 text-xs text-muted-foreground">{job.overdue === true ? "Overdue" : due ? `Due ${new Date(due).toLocaleDateString()}` : "No due date"}{status ? ` · ${status}` : ""}</span></a> : null;
     })}</div> : null}
     <SourceActions sources={sources} />
   </div>;

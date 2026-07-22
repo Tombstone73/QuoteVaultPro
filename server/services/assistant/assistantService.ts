@@ -517,7 +517,7 @@ function renderToolResults(
           : execution.warning ?? "The lookup could not be completed.";
       cards.push({
         kind: permissionDenied ? "permission_denied" : "tool_warning",
-        title: execution.toolName,
+        title: displayToolTitle(execution.toolName),
         summary,
         sourceLinks: [],
         toolStatus: execution.status === "rejected" ? "failed" : execution.status as any,
@@ -534,7 +534,12 @@ function renderToolResults(
     }
     const result = execution.result;
     if (result.status === "not_found") {
-      cards.push({ kind: "not_found", title: execution.toolName, summary: exactOrderLookup ? `I couldn't find order ${exactOrderLookup.displayNumber} in the current organization.` : "No matching record was found.", sourceLinks: [], toolStatus: "not_found" });
+      const summary = exactOrderLookup
+        ? `I couldn't find order ${exactOrderLookup.displayNumber} in the current organization.`
+        : execution.toolName === "production.get_queue_summary"
+          ? result.warning ?? "I couldn't find that active production station. Try the station name shown on your production board."
+          : "No matching record was found.";
+      cards.push({ kind: "not_found", title: displayToolTitle(execution.toolName), summary, sourceLinks: [], toolStatus: "not_found" });
       continue;
     }
     if (execution.toolName === "search.global" && exactSearchTarget) {
@@ -581,11 +586,25 @@ function renderToolResults(
       "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary",
     };
     const summary = summaryForTool(execution.toolName, result.data, { exactOrderLookup, currentOrderSummary });
-    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: execution.toolName, summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: result.data });
+    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: displayToolTitle(execution.toolName), summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: result.data });
   }
   if (!cards.length) return { response: "I need a little more detail to find the right information.", cards };
   const completed = cards.filter((card) => !["tool_warning", "permission_denied", "not_found"].includes(card.kind));
   return { response: completed.length ? completed.map((card) => card.summary).join(" ") : cards[0]!.summary, cards };
+}
+
+function displayToolTitle(toolName: string): string {
+  const titles: Record<string, string> = {
+    "production.get_queue_summary": "Production queue",
+    "operations.get_attention_summary": "Production attention",
+    "reports.operational_summary": "Operational summary",
+    "orders.get_summary": "Order summary",
+    "products.get_summary": "Product summary",
+    "customers.get_summary": "Customer summary",
+    "search.global": "Record search",
+    "navigation.get_current_context": "Current workspace",
+  };
+  return titles[toolName] ?? "Assistant result";
 }
 
 function exactSearchMatches(matches: unknown, target: import("./deterministicReadRouting").DeterministicSearchTarget) {
@@ -632,13 +651,38 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
   if (toolName === "production.get_queue_summary") {
     const stations = Array.isArray(data.stations) ? data.stations : [];
     if (!stations.length) return "I couldn't find an active production queue for that station.";
-    const station = stations[0] as { stationLabel?: string; activeJobs?: number; earliestDueJob?: { orderNumber?: string; dueDate?: string }; overdueJobs?: number; dueTodayJobs?: number };
+    if (stations.length > 1) {
+      const candidates = stations.filter((station: any) => station?.active !== false);
+      const ranked = [...(candidates.length ? candidates : stations)].sort((left: any, right: any) => (
+        Number(right.activeJobs ?? 0) - Number(left.activeJobs ?? 0)
+        || Number(right.overdueJobs ?? 0) - Number(left.overdueJobs ?? 0)
+        || String(left.earliestDueJob?.dueDate ?? "9999-12-31").localeCompare(String(right.earliestDueJob?.dueDate ?? "9999-12-31"))
+        || String(left.stationLabel ?? "").localeCompare(String(right.stationLabel ?? ""))
+      ));
+      const leading = ranked[0] as { stationLabel?: string; activeJobs?: number; overdueJobs?: number } | undefined;
+      const overview = ranked.map((station: any) => `${station.stationLabel ?? "Station"}: ${station.activeJobs ?? 0}`).join(", ");
+      return leading
+        ? `${leading.stationLabel ?? "That station"} has the largest backlog with ${leading.activeJobs ?? 0} active jobs. Largest backlog means the highest active non-terminal job count; ties use overdue jobs, earliest due work, then station order. ${overview}.`
+        : "There aren't any active production stations to compare right now.";
+    }
+    const station = stations[0] as { stationLabel?: string; activeJobs?: number; earliestDueJob?: { orderNumber?: string; dueDate?: string }; overdueJobs?: number; dueTodayJobs?: number; queuedJobs?: number; inProductionJobs?: number };
     const label = station.stationLabel ?? "that station";
     if (!station.activeJobs) return `There aren't any active jobs in ${label} right now.`;
     const earliest = station.earliestDueJob?.orderNumber ? ` The earliest is Order ${station.earliestDueJob.orderNumber}${station.earliestDueJob.dueDate ? `, due ${formatAssistantDate(station.earliestDueJob.dueDate)}` : ""}.` : " I can't reliably determine the earliest due job from the available data.";
-    return `There are ${station.activeJobs} active ${station.activeJobs === 1 ? "job" : "jobs"} in ${label}.${earliest}${station.overdueJobs ? ` ${station.overdueJobs} ${station.overdueJobs === 1 ? "job is" : "jobs are"} overdue.` : ""}${station.dueTodayJobs ? ` ${station.dueTodayJobs} ${station.dueTodayJobs === 1 ? "is" : "are"} due today.` : ""}`;
+    return `There are ${station.activeJobs} active ${station.activeJobs === 1 ? "job" : "jobs"} in ${label}, with ${station.queuedJobs ?? 0} queued and ${station.inProductionJobs ?? 0} in production.${earliest}${station.overdueJobs ? ` ${station.overdueJobs} ${station.overdueJobs === 1 ? "job is" : "jobs are"} overdue.` : ""}${station.dueTodayJobs ? ` ${station.dueTodayJobs} ${station.dueTodayJobs === 1 ? "is" : "are"} due today.` : ""}`;
   }
-  if (toolName === "operations.get_attention_summary") return "Here's what needs production attention right now.";
+  if (toolName === "operations.get_attention_summary") {
+    const category = Array.isArray(data.categories) ? data.categories[0] as { label?: string; count?: number | null; available?: boolean } | undefined : undefined;
+    if (!category) return "I couldn't find a production attention summary right now.";
+    if (!category.available) return `${category.label ?? "That metric"} isn't reliably available from the current production data.`;
+    const count = Number(category.count ?? 0);
+    const items = Array.isArray(data.attentionItems) ? data.attentionItems : [];
+    const first = items[0] as { orderNumber?: string; dueDate?: string } | undefined;
+    const lead = count === 0 ? `There are no ${String(category.label ?? "matching items").toLowerCase()} right now.` : `There are ${count} ${String(category.label ?? "matching items").toLowerCase()}.`;
+    const firstDue = first?.orderNumber ? ` The first listed is Order ${first.orderNumber}${first.dueDate ? `, due ${formatAssistantDate(first.dueDate)}` : ""}.` : "";
+    const urgency = String(category.label ?? "").toLowerCase().includes("urgent") ? " Urgent work is ordered by overdue due date, then due today, tomorrow, and other active work." : "";
+    return `${lead}${firstDue}${urgency}`;
+  }
   if (toolName === "navigation.get_current_context") {
     const record = data.currentRecord as {
       entityType?: string; orderNumber?: string; entityId?: string; customer?: string; customerName?: string;

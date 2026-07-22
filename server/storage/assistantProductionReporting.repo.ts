@@ -2,6 +2,7 @@ import { and, asc, eq, isNotNull, notInArray, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { customers, orderLineItems, orders, organizations, productionJobs, products, stations } from "@shared/schema";
 import { TERMINAL_PRODUCTION_STATUSES } from "@shared/operationalState";
+import { fulfillmentQueueEligibleOrderCondition } from "../services/fulfillment/eligibility";
 
 /**
  * Narrow, tenant-bound projection for the operational assistant tools.  Due
@@ -43,6 +44,20 @@ export type AssistantProductionQueueFilters = {
   status?: "queued" | "in_progress" | "paused";
   due?: "overdue" | "today" | "tomorrow";
   includeOverdue?: boolean;
+  /** Inclusive calendar window beginning at the organization's current day. */
+  dueWithinDays?: number;
+};
+
+/** A fulfillment queue row is intentionally order-backed. Once an order is
+ * production-complete there may no longer be an active production-job row to
+ * present, so fabricating a job identifier would be misleading. */
+export type AssistantFulfillmentReadyOrderRecord = {
+  orderId: string;
+  orderNumber: string;
+  customerName: string | null;
+  fulfillmentStatus: string | null;
+  dueDate: string | null;
+  readySince: Date | string | null;
 };
 
 export type AssistantProductionStationRecord = {
@@ -93,7 +108,7 @@ export class AssistantProductionReportingRepository {
   ): Promise<AssistantProductionStationAggregate[]> {
     const due = effectiveDueDate();
     const conditions = this.baseConditions(organizationId, filters);
-    const dueCondition = this.dueCondition(due, dates, filters.due, filters.includeOverdue);
+    const dueCondition = this.dueCondition(due, dates, filters.due, filters.includeOverdue, filters.dueWithinDays);
     const rows = await db
       .select({
         stationKey: productionJobs.stationKey,
@@ -128,7 +143,7 @@ export class AssistantProductionReportingRepository {
   ): Promise<AssistantProductionJobRecord[]> {
     const due = effectiveDueDate();
     const conditions = this.baseConditions(organizationId, filters);
-    const dueCondition = this.dueCondition(due, dates, filters.due, filters.includeOverdue);
+    const dueCondition = this.dueCondition(due, dates, filters.due, filters.includeOverdue, filters.dueWithinDays);
     const rows = await db
       .select({
         jobId: productionJobs.id,
@@ -156,6 +171,10 @@ export class AssistantProductionReportingRepository {
         sql`case when ${due} is null then 1 else 0 end`,
         sql`case when ${due} < ${dates.startOfToday} then 0 else 1 end`,
         asc(due),
+        // Priority is an existing canonical order field. It is only a tie
+        // breaker after the documented deadline ordering, never a predictive
+        // lateness score.
+        sql`case when lower(coalesce(${orders.priority}, '')) in ('rush', 'urgent') then 0 else 1 end`,
         asc(productionJobs.id),
       )
       .limit(Math.min(Math.max(1, filters.limit), 20));
@@ -171,6 +190,45 @@ export class AssistantProductionReportingRepository {
       dueDate: row.dueDate ?? null,
       createdAt: row.createdAt,
       updatedAt: row.updatedAt,
+    }));
+  }
+
+  /**
+   * Read a bounded slice of the canonical fulfillment queue. The predicate is
+   * shared with the fulfillment service so this never substitutes a looser
+   * status heuristic for fulfillment readiness.
+   */
+  async listReadyForFulfillmentOrders(
+    organizationId: string,
+    limit: number,
+  ): Promise<AssistantFulfillmentReadyOrderRecord[]> {
+    const due = effectiveDueDate();
+    const rows = await db
+      .select({
+        orderId: orders.id,
+        orderNumber: orders.displayNumber,
+        fallbackOrderNumber: orders.orderNumber,
+        customerName: customers.companyName,
+        fulfillmentStatus: orders.fulfillmentStatus,
+        dueDate: due,
+        readySince: sql<Date | string | null>`coalesce(${orders.productionCompletedAt}, ${orders.updatedAt})`,
+      })
+      .from(orders)
+      .leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId)))
+      .where(fulfillmentQueueEligibleOrderCondition(organizationId))
+      // A ready order with a due date should be surfaced before an undated
+      // order. This is deterministic and keeps the assistant's small result
+      // window useful without inventing a fulfillment priority score.
+      .orderBy(sql`case when ${due} is null then 1 else 0 end`, asc(due), asc(orders.id))
+      .limit(Math.min(Math.max(1, limit), 20));
+
+    return rows.map((row) => ({
+      orderId: row.orderId,
+      orderNumber: row.orderNumber ?? row.fallbackOrderNumber,
+      customerName: row.customerName ?? null,
+      fulfillmentStatus: row.fulfillmentStatus ?? null,
+      dueDate: row.dueDate ?? null,
+      readySince: row.readySince ?? null,
     }));
   }
 
@@ -229,10 +287,16 @@ export class AssistantProductionReportingRepository {
     dates: AssistantProductionDateWindow,
     filter: AssistantProductionQueueFilters["due"],
     includeOverdue: boolean | undefined,
+    dueWithinDays: number | undefined,
   ) {
     if (filter === "overdue") return and(isNotNull(due), sql`${due} < ${dates.startOfToday}`);
     if (filter === "today") return and(isNotNull(due), sql`${due} >= ${dates.startOfToday}`, sql`${due} < ${dates.startOfTomorrow}`);
     if (filter === "tomorrow") return and(isNotNull(due), sql`${due} >= ${dates.startOfTomorrow}`, sql`${due} < ${dates.startOfDayAfterTomorrow}`);
+    if (typeof dueWithinDays === "number") {
+      const days = Math.min(Math.max(1, Math.floor(dueWithinDays)), 31);
+      const end = new Date(dates.startOfToday.getTime() + days * 86_400_000);
+      return and(isNotNull(due), sql`${due} >= ${dates.startOfToday}`, sql`${due} < ${end}`);
+    }
     if (includeOverdue === false) return or(sql`${due} is null`, sql`${due} >= ${dates.startOfToday}`);
     return undefined;
   }

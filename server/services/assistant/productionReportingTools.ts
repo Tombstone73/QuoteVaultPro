@@ -10,11 +10,13 @@ import type { OperationalSummary } from "../operationalSummary";
 import {
   AssistantProductionReportingRepository,
   type AssistantProductionDateWindow,
+  type AssistantFulfillmentReadyOrderRecord,
   type AssistantProductionJobRecord,
   type AssistantProductionQueueFilters,
   type AssistantProductionStationRecord,
   type AssistantProductionStationAggregate,
 } from "../../storage/assistantProductionReporting.repo";
+import { resolveAssistantStationReference } from "./assistantStationResolution";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
 
 type QueueInput = ReturnType<typeof assistantProductionQueueInputSchema.parse>;
@@ -29,7 +31,7 @@ const SAFE_STATION_ROUTES: Record<string, string> = {
 };
 
 export interface AssistantProductionReportingToolDependencies {
-  repository?: Pick<AssistantProductionReportingRepository, "getStations" | "getOrganizationTimezone" | "getStationAggregates" | "listUrgentJobs" | "getOldestActiveJob">;
+  repository?: Pick<AssistantProductionReportingRepository, "getStations" | "getOrganizationTimezone" | "getStationAggregates" | "listUrgentJobs" | "listReadyForFulfillmentOrders" | "getOldestActiveJob">;
   getOperationalSummary?: (organizationId: string) => Promise<OperationalSummary>;
   now?: () => Date;
   /** Test-only fallback when an organization has no configured IANA timezone. */
@@ -119,15 +121,36 @@ function toUrgentJob(row: AssistantProductionJobRecord, dates: AssistantProducti
   };
 }
 
+function toAttentionItem(row: AssistantProductionJobRecord, dates: AssistantProductionDateWindow, capturedAt: string, reason: string) {
+  return { ...toUrgentJob(row, dates, capturedAt), reason };
+}
+
+function toFulfillmentAttentionItem(row: AssistantFulfillmentReadyOrderRecord, dates: AssistantProductionDateWindow, capturedAt: string) {
+  const dueDate = iso(row.dueDate);
+  return {
+    orderId: row.orderId,
+    orderNumber: row.orderNumber,
+    ...(row.customerName ? { customerName: row.customerName } : {}),
+    label: "Ready for fulfillment",
+    stationLabel: "Fulfillment",
+    status: displayStatus(row.fulfillmentStatus || "ready"),
+    ...(dueDate ? { dueDate } : {}),
+    overdue: Boolean(dueDate && new Date(dueDate).getTime() < dates.startOfToday.getTime()),
+    reason: "Ready for fulfillment",
+    sourceLink: { label: `Order ${row.orderNumber}`, href: `/orders/${row.orderId}`, entityType: "order" as const, entityId: row.orderId, capturedAt },
+  };
+}
+
 function zeroAggregate(stationKey: string): AssistantProductionStationAggregate {
   return { stationKey, activeJobs: 0, queuedJobs: 0, inProductionJobs: 0, overdueJobs: 0, dueTodayJobs: 0, dueTomorrowJobs: 0 };
 }
 
 function sourceLinksFor(stations: Array<{ boardLink: { label: string; href: string; capturedAt: string } }>, urgentJobs: Array<{ sourceLink: any; orderId: string; orderNumber: string }>, capturedAt: string) {
-  return [
+  const links = [
+    ...urgentJobs.map((job) => job.sourceLink),
     ...stations.map((station) => station.boardLink),
-    ...urgentJobs.flatMap((job) => [job.sourceLink, { label: `Order ${job.orderNumber}`, href: `/orders/${job.orderId}`, entityType: "order" as const, entityId: job.orderId, capturedAt }]),
-  ].slice(0, 10);
+  ];
+  return links.filter((link, index) => links.findIndex((candidate) => candidate.href === link.href) === index).slice(0, 10);
 }
 
 export function createAssistantProductionReportingToolAdapters(
@@ -151,14 +174,24 @@ export function createAssistantProductionReportingToolAdapters(
       resolveTimezone(context.scope.organizationId),
     ]);
     const dates = productionDateWindow(new Date(retrievedAt), timezone);
+    const stationResolution = input.stationKey
+      ? resolveAssistantStationReference(input.stationKey, stationsMetadata)
+      : null;
+    if (stationResolution && stationResolution.kind !== "unique") {
+      const warning = stationResolution.kind === "ambiguous"
+        ? `More than one active station matches ${stationResolution.query}. Choose one of: ${stationResolution.candidates.map((station) => station.name).join(", ")}.`
+        : stationResolution.kind === "inactive"
+          ? `${stationResolution.candidates.map((station) => station.name).join(", ")} is inactive. Choose an active production station.`
+          : `No active production station matches ${stationResolution.query}. Try the station name shown on your production board.`;
+      return { status: "not_found", data: null, warning };
+    }
+    const requestedStation = stationResolution?.station;
     const filters: AssistantProductionQueueFilters = {
-      ...(input.stationKey ? { stationKey: input.stationKey } : {}),
+      ...(requestedStation ? { stationKey: requestedStation.key } : {}),
       ...(input.status ? { status: input.status } : {}),
       ...(input.due ? { due: input.due } : {}),
       ...(input.includeOverdue !== undefined ? { includeOverdue: input.includeOverdue } : {}),
     };
-    const requestedStation = input.stationKey ? stationsMetadata.find((station) => station.key === input.stationKey) : undefined;
-    if (input.stationKey && !requestedStation) return { status: "not_found", data: null };
     const [aggregates, jobs, oldest] = await Promise.all([
       repository.getStationAggregates(context.scope.organizationId, dates, filters),
       repository.listUrgentJobs(context.scope.organizationId, dates, { ...filters, limit: input.limit ?? 10 }),
@@ -168,9 +201,9 @@ export function createAssistantProductionReportingToolAdapters(
     // The two canonical production boards are shown even when empty, while
     // every additional station represented by active tenant data is included.
     const metadataByKey = new Map(stationsMetadata.map((station) => [station.key, station]));
-    const stationKeys = input.stationKey
-      ? [input.stationKey]
-      : stationsMetadata.map((station) => station.key);
+    const stationKeys = requestedStation
+      ? [requestedStation.key]
+      : stationsMetadata.filter((station) => station.active).map((station) => station.key);
     const urgentJobs = jobs.map((row) => toUrgentJob(row, dates, retrievedAt));
     const oldestJob = oldest ? toUrgentJob(oldest, dates, retrievedAt) : undefined;
     const stations = stationKeys.map((stationKey) => {
@@ -192,7 +225,7 @@ export function createAssistantProductionReportingToolAdapters(
         boardLink: stationBoardLink(stationKey, retrievedAt),
       };
     });
-    const warnings = input.stationKey && !aggregateByStation.has(input.stationKey)
+    const warnings = requestedStation && !aggregateByStation.has(requestedStation.key)
       ? [`There are no active jobs in ${requestedStation!.name}.`]
       : [];
     const data = assistantProductionQueueResultSchema.parse({ stations, urgentJobs, timezone, warnings });
@@ -207,14 +240,52 @@ export function createAssistantProductionReportingToolAdapters(
       resolveTimezone(context.scope.organizationId),
     ]);
     const dates = productionDateWindow(new Date(retrievedAt), timezone);
-    const productionFilters: AssistantProductionQueueFilters = input.stationKey ? { stationKey: input.stationKey } : {};
-    if (input.stationKey && !stationsMetadata.some((station) => station.key === input.stationKey)) return { status: "not_found", data: null };
+    const stationResolution = input.stationKey
+      ? resolveAssistantStationReference(input.stationKey, stationsMetadata)
+      : null;
+    if (stationResolution && stationResolution.kind !== "unique") {
+      const warning = stationResolution.kind === "ambiguous"
+        ? `More than one active station matches ${stationResolution.query}. Choose one of: ${stationResolution.candidates.map((station) => station.name).join(", ")}.`
+        : stationResolution.kind === "inactive"
+          ? `${stationResolution.candidates.map((station) => station.name).join(", ")} is inactive. Choose an active production station.`
+          : `No active production station matches ${stationResolution.query}. Try the station name shown on your production board.`;
+      return { status: "not_found", data: null, warning };
+    }
+    const attentionFilter = input.filter ?? "all_attention";
+    const productionFilters: AssistantProductionQueueFilters = stationResolution?.station ? { stationKey: stationResolution.station.key } : {};
+    if (attentionFilter === "overdue") productionFilters.due = "overdue";
+    if (attentionFilter === "today" || attentionFilter === "due_today") productionFilters.due = "today";
+    if (attentionFilter === "tomorrow" || attentionFilter === "due_tomorrow") productionFilters.due = "tomorrow";
+    if (attentionFilter === "in_production") productionFilters.status = "in_progress";
+    if (attentionFilter === "waiting_prepress" && !productionFilters.stationKey) productionFilters.stationKey = "prepress";
+    if (input.dueWithinDays) productionFilters.dueWithinDays = input.dueWithinDays;
+    const requiresFulfillmentRecords = attentionFilter === "ready_for_fulfillment";
+    // Artwork and proof queues have canonical counts, but no canonical
+    // production-job identity. Returning generic jobs here would falsely
+    // imply that they matched the requested filter.
+    const unavailableItemFilter = attentionFilter === "waiting_artwork" || attentionFilter === "waiting_proof";
     const [aggregates, jobs, operational] = await Promise.all([
       repository.getStationAggregates(context.scope.organizationId, dates, productionFilters),
-      repository.listUrgentJobs(context.scope.organizationId, dates, { ...productionFilters, limit: input.limit ?? 10 }),
+      unavailableItemFilter || requiresFulfillmentRecords
+        ? Promise.resolve([])
+        : repository.listUrgentJobs(context.scope.organizationId, dates, { ...productionFilters, limit: input.limit ?? 10 }),
       getOperationalSummary(context.scope.organizationId).catch(() => null),
     ]);
+    const fulfillmentRows = requiresFulfillmentRecords
+      ? await repository.listReadyForFulfillmentOrders(context.scope.organizationId, input.limit ?? 10)
+      : [];
+    const attentionReason = attentionFilter === "overdue" ? "Overdue"
+      : attentionFilter === "today" || attentionFilter === "due_today" ? "Due today"
+        : attentionFilter === "tomorrow" || attentionFilter === "due_tomorrow" ? "Due tomorrow"
+          : attentionFilter === "in_production" ? "In production"
+            : attentionFilter === "waiting_prepress" ? "Waiting on prepress"
+              : attentionFilter === "urgent" ? "Urgent production work"
+                : input.dueWithinDays ? `Due within ${input.dueWithinDays} day${input.dueWithinDays === 1 ? "" : "s"}`
+                  : "Active production job";
     const urgentJobs = jobs.map((row) => toUrgentJob(row, dates, retrievedAt));
+    const attentionItems = requiresFulfillmentRecords
+      ? fulfillmentRows.map((row) => toFulfillmentAttentionItem(row, dates, retrievedAt))
+      : jobs.map((row) => toAttentionItem(row, dates, retrievedAt, attentionReason));
     const metadataByKey = new Map(stationsMetadata.map((station) => [station.key, station]));
     const stations = aggregates.flatMap((aggregate) => {
       const metadata = metadataByKey.get(aggregate.stationKey);
@@ -239,17 +310,28 @@ export function createAssistantProductionReportingToolAdapters(
     ];
     const mostLoadedStation = [...stations].sort((a, b) => b.activeJobs - a.activeJobs || b.overdueJobs - a.overdueJobs || a.stationKey.localeCompare(b.stationKey))[0];
     const earliestDueJob = urgentJobs.find((job) => job.dueDate);
-    const filterMap: Record<NonNullable<AttentionInput["filter"]>, string> = {
-      overdue: "overdue", today: "due_today", tomorrow: "due_tomorrow", waiting_artwork: "waiting_artwork", waiting_proof: "waiting_proof", waiting_prepress: "waiting_prepress", in_production: "in_production", ready_for_fulfillment: "ready_for_fulfillment",
+    const filterMap: Partial<Record<NonNullable<AttentionInput["filter"]>, string>> = {
+      overdue: "overdue", today: "due_today", due_today: "due_today", tomorrow: "due_tomorrow", due_tomorrow: "due_tomorrow", waiting_artwork: "waiting_artwork", waiting_proof: "waiting_proof", waiting_prepress: "waiting_prepress", in_production: "in_production", ready_for_fulfillment: "ready_for_fulfillment",
     };
-    const filteredCategories = input.filter ? categories.filter((category) => category.key === filterMap[input.filter!]) : categories;
+    const categoryKey = input.filter ? filterMap[input.filter] : undefined;
+    const filteredCategories = categoryKey ? categories.filter((category) => category.key === categoryKey) : categories;
     const data = assistantAttentionSummaryResultSchema.parse({
       totalActiveJobs: sum("activeJobs"), categories: filteredCategories,
       ...(mostLoadedStation ? { mostLoadedStation } : {}), ...(earliestDueJob ? { earliestDueJob } : {}),
-      attentionItems: urgentJobs, timezone,
-      warnings: operational ? [] : ["Some workflow queue metrics are unavailable; active production-job metrics remain current."],
+      attentionItems, timezone,
+      warnings: [
+        ...(operational ? [] : ["Some workflow queue metrics are unavailable; active production-job metrics remain current."]),
+        ...(unavailableItemFilter
+          ? [attentionFilter === "waiting_artwork"
+            ? "Artwork-waiting is unavailable because no single canonical migrated field identifies matching jobs."
+            : "The proof queue count is current, but it cannot safely be joined to a production-job identity here."]
+          : []),
+        ...(requiresFulfillmentRecords && operational && operational.fulfillment > attentionItems.length
+          ? [`Showing the first ${attentionItems.length} of ${operational.fulfillment} ready-for-fulfillment orders.`]
+          : []),
+      ],
     });
-    return { status: "succeeded", data, provenance: { sourceLinks: sourceLinksFor(stations, urgentJobs, retrievedAt), freshness: { capturedAt: retrievedAt } } };
+    return { status: "succeeded", data, provenance: { sourceLinks: sourceLinksFor(stations, attentionItems, retrievedAt), freshness: { capturedAt: retrievedAt } } };
   };
 
   return {
