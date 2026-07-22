@@ -4,20 +4,61 @@ import { and, eq, sql } from 'drizzle-orm';
 
 export type BillingReadyPolicy = 'all_line_items_done' | 'manual' | 'none';
 
-/** Service/fee lines are immediately billable once they carry a configured price. */
+/**
+ * Billing eligibility is financial, not operational. Production and fulfillment
+ * progress may be useful context for a person preparing an invoice, but it must
+ * never prevent one from being created.
+ */
 export function isLineItemReadyForBilling(lineItem: {
   status?: string | null;
   totalPrice?: unknown;
   workflowIntent?: string | null;
   allowZeroPrice?: boolean | null;
 }): boolean {
-  if (lineItem.workflowIntent === "service_fee") {
+  if (String(lineItem.workflowIntent || "").trim().toLowerCase() === "service_fee") {
     const total = Number(lineItem.totalPrice);
     return Number.isFinite(total) && (total > 0 || lineItem.allowZeroPrice === true);
   }
 
-  const status = String(lineItem.status || '').toLowerCase();
-  return status === 'done' || status === 'canceled';
+  // Quantity-only, fulfillment, and production lines are invoiceable regardless
+  // of lifecycle status. Their price is captured on the order line item.
+  return true;
+}
+
+export type InvoiceFinancialEligibility = {
+  canCreateInvoice: boolean;
+  code?: "ORDER_HAS_NO_BILLABLE_LINES" | "UNPRICED_SERVICE_FEE";
+  message?: string;
+};
+
+/**
+ * The only line-level invoice blockers are financial: an order must contain at
+ * least one line and every service/fee line must have an explicit usable price.
+ * In particular, this intentionally does not inspect production status.
+ */
+export function resolveInvoiceFinancialEligibility(lines: Array<{
+  totalPrice?: unknown;
+  workflowIntent?: string | null;
+  allowZeroPrice?: boolean | null;
+}>): InvoiceFinancialEligibility {
+  if (lines.length === 0) {
+    return {
+      canCreateInvoice: false,
+      code: "ORDER_HAS_NO_BILLABLE_LINES",
+      message: "Add at least one billable line before creating an invoice.",
+    };
+  }
+
+  const unpricedServiceFeeCount = lines.filter((line) => !isLineItemReadyForBilling(line)).length;
+  if (unpricedServiceFeeCount > 0) {
+    return {
+      canCreateInvoice: false,
+      code: "UNPRICED_SERVICE_FEE",
+      message: `${unpricedServiceFeeCount} service/fee line${unpricedServiceFeeCount === 1 ? " is" : "s are"} missing a configured price.`,
+    };
+  }
+
+  return { canCreateInvoice: true };
 }
 export type OrderBillingStatus = 'not_ready' | 'ready' | 'billed';
 
@@ -115,7 +156,7 @@ export async function recomputeOrderBillingStatus(params: {
         allowZeroPrice: products.allowZeroPrice,
       })
       .from(orderLineItems)
-      .innerJoin(products, eq(products.id, orderLineItems.productId))
+      .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
       .where(eq(orderLineItems.orderId, orderId));
 
     const allDone = lineItems.length > 0 && lineItems.every(isLineItemReadyForBilling);

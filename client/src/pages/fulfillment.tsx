@@ -16,6 +16,7 @@ import {
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ROUTES } from "@/config/routes";
+import { getFulfillmentOrderDetailPath } from "@/lib/fulfillmentOrderNavigation";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { getFulfillmentArtworkViewUrl } from "@/lib/fulfillmentArtwork";
@@ -609,7 +610,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
   };
 
   const handleOpenOrder = (orderId: string) => {
-    navigate(ROUTES.orders.detail(orderId), { state: { referrer: buildReferrer(location) } });
+    navigate(getFulfillmentOrderDetailPath(orderId), { state: { referrer: buildReferrer(location) } });
   };
 
   const handleOpenCustomer = async (row: FulfillmentQueueRow) => {
@@ -846,9 +847,8 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
                           className="w-fit text-sm font-bold text-primary underline-offset-2 hover:underline"
                           onClick={(event) => {
                             event.stopPropagation();
-                            setDetailOrderId(row.orderId);
+                            handleOpenOrder(row.orderId);
                           }}
-                          disabled={busyOrderId === row.orderId}
                         >
                           #{row.orderNumber}
                         </button>
