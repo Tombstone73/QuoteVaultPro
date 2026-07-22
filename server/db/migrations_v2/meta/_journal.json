@@ -862,6 +862,13 @@
       "when": 1785715200000,
       "tag": "0127_quote_internal_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 128,
+      "version": "7",
+      "when": 1785801600000,
+      "tag": "0128_ai_reports_foundation",
+      "breakpoints": true
     }
   ]
 }

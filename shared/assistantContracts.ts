@@ -1,4 +1,10 @@
 import { z } from "zod";
+export {
+  analyticsCustomerProductSalesInputSchema,
+  analyticsCustomerProductSalesResultSchema,
+  analyticsResolveCustomerInputSchema,
+  analyticsResolveCustomerResultSchema,
+} from "./aiReportingContracts";
 
 /**
  * Versioned, presentation-safe contracts for the internal PrintersHero
@@ -34,8 +40,10 @@ export const assistantToolNameValues = [
   "navigation.get_current_context",
   "production.get_queue_summary",
   "operations.get_attention_summary",
+  "analytics.resolve_customer",
+  "analytics.customer_product_sales",
 ] as const;
-export const assistantPlannerIntentValues = ["lookup", "operational_summary", "production_reporting", "navigation", "unsupported_write", "clarification"] as const;
+export const assistantPlannerIntentValues = ["lookup", "operational_summary", "production_reporting", "analytical_reporting", "navigation", "unsupported_write", "clarification"] as const;
 
 export type AssistantContextVersion = (typeof assistantContextVersionValues)[number];
 export type AssistantPresentationMode = (typeof assistantPresentationModeValues)[number];
@@ -64,7 +72,7 @@ export const assistantCapabilitySchema = z.object({
   /** True only when the configured provider can serve the internal assistant. */
   providerConfigured: z.boolean(),
   readToolsEnabled: z.boolean(),
-  registeredReadTools: z.array(z.enum(assistantToolNameValues)).max(12),
+  registeredReadTools: z.array(z.enum(assistantToolNameValues)).max(16),
   /** Whether the reviewed confirmation framework is available to this organization. */
   writeFrameworkEnabled: z.boolean(),
   // Stage 4 enables a server-owned, explicitly allowlisted write action. The
@@ -551,6 +559,8 @@ export const assistantStage2CardKindValues = [
   "station_comparison",
   "attention_summary",
   "urgent_job_list",
+  "customer_resolution",
+  "customer_product_sales",
 ] as const;
 export const assistantStage2StructuredCardSchema = z.object({
   kind: z.enum(assistantStage2CardKindValues),

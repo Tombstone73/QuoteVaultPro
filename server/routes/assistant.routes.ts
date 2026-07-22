@@ -39,7 +39,14 @@ function buildActor(req: Request, userId: string): AssistantActor {
         "assistant.internal_staff",
         "catalog.read",
         "assistant.quotes.add_internal_note",
-        ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft", "assistant.diagnostics.view"] : []),
+        ...(role === "owner" || role === "admin" ? [
+          "assistant.products.create_inactive_draft",
+          "assistant.products.update_inactive_draft",
+          "assistant.diagnostics.view",
+          // Financial reporting is deliberately derived from the server-owned
+          // tenant role, never a browser supplied capability or model input.
+          "finance.read",
+        ] : []),
       ];
     })(),
   };
