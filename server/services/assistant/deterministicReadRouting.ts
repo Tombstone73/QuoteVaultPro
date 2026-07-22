@@ -1,5 +1,6 @@
 import { assistantContextEnvelopeSchema, assistantProviderPlanSchema, type AssistantContextEnvelope, type AssistantProviderPlan } from "@shared/assistantContracts";
 import { canonicalOrderNumberLookup } from "@shared/documentNumbering";
+import { resolveExplicitReportingScope } from "./reportingScope";
 
 type DeterministicLookupKind = "order" | "quote" | "product" | "customer";
 
@@ -71,6 +72,25 @@ function requestedResultLimit(value: string | undefined): number {
   return Math.min(20, Math.max(1, parsed));
 }
 
+/** Explicit order scope is resolved before the production shortcut. The words
+ * "overdue" and "due today" alone are not enough to choose a job queue. */
+function orderDueReadPlan(message: string): AssistantProviderPlan | null {
+  if (resolveExplicitReportingScope(message) !== "order") return null;
+  const due = /\bdue\s+today\b/i.test(message) ? "due_today"
+    : /\bdue\s+tomorrow\b/i.test(message) ? "due_tomorrow"
+      : /\boverdue\b/i.test(message) ? "overdue" : null;
+  if (!due) return null;
+  const requested = /\b(?:show|list)\s+(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)\b/i.exec(message);
+  return plan({
+    intent: "operational_summary",
+    selectedSkill: "deterministic_order_due_summary",
+    toolCalls: [{ toolName: "orders.get_due_summary", arguments: { due, limit: requestedResultLimit(requested?.[1]), includeOperationalSummary: true } }],
+    clarificationRequired: false,
+    clarificationQuestion: null,
+    responseStyle: "concise",
+  });
+}
+
 function productionReadPlan(message: string): AssistantProviderPlan | null {
   const remainingAtStation = /\b(?:how many|what)\s+(?:prints?|units?)\s+(?:are\s+)?(?:left|remaining|remain)\s+(?:in|at)\s+(?:the\s+)?([A-Za-z0-9][A-Za-z0-9 _-]{0,99})\??$/i.exec(message);
   if (remainingAtStation) {
@@ -113,7 +133,7 @@ function productionReadPlan(message: string): AssistantProviderPlan | null {
     responseStyle: "concise",
   });
 
-  if (/\b(?:what needs attention|are any jobs overdue|overdue jobs?|due today|due tomorrow|waiting on (?:artwork|proof|prepress)|ready for fulfillment)\b/i.test(message)) {
+  if (/\b(?:what needs attention|are any (?:production )?jobs overdue|overdue (?:production )?jobs?|due today|due tomorrow|waiting on (?:artwork|proof|prepress)|ready for fulfillment)\b/i.test(message)) {
     const filter = /\bdue today\b/i.test(message) ? "due_today"
       : /\bdue tomorrow\b/i.test(message) ? "due_tomorrow"
         : /\boverdue\b/i.test(message) ? "overdue"
@@ -230,6 +250,9 @@ export function resolveDeterministicReadPlan(message: string, rawContext?: Assis
       responseStyle: "concise",
     });
   }
+
+  const orderDue = orderDueReadPlan(normalized);
+  if (orderDue) return orderDue;
 
   const production = productionReadPlan(normalized);
   if (production) return production;

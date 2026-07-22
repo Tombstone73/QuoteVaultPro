@@ -15,17 +15,23 @@ const context = {
 };
 
 function repository(overrides: Record<string, unknown> = {}) {
+  const company = { id: "customer-a", displayName: "Brainstorm Print", updatedAt: capturedAt, resolutionType: "company" as const, contactId: null, contactName: null, explanation: "Resolved company account Brainstorm Print." };
   return {
     getOrganizationTimezone: jest.fn(async () => "America/New_York"),
     resolveCustomer: jest.fn(async (_organizationId: string, query: string) => query === "unknown"
       ? { customer: null, alternatives: [], confidence: "none" as const }
       : query === "Brainstorm"
-        ? { customer: null, alternatives: [{ id: "customer-a", displayName: "Brainstorm Print", updatedAt: capturedAt }, { id: "customer-b", displayName: "Brainstorm Graphics", updatedAt: capturedAt }], confidence: "ambiguous" as const }
-        : { customer: { id: "customer-a", displayName: "Brainstorm Print", updatedAt: capturedAt }, alternatives: [], confidence: "exact" as const }),
+        ? { customer: null, alternatives: [company, { id: "customer-b", displayName: "Brainstorm Graphics", updatedAt: capturedAt, resolutionType: "company" as const, contactId: null, contactName: null, explanation: "Resolved company account Brainstorm Graphics." }], confidence: "ambiguous" as const }
+        : { customer: company, alternatives: [], confidence: "exact" as const }),
     customerProductSales: jest.fn(async () => [{
       label: "PVC Banner", productId: "product-pvc", revenueCents: 42500, quantity: 25, invoiceCount: 2, orderCount: 2,
       averageUnitPriceCents: 1700, firstPurchaseAt: "2026-07-01T04:00:00.000Z", latestPurchaseAt: "2026-07-20T04:00:00.000Z",
       sourceRecordCount: 2, totalRevenueCents: 50000, groupingRationale: "Rows are grouped by historical product identifier and invoice-time label.",
+    }]),
+    customerUninvoicedOrders: jest.fn(async () => [{
+      orderId: "order-a", orderNumber: "ORD-20002", orderDate: "2026-07-20T04:00:00.000Z", orderStatus: "in_production",
+      fulfillmentState: "pending", invoiceState: "no_invoice" as const, billingReadiness: "not_ready",
+      billingBlockers: ["Order is not marked billing ready.", "Fulfillment is pending."], orderTotalCents: 124000, lineCount: 2,
     }]),
     ...overrides,
   };
@@ -39,7 +45,7 @@ describe("assistant analytics reporting tools", () => {
 
     expect(result).toMatchObject({
       status: "succeeded",
-      data: { confidence: "exact", customer: { id: "customer-a", sourceLink: { href: "/customers/customer-a" } } },
+      data: { confidence: "exact", customer: { id: "customer-a", resolutionType: "company", sourceLink: { href: "/customers/customer-a" } } },
       provenance: { sourceLinks: [expect.objectContaining({ href: "/customers/customer-a" })] },
     });
     expect(repo.resolveCustomer).toHaveBeenCalledWith("org-a", "Brainstorm Print");
@@ -52,7 +58,7 @@ describe("assistant analytics reporting tools", () => {
 
     expect(result).toMatchObject({
       status: "partial",
-      data: { confidence: "ambiguous", customer: null, alternatives: [{ id: "customer-a" }, { id: "customer-b" }] },
+      data: { confidence: "ambiguous", customer: null, alternatives: [{ id: "customer-a", resolutionType: "company" }, { id: "customer-b", resolutionType: "company" }] },
       warning: expect.stringContaining("Choose one of"),
     });
   });
@@ -87,6 +93,36 @@ describe("assistant analytics reporting tools", () => {
 
     expect(result).toMatchObject({ status: "not_found", data: null });
     expect(repo.customerProductSales).not.toHaveBeenCalled();
+  });
+
+  test("preserves the contact-to-company explanation while sales uses the company account", async () => {
+    const repo = repository({
+      resolveCustomer: jest.fn(async () => ({
+        customer: { id: "customer-graphic", displayName: "Graphic Solutions", updatedAt: capturedAt, resolutionType: "contact" as const, contactId: "contact-rick", contactName: "Rick Clark", explanation: "Found Rick Clark at Graphic Solutions; analytics use the company account." },
+        alternatives: [], confidence: "exact" as const,
+      })),
+    });
+    const tools = createAssistantAnalyticsReportingToolAdapters({ repository: repo as any, now: () => new Date(capturedAt) });
+    const resolution = await tools["analytics.resolve_customer"]!.execute({ query: "Rick Clark" }, context);
+    const sales = await tools["analytics.customer_product_sales"]!.execute({ customer: { name: "Rick Clark" }, dateRange: { start: "2026-07-01", end: "2026-07-31" }, limit: 5 }, context);
+
+    expect(resolution).toMatchObject({ data: { customer: { displayName: "Graphic Solutions", resolutionType: "contact", contactName: "Rick Clark", explanation: expect.stringContaining("company account") } } });
+    expect(sales).toMatchObject({ status: "succeeded", data: { customer: { id: "customer-graphic", displayName: "Graphic Solutions" } } });
+    expect(repo.customerProductSales).toHaveBeenCalledWith("org-a", "customer-graphic", expect.anything(), "exact_product", "revenue", 5);
+  });
+
+  test("returns operational uninvoiced orders without treating their value as posted revenue", async () => {
+    const repo = repository();
+    const tools = createAssistantAnalyticsReportingToolAdapters({ repository: repo as any, now: () => new Date(capturedAt) });
+    const result = await (tools as any)["analytics.customer_uninvoiced_orders"].execute({
+      customer: { id: "customer-a" }, dateRange: { start: "2026-07-01", end: "2026-07-31" }, limit: 10,
+    }, context);
+
+    expect(result).toMatchObject({ status: "succeeded", data: { totalOrderValueCents: 124000 } });
+    const data = (result as any).data;
+    expect(data.orders[0]).toMatchObject({ orderNumber: "ORD-20002", invoiceState: "no_invoice", orderTotalCents: 124000, sourceLink: { href: "/orders/order-a" } });
+    expect(data.warnings).toEqual([expect.stringContaining("not included in posted revenue")]);
+    expect(repo.customerUninvoicedOrders).toHaveBeenCalledWith("org-a", "customer-a", expect.objectContaining({ start: expect.any(Date), endExclusive: expect.any(Date) }), 10);
   });
 
   test("uses tenant calendar boundaries across DST", () => {

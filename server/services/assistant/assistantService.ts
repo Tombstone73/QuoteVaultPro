@@ -584,14 +584,46 @@ function renderToolResults(
       "search.global": "search_results", "customers.get_summary": "customer_summary", "orders.get_summary": "order_summary",
       "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context",
       "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary",
+      "orders.get_due_summary": "order_due_summary",
       "analytics.resolve_customer": "customer_resolution", "analytics.customer_product_sales": "customer_product_sales",
+      "analytics.customer_uninvoiced_orders": "uninvoiced_order_summary",
     };
     const summary = summaryForTool(execution.toolName, result.data, { exactOrderLookup, currentOrderSummary });
-    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: displayToolTitle(execution.toolName), summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: result.data });
+    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: displayToolTitle(execution.toolName), summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: withSuggestedPrompts(execution.toolName, result.data) });
   }
   if (!cards.length) return { response: "I need a little more detail to find the right information.", cards };
   const completed = cards.filter((card) => !["tool_warning", "permission_denied", "not_found"].includes(card.kind));
   return { response: completed.length ? completed.map((card) => card.summary).join(" ") : cards[0]!.summary, cards };
+}
+
+/** Suggestions remain ordinary, visible text prompts. They do not contain
+ * identifiers, tool parameters, plan tokens, or an action path. */
+function withSuggestedPrompts(toolName: string, data: any): any {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  if (Array.isArray(data.suggestedPrompts)) return data;
+  if (toolName === "orders.get_due_summary") {
+    const state = data.orders?.[0]?.dueState === "due_today" ? "today's" : data.orders?.[0]?.dueState === "due_tomorrow" ? "tomorrow's" : "overdue";
+    return {
+      ...data,
+      suggestedPrompts: [
+        { id: "show-incomplete-lines", label: "Show incomplete line items", prompt: `Show incomplete line items for ${state} orders.`, intent: "production_reporting", presentationPriority: 1 },
+        { id: "summarize-due-orders", label: `Summarize ${state} orders`, prompt: `Summarize ${state} orders.`, intent: "operational_summary", presentationPriority: 2 },
+        { id: "remaining-work-station", label: "Show remaining work by station", prompt: "Show remaining work by station.", intent: "production_reporting", presentationPriority: 3 },
+      ],
+    };
+  }
+  if (toolName === "analytics.customer_uninvoiced_orders") {
+    const customer = typeof data.customer?.displayName === "string" ? data.customer.displayName : "this customer";
+    return {
+      ...data,
+      suggestedPrompts: [
+        { id: "show-uninvoiced-orders", label: "Show uninvoiced orders", prompt: `Show uninvoiced orders for ${customer}.`, intent: "analytical_reporting", presentationPriority: 1 },
+        { id: "analyze-order-value", label: "Analyze order value instead", prompt: `Analyze ${customer} order value instead.`, intent: "analytical_reporting", presentationPriority: 2 },
+        { id: "explain-billing-blockers", label: "Explain what is blocking invoicing", prompt: `Explain what is blocking invoicing for ${customer}.`, intent: "operational_summary", presentationPriority: 3 },
+      ],
+    };
+  }
+  return data;
 }
 
 function displayToolTitle(toolName: string): string {
@@ -600,12 +632,14 @@ function displayToolTitle(toolName: string): string {
     "operations.get_attention_summary": "Production attention",
     "reports.operational_summary": "Operational summary",
     "orders.get_summary": "Order summary",
+    "orders.get_due_summary": "Order due summary",
     "products.get_summary": "Product summary",
     "customers.get_summary": "Customer summary",
     "search.global": "Record search",
     "navigation.get_current_context": "Current workspace",
     "analytics.resolve_customer": "Customer resolution",
     "analytics.customer_product_sales": "Customer product sales",
+    "analytics.customer_uninvoiced_orders": "Uninvoiced orders",
   };
   return titles[toolName] ?? "Assistant result";
 }
@@ -636,6 +670,8 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
   if (toolName === "customers.get_summary") return `You're looking at ${data.customer?.label ?? "this customer"}${data.customer?.status ? `, currently ${formatAssistantDisplayValue(data.customer.status)}` : ""}.`;
   if (toolName === "orders.get_summary") {
     const order = data.order;
+    const operationalSummary = summarizeOperationalOrder(data);
+    if (operationalSummary) return operationalSummary;
     if (options.exactOrderLookup && order) {
       const orderLabel = order.label ?? order.number ?? options.exactOrderLookup.displayNumber;
       const displayOrder = /^order\b/i.test(orderLabel) ? orderLabel : `Order ${orderLabel}`;
@@ -649,11 +685,25 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
     }
     return `${order?.label ?? "This order"} is currently ${formatAssistantDisplayValue(order?.status)}${data.dueDate ? ` and due ${formatAssistantDate(data.dueDate)}` : ""}.`;
   }
+  if (toolName === "orders.get_due_summary") {
+    const orders = Array.isArray(data.orders) ? data.orders as Array<{ orderNumber?: string }> : [];
+    const total = Number(data.totalMatchingOrders ?? orders.length ?? 0);
+    const filter = options.exactOrderLookup ? "matching" : undefined;
+    if (!total) return "There are no matching orders in that due-date window.";
+    const labels = orders.map((order) => order.orderNumber).filter((value): value is string => Boolean(value));
+    const listed = labels.length <= 3 ? labels.join(labels.length === 2 ? " and " : ", ") : `${labels.slice(0, 3).join(", ")}${total > 3 ? ", and more" : ""}`;
+    const state = orders[0] && (data.orders[0] as { dueState?: string }).dueState;
+    const phrase = state === "overdue" ? "overdue" : state === "due_today" ? "due today" : state === "due_tomorrow" ? "due tomorrow" : filter ?? "matching";
+    return `${total} ${total === 1 ? "order is" : "orders are"} ${phrase}: ${listed}.`;
+  }
   if (toolName === "products.get_summary") return `${data.product?.label ?? "This product"} is ${data.active === false ? "inactive" : data.product?.status ?? "available"}${data.category ? ` in ${data.category}` : ""}.`;
   if (toolName === "reports.operational_summary") return "Here's the current operational picture.";
   if (toolName === "analytics.resolve_customer") {
     if (data.confidence === "ambiguous") return "I found multiple matching customers. Please choose the correct customer before I run a financial report.";
-    return data.customer?.displayName ? `I found ${data.customer.displayName}.` : "I couldn't find a matching customer.";
+    if (!data.customer?.displayName) return "I couldn't find a matching customer.";
+    return data.customer.resolutionType === "contact" && data.customer.contactName
+      ? `I found ${data.customer.contactName} at ${data.customer.displayName}. I'll analyze ${data.customer.displayName}'s purchasing history.`
+      : `I found ${data.customer.displayName}.`;
   }
   if (toolName === "analytics.customer_product_sales") {
     const customer = data.customer?.displayName ?? "This customer";
@@ -662,6 +712,16 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
     const first = rows[0];
     const dollars = typeof first?.revenueCents === "number" ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(first.revenueCents / 100) : null;
     return `${customer}'s leading product is ${first?.label ?? "the first listed product"}${dollars ? ` at ${dollars} in posted invoice-line revenue` : ""}.`;
+  }
+  if (toolName === "analytics.customer_uninvoiced_orders") {
+    const customer = data.customer?.displayName ?? "This customer";
+    const orders = Array.isArray(data.orders) ? data.orders : [];
+    if (!orders.length) return `${customer} has no qualifying uninvoiced orders in the requested date range.`;
+    const total = typeof data.totalOrderValueCents === "number"
+      ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(data.totalOrderValueCents / 100)
+      : null;
+    const first = orders[0] as { orderNumber?: string; fulfillmentState?: string } | undefined;
+    return `${customer} has ${orders.length} uninvoiced ${orders.length === 1 ? "order" : "orders"}${total ? ` worth ${total}` : ""}${first?.fulfillmentState ? `; the first is ${first.orderNumber ?? "an order"} and is ${formatAssistantDisplayValue(first.fulfillmentState)}` : ""}. This operational order value is not posted revenue.`;
   }
   if (toolName === "production.get_queue_summary") {
     const stations = Array.isArray(data.stations) ? data.stations : [];
@@ -726,6 +786,37 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
   return "Here’s what I found.";
 }
 
+function summarizeOperationalOrder(data: any): string | null {
+  const order = data?.order;
+  const operational = data?.operational;
+  if (!order || !operational || !Array.isArray(operational.lineItems)) return null;
+  const label = order.label ?? "This order";
+  const status = formatAssistantDisplayValue(order.status ?? "unavailable");
+  const due = data.dueDate ? ` and due ${formatAssistantDate(data.dueDate)}` : "";
+  const lines = operational.lineItems as Array<any>;
+  const productGroups = Array.from(new Set(lines.map((line) => line?.productName ?? line?.materialName).filter((value): value is string => typeof value === "string" && Boolean(value.trim()))));
+  const pieces = lines.reduce((total, line) => total + (Number.isInteger(line?.orderedPieces) && line.orderedPieces >= 0 ? line.orderedPieces : 0), 0);
+  const area = lines.reduce((total, line) => total + (typeof line?.finishedSquareFeet === "number" && Number.isFinite(line.finishedSquareFeet) ? line.finishedSquareFeet : 0), 0);
+  const classified = lines.filter((line) => line?.sidedness === "single_sided" || line?.sidedness === "double_sided");
+  const singleSided = classified.filter((line) => line.sidedness === "single_sided").length;
+  const doubleSided = classified.filter((line) => line.sidedness === "double_sided").length;
+  const unknownSidedness = lines.length - classified.length;
+  const production = operational.production;
+  const productionText = production
+    ? `${production.totalJobs ?? 0} production ${production.totalJobs === 1 ? "job" : "jobs"}, with ${production.queuedJobs ?? 0} queued, ${production.inProductionJobs ?? 0} in production, and ${production.completedJobs ?? 0} completed.`
+    : null;
+  const sidednessText = lines.length
+    ? unknownSidedness === 0
+      ? `${singleSided} confirmed single-sided and ${doubleSided} confirmed double-sided.`
+      : `${singleSided} confirmed single-sided; sidedness is unavailable for ${unknownSidedness} ${unknownSidedness === 1 ? "line" : "lines"}.`
+    : null;
+  const billing = typeof operational.billingStatus === "string" ? ` Billing is ${formatAssistantDisplayValue(operational.billingStatus)}.` : "";
+  const areaText = area > 0 ? ` totaling ${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(area)} finished square feet` : "";
+  const productText = productGroups.length ? ` (${productGroups.slice(0, 3).join(", ")}${productGroups.length > 3 ? ", and more" : ""})` : "";
+  const progressWarning = production?.printProgressAvailable === false && typeof production.printProgressWarning === "string" ? ` ${production.printProgressWarning}` : "";
+  return `${label} is ${status}${due}. It has ${lines.length} line ${lines.length === 1 ? "item" : "items"}${productText}, ${pieces} ordered pieces${areaText}. ${[sidednessText, productionText].filter(Boolean).join(" ")}${billing}${progressWarning}`;
+}
+
 function formatAssistantDate(value: string): string {
   const dateOnly = /^(\d{4})-(\d{2})-(\d{2})/.exec(value);
   const date = dateOnly
@@ -747,7 +838,7 @@ export function responsePresentationForCards(cards: readonly unknown[]): Assista
   const kinds = new Set(visibleCards.map((card) => card.kind));
   return kinds.has("action_plan") || kinds.has("action_proposal") ? "proposed_action"
       : kinds.has("execution_result") ? "execution_result"
-        : kinds.has("operational_metrics") || kinds.has("production_queue_summary") || kinds.has("station_comparison") || kinds.has("attention_summary") || kinds.has("customer_product_sales") ? "analytical"
+        : kinds.has("operational_metrics") || kinds.has("production_queue_summary") || kinds.has("station_comparison") || kinds.has("attention_summary") || kinds.has("customer_product_sales") || kinds.has("uninvoiced_order_summary") ? "analytical"
           : kinds.has("search_results") ? "collection"
             : kinds.has("order_summary") || kinds.has("customer_summary") || kinds.has("product_summary") ? "record_summary"
               : kinds.has("provider_unavailable") || kinds.has("tool_warning") || kinds.has("permission_denied") ? "diagnostic"

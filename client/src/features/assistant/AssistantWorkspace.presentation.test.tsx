@@ -15,7 +15,7 @@ const context = {
   selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-21T12:00:00.000Z", unsavedChanges: false,
 } as const;
 
-function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void } = {}) {
+function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void } = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -110,6 +110,43 @@ describe("Assistant workspace presentation", () => {
     expect(container.textContent).toContain("Print progress unavailable · No canonical completed-print source");
     expect(container.querySelectorAll('a[href="/orders/order-1"]')).toHaveLength(1);
     expect(container.querySelectorAll('a[href^="/production/jobs/"]')).toHaveLength(5);
+    act(() => root.unmount());
+  });
+
+  test("renders a useful operational order card and submits suggested prompts as normal messages", () => {
+    const onSubmitSuggestion = jest.fn();
+    const { container, root } = render([
+      {
+        kind: "order_summary", title: "Order summary", summary: "Order 20002 is in production.", sourceLinks: [{ label: "Order 20002", href: "/orders/order-1" }],
+        details: {
+          operational: {
+            priority: "rush", fulfillmentStatus: "pending", billingStatus: "not_ready", orderTotal: 1240,
+            lineItems: [{ sequence: 1, label: "ACM panel", productName: "ACM", materialName: "Aluminum composite", orderedPieces: 3, dimensions: { widthInches: 24, heightInches: 48 }, finishedSquareFeet: 24, sidedness: "double_sided", status: "in_production", workflowState: "production", stations: ["Flatbed"] }],
+            production: { totalJobs: 1, queuedJobs: 0, inProductionJobs: 1, completedJobs: 0, stations: [{ stationLabel: "Flatbed", jobCount: 1 }], printProgressAvailable: false, printProgressWarning: "Authoritative print completion is unavailable." },
+          },
+          suggestedPrompts: [{ id: "show_line_item_details", label: "Show line-item details", prompt: "Show line-item details for Order 20002.", intent: "lookup", presentationPriority: 1 }],
+        },
+      },
+    ], { presentation: "record_summary", onSubmitSuggestion });
+    expect(container.textContent).toContain("24 finished sq ft");
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Show line-item details") as HTMLButtonElement;
+    act(() => button.click());
+    expect(onSubmitSuggestion).toHaveBeenCalledWith("Show line-item details for Order 20002.");
+    expect(container.textContent).toContain("Authoritative print completion is unavailable.");
+    act(() => root.unmount());
+  });
+
+  test("submits server-provided due-summary suggestions as normal messages", () => {
+    const onSubmitSuggestion = jest.fn();
+    const { container, root } = render([
+      {
+        kind: "order_due_summary", title: "Order due summary", summary: "2 orders are overdue.", sourceLinks: [{ label: "Order ORD-20002", href: "/orders/order-1" }],
+        details: { suggestedPrompts: [{ id: "show-incomplete-lines", label: "Show incomplete line items", prompt: "Show incomplete line items for overdue orders.", intent: "production_reporting", presentationPriority: 1 }] },
+      },
+    ], { presentation: "analytical", onSubmitSuggestion });
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Show incomplete line items") as HTMLButtonElement;
+    act(() => button.click());
+    expect(onSubmitSuggestion).toHaveBeenCalledWith("Show incomplete line items for overdue orders.");
     act(() => root.unmount());
   });
 });

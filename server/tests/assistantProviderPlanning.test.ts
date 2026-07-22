@@ -54,6 +54,24 @@ describe("assistant provider planning", () => {
     expect(provider.generateJson).toHaveBeenCalledWith(expect.objectContaining({ feature: "assistant", providerConfig: expect.any(Object) }));
   });
 
+  test("pairs a bounded uninvoiced-order read with customer posted-revenue reporting", async () => {
+    const provider = {
+      generateJson: jest.fn(async () => ({
+        rawText: JSON.stringify({
+          intent: "analytical_reporting", selectedSkill: "customer_sales", clarificationRequired: false, clarificationQuestion: null, responseStyle: "concise",
+          toolCalls: [{ toolName: "analytics.customer_product_sales", arguments: { customer: { name: "Graphic Solutions" }, dateRange: { start: "2026-07-01", end: "2026-07-31" } }],
+        }),
+        provider: "openai", model: "test-model", requestMetadata: {},
+      })),
+    } as any;
+    const planner = new ConfiguredAssistantPlanner(provider, resolver());
+    const result = await planner.plan({ organizationId: "org_1", message: "Top products purchased by Graphic Solutions in July", context });
+    expect(result.plan.toolCalls).toEqual(expect.arrayContaining([
+      expect.objectContaining({ toolName: "analytics.customer_product_sales" }),
+      expect.objectContaining({ toolName: "analytics.customer_uninvoiced_orders", arguments: expect.objectContaining({ customer: { name: "Graphic Solutions" } }) }),
+    ]));
+  });
+
   test("rejects loose prose and unknown provider-generated tool names", async () => {
     const provider = {
       generateJson: jest.fn(async () => ({ rawText: "Use orders.get_summary", provider: "openai", model: "test", requestMetadata: {} })),

@@ -30,11 +30,12 @@ export interface AssistantProviderResolver {
 }
 
 const PLANNER_SYSTEM_PROMPT = `You are the PrintersHero read-only assistant planner. Return one strict JSON object only, with no markdown or prose.
-You may choose only these read-only tools: search.global, customers.get_summary, orders.get_summary, products.get_summary, reports.operational_summary, navigation.get_current_context, production.get_queue_summary, operations.get_attention_summary, analytics.resolve_customer, analytics.customer_product_sales.
-Allowed arguments only: search.global {query,limit?}; customers.get_summary {customerId?,query?}; orders.get_summary {orderId?,orderNumber?}; products.get_summary {productId?,query?}; reports.operational_summary {timezone?,date?}; navigation.get_current_context {}; production.get_queue_summary {stationKey?,status?,due?,includeOverdue?,limit?}; operations.get_attention_summary {filter?,dueWithinDays?,stationKey?,limit?}; analytics.resolve_customer {query}; analytics.customer_product_sales {customer:{id?,name?},dateRange:{start,end},rankingMetric?,limit?,grouping?,includeQuantities?,includeInvoiceCounts?,includeOrderCounts?,includeAverageUnitPrice?}.
+You may choose only these read-only tools: search.global, customers.get_summary, orders.get_summary, orders.get_due_summary, products.get_summary, reports.operational_summary, navigation.get_current_context, production.get_queue_summary, operations.get_attention_summary, analytics.resolve_customer, analytics.customer_product_sales, analytics.customer_uninvoiced_orders.
+Allowed arguments only: search.global {query,limit?}; customers.get_summary {customerId?,query?}; orders.get_summary {orderId?,orderNumber?}; orders.get_due_summary {due?,dueWithinDays?,dateRange?,status?,limit?,includeOperationalSummary?}; products.get_summary {productId?,query?}; reports.operational_summary {timezone?,date?}; navigation.get_current_context {}; production.get_queue_summary {stationKey?,status?,due?,includeOverdue?,limit?}; operations.get_attention_summary {filter?,dueWithinDays?,stationKey?,limit?}; analytics.resolve_customer {query}; analytics.customer_product_sales {customer:{id?,name?},dateRange:{start,end},rankingMetric?,limit?,grouping?,includeQuantities?,includeInvoiceCounts?,includeOrderCounts?,includeAverageUnitPrice?}; analytics.customer_uninvoiced_orders {customer:{id?,name?},dateRange:{start,end},limit?}.
 For production.get_queue_summary, stationKey is only an untrusted human station phrase such as "Flatbed printing"; the server resolves it within the organization. Never invent a station ID or canonical key. Omit stationKey for all-station and comparison questions. Use production.get_queue_summary for a station queue, first due job, backlog, or station comparison. Use operations.get_attention_summary for what needs attention, overdue work, due-today/tomorrow work, proof/prepress/artwork/fulfillment attention, and urgent production jobs. Its filter must be one of overdue, due_today, due_tomorrow, waiting_artwork, waiting_proof, waiting_prepress, in_production, ready_for_fulfillment, urgent, or all_attention.
 Production questions apply to the whole organization. Do not use passive customer, order, or page context as a filter unless the user explicitly says "this customer", "their jobs", "this order", "this station", or "this board". These are read-only reporting questions, never mutations.
-For historical customer product sales, use only analytics.customer_product_sales. Supply the customer name exactly as stated; the server resolves it in the active organization. Require a date range when the question does not state one. Do not infer products, financial totals, margins, dates, customer IDs, or currency values. Use analytics.resolve_customer only to resolve a customer by itself or when clarification will follow; do not fabricate an ID from it.
+Preserve the user's reporting scope. Use orders.get_due_summary for explicit order due/overdue questions; use production tools only when the user explicitly asks about production jobs, stations, or production work. Never headline an order question with a production-job count.
+For historical customer product sales, use only analytics.customer_product_sales. Supply the customer name exactly as stated; the server resolves it in the active organization. Require a date range when the question does not state one. When posted revenue is empty and the user asks why or requests operational context, use analytics.customer_uninvoiced_orders with the same customer and date range. Never label operational order value as revenue. Do not infer products, financial totals, margins, dates, customer IDs, or currency values. Use analytics.resolve_customer only to resolve a customer by itself or when clarification will follow; do not fabricate an ID from it.
 Never create, edit, save, change, confirm, execute, price, calculate a new price, publish, share, export, or perform GO actions. A request to save, publish, share, or export a report is a metadata workflow the application may offer after a read result, but this planner must classify it as intent "unsupported_write" with no tool calls.
 Never return or request organization IDs, user IDs, roles, permissions, URLs, SQL, service names, credentials, or auth material. Tool arguments must use only the documented argument fields.
 Choose a plan that supports a concise, human-readable answer. Never ask the user to interpret a tool name, planning step, schema, or internal diagnostic.
@@ -60,8 +61,9 @@ function contextForPlanner(context: AssistantContextEnvelope) {
  * before any adapter reaches the database. */
 function withBoundedAnalyticsPlan(plan: AssistantProviderPlan): AssistantProviderPlan {
   const customerSales = plan.toolCalls.find((call) => call.toolName === "analytics.customer_product_sales");
-  if (!customerSales) return plan;
-  const range = customerSales.arguments?.dateRange;
+  const customerAnalytics = customerSales ?? plan.toolCalls.find((call) => call.toolName === "analytics.customer_uninvoiced_orders");
+  if (!customerAnalytics) return plan;
+  const range = customerAnalytics.arguments?.dateRange;
   if (!range || typeof range !== "object" || Array.isArray(range)
     || typeof (range as Record<string, unknown>).start !== "string"
     || typeof (range as Record<string, unknown>).end !== "string") {
@@ -72,6 +74,23 @@ function withBoundedAnalyticsPlan(plan: AssistantProviderPlan): AssistantProvide
       clarificationRequired: true,
       clarificationQuestion: "What date range should I use for this sales report?",
       responseStyle: "concise",
+    });
+  }
+  // An empty posted-revenue result is otherwise indistinguishable from a
+  // customer with active, uninvoiced work. Pair the bounded operational read
+  // with customer sales reports server-side so the model never has to invent
+  // a second customer ID, date range, or query route.
+  if (customerSales && !plan.toolCalls.some((call) => call.toolName === "analytics.customer_uninvoiced_orders")) {
+    return assistantProviderPlanSchema.parse({
+      ...plan,
+      toolCalls: [...plan.toolCalls, {
+        toolName: "analytics.customer_uninvoiced_orders",
+        arguments: {
+          customer: customerSales.arguments.customer,
+          dateRange: customerSales.arguments.dateRange,
+          limit: 10,
+        },
+      }],
     });
   }
   return plan;

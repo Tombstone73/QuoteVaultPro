@@ -30,7 +30,15 @@ export class AssistantOrderProductRepository {
         orderNumber: orders.orderNumber,
         displayNumber: orders.displayNumber,
         status: orders.status,
+        state: orders.state,
+        statusPillValue: orders.statusPillValue,
+        priority: orders.priority,
+        poNumber: orders.poNumber,
+        label: orders.label,
         dueDate: orders.dueDate,
+        fulfillmentStatus: orders.fulfillmentStatus,
+        billingStatus: orders.billingStatus,
+        total: orders.total,
         updatedAt: orders.updatedAt,
         customerId: customers.id,
         customerName: customers.companyName,
@@ -56,12 +64,19 @@ export class AssistantOrderProductRepository {
         description: orderLineItems.description,
         quantity: orderLineItems.quantity,
         status: orderLineItems.status,
+        workflowState: orderLineItems.workflowState,
+        width: orderLineItems.width,
+        height: orderLineItems.height,
+        selectedOptions: orderLineItems.selectedOptions,
+        nestingConfigSnapshot: orderLineItems.nestingConfigSnapshot,
         sortOrder: orderLineItems.sortOrder,
         productName: products.name,
+        materialName: materials.name,
       })
       .from(orderLineItems)
       .innerJoin(orders, and(eq(orders.id, orderLineItems.orderId), eq(orders.organizationId, organizationId)))
       .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
+      .leftJoin(materials, and(eq(materials.id, orderLineItems.materialId), eq(materials.organizationId, organizationId)))
       .where(and(eq(orderLineItems.orderId, orderId), eq(orders.organizationId, organizationId)))
       .orderBy(asc(orderLineItems.sortOrder), asc(orderLineItems.id))
       .limit(25);
@@ -69,7 +84,7 @@ export class AssistantOrderProductRepository {
 
   async getOrderProduction(organizationId: string, orderId: string) {
     return db
-      .select({ id: productionJobs.id, stationKey: productionJobs.stationKey, stepKey: productionJobs.stepKey, status: productionJobs.status })
+      .select({ id: productionJobs.id, lineItemId: productionJobs.lineItemId, stationKey: productionJobs.stationKey, stepKey: productionJobs.stepKey, status: productionJobs.status })
       .from(productionJobs)
       .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, orderId)))
       .orderBy(desc(productionJobs.updatedAt))

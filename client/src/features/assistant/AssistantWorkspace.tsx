@@ -83,6 +83,68 @@ function AnalyticalDetails({ details }: { details: unknown }) {
   })}</div>;
 }
 
+type SuggestedPrompt = { id: string; label: string; prompt: string; presentationPriority: number };
+
+function suggestedPrompts(details: unknown): SuggestedPrompt[] {
+  if (!isRecord(details) || !Array.isArray(details.suggestedPrompts)) return [];
+  return details.suggestedPrompts.flatMap((candidate) => {
+    if (!isRecord(candidate)) return [];
+    const id = text(candidate.id);
+    const label = text(candidate.label);
+    const prompt = text(candidate.prompt);
+    const priority = numericValue(candidate.presentationPriority);
+    return id && label && prompt && priority !== null ? [{ id, label, prompt, presentationPriority: priority }] : [];
+  }).sort((left, right) => left.presentationPriority - right.presentationPriority).slice(0, 4);
+}
+
+function SuggestedPromptChips({ details, onSubmit }: { details: unknown; onSubmit?: (prompt: string) => void }) {
+  const prompts = suggestedPrompts(details);
+  if (!prompts.length || !onSubmit) return null;
+  return <div className="mt-3 flex flex-wrap gap-2" aria-label="Suggested follow-up questions">
+    {prompts.map((suggestion) => <Button key={suggestion.id} type="button" variant="outline" size="sm" className="h-auto min-h-8 whitespace-normal px-2.5 py-1.5 text-left text-xs" onClick={() => onSubmit(suggestion.prompt)}>{suggestion.label}</Button>)}
+  </div>;
+}
+
+function formatSquareFeet(value: unknown): string | null {
+  const squareFeet = numericValue(value);
+  return squareFeet === null ? null : `${new Intl.NumberFormat("en-US", { maximumFractionDigits: 2 }).format(squareFeet)} finished sq ft`;
+}
+
+function OperationalOrderSummaryDetails({ details, sources, onSubmitSuggestion }: { details: unknown; sources: Array<{ href: string; label: string }>; onSubmitSuggestion?: (prompt: string) => void }) {
+  if (!isRecord(details) || !isRecord(details.operational)) return <><SourceActions sources={sources} /><SuggestedPromptChips details={details} onSubmit={onSubmitSuggestion} /></>;
+  const operational = details.operational;
+  const lineItems = Array.isArray(operational.lineItems) ? operational.lineItems.filter(isRecord) : [];
+  const production = isRecord(operational.production) ? operational.production : null;
+  const stations = production && Array.isArray(production.stations) ? production.stations.filter(isRecord) : [];
+  const priority = text(operational.priority);
+  const fulfillment = text(operational.fulfillmentStatus);
+  const billing = text(operational.billingStatus);
+  const total = numericValue(operational.orderTotal);
+  const printProgressWarning = production && production.printProgressAvailable === false ? text(production.printProgressWarning) : null;
+  return <div className="mt-3 space-y-3">
+    <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+      {priority ? <div className="rounded-lg border border-border/70 bg-card/40 px-3 py-2 text-xs"><p className="font-medium">{formatAssistantDisplayValue(priority)}</p><p className="text-muted-foreground">Priority</p></div> : null}
+      {fulfillment ? <div className="rounded-lg border border-border/70 bg-card/40 px-3 py-2 text-xs"><p className="font-medium">{formatAssistantDisplayValue(fulfillment)}</p><p className="text-muted-foreground">Fulfillment</p></div> : null}
+      {billing ? <div className="rounded-lg border border-border/70 bg-card/40 px-3 py-2 text-xs"><p className="font-medium">{formatAssistantDisplayValue(billing)}</p><p className="text-muted-foreground">Billing</p></div> : null}
+      {total !== null ? <div className="rounded-lg border border-border/70 bg-card/40 px-3 py-2 text-xs"><p className="font-medium tabular-nums">{new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(total)}</p><p className="text-muted-foreground">Order total</p></div> : null}
+    </div>
+    {lineItems.length ? <section className="overflow-hidden rounded-lg border border-border/60 bg-card/30"><div className="border-b border-border/60 bg-muted/20 px-3 py-2 text-xs font-medium text-muted-foreground">Line items · ordered pieces and finished geometry</div><div className="divide-y">{lineItems.slice(0, 25).map((line, index) => {
+      const sequence = numericValue(line.sequence) ?? index + 1;
+      const label = text(line.label) ?? "Order line";
+      const product = text(line.productName) ?? text(line.materialName);
+      const pieces = numericValue(line.orderedPieces);
+      const dimensions = isRecord(line.dimensions) ? [numericValue(line.dimensions.widthInches), numericValue(line.dimensions.heightInches)] : null;
+      const size = dimensions && dimensions[0] !== null && dimensions[1] !== null ? `${dimensions[0]} × ${dimensions[1]} in` : null;
+      const sidedness = text(line.sidedness);
+      const stationsForLine = Array.isArray(line.stations) ? line.stations.map(text).filter((value): value is string => Boolean(value)) : [];
+      return <div key={`${sequence}-${label}-${index}`} className="px-3 py-2.5 text-sm"><p className="font-medium">Line {sequence} · {label}</p><p className="mt-0.5 text-xs text-muted-foreground">{[product, pieces === null ? null : `${new Intl.NumberFormat().format(pieces)} ordered pieces`, size, formatSquareFeet(line.finishedSquareFeet), sidedness === "unavailable" ? "Sidedness unavailable" : sidedness ? formatAssistantDisplayValue(sidedness) : null, stationsForLine.length ? stationsForLine.join(", ") : null].filter(Boolean).join(" · ")}</p></div>;
+    })}</div></section> : null}
+    {production ? <section className="rounded-lg border border-border/60 bg-card/30 px-3 py-2.5 text-sm"><p className="font-medium">Production</p><p className="mt-0.5 text-xs text-muted-foreground">{[`${numericValue(production.totalJobs) ?? 0} jobs`, `${numericValue(production.queuedJobs) ?? 0} queued`, `${numericValue(production.inProductionJobs) ?? 0} in production`, `${numericValue(production.completedJobs) ?? 0} completed`].join(" · ")}</p>{stations.length ? <p className="mt-1 text-xs text-muted-foreground">{stations.map((station) => `${text(station.stationLabel) ?? "Station"}: ${numericValue(station.jobCount) ?? 0}`).join(" · ")}</p> : null}{printProgressWarning ? <p className="mt-1 text-xs text-muted-foreground">{printProgressWarning}</p> : null}</section> : null}
+    <SourceActions sources={sources} />
+    <SuggestedPromptChips details={details} onSubmit={onSubmitSuggestion} />
+  </div>;
+}
+
 function CustomerProductSalesDetails({ details, sources }: { details: unknown; sources: Array<{ href: string; label: string }> }) {
   if (!isRecord(details)) return <SourceActions sources={sources} />;
   const rows = Array.isArray(details.rows) ? details.rows.filter(isRecord) : [];
@@ -225,6 +287,7 @@ export function ResultCards({
   presentation: serverPresentation,
   responseState,
   onRetry,
+  onSubmitSuggestion,
 }: {
   cards: AssistantStructuredCard[];
   context: AssistantContextEnvelope;
@@ -239,6 +302,7 @@ export function ResultCards({
   presentation?: AssistantResponsePresentation;
   responseState?: AssistantResponseState;
   onRetry?: () => void;
+  onSubmitSuggestion?: (prompt: string) => void;
 }) {
   const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false);
   const presentation = responsePresentationForCards(serverPresentation);
@@ -274,12 +338,14 @@ export function ResultCards({
     if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source" || diagnosticCards.includes(card)) return null;
     if (["production_queue_summary", "station_comparison", "attention_summary", "urgent_job_list"].includes(card.kind)) return <ProductionReportingDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (card.kind === "customer_product_sales") return <CustomerProductSalesDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
+    if (card.kind === "order_summary") return <OperationalOrderSummaryDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} onSubmitSuggestion={onSubmitSuggestion} />;
     if (presentation === "collection" && card.kind === "search_results") return <CollectionRows key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (presentation === "analytical" && card.kind === "operational_metrics") return <AnalyticalDetails key={`${card.kind}-${index}`} details={card.details} />;
     if (["conversational", "record_summary"].includes(presentation) && ["current_context", "customer_summary", "order_summary", "product_summary"].includes(card.kind)) return <SourceActions key={`${card.kind}-${index}`} sources={card.sourceLinks} />;
     return <section key={`${card.kind}-${index}`} className="rounded-xl border border-border/70 bg-card/45 px-3 py-3 text-sm shadow-sm">
       <p className="font-medium text-foreground">{card.title}</p>
       <SourceActions sources={card.sourceLinks} />
+      <SuggestedPromptChips details={card.details} onSubmit={onSubmitSuggestion} />
       {card.freshness ? <p className="mt-2 text-xs text-muted-foreground">Updated {new Date(card.freshness).toLocaleString()}</p> : null}
     </section>;
   })}
@@ -364,6 +430,27 @@ function ConversationContent() {
     event.preventDefault();
     const message = draft.trim();
     if (!message || sendTurn.isPending || !toolsEnabled) return;
+    setOptimisticUserMessage({ id: `pending-${Date.now()}`, role: "user", content: message, structuredCards: [], provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
+    let conversationId = activeConversationId;
+    if (!conversationId) {
+      const conversation = await createConversation.mutateAsync();
+      conversationId = conversation.id;
+      setActiveConversationId(conversationId);
+    }
+    try {
+      await sendTurn.mutateAsync({ conversationId, message, context });
+      setDraft("");
+    } catch {
+      setOptimisticUserMessage(null);
+    }
+  };
+
+  const submitSuggestedPrompt = async (prompt: string) => {
+    const message = prompt.trim();
+    if (!message || sendTurn.isPending || !toolsEnabled) return;
+    // Suggestions intentionally travel through the same normal-message path
+    // as typed text. They cannot call a tool, confirm a plan, or bypass the
+    // server's tenant, authorization, and planning checks.
     setOptimisticUserMessage({ id: `pending-${Date.now()}`, role: "user", content: message, structuredCards: [], provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
     let conversationId = activeConversationId;
     if (!conversationId) {
@@ -467,7 +554,7 @@ function ConversationContent() {
           ) : messages.map((message, index) => {
             const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
             if (message.role === "user") return <article key={message.id} ref={message.id === latestMessage?.id ? conversationScroll.latestUserRef : undefined} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
-            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Your message wasn’t sent. Try again.</p> : null}
         </div>
