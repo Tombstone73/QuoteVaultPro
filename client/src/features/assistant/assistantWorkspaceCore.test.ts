@@ -1,4 +1,4 @@
-import { buildSafeAssistantContext, getAssistantPreferenceKey, isAssistantShortcut, preserveConversationState, resolveAssistantPresentation, shouldEnableAssistantForRoute } from "./assistantWorkspaceCore";
+import { assistantComposerHelper, assistantConversationLabel, buildSafeAssistantContext, getAssistantPreferenceKey, isAssistantShortcut, preserveConversationState, resolveAssistantPresentation, shouldEnableAssistantForRoute, visibleAssistantConversations } from "./assistantWorkspaceCore";
 
 describe("assistant workspace core", () => {
   const capability = {
@@ -36,6 +36,25 @@ describe("assistant workspace core", () => {
 
   it("preserves the draft and selected conversation while presentation changes", () => {
     expect(preserveConversationState({ activeConversationId: "conversation-1", draft: "Keep this draft" }, {})).toEqual({ activeConversationId: "conversation-1", draft: "Keep this draft" });
+  });
+
+  it("shows one active empty chat while retaining non-empty history", () => {
+    const conversations = [
+      { id: "empty_old", title: "New conversation", lastMessagePreview: null },
+      { id: "used", title: "Current Order Summary", lastMessagePreview: "Order summary" },
+      { id: "empty_active", title: "New conversation", lastMessagePreview: null },
+    ];
+    expect(visibleAssistantConversations(conversations, "empty_active").map((conversation) => conversation.id))
+      .toEqual(["used", "empty_active"]);
+    expect(assistantConversationLabel("New conversation")).toBe("New chat");
+    expect(assistantConversationLabel("T3 Signs Lookup")).toBe("T3 Signs Lookup");
+  });
+
+  it("uses compact dock helper text while keeping the full requirement accessible", () => {
+    expect(assistantComposerHelper("Lookups require a preview and dedicated confirmation.", "dock_right"))
+      .toEqual({ text: "Lookups + confirmed actions", fullText: "Lookups require a preview and dedicated confirmation.", compact: true });
+    expect(assistantComposerHelper("Full helper", "dock_bottom"))
+      .toEqual({ text: "Full helper", fullText: "Full helper", compact: false });
   });
 
   it("only handles Ctrl/Cmd+J outside editable controls, leaving global search untouched", () => {

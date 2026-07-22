@@ -53,6 +53,31 @@ export function buildSafeAssistantContext(pathname: string, pageTitle: string): 
 
 export type AssistantWorkspaceDraftState = { activeConversationId: string | null; draft: string };
 
+type AssistantConversationListItem = {
+  id: string;
+  title: string;
+  lastMessagePreview?: string | null;
+};
+
+/** Empty conversations are kept for retention, but only the active one is
+ * shown. This prevents abandoned drafts from reading like duplicate chats. */
+export function visibleAssistantConversations<T extends AssistantConversationListItem>(conversations: readonly T[] | undefined, activeConversationId: string | null): T[] {
+  return (conversations ?? []).filter((conversation) => conversation.id === activeConversationId || Boolean(conversation.lastMessagePreview?.trim()));
+}
+
+export function assistantConversationLabel(title: string | null | undefined): string {
+  return !title?.trim() || title.trim() === "New conversation" ? "New chat" : title.trim();
+}
+
+export function assistantComposerHelper(fullText: string, presentation: AssistantPresentation) {
+  const compact = presentation === "dock_left" || presentation === "dock_right";
+  return {
+    text: compact ? "Lookups + confirmed actions" : fullText,
+    fullText,
+    compact,
+  };
+}
+
 /** Presentation-independent state used by the provider for all workspace renderers. */
 export function preserveConversationState(current: AssistantWorkspaceDraftState, update: Partial<AssistantWorkspaceDraftState>) {
   return { ...current, ...update };

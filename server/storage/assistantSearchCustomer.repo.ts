@@ -23,6 +23,13 @@ export type AssistantSearchEntityType =
   | "production_job"
   | "product";
 
+/**
+ * Exact assistant lookups deliberately use a reduced query surface.  This
+ * prevents a customer or product lookup from depending on unrelated legacy
+ * joins in the wider global-search fan-out.
+ */
+export type AssistantDirectSearchEntityType = "customer" | "product";
+
 export interface AssistantSearchRecord {
   entityType: AssistantSearchEntityType;
   recordId: string;
@@ -66,6 +73,7 @@ export interface AssistantCustomerSummaryRecord {
 
 export interface AssistantSearchCustomerRepository {
   search(organizationId: string, query: string, limit: number): Promise<AssistantSearchRecord[]>;
+  searchByEntity(organizationId: string, query: string, limit: number, entityType: AssistantDirectSearchEntityType): Promise<AssistantSearchRecord[]>;
   getCustomerSummary(organizationId: string, customerId: string, activityLimit: number): Promise<AssistantCustomerSummaryRecord | null>;
 }
 
@@ -172,6 +180,60 @@ export class DrizzleAssistantSearchCustomerRepository implements AssistantSearch
       ...jobRows.map((row): AssistantSearchRecord => ({ entityType: "production_job", recordId: row.id, displayLabel: `Production job for ${orderLabel(row.displayNumber, row.orderNumber)}`, secondaryDescription: row.customerName, status: row.status, route: `/production/jobs/${row.id}`, freshness: row.updatedAt })),
       ...productRows.map((row): AssistantSearchRecord => ({ entityType: "product", recordId: row.id, displayLabel: row.name, secondaryDescription: row.category, status: row.isActive ? "active" : "inactive", route: `/products/${row.id}/edit`, freshness: row.updatedAt })),
     ];
+  }
+
+  /**
+   * Bounded, tenant-scoped direct lookups used only when deterministic routing
+   * has already established the requested record kind.  Keep these queries
+   * independent of broad global-search joins so an unrelated category cannot
+   * turn a valid customer/product lookup into a tool failure.
+   */
+  async searchByEntity(
+    organizationId: string,
+    query: string,
+    limit: number,
+    entityType: AssistantDirectSearchEntityType,
+  ): Promise<AssistantSearchRecord[]> {
+    const pattern = searchPattern(query);
+    if (entityType === "customer") {
+      const rows = await this.dbInstance
+        .select({ id: customers.id, companyName: customers.companyName, email: customers.email, phone: customers.phone, status: customers.status, updatedAt: customers.updatedAt })
+        .from(customers)
+        .where(and(
+          eq(customers.organizationId, organizationId),
+          or(ilike(customers.companyName, pattern), ilike(customers.email, pattern), ilike(customers.phone, pattern)),
+        ))
+        .orderBy(desc(customers.updatedAt))
+        .limit(limit);
+      return rows.map((row): AssistantSearchRecord => ({
+        entityType: "customer",
+        recordId: row.id,
+        displayLabel: row.companyName,
+        secondaryDescription: row.email ?? row.phone,
+        status: row.status,
+        route: `/customers/${row.id}`,
+        freshness: row.updatedAt,
+      }));
+    }
+
+    const rows = await this.dbInstance
+      .select({ id: products.id, name: products.name, category: products.category, isActive: products.isActive, updatedAt: products.updatedAt })
+      .from(products)
+      .where(and(
+        eq(products.organizationId, organizationId),
+        or(ilike(products.name, pattern), ilike(products.category, pattern)),
+      ))
+      .orderBy(desc(products.updatedAt))
+      .limit(limit);
+    return rows.map((row): AssistantSearchRecord => ({
+      entityType: "product",
+      recordId: row.id,
+      displayLabel: row.name,
+      secondaryDescription: row.category,
+      status: row.isActive ? "active" : "inactive",
+      route: `/products/${row.id}/edit`,
+      freshness: row.updatedAt,
+    }));
   }
 
   async getCustomerSummary(organizationId: string, customerId: string, activityLimit: number): Promise<AssistantCustomerSummaryRecord | null> {

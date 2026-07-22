@@ -125,6 +125,7 @@ export class DrizzleAssistantRepository implements AssistantRepository {
     correlationId: string;
     status?: "responded" | "failed";
     structuredCards?: AssistantStructuredCard[];
+    initialTitle?: string;
     provider?: string | null;
     model?: string | null;
     mode?: string;
@@ -226,6 +227,12 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       await tx
         .update(aiConversations)
         .set({
+          // The first meaningful turn gives an untouched fallback conversation
+          // a useful deterministic title. Once a user has named or used a
+          // conversation, this path cannot overwrite it.
+          ...(nextSequence === 1 && conversation.title === "New conversation" && input.initialTitle
+            ? { title: input.initialTitle }
+            : {}),
           lastMessagePreview: input.response.slice(0, 240),
           lastActivityAt: now,
           updatedAt: now,

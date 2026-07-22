@@ -11,7 +11,7 @@ import { createCustomerSummaryTool, createSearchGlobalTool, customerSummaryToolR
 import { createStage2OrderProductToolAdapters } from "./orderProductOperationalTools";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
 
-const entityTypes = new Set(["customer", "order", "quote", "product", "invoice", "production_job"]);
+const entityTypes = new Set(["customer", "contact", "order", "quote", "product", "invoice", "production_job"]);
 
 function sourceLink(record: { recordId: string; route: string; label: string }, entityType?: string, capturedAt?: string): AssistantSourceLink {
   return {
@@ -48,6 +48,7 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
         const result = await search.execute(contextForLegacyAdapter(context), {
           query: input.query,
           maxResultsPerCategory: Math.min(5, input.limit ?? 5),
+          ...(input.entityType ? { entityType: input.entityType } : {}),
         });
         const matches = result.data.results.map((record) => assistantEntitySummarySchema.parse({
           entityType: record.entityType,

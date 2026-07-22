@@ -5,6 +5,8 @@ let AssistantService: any;
 let AssistantServiceError: any;
 let ASSISTANT_UNAVAILABLE_REPLY: string;
 let resolveAssistantCapabilityQuestion: any;
+let responseStateForCards: any;
+let titleFromMessage: any;
 let assistantCapabilityCommandPermissions: any;
 let assistantCapabilityCommandDescriptions: any;
 
@@ -14,6 +16,8 @@ beforeAll(async () => {
   AssistantServiceError = module.AssistantServiceError;
   ASSISTANT_UNAVAILABLE_REPLY = module.ASSISTANT_UNAVAILABLE_REPLY;
   resolveAssistantCapabilityQuestion = module.resolveAssistantCapabilityQuestion;
+  responseStateForCards = module.responseStateForCards;
+  titleFromMessage = module.titleFromMessage;
   const capabilities = await import("../services/assistant/assistantCapabilities");
   assistantCapabilityCommandPermissions = capabilities.assistantCapabilityCommandPermissions;
   assistantCapabilityCommandDescriptions = capabilities.assistantCapabilityCommandDescriptions;
@@ -151,6 +155,22 @@ describe("AssistantService", () => {
     expect(resolveAssistantCapabilityQuestion("Find order 20002", capability)).toBeNull();
   });
 
+  test("keeps successful capability answers and safe not-found results non-retryable", () => {
+    expect(responseStateForCards([{ kind: "notice", title: "Assistant capabilities", body: "I can help.", tone: "info" }]))
+      .toEqual({ kind: "success", retryable: false, diagnosticsAvailable: false });
+    expect(responseStateForCards([{ kind: "not_found", title: "No matching order", summary: "Not found.", sourceLinks: [], toolStatus: "not_found" }]))
+      .toEqual({ kind: "not_found", retryable: false, diagnosticsAvailable: false });
+    expect(responseStateForCards([{ kind: "provider_unavailable", title: "Unavailable", summary: "Retry later.", sourceLinks: [], toolStatus: "failed" }]))
+      .toEqual({ kind: "retryable_failure", retryable: true, diagnosticsAvailable: true });
+  });
+
+  test("derives safe, readable first-message conversation titles without provider input", () => {
+    expect(titleFromMessage("Summarize this order.")).toBe("Current Order Summary");
+    expect(titleFromMessage("Find order ORD 20002!")).toBe("Find Order ORD-20002");
+    expect(titleFromMessage("Find customer T3 Signs.")).toBe("T3 Signs Lookup");
+    expect(titleFromMessage("\u0000**Create** a product draft")).toBe("Product Draft Setup");
+  });
+
   test("explains missing write permission without advertising a read-only organization as mutable", async () => {
     resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true });
     const service = new AssistantService(makeRepo(), resolver);
@@ -193,6 +213,7 @@ describe("AssistantService", () => {
       message: "What orders are late?",
       context,
       response: ASSISTANT_UNAVAILABLE_REPLY,
+      initialTitle: "What orders are late",
       correlationId: expect.any(String),
     }));
     expect(result.assistantMessage.content).toBe(ASSISTANT_UNAVAILABLE_REPLY);

@@ -2,6 +2,7 @@ import type {
   AssistantContextEnvelope,
   AssistantCreateConversationRequest,
   AssistantResponsePresentation,
+  AssistantResponseState,
   AssistantStructuredCard,
   AssistantUpdateConversationRequest,
   AssistantTurnRequest,
@@ -106,6 +107,9 @@ export interface AssistantRepository {
     status?: "responded" | "failed";
     structuredCards?: AssistantStructuredCard[];
     presentation?: AssistantResponsePresentation;
+    /** A deterministic title applied only by the repository to an untouched
+     * fallback conversation. User-provided titles always remain authoritative. */
+    initialTitle?: string;
     provider?: string | null;
     model?: string | null;
     mode?: string;
@@ -180,8 +184,24 @@ export function toIso(value: Date | string): string {
 }
 
 function titleFromMessage(message: string): string {
-  const normalized = message.replace(/\s+/g, " ").trim();
-  return normalized.slice(0, 96) || "New conversation";
+  const normalized = message
+    .normalize("NFKC")
+    .replace(/[\u0000-\u001F\u007F]/g, " ")
+    .replace(/[`*_#<>\[\]]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim()
+    .replace(/[.!?]+$/, "");
+  if (!normalized) return "New chat";
+
+  if (/^(?:summari[sz]e|give me (?:a )?(?:summary|overview)|tell me about|what is) (?:this|the current) order\b/i.test(normalized)) {
+    return "Current Order Summary";
+  }
+  const orderLookup = /^(?:find|show|look up|lookup|get)\s+(?:order\s+)?(?:ord[\s-]*)?(\d{1,12})\b/i.exec(normalized);
+  if (orderLookup) return `Find Order ORD-${orderLookup[1]}`;
+  if (/\b(?:create|start|set up|setup)\b.*\bproduct\b/i.test(normalized)) return "Product Draft Setup";
+  const namedLookup = /^(?:find|show|look up|lookup|get)\s+(?:customer|product)\s+(.+)$/i.exec(normalized);
+  if (namedLookup?.[1]) return `${namedLookup[1].replace(/[.!?]+$/, "").slice(0, 72)} Lookup`;
+  return normalized.slice(0, 96);
 }
 
 /** Conversation cards are presentation-only, but their server-created intake
@@ -301,13 +321,15 @@ export class AssistantService {
     let provider: string | null = null;
     let model: string | null = null;
     let errorCode: string | null = null;
-    let cards: AssistantResultCard[] = [];
+    let cards: AssistantStructuredCard[] = [];
     const audits: AssistantToolExecutionAudit[] = [];
     try {
       const capabilityReply = resolveAssistantCapabilityQuestion(request.message, capability);
       if (capabilityReply) {
         response = capabilityReply.response;
-        cards = [{ kind: "tool_warning", title: capabilityReply.title, summary: response, sourceLinks: [] }];
+        // A local capability answer is a successful conversational response;
+        // it is not a warning, retry target, or diagnostic disclosure.
+        cards = [{ kind: "notice", title: capabilityReply.title, body: response, tone: "info" }];
         provider = "local_policy";
         model = "assistant-capabilities-v1";
       } else {
@@ -412,6 +434,7 @@ export class AssistantService {
       correlationId,
       status,
       structuredCards: cards,
+      initialTitle: titleFromMessage(request.message),
       provider,
       model,
       mode: "stage_2_read_only",
@@ -439,13 +462,14 @@ export class AssistantService {
 
   private async persistResponse(input: {
     scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string;
-    response: string; status: "responded" | "failed"; errorCode?: string; structuredCards: AssistantResultCard[];
+    response: string; status: "responded" | "failed"; errorCode?: string; structuredCards: AssistantStructuredCard[];
   }) {
     const result = await this.repo.createFoundationTurn({
       ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message,
       context: input.request.context, clientRequestId: input.request.clientRequestId, response: input.response,
       correlationId: input.correlationId, status: input.status,
       structuredCards: input.structuredCards,
+      initialTitle: titleFromMessage(input.request.message),
       provider: null, model: null, mode: "stage_2_read_only", promptVersion: "assistant-stage-2-planner-v1",
       errorCode: input.errorCode ?? null, errorMessage: input.status === "failed" ? input.response : null,
     });
@@ -474,7 +498,7 @@ function renderToolResults(
     }
     const result = execution.result;
     if (result.status === "not_found") {
-      cards.push({ kind: "not_found", title: execution.toolName, summary: exactOrderLookup ? `I couldn't find order ${exactOrderLookup.orderNumber} in the current organization.` : "No matching record was found.", sourceLinks: [], toolStatus: "not_found" });
+      cards.push({ kind: "not_found", title: execution.toolName, summary: exactOrderLookup ? `I couldn't find order ${exactOrderLookup.displayNumber} in the current organization.` : "No matching record was found.", sourceLinks: [], toolStatus: "not_found" });
       continue;
     }
     if (execution.toolName === "search.global" && exactSearchTarget) {
@@ -554,7 +578,7 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
   if (toolName === "orders.get_summary") {
     const order = data.order;
     if (options.exactOrderLookup && order) {
-      const orderLabel = order.label ?? order.number ?? options.exactOrderLookup.orderNumber;
+      const orderLabel = order.label ?? order.number ?? options.exactOrderLookup.displayNumber;
       const displayOrder = /^order\b/i.test(orderLabel) ? orderLabel : `Order ${orderLabel}`;
       return `I found ${displayOrder}${data.customer?.label ? ` for ${data.customer.label}` : ""}.`;
     }
@@ -564,7 +588,7 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
         ? `${order?.label ?? "This order"} is currently ${formatAssistantDisplayValue(order?.status)}. ${blockers.join(" ")}`
         : `I can see ${order?.label ?? "this order"}'s current status, but the system does not expose a reliable blocking reason yet.`;
     }
-    return `${order?.label ?? "This order"} is currently ${formatAssistantDisplayValue(order?.status)}${data.dueDate ? ` and due ${new Date(data.dueDate).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : ""}.`;
+    return `${order?.label ?? "This order"} is currently ${formatAssistantDisplayValue(order?.status)}${data.dueDate ? ` and due ${formatAssistantDate(data.dueDate)}` : ""}.`;
   }
   if (toolName === "products.get_summary") return `${data.product?.label ?? "This product"} is ${data.active === false ? "inactive" : data.product?.status ?? "available"}${data.category ? ` in ${data.category}` : ""}.`;
   if (toolName === "reports.operational_summary") return "Here's the current operational picture.";
@@ -612,6 +636,25 @@ export function responsePresentationForCards(cards: readonly unknown[]): Assista
             : kinds.has("order_summary") || kinds.has("customer_summary") || kinds.has("product_summary") ? "record_summary"
               : kinds.has("provider_unavailable") || kinds.has("tool_warning") || kinds.has("permission_denied") ? "diagnostic"
                 : "conversational";
+}
+
+/** Classify each persisted response independently. Presentation cards can
+ * carry provenance or warnings, but may never make a successful response
+ * retryable merely because an earlier turn failed. */
+export function responseStateForCards(cards: readonly unknown[]): AssistantResponseState {
+  const values = cards.filter((card): card is { kind: string; toolStatus?: string } => Boolean(card && typeof card === "object" && typeof (card as { kind?: unknown }).kind === "string"));
+  const kinds = new Set(values.map((card) => card.kind));
+  if (kinds.has("provider_unavailable")) return { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true };
+  if (values.some((card) => card.kind === "tool_warning" && card.toolStatus === "failed")) {
+    return { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true };
+  }
+  if (kinds.has("permission_denied") || values.some((card) => card.kind === "tool_warning" && card.toolStatus === "permission_denied")) {
+    return { kind: "permission_denied", retryable: false, diagnosticsAvailable: false };
+  }
+  if (kinds.has("not_found")) return { kind: "not_found", retryable: false, diagnosticsAvailable: false };
+  if (kinds.has("partial_result")) return { kind: "partial", retryable: false, diagnosticsAvailable: true };
+  if (kinds.has("tool_warning")) return { kind: "validation_error", retryable: false, diagnosticsAvailable: false };
+  return { kind: "success", retryable: false, diagnosticsAvailable: false };
 }
 
 export { titleFromMessage };

@@ -29,6 +29,41 @@ function repo() {
 }
 
 describe("AssistantService deterministic read routing", () => {
+  test.each([
+    "Summarize this order.",
+    "Give me a summary of this order",
+    "Tell me about this order",
+    "Give me an overview of this order",
+  ])("current-order summary variant %s bypasses provider planning", async (message) => {
+    const repository = repo();
+    const planner = { plan: jest.fn() };
+    const executePlan = jest.fn(async () => ({
+      executions: [{
+        toolName: "orders.get_summary",
+        status: "succeeded",
+        result: {
+          status: "succeeded",
+          data: {
+            order: { entityType: "order", recordId: "order_1", label: "Order ORD-20002", status: "in_production", sourceLink: { label: "Order ORD-20002", href: "/orders/order_1" }, freshness: "2026-07-21T12:00:00.000Z" },
+            dueDate: "2026-07-22T00:00:00.000Z",
+          },
+          provenance: { sourceLinks: [{ label: "Order ORD-20002", href: "/orders/order_1" }], freshness: { capturedAt: "2026-07-21T12:00:00.000Z" } },
+        },
+      }],
+    }));
+    const service = new AssistantService(repository, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true })) }, planner, () => ({ executePlan }));
+
+    await service.createTurn(scope, "conversation_1", actor, { message, context });
+
+    expect(planner.plan).not.toHaveBeenCalled();
+    expect(executePlan).toHaveBeenCalledWith(expect.objectContaining({
+      toolCalls: [{ toolName: "orders.get_summary", arguments: { orderId: "order_1" } }],
+    }), expect.anything());
+    expect(repository.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({
+      response: "Order ORD-20002 is currently In Production and due July 22.",
+    }));
+  });
+
   test("exact order lookup bypasses the provider but retains normal tool orchestration", async () => {
     const repository = repo();
     const planner = { plan: jest.fn() };

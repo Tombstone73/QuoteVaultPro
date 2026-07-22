@@ -172,9 +172,31 @@ describe("assistant routes", () => {
 
     const response = await request(app).get("/api/assistant/conversations/conversation_1").expect(200);
 
-    expect(response.body.data.messages[0]).toEqual(expect.objectContaining({ presentation: "conversational" }));
+    expect(response.body.data.messages[0]).toEqual(expect.objectContaining({
+      presentation: "conversational",
+      responseState: { kind: "success", retryable: false, diagnosticsAvailable: false },
+    }));
     expect(response.body.data.messages[0].structuredCards).toEqual([
       expect.objectContaining({ kind: "current_context" }),
+    ]);
+  });
+
+  test("classifies each response independently so a prior failure cannot make a successful answer retryable", async () => {
+    const service = buildService();
+    service.getConversation.mockResolvedValue({
+      ...conversation,
+      messages: [
+        { id: "message_failed", conversationId: conversation.id, turnId: "turn_1", role: "assistant", content: "Retry later.", createdAt: new Date(NOW), structuredCards: [{ kind: "provider_unavailable", title: "Unavailable", summary: "Retry later.", sourceLinks: [], toolStatus: "failed" }] },
+        { id: "message_success", conversationId: conversation.id, turnId: "turn_2", role: "assistant", content: "I can help with that.", createdAt: new Date(NOW), structuredCards: [{ kind: "notice", title: "Assistant capabilities", body: "I can help with that.", tone: "info" }] },
+      ],
+    });
+    const { app } = buildApp(service);
+
+    const response = await request(app).get("/api/assistant/conversations/conversation_1").expect(200);
+
+    expect(response.body.data.messages.map((message: any) => message.responseState)).toEqual([
+      { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true },
+      { kind: "success", retryable: false, diagnosticsAvailable: false },
     ]);
   });
 

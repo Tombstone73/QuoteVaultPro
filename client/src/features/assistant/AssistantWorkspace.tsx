@@ -11,6 +11,8 @@ import type { AssistantStructuredCard } from "@shared/assistantContracts";
 import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
+import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
+import type { AssistantResponseState } from "@shared/assistantContracts";
 
 type AssistantResponsePresentation = "conversational" | "collection" | "record_summary" | "analytical" | "proposed_action" | "execution_result" | "diagnostic";
 
@@ -81,6 +83,7 @@ export function ResultCards({
   diagnosticsEnabled = false,
   correlationId = null,
   presentation: serverPresentation,
+  responseState,
   onRetry,
 }: {
   cards: AssistantStructuredCard[];
@@ -94,6 +97,7 @@ export function ResultCards({
   diagnosticsEnabled?: boolean;
   correlationId?: string | null;
   presentation?: AssistantResponsePresentation;
+  responseState?: AssistantResponseState;
   onRetry?: () => void;
 }) {
   const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false);
@@ -137,8 +141,8 @@ export function ResultCards({
       {card.freshness ? <p className="mt-2 text-xs text-muted-foreground">Updated {new Date(card.freshness).toLocaleString()}</p> : null}
     </section>;
   })}
-  {presentation === "diagnostic" && onRetry ? <Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button> : null}
-  {diagnosticsEnabled && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => setDiagnosticsOpen((open) => !open)} aria-expanded={diagnosticsOpen}>{diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"}</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground"><p>Correlation ID: {correlationId ?? "Unavailable"}</p>{diagnosticCards.map((card, index) => <p key={`${diagnosticLabel(card)}-${index}`} className="mt-1">Tool: {diagnosticLabel(card)}{diagnosticStatus(card) ? ` (${formatAssistantDisplayValue(diagnosticStatus(card))})` : ""}</p>)}</div> : null}</div> : null}
+  {responseState?.retryable && onRetry ? <Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button> : null}
+  {diagnosticsEnabled && responseState?.diagnosticsAvailable && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => setDiagnosticsOpen((open) => !open)} aria-expanded={diagnosticsOpen}>{diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"}</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground"><p>Correlation ID: {correlationId ?? "Unavailable"}</p>{diagnosticCards.map((card, index) => <p key={`${diagnosticLabel(card)}-${index}`} className="mt-1">Tool: {diagnosticLabel(card)}{diagnosticStatus(card) ? ` (${formatAssistantDisplayValue(diagnosticStatus(card))})` : ""}</p>)}</div> : null}</div> : null}
   </div>;
 }
 
@@ -190,7 +194,7 @@ function PresentationControls() {
 }
 
 function ConversationContent() {
-  const { capabilities, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft, executionPlans, saveExecutionPlan, updateExecutionPlan } = useAssistantWorkspace();
+  const { capabilities, presentation, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft, executionPlans, saveExecutionPlan, updateExecutionPlan } = useAssistantWorkspace();
   const enabled = Boolean(capabilities?.enabled && capabilities.conversationsEnabled);
   const toolsEnabled = Boolean(capabilities?.toolsEnabled);
   const conversations = useAssistantConversations(enabled);
@@ -243,6 +247,9 @@ function ConversationContent() {
     await sendTurn.mutateAsync({ conversationId: activeConversationId, message, context });
   };
   const messages = detail.data?.messages ?? [];
+  const conversationItems = visibleAssistantConversations(conversations.data, activeConversationId);
+  const fullComposerHelper = capabilities?.composerHelperText || capabilities?.unavailableReason || "Business questions are unavailable until AI configuration is complete.";
+  const composerHelper = assistantComposerHelper(fullComposerHelper, presentation);
 
   if (!enabled) {
     return <WorkspaceNotice title="Assistant unavailable" description={capabilities?.unavailableReason || "The assistant is not enabled for this organization."} />;
@@ -256,9 +263,9 @@ function ConversationContent() {
         </Button>
         <div className="space-y-1 overflow-y-auto">
           {conversations.isLoading ? <p className="px-2 py-3 text-xs text-muted-foreground">Loading chats…</p> : null}
-          {conversations.data?.map((conversation) => (
+          {conversationItems.map((conversation) => (
             <button key={conversation.id} type="button" onClick={() => setActiveConversationId(conversation.id)} className={cn("w-full rounded px-2 py-2 text-left text-xs hover:bg-muted", activeConversationId === conversation.id && "bg-muted font-medium")}>
-              <span className="line-clamp-2">{conversation.title || "New conversation"}</span>
+              <span className="line-clamp-2">{assistantConversationLabel(conversation.title)}</span>
             </button>
           ))}
         </div>
@@ -281,7 +288,7 @@ function ConversationContent() {
           ) : messages.map((message, index) => {
             const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
             if (message.role === "user") return <article key={message.id} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
-            return <article key={message.id} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            return <article key={message.id} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Your message wasn’t sent. Try again.</p> : null}
         </div>
@@ -291,7 +298,7 @@ function ConversationContent() {
             <Input id="assistant-message" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} maxLength={8_000} disabled={sendTurn.isPending || !toolsEnabled} />
             <Button type="submit" size="icon" disabled={!draft.trim() || sendTurn.isPending || !toolsEnabled} aria-label="Send message"><Send className="h-4 w-4" /></Button>
           </div>
-          <p className="mt-2 text-xs leading-5 text-muted-foreground">{capabilities?.composerHelperText || capabilities?.unavailableReason || "Business questions are unavailable until AI configuration is complete."}</p>
+          <p className={cn("mt-2 text-xs leading-5 text-muted-foreground", composerHelper.compact && "truncate")} title={composerHelper.compact ? composerHelper.fullText : undefined} aria-label={composerHelper.compact ? composerHelper.fullText : undefined}>{composerHelper.text}</p>
         </form>
       </section>
     </div>

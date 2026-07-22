@@ -15,7 +15,7 @@ const context = {
   selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-21T12:00:00.000Z", unsavedChanges: false,
 } as const;
 
-function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any } = {}) {
+function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void } = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -51,17 +51,43 @@ describe("Assistant workspace presentation", () => {
     const cards = [
       { kind: "provider_unavailable", title: "navigation.get_current_context", summary: "I couldn't safely interpret that request.", sourceLinks: [], toolStatus: "failed" },
     ];
-    const normal = render(cards, { presentation: "diagnostic" });
+    const normal = render(cards, { presentation: "diagnostic", responseState: { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true } });
     expect(normal.container.textContent).not.toContain("navigation.get_current_context");
     expect(normal.container.textContent).not.toContain("corr_123");
     act(() => normal.root.unmount());
 
-    const authorized = render(cards, { diagnosticsEnabled: true, correlationId: "corr_123", presentation: "diagnostic" });
+    const authorized = render(cards, { diagnosticsEnabled: true, correlationId: "corr_123", presentation: "diagnostic", responseState: { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true } });
     expect(authorized.container.textContent).toContain("Show diagnostics");
     const button = authorized.container.querySelector("button") as HTMLButtonElement;
     act(() => button.click());
     expect(authorized.container.textContent).toContain("navigation.get_current_context");
     expect(authorized.container.textContent).toContain("corr_123");
     act(() => authorized.root.unmount());
+  });
+
+  test("does not offer retry or diagnostics for a successful capability answer", () => {
+    const { container, root } = render([
+      { kind: "notice", title: "Assistant capabilities", body: "I can help with lookups.", tone: "info" },
+    ], {
+      diagnosticsEnabled: true,
+      presentation: "conversational",
+      responseState: { kind: "success", retryable: false, diagnosticsAvailable: false },
+      onRetry: () => undefined,
+    });
+    expect(container.textContent).not.toContain("Try again");
+    expect(container.textContent).not.toContain("Show diagnostics");
+    act(() => root.unmount());
+  });
+
+  test("offers retry only for a retryable failed response", () => {
+    const { container, root } = render([
+      { kind: "provider_unavailable", title: "Planner unavailable", summary: "Please retry.", sourceLinks: [], toolStatus: "failed" },
+    ], {
+      presentation: "diagnostic",
+      responseState: { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true },
+      onRetry: () => undefined,
+    });
+    expect(container.textContent).toContain("Try again");
+    act(() => root.unmount());
   });
 });

@@ -109,6 +109,24 @@ export const assistantResponsePresentationValues = [
 ] as const;
 export type AssistantResponsePresentation = (typeof assistantResponsePresentationValues)[number];
 
+/** Server-derived outcome state. This is intentionally independent from visual
+ * presentation so the browser never mistakes supporting provenance for an
+ * error or offers a retry for a safe validation/not-found response. */
+export const assistantResponseStateKindValues = [
+  "success",
+  "partial",
+  "retryable_failure",
+  "validation_error",
+  "permission_denied",
+  "not_found",
+] as const;
+export const assistantResponseStateSchema = z.object({
+  kind: z.enum(assistantResponseStateKindValues),
+  retryable: z.boolean(),
+  diagnosticsAvailable: z.boolean(),
+}).strict();
+export type AssistantResponseState = z.infer<typeof assistantResponseStateSchema>;
+
 export const assistantFloatingBoundsSchema = z.object({
   x: z.number().finite().min(0).max(100_000),
   y: z.number().finite().min(0).max(100_000),
@@ -127,6 +145,7 @@ export type AssistantPresentationState = z.infer<typeof assistantPresentationSta
 
 export const assistantEntityTypeValues = [
   "customer",
+  "contact",
   "order",
   "quote",
   "product",
@@ -220,6 +239,8 @@ export type AssistantToolResultEnvelope = z.infer<typeof assistantToolResultEnve
 export const assistantGlobalSearchInputSchema = z.object({
   query: z.string().trim().min(1).max(160),
   limit: z.number().int().min(1).max(20).optional(),
+  /** Server-selected discriminator for deterministic exact customer/product lookup. */
+  entityType: z.enum(["customer", "product"]).optional(),
 }).strict();
 export const assistantEntitySummarySchema = z.object({
   entityType: z.enum(assistantEntityTypeValues),
@@ -473,6 +494,8 @@ export const assistantMessageSchema = z.object({
   content: z.string().max(8_000),
   /** Server-derived rendering intent; this is metadata, not a visible card. */
   presentation: z.enum(assistantResponsePresentationValues).optional(),
+  /** Server-derived interaction state; never infer this from card titles. */
+  responseState: assistantResponseStateSchema.optional(),
   structuredCards: z.array(assistantStructuredCardSchema).max(20).default([]),
   provider: z.string().trim().min(1).max(80).nullable(),
   model: z.string().trim().min(1).max(160).nullable(),
