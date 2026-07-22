@@ -68,11 +68,13 @@ import {
 import { sortFinalProductionFiles } from "@shared/productionFileHydration";
 import { resolveProductionCompletionRoute } from "../services/productionCompletionRouting";
 import { resolveLineItemProductionDueDate } from "../services/productionDueDate";
+import { resolveProductionCompletionLineItemState } from "../services/productionCompletionLineItemState";
 
 /**
  * Canonical station key for the Fulfillment station.
  * Production jobs at non-prepress, non-design stations route here on completion.
- * Fulfillment jobs route the line item to "completed" on completion.
+ * Reaching fulfillment marks the line item fulfillment-ready/completed; the
+ * fulfillment job still records the physical handoff separately.
  */
 const FULFILLMENT_STATION_KEY = "fulfillment";
 const COMPLETION_RECOVERY_HOURS = 24;
@@ -445,7 +447,36 @@ async function completeProductionJobWorkflow(
             },
           });
 
-          if (target.stationKey === FULFILLMENT_STATION_KEY) {
+          const completionLineItemState = resolveProductionCompletionLineItemState(target.stationKey);
+          if (completionLineItemState) {
+            // A line that has completed its production route is fulfillment-ready.
+            // Persist that terminal line state immediately so billing and order
+            // summaries cannot remain stale while the fulfillment job is queued.
+            await tx
+              .update(orderLineItems)
+              .set({ ...completionLineItemState, updatedAt: now })
+              .where(eq(orderLineItems.id, job.lineItemId));
+
+            await appendEvent({
+              tx,
+              organizationId: args.organizationId,
+              productionJobId: args.jobId,
+              type: "note",
+              payload: {
+                eventType: "workflow_transition",
+                fromState: lineItem.workflowState,
+                toState: "completed",
+                lifecycleStatus: "complete",
+                ownerAction: "routed_to_fulfillment",
+                actorUserId: args.userId,
+                metadata: {
+                  source: "production_completion_routed_to_fulfillment",
+                  previousLifecycleStatus: lineItem.status,
+                  targetStationKey: FULFILLMENT_STATION_KEY,
+                },
+              },
+            });
+
             await markOrderReadyForFulfillmentIfProductionComplete(tx, {
               organizationId: args.organizationId,
               orderId: job.orderId,

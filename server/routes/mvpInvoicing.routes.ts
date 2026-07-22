@@ -1,12 +1,12 @@
 import type { Express } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, companySettings, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orders, organizations, payments, paymentWebhookEvents, users, manualPaymentMethodSchema } from "../../shared/schema";
+import { auditLogs, companySettings, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus } from "../invoicesService";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
 import { updateInvoiceReminderSettingsSchema } from "../../shared/schema";
-import { recomputeOrderBillingStatus } from "../services/orderBillingService";
+import { recomputeOrderBillingStatus, resolveInvoiceFinancialEligibility } from "../services/orderBillingService";
 import { getValidAccessTokenForOrganization, syncSingleInvoiceToQuickBooksForOrganization, syncSinglePaymentToQuickBooksForOrganization } from "../quickbooksService";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "../../shared/rollups/invoicePaymentRollup";
 import { createInvoicePaymentIntent, getStripeClient, getStripeWebhookSecret } from "../lib/stripe";
@@ -1774,19 +1774,24 @@ export async function registerMvpInvoicingRoutes(
         return res.status(409).json({ error: "Cannot create an invoice from a cancelled order", code: "ORDER_CANCELLED" });
       }
 
-      // Invoice creation is allowed only after the current line-item state has
-      // established billing readiness. This keeps service/fee lines invoiceable
-      // without bypassing production/proof gates for normal production lines.
+      // Keep the displayed readiness state synchronized, but never use production
+      // or fulfillment progress as an invoice gate.
       await recomputeOrderBillingStatus({ organizationId, orderId });
-      const [billingOrder] = await db
-        .select({ billingStatus: orders.billingStatus, billingReadyOverride: orders.billingReadyOverride })
-        .from(orders)
-        .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
-        .limit(1);
-      if (!billingOrder || (billingOrder.billingStatus !== "ready" && !billingOrder.billingReadyOverride)) {
+
+      const invoiceLines = await db
+        .select({
+          totalPrice: orderLineItems.totalPrice,
+          workflowIntent: products.workflowIntent,
+          allowZeroPrice: products.allowZeroPrice,
+        })
+        .from(orderLineItems)
+        .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
+        .where(eq(orderLineItems.orderId, orderId));
+      const financialEligibility = resolveInvoiceFinancialEligibility(invoiceLines);
+      if (!financialEligibility.canCreateInvoice) {
         return res.status(409).json({
-          error: "Order is not ready for billing. Complete required production/proof work or set a billing override before creating an invoice.",
-          code: "BILLING_NOT_READY",
+          error: financialEligibility.message,
+          code: financialEligibility.code,
         });
       }
 

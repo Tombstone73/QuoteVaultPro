@@ -1810,34 +1810,14 @@ export default function OrderDetail() {
   const billingOverrideActive = Boolean((order as any).billingReadyOverride);
   const billingOverrideNoteValue = String((order as any).billingReadyOverrideNote || '');
   const billingReadyAtValue = (order as any).billingReadyAt as string | null | undefined;
-  const designBillingRows = orderDesignBillingVisibilityQuery.data ?? [];
-  const designBillingCandidateTotal = designBillingRows.reduce((sum, row) => sum + (row.billableDesignAmount ?? 0), 0);
-  const designBillingSoldTotal = designBillingRows.reduce((sum, row) => sum + (row.soldDesignAmount ?? 0), 0);
-  const designBillingUnsyncedCount = designBillingRows.filter((row) => row.visibilityState === "no_summary").length;
-  const billingBadgeVariant: "default" | "secondary" | "outline" =
-    billingStatus === 'ready' ? 'default' : billingStatus === 'billed' ? 'secondary' : 'outline';
-  const billingLabel =
-    billingStatus === 'ready'
-      ? 'Ready for Billing'
-      : billingStatus === 'billed'
-        ? 'Billed'
-        : 'Not Ready';
   const invoiceStateSummary = deriveOrderInvoiceState({
     billingStatus,
     invoices: orderInvoices,
   });
-  const paymentResolution = orderPaymentResolution.data;
-  const isPreparingInvoicePayment = createOrderInvoice.isPending || billInvoice.isPending;
-  const billingActions = getOrderBillingActionState({
-    billingReady: billingStatus === 'ready' || billingOverrideActive,
-    hasExistingInvoice: orderInvoices.length > 0,
-    orderCanceled: orderIsCanceled,
-    isLoading: orderPaymentResolution.isLoading || isInvoicesLoading,
-    isPreparing: isPreparingInvoicePayment,
-    resolutionStatus: paymentResolution?.resolutionStatus,
-    blockedReason: paymentResolution?.blockedReason,
-  });
-  const payableInvoiceCandidates = paymentResolution?.invoiceCandidates.filter((invoice) => invoice.payable) ?? [];
+  const designBillingRows = orderDesignBillingVisibilityQuery.data ?? [];
+  const designBillingCandidateTotal = designBillingRows.reduce((sum, row) => sum + (row.billableDesignAmount ?? 0), 0);
+  const designBillingSoldTotal = designBillingRows.reduce((sum, row) => sum + (row.soldDesignAmount ?? 0), 0);
+  const designBillingUnsyncedCount = designBillingRows.filter((row) => row.visibilityState === "no_summary").length;
   const billingLineItems = order.lineItems ?? [];
   const isServiceFeeOnlyOrder = billingLineItems.length > 0 && billingLineItems.every((lineItem: any) =>
     lineItem.product?.workflowIntent === 'service_fee',
@@ -1862,17 +1842,39 @@ export default function OrderDetail() {
     const workflowIntent = lineItem.product?.workflowIntent;
     if (workflowIntent === 'service_fee') return false;
     const status = String(lineItem.status ?? '').toLowerCase();
-    return status !== 'done' && status !== 'canceled';
+    return status !== 'done' && status !== 'complete' && status !== 'canceled';
   }).length;
-  const billingNotReadyExplanation = billingStatus === 'ready' || billingStatus === 'billed' || billingOverrideActive
-    ? null
-    : billingLineItems.length === 0
-      ? 'No billable lines.'
-      : unpricedServiceFeeCount > 0
-        ? `${unpricedServiceFeeCount} service/fee line${unpricedServiceFeeCount === 1 ? '' : 's'} missing a configured price.`
-        : incompleteProductionCount > 0
-          ? `${incompleteProductionCount} production line${incompleteProductionCount === 1 ? '' : 's'} not complete.`
-          : 'Billing readiness is being recalculated from the current order lines.';
+  const invoiceEligibleForCreation = billingLineItems.length > 0 && unpricedServiceFeeCount === 0;
+  const billingBadgeVariant: "default" | "secondary" | "outline" =
+    billingStatus === 'billed' ? 'secondary' : invoiceEligibleForCreation ? 'default' : 'outline';
+  const billingLabel =
+    billingStatus === 'billed'
+      ? 'Billed'
+      : invoiceEligibleForCreation
+        ? 'Invoice Eligible'
+        : 'Financial Review Needed';
+  const paymentResolution = orderPaymentResolution.data;
+  const isPreparingInvoicePayment = createOrderInvoice.isPending || billInvoice.isPending;
+  const billingActions = getOrderBillingActionState({
+    // This is deliberately financial eligibility, not the persisted operational
+    // billing-status field, which can lag behind production workflow updates.
+    billingReady: invoiceEligibleForCreation,
+    hasExistingInvoice: orderInvoices.length > 0,
+    orderCanceled: orderIsCanceled,
+    isLoading: orderPaymentResolution.isLoading || isInvoicesLoading,
+    isPreparing: isPreparingInvoicePayment,
+    resolutionStatus: paymentResolution?.resolutionStatus,
+    blockedReason: paymentResolution?.blockedReason,
+  });
+  const payableInvoiceCandidates = paymentResolution?.invoiceCandidates.filter((invoice) => invoice.payable) ?? [];
+  const billingNotReadyExplanation = billingLineItems.length === 0
+    ? 'Add at least one billable line before creating an invoice.'
+    : unpricedServiceFeeCount > 0
+      ? `${unpricedServiceFeeCount} service/fee line${unpricedServiceFeeCount === 1 ? '' : 's'} missing a configured price.`
+      : null;
+  const productionStatusWarning = incompleteProductionCount > 0
+    ? `${incompleteProductionCount} production line${incompleteProductionCount === 1 ? '' : 's'} still show incomplete status. This does not prevent invoice creation.`
+    : null;
 
   const handleCreateInvoice = async () => {
     if (!orderId) return;
@@ -3509,6 +3511,12 @@ export default function OrderDetail() {
                   </div>
                 )}
 
+                {productionStatusWarning && (
+                  <div className="rounded-md border border-sky-500/30 bg-sky-500/10 px-3 py-2 text-sm text-sky-900 dark:text-sky-100">
+                    {productionStatusWarning}
+                  </div>
+                )}
+
                 <div className="flex flex-wrap gap-2">
                   {isAdminOrOwner && (
                     <span title={billingActions.takePaymentHelp ?? undefined}>
@@ -3543,7 +3551,7 @@ export default function OrderDetail() {
                   )}
 
                   {isAdminOrOwner && !billingOverrideActive && billingStatus !== 'billed' && (
-                    <Button variant="outline" onClick={() => setBillingOverrideDialogOpen(true)}>
+                    <Button variant="secondary" onClick={() => setBillingOverrideDialogOpen(true)}>
                       Set Ready Override
                     </Button>
                   )}
