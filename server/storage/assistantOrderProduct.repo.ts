@@ -42,59 +42,47 @@ export class AssistantOrderProductRepository {
 
     if (!order) return null;
 
-    const [lineItems, production, invoiceRows] = await Promise.all([
-      db
-        .select({
-          id: orderLineItems.id,
-          description: orderLineItems.description,
-          quantity: orderLineItems.quantity,
-          status: orderLineItems.status,
-          workflowState: orderLineItems.workflowState,
-          requiresDesign: orderLineItems.requiresDesign,
-          designStatus: orderLineItems.designStatus,
-          requiresProofApproval: orderLineItems.requiresProofApproval,
-          approvedProofVersionId: orderLineItems.approvedProofVersionId,
-          requiresPrepress: orderLineItems.requiresPrepress,
-          sortOrder: orderLineItems.sortOrder,
-          productName: products.name,
-        })
-        .from(orderLineItems)
-        .innerJoin(orders, and(eq(orders.id, orderLineItems.orderId), eq(orders.organizationId, organizationId)))
-        .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
-        .where(and(eq(orderLineItems.orderId, order.id), eq(orders.organizationId, organizationId)))
-        .orderBy(asc(orderLineItems.sortOrder), asc(orderLineItems.id))
-        .limit(25),
-      db
-        .select({
-          id: productionJobs.id,
-          stationKey: productionJobs.stationKey,
-          stepKey: productionJobs.stepKey,
-          status: productionJobs.status,
-          updatedAt: productionJobs.updatedAt,
-        })
-        .from(productionJobs)
-        .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, order.id)))
-        .orderBy(desc(productionJobs.updatedAt))
-        .limit(25),
-      db
-        .select({
-          id: invoices.id,
-          displayNumber: invoices.displayNumber,
-          invoiceNumber: invoices.invoiceNumber,
-          status: invoices.status,
-          updatedAt: invoices.updatedAt,
-        })
-        .from(invoices)
-        .where(and(eq(invoices.organizationId, organizationId), eq(invoices.orderId, order.id)))
-        .orderBy(desc(invoices.updatedAt))
-        .limit(5),
-    ]);
+    // This query is deliberately limited to the canonical order/customer
+    // fields required to represent a safe summary. Related operational data is
+    // fetched by independent optional methods below, so schema drift in an
+    // enrichment cannot turn a valid tenant-scoped core lookup into a failure.
+    return { order, lineItems: [], production: [], invoices: [] };
+  }
 
-    // Keep the assistant's core order read independent from newer workflow
-    // columns. Those columns are optional enrichments in the application and
-    // are not present in every safely supported DEV schema revision; selecting
-    // one missing column made an otherwise valid tenant-scoped lookup fail.
-    return { order, lineItems, production, invoices: invoiceRows };
+  async getOrderLineItems(organizationId: string, orderId: string) {
+    return db
+      .select({
+        id: orderLineItems.id,
+        description: orderLineItems.description,
+        quantity: orderLineItems.quantity,
+        status: orderLineItems.status,
+        sortOrder: orderLineItems.sortOrder,
+        productName: products.name,
+      })
+      .from(orderLineItems)
+      .innerJoin(orders, and(eq(orders.id, orderLineItems.orderId), eq(orders.organizationId, organizationId)))
+      .leftJoin(products, and(eq(products.id, orderLineItems.productId), eq(products.organizationId, organizationId)))
+      .where(and(eq(orderLineItems.orderId, orderId), eq(orders.organizationId, organizationId)))
+      .orderBy(asc(orderLineItems.sortOrder), asc(orderLineItems.id))
+      .limit(25);
+  }
+
+  async getOrderProduction(organizationId: string, orderId: string) {
+    return db
+      .select({ id: productionJobs.id, stationKey: productionJobs.stationKey, stepKey: productionJobs.stepKey, status: productionJobs.status })
+      .from(productionJobs)
+      .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.orderId, orderId)))
+      .orderBy(desc(productionJobs.updatedAt))
+      .limit(25);
+  }
+
+  async getOrderInvoices(organizationId: string, orderId: string) {
+    return db
+      .select({ id: invoices.id, displayNumber: invoices.displayNumber, invoiceNumber: invoices.invoiceNumber, status: invoices.status })
+      .from(invoices)
+      .where(and(eq(invoices.organizationId, organizationId), eq(invoices.orderId, orderId)))
+      .orderBy(desc(invoices.updatedAt))
+      .limit(5);
   }
 
   async getProduct(organizationId: string, input: { productId?: string; query?: string }) {

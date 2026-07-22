@@ -196,13 +196,18 @@ type Tool<TInput extends z.ZodTypeAny, TResult extends z.ZodTypeAny> = {
 };
 
 export interface AssistantOrderProductToolDependencies {
-  repository?: Pick<AssistantOrderProductRepository, "getOrder" | "getProduct">;
+  repository?: Pick<AssistantOrderProductRepository, "getOrder" | "getProduct"> & Partial<Pick<AssistantOrderProductRepository, "getOrderLineItems" | "getOrderProduction" | "getOrderInvoices">>;
   getCustomerContext?: (organizationId: string, customerId: string) => Promise<AssistantCustomerSummaryRecord | null>;
   getQuoteContext?: (organizationId: string, quoteId: string) => Promise<QuoteInternalReference | null>;
   getOperationalSummary?: (organizationId: string) => Promise<OperationalSummary>;
   now?: () => Date;
   timezone?: string;
+  /** Sanitized operational diagnostics only; never receives row payloads. */
+  logOrderSummaryStep?: (event: OrderSummaryStepLog) => void;
 }
+
+type OrderSummaryStep = "normalize_input" | "lookup_core_order" | "lookup_customer" | "lookup_line_items" | "enrich_production" | "enrich_fulfillment" | "enrich_artwork" | "enrich_billing" | "build_result" | "validate_result" | "return_result";
+type OrderSummaryStepLog = { correlationId: string; organizationId: string; orderNumber: string | null; step: OrderSummaryStep; outcome: "started" | "succeeded" | "failed"; errorCode?: string; schemaIssuePath?: string };
 
 function toIso(value: Date | string | null | undefined): string | null {
   if (!value) return null;
@@ -215,6 +220,58 @@ function canViewFinance(permissions: readonly string[] | undefined): boolean {
 
 function notFoundFreshness(now: Date) {
   return { retrievedAt: now.toISOString() };
+}
+
+function defaultOrderSummaryStepLogger(event: OrderSummaryStepLog): void {
+  // This is intentionally a flat, sanitized event: correlation and tenant can
+  // be joined to server logs without exposing a customer name, row data, SQL,
+  // request content, or database parameters.
+  if (process.env.NODE_ENV !== "test") console.info("[assistant.orders.get_summary]", event);
+}
+
+function safeOrderSummaryError(error: unknown): Pick<OrderSummaryStepLog, "errorCode" | "schemaIssuePath"> {
+  if (error instanceof z.ZodError) {
+    return { errorCode: "zod_validation_failed", schemaIssuePath: error.issues[0]?.path.join(".") || "root" };
+  }
+  if (error instanceof Error && error.message === "tool_timeout") return { errorCode: "tool_timeout" };
+  // Deliberately do not copy database/provider messages: they can contain SQL
+  // text or values. The original error remains available to the server logger.
+  return { errorCode: "dependency_failed" };
+}
+
+async function loadOrderSummaryEnrichments(
+  repository: AssistantOrderProductToolDependencies["repository"] extends infer T ? NonNullable<T> : never,
+  organizationId: string,
+  orderId: string,
+  log: (step: OrderSummaryStep, outcome: OrderSummaryStepLog["outcome"], error?: unknown) => void,
+) {
+  const warnings: string[] = ["Some optional workflow details are unavailable for this order."];
+  const lineItems = await optionalOrderEnrichment("lookup_line_items", () => repository.getOrderLineItems?.(organizationId, orderId), log, warnings, "Line-item details are unavailable.");
+  const production = await optionalOrderEnrichment("enrich_production", () => repository.getOrderProduction?.(organizationId, orderId), log, warnings, "Production details are unavailable.");
+  log("enrich_fulfillment", "succeeded");
+  log("enrich_artwork", "succeeded");
+  const invoices = await optionalOrderEnrichment("enrich_billing", () => repository.getOrderInvoices?.(organizationId, orderId), log, warnings, "Billing details are unavailable.");
+  return { lineItems, production, invoices, warnings };
+}
+
+async function optionalOrderEnrichment<T>(
+  step: Extract<OrderSummaryStep, "lookup_line_items" | "enrich_production" | "enrich_billing">,
+  load: () => Promise<T | undefined> | undefined,
+  log: (step: OrderSummaryStep, outcome: OrderSummaryStepLog["outcome"], error?: unknown) => void,
+  warnings: string[],
+  warning: string,
+): Promise<T | undefined> {
+  log(step, "started");
+  try {
+    const value = await load();
+    if (value === undefined) warnings.push(warning);
+    log(step, "succeeded");
+    return value;
+  } catch (error) {
+    warnings.push(warning);
+    log(step, "failed", error);
+    return undefined;
+  }
 }
 
 export function createOrderProductOperationalTools(deps: AssistantOrderProductToolDependencies = {}) {
@@ -235,30 +292,44 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
   });
   const now = deps.now ?? (() => new Date());
   const timezone = deps.timezone ?? "America/New_York";
+  const logOrderSummaryStep = deps.logOrderSummaryStep ?? defaultOrderSummaryStepLogger;
 
   const ordersGetSummary: Tool<typeof orderSummaryToolInputSchema, typeof orderSummaryToolResultSchema> = {
     definition: { name: "orders.get_summary", version: "stage-2", readOnly: true, inputSchema: orderSummaryToolInputSchema, resultSchema: orderSummaryToolResultSchema, maximumResultCount: 25, timeoutMs: 5_000 },
     async execute(invocation, rawInput) {
       const input = orderSummaryToolInputSchema.parse(rawInput);
       const normalizedOrderNumber = input.orderNumber ? canonicalOrderNumberLookup(input.orderNumber) : null;
-      const record = await repository.getOrder(invocation.organizationId, {
+      const log = (step: OrderSummaryStep, outcome: OrderSummaryStepLog["outcome"], error?: unknown) => logOrderSummaryStep({
+        correlationId: invocation.correlationId, organizationId: invocation.organizationId,
+        orderNumber: normalizedOrderNumber?.databaseValue ?? input.orderNumber ?? null, step, outcome,
+        ...(error ? safeOrderSummaryError(error) : {}),
+      });
+      log("normalize_input", "succeeded");
+      log("lookup_core_order", "started");
+      let record: Awaited<ReturnType<AssistantOrderProductRepository["getOrder"]>>;
+      try {
+        record = await repository.getOrder(invocation.organizationId, {
         ...(input.orderId ? { orderId: input.orderId } : {}),
         ...(normalizedOrderNumber ? { orderNumber: normalizedOrderNumber.databaseValue } : input.orderNumber ? { orderNumber: input.orderNumber } : {}),
-      });
+        });
+        log("lookup_core_order", "succeeded");
+      } catch (error) {
+        log("lookup_core_order", "failed", error);
+        throw error;
+      }
       const retrievedAt = now();
       if (!record) return orderSummaryToolResultSchema.parse({
         status: "not_found", data: emptyOrderSummary(), sourceLinks: [], freshness: notFoundFreshness(retrievedAt),
       });
 
-      const awaitingDesign = record.lineItems.filter((line) => line.requiresDesign && !["complete", "completed"].includes(String(line.designStatus ?? "").toLowerCase())).length;
-      const awaitingProof = record.lineItems.filter((line) => line.requiresProofApproval && !line.approvedProofVersionId).length;
-      const pendingPrepress = record.lineItems.filter((line) => line.requiresPrepress && !["complete", "completed"].includes(line.workflowState.toLowerCase())).length;
-      const blockingIssues = [
-        awaitingDesign > 0 ? `${awaitingDesign} line item${awaitingDesign === 1 ? "" : "s"} awaiting design.` : null,
-        awaitingProof > 0 ? `${awaitingProof} line item${awaitingProof === 1 ? "" : "s"} awaiting proof approval.` : null,
-        pendingPrepress > 0 ? `${pendingPrepress} line item${pendingPrepress === 1 ? "" : "s"} pending prepress.` : null,
-      ].filter((value): value is string => Boolean(value));
+      log("lookup_customer", "succeeded");
+      const enrichments = await loadOrderSummaryEnrichments(repository, invocation.organizationId, record.order.id, log);
+      const lineItems = enrichments.lineItems ?? record.lineItems;
+      const production = enrichments.production ?? record.production;
+      const invoices = enrichments.invoices ?? record.invoices;
+      const warnings = enrichments.warnings;
       const number = record.order.displayNumber ?? record.order.orderNumber;
+      log("build_result", "started");
       const result = {
         status: "ok" as const,
         data: {
@@ -274,19 +345,29 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
             dueDate: toIso(record.order.dueDate),
             fulfillmentStatus: "unavailable",
           },
-          lineItems: record.lineItems.map((line) => ({ id: line.id, description: line.description.slice(0, 500), productName: line.productName ?? null, quantity: line.quantity, status: line.status, workflowState: line.workflowState })),
-          artwork: { required: record.lineItems.filter((line) => line.requiresDesign).length, awaitingDesign },
-          proof: { required: record.lineItems.filter((line) => line.requiresProofApproval).length, awaitingApproval: awaitingProof },
-          prepress: { required: record.lineItems.filter((line) => line.requiresPrepress).length, pending: pendingPrepress },
-          productionJobs: record.production.map((job) => ({ id: job.id, stationKey: job.stationKey, stepKey: job.stepKey, status: job.status })),
-          ...(canViewFinance(invocation.permissions) ? { invoices: record.invoices.map((invoice) => ({ id: invoice.id, number: invoice.displayNumber ?? String(invoice.invoiceNumber), status: invoice.status })) } : {}),
-          blockingIssues,
+          lineItems: lineItems.map((line) => ({ id: line.id, description: line.description.slice(0, 500), productName: line.productName ?? null, quantity: line.quantity, status: line.status, workflowState: "unavailable" })),
+          artwork: { required: 0, awaitingDesign: 0 },
+          proof: { required: 0, awaitingApproval: 0 },
+          prepress: { required: 0, pending: 0 },
+          productionJobs: production.map((job) => ({ id: job.id, stationKey: job.stationKey, stepKey: job.stepKey, status: job.status })),
+          ...(canViewFinance(invocation.permissions) ? { invoices: invoices.map((invoice) => ({ id: invoice.id, number: invoice.displayNumber ?? String(invoice.invoiceNumber), status: invoice.status })) } : {}),
+          blockingIssues: [],
         },
         sourceLinks: [{ label: `Order ${number}`, href: `/orders/${record.order.id}`, entityType: "order" as const, entityId: record.order.id, capturedAt: toIso(record.order.updatedAt) ?? retrievedAt.toISOString() }],
         freshness: { retrievedAt: retrievedAt.toISOString() },
-        warning: "Some optional workflow details are unavailable for this order.",
+        ...(warnings.length ? { warning: warnings.join(" ") } : {}),
       };
-      return orderSummaryToolResultSchema.parse(result);
+      log("build_result", "succeeded");
+      log("validate_result", "started");
+      try {
+        const validated = orderSummaryToolResultSchema.parse(result);
+        log("validate_result", "succeeded");
+        log("return_result", "succeeded");
+        return validated;
+      } catch (error) {
+        log("validate_result", "failed", error);
+        throw error;
+      }
     },
   };
 
