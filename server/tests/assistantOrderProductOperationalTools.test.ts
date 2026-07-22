@@ -44,6 +44,32 @@ describe("assistant order/product/operational tools", () => {
     expect(result.data.blockingIssues).toHaveLength(0);
   });
 
+  test("uses persisted order-line dimensions and selected-option snapshots without inferring print progress", async () => {
+    const repository = {
+      ...repo(),
+      getOrderLineItems: jest.fn(async () => [{
+        id: "line-1", description: "ACM panel", productName: "ACM", materialName: "Aluminum composite", quantity: 3,
+        width: "24", height: "48", status: "in_production", workflowState: "production",
+        selectedOptions: [{ optionName: "Print Sides", value: "double-sided" }],
+      }]),
+      getOrderProduction: jest.fn(async () => [{ id: "job-1", lineItemId: "line-1", stationKey: "flatbed", stepKey: "print", status: "in_progress" }]),
+      getOrderInvoices: jest.fn(async () => []),
+    };
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow });
+    const result = await tools.ordersGetSummary.execute({ ...invocation, permissions: ["finance:read"] }, { orderNumber: "16309" });
+
+    expect(result.data.lineItems).toEqual([expect.objectContaining({
+      lineItemSequence: 1,
+      quantity: 3,
+      dimensions: { widthInches: 24, heightInches: 48 },
+      finishedSquareFeet: 24,
+      sidedness: "double_sided",
+      stationLabels: ["Flatbed"],
+    })]);
+    expect(result.data.productionOverview).toMatchObject({ inProductionJobs: 1, printProgressAvailable: false });
+    expect(result.data.productionOverview.printProgressWarning).toContain("authoritative completed quantities");
+  });
+
   test("keeps the core order summary valid when optional workflow columns are unavailable", async () => {
     const repository = {
       getOrder: jest.fn(async () => ({
@@ -328,6 +354,17 @@ describe("assistant order/product/operational tools", () => {
       expect.objectContaining({ href: "/orders/order-1" }),
     ]));
     expect((result.data as any).customer.sourceLink.href).toBe("/customers/customer-1");
+  });
+
+  test("adapter supplies only text-based, bounded follow-up prompts for an order", async () => {
+    const adapters = createAssistantOrderProductToolAdapters({ repository: repo(), now: fixedNow });
+    const result = await adapters["orders.get_summary"]!.execute({ orderNumber: "16309" }, {
+      scope: { organizationId: "org-a", userId: "user-a" }, actor: { userId: "user-a", email: null }, permissions: ["assistant.internal_staff"], context, correlationId: "correlation-1", signal: new AbortController().signal,
+    });
+    const prompts = (result.data as any).suggestedPrompts;
+    expect(prompts).toHaveLength(3);
+    expect(prompts).toEqual(expect.arrayContaining([expect.objectContaining({ label: "Show line-item details", prompt: expect.stringContaining("Order 16309") })]));
+    expect(JSON.stringify(prompts)).not.toContain("confirmationToken");
   });
 
   test("navigation adapter exposes the canonical order source instead of the generic workspace", async () => {

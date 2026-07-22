@@ -2,6 +2,8 @@ import { z } from "zod";
 import {
   analyticsCustomerProductSalesInputSchema,
   analyticsCustomerProductSalesResultSchema,
+  analyticsCustomerUninvoicedOrdersInputSchema,
+  analyticsCustomerUninvoicedOrdersResultSchema,
   analyticsResolveCustomerInputSchema,
   analyticsResolveCustomerResultSchema,
 } from "@shared/aiReportingContracts";
@@ -16,11 +18,12 @@ import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolR
 
 type ResolveInput = z.infer<typeof analyticsResolveCustomerInputSchema>;
 type CustomerProductSalesInput = z.infer<typeof analyticsCustomerProductSalesInputSchema>;
+type CustomerUninvoicedOrdersInput = z.infer<typeof analyticsCustomerUninvoicedOrdersInputSchema>;
 
 const FALLBACK_TIMEZONE = "UTC";
 
 export interface AssistantAnalyticsReportingToolDependencies {
-  repository?: Pick<AssistantAnalyticsReportingRepository, "getOrganizationTimezone" | "resolveCustomer" | "customerProductSales">;
+  repository?: Pick<AssistantAnalyticsReportingRepository, "getOrganizationTimezone" | "resolveCustomer" | "customerProductSales" | "customerUninvoicedOrders">;
   now?: () => Date;
   /** Test-only fallback when organization settings have no valid IANA zone. */
   timezone?: string;
@@ -92,6 +95,18 @@ function customerResultSource(customer: AssistantAnalyticsCustomerRecord) {
   return { label: customer.displayName, href: `/customers/${customer.id}` };
 }
 
+function resolvedCustomerData(customer: AssistantAnalyticsCustomerRecord) {
+  return {
+    id: customer.id,
+    displayName: customer.displayName,
+    resolutionType: customer.resolutionType,
+    contactId: customer.contactId,
+    contactName: customer.contactName,
+    explanation: customer.explanation,
+    sourceLink: customerResultSource(customer),
+  };
+}
+
 function alternativesWarning(query: string, alternatives: AssistantAnalyticsCustomerRecord[]) {
   if (!alternatives.length) return `No customer matches ${query}.`;
   return `More than one customer may match ${query}. Choose one of: ${alternatives.map((item) => item.displayName).join(", ")}.`;
@@ -124,11 +139,9 @@ export function createAssistantAnalyticsReportingToolAdapters(
     if (resolution.confidence === "none") return { status: "not_found" as const, data: null, warning: alternativesWarning(input.query, []) };
     const data = analyticsResolveCustomerResultSchema.parse({
       customer: resolution.customer ? {
-        id: resolution.customer.id,
-        displayName: resolution.customer.displayName,
-        sourceLink: customerResultSource(resolution.customer),
+        ...resolvedCustomerData(resolution.customer),
       } : null,
-      alternatives: resolution.alternatives.map((customer) => ({ id: customer.id, displayName: customer.displayName })),
+      alternatives: resolution.alternatives.map(resolvedCustomerData),
       confidence: resolution.confidence,
     });
     const sourceLinks = [
@@ -196,9 +209,60 @@ export function createAssistantAnalyticsReportingToolAdapters(
     };
   };
 
+  const customerUninvoicedOrders = async (rawInput: unknown, context: AssistantTrustedToolContext) => {
+    const input = analyticsCustomerUninvoicedOrdersInputSchema.parse(rawInput) as CustomerUninvoicedOrdersInput;
+    const customerQuery = input.customer.id ?? input.customer.name!;
+    const resolution = await repository.resolveCustomer(context.scope.organizationId, customerQuery);
+    const customer = resolution.confidence === "exact" && resolution.customer ? resolution.customer : null;
+    if (!customer) return {
+      status: "not_found" as const,
+      data: null,
+      warning: alternativesWarning(customerQuery, resolution.alternatives),
+    };
+    if (!("customerUninvoicedOrders" in repository) || typeof repository.customerUninvoicedOrders !== "function") {
+      throw new Error("The customer uninvoiced-orders repository adapter is not configured.");
+    }
+    const [capturedAt, timezone] = await Promise.all([
+      Promise.resolve(now().toISOString()),
+      timezoneFor(context.scope.organizationId),
+    ]);
+    const orders = await repository.customerUninvoicedOrders(
+      context.scope.organizationId,
+      customer.id,
+      analyticsDateWindow(input.dateRange.start, input.dateRange.end, timezone),
+      input.limit,
+    );
+    const data = analyticsCustomerUninvoicedOrdersResultSchema.parse({
+      customer: resolvedCustomerData(customer),
+      dateRange: input.dateRange,
+      totalOrderValueCents: orders.reduce((total, order) => total + order.orderTotalCents, 0),
+      orders: orders.map((order) => ({
+        ...order,
+        orderDate: iso(order.orderDate),
+        sourceLink: { label: order.orderNumber, href: `/orders/${order.orderId}` },
+      })),
+      warnings: ["Uninvoiced order value is operational context only and is not included in posted revenue."],
+      timezone,
+    });
+    return {
+      status: "succeeded" as const,
+      data,
+      provenance: {
+        sourceLinks: [
+          customerSource(customer, capturedAt),
+          ...orders.map((order) => ({ label: order.orderNumber, href: `/orders/${order.orderId}`, entityType: "order" as const, entityId: order.orderId, capturedAt })),
+        ].slice(0, 10),
+        freshness: { capturedAt },
+      },
+    };
+  };
+
   return {
     "analytics.resolve_customer": { execute: resolve },
     "analytics.customer_product_sales": { execute: customerProductSales },
+    // The allowlist entry is owned by the central registry; this adapter cannot
+    // become callable until it is registered with the same finance-read policy.
+    "analytics.customer_uninvoiced_orders": { execute: customerUninvoicedOrders },
   } as AssistantToolAdapters;
 }
 

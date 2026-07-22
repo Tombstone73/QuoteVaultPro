@@ -65,6 +65,11 @@ export const orderSummaryToolResultSchema = toolEnvelopeSchema(z.object({
     statusPill: z.string().nullable(),
     dueDate: z.string().nullable(),
     fulfillmentStatus: z.string().min(1),
+    billingStatus: z.string().min(1),
+    priority: z.string().min(1),
+    poNumber: z.string().nullable(),
+    jobLabel: z.string().nullable(),
+    orderTotal: z.number().finite().nonnegative().nullable(),
   }).nullable(),
   lineItems: z.array(z.object({
     id: identifierSchema,
@@ -73,16 +78,32 @@ export const orderSummaryToolResultSchema = toolEnvelopeSchema(z.object({
     quantity: z.number().int().nonnegative(),
     status: z.string().min(1),
     workflowState: z.string().min(1),
+    lineItemSequence: z.number().int().positive(),
+    materialName: z.string().nullable(),
+    dimensions: z.object({ widthInches: z.number().positive(), heightInches: z.number().positive() }).nullable(),
+    finishedSquareFeet: z.number().finite().nonnegative().nullable(),
+    sidedness: z.enum(["single_sided", "double_sided", "unavailable"]),
+    stationLabels: z.array(z.string().min(1)).max(10),
   }).strict()).max(25),
   artwork: z.object({ required: z.number().int().nonnegative(), awaitingDesign: z.number().int().nonnegative() }).strict(),
   proof: z.object({ required: z.number().int().nonnegative(), awaitingApproval: z.number().int().nonnegative() }).strict(),
   prepress: z.object({ required: z.number().int().nonnegative(), pending: z.number().int().nonnegative() }).strict(),
   productionJobs: z.array(z.object({
     id: identifierSchema,
+    lineItemId: identifierSchema.nullable(),
     stationKey: z.string().min(1),
     stepKey: z.string().min(1),
     status: z.string().min(1),
   }).strict()).max(25),
+  productionOverview: z.object({
+    totalJobs: z.number().int().nonnegative(),
+    queuedJobs: z.number().int().nonnegative(),
+    inProductionJobs: z.number().int().nonnegative(),
+    completedJobs: z.number().int().nonnegative(),
+    stations: z.array(z.object({ stationLabel: z.string().min(1), jobCount: z.number().int().nonnegative() }).strict()).max(10),
+    printProgressAvailable: z.boolean(),
+    printProgressWarning: z.string().min(1).max(300).optional(),
+  }).strict(),
   invoices: z.array(z.object({
     id: identifierSchema,
     number: z.string().min(1),
@@ -302,11 +323,18 @@ const normalizedLineItemSchema = z.object({
   productName: z.string().nullable(),
   quantity: z.number().int().nonnegative(),
   status: z.string().min(1),
-  workflowState: z.literal("unavailable"),
+  workflowState: z.string().min(1),
+  lineItemSequence: z.number().int().positive(),
+  materialName: z.string().nullable(),
+  dimensions: z.object({ widthInches: z.number().positive(), heightInches: z.number().positive() }).nullable(),
+  finishedSquareFeet: z.number().finite().nonnegative().nullable(),
+  sidedness: z.enum(["single_sided", "double_sided", "unavailable"]),
+  stationLabels: z.array(z.string().min(1)).max(10),
 }).strict();
 
 const normalizedProductionJobSchema = z.object({
   id: identifierSchema,
+  lineItemId: identifierSchema.nullable(),
   stationKey: z.string().min(1),
   stepKey: z.string().min(1),
   status: z.string().min(1),
@@ -348,17 +376,61 @@ function normalizeOptionalRecords<T>(
   return records;
 }
 
-function normalizeLineItems(values: unknown, warnings: string[]) {
-  return normalizeOptionalRecords(values, (value) => {
+function decimalNumber(value: unknown): number | null {
+  const number = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+  return Number.isFinite(number) ? number : null;
+}
+
+function lineDimensions(raw: Record<string, unknown>) {
+  const widthInches = decimalNumber(raw.width);
+  const heightInches = decimalNumber(raw.height);
+  if (widthInches === null || heightInches === null || widthInches <= 0 || heightInches <= 0) return null;
+  return { widthInches, heightInches };
+}
+
+function confirmedSidedness(value: unknown): "single_sided" | "double_sided" | "unavailable" {
+  if (!Array.isArray(value)) return "unavailable";
+  const selections = value.flatMap((candidate) => {
+    if (!candidate || typeof candidate !== "object") return [];
+    const option = candidate as Record<string, unknown>;
+    const name = trimmed(option.optionName);
+    const selected = trimmed(option.value);
+    return name && selected && /\b(?:side|sided|print\s+sides?)\b/i.test(name) ? [selected.toLowerCase().replace(/[_-]/g, " ")] : [];
+  });
+  if (selections.length !== 1) return "unavailable";
+  if (/^(?:single|one)\s*(?:side|sided)?$/.test(selections[0]!)) return "single_sided";
+  if(/^(?:double|two)\s*(?:side|sided)?$/.test(selections[0]!)) return "double_sided";
+  return "unavailable";
+}
+
+function stationLabel(key: string): string {
+  return key.split(/[_-]/).filter(Boolean).map((part) => part[0]!.toUpperCase() + part.slice(1)).join(" ") || key;
+}
+
+function normalizeLineItems(values: unknown, warnings: string[], stationsByLineId: ReadonlyMap<string, string[]>) {
+  const indexed = Array.isArray(values)
+    ? values.map((value, index) => value && typeof value === "object" ? { ...(value as Record<string, unknown>), lineItemSequence: index + 1 } : value)
+    : values;
+  return normalizeOptionalRecords(indexed, (value) => {
     if (!value || typeof value !== "object") return undefined;
     const raw = value as Record<string, unknown>;
+    const dimensions = lineDimensions(raw);
+    const finishedSquareFeet = dimensions
+      ? Number(((dimensions.widthInches * dimensions.heightInches * Number(raw.quantity)) / 144).toFixed(4))
+      : null;
     const parsed = normalizedLineItemSchema.safeParse({
       id: raw.id,
       description: trimmed(raw.description),
       productName: trimmed(raw.productName) ?? null,
       quantity: raw.quantity,
       status: safeOptionalStatus(raw.status),
-      workflowState: "unavailable",
+      workflowState: safeOptionalStatus(raw.workflowState),
+      lineItemSequence: Number(raw.lineItemSequence),
+      materialName: trimmed(raw.materialName) ?? null,
+      dimensions,
+      finishedSquareFeet,
+      sidedness: confirmedSidedness(raw.selectedOptions),
+      stationLabels: stationsByLineId.get(String(raw.id)) ?? [],
     });
     return parsed.success ? parsed.data : undefined;
   }, warnings, "Malformed line-item details were omitted.");
@@ -370,6 +442,7 @@ function normalizeProductionJobs(values: unknown, warnings: string[]) {
     const raw = value as Record<string, unknown>;
     const parsed = normalizedProductionJobSchema.safeParse({
       id: raw.id,
+      lineItemId: trimmed(raw.lineItemId) ?? null,
       stationKey: trimmed(raw.stationKey),
       stepKey: trimmed(raw.stepKey),
       status: safeOptionalStatus(raw.status),
@@ -389,6 +462,40 @@ function normalizeInvoices(values: unknown, warnings: string[]) {
     });
     return parsed.success ? parsed.data : undefined;
   }, warnings, "Malformed billing details were omitted.");
+}
+
+function stationsByLine(production: Array<z.infer<typeof normalizedProductionJobSchema>>): Map<string, string[]> {
+  const result = new Map<string, string[]>();
+  for (const job of production) {
+    if (!job.lineItemId) continue;
+    const labels = result.get(job.lineItemId) ?? [];
+    const label = stationLabel(job.stationKey);
+    if (!labels.includes(label)) labels.push(label);
+    result.set(job.lineItemId, labels);
+  }
+  return result;
+}
+
+function productionOverview(production: Array<z.infer<typeof normalizedProductionJobSchema>>) {
+  const normalizedStatus = (status: string) => status.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  const counts = { queuedJobs: 0, inProductionJobs: 0, completedJobs: 0 };
+  const stationCounts = new Map<string, number>();
+  production.forEach((job) => {
+    const status = normalizedStatus(job.status);
+    if (["queued", "pending", "paused"].includes(status)) counts.queuedJobs += 1;
+    else if (["in_progress", "inproduction", "printing", "running"].includes(status)) counts.inProductionJobs += 1;
+    else if (["completed", "complete", "done"].includes(status)) counts.completedJobs += 1;
+    const label = stationLabel(job.stationKey);
+    stationCounts.set(label, (stationCounts.get(label) ?? 0) + 1);
+  });
+  return {
+    totalJobs: production.length,
+    ...counts,
+    stations: Array.from(stationCounts, ([stationLabel, jobCount]) => ({ stationLabel, jobCount }))
+      .sort((left, right) => right.jobCount - left.jobCount || left.stationLabel.localeCompare(right.stationLabel)),
+    printProgressAvailable: false,
+    printProgressWarning: "Print completion and remaining quantities are unavailable because production records do not contain authoritative completed quantities.",
+  };
 }
 
 export function createOrderProductOperationalTools(deps: AssistantOrderProductToolDependencies = {}) {
@@ -442,11 +549,16 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
 
       log("lookup_customer", "succeeded");
       const enrichments = await loadOrderSummaryEnrichments(repository, invocation.organizationId, record.order.id, log, optionalOrderEnrichmentTimeoutMs);
-      const lineItems = normalizeLineItems(enrichments.lineItems ?? record.lineItems, enrichments.warnings);
       const production = normalizeProductionJobs(enrichments.production ?? record.production, enrichments.warnings);
+      const lineItems = normalizeLineItems(enrichments.lineItems ?? record.lineItems, enrichments.warnings, stationsByLine(production));
       const invoices = normalizeInvoices(enrichments.invoices ?? record.invoices, enrichments.warnings);
       const warnings = enrichments.warnings;
       const number = record.order.displayNumber ?? record.order.orderNumber;
+      const billingStatus = safeOptionalStatus(record.order.billingStatus);
+      const orderTotal = canViewFinance(invocation.permissions) ? decimalNumber(record.order.total) : null;
+      const blockingIssues = billingStatus === "not_ready"
+        ? ["Billing is not ready for this order."]
+        : [];
       log("build_result", "started");
       const result = {
         status: "ok" as const,
@@ -458,18 +570,24 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
             // every supported schema revision. Workflow/pill/fulfillment
             // enrichments remain intentionally unavailable rather than making
             // a valid order lookup depend on optional schema columns.
-            state: record.order.status,
-            statusPill: null,
+            state: safeOptionalStatus(record.order.state ?? record.order.status),
+            statusPill: trimmed(record.order.statusPillValue) ?? null,
             dueDate: toIso(record.order.dueDate),
-            fulfillmentStatus: "unavailable",
+            fulfillmentStatus: safeOptionalStatus(record.order.fulfillmentStatus),
+            billingStatus,
+            priority: safeOptionalStatus(record.order.priority),
+            poNumber: trimmed(record.order.poNumber) ?? null,
+            jobLabel: trimmed(record.order.label) ?? null,
+            orderTotal,
           },
           lineItems,
           artwork: { required: 0, awaitingDesign: 0 },
           proof: { required: 0, awaitingApproval: 0 },
           prepress: { required: 0, pending: 0 },
           productionJobs: production,
+          productionOverview: productionOverview(production),
           ...(canViewFinance(invocation.permissions) ? { invoices } : {}),
-          blockingIssues: [],
+          blockingIssues,
         },
         sourceLinks: [{ label: `Order ${number}`, href: `/orders/${record.order.id}`, entityType: "order" as const, entityId: record.order.id, capturedAt: toIso(record.order.updatedAt) ?? retrievedAt.toISOString() }],
         freshness: { retrievedAt: retrievedAt.toISOString() },
@@ -604,6 +722,30 @@ export function createStage2OrderProductToolAdapters(
           artworkState: `${result.data.artwork.awaitingDesign} awaiting design of ${result.data.artwork.required} requiring design.`,
           productionState: `${result.data.productionJobs.length} production job${result.data.productionJobs.length === 1 ? "" : "s"}; ${result.data.prepress.pending} pending prepress.`,
           fulfillmentState: order.fulfillmentStatus,
+          operational: {
+            priority: order.priority,
+            statusPill: order.statusPill,
+            poNumber: order.poNumber,
+            jobLabel: order.jobLabel,
+            lineItems: result.data.lineItems.map((line) => ({
+              sequence: line.lineItemSequence,
+              label: line.description,
+              productName: line.productName,
+              materialName: line.materialName,
+              orderedPieces: line.quantity,
+              dimensions: line.dimensions,
+              finishedSquareFeet: line.finishedSquareFeet,
+              sidedness: line.sidedness,
+              status: line.status,
+              workflowState: line.workflowState,
+              stations: line.stationLabels,
+            })),
+            production: result.data.productionOverview,
+            fulfillmentStatus: order.fulfillmentStatus,
+            billingStatus: order.billingStatus,
+            ...(order.orderTotal !== null ? { orderTotal: order.orderTotal } : {}),
+          },
+          suggestedPrompts: orderSuggestedPrompts(order.number),
           ...(invoice ? { invoice: entitySummary("invoice", invoice.id, `Invoice ${invoice.number}`, invoice.status, { label: `Invoice ${invoice.number}`, href: `/invoices/${invoice.id}`, entityType: "invoice", entityId: invoice.id, capturedAt: freshness }, freshness) } : {}),
           ...(result.data.blockingIssues.length ? { blockingIssues: result.data.blockingIssues } : {}),
         });
@@ -676,6 +818,15 @@ export function createStage2OrderProductToolAdapters(
       },
     },
   };
+}
+
+function orderSuggestedPrompts(orderNumber: string) {
+  const orderLabel = /^order\b/i.test(orderNumber) ? orderNumber : `Order ${orderNumber}`;
+  return [
+    { id: "show_line_item_details", label: "Show line-item details", prompt: `Show line-item details for ${orderLabel}.`, intent: "lookup" as const, contextReference: { entityType: "order" as const, label: orderLabel }, presentationPriority: 1 },
+    { id: "show_remaining_work_by_station", label: "Show remaining work by station", prompt: `Show remaining work by station for ${orderLabel}.`, intent: "production_reporting" as const, contextReference: { entityType: "order" as const, label: orderLabel }, presentationPriority: 2 },
+    { id: "explain_billing_blockers", label: "Explain billing blockers", prompt: `Explain billing blockers for ${orderLabel}.`, intent: "operational_summary" as const, contextReference: { entityType: "order" as const, label: orderLabel }, presentationPriority: 3 },
+  ];
 }
 
 /** The browser route is only a nomination.  Treat it as an order context only
@@ -814,7 +965,16 @@ function currentDateInTimezone(timezone: string, freshness: string): string {
 }
 
 function emptyOrderSummary() {
-  return { order: null, lineItems: [], artwork: { required: 0, awaitingDesign: 0 }, proof: { required: 0, awaitingApproval: 0 }, prepress: { required: 0, pending: 0 }, productionJobs: [], blockingIssues: [] };
+  return {
+    order: null,
+    lineItems: [],
+    artwork: { required: 0, awaitingDesign: 0 },
+    proof: { required: 0, awaitingApproval: 0 },
+    prepress: { required: 0, pending: 0 },
+    productionJobs: [],
+    productionOverview: { totalJobs: 0, queuedJobs: 0, inProductionJobs: 0, completedJobs: 0, stations: [], printProgressAvailable: false, printProgressWarning: "Print completion and remaining quantities are unavailable because production records do not contain authoritative completed quantities." },
+    blockingIssues: [],
+  };
 }
 
 function emptyProductSummary() {

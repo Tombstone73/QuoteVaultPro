@@ -2,6 +2,8 @@ import { z } from "zod";
 export {
   analyticsCustomerProductSalesInputSchema,
   analyticsCustomerProductSalesResultSchema,
+  analyticsCustomerUninvoicedOrdersInputSchema,
+  analyticsCustomerUninvoicedOrdersResultSchema,
   analyticsResolveCustomerInputSchema,
   analyticsResolveCustomerResultSchema,
 } from "./aiReportingContracts";
@@ -40,10 +42,26 @@ export const assistantToolNameValues = [
   "navigation.get_current_context",
   "production.get_queue_summary",
   "operations.get_attention_summary",
+  "orders.get_due_summary",
   "analytics.resolve_customer",
   "analytics.customer_product_sales",
+  "analytics.customer_uninvoiced_orders",
 ] as const;
 export const assistantPlannerIntentValues = ["lookup", "operational_summary", "production_reporting", "analytical_reporting", "navigation", "unsupported_write", "clarification"] as const;
+/** Reporting scope is independent from tool selection. Keeping it typed avoids
+ * silently replacing an order question with a production-job answer. */
+export const assistantReportingScopeValues = [
+  "order",
+  "order_line",
+  "production_job",
+  "production_station",
+  "print_quantity",
+  "customer",
+  "contact",
+  "invoice",
+  "posted_revenue",
+  "order_value",
+] as const;
 
 export type AssistantContextVersion = (typeof assistantContextVersionValues)[number];
 export type AssistantPresentationMode = (typeof assistantPresentationModeValues)[number];
@@ -52,6 +70,7 @@ export type AssistantTurnStatus = (typeof assistantTurnStatusValues)[number];
 export type AssistantMessageRole = (typeof assistantMessageRoleValues)[number];
 export type AssistantToolName = (typeof assistantToolNameValues)[number];
 export type AssistantPlannerIntent = (typeof assistantPlannerIntentValues)[number];
+export type AssistantReportingScope = (typeof assistantReportingScopeValues)[number];
 
 const assistantIsoDateTimeSchema = z.string().datetime({ offset: true });
 export const assistantSafeIdentifierSchema = z.string()
@@ -291,6 +310,56 @@ export const assistantOrderSummaryInputSchema = z.object({
 }).strict().refine((value) => Boolean(value.orderId || value.orderNumber), {
   message: "orderId or orderNumber is required",
 });
+
+/** A suggestion is a text-only continuation. It never carries an executable
+ * tool call, confirmation token, or implicit authority. The backend receives
+ * the prompt as an ordinary user message and resolves scope again. */
+export const assistantSuggestedPromptSchema = z.object({
+  id: z.string().trim().min(1).max(120).regex(/^[a-z][a-z0-9_-]*$/),
+  label: z.string().trim().min(1).max(120),
+  prompt: z.string().trim().min(1).max(500),
+  intent: z.enum(["lookup", "operational_summary", "production_reporting", "analytical_reporting"]),
+  contextReference: z.object({
+    entityType: z.enum(["customer", "contact", "order", "invoice", "production_job"]),
+    label: z.string().trim().min(1).max(160),
+  }).strict().optional(),
+  presentationPriority: z.number().int().min(1).max(4),
+}).strict();
+export type AssistantSuggestedPrompt = z.infer<typeof assistantSuggestedPromptSchema>;
+
+export const assistantOperationalOrderLineSchema = z.object({
+  sequence: z.number().int().positive(),
+  label: z.string().trim().min(1).max(500),
+  productName: z.string().trim().min(1).max(255).nullable(),
+  materialName: z.string().trim().min(1).max(255).nullable(),
+  orderedPieces: z.number().int().nonnegative(),
+  dimensions: z.object({ widthInches: z.number().positive(), heightInches: z.number().positive() }).strict().nullable(),
+  finishedSquareFeet: z.number().finite().nonnegative().nullable(),
+  sidedness: z.enum(["single_sided", "double_sided", "unavailable"]),
+  status: z.string().trim().min(1).max(120),
+  workflowState: z.string().trim().min(1).max(120),
+  stations: z.array(z.string().trim().min(1).max(160)).max(10),
+}).strict();
+export const assistantOperationalOrderSummarySchema = z.object({
+  priority: z.string().trim().min(1).max(120),
+  statusPill: z.string().trim().min(1).max(160).nullable(),
+  poNumber: z.string().trim().min(1).max(120).nullable(),
+  jobLabel: z.string().trim().min(1).max(500).nullable(),
+  lineItems: z.array(assistantOperationalOrderLineSchema).max(25),
+  production: z.object({
+    totalJobs: z.number().int().nonnegative(),
+    queuedJobs: z.number().int().nonnegative(),
+    inProductionJobs: z.number().int().nonnegative(),
+    completedJobs: z.number().int().nonnegative(),
+    stations: z.array(z.object({ stationLabel: z.string().trim().min(1).max(160), jobCount: z.number().int().nonnegative() }).strict()).max(10),
+    printProgressAvailable: z.boolean(),
+    printProgressWarning: z.string().trim().min(1).max(300).optional(),
+  }).strict(),
+  fulfillmentStatus: z.string().trim().min(1).max(160),
+  billingStatus: z.string().trim().min(1).max(160),
+  orderTotal: z.number().finite().nonnegative().optional(),
+}).strict();
+
 export const assistantOrderSummaryResultSchema = z.object({
   order: assistantEntitySummarySchema,
   customer: assistantEntitySummarySchema.optional(),
@@ -301,6 +370,8 @@ export const assistantOrderSummaryResultSchema = z.object({
   fulfillmentState: z.string().trim().min(1).max(160).optional(),
   invoice: assistantEntitySummarySchema.optional(),
   blockingIssues: z.array(z.string().trim().min(1).max(300)).max(10).optional(),
+  operational: assistantOperationalOrderSummarySchema.optional(),
+  suggestedPrompts: z.array(assistantSuggestedPromptSchema).max(4).optional(),
 }).strict();
 
 export const assistantProductSummaryInputSchema = z.object({
@@ -486,6 +557,56 @@ export const assistantAttentionSummaryResultSchema = z.object({
   warnings: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
 }).strict();
 
+/** Order due reporting deliberately has its own order-level contract. It
+ * prevents a production-job queue from being used as the headline answer to
+ * an order due-date question. */
+export const assistantOrderDueFilterValues = ["overdue", "due_today", "due_tomorrow", "due_within_days", "date_range"] as const;
+export const assistantOrderDueSummaryInputSchema = z.object({
+  due: z.enum(assistantOrderDueFilterValues).optional(),
+  dueWithinDays: z.number().int().min(1).max(31).optional(),
+  dateRange: z.object({
+    start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+    end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  }).strict().optional(),
+  status: z.enum(["new", "in_production", "on_hold", "ready_for_shipment", "completed", "closed", "canceled", "cancelled"]).optional(),
+  limit: z.number().int().min(1).max(20).optional(),
+  includeOperationalSummary: z.boolean().optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.due === "due_within_days" && !value.dueWithinDays) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["dueWithinDays"], message: "dueWithinDays is required for due_within_days." });
+  }
+  if (value.due === "date_range" && !value.dateRange) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["dateRange"], message: "dateRange is required for date_range." });
+  }
+  if (value.dateRange && value.dateRange.start > value.dateRange.end) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["dateRange", "end"], message: "date range end must not precede start." });
+  }
+});
+export const assistantOrderDueSummaryOrderSchema = z.object({
+  orderId: assistantSafeIdentifierSchema,
+  orderNumber: z.string().trim().min(1).max(64),
+  customerName: z.string().trim().min(1).max(240),
+  status: z.string().trim().min(1).max(120),
+  dueDate: assistantIsoDateTimeSchema,
+  dueState: z.enum(["overdue", "due_today", "due_tomorrow", "future"]),
+  daysFromDue: z.number().int(),
+  lineItemCount: z.number().int().nonnegative().nullable(),
+  incompleteLineItemCount: z.number().int().nonnegative().nullable(),
+  productionJobCount: z.number().int().nonnegative().nullable(),
+  activeProductionJobCount: z.number().int().nonnegative().nullable(),
+  fulfillmentState: z.string().trim().min(1).max(120).nullable(),
+  invoiceState: z.string().trim().min(1).max(120).nullable(),
+  billingReadiness: z.string().trim().min(1).max(120).nullable(),
+  orderTotal: z.number().nonnegative().nullable().optional(),
+  sourceLink: assistantSourceLinkSchema,
+}).strict();
+export const assistantOrderDueSummaryResultSchema = z.object({
+  totalMatchingOrders: z.number().int().nonnegative(),
+  orders: z.array(assistantOrderDueSummaryOrderSchema).max(20),
+  timezone: z.string().trim().min(1).max(80),
+  warnings: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
+}).strict();
+
 export const assistantNavigationCurrentContextInputSchema = z.object({}).strict();
 /** A current-record summary is always server-resolved.  The UI context only
  * nominates a record; it never supplies record attributes or source links. */
@@ -613,9 +734,12 @@ export const assistantStage2CardKindValues = [
   "production_queue_summary",
   "station_comparison",
   "attention_summary",
+  "order_due_summary",
   "urgent_job_list",
   "customer_resolution",
   "customer_product_sales",
+  "uninvoiced_order_summary",
+  "revenue_gap_explanation",
 ] as const;
 export const assistantStage2StructuredCardSchema = z.object({
   kind: z.enum(assistantStage2CardKindValues),

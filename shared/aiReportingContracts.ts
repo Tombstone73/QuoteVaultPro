@@ -5,6 +5,9 @@ export const reportStatusValues = ["draft", "ready", "archived", "failed"] as co
 export const reportSectionKindValues = ["executive_summary", "narrative", "kpi_grid", "table", "bar_chart", "line_chart", "ranked_list", "callout", "source_notes", "methodology", "page_break"] as const;
 export const analyticsGroupingValues = ["exact_product", "historical_product_id", "normalized_product_label", "category"] as const;
 export const analyticsRankingMetricValues = ["revenue", "quantity", "invoice_count", "order_count", "average_unit_price"] as const;
+/** Financial reporting is deliberately labelled at the point it is persisted.
+ * Operational order value is never recognized revenue. */
+export const analyticsFinancialSourceValues = ["posted_revenue", "order_value", "combined_pipeline_view"] as const;
 
 export const analyticsDateRangeSchema = z.object({
   start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -17,9 +20,19 @@ export const analyticsCustomerReferenceSchema = z.object({
 }).strict().refine((value) => Boolean(value.id || value.name), "Customer reference is required");
 
 export const analyticsResolveCustomerInputSchema = z.object({ query: z.string().trim().min(1).max(240) }).strict();
+const analyticsResolvedCustomerSchema = z.object({
+  /** The customer/company account that downstream analytics will use. */
+  id: z.string().trim().min(1).max(128),
+  displayName: z.string().trim().min(1).max(240),
+  resolutionType: z.enum(["company", "contact"]),
+  contactId: z.string().trim().min(1).max(128).nullable(),
+  contactName: z.string().trim().min(1).max(240).nullable(),
+  explanation: z.string().trim().min(1).max(300),
+  sourceLink: z.object({ label: z.string(), href: z.string().startsWith("/") }).strict(),
+}).strict();
 export const analyticsResolveCustomerResultSchema = z.object({
-  customer: z.object({ id: z.string().trim().min(1).max(128), displayName: z.string().trim().min(1).max(240), sourceLink: z.object({ label: z.string(), href: z.string().startsWith("/") }).strict() }).strict().nullable(),
-  alternatives: z.array(z.object({ id: z.string().trim().min(1).max(128), displayName: z.string().trim().min(1).max(240) }).strict()).max(10),
+  customer: analyticsResolvedCustomerSchema.nullable(),
+  alternatives: z.array(analyticsResolvedCustomerSchema).max(10),
   confidence: z.enum(["exact", "ambiguous", "none"]),
 }).strict();
 
@@ -59,6 +72,35 @@ export const analyticsCustomerProductSalesResultSchema = z.object({
   timezone: z.string().trim().min(1).max(80),
 }).strict();
 
+/** Read-only operational context for the gap between posted revenue and orders
+ * that have not yet produced a posted native invoice. */
+export const analyticsCustomerUninvoicedOrdersInputSchema = z.object({
+  customer: analyticsCustomerReferenceSchema,
+  dateRange: analyticsDateRangeSchema,
+  limit: z.number().int().min(1).max(25).default(10),
+}).strict();
+export const analyticsCustomerUninvoicedOrderSchema = z.object({
+  orderId: z.string().trim().min(1).max(128),
+  orderNumber: z.string().trim().min(1).max(80),
+  orderDate: z.string().datetime({ offset: true }),
+  orderStatus: z.string().trim().min(1).max(80),
+  fulfillmentState: z.string().trim().min(1).max(80),
+  invoiceState: z.enum(["no_invoice", "draft", "unposted"]),
+  billingReadiness: z.string().trim().min(1).max(80),
+  billingBlockers: z.array(z.string().trim().min(1).max(300)).max(5),
+  orderTotalCents: z.number().int().nonnegative(),
+  lineCount: z.number().int().nonnegative(),
+  sourceLink: z.object({ label: z.string(), href: z.string().startsWith("/") }).strict(),
+}).strict();
+export const analyticsCustomerUninvoicedOrdersResultSchema = z.object({
+  customer: analyticsResolvedCustomerSchema,
+  dateRange: analyticsDateRangeSchema,
+  totalOrderValueCents: z.number().int().nonnegative(),
+  orders: z.array(analyticsCustomerUninvoicedOrderSchema).max(25),
+  warnings: z.array(z.string().trim().min(1).max(300)).max(10),
+  timezone: z.string().trim().min(1).max(80),
+}).strict();
+
 const reportSourceSchema = z.object({ label: z.string().trim().min(1).max(240), count: z.number().int().nonnegative(), freshness: z.string().datetime({ offset: true }) }).strict();
 const reportKpiSchema = z.object({ label: z.string().trim().min(1).max(100), value: z.string().trim().min(1).max(120), detail: z.string().trim().max(240).optional(), sensitive: z.boolean().default(false) }).strict();
 const reportTableColumnSchema = z.object({ key: z.string().trim().min(1).max(80).regex(/^[a-zA-Z][a-zA-Z0-9_]*$/), label: z.string().trim().min(1).max(100), sensitive: z.boolean().default(false) }).strict();
@@ -69,6 +111,9 @@ export const reportDefinitionSchema = z.object({
   subtitle: z.string().trim().max(300).optional(),
   description: z.string().trim().max(2_000).optional(),
   audience: z.enum(reportAudienceValues).default("private"),
+  /** Optional because non-financial reports are also stored in Report Studio.
+   * When present, this preserves the distinction on refresh, sharing, and reopen. */
+  financialSource: z.enum(analyticsFinancialSourceValues).optional(),
   timezone: z.string().trim().min(1).max(80),
   dataSnapshotAt: z.string().datetime({ offset: true }),
   filters: z.record(z.unknown()).default({}),

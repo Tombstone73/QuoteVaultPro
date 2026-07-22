@@ -1,6 +1,6 @@
-import { and, asc, desc, eq, gte, ilike, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, ilike, inArray, lt, ne, or, sql } from "drizzle-orm";
 import { db } from "../db";
-import { customers, invoiceLineItems, invoices, organizations, products } from "@shared/schema";
+import { customerContactLinks, customerContacts, customers, invoiceLineItems, invoices, orders, organizations, products } from "@shared/schema";
 import { analyticsGroupingValues, analyticsRankingMetricValues } from "@shared/aiReportingContracts";
 
 export type AnalyticsGrouping = (typeof analyticsGroupingValues)[number];
@@ -26,6 +26,10 @@ export type AssistantAnalyticsCustomerRecord = {
   id: string;
   displayName: string;
   updatedAt: Date | string;
+  resolutionType: "company" | "contact";
+  contactId: string | null;
+  contactName: string | null;
+  explanation: string;
 };
 
 export type AssistantAnalyticsCustomerResolution = {
@@ -51,6 +55,19 @@ export type AssistantAnalyticsProductSalesRecord = {
 
 export type AssistantAnalyticsDateWindow = { start: Date; endExclusive: Date };
 
+export type AssistantAnalyticsUninvoicedOrderRecord = {
+  orderId: string;
+  orderNumber: string;
+  orderDate: Date | string;
+  orderStatus: string;
+  fulfillmentState: string;
+  invoiceState: "no_invoice" | "draft" | "unposted";
+  billingReadiness: string;
+  billingBlockers: string[];
+  orderTotalCents: number;
+  lineCount: number;
+};
+
 function escapeLike(value: string): string {
   return value.replace(/\\/g, "\\\\").replace(/%/g, "\\%").replace(/_/g, "\\_");
 }
@@ -58,6 +75,47 @@ function escapeLike(value: string): string {
 function asNumber(value: unknown): number {
   const parsed = Number(value ?? 0);
   return Number.isFinite(parsed) ? Math.round(parsed) : 0;
+}
+
+function companyRecord(row: { id: string; displayName: string; updatedAt: Date | string }): AssistantAnalyticsCustomerRecord {
+  return {
+    ...row,
+    resolutionType: "company",
+    contactId: null,
+    contactName: null,
+    explanation: `Resolved company account ${row.displayName}.`,
+  };
+}
+
+function contactRecord(row: { id: string; displayName: string; updatedAt: Date | string; contactId: string; contactName: string }): AssistantAnalyticsCustomerRecord {
+  return {
+    ...row,
+    resolutionType: "contact",
+    explanation: `Found ${row.contactName} at ${row.displayName}; analytics use the company account.`,
+  };
+}
+
+function uniqueCandidates(rows: AssistantAnalyticsCustomerRecord[]): AssistantAnalyticsCustomerRecord[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    const key = `${row.resolutionType}:${row.id}:${row.contactId ?? ""}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  }).sort((left, right) => left.displayName.localeCompare(right.displayName) || (left.contactName ?? "").localeCompare(right.contactName ?? ""));
+}
+
+function billingBlockers(row: { billingReadiness: string; billingReadyPolicy: string | null; fulfillmentState: string; invoiceState: "no_invoice" | "draft" | "unposted" }): string[] {
+  const blockers: string[] = [];
+  if (row.billingReadiness !== "ready" && row.billingReadiness !== "billed") {
+    blockers.push(row.billingReadyPolicy?.trim() || "Order is not marked billing ready.");
+  }
+  if (row.fulfillmentState !== "shipped" && row.fulfillmentState !== "delivered") {
+    blockers.push(`Fulfillment is ${row.fulfillmentState}.`);
+  }
+  if (row.invoiceState === "draft") blockers.push("A draft invoice exists but is not posted.");
+  if (row.invoiceState === "no_invoice" && row.billingReadiness === "ready") blockers.push("No invoice has been created for this billing-ready order.");
+  return Array.from(new Set(blockers)).slice(0, 5);
 }
 
 /** The issue timestamp is the established invoice date when an invoice has
@@ -113,28 +171,124 @@ export class AssistantAnalyticsReportingRepository {
     return typeof value === "string" && value.trim() ? value.trim() : null;
   }
 
-  /** Exact customer IDs and names resolve automatically. Partial names only
-   * produce bounded alternatives, avoiding a silent financial-data mismatch. */
+  /** A resolved contact is deliberately mapped to its tenant-scoped company
+   * account. Financial history belongs to that customer, not to a contact row. */
   async resolveCustomer(organizationId: string, query: string): Promise<AssistantAnalyticsCustomerResolution> {
     const normalized = query.trim();
-    const rowShape = { id: customers.id, displayName: customers.companyName, updatedAt: customers.updatedAt };
+    const companyShape = { id: customers.id, displayName: customers.companyName, updatedAt: customers.updatedAt };
+    const contactName = sql<string>`nullif(trim(coalesce(${customerContacts.firstName}, '') || ' ' || coalesce(${customerContacts.lastName}, '')), '')`;
+    const contactShape = { ...companyShape, contactId: customerContacts.id, contactName };
+    const contactRows = (condition: ReturnType<typeof and>) => db.select(contactShape)
+      .from(customerContacts)
+      .leftJoin(customerContactLinks, and(
+        eq(customerContactLinks.organizationId, organizationId),
+        eq(customerContactLinks.contactId, customerContacts.id),
+        eq(customerContactLinks.status, "active"),
+      ))
+      .innerJoin(customers, and(
+        eq(customers.organizationId, organizationId),
+        sql`${customers.id} = coalesce(${customerContactLinks.customerId}, ${customerContacts.customerId})`,
+      ))
+      .where(and(eq(customerContacts.organizationId, organizationId), eq(customerContacts.status, "active"), condition))
+      .orderBy(asc(customers.companyName), asc(customerContacts.lastName), asc(customerContacts.firstName), asc(customerContacts.id))
+      .limit(10);
     const [idMatch, exactNameMatches] = await Promise.all([
-      db.select(rowShape).from(customers).where(and(eq(customers.organizationId, organizationId), eq(customers.id, normalized))).limit(1),
-      db.select(rowShape).from(customers).where(and(
+      db.select(companyShape).from(customers).where(and(eq(customers.organizationId, organizationId), eq(customers.id, normalized))).limit(1),
+      db.select(companyShape).from(customers).where(and(
         eq(customers.organizationId, organizationId),
         sql`lower(${customers.companyName}) = lower(${normalized})`,
       )).orderBy(asc(customers.companyName), asc(customers.id)).limit(10),
     ]);
-    if (idMatch[0]) return { customer: idMatch[0], alternatives: [], confidence: "exact" };
-    if (exactNameMatches.length === 1) return { customer: exactNameMatches[0], alternatives: [], confidence: "exact" };
-    if (exactNameMatches.length > 1) return { customer: null, alternatives: exactNameMatches, confidence: "ambiguous" };
+    if (idMatch[0]) return { customer: companyRecord(idMatch[0]), alternatives: [], confidence: "exact" };
+    if (exactNameMatches.length === 1) return { customer: companyRecord(exactNameMatches[0]), alternatives: [], confidence: "exact" };
+    if (exactNameMatches.length > 1) return { customer: null, alternatives: exactNameMatches.map(companyRecord), confidence: "ambiguous" };
+
+    const exactContacts = uniqueCandidates((await contactRows(sql`lower(${contactName}) = lower(${normalized})`)).map(contactRecord));
+    if (exactContacts.length === 1) return { customer: exactContacts[0], alternatives: [], confidence: "exact" };
+    if (exactContacts.length > 1) return { customer: null, alternatives: exactContacts, confidence: "ambiguous" };
+
+    const exactEmailContacts = uniqueCandidates((await contactRows(sql`lower(${customerContacts.email}) = lower(${normalized})`)).map(contactRecord));
+    if (exactEmailContacts.length === 1) return { customer: exactEmailContacts[0], alternatives: [], confidence: "exact" };
+    if (exactEmailContacts.length > 1) return { customer: null, alternatives: exactEmailContacts, confidence: "ambiguous" };
 
     const pattern = `%${escapeLike(normalized)}%`;
-    const alternatives = await db.select(rowShape).from(customers).where(and(
+    const [companyAlternatives, contactAlternatives] = await Promise.all([
+      db.select(companyShape).from(customers).where(and(
       eq(customers.organizationId, organizationId),
       or(ilike(customers.companyName, pattern), ilike(customers.email, pattern), ilike(customers.phone, pattern)),
-    )).orderBy(asc(customers.companyName), asc(customers.id)).limit(10);
+      )).orderBy(asc(customers.companyName), asc(customers.id)).limit(10),
+      contactRows(or(ilike(contactName, pattern), ilike(customerContacts.email, pattern))),
+    ]);
+    const alternatives = uniqueCandidates([
+      ...companyAlternatives.map(companyRecord),
+      ...contactAlternatives.map(contactRecord),
+    ]).slice(0, 10);
     return { customer: null, alternatives, confidence: alternatives.length ? "ambiguous" : "none" };
+  }
+
+  /** Qualifying orders are operational context only. This method excludes any
+   * order with a native posted invoice, so its total cannot enter revenue. */
+  async customerUninvoicedOrders(
+    organizationId: string,
+    customerId: string,
+    dateWindow: AssistantAnalyticsDateWindow,
+    limit: number,
+  ): Promise<AssistantAnalyticsUninvoicedOrderRecord[]> {
+    const invoiceState = sql<"no_invoice" | "draft" | "unposted">`case when count(${invoices.id}) = 0 then 'no_invoice' when bool_or(${invoices.status} = 'draft') then 'draft' else 'unposted' end`;
+    const lineCount = sql<number>`(select count(*) from order_line_items where order_line_items.order_id = ${orders.id})`;
+    const postedInvoiceExists = sql<boolean>`exists (
+      select 1 from invoices posted_invoice
+      where posted_invoice.organization_id = ${organizationId}
+        and posted_invoice.order_id = ${orders.id}
+        and posted_invoice.is_historical = false
+        and posted_invoice.status in ('finalized', 'billed', 'sent', 'partially_paid', 'overdue', 'paid')
+    )`;
+    const rows = await db.select({
+      orderId: orders.id,
+      orderNumber: sql<string>`coalesce(nullif(${orders.displayNumber}, ''), ${orders.orderNumber})`,
+      orderDate: orders.createdAt,
+      orderStatus: sql<string>`coalesce(nullif(${orders.canonicalState}, ''), nullif(${orders.status}, ''), ${orders.state})`,
+      fulfillmentState: orders.fulfillmentStatus,
+      invoiceState,
+      billingReadiness: orders.billingStatus,
+      billingReadyPolicy: orders.billingReadyPolicy,
+      orderTotal: orders.total,
+      lineCount,
+    }).from(orders)
+      .leftJoin(invoices, and(
+        eq(invoices.organizationId, organizationId),
+        eq(invoices.orderId, orders.id),
+        eq(invoices.isHistorical, false),
+      ))
+      .where(and(
+        eq(orders.organizationId, organizationId),
+        eq(orders.customerId, customerId),
+        ne(orders.state, "canceled"),
+        ne(orders.status, "canceled"),
+        gte(orders.createdAt, dateWindow.start.toISOString()),
+        lt(orders.createdAt, dateWindow.endExclusive.toISOString()),
+        sql`not ${postedInvoiceExists}`,
+      ))
+      .groupBy(orders.id)
+      .orderBy(desc(orders.createdAt), asc(orders.id))
+      .limit(Math.min(Math.max(1, limit), 25));
+    return rows.map((row) => {
+      const normalizedInvoiceState = row.invoiceState === "draft" || row.invoiceState === "unposted" ? row.invoiceState : "no_invoice";
+      const billingReadiness = row.billingReadiness || "not_ready";
+      const fulfillmentState = row.fulfillmentState || "pending";
+      return {
+        orderId: row.orderId,
+        orderNumber: String(row.orderNumber),
+        orderDate: row.orderDate,
+        orderStatus: String(row.orderStatus || "open"),
+        fulfillmentState,
+        invoiceState: normalizedInvoiceState,
+        billingReadiness,
+        billingBlockers: billingBlockers({ billingReadiness, billingReadyPolicy: row.billingReadyPolicy, fulfillmentState, invoiceState: normalizedInvoiceState }),
+        orderTotalCents: Math.max(0, Math.round(Number(row.orderTotal ?? 0) * 100)),
+        lineCount: Math.max(0, asNumber(row.lineCount)),
+      };
+    });
   }
 
   async customerProductSales(
