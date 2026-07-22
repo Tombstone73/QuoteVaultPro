@@ -584,6 +584,7 @@ function renderToolResults(
       "search.global": "search_results", "customers.get_summary": "customer_summary", "orders.get_summary": "order_summary",
       "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context",
       "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary",
+      "analytics.resolve_customer": "customer_resolution", "analytics.customer_product_sales": "customer_product_sales",
     };
     const summary = summaryForTool(execution.toolName, result.data, { exactOrderLookup, currentOrderSummary });
     cards.push({ kind: names[execution.toolName] ?? "partial_result", title: displayToolTitle(execution.toolName), summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: result.data });
@@ -603,6 +604,8 @@ function displayToolTitle(toolName: string): string {
     "customers.get_summary": "Customer summary",
     "search.global": "Record search",
     "navigation.get_current_context": "Current workspace",
+    "analytics.resolve_customer": "Customer resolution",
+    "analytics.customer_product_sales": "Customer product sales",
   };
   return titles[toolName] ?? "Assistant result";
 }
@@ -648,6 +651,18 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
   }
   if (toolName === "products.get_summary") return `${data.product?.label ?? "This product"} is ${data.active === false ? "inactive" : data.product?.status ?? "available"}${data.category ? ` in ${data.category}` : ""}.`;
   if (toolName === "reports.operational_summary") return "Here's the current operational picture.";
+  if (toolName === "analytics.resolve_customer") {
+    if (data.confidence === "ambiguous") return "I found multiple matching customers. Please choose the correct customer before I run a financial report.";
+    return data.customer?.displayName ? `I found ${data.customer.displayName}.` : "I couldn't find a matching customer.";
+  }
+  if (toolName === "analytics.customer_product_sales") {
+    const customer = data.customer?.displayName ?? "This customer";
+    const rows = Array.isArray(data.rows) ? data.rows : [];
+    if (!rows.length) return `${customer} has no posted native invoice-line sales in the requested date range.`;
+    const first = rows[0];
+    const dollars = typeof first?.revenueCents === "number" ? new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(first.revenueCents / 100) : null;
+    return `${customer}'s leading product is ${first?.label ?? "the first listed product"}${dollars ? ` at ${dollars} in posted invoice-line revenue` : ""}.`;
+  }
   if (toolName === "production.get_queue_summary") {
     const stations = Array.isArray(data.stations) ? data.stations : [];
     if (!stations.length) return "I couldn't find an active production queue for that station.";
@@ -722,7 +737,7 @@ export function responsePresentationForCards(cards: readonly unknown[]): Assista
   const kinds = new Set(visibleCards.map((card) => card.kind));
   return kinds.has("action_plan") || kinds.has("action_proposal") ? "proposed_action"
       : kinds.has("execution_result") ? "execution_result"
-        : kinds.has("operational_metrics") || kinds.has("production_queue_summary") || kinds.has("station_comparison") || kinds.has("attention_summary") ? "analytical"
+        : kinds.has("operational_metrics") || kinds.has("production_queue_summary") || kinds.has("station_comparison") || kinds.has("attention_summary") || kinds.has("customer_product_sales") ? "analytical"
           : kinds.has("search_results") ? "collection"
             : kinds.has("order_summary") || kinds.has("customer_summary") || kinds.has("product_summary") ? "record_summary"
               : kinds.has("provider_unavailable") || kinds.has("tool_warning") || kinds.has("permission_denied") ? "diagnostic"

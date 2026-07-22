@@ -97,6 +97,8 @@ import FulfillmentPage from "@/pages/fulfillment";
 import FulfillmentShipmentDetailPage from "@/pages/fulfillment-shipment-detail";
 import LabelsPage from "@/pages/labels";
 import ReportsPage from "@/pages/reports";
+import ReportStudioRoute from "@/pages/report-studio";
+import SharedReportPage from "@/pages/shared-report";
 import FinancePage from "@/pages/finance";
 import InboundOrdersPage from "@/pages/inbound-orders";
 import {
@@ -138,6 +140,7 @@ function Router() {
         <Route path="/accept-invite" element={<AcceptInvitePage />} />
         {/* Token-based proof review — no account required; the token IS the auth */}
         <Route path="/portal/proof/:token" element={<PortalProofPage />} />
+        <Route path="/shared/reports/:token" element={<SharedReportPage />} />
         {/* Public legal/support pages */}
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/terms" element={<TermsPage />} />
@@ -152,6 +155,7 @@ function Router() {
     return (
       <Routes>
         <Route path="/force-password-change" element={<ForcePasswordChange />} />
+        <Route path="/shared/reports/:token" element={<SharedReportPage />} />
         <Route path="/byos" element={<ByosPage />} />
         <Route path="/privacy" element={<PrivacyPage />} />
         <Route path="/terms" element={<TermsPage />} />
@@ -179,6 +183,7 @@ function Router() {
     return (
       <Routes>
         <Route path="/portal/proof/:token" element={<PortalProofPage />} />
+        <Route path="/shared/reports/:token" element={<SharedReportPage />} />
         <Route path="/portal" element={<PortalLayout />}>
           <Route index element={<PortalDashboardPage />} />
           <Route path="dashboard" element={<Navigate to="/portal" replace />} />
@@ -210,6 +215,7 @@ function Router() {
       {/* Public marketing landing page. Authenticated users keep /dashboard as the app home. */}
       <Route path="/" element={<Landing />} />
       <Route path="/byos" element={<ByosPage />} />
+      <Route path="/shared/reports/:token" element={<SharedReportPage />} />
 
       {/* Redirect login to dashboard if already authenticated */}
       <Route path="/login" element={<Navigate to="/dashboard" replace />} />
@@ -308,6 +314,7 @@ function Router() {
         <Route path="/fulfillment/shipments/:shipmentId" element={<FulfillmentShipmentDetailPage />} />
         <Route path={ROUTES.labels} element={<LabelsPage />} />
         <Route path={ROUTES.reports} element={<ReportsPage />} />
+        <Route path="/reports/:reportId" element={<ReportStudioRoute />} />
         <Route path={ROUTES.finance} element={<FinancePage />} />
 
         {/* Product Catalog (standalone) */}

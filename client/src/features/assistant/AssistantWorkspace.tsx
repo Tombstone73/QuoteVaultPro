@@ -83,6 +83,14 @@ function AnalyticalDetails({ details }: { details: unknown }) {
   })}</div>;
 }
 
+function CustomerProductSalesDetails({ details, sources }: { details: unknown; sources: Array<{ href: string; label: string }> }) {
+  if (!isRecord(details)) return <SourceActions sources={sources} />;
+  const rows = Array.isArray(details.rows) ? details.rows.filter(isRecord) : [];
+  if (!rows.length) return <SourceActions sources={sources} />;
+  const money = (value: unknown) => typeof value === "number" ? new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(value / 100) : "—";
+  return <div className="mt-3 space-y-2"><div className="overflow-x-auto rounded-lg border border-border/60 bg-card/30"><table className="w-full text-left text-sm"><thead className="border-b text-xs text-muted-foreground"><tr><th className="px-3 py-2">Product</th><th className="px-3 py-2 text-right">Revenue</th><th className="px-3 py-2 text-right">Qty.</th><th className="px-3 py-2 text-right">Invoices</th></tr></thead><tbody>{rows.slice(0, 25).map((row, index) => <tr key={`${text(row.label) ?? "product"}-${index}`} className="border-b last:border-0"><td className="px-3 py-2 font-medium">{text(row.label) ?? "Unnamed product"}</td><td className="px-3 py-2 text-right tabular-nums">{money(row.revenueCents)}</td><td className="px-3 py-2 text-right tabular-nums">{typeof row.quantity === "number" ? row.quantity : "—"}</td><td className="px-3 py-2 text-right tabular-nums">{typeof row.invoiceCount === "number" ? row.invoiceCount : "—"}</td></tr>)}</tbody></table></div>{Array.isArray(details.warnings) ? <p className="text-xs text-muted-foreground">{details.warnings.filter((warning): warning is string => typeof warning === "string").join(" ")}</p> : null}<SourceActions sources={sources} /></div>;
+}
+
 function ProductionReportingDetails({ details, sources }: { details: unknown; sources: Array<{ href: string; label: string }> }) {
   if (!isRecord(details)) return <SourceActions sources={sources} />;
   const stations = Array.isArray(details.stations) ? details.stations.filter(isRecord) : [];
@@ -178,6 +186,7 @@ export function ResultCards({
     if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} />;
     if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source" || diagnosticCards.includes(card)) return null;
     if (["production_queue_summary", "station_comparison", "attention_summary", "urgent_job_list"].includes(card.kind)) return <ProductionReportingDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
+    if (card.kind === "customer_product_sales") return <CustomerProductSalesDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (presentation === "collection" && card.kind === "search_results") return <CollectionRows key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (presentation === "analytical" && card.kind === "operational_metrics") return <AnalyticalDetails key={`${card.kind}-${index}`} details={card.details} />;
     if (["conversational", "record_summary"].includes(presentation) && ["current_context", "customer_summary", "order_summary", "product_summary"].includes(card.kind)) return <SourceActions key={`${card.kind}-${index}`} sources={card.sourceLinks} />;

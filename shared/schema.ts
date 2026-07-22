@@ -73,6 +73,7 @@ import {
   type AssistantStructuredCard,
   type AssistantTurnStatus,
 } from "./assistantContracts";
+import type { ReportDefinition } from "./aiReportingContracts";
 
 // ============================================================
 // DOWNLOAD INTENT (Future-proofing for preflight/print variants)
@@ -7972,6 +7973,78 @@ export const insertLineItemProofVersionSchema = createInsertSchema(lineItemProof
   createdAt: true,
   updatedAt: true,
 });
+
+/** Persisted, validated analytical artifacts. They store a generated data
+ * snapshot and declarative report definition, never SQL or executable code. */
+export const aiReports = pgTable("ai_reports", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  ownerUserId: varchar("owner_user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").references(() => aiConversations.id, { onDelete: "set null" }),
+  sourceTurnId: varchar("source_turn_id").references(() => aiTurns.id, { onDelete: "set null" }),
+  title: varchar("title", { length: 240 }).notNull(),
+  description: text("description"),
+  status: varchar("status", { length: 32 }).notNull().default("ready"),
+  reportType: varchar("report_type", { length: 80 }).notNull().default("analytical"),
+  audience: varchar("audience", { length: 32 }).notNull().default("private"),
+  definitionJson: jsonb("definition_json").$type<ReportDefinition>().notNull(),
+  queryPlanJson: jsonb("query_plan_json").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  dataSnapshotJson: jsonb("data_snapshot_json").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  snapshotMetadata: jsonb("snapshot_metadata").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  dataSnapshotAt: timestamp("data_snapshot_at", { withTimezone: true }).notNull(),
+  archivedAt: timestamp("archived_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_reports_org_status_updated_idx").on(table.organizationId, table.status, table.updatedAt),
+  index("ai_reports_org_owner_updated_idx").on(table.organizationId, table.ownerUserId, table.updatedAt),
+]);
+
+export const aiReportVersions = pgTable("ai_report_versions", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  reportId: varchar("report_id").notNull().references(() => aiReports.id, { onDelete: "cascade" }),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  versionNumber: integer("version_number").notNull(),
+  definitionJson: jsonb("definition_json").$type<ReportDefinition>().notNull(),
+  dataSnapshotJson: jsonb("data_snapshot_json").$type<Record<string, unknown>>().notNull(),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  changeSummary: varchar("change_summary", { length: 500 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("ai_report_versions_report_version_uidx").on(table.reportId, table.versionNumber),
+  index("ai_report_versions_org_report_created_idx").on(table.organizationId, table.reportId, table.createdAt),
+]);
+
+export const aiReportShares = pgTable("ai_report_shares", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  reportId: varchar("report_id").notNull().references(() => aiReports.id, { onDelete: "cascade" }),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  tokenHash: varchar("token_hash", { length: 128 }).notNull(),
+  audience: varchar("audience", { length: 32 }).notNull().default("customer_safe"),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  revokedAt: timestamp("revoked_at", { withTimezone: true }),
+  downloadAllowed: boolean("download_allowed").notNull().default(false),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("ai_report_shares_token_hash_uidx").on(table.tokenHash),
+  index("ai_report_shares_org_report_idx").on(table.organizationId, table.reportId),
+  index("ai_report_shares_expires_at_idx").on(table.expiresAt),
+]);
+
+/** Privacy-preserving access audit for a public report share. The raw token,
+ * IP address, and browser identifier are never persisted here. */
+export const aiReportViews = pgTable("ai_report_views", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  reportId: varchar("report_id").notNull().references(() => aiReports.id, { onDelete: "cascade" }),
+  shareId: varchar("share_id").notNull().references(() => aiReportShares.id, { onDelete: "cascade" }),
+  viewedAt: timestamp("viewed_at", { withTimezone: true }).defaultNow().notNull(),
+  viewerHash: varchar("viewer_hash", { length: 128 }),
+}, (table) => [
+  index("ai_report_views_org_report_viewed_idx").on(table.organizationId, table.reportId, table.viewedAt),
+  index("ai_report_views_share_viewed_idx").on(table.shareId, table.viewedAt),
+]);
 
 export const insertProofVersionLineItemSchema = createInsertSchema(proofVersionLineItems).omit({
   id: true,

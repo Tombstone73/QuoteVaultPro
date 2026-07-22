@@ -42,6 +42,8 @@ export const assistantCapabilityReadTools = [
   "navigation.get_current_context",
   "production.get_queue_summary",
   "operations.get_attention_summary",
+  "analytics.resolve_customer",
+  "analytics.customer_product_sales",
 ] as const;
 
 /**
