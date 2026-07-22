@@ -87,6 +87,20 @@ describe("assistant tool registry", () => {
     expect(audit).toHaveBeenCalledWith(expect.objectContaining({ status: "succeeded" }));
   });
 
+  test("keeps a validated read result when non-critical audit persistence fails", async () => {
+    const service = new AssistantOrchestrationService(
+      { "search.global": { execute: jest.fn(async () => successfulSearch) } },
+      async () => { throw new Error("audit store unavailable"); },
+    );
+
+    const output = await service.executePlan({
+      intent: "lookup", selectedSkill: "search", clarificationRequired: false, clarificationQuestion: null, responseStyle: "standard",
+      toolCalls: [{ toolName: "search.global", arguments: { query: "OTB" } }],
+    }, trustedContext);
+
+    expect(output.executions).toEqual([expect.objectContaining({ status: "succeeded", result: expect.objectContaining({ data: { matches: [] } }) })]);
+  });
+
   test("enforces authorization before each call and validates adapters cannot return arbitrary rows", async () => {
     const execute = jest.fn(async () => ({ ...successfulSearch, data: { rawRows: [{ password: "no" }] } }));
     const service = new AssistantOrchestrationService({ "products.get_summary": { execute } });

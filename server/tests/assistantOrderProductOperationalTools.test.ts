@@ -41,7 +41,7 @@ describe("assistant order/product/operational tools", () => {
     expect(result.data.order?.customer).toBe("OTB Graphics");
     expect(result.data.invoices).toBeUndefined();
     expect(result.sourceLinks[0]?.href).toBe("/orders/order-1");
-    expect(result.data.blockingIssues).toHaveLength(3);
+    expect(result.data.blockingIssues).toHaveLength(0);
   });
 
   test("keeps the core order summary valid when optional workflow columns are unavailable", async () => {
@@ -57,14 +57,47 @@ describe("assistant order/product/operational tools", () => {
     };
     const tools = createOrderProductOperationalTools({ repository, now: fixedNow });
 
-    const result = await tools.ordersGetSummary.execute(invocation, { orderNumber: "ORD-20002" });
+    const result = await tools.ordersGetSummary.execute({ ...invocation, permissions: ["finance:read"] }, { orderNumber: "ORD-20002" });
 
     expect(result).toMatchObject({
       status: "ok",
       data: { order: { number: "ORD-20002", customer: "T3 Signs", status: "fulfillment", fulfillmentStatus: "unavailable" } },
       sourceLinks: [expect.objectContaining({ href: "/orders/order-20002" })],
-      warning: "Some optional workflow details are unavailable for this order.",
+      warning: expect.stringContaining("Some optional workflow details are unavailable for this order."),
     });
+    expect(() => (tools.ordersGetSummary.definition.resultSchema as any).parse(result)).not.toThrow();
+  });
+
+  test("returns a validated partial summary when every optional order enrichment fails", async () => {
+    const logOrderSummaryStep = jest.fn();
+    const repository = {
+      getOrder: jest.fn(async () => ({
+        order: {
+          id: "order-20002", orderNumber: "20002", displayNumber: "ORD-20002", status: "fulfillment",
+          dueDate: null, updatedAt: capturedAt, customerId: "customer-1", customerName: "T3 Signs",
+        },
+        lineItems: [], production: [], invoices: [],
+      })),
+      getOrderLineItems: jest.fn(async () => { throw new Error("schema drift"); }),
+      getOrderProduction: jest.fn(async () => { throw new Error("production unavailable"); }),
+      getOrderInvoices: jest.fn(async () => { throw new Error("billing unavailable"); }),
+      getProduct: repo().getProduct,
+    };
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow, logOrderSummaryStep });
+
+    const result = await tools.ordersGetSummary.execute({ ...invocation, permissions: ["finance:read"] }, { orderNumber: "ORD-20002" });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      data: {
+        order: { id: "order-20002", customer: "T3 Signs", dueDate: null },
+        lineItems: [], productionJobs: [], invoices: [],
+      },
+      sourceLinks: [expect.objectContaining({ href: "/orders/order-20002" })],
+    });
+    expect(result.warning).toContain("Some optional workflow details are unavailable");
+    expect(logOrderSummaryStep).toHaveBeenCalledWith(expect.objectContaining({ step: "lookup_line_items", outcome: "failed", correlationId: "correlation-1", organizationId: "org-a", errorCode: "dependency_failed" }));
+    expect(logOrderSummaryStep).toHaveBeenCalledWith(expect.objectContaining({ step: "validate_result", outcome: "succeeded" }));
     expect(() => (tools.ordersGetSummary.definition.resultSchema as any).parse(result)).not.toThrow();
   });
 
