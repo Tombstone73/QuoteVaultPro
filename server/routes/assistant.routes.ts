@@ -171,7 +171,8 @@ export function registerAssistantRoutes(
 
   app.get("/api/assistant/conversations", ...guarded, async (req, res) => {
     try {
-      const rows = await service.listConversations(resolveScope(req));
+      const status = req.query.status === "archived" ? "archived" : "active";
+      const rows = await service.listConversations(resolveScope(req), status);
       return res.json({ success: true, data: rows.map(conversationSummary) });
     } catch (error) {
       return sendError(res, error);

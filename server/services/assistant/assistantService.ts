@@ -92,7 +92,7 @@ export interface AssistantTurnResult {
 }
 
 export interface AssistantRepository {
-  listConversations(scope: AssistantScope): Promise<AssistantConversationRecord[]>;
+  listConversations(scope: AssistantScope, status?: "active" | "archived"): Promise<AssistantConversationRecord[]>;
   createConversation(input: AssistantScope & { title?: string | null }): Promise<AssistantConversationRecord>;
   getConversation(scope: AssistantScope & { conversationId: string }): Promise<AssistantConversationDetailRecord | null>;
   updateConversation(input: AssistantScope & { conversationId: string; patch: AssistantUpdateConversationRequest }): Promise<AssistantConversationRecord | null>;
@@ -162,7 +162,7 @@ export function resolveAssistantCapabilityQuestion(
       : capability.productionCommandsEnabled.length
         ? " Confirmed changes are available to some roles, but not to your current role."
         : "";
-    return { title: "Assistant capabilities", response: `I can search your customers, orders, quotes, products, invoices, and production jobs. I can summarize records, show your operational backlog, and explain the current workspace.${actionSentence} I can't activate products, edit active products, perform external research, or make unconfirmed changes yet.` };
+    return { title: "Assistant capabilities", response: `I can search your records, summarize orders and products, show production queues, identify overdue or urgent jobs, compare station workloads, and show what needs attention today.${actionSentence} I can't activate products, edit active products, perform external research, or make unconfirmed changes yet.` };
   }
 
   const limits = [
@@ -262,14 +262,14 @@ export class AssistantService {
         : writeActionsEnabled
           ? "Business lookups and confirmed actions are enabled. Changes require a preview and the dedicated GO button. External research is disabled."
           : "Business lookups are enabled. Write actions and external research are disabled.",
-      assistantVersion: "stage-5",
+      assistantVersion: "stage-7",
       unavailableReason: resolved.unavailableReason ?? (resolved.enabled ? null : "The assistant is disabled for this organization."),
       actorScope: scope,
     };
   }
 
-  async listConversations(scope: AssistantScope) {
-    return this.repo.listConversations(scope);
+  async listConversations(scope: AssistantScope, status?: "active" | "archived") {
+    return this.repo.listConversations(scope, status);
   }
 
   async createConversation(scope: AssistantScope, data: AssistantCreateConversationRequest) {
@@ -578,6 +578,7 @@ function renderToolResults(
     const names: Record<string, AssistantResultCard["kind"]> = {
       "search.global": "search_results", "customers.get_summary": "customer_summary", "orders.get_summary": "order_summary",
       "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context",
+      "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary",
     };
     const summary = summaryForTool(execution.toolName, result.data, { exactOrderLookup, currentOrderSummary });
     cards.push({ kind: names[execution.toolName] ?? "partial_result", title: execution.toolName, summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: result.data });
@@ -628,6 +629,16 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
   }
   if (toolName === "products.get_summary") return `${data.product?.label ?? "This product"} is ${data.active === false ? "inactive" : data.product?.status ?? "available"}${data.category ? ` in ${data.category}` : ""}.`;
   if (toolName === "reports.operational_summary") return "Here's the current operational picture.";
+  if (toolName === "production.get_queue_summary") {
+    const stations = Array.isArray(data.stations) ? data.stations : [];
+    if (!stations.length) return "I couldn't find an active production queue for that station.";
+    const station = stations[0] as { stationLabel?: string; activeJobs?: number; earliestDueJob?: { orderNumber?: string; dueDate?: string }; overdueJobs?: number; dueTodayJobs?: number };
+    const label = station.stationLabel ?? "that station";
+    if (!station.activeJobs) return `There aren't any active jobs in ${label} right now.`;
+    const earliest = station.earliestDueJob?.orderNumber ? ` The earliest is Order ${station.earliestDueJob.orderNumber}${station.earliestDueJob.dueDate ? `, due ${formatAssistantDate(station.earliestDueJob.dueDate)}` : ""}.` : " I can't reliably determine the earliest due job from the available data.";
+    return `There are ${station.activeJobs} active ${station.activeJobs === 1 ? "job" : "jobs"} in ${label}.${earliest}${station.overdueJobs ? ` ${station.overdueJobs} ${station.overdueJobs === 1 ? "job is" : "jobs are"} overdue.` : ""}${station.dueTodayJobs ? ` ${station.dueTodayJobs} ${station.dueTodayJobs === 1 ? "is" : "are"} due today.` : ""}`;
+  }
+  if (toolName === "operations.get_attention_summary") return "Here's what needs production attention right now.";
   if (toolName === "navigation.get_current_context") {
     const record = data.currentRecord as {
       entityType?: string; orderNumber?: string; entityId?: string; customer?: string; customerName?: string;
@@ -667,7 +678,7 @@ export function responsePresentationForCards(cards: readonly unknown[]): Assista
   const kinds = new Set(visibleCards.map((card) => card.kind));
   return kinds.has("action_plan") || kinds.has("action_proposal") ? "proposed_action"
       : kinds.has("execution_result") ? "execution_result"
-        : kinds.has("operational_metrics") ? "analytical"
+        : kinds.has("operational_metrics") || kinds.has("production_queue_summary") || kinds.has("station_comparison") || kinds.has("attention_summary") ? "analytical"
           : kinds.has("search_results") ? "collection"
             : kinds.has("order_summary") || kinds.has("customer_summary") || kinds.has("product_summary") ? "record_summary"
               : kinds.has("provider_unavailable") || kinds.has("tool_warning") || kinds.has("permission_denied") ? "diagnostic"

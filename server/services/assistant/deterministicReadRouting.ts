@@ -60,6 +60,52 @@ function currentEntitySummaryQuestion(message: string, entityType: "customer" | 
   return new RegExp(`^(?:summari[sz]e ${subject}|give me (?:a )?summary of ${subject}|tell me about ${subject}|give me (?:an )?overview of ${subject}|what(?:'s| is) ${subject})$`, "i").test(message);
 }
 
+function normalizedStationKey(value: string): string | null {
+  const normalized = value.trim().toLowerCase().replace(/\s+/g, "_");
+  return /^[a-z][a-z0-9_-]{0,63}$/.test(normalized) ? normalized : null;
+}
+
+function productionReadPlan(message: string): AssistantProviderPlan | null {
+  const stationQueue = /\b(?:how many jobs? are in|what is due next on|first due in|show(?: me)?(?: the)?(?: first)?\s+\d*\s*jobs? (?:in|on)|jobs? in)\s+(?:the\s+)?([a-z][a-z0-9_-]*(?:\s+[a-z][a-z0-9_-]*)?)(?=\s+(?:printing|jobs?|queue|station|and)\b|[?.!]|$)/i.exec(message);
+  if (stationQueue) {
+    const stationKey = normalizedStationKey(stationQueue[1]!);
+    if (stationKey) return plan({
+      intent: "production_reporting",
+      selectedSkill: "deterministic_production_station_queue",
+      toolCalls: [{ toolName: "production.get_queue_summary", arguments: { stationKey, limit: 5 } }],
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      responseStyle: "concise",
+    });
+  }
+  if (/\b(?:what needs attention|overdue jobs?|due today|due tomorrow|waiting on (?:artwork|proof|prepress)|ready for fulfillment)\b/i.test(message)) {
+    const filter = /\bdue today\b/i.test(message) ? "today"
+      : /\bdue tomorrow\b/i.test(message) ? "tomorrow"
+        : /\boverdue\b/i.test(message) ? "overdue"
+          : /\bwaiting on artwork\b/i.test(message) ? "waiting_artwork"
+            : /\bwaiting on proof\b/i.test(message) ? "waiting_proof"
+              : /\bwaiting on prepress\b/i.test(message) ? "waiting_prepress"
+                : /\bready for fulfillment\b/i.test(message) ? "ready_for_fulfillment" : undefined;
+    return plan({
+      intent: "production_reporting",
+      selectedSkill: "deterministic_production_attention",
+      toolCalls: [{ toolName: "operations.get_attention_summary", arguments: { ...(filter ? { filter } : {}), limit: 10 } }],
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      responseStyle: "concise",
+    });
+  }
+  if (/\b(?:which station is busiest|largest backlog|station comparison|bottleneck)\b/i.test(message)) return plan({
+    intent: "production_reporting",
+    selectedSkill: "deterministic_production_station_comparison",
+    toolCalls: [{ toolName: "production.get_queue_summary", arguments: { limit: 10 } }],
+    clarificationRequired: false,
+    clarificationQuestion: null,
+    responseStyle: "concise",
+  });
+  return null;
+}
+
 /**
  * Identifiers and names are capped before they ever become tool arguments.
  * This makes a deterministic path no more permissive than the registry's
@@ -144,6 +190,9 @@ export function resolveDeterministicReadPlan(message: string, rawContext?: Assis
       responseStyle: "concise",
     });
   }
+
+  const production = productionReadPlan(normalized);
+  if (production) return production;
 
   const lookup = exactLookup(normalized);
   if (!lookup) return null;

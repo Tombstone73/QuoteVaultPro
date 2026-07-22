@@ -61,11 +61,15 @@ function conversationPredicate(scope: AssistantScope, conversationId: string) {
 }
 
 export class DrizzleAssistantRepository implements AssistantRepository {
-  async listConversations(scope: AssistantScope): Promise<AssistantConversationRecord[]> {
+  async listConversations(scope: AssistantScope, status: "active" | "archived" = "active"): Promise<AssistantConversationRecord[]> {
     const rows = await db
       .select()
       .from(aiConversations)
-      .where(and(eq(aiConversations.orgId, scope.organizationId), eq(aiConversations.userId, scope.userId)))
+      .where(and(
+        eq(aiConversations.orgId, scope.organizationId),
+        eq(aiConversations.userId, scope.userId),
+        eq(aiConversations.status, status),
+      ))
       .orderBy(desc(aiConversations.lastActivityAt))
       .limit(100);
     return rows.map(toConversation);
@@ -102,12 +106,15 @@ export class DrizzleAssistantRepository implements AssistantRepository {
     return { ...toConversation(conversation), messages: messages.map(toMessage) };
   }
 
-  async updateConversation(input: AssistantScope & { conversationId: string; patch: { title?: string; status?: "archived" } }): Promise<AssistantConversationRecord | null> {
+  async updateConversation(input: AssistantScope & { conversationId: string; patch: { title?: string; status?: "active" | "archived" } }): Promise<AssistantConversationRecord | null> {
     const [row] = await db
       .update(aiConversations)
       .set({
         ...(input.patch.title !== undefined ? { title: input.patch.title } : {}),
-        ...(input.patch.status === "archived" ? { status: "archived" as const, archivedAt: new Date() } : {}),
+        ...(input.patch.status !== undefined ? {
+          status: input.patch.status,
+          archivedAt: input.patch.status === "archived" ? new Date() : null,
+        } : {}),
         updatedAt: new Date(),
       })
       .where(conversationPredicate(input, input.conversationId))

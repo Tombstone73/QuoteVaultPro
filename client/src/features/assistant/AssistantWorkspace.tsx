@@ -1,9 +1,9 @@
 import * as React from "react";
-import { Bot, Expand, Maximize2, MessageSquarePlus, Minus, PanelBottom, PanelLeft, PanelRight, RefreshCw, Send } from "lucide-react";
+import { Bot, Expand, Maximize2, Minus, PanelBottom, PanelLeft, PanelRight, RefreshCw, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSendAssistantTurn } from "@/hooks/useAssistantApi";
+import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSendAssistantTurn, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
@@ -13,6 +13,7 @@ import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantQuoteNot
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
 import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
+import { AssistantConversationSidebar } from "./AssistantConversationManagement";
 import type { AssistantMessage, AssistantResponseState } from "@shared/assistantContracts";
 
 type AssistantResponsePresentation = "conversational" | "collection" | "record_summary" | "analytical" | "proposed_action" | "execution_result" | "diagnostic";
@@ -81,6 +82,35 @@ function AnalyticalDetails({ details }: { details: unknown }) {
   })}</div>;
 }
 
+function ProductionReportingDetails({ details, sources }: { details: unknown; sources: Array<{ href: string; label: string }> }) {
+  if (!isRecord(details)) return <SourceActions sources={sources} />;
+  const stations = Array.isArray(details.stations) ? details.stations.filter(isRecord) : [];
+  const categories = Array.isArray(details.categories) ? details.categories.filter(isRecord) : [];
+  const urgentJobs = Array.isArray(details.urgentJobs) ? details.urgentJobs.filter(isRecord) : Array.isArray(details.attentionItems) ? details.attentionItems.filter(isRecord) : [];
+  const metrics = stations.flatMap((station) => {
+    const label = text(station.stationLabel);
+    const count = typeof station.activeJobs === "number" ? station.activeJobs : null;
+    return label && count !== null ? [{ label, value: count, detail: `${typeof station.overdueJobs === "number" ? station.overdueJobs : 0} overdue` }] : [];
+  });
+  return <div className="mt-3 space-y-3">
+    {metrics.length ? <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{metrics.slice(0, 12).map((metric) => <div key={metric.label} className="rounded-lg border border-border/70 bg-card/40 px-3 py-2"><p className="text-lg font-semibold tabular-nums">{metric.value}</p><p className="text-xs leading-4 text-muted-foreground">{metric.label}</p><p className="text-[11px] text-muted-foreground">{metric.detail}</p></div>)}</div> : null}
+    {categories.length ? <div className="grid grid-cols-2 gap-2">{categories.map((category) => {
+      const label = text(category.label);
+      const available = category.available === true;
+      const value = typeof category.count === "number" ? String(category.count) : "Unavailable";
+      return label ? <div key={label} className="rounded-lg border border-border/70 bg-card/40 px-3 py-2"><p className="font-medium">{value}</p><p className="text-xs text-muted-foreground">{label}{!available ? " — unavailable" : ""}</p></div> : null;
+    })}</div> : null}
+    {urgentJobs.length ? <div className="divide-y rounded-lg border border-border/60 bg-card/30">{urgentJobs.slice(0, 10).map((job) => {
+      const link = isRecord(job.sourceLink) ? job.sourceLink : null;
+      const href = text(link?.href);
+      const label = text(job.orderNumber) ? `Order ${text(job.orderNumber)}` : text(job.label) ?? "Production job";
+      const due = text(job.dueDate);
+      return href ? <a key={href} href={href} className="block px-3 py-2 text-sm hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"><span className="font-medium">{label}</span><span className="ml-2 text-xs text-muted-foreground">{job.overdue === true ? "Overdue" : due ? `Due ${new Date(due).toLocaleDateString()}` : "No due date"}</span></a> : null;
+    })}</div> : null}
+    <SourceActions sources={sources} />
+  </div>;
+}
+
 export function ResultCards({
   cards,
   context,
@@ -142,6 +172,7 @@ export function ResultCards({
     const plan = toAssistantPlanCardModel(card);
     if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} />;
     if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source" || diagnosticCards.includes(card)) return null;
+    if (["production_queue_summary", "station_comparison", "attention_summary", "urgent_job_list"].includes(card.kind)) return <ProductionReportingDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (presentation === "collection" && card.kind === "search_results") return <CollectionRows key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (presentation === "analytical" && card.kind === "operational_metrics") return <AnalyticalDetails key={`${card.kind}-${index}`} details={card.details} />;
     if (["conversational", "record_summary"].includes(presentation) && ["current_context", "customer_summary", "order_summary", "product_summary"].includes(card.kind)) return <SourceActions key={`${card.kind}-${index}`} sources={card.sourceLinks} />;
@@ -208,7 +239,9 @@ function ConversationContent() {
   const enabled = Boolean(capabilities?.enabled && capabilities.conversationsEnabled);
   const toolsEnabled = Boolean(capabilities?.toolsEnabled);
   const conversations = useAssistantConversations(enabled);
+  const archivedConversations = useAssistantConversations(enabled, "archived");
   const createConversation = useCreateAssistantConversation();
+  const updateConversation = useUpdateAssistantConversation();
   const detail = useAssistantConversation(activeConversationId, enabled);
   const sendTurn = useSendAssistantTurn();
   const cancelPlan = useCancelAssistantPlan();
@@ -287,10 +320,24 @@ function ConversationContent() {
 
   return (
     <div className="flex min-h-0 flex-1">
-      <aside className="hidden w-40 shrink-0 border-r bg-muted/20 p-2 md:block">
-        <Button type="button" variant="outline" className="mb-2 w-full justify-start gap-2" onClick={() => void createNew()} disabled={createConversation.isPending}>
-          <MessageSquarePlus className="h-4 w-4" /> New chat
-        </Button>
+      <AssistantConversationSidebar
+        conversations={conversationItems}
+        archivedConversations={archivedConversations.data ?? []}
+        activeConversationId={activeConversationId}
+        creating={createConversation.isPending}
+        updatingConversationId={updateConversation.isPending ? updateConversation.variables.conversationId : null}
+        archivedLoading={archivedConversations.isLoading}
+        onCreate={() => void createNew()}
+        onSelect={setActiveConversationId}
+        onRename={(conversationId, title) => updateConversation.mutateAsync({ conversationId, patch: { title } })}
+        onArchive={(conversationId) => updateConversation.mutateAsync({ conversationId, patch: { status: "archived" } })}
+        onRestore={(conversationId) => updateConversation.mutateAsync({ conversationId, patch: { status: "active" } })}
+        onArchiveComplete={(conversationId) => {
+          if (activeConversationId !== conversationId) return;
+          setActiveConversationId(conversationItems.find((conversation) => conversation.id !== conversationId)?.id ?? null);
+        }}
+      />
+      {/* Legacy sidebar markup remains intentionally removed in favor of the metadata-aware conversation sidebar.
         <div className="space-y-1 overflow-y-auto">
           {conversations.isLoading ? <p className="px-2 py-3 text-xs text-muted-foreground">Loading chats…</p> : null}
           {conversationItems.map((conversation) => (
@@ -299,7 +346,7 @@ function ConversationContent() {
             </button>
           ))}
         </div>
-      </aside>
+      */}
       <section className="flex min-w-0 flex-1 flex-col">
         <div className="flex items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground">
           <span className="truncate">Context: {context.pageTitle}{context.entityType ? ` · ${context.entityType}${context.entityId ? ` ${context.entityId}` : ""}` : ""}</span>
