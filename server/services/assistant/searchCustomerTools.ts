@@ -3,6 +3,7 @@ import {
   ASSISTANT_SEARCH_MAX_RESULTS_PER_CATEGORY,
   DrizzleAssistantSearchCustomerRepository,
   type AssistantCustomerSummaryRecord,
+  type AssistantDirectSearchEntityType,
   type AssistantSearchCustomerRepository,
   type AssistantSearchRecord,
 } from "../../storage/assistantSearchCustomer.repo";
@@ -23,6 +24,9 @@ export const assistantSearchResultSchema = z.object({
 export const searchGlobalToolInputSchema = z.object({
   query: z.string().trim().min(2).max(120),
   maxResultsPerCategory: z.coerce.number().int().min(1).max(ASSISTANT_SEARCH_MAX_RESULTS_PER_CATEGORY).default(ASSISTANT_SEARCH_MAX_RESULTS_PER_CATEGORY),
+  // Only deterministic server routing supplies this discriminator. Provider
+  // planning still uses the conservative generic search contract.
+  entityType: z.enum(["customer", "product"]).optional(),
 }).strict();
 
 export const searchGlobalToolResultSchema = z.object({
@@ -118,7 +122,9 @@ export function createSearchGlobalTool(repository: AssistantSearchCustomerReposi
     },
     async execute(invocation: TrustedAssistantToolInvocation, rawInput: unknown): Promise<AssistantToolExecution<z.infer<typeof searchGlobalToolResultSchema>>> {
       const input = searchGlobalToolInputSchema.parse(rawInput);
-      const records = await repository.search(invocation.scope.organizationId, input.query, input.maxResultsPerCategory);
+      const records = input.entityType
+        ? await repository.searchByEntity(invocation.scope.organizationId, input.query, input.maxResultsPerCategory, input.entityType as AssistantDirectSearchEntityType)
+        : await repository.search(invocation.scope.organizationId, input.query, input.maxResultsPerCategory);
       const results = records.map(normalizedSearchRecord);
       const counts = results.reduce<Record<z.infer<typeof assistantSearchResultSchema>["entityType"], number>>((accumulator, result) => {
         accumulator[result.entityType] += 1;

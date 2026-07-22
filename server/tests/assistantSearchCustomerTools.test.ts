@@ -1,4 +1,5 @@
 import { describe, expect, jest, test } from "@jest/globals";
+import { assistantEntitySummarySchema } from "@shared/assistantContracts";
 import {
   createCustomerSummaryTool,
   createSearchGlobalTool,
@@ -33,6 +34,15 @@ const repository = {
       freshness: new Date("2026-07-21T11:00:00.000Z"),
     },
   ]),
+  searchByEntity: jest.fn(async (_organizationId: string, query: string, _limit: number, entityType: "customer" | "product") => [{
+    entityType,
+    recordId: `${entityType}_1`,
+    displayLabel: entityType === "customer" ? query : "Economy Yard Sign Stakes",
+    secondaryDescription: entityType === "customer" ? "hello@otb.test" : "Yard signs",
+    status: "active",
+    route: entityType === "customer" ? "/customers/customer_1" : "/products/product_1/edit",
+    freshness: new Date("2026-07-21T12:00:00.000Z"),
+  }]),
   getCustomerSummary: jest.fn(async () => ({
     id: "customer_1",
     companyName: "OTB Graphics",
@@ -69,6 +79,16 @@ describe("Stage 2 customer/search assistant tools", () => {
     expect(escapeAssistantSearchTerm("100%_ready\\now")).toBe("100\\%\\_ready\\\\now");
   });
 
+  test("retains contact records in the shared global-search DTO contract", () => {
+    expect(assistantEntitySummarySchema.parse({
+      entityType: "contact",
+      recordId: "contact_1",
+      label: "Ada Lovelace",
+      sourceLink: { label: "Ada Lovelace", href: "/contacts/contact_1", entityType: "contact", entityId: "contact_1" },
+      freshness: "2026-07-21T12:00:00.000Z",
+    })).toMatchObject({ entityType: "contact" });
+  });
+
   test("search.global passes only trusted organization scope and returns fixed safe source links", async () => {
     const tool = createSearchGlobalTool(repository);
 
@@ -83,6 +103,24 @@ describe("Stage 2 customer/search assistant tools", () => {
       { recordId: "customer_1", route: "/customers/customer_1", label: "OTB Graphics" },
       { recordId: "order_1", route: "/orders/order_1", label: "Order 16309" },
     ]);
+  });
+
+  test.each([
+    ["customer", "T3 Signs", "/customers/customer_1"],
+    ["product", "Economy Yard Sign Stakes", "/products/product_1/edit"],
+  ] as const)("uses a dedicated bounded tenant-safe %s lookup when deterministic routing supplies the entity type", async (entityType, query, route) => {
+    const tool = createSearchGlobalTool(repository);
+    repository.search.mockClear();
+    repository.searchByEntity.mockClear();
+
+    const result = await tool.execute(invocation, { query, entityType, maxResultsPerCategory: 3 });
+
+    expect(repository.searchByEntity).toHaveBeenCalledWith("org_allowed", query, 3, entityType);
+    expect(repository.search).not.toHaveBeenCalled();
+    expect(result).toMatchObject({
+      status: "success",
+      data: { results: [expect.objectContaining({ entityType, route })] },
+    });
   });
 
   test("customers.get_summary omits finance and internal fields even when the caller asks for them", async () => {

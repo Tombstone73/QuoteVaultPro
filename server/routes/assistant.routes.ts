@@ -10,6 +10,7 @@ import {
   AssistantService,
   AssistantServiceError,
   responsePresentationForCards,
+  responseStateForCards,
   type AssistantActor,
 } from "../services/assistant/assistantService";
 import { OrganizationAssistantCapabilityResolver } from "../services/assistant/assistantCapabilities";
@@ -73,6 +74,7 @@ function messageDto(message: any, turnId = message.turnId) {
     // intentionally read only to derive the server-owned presentation then
     // stripped before the browser receives its visible card collection.
     presentation: responsePresentationForCards(rawCards),
+    responseState: responseStateForCards(rawCards),
     structuredCards: withTurnBoundProposals(rawCards.filter((card: any) => card?.kind !== "response_presentation"), turnId),
     provider: message.provider ?? null,
     model: message.model ?? null,

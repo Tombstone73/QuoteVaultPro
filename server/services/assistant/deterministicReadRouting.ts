@@ -1,4 +1,5 @@
 import { assistantContextEnvelopeSchema, assistantProviderPlanSchema, type AssistantContextEnvelope, type AssistantProviderPlan } from "@shared/assistantContracts";
+import { canonicalOrderNumberLookup } from "@shared/documentNumbering";
 
 type DeterministicLookupKind = "order" | "quote" | "product" | "customer";
 
@@ -9,6 +10,7 @@ export interface DeterministicSearchTarget {
 
 export interface DeterministicOrderLookupTarget {
   orderNumber: string;
+  displayNumber: string;
 }
 
 /**
@@ -22,7 +24,7 @@ function plan(input: unknown): AssistantProviderPlan {
 }
 
 function normalizedMessage(message: string): string {
-  return message.replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim();
+  return message.replace(/[\u2018\u2019]/g, "'").replace(/\s+/g, " ").trim().replace(/[.?!]+$/g, "");
 }
 
 function readNavigationQuestion(message: string): boolean {
@@ -32,7 +34,7 @@ function readNavigationQuestion(message: string): boolean {
 }
 
 function currentOrderQuestion(message: string): boolean {
-  return /^(?:what(?:'s| is) blocking this order|why is this order blocked|what still needs to happen on this order|what is preventing (?:fulfillment|billing)|summari[sz]e this order|what is the production status|what is the artwork status)\??$/i.test(message);
+  return /^(?:what(?:'s| is) blocking this order|why is this order blocked|what still needs to happen on this order|what is preventing (?:fulfillment|billing)|summari[sz]e (?:this|the current) order|give me (?:a )?summary of (?:this|the current) order|tell me about (?:this|the current) order|give me (?:an )?overview of (?:this|the current) order|what(?:'s| is) (?:this|the current) order|what is the production status|what is the artwork status)$/i.test(message);
 }
 
 function currentOrderBlockingQuestion(message: string): boolean {
@@ -43,6 +45,19 @@ function currentOrderId(context: AssistantContextEnvelope | undefined): string |
   if (!context || context.entityType !== "order" || !context.entityId) return null;
   if (!/^\/orders\/[A-Za-z0-9_-]{1,128}$/.test(context.route)) return null;
   return context.entityId;
+}
+
+function currentEntityId(context: AssistantContextEnvelope | undefined, entityType: "customer" | "product"): string | null {
+  if (!context || context.entityType !== entityType || !context.entityId) return null;
+  const route = entityType === "customer"
+    ? /^\/customers\/[A-Za-z0-9_-]{1,128}$/
+    : /^\/products\/[A-Za-z0-9_-]{1,128}\/edit$/;
+  return route.test(context.route) ? context.entityId : null;
+}
+
+function currentEntitySummaryQuestion(message: string, entityType: "customer" | "product"): boolean {
+  const subject = `(?:this|the current) ${entityType}`;
+  return new RegExp(`^(?:summari[sz]e ${subject}|give me (?:a )?summary of ${subject}|tell me about ${subject}|give me (?:an )?overview of ${subject}|what(?:'s| is) ${subject})$`, "i").test(message);
 }
 
 /**
@@ -78,9 +93,9 @@ export function deterministicSearchTarget(planValue: AssistantProviderPlan): Det
 
 export function deterministicOrderLookupTarget(planValue: AssistantProviderPlan): DeterministicOrderLookupTarget | null {
   const call = planValue.selectedSkill === "deterministic_order_lookup" ? planValue.toolCalls[0] : null;
-  return call?.toolName === "orders.get_summary" && typeof call.arguments.orderNumber === "string"
-    ? { orderNumber: call.arguments.orderNumber }
-    : null;
+  if (call?.toolName !== "orders.get_summary" || typeof call.arguments.orderNumber !== "string") return null;
+  const normalized = canonicalOrderNumberLookup(call.arguments.orderNumber);
+  return normalized ? { orderNumber: normalized.lookupValue, displayNumber: normalized.displayValue } : null;
 }
 
 export function resolveDeterministicReadPlan(message: string, rawContext?: AssistantContextEnvelope): AssistantProviderPlan | null {
@@ -92,6 +107,28 @@ export function resolveDeterministicReadPlan(message: string, rawContext?: Assis
       intent: "lookup",
       selectedSkill: currentOrderBlockingQuestion(normalized) ? "deterministic_current_order_blocking" : "deterministic_current_order_summary",
       toolCalls: [{ toolName: "orders.get_summary", arguments: { orderId } }],
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      responseStyle: "concise",
+    });
+  }
+  const customerId = currentEntitySummaryQuestion(normalized, "customer") ? currentEntityId(context, "customer") : null;
+  if (customerId) {
+    return plan({
+      intent: "lookup",
+      selectedSkill: "deterministic_current_customer_summary",
+      toolCalls: [{ toolName: "customers.get_summary", arguments: { customerId } }],
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      responseStyle: "concise",
+    });
+  }
+  const productId = currentEntitySummaryQuestion(normalized, "product") ? currentEntityId(context, "product") : null;
+  if (productId) {
+    return plan({
+      intent: "lookup",
+      selectedSkill: "deterministic_current_product_summary",
+      toolCalls: [{ toolName: "products.get_summary", arguments: { productId } }],
       clarificationRequired: false,
       clarificationQuestion: null,
       responseStyle: "concise",
@@ -113,20 +150,21 @@ export function resolveDeterministicReadPlan(message: string, rawContext?: Assis
   if (lookup.kind === "order") {
     // An order number is a deliberately narrow identifier and the adapter
     // re-fetches it under the trusted tenant scope.
-    if (!/^[A-Za-z0-9_-]{1,64}$/.test(lookup.value)) {
+    const orderNumber = canonicalOrderNumberLookup(lookup.value);
+    if (!orderNumber) {
       return plan({
         intent: "clarification",
         selectedSkill: "deterministic_invalid_order_lookup",
         toolCalls: [],
         clarificationRequired: true,
-        clarificationQuestion: "Please enter a valid order number using letters, numbers, hyphens, or underscores.",
+        clarificationQuestion: "I couldn't recognize that order number. Try something like ORD-20002.",
         responseStyle: "concise",
       });
     }
     return plan({
       intent: "lookup",
       selectedSkill: "deterministic_order_lookup",
-      toolCalls: [{ toolName: "orders.get_summary", arguments: { orderNumber: lookup.value } }],
+      toolCalls: [{ toolName: "orders.get_summary", arguments: { orderNumber: orderNumber.lookupValue } }],
       clarificationRequired: false,
       clarificationQuestion: null,
       responseStyle: "concise",
@@ -144,7 +182,14 @@ export function resolveDeterministicReadPlan(message: string, rawContext?: Assis
   return plan({
     intent: "lookup",
     selectedSkill: `deterministic_${lookup.kind}_lookup`,
-    toolCalls: [{ toolName: "search.global", arguments: { query: lookup.value, limit: 5 } }],
+    toolCalls: [{
+      toolName: "search.global",
+      arguments: {
+        query: lookup.value,
+        limit: 5,
+        ...(lookup.kind === "customer" || lookup.kind === "product" ? { entityType: lookup.kind } : {}),
+      },
+    }],
     clarificationRequired: false,
     clarificationQuestion: null,
     responseStyle: "concise",

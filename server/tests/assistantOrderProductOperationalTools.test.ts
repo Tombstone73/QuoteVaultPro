@@ -44,6 +44,15 @@ describe("assistant order/product/operational tools", () => {
     expect(result.data.blockingIssues).toHaveLength(3);
   });
 
+  test.each(["20002", "ORD-20002", "ord-20002", "ORD 20002", "Order 20002."])("normalizes %s before using the tenant-scoped order repository", async (orderNumber) => {
+    const repository = repo();
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow });
+
+    await tools.ordersGetSummary.execute(invocation, { orderNumber });
+
+    expect(repository.getOrder).toHaveBeenCalledWith("org-a", { orderNumber: "20002" });
+  });
+
   test("order summaries expose invoice linkage only to a trusted finance permission", async () => {
     const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow });
     const result = await tools.ordersGetSummary.execute({ ...invocation, permissions: ["finance:read"] }, { orderId: "order-1" });

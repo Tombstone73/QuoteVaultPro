@@ -13,6 +13,7 @@ import {
   type AssistantContextEnvelope,
   type AssistantToolResultEnvelope,
 } from "@shared/assistantContracts";
+import { canonicalOrderNumberLookup } from "@shared/documentNumbering";
 import type { OperationalSummary } from "../operationalSummary";
 import { AssistantOrderProductRepository } from "../../storage/assistantOrderProduct.repo";
 import {
@@ -239,7 +240,11 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
     definition: { name: "orders.get_summary", version: "stage-2", readOnly: true, inputSchema: orderSummaryToolInputSchema, resultSchema: orderSummaryToolResultSchema, maximumResultCount: 25, timeoutMs: 5_000 },
     async execute(invocation, rawInput) {
       const input = orderSummaryToolInputSchema.parse(rawInput);
-      const record = await repository.getOrder(invocation.organizationId, input);
+      const normalizedOrderNumber = input.orderNumber ? canonicalOrderNumberLookup(input.orderNumber) : null;
+      const record = await repository.getOrder(invocation.organizationId, {
+        ...(input.orderId ? { orderId: input.orderId } : {}),
+        ...(normalizedOrderNumber ? { orderNumber: normalizedOrderNumber.databaseValue } : input.orderNumber ? { orderNumber: input.orderNumber } : {}),
+      });
       const retrievedAt = now();
       if (!record) return orderSummaryToolResultSchema.parse({
         status: "not_found", data: emptyOrderSummary(), sourceLinks: [], freshness: notFoundFreshness(retrievedAt),

@@ -45,6 +45,39 @@ export function numericCoreFromSearch(value: unknown): number | null {
   return Number.isSafeInteger(parsed) ? parsed : null;
 }
 
+/**
+ * Converts the small, human-facing set of supported order-number spellings
+ * into the legacy database representation. Orders persist their numeric core
+ * in `orderNumber`; `displayNumber` is the customer-facing `ORD-` value.
+ *
+ * This intentionally does not try to infer arbitrary identifiers. It is a
+ * narrow parser for a number optionally prefixed with "ORD", "Order", or
+ * both, and is shared by deterministic routing and the registered read tool
+ * so provider and provider-free paths cannot drift apart.
+ */
+export function canonicalOrderNumberLookup(value: unknown): {
+  displayValue: string;
+  lookupValue: string;
+  databaseValue: string;
+} | null {
+  const normalized = String(value ?? "")
+    .trim()
+    .replace(/[.!?,;:]+$/g, "")
+    .replace(/\s+/g, " ");
+  const withoutOrderWord = normalized.replace(/^order\s+/i, "");
+  const match = /^(?:ord[\s_-]*)?(\d{1,15})$/i.exec(withoutOrderWord);
+  if (!match) return null;
+
+  const numeric = Number(match[1]);
+  if (!Number.isSafeInteger(numeric) || numeric < 1) return null;
+  const lookupValue = String(numeric);
+  return {
+    displayValue: `ORD-${lookupValue}`,
+    lookupValue,
+    databaseValue: lookupValue,
+  };
+}
+
 export function documentNumberMatchesSearch(args: {
   query: unknown;
   displayNumber?: unknown;
