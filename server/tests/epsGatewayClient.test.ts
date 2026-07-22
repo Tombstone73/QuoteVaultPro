@@ -68,6 +68,20 @@ describe("EPS gateway client", () => {
 
     expect(
       normalizeEpsResponse({
+        success: true,
+        message: "PTK Generated",
+        data: { state: "PTK", ptk: "nested-ptk-value" },
+      }),
+    ).toMatchObject({
+      approved: false,
+      pending: true,
+      status: "pending",
+      ptk: "nested-ptk-value",
+      responseMessage: "PTK Generated",
+    });
+
+    expect(
+      normalizeEpsResponse({
         TransactionResult: true,
         ResponseMsg: "Success",
         ApprovedAmount: "29.75",
