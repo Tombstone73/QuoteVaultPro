@@ -125,7 +125,7 @@ describe("AssistantService deterministic read routing", () => {
     expect(planner.plan).not.toHaveBeenCalled();
     expect(repository.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({
       response: "You're viewing Order ORD-20003 for T3 Signs. It is currently In Production and due July 22.",
-      structuredCards: [expect.objectContaining({ kind: "current_context", title: "navigation.get_current_context" })],
+      structuredCards: [expect.objectContaining({ kind: "current_context", title: "Current workspace" })],
     }));
   });
 

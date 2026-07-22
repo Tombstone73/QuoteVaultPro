@@ -60,15 +60,58 @@ function currentEntitySummaryQuestion(message: string, entityType: "customer" | 
   return new RegExp(`^(?:summari[sz]e ${subject}|give me (?:a )?summary of ${subject}|tell me about ${subject}|give me (?:an )?overview of ${subject}|what(?:'s| is) ${subject})$`, "i").test(message);
 }
 
-function normalizedStationKey(value: string): string | null {
-  const normalized = value.trim().toLowerCase().replace(/\s+/g, "_");
-  return /^[a-z][a-z0-9_-]{0,63}$/.test(normalized) ? normalized : null;
+function stationReference(value: string): string | null {
+  const normalized = value.trim().replace(/\s+/g, " ");
+  return /^[A-Za-z0-9][A-Za-z0-9 _-]{0,99}$/.test(normalized) ? normalized : null;
+}
+
+function requestedResultLimit(value: string | undefined): number {
+  const words: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+  const parsed = value && /^\d+$/.test(value) ? Number(value) : words[value?.toLowerCase() ?? ""] ?? 10;
+  return Math.min(20, Math.max(1, parsed));
 }
 
 function productionReadPlan(message: string): AssistantProviderPlan | null {
-  const stationQueue = /\b(?:how many jobs? are in|what is due next on|first due in|show(?: me)?(?: the)?(?: first)?\s+\d*\s*jobs? (?:in|on)|jobs? in)\s+(?:the\s+)?([a-z][a-z0-9_-]*(?:\s+[a-z][a-z0-9_-]*)?)(?=\s+(?:printing|jobs?|queue|station|and)\b|[?.!]|$)/i.exec(message);
+  if (/\b(?:which station has the largest backlog|which station is busiest|largest backlog|station comparison|compare\s+.+\s+and\s+.+|which board should i work on first|bottleneck)\b/i.test(message)) return plan({
+    intent: "production_reporting",
+    selectedSkill: "deterministic_production_station_comparison",
+    toolCalls: [{ toolName: "production.get_queue_summary", arguments: { limit: 10 } }],
+    clarificationRequired: false,
+    clarificationQuestion: null,
+    responseStyle: "concise",
+  });
+
+  const urgent = /\bshow(?: me)?(?: the)?\s*(\d{1,2}|one|two|three|four|five|six|seven|eight|nine|ten)?\s*(?:most )?urgent production jobs?\b/i.exec(message);
+  if (urgent) return plan({
+    intent: "production_reporting",
+    selectedSkill: "deterministic_production_urgent_jobs",
+    toolCalls: [{ toolName: "operations.get_attention_summary", arguments: { filter: "urgent", limit: requestedResultLimit(urgent[1]) } }],
+    clarificationRequired: false,
+    clarificationQuestion: null,
+    responseStyle: "concise",
+  });
+
+  if (/\b(?:what needs attention|are any jobs overdue|overdue jobs?|due today|due tomorrow|waiting on (?:artwork|proof|prepress)|ready for fulfillment)\b/i.test(message)) {
+    const filter = /\bdue today\b/i.test(message) ? "due_today"
+      : /\bdue tomorrow\b/i.test(message) ? "due_tomorrow"
+        : /\boverdue\b/i.test(message) ? "overdue"
+          : /\bwaiting on artwork\b/i.test(message) ? "waiting_artwork"
+            : /\bwaiting on proof\b/i.test(message) ? "waiting_proof"
+              : /\bwaiting on prepress\b/i.test(message) ? "waiting_prepress"
+                : /\bready for fulfillment\b/i.test(message) ? "ready_for_fulfillment" : "all_attention";
+    return plan({
+      intent: "production_reporting",
+      selectedSkill: "deterministic_production_attention",
+      toolCalls: [{ toolName: "operations.get_attention_summary", arguments: { filter, limit: 10 } }],
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      responseStyle: "concise",
+    });
+  }
+
+  const stationQueue = /\b(?:how many jobs? are in|what is due next on|first due in|when is the first)\s+(?:the\s+)?([A-Za-z0-9][A-Za-z0-9 _-]*?)(?=\s+(?:job|jobs|queue|station)\b|\s+and\b|,|[?.!]|$)/i.exec(message);
   if (stationQueue) {
-    const stationKey = normalizedStationKey(stationQueue[1]!);
+    const stationKey = stationReference(stationQueue[1]!);
     if (stationKey) return plan({
       intent: "production_reporting",
       selectedSkill: "deterministic_production_station_queue",
@@ -78,31 +121,6 @@ function productionReadPlan(message: string): AssistantProviderPlan | null {
       responseStyle: "concise",
     });
   }
-  if (/\b(?:what needs attention|overdue jobs?|due today|due tomorrow|waiting on (?:artwork|proof|prepress)|ready for fulfillment)\b/i.test(message)) {
-    const filter = /\bdue today\b/i.test(message) ? "today"
-      : /\bdue tomorrow\b/i.test(message) ? "tomorrow"
-        : /\boverdue\b/i.test(message) ? "overdue"
-          : /\bwaiting on artwork\b/i.test(message) ? "waiting_artwork"
-            : /\bwaiting on proof\b/i.test(message) ? "waiting_proof"
-              : /\bwaiting on prepress\b/i.test(message) ? "waiting_prepress"
-                : /\bready for fulfillment\b/i.test(message) ? "ready_for_fulfillment" : undefined;
-    return plan({
-      intent: "production_reporting",
-      selectedSkill: "deterministic_production_attention",
-      toolCalls: [{ toolName: "operations.get_attention_summary", arguments: { ...(filter ? { filter } : {}), limit: 10 } }],
-      clarificationRequired: false,
-      clarificationQuestion: null,
-      responseStyle: "concise",
-    });
-  }
-  if (/\b(?:which station is busiest|largest backlog|station comparison|bottleneck)\b/i.test(message)) return plan({
-    intent: "production_reporting",
-    selectedSkill: "deterministic_production_station_comparison",
-    toolCalls: [{ toolName: "production.get_queue_summary", arguments: { limit: 10 } }],
-    clarificationRequired: false,
-    clarificationQuestion: null,
-    responseStyle: "concise",
-  });
   return null;
 }
 

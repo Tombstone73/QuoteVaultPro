@@ -334,9 +334,16 @@ const assistantProductionStationKeySchema = z.string()
   .min(1)
   .max(64)
   .regex(/^[a-z][a-z0-9_-]*$/i, "Station key contains unsupported characters");
+/** A model may nominate a human station phrase, but the server resolves it
+ * against the active organization-scoped station list before querying. */
+const assistantProductionStationReferenceSchema = z.string()
+  .trim()
+  .min(1)
+  .max(100)
+  .regex(/^[A-Za-z0-9][A-Za-z0-9 _-]*$/, "Station reference contains unsupported characters");
 const assistantProductionDateFilterSchema = z.enum(["overdue", "today", "tomorrow"]);
 export const assistantProductionQueueInputSchema = z.object({
-  stationKey: assistantProductionStationKeySchema.optional(),
+  stationKey: assistantProductionStationReferenceSchema.optional(),
   status: z.enum(["queued", "in_progress", "paused"]).optional(),
   due: assistantProductionDateFilterSchema.optional(),
   includeOverdue: z.boolean().optional(),
@@ -353,6 +360,23 @@ export const assistantProductionUrgentJobSchema = z.object({
   status: z.string().trim().min(1).max(120),
   dueDate: assistantIsoDateTimeSchema.optional(),
   overdue: z.boolean(),
+  sourceLink: assistantSourceLinkSchema,
+}).strict();
+/** Attention can include an order-level canonical queue (for example
+ * fulfillment), where no current production-job UUID exists. The reduced DTO
+ * still has a human-readable order and a safe internal source link. */
+export const assistantAttentionItemSchema = z.object({
+  jobId: assistantSafeIdentifierSchema.optional(),
+  orderId: assistantSafeIdentifierSchema,
+  orderNumber: z.string().trim().min(1).max(64),
+  customerName: z.string().trim().min(1).max(240).optional(),
+  label: z.string().trim().min(1).max(300),
+  stationKey: assistantProductionStationReferenceSchema.optional(),
+  stationLabel: z.string().trim().min(1).max(160),
+  status: z.string().trim().min(1).max(120),
+  dueDate: assistantIsoDateTimeSchema.optional(),
+  overdue: z.boolean(),
+  reason: z.string().trim().min(1).max(240),
   sourceLink: assistantSourceLinkSchema,
 }).strict();
 export const assistantProductionStationSummarySchema = z.object({
@@ -384,7 +408,7 @@ export const assistantAttentionCategorySchema = z.object({
   note: z.string().trim().min(1).max(300).optional(),
 }).strict();
 export const assistantAttentionSummaryInputSchema = z.object({
-  filter: z.enum(["today", "tomorrow", "overdue", "waiting_artwork", "waiting_proof", "waiting_prepress", "in_production", "ready_for_fulfillment"]).optional(),
+  filter: z.enum(["today", "tomorrow", "due_today", "due_tomorrow", "overdue", "waiting_artwork", "waiting_proof", "waiting_prepress", "in_production", "ready_for_fulfillment", "urgent", "all_attention"]).optional(),
   dueWithinDays: z.number().int().min(1).max(31).optional(),
   stationKey: assistantProductionStationKeySchema.optional(),
   limit: z.number().int().min(1).max(20).optional(),
@@ -394,7 +418,7 @@ export const assistantAttentionSummaryResultSchema = z.object({
   categories: z.array(assistantAttentionCategorySchema).min(1).max(8),
   mostLoadedStation: assistantProductionStationSummarySchema.optional(),
   earliestDueJob: assistantProductionUrgentJobSchema.optional(),
-  attentionItems: z.array(assistantProductionUrgentJobSchema).max(20),
+  attentionItems: z.array(assistantAttentionItemSchema).max(20),
   timezone: z.string().trim().min(1).max(80),
   warnings: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
 }).strict();
