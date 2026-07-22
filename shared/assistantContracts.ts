@@ -764,6 +764,63 @@ export const assistantStructuredCardSchema = z.union([
 ]);
 export type AssistantStructuredCard = z.infer<typeof assistantStructuredCardSchema>;
 
+// Stage 8.2 reporting entity selection is deliberately separate from the
+// mutation-plan framework above.  The browser receives a short-lived opaque
+// candidate identifier, never a customer primary key or a report plan.
+export const assistantReportResolutionStatusValues = [
+  "awaiting_entity_resolution",
+  "resolved",
+  "resuming",
+  "resumed",
+  "expired",
+  "cancelled",
+  "failed",
+] as const;
+export type AssistantReportResolutionStatus = (typeof assistantReportResolutionStatusValues)[number];
+
+export const assistantOpaqueReportCandidateSchema = z.object({
+  candidateId: assistantSafeIdentifierSchema,
+  companyName: z.string().trim().min(1).max(240),
+  companyStatus: z.string().trim().min(1).max(120).nullable().optional(),
+  location: z.string().trim().min(1).max(240).nullable().optional(),
+  matchReason: z.string().trim().min(1).max(500),
+  relatedContactNames: z.array(z.string().trim().min(1).max(240)).max(10).default([]),
+  companyLink: assistantSourceLinkSchema,
+}).strict();
+export type AssistantOpaqueReportCandidate = z.infer<typeof assistantOpaqueReportCandidateSchema>;
+
+export const assistantPendingReportResolutionSchema = z.object({
+  resolutionId: assistantSafeIdentifierSchema,
+  conversationId: assistantSafeIdentifierSchema,
+  version: z.number().int().positive(),
+  status: z.enum(assistantReportResolutionStatusValues),
+  expiresAt: assistantIsoDateTimeSchema,
+  candidates: z.array(assistantOpaqueReportCandidateSchema).min(2).max(10),
+  cancellationAvailable: z.boolean(),
+}).strict();
+export type AssistantPendingReportResolution = z.infer<typeof assistantPendingReportResolutionSchema>;
+
+export const assistantCustomerResolutionSelectionCardSchema = z.object({
+  kind: z.literal("customer_resolution"),
+  title: z.string().trim().min(1).max(160),
+  summary: z.string().trim().min(1).max(2_000),
+  resolution: assistantPendingReportResolutionSchema,
+  sourceLinks: z.array(assistantSourceLinkSchema).max(10).default([]),
+}).strict();
+export type AssistantCustomerResolutionSelectionCard = z.infer<typeof assistantCustomerResolutionSelectionCardSchema>;
+
+export const assistantReportResolutionSelectionRequestSchema = z.object({
+  candidateId: assistantSafeIdentifierSchema,
+  expectedVersion: z.number().int().positive(),
+}).strict();
+export type AssistantReportResolutionSelectionRequest = z.infer<typeof assistantReportResolutionSelectionRequestSchema>;
+
+export const assistantReportResolutionCancelRequestSchema = z.object({
+  expectedVersion: z.number().int().positive(),
+}).strict();
+export type AssistantReportResolutionCancelRequest = z.infer<typeof assistantReportResolutionCancelRequestSchema>;
+
+
 export const assistantUsageCorrelationSchema = z.object({
   correlationId: assistantSafeIdentifierSchema,
   conversationId: assistantSafeIdentifierSchema,
@@ -792,6 +849,22 @@ export const assistantMessageSchema = z.object({
   createdAt: assistantIsoDateTimeSchema,
 }).strict();
 export type AssistantMessage = z.infer<typeof assistantMessageSchema>;
+
+export const assistantReportResolutionContinuationResultSchema = z.object({
+  resolutionId: assistantSafeIdentifierSchema,
+  version: z.number().int().positive(),
+  status: z.literal("resumed"),
+  turnId: assistantSafeIdentifierSchema,
+  correlationId: assistantSafeIdentifierSchema,
+  message: assistantMessageSchema,
+}).strict();
+export type AssistantReportResolutionContinuationResult = z.infer<typeof assistantReportResolutionContinuationResultSchema>;
+
+export const assistantReportResolutionSelectionResponseSchema = z.object({
+  resolution: assistantPendingReportResolutionSchema,
+  continuation: assistantReportResolutionContinuationResultSchema.optional(),
+}).strict();
+export type AssistantReportResolutionSelectionResponse = z.infer<typeof assistantReportResolutionSelectionResponseSchema>;
 
 export const assistantConversationSummarySchema = z.object({
   id: assistantSafeIdentifierSchema,
@@ -1003,6 +1076,11 @@ export const assistantErrorCodeValues = [
   "confirmation_expired",
   "confirmation_used",
   "plan_transition_invalid",
+  "report_resolution_not_found",
+  "report_resolution_expired",
+  "report_resolution_cancelled",
+  "report_resolution_stale",
+  "report_resolution_invalid_candidate",
 ] as const;
 
 export const assistantErrorResponseSchema = z.object({

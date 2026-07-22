@@ -3,7 +3,7 @@ import { Bot, Expand, Maximize2, Minus, PanelBottom, PanelLeft, PanelRight, Refr
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { cn } from "@/lib/utils";
-import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSendAssistantTurn, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
+import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSendAssistantTurn, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
@@ -151,6 +151,70 @@ function CustomerProductSalesDetails({ details, sources }: { details: unknown; s
   if (!rows.length) return <SourceActions sources={sources} />;
   const money = (value: unknown) => typeof value === "number" ? new Intl.NumberFormat(undefined, { style: "currency", currency: "USD" }).format(value / 100) : "—";
   return <div className="mt-3 space-y-2"><div className="overflow-x-auto rounded-lg border border-border/60 bg-card/30"><table className="w-full text-left text-sm"><thead className="border-b text-xs text-muted-foreground"><tr><th className="px-3 py-2">Product</th><th className="px-3 py-2 text-right">Revenue</th><th className="px-3 py-2 text-right">Qty.</th><th className="px-3 py-2 text-right">Invoices</th></tr></thead><tbody>{rows.slice(0, 25).map((row, index) => <tr key={`${text(row.label) ?? "product"}-${index}`} className="border-b last:border-0"><td className="px-3 py-2 font-medium">{text(row.label) ?? "Unnamed product"}</td><td className="px-3 py-2 text-right tabular-nums">{money(row.revenueCents)}</td><td className="px-3 py-2 text-right tabular-nums">{typeof row.quantity === "number" ? row.quantity : "—"}</td><td className="px-3 py-2 text-right tabular-nums">{typeof row.invoiceCount === "number" ? row.invoiceCount : "—"}</td></tr>)}</tbody></table></div>{Array.isArray(details.warnings) ? <p className="text-xs text-muted-foreground">{details.warnings.filter((warning): warning is string => typeof warning === "string").join(" ")}</p> : null}<SourceActions sources={sources} /></div>;
+}
+
+/** Dedicated UI for a paused analytical report. The card treats every value
+ * as presentation text; selection sends only the opaque candidate ID and the
+ * optimistic resolution version back to the server. */
+function CustomerResolutionSelectionCard({ card }: { card: AssistantStructuredCard }) {
+  const [selectedCandidateId, setSelectedCandidateId] = React.useState<string | null>(null);
+  const [cancelled, setCancelled] = React.useState(false);
+  const selectResolution = useSelectAssistantReportResolution();
+  const cancelResolution = useCancelAssistantReportResolution();
+  const rawCard = card as unknown as Record<string, unknown>;
+  const details = isRecord(rawCard.details) ? rawCard.details : null;
+  const resolution = details && isRecord(details.resolution)
+    ? details.resolution
+    : details && text(details.resolutionId)
+      ? details
+    : isRecord(rawCard.resolution)
+      ? rawCard.resolution
+      : null;
+  const resolutionId = text(resolution?.resolutionId);
+  const version = numericValue(resolution?.version);
+  const status = text(resolution?.status) ?? "awaiting_entity_resolution";
+  const candidates: Record<string, unknown>[] = Array.isArray(resolution?.candidates) ? resolution.candidates.filter(isRecord) : [];
+  const isSelectable = !cancelled && status === "awaiting_entity_resolution" && Boolean(resolutionId) && version !== null;
+  if (!resolutionId || version === null || !candidates.length) return null;
+
+  return <section className="rounded-xl border border-border/70 bg-card/45 px-3 py-3 text-sm shadow-sm" data-testid="assistant-customer-resolution-card">
+    <p className="font-medium text-foreground">{text(rawCard.title) ?? "Choose a company"}</p>
+    <p className="mt-1 text-muted-foreground">{text(rawCard.summary) ?? "Choose the purchasing company for this report."}</p>
+    <div className="mt-3 space-y-2">
+      {candidates.map((candidate: Record<string, unknown>) => {
+        const candidateId = text(candidate.candidateId);
+        const companyName = text(candidate.companyName) ?? "Company";
+        const companyStatus = text(candidate.companyStatus);
+        const location = text(candidate.location);
+        const reason = text(candidate.matchReason);
+        const companyLink = isRecord(candidate.companyLink)
+          ? sourceLink(candidate.companyLink)
+          : text(candidate.companyPath)
+            ? { href: text(candidate.companyPath)!, label: `Open ${companyName}` }
+            : null;
+        const relatedContacts = Array.isArray(candidate.relatedContactNames) ? candidate.relatedContactNames.map(text).filter((name: string | null): name is string => Boolean(name)) : [];
+        if (!candidateId) return null;
+        const pending = selectResolution.isPending && selectedCandidateId === candidateId;
+        return <div key={candidateId} className="rounded-lg border border-border/60 bg-background/30 px-3 py-2.5">
+          <div className="flex flex-wrap items-start justify-between gap-2"><div className="min-w-0"><p className="font-medium">{companyName}</p><p className="mt-0.5 text-xs text-muted-foreground">{[companyStatus, location].filter(Boolean).join(" · ")}</p></div></div>
+          {reason ? <p className="mt-1 text-xs text-muted-foreground">{reason}</p> : null}
+          {relatedContacts.length ? <p className="mt-1 text-xs text-muted-foreground">Related contacts: {relatedContacts.join(", ")}</p> : null}
+          <div className="mt-2 flex flex-wrap gap-2">
+            <Button type="button" size="sm" disabled={!isSelectable || Boolean(selectedCandidateId) || selectResolution.isPending} onClick={() => {
+              setSelectedCandidateId(candidateId);
+              selectResolution.mutate({ resolutionId, candidateId, expectedVersion: version }, { onError: () => setSelectedCandidateId(null) });
+            }}>{pending ? "Selecting…" : selectedCandidateId ? "Selected" : "Select company"}</Button>
+            {companyLink ? <Button asChild type="button" size="sm" variant="outline"><a href={companyLink.href}>Open company</a></Button> : null}
+          </div>
+        </div>;
+      })}
+    </div>
+    {isSelectable ? <Button type="button" size="sm" variant="ghost" className="mt-2 text-muted-foreground" disabled={cancelResolution.isPending || Boolean(selectedCandidateId)} onClick={() => {
+      setCancelled(true);
+      cancelResolution.mutate({ resolutionId, expectedVersion: version }, { onError: () => setCancelled(false) });
+    }}>{cancelResolution.isPending ? "Cancelling…" : "Cancel report"}</Button> : null}
+    {!isSelectable || selectedCandidateId ? <p className="mt-3 text-xs text-muted-foreground">{selectedCandidateId || status === "resuming" ? "Continuing the saved report…" : status === "resumed" ? "Report continued." : "This selection is no longer available."}</p> : null}
+  </section>;
 }
 
 type AssistantSourceLink = { href: string; label: string };
@@ -336,6 +400,7 @@ export function ResultCards({
     const plan = toAssistantPlanCardModel(card);
     if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} />;
     if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source" || diagnosticCards.includes(card)) return null;
+    if (card.kind === "customer_resolution") return <CustomerResolutionSelectionCard key={`${card.kind}-${index}`} card={card} />;
     if (["production_queue_summary", "station_comparison", "attention_summary", "urgent_job_list"].includes(card.kind)) return <ProductionReportingDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (card.kind === "customer_product_sales") return <CustomerProductSalesDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (card.kind === "order_summary") return <OperationalOrderSummaryDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} onSubmitSuggestion={onSubmitSuggestion} />;

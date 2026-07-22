@@ -5,6 +5,7 @@ import type {
   AssistantConversationSummary,
   AssistantMessage,
   AssistantPresentationMode,
+  AssistantReportResolutionSelectionResponse,
 } from "@shared/assistantContracts";
 
 export type AssistantPresentation = AssistantPresentationMode;
@@ -14,6 +15,7 @@ export type {
   AssistantConversationDetail,
   AssistantConversationSummary,
   AssistantMessage,
+  AssistantReportResolutionSelectionResponse,
 };
 
 export interface AssistantLayoutPreferences {
