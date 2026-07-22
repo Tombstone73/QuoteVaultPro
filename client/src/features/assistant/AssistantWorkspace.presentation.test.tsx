@@ -90,4 +90,26 @@ describe("Assistant workspace presentation", () => {
     expect(container.textContent).toContain("Try again");
     act(() => root.unmount());
   });
+
+  test("groups production rows by order while preserving line identity and honest progress", () => {
+    const rows = [
+      { productionJobId: "job-1", orderId: "order-1", orderNumber: "ORD-20002", customerName: "T3 Signs", orderLineItemId: "line-1", lineItemSequence: 1, lineItemLabel: "ACM sign", orderedQuantity: 1, completedQuantity: 0, remainingQuantity: 1, quantityUnit: "prints", stationLabel: "Flatbed", productionStatus: "Queued", dueState: "overdue", orderSourceLink: { label: "View order", href: "/orders/order-1" }, productionJobSourceLink: { label: "View job", href: "/production/jobs/job-1" } },
+      { productionJobId: "job-2", orderId: "order-1", orderNumber: "ORD-20002", customerName: "T3 Signs", orderLineItemId: "line-2", lineItemSequence: 2, lineItemLabel: "ACM sign", orderedQuantity: 2, completedQuantity: 1, remainingQuantity: 1, quantityUnit: "prints", stationLabel: "Flatbed", productionStatus: "Queued", dueState: "overdue", orderSourceLink: { label: "View order", href: "/orders/order-1" }, productionJobSourceLink: { label: "View job", href: "/production/jobs/job-2" } },
+      { productionJobId: "job-3", orderId: "order-1", orderNumber: "ORD-20002", orderLineItemId: "line-3", lineItemSequence: 3, lineItemLabel: "Packaging", stationLabel: "Fulfillment", productionStatus: "Pending", progressAvailable: false, progressWarning: "No canonical completed-print source", orderSourceLink: { label: "View order", href: "/orders/order-1" }, productionJobSourceLink: { label: "View job", href: "/production/jobs/job-3" } },
+      { productionJobId: "job-4", orderId: "order-1", orderNumber: "ORD-20002", orderLineItemId: "line-4", lineItemSequence: 4, lineItemLabel: "Banner", orderedQuantity: 4, completedQuantity: 4, remainingQuantity: 0, quantityUnit: "prints", stationLabel: "Flatbed", productionStatus: "Done", orderSourceLink: { label: "View order", href: "/orders/order-1" }, productionJobSourceLink: { label: "View job", href: "/production/jobs/job-4" } },
+      { productionJobId: "job-5", orderId: "order-1", orderNumber: "ORD-20002", orderLineItemId: "line-5", lineItemSequence: 5, lineItemLabel: "Yard sign", orderedQuantity: 3, completedQuantity: 1, remainingQuantity: 2, quantityUnit: "prints", stationLabel: "Flatbed", productionStatus: "In production", orderSourceLink: { label: "View order", href: "/orders/order-1" }, productionJobSourceLink: { label: "View job", href: "/production/jobs/job-5" } },
+    ];
+    const { container, root } = render([
+      { kind: "attention_summary", title: "Production attention", summary: "", sourceLinks: [{ label: "View order", href: "/orders/order-1" }], details: { attentionItems: rows } },
+    ], { presentation: "analytical" });
+
+    expect(container.textContent).toContain("Order ORD-20002 · T3 Signs");
+    expect(container.textContent).toContain("Line 1 · ACM sign");
+    expect(container.textContent).toContain("Line 2 · ACM sign");
+    expect(container.textContent).toContain("Ordered: 2 prints · Completed: 1 prints · Remaining: 1 prints");
+    expect(container.textContent).toContain("Print progress unavailable · No canonical completed-print source");
+    expect(container.querySelectorAll('a[href="/orders/order-1"]')).toHaveLength(1);
+    expect(container.querySelectorAll('a[href^="/production/jobs/"]')).toHaveLength(5);
+    act(() => root.unmount());
+  });
 });
