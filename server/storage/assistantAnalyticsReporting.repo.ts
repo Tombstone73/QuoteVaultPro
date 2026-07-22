@@ -95,13 +95,31 @@ function contactRecord(row: { id: string; displayName: string; updatedAt: Date |
   };
 }
 
-function uniqueCandidates(rows: AssistantAnalyticsCustomerRecord[]): AssistantAnalyticsCustomerRecord[] {
-  const seen = new Set<string>();
-  return rows.filter((row) => {
-    const key = `${row.resolutionType}:${row.id}:${row.contactId ?? ""}`;
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+/**
+ * Customer analytics are scoped to a purchasing entity, not a search-row
+ * identity. A company hit and every matching contact at that company must
+ * therefore collapse to the same customers.id before ambiguity is decided.
+ */
+export function normalizeCustomerResolutionCandidates(rows: AssistantAnalyticsCustomerRecord[]): AssistantAnalyticsCustomerRecord[] {
+  const byCustomerId = new Map<string, AssistantAnalyticsCustomerRecord[]>();
+  for (const row of rows) {
+    const grouped = byCustomerId.get(row.id) ?? [];
+    grouped.push(row);
+    byCustomerId.set(row.id, grouped);
+  }
+
+  return Array.from(byCustomerId.values()).map((group) => {
+    const company = group.find((row) => row.resolutionType === "company");
+    const contact = group.find((row) => row.resolutionType === "contact");
+    if (company) {
+      const contactCount = group.filter((row) => row.resolutionType === "contact").length;
+      return contactCount > 0
+        ? { ...company, explanation: `Matched company account ${company.displayName} and ${contactCount} related contact${contactCount === 1 ? "" : "s"}.` }
+        : company;
+    }
+    // Preserve a contact explanation when contacts are the only evidence for a
+    // company. This makes an automatic contact-to-company resolution explainable.
+    return contact!;
   }).sort((left, right) => left.displayName.localeCompare(right.displayName) || (left.contactName ?? "").localeCompare(right.contactName ?? ""));
 }
 
@@ -203,11 +221,11 @@ export class AssistantAnalyticsReportingRepository {
     if (exactNameMatches.length === 1) return { customer: companyRecord(exactNameMatches[0]), alternatives: [], confidence: "exact" };
     if (exactNameMatches.length > 1) return { customer: null, alternatives: exactNameMatches.map(companyRecord), confidence: "ambiguous" };
 
-    const exactContacts = uniqueCandidates((await contactRows(sql`lower(${contactName}) = lower(${normalized})`)).map(contactRecord));
+    const exactContacts = normalizeCustomerResolutionCandidates((await contactRows(sql`lower(${contactName}) = lower(${normalized})`)).map(contactRecord));
     if (exactContacts.length === 1) return { customer: exactContacts[0], alternatives: [], confidence: "exact" };
     if (exactContacts.length > 1) return { customer: null, alternatives: exactContacts, confidence: "ambiguous" };
 
-    const exactEmailContacts = uniqueCandidates((await contactRows(sql`lower(${customerContacts.email}) = lower(${normalized})`)).map(contactRecord));
+    const exactEmailContacts = normalizeCustomerResolutionCandidates((await contactRows(sql`lower(${customerContacts.email}) = lower(${normalized})`)).map(contactRecord));
     if (exactEmailContacts.length === 1) return { customer: exactEmailContacts[0], alternatives: [], confidence: "exact" };
     if (exactEmailContacts.length > 1) return { customer: null, alternatives: exactEmailContacts, confidence: "ambiguous" };
 
@@ -219,10 +237,13 @@ export class AssistantAnalyticsReportingRepository {
       )).orderBy(asc(customers.companyName), asc(customers.id)).limit(10),
       contactRows(or(ilike(contactName, pattern), ilike(customerContacts.email, pattern))),
     ]);
-    const alternatives = uniqueCandidates([
+    const alternatives = normalizeCustomerResolutionCandidates([
       ...companyAlternatives.map(companyRecord),
       ...contactAlternatives.map(contactRecord),
     ]).slice(0, 10);
+    if (alternatives.length === 1) {
+      return { customer: alternatives[0]!, alternatives: [], confidence: "exact" };
+    }
     return { customer: null, alternatives, confidence: alternatives.length ? "ambiguous" : "none" };
   }
 
