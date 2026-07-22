@@ -30,11 +30,7 @@ export class AssistantOrderProductRepository {
         orderNumber: orders.orderNumber,
         displayNumber: orders.displayNumber,
         status: orders.status,
-        state: orders.state,
-        canonicalState: orders.canonicalState,
-        statusPillValue: orders.statusPillValue,
         dueDate: orders.dueDate,
-        fulfillmentStatus: orders.fulfillmentStatus,
         updatedAt: orders.updatedAt,
         customerId: customers.id,
         customerName: customers.companyName,
@@ -94,6 +90,10 @@ export class AssistantOrderProductRepository {
         .limit(5),
     ]);
 
+    // Keep the assistant's core order read independent from newer workflow
+    // columns. Those columns are optional enrichments in the application and
+    // are not present in every safely supported DEV schema revision; selecting
+    // one missing column made an otherwise valid tenant-scoped lookup fail.
     return { order, lineItems, production, invoices: invoiceRows };
   }
 
@@ -175,4 +175,3 @@ export function escapeLike(value: string): string {
   // parameter by Drizzle; this only controls LIKE semantics.
   return value.replace(/[\\%_]/g, "\\$&");
 }
-

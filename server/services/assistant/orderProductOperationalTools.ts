@@ -264,9 +264,15 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
         data: {
           order: {
             id: record.order.id, number, customerId: record.order.customerId, customer: record.order.customerName,
-            status: record.order.status, state: record.order.canonicalState ?? record.order.state,
-            statusPill: record.order.statusPillValue ?? null, dueDate: toIso(record.order.dueDate),
-            fulfillmentStatus: record.order.fulfillmentStatus,
+            status: record.order.status,
+            // The legacy status is the core, tenant-scoped value available in
+            // every supported schema revision. Workflow/pill/fulfillment
+            // enrichments remain intentionally unavailable rather than making
+            // a valid order lookup depend on optional schema columns.
+            state: record.order.status,
+            statusPill: null,
+            dueDate: toIso(record.order.dueDate),
+            fulfillmentStatus: "unavailable",
           },
           lineItems: record.lineItems.map((line) => ({ id: line.id, description: line.description.slice(0, 500), productName: line.productName ?? null, quantity: line.quantity, status: line.status, workflowState: line.workflowState })),
           artwork: { required: record.lineItems.filter((line) => line.requiresDesign).length, awaitingDesign },
@@ -278,6 +284,7 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
         },
         sourceLinks: [{ label: `Order ${number}`, href: `/orders/${record.order.id}`, entityType: "order" as const, entityId: record.order.id, capturedAt: toIso(record.order.updatedAt) ?? retrievedAt.toISOString() }],
         freshness: { retrievedAt: retrievedAt.toISOString() },
+        warning: "Some optional workflow details are unavailable for this order.",
       };
       return orderSummaryToolResultSchema.parse(result);
     },
@@ -401,7 +408,7 @@ export function createStage2OrderProductToolAdapters(
           ...(invoice ? { invoice: entitySummary("invoice", invoice.id, `Invoice ${invoice.number}`, invoice.status, { label: `Invoice ${invoice.number}`, href: `/invoices/${invoice.id}`, entityType: "invoice", entityId: invoice.id, capturedAt: freshness }, freshness) } : {}),
           ...(result.data.blockingIssues.length ? { blockingIssues: result.data.blockingIssues } : {}),
         });
-        return succeeded(data, result.sourceLinks, freshness);
+        return succeeded(data, result.sourceLinks, freshness, result.warning);
       },
     },
     "products.get_summary": {
