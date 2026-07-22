@@ -101,6 +101,87 @@ describe("assistant order/product/operational tools", () => {
     expect(() => (tools.ordersGetSummary.definition.resultSchema as any).parse(result)).not.toThrow();
   });
 
+  test("starts independent optional enrichments concurrently after the core lookup", async () => {
+    const started: string[] = [];
+    const resolvers: Array<() => void> = [];
+    const pending = <T,>(name: string, value: T) => new Promise<T>((resolve) => {
+      started.push(name);
+      resolvers.push(() => resolve(value));
+    });
+    const repository = {
+      getOrder: jest.fn(async () => ({
+        order: { id: "order-20002", orderNumber: "20002", displayNumber: "ORD-20002", status: "fulfillment", dueDate: null, updatedAt: capturedAt, customerId: "customer-1", customerName: "T3 Signs" },
+        lineItems: [], production: [], invoices: [],
+      })),
+      getOrderLineItems: jest.fn(() => pending("line_items", [])),
+      getOrderProduction: jest.fn(() => pending("production", [])),
+      getOrderInvoices: jest.fn(() => pending("billing", [])),
+      getProduct: repo().getProduct,
+    };
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow });
+    const resultPromise = tools.ordersGetSummary.execute(invocation, { orderNumber: "20002" });
+
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(started.sort()).toEqual(["billing", "line_items", "production"]);
+    resolvers.forEach((resolve) => resolve());
+    await expect(resultPromise).resolves.toMatchObject({ status: "ok" });
+  });
+
+  test("times out an individual optional enrichment without losing the core summary", async () => {
+    const logOrderSummaryStep = jest.fn();
+    const repository = {
+      getOrder: jest.fn(async () => ({
+        order: { id: "order-20002", orderNumber: "20002", displayNumber: "ORD-20002", status: "fulfillment", dueDate: null, updatedAt: capturedAt, customerId: "customer-1", customerName: "T3 Signs" },
+        lineItems: [], production: [], invoices: [],
+      })),
+      getOrderLineItems: jest.fn(() => new Promise(() => undefined)),
+      getOrderProduction: jest.fn(async () => []),
+      getOrderInvoices: jest.fn(async () => []),
+      getProduct: repo().getProduct,
+    };
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow, logOrderSummaryStep, optionalOrderEnrichmentTimeoutMs: 10 });
+
+    const result = await tools.ordersGetSummary.execute(invocation, { orderNumber: "20002" });
+
+    expect(result).toMatchObject({ status: "ok", data: { order: { id: "order-20002" }, lineItems: [] } });
+    expect(result.warning).toContain("Line-item details are unavailable.");
+    expect(logOrderSummaryStep).toHaveBeenCalledWith(expect.objectContaining({ step: "lookup_line_items", outcome: "failed", errorCode: "tool_timeout" }));
+  });
+
+  test("drops malformed optional records and preserves the validated core summary", async () => {
+    const repository = {
+      getOrder: jest.fn(async () => ({
+        order: { id: "order-20002", orderNumber: "20002", displayNumber: "ORD-20002", status: "fulfillment", dueDate: null, updatedAt: capturedAt, customerId: "customer-1", customerName: "T3 Signs" },
+        lineItems: [], production: [], invoices: [],
+      })),
+      getOrderLineItems: jest.fn(async () => [
+        { id: "line-bad", description: "   ", productName: "Product", quantity: 1, status: "new" },
+        { id: "line-good", description: "  Good line  ", productName: "  ", quantity: 2, status: null },
+      ]),
+      getOrderProduction: jest.fn(async () => [
+        { id: "job-bad", stationKey: " ", stepKey: "prepress", status: "queued" },
+        { id: "job-good", stationKey: " flatbed ", stepKey: " prepress ", status: null },
+      ]),
+      getOrderInvoices: jest.fn(async () => []),
+      getProduct: repo().getProduct,
+    };
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow });
+
+    const result = await tools.ordersGetSummary.execute({ ...invocation, permissions: ["finance:read"] }, { orderNumber: "20002" });
+
+    expect(result).toMatchObject({
+      status: "ok",
+      data: {
+        order: { id: "order-20002" },
+        lineItems: [{ id: "line-good", description: "Good line", productName: null, status: "unavailable" }],
+        productionJobs: [{ id: "job-good", stationKey: "flatbed", stepKey: "prepress", status: "unavailable" }],
+      },
+    });
+    expect(result.warning).toContain("Malformed line-item details were omitted.");
+    expect(result.warning).toContain("Malformed production details were omitted.");
+    expect(() => (tools.ordersGetSummary.definition.resultSchema as any).parse(result)).not.toThrow();
+  });
+
   test.each(["20002", "ORD-20002", "ord-20002", "ORD 20002", "Order 20002."])("normalizes %s before using the tenant-scoped order repository", async (orderNumber) => {
     const repository = repo();
     const tools = createOrderProductOperationalTools({ repository, now: fixedNow });

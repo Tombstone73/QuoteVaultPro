@@ -36,6 +36,13 @@ export type AssistantToolPermissionPolicy = "internal_staff" | "catalog_read" | 
 export type AssistantToolDataClassification = "internal" | "restricted_finance";
 export type AssistantToolSourceLinkBehavior = "required" | "optional";
 
+/**
+ * Tool deadlines are policy, not adapter implementation details.  This cap
+ * bounds every individual read while allowing a slower, known multi-query
+ * lookup such as an order summary to receive its explicitly registered time.
+ */
+export const ASSISTANT_PLATFORM_MAX_TOOL_TIMEOUT_MS = 5_000;
+
 export interface AssistantToolAdapter<TInput = unknown> {
   execute(input: TInput, context: AssistantTrustedToolContext): Promise<AssistantToolResultEnvelope>;
 }
@@ -94,7 +101,10 @@ const toolMetadata = {
     inputSchema: assistantOrderSummaryInputSchema,
     resultSchema: assistantOrderSummaryResultSchema,
     maxResults: 1,
-    timeoutMs: 3_000,
+    // The order summary has a tenant-scoped core lookup plus bounded optional
+    // enrichments.  Five seconds is the platform maximum and prevents an
+    // outer deadline from pre-empting its registered execution budget.
+    timeoutMs: 5_000,
     dataClassification: "internal",
     sourceLinkBehavior: "required",
     auditCategory: "assistant_order_summary",
@@ -152,6 +162,11 @@ export function createAssistantToolRegistry(adapters: AssistantToolAdapters = {}
       ...(adapters[name] ? { adapter: adapters[name] } : {}),
     },
   ] as const);
+  for (const [, tool] of tools) {
+    if (!Number.isInteger(tool.timeoutMs) || tool.timeoutMs <= 0 || tool.timeoutMs > ASSISTANT_PLATFORM_MAX_TOOL_TIMEOUT_MS) {
+      throw new Error(`Assistant tool ${tool.name} has an unsafe timeout policy.`);
+    }
+  }
   return new Map(tools);
 }
 

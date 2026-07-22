@@ -119,6 +119,7 @@ export interface AssistantRepository {
     toolExecutions?: Array<{
       toolName: string; toolVersion: string; status: "succeeded" | "failed" | "disabled";
       errorCode?: string; auditStatus: string; durationMs: number;
+      failureCategory?: string; failingStep?: string; coreResultSucceeded?: boolean;
     }>;
   }): Promise<AssistantTurnResult | null>;
 }
@@ -423,7 +424,7 @@ export class AssistantService {
       response = error instanceof AssistantPlanningError ? error.message : "The assistant is temporarily unavailable. Please retry.";
       cards = [{ kind: "provider_unavailable", title: "Business questions unavailable", summary: response, sourceLinks: [], toolStatus: "failed" }];
     }
-    const result = await this.repo.createFoundationTurn({
+    const result = await this.persistFoundationTurn({
       ...scope,
       conversationId,
       actor,
@@ -448,6 +449,9 @@ export class AssistantService {
         errorCode: audit.failureCode,
         auditStatus: audit.status,
         durationMs: audit.durationMs,
+        failureCategory: audit.failureCategory,
+        failingStep: audit.failingStep,
+        coreResultSucceeded: audit.coreResultSucceeded,
       })),
     });
     if (!result) throw this.notFound();
@@ -464,7 +468,7 @@ export class AssistantService {
     scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string;
     response: string; status: "responded" | "failed"; errorCode?: string; structuredCards: AssistantStructuredCard[];
   }) {
-    const result = await this.repo.createFoundationTurn({
+    const result = await this.persistFoundationTurn({
       ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message,
       context: input.request.context, clientRequestId: input.request.clientRequestId, response: input.response,
       correlationId: input.correlationId, status: input.status,
@@ -476,10 +480,26 @@ export class AssistantService {
     if (!result) throw this.notFound();
     return result;
   }
+
+  /**
+   * A read result and the durable conversation response are separate concerns.
+   * We cannot claim a lookup failed when only response persistence failed.
+   */
+  private async persistFoundationTurn(input: Parameters<AssistantRepository["createFoundationTurn"]>[0]) {
+    try {
+      return await this.repo.createFoundationTurn(input);
+    } catch {
+      throw new AssistantServiceError(
+        "ASSISTANT_MESSAGE_PERSISTENCE_FAILED",
+        "The lookup completed, but the assistant response could not be saved. Please retry.",
+        503,
+      );
+    }
+  }
 }
 
 function renderToolResults(
-  executions: Array<{ toolName: string; status: string; result?: any; warning?: string }>,
+  executions: Array<{ toolName: string; status: string; result?: any; warning?: string; failureCategory?: string; failureCode?: string; failingStep?: string; coreResultSucceeded?: boolean }>,
   exactSearchTarget: import("./deterministicReadRouting").DeterministicSearchTarget | null = null,
   exactOrderLookup: import("./deterministicReadRouting").DeterministicOrderLookupTarget | null = null,
   currentOrderSummary = false,
@@ -490,10 +510,26 @@ function renderToolResults(
       const permissionDenied = execution.status === "permission_denied";
       const summary = permissionDenied
         ? "You don't have permission to view that order."
-        : exactOrderLookup
-          ? "I couldn't complete that lookup right now. Nothing was changed. Please retry."
+        : exactOrderLookup && execution.failureCategory === "timeout"
+          ? "I couldn't complete that lookup before it timed out. Nothing was changed. Please retry."
+          : exactOrderLookup
+            ? "I couldn't complete the order lookup right now. Nothing was changed. Please retry."
           : execution.warning ?? "The lookup could not be completed.";
-      cards.push({ kind: permissionDenied ? "permission_denied" : "tool_warning", title: execution.toolName, summary, sourceLinks: [], toolStatus: execution.status === "rejected" ? "failed" : execution.status as any });
+      cards.push({
+        kind: permissionDenied ? "permission_denied" : "tool_warning",
+        title: execution.toolName,
+        summary,
+        sourceLinks: [],
+        toolStatus: execution.status === "rejected" ? "failed" : execution.status as any,
+        ...(execution.failureCategory ? {
+          details: {
+            failureCategory: execution.failureCategory,
+            failureCode: execution.failureCode ?? null,
+            failingStep: execution.failingStep ?? null,
+            coreResultSucceeded: execution.coreResultSucceeded ?? false,
+          },
+        } : {}),
+      });
       continue;
     }
     const result = execution.result;

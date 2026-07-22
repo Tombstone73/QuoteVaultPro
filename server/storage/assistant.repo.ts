@@ -139,6 +139,9 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       errorCode?: string;
       auditStatus: string;
       durationMs: number;
+      failureCategory?: string;
+      failingStep?: string;
+      coreResultSucceeded?: boolean;
     }>;
   }): Promise<AssistantTurnResult | null> {
     const created = await db.transaction(async (tx) => {
@@ -263,7 +266,15 @@ export class DrizzleAssistantRepository implements AssistantRepository {
           eventType: "assistant_tool_executed",
           status: execution.auditStatus,
           correlationId: input.correlationId,
-          metadata: { toolName: execution.toolName, toolVersion: execution.toolVersion, durationMs: execution.durationMs, errorCode: execution.errorCode ?? null },
+          metadata: {
+            toolName: execution.toolName,
+            toolVersion: execution.toolVersion,
+            durationMs: execution.durationMs,
+            errorCode: execution.errorCode ?? null,
+            failureCategory: execution.failureCategory ?? null,
+            failingStep: execution.failingStep ?? null,
+            coreResultSucceeded: execution.coreResultSucceeded ?? false,
+          },
         });
       }
 

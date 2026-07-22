@@ -219,6 +219,14 @@ describe("AssistantService", () => {
     expect(result.assistantMessage.content).toBe(ASSISTANT_UNAVAILABLE_REPLY);
   });
 
+  test("classifies a response persistence failure separately from a lookup failure", async () => {
+    const repo = makeRepo({ createFoundationTurn: jest.fn(async () => { throw new Error("database unavailable"); }) });
+    const service = new AssistantService(repo, resolver);
+
+    await expect(service.createTurn(scope, "conversation_1", actor, { message: "What orders are late?", context }))
+      .rejects.toMatchObject({ code: "ASSISTANT_MESSAGE_PERSISTENCE_FAILED", statusCode: 503 });
+  });
+
   test("context contract rejects oversized selected-record scope", () => {
     expect(() => assistantContextEnvelopeSchema.parse({
       ...context,

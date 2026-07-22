@@ -22,6 +22,7 @@ import {
 } from "../../storage/assistantSearchCustomer.repo";
 import { QuoteInternalNotesRepository, type QuoteInternalReference } from "../../storage/quoteInternalNotes.repo";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
+import { AssistantToolExecutionError } from "./orchestration";
 
 const identifierSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/);
 const isoDateSchema = z.string().datetime({ offset: true });
@@ -187,7 +188,6 @@ type ToolDefinition<TInput extends z.ZodTypeAny, TResult extends z.ZodTypeAny> =
   inputSchema: TInput;
   resultSchema: TResult;
   maximumResultCount: number;
-  timeoutMs: number;
 };
 
 type Tool<TInput extends z.ZodTypeAny, TResult extends z.ZodTypeAny> = {
@@ -204,6 +204,8 @@ export interface AssistantOrderProductToolDependencies {
   timezone?: string;
   /** Sanitized operational diagnostics only; never receives row payloads. */
   logOrderSummaryStep?: (event: OrderSummaryStepLog) => void;
+  /** Bound each independent optional read so it cannot consume the core tool deadline. */
+  optionalOrderEnrichmentTimeoutMs?: number;
 }
 
 type OrderSummaryStep = "normalize_input" | "lookup_core_order" | "lookup_customer" | "lookup_line_items" | "enrich_production" | "enrich_fulfillment" | "enrich_artwork" | "enrich_billing" | "build_result" | "validate_result" | "return_result";
@@ -244,13 +246,19 @@ async function loadOrderSummaryEnrichments(
   organizationId: string,
   orderId: string,
   log: (step: OrderSummaryStep, outcome: OrderSummaryStepLog["outcome"], error?: unknown) => void,
+  timeoutMs: number,
 ) {
   const warnings: string[] = ["Some optional workflow details are unavailable for this order."];
-  const lineItems = await optionalOrderEnrichment("lookup_line_items", () => repository.getOrderLineItems?.(organizationId, orderId), log, warnings, "Line-item details are unavailable.");
-  const production = await optionalOrderEnrichment("enrich_production", () => repository.getOrderProduction?.(organizationId, orderId), log, warnings, "Production details are unavailable.");
+  // These reads have no dependency on one another after the tenant-scoped core
+  // order has been found. Start them together so one slow optional subsystem
+  // does not serially consume the order-summary budget.
+  const [lineItems, production, invoices] = await Promise.all([
+    optionalOrderEnrichment("lookup_line_items", () => repository.getOrderLineItems?.(organizationId, orderId), log, warnings, "Line-item details are unavailable.", timeoutMs),
+    optionalOrderEnrichment("enrich_production", () => repository.getOrderProduction?.(organizationId, orderId), log, warnings, "Production details are unavailable.", timeoutMs),
+    optionalOrderEnrichment("enrich_billing", () => repository.getOrderInvoices?.(organizationId, orderId), log, warnings, "Billing details are unavailable.", timeoutMs),
+  ]);
   log("enrich_fulfillment", "succeeded");
   log("enrich_artwork", "succeeded");
-  const invoices = await optionalOrderEnrichment("enrich_billing", () => repository.getOrderInvoices?.(organizationId, orderId), log, warnings, "Billing details are unavailable.");
   return { lineItems, production, invoices, warnings };
 }
 
@@ -260,10 +268,12 @@ async function optionalOrderEnrichment<T>(
   log: (step: OrderSummaryStep, outcome: OrderSummaryStepLog["outcome"], error?: unknown) => void,
   warnings: string[],
   warning: string,
+  timeoutMs: number,
 ): Promise<T | undefined> {
   log(step, "started");
   try {
-    const value = await load();
+    const pending = Promise.resolve().then(load);
+    const value = await withTimeout(pending, timeoutMs);
     if (value === undefined) warnings.push(warning);
     log(step, "succeeded");
     return value;
@@ -272,6 +282,113 @@ async function optionalOrderEnrichment<T>(
     log(step, "failed", error);
     return undefined;
   }
+}
+
+async function withTimeout<T>(pending: Promise<T>, timeoutMs: number): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error("tool_timeout")), timeoutMs);
+  });
+  try {
+    return await Promise.race([pending, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+const normalizedLineItemSchema = z.object({
+  id: identifierSchema,
+  description: z.string().min(1).max(500),
+  productName: z.string().nullable(),
+  quantity: z.number().int().nonnegative(),
+  status: z.string().min(1),
+  workflowState: z.literal("unavailable"),
+}).strict();
+
+const normalizedProductionJobSchema = z.object({
+  id: identifierSchema,
+  stationKey: z.string().min(1),
+  stepKey: z.string().min(1),
+  status: z.string().min(1),
+}).strict();
+
+const normalizedInvoiceSchema = z.object({
+  id: identifierSchema,
+  number: z.string().min(1),
+  status: z.string().min(1),
+}).strict();
+
+function trimmed(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function safeOptionalStatus(value: unknown): string {
+  // Optional workflow statuses are not authoritative order state. Preserve a
+  // well-formed display value, but prevent null/legacy values from failing the
+  // summary or implying a trusted status.
+  return trimmed(value) ?? "unavailable";
+}
+
+function normalizeOptionalRecords<T>(
+  values: unknown,
+  normalize: (value: unknown) => T | undefined,
+  warnings: string[],
+  warning: string,
+): T[] {
+  if (!Array.isArray(values)) {
+    warnings.push(warning);
+    return [];
+  }
+  const records: T[] = [];
+  for (const value of values) {
+    const record = normalize(value);
+    if (record) records.push(record);
+    else warnings.push(warning);
+  }
+  return records;
+}
+
+function normalizeLineItems(values: unknown, warnings: string[]) {
+  return normalizeOptionalRecords(values, (value) => {
+    if (!value || typeof value !== "object") return undefined;
+    const raw = value as Record<string, unknown>;
+    const parsed = normalizedLineItemSchema.safeParse({
+      id: raw.id,
+      description: trimmed(raw.description),
+      productName: trimmed(raw.productName) ?? null,
+      quantity: raw.quantity,
+      status: safeOptionalStatus(raw.status),
+      workflowState: "unavailable",
+    });
+    return parsed.success ? parsed.data : undefined;
+  }, warnings, "Malformed line-item details were omitted.");
+}
+
+function normalizeProductionJobs(values: unknown, warnings: string[]) {
+  return normalizeOptionalRecords(values, (value) => {
+    if (!value || typeof value !== "object") return undefined;
+    const raw = value as Record<string, unknown>;
+    const parsed = normalizedProductionJobSchema.safeParse({
+      id: raw.id,
+      stationKey: trimmed(raw.stationKey),
+      stepKey: trimmed(raw.stepKey),
+      status: safeOptionalStatus(raw.status),
+    });
+    return parsed.success ? parsed.data : undefined;
+  }, warnings, "Malformed production details were omitted.");
+}
+
+function normalizeInvoices(values: unknown, warnings: string[]) {
+  return normalizeOptionalRecords(values, (value) => {
+    if (!value || typeof value !== "object") return undefined;
+    const raw = value as Record<string, unknown>;
+    const parsed = normalizedInvoiceSchema.safeParse({
+      id: raw.id,
+      number: trimmed(raw.displayNumber) ?? (typeof raw.invoiceNumber === "number" ? String(raw.invoiceNumber) : undefined),
+      status: safeOptionalStatus(raw.status),
+    });
+    return parsed.success ? parsed.data : undefined;
+  }, warnings, "Malformed billing details were omitted.");
 }
 
 export function createOrderProductOperationalTools(deps: AssistantOrderProductToolDependencies = {}) {
@@ -293,9 +410,10 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
   const now = deps.now ?? (() => new Date());
   const timezone = deps.timezone ?? "America/New_York";
   const logOrderSummaryStep = deps.logOrderSummaryStep ?? defaultOrderSummaryStepLogger;
+  const optionalOrderEnrichmentTimeoutMs = deps.optionalOrderEnrichmentTimeoutMs ?? 1_500;
 
   const ordersGetSummary: Tool<typeof orderSummaryToolInputSchema, typeof orderSummaryToolResultSchema> = {
-    definition: { name: "orders.get_summary", version: "stage-2", readOnly: true, inputSchema: orderSummaryToolInputSchema, resultSchema: orderSummaryToolResultSchema, maximumResultCount: 25, timeoutMs: 5_000 },
+    definition: { name: "orders.get_summary", version: "stage-2", readOnly: true, inputSchema: orderSummaryToolInputSchema, resultSchema: orderSummaryToolResultSchema, maximumResultCount: 25 },
     async execute(invocation, rawInput) {
       const input = orderSummaryToolInputSchema.parse(rawInput);
       const normalizedOrderNumber = input.orderNumber ? canonicalOrderNumberLookup(input.orderNumber) : null;
@@ -315,7 +433,7 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
         log("lookup_core_order", "succeeded");
       } catch (error) {
         log("lookup_core_order", "failed", error);
-        throw error;
+        throw new AssistantToolExecutionError("core_query_failed", "core_query_failed", "lookup_core_order");
       }
       const retrievedAt = now();
       if (!record) return orderSummaryToolResultSchema.parse({
@@ -323,10 +441,10 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       });
 
       log("lookup_customer", "succeeded");
-      const enrichments = await loadOrderSummaryEnrichments(repository, invocation.organizationId, record.order.id, log);
-      const lineItems = enrichments.lineItems ?? record.lineItems;
-      const production = enrichments.production ?? record.production;
-      const invoices = enrichments.invoices ?? record.invoices;
+      const enrichments = await loadOrderSummaryEnrichments(repository, invocation.organizationId, record.order.id, log, optionalOrderEnrichmentTimeoutMs);
+      const lineItems = normalizeLineItems(enrichments.lineItems ?? record.lineItems, enrichments.warnings);
+      const production = normalizeProductionJobs(enrichments.production ?? record.production, enrichments.warnings);
+      const invoices = normalizeInvoices(enrichments.invoices ?? record.invoices, enrichments.warnings);
       const warnings = enrichments.warnings;
       const number = record.order.displayNumber ?? record.order.orderNumber;
       log("build_result", "started");
@@ -345,12 +463,12 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
             dueDate: toIso(record.order.dueDate),
             fulfillmentStatus: "unavailable",
           },
-          lineItems: lineItems.map((line) => ({ id: line.id, description: line.description.slice(0, 500), productName: line.productName ?? null, quantity: line.quantity, status: line.status, workflowState: "unavailable" })),
+          lineItems,
           artwork: { required: 0, awaitingDesign: 0 },
           proof: { required: 0, awaitingApproval: 0 },
           prepress: { required: 0, pending: 0 },
-          productionJobs: production.map((job) => ({ id: job.id, stationKey: job.stationKey, stepKey: job.stepKey, status: job.status })),
-          ...(canViewFinance(invocation.permissions) ? { invoices: invoices.map((invoice) => ({ id: invoice.id, number: invoice.displayNumber ?? String(invoice.invoiceNumber), status: invoice.status })) } : {}),
+          productionJobs: production,
+          ...(canViewFinance(invocation.permissions) ? { invoices } : {}),
           blockingIssues: [],
         },
         sourceLinks: [{ label: `Order ${number}`, href: `/orders/${record.order.id}`, entityType: "order" as const, entityId: record.order.id, capturedAt: toIso(record.order.updatedAt) ?? retrievedAt.toISOString() }],
@@ -366,13 +484,13 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
         return validated;
       } catch (error) {
         log("validate_result", "failed", error);
-        throw error;
+        throw new AssistantToolExecutionError("result_validation_failed", "result_validation_failed", "final_result_validation", true);
       }
     },
   };
 
   const productsGetSummary: Tool<typeof productSummaryToolInputSchema, typeof productSummaryToolResultSchema> = {
-    definition: { name: "products.get_summary", version: "stage-2", readOnly: true, inputSchema: productSummaryToolInputSchema, resultSchema: productSummaryToolResultSchema, maximumResultCount: 25, timeoutMs: 5_000 },
+    definition: { name: "products.get_summary", version: "stage-2", readOnly: true, inputSchema: productSummaryToolInputSchema, resultSchema: productSummaryToolResultSchema, maximumResultCount: 25 },
     async execute(invocation, rawInput) {
       const input = productSummaryToolInputSchema.parse(rawInput);
       const record = await repository.getProduct(invocation.organizationId, input);
@@ -397,7 +515,7 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
   };
 
   const reportsOperationalSummary: Tool<typeof operationalSummaryToolInputSchema, typeof operationalSummaryToolResultSchema> = {
-    definition: { name: "reports.operational_summary", version: "stage-2", readOnly: true, inputSchema: operationalSummaryToolInputSchema, resultSchema: operationalSummaryToolResultSchema, maximumResultCount: 10, timeoutMs: 5_000 },
+    definition: { name: "reports.operational_summary", version: "stage-2", readOnly: true, inputSchema: operationalSummaryToolInputSchema, resultSchema: operationalSummaryToolResultSchema, maximumResultCount: 10 },
     async execute(invocation, rawInput) {
       operationalSummaryToolInputSchema.parse(rawInput);
       const summary = await getOperationalSummary(invocation.organizationId);
@@ -412,7 +530,7 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
   };
 
   const navigationGetCurrentContext: Tool<typeof currentContextToolInputSchema, typeof currentContextToolResultSchema> = {
-    definition: { name: "navigation.get_current_context", version: "stage-2", readOnly: true, inputSchema: currentContextToolInputSchema, resultSchema: currentContextToolResultSchema, maximumResultCount: 1, timeoutMs: 1_000 },
+    definition: { name: "navigation.get_current_context", version: "stage-2", readOnly: true, inputSchema: currentContextToolInputSchema, resultSchema: currentContextToolResultSchema, maximumResultCount: 1 },
     async execute(invocation, rawInput) {
       currentContextToolInputSchema.parse(rawInput);
       const context = assistantContextEnvelopeSchema.parse(invocation.context);
