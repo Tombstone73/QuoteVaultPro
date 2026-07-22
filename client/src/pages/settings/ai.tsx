@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { useToast } from "@/hooks/use-toast";
+import { apiFetch } from "@/lib/queryClient";
 import type { AiCapabilitiesDto, AiMode, AiProvider, SafeAiSettingsDto } from "@shared/aiFoundationContracts";
 
 export type AiSettingsDraft = {
@@ -26,7 +27,7 @@ export type AiSettingsDraft = {
 };
 
 async function fetchAiSettings(): Promise<SafeAiSettingsDto> {
-  const response = await fetch("/api/ai/settings", { credentials: "include" });
+  const response = await apiFetch("/api/ai/settings");
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error((body as { message?: string }).message ?? "Failed to load AI settings");
@@ -36,7 +37,7 @@ async function fetchAiSettings(): Promise<SafeAiSettingsDto> {
 }
 
 async function fetchAiCapabilities(): Promise<AiCapabilitiesDto> {
-  const response = await fetch("/api/ai/capabilities", { credentials: "include" });
+  const response = await apiFetch("/api/ai/capabilities");
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error((body as { message?: string }).message ?? "Failed to load AI capabilities");
@@ -65,7 +66,7 @@ export function buildAiSettingsPayload(draft: AiSettingsDraft) {
 async function saveAiSettings(draft: AiSettingsDraft): Promise<SafeAiSettingsDto> {
   const payload = buildAiSettingsPayload(draft);
 
-  const response = await fetch("/api/ai/settings", {
+  const response = await apiFetch("/api/ai/settings", {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     credentials: "include",

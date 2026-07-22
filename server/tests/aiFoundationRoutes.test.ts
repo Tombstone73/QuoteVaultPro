@@ -42,10 +42,13 @@ beforeAll(async () => {
   registerAiFoundationRoutes = routeModule.registerAiFoundationRoutes;
 });
 
-function buildApp(options: { orgRole?: string; orgId?: string } = {}) {
+function buildApp(options: { authenticated?: boolean; orgRole?: string; orgId?: string } = {}) {
   const app = express();
   app.use(express.json());
-  const isAuthenticated = (req: any, _res: any, next: any) => {
+  const isAuthenticated = (req: any, res: any, next: any) => {
+    if (options.authenticated === false) {
+      return res.status(401).json({ message: "Unauthorized" });
+    }
     req.user = { id: "user_1", email: "admin@example.test", role: "admin" };
     next();
   };
@@ -135,5 +138,15 @@ describe("AI foundation routes", () => {
       triageBriefEnabled: true,
     }));
     expect(JSON.stringify(response.body)).not.toContain("sk-secret");
+  });
+
+  test("settings PATCH returns Unauthorized only when no authenticated session reaches the route", async () => {
+    const response = await request(buildApp({ authenticated: false }))
+      .patch("/api/ai/settings")
+      .send({ mode: "printershero_managed" });
+
+    expect(response.status).toBe(401);
+    expect(response.body.message).toBe("Unauthorized");
+    expect(updateSettings).not.toHaveBeenCalled();
   });
 });
