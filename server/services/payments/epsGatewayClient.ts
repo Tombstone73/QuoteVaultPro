@@ -120,11 +120,11 @@ export function normalizeEpsResponse(input: unknown): EpsNormalizedResponse {
   const tokenLast4 = epsLast4(getString(merged, ["AccountNum", "accountNum"]));
 
   // EPS returns a successful hosted-form token in `data.ptk` with a state of
-  // either STORED or PTK. This is not a card approval: the token must be
+  // GENERATED (and some gateway versions use STORED or PTK). This is not a card approval: the token must be
   // carried into the hosted-form URL and the payment remains pending until the
   // hosted result is confirmed. Treating the top-level success flag as an
   // approval caused valid PTK responses to be rejected after generation.
-  const storedPtk = (state === "STORED" || state === "PTK") && !!ptk;
+  const storedPtk = (state === "GENERATED" || state === "STORED" || state === "PTK") && !!ptk;
   const approved =
     successFlag === true ||
     responseCode === "A0000" ||

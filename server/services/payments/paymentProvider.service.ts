@@ -507,7 +507,10 @@ export async function createHostedSession(input: {
     zip: (customer as any)?.billingZip || (customer as any)?.zipCode || null,
   });
   const response = await client.getHostedPtk(payload);
-  if (!response.ptk || !response.pending) {
+  if (!response.ptk) {
+    throw new PaymentProviderError("EPS PTK missing from response.", "EPS_PTK_MISSING", 502);
+  }
+  if (!response.pending) {
     throw new PaymentProviderError(response.responseMessage || "EPS did not return a hosted payment token.", "EPS_PTK_FAILED", 502);
   }
 
