@@ -220,6 +220,7 @@ describe("EPS payment provider routes Phase 1", () => {
         paymentId: "payment_1",
         epsTransactionId: "txn_123",
         authCode: "AUTH1",
+        tokenLast4: "3364",
         approvedAmountCents: 2500,
         responseCode: "A0000",
         responseMessage: "Approved",
@@ -251,6 +252,8 @@ describe("EPS payment provider routes Phase 1", () => {
       .send({
         paymentId: "payment_1",
         epsTransactionId: "txn_duplicate",
+        authCode: "AUTH1",
+        tokenLast4: "3364",
         approvedAmountCents: 2500,
         result: "approved",
       });
@@ -260,6 +263,21 @@ describe("EPS payment provider routes Phase 1", () => {
       success: false,
       code: "EPS_TRANSACTION_DUPLICATE",
     });
+  });
+
+  test("record-hosted-result requires EPS approval evidence before it can settle a payment", async () => {
+    const response = await request(buildApp())
+      .post("/api/payments/eps/record-hosted-result")
+      .send({
+        paymentId: "payment_1",
+        epsTransactionId: "txn_missing_evidence",
+        approvedAmountCents: 125,
+        result: "approved",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({ success: false, code: "INVALID_REQUEST" });
+    expect(recordHostedResult).not.toHaveBeenCalled();
   });
 
   test("record-hosted-result returns safe amount-mismatch errors", async () => {
@@ -276,6 +294,8 @@ describe("EPS payment provider routes Phase 1", () => {
       .send({
         paymentId: "payment_1",
         epsTransactionId: "txn_amount_mismatch",
+        authCode: "AUTH1",
+        tokenLast4: "3364",
         approvedAmountCents: 2400,
         result: "approved",
         amountOverride: false,
@@ -307,6 +327,8 @@ describe("EPS payment provider routes Phase 1", () => {
       .send({
         paymentId: "payment_1",
         epsTransactionId: "txn_override",
+        authCode: "AUTH1",
+        tokenLast4: "3364",
         approvedAmountCents: 2400,
         result: "approved",
         amountOverride: true,
