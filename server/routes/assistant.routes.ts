@@ -99,6 +99,8 @@ function sendError(res: Response, error: unknown) {
       ? "conversation_not_found"
       : error.code === "ASSISTANT_DISABLED"
         ? "assistant_disabled"
+        : error.code === "ASSISTANT_MESSAGE_PERSISTENCE_FAILED"
+          ? "message_persistence_failed"
         : error.code === "ASSISTANT_AUTH_REQUIRED"
           ? "assistant_unavailable"
           : "turn_failed";

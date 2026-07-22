@@ -12,7 +12,8 @@ import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
 import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
-import type { AssistantResponseState } from "@shared/assistantContracts";
+import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
+import type { AssistantMessage, AssistantResponseState } from "@shared/assistantContracts";
 
 type AssistantResponsePresentation = "conversational" | "collection" | "record_summary" | "analytical" | "proposed_action" | "execution_result" | "diagnostic";
 
@@ -31,6 +32,15 @@ function diagnosticLabel(card: AssistantStructuredCard): string {
 
 function diagnosticStatus(card: AssistantStructuredCard): string | null {
   return "toolStatus" in card && card.toolStatus ? card.toolStatus : "status" in card ? card.status : null;
+}
+
+function diagnosticDetails(card: AssistantStructuredCard): { category: string | null; code: string | null; step: string | null } {
+  const details = "details" in card && isRecord(card.details) ? card.details : null;
+  return {
+    category: text(details?.failureCategory),
+    code: text(details?.failureCode),
+    step: text(details?.failingStep),
+  };
 }
 
 export function responsePresentationForCards(presentation: AssistantResponsePresentation | undefined): AssistantResponsePresentation {
@@ -142,7 +152,7 @@ export function ResultCards({
     </section>;
   })}
   {responseState?.retryable && onRetry ? <Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button> : null}
-  {diagnosticsEnabled && responseState?.diagnosticsAvailable && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => setDiagnosticsOpen((open) => !open)} aria-expanded={diagnosticsOpen}>{diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"}</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground"><p>Correlation ID: {correlationId ?? "Unavailable"}</p>{diagnosticCards.map((card, index) => <p key={`${diagnosticLabel(card)}-${index}`} className="mt-1">Tool: {diagnosticLabel(card)}{diagnosticStatus(card) ? ` (${formatAssistantDisplayValue(diagnosticStatus(card))})` : ""}</p>)}</div> : null}</div> : null}
+  {diagnosticsEnabled && responseState?.diagnosticsAvailable && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => setDiagnosticsOpen((open) => !open)} aria-expanded={diagnosticsOpen}>{diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"}</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground"><p>Correlation ID: {correlationId ?? "Unavailable"}</p>{diagnosticCards.map((card, index) => { const details = diagnosticDetails(card); return <div key={`${diagnosticLabel(card)}-${index}`} className="mt-1"><p>Tool: {diagnosticLabel(card)}{diagnosticStatus(card) ? ` (${formatAssistantDisplayValue(diagnosticStatus(card))})` : ""}</p>{details.category ? <p>Category: {formatAssistantDisplayValue(details.category)}</p> : null}{details.code ? <p>Code: {formatAssistantDisplayValue(details.code)}</p> : null}{details.step ? <p>Step: {formatAssistantDisplayValue(details.step)}</p> : null}</div>; })}</div> : null}</div> : null}
   </div>;
 }
 
@@ -204,6 +214,7 @@ function ConversationContent() {
   const cancelPlan = useCancelAssistantPlan();
   const confirmPlan = useConfirmAssistantQuoteInternalNote();
   const createExecutionPlan = useCreateAssistantExecutionPlan();
+  const [optimisticUserMessage, setOptimisticUserMessage] = React.useState<AssistantMessage | null>(null);
 
   React.useEffect(() => {
     if (!activeConversationId && conversations.data?.[0]) setActiveConversationId(conversations.data[0].id);
@@ -219,14 +230,19 @@ function ConversationContent() {
     event.preventDefault();
     const message = draft.trim();
     if (!message || sendTurn.isPending || !toolsEnabled) return;
+    setOptimisticUserMessage({ id: `pending-${Date.now()}`, role: "user", content: message, structuredCards: [], provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
     let conversationId = activeConversationId;
     if (!conversationId) {
       const conversation = await createConversation.mutateAsync();
       conversationId = conversation.id;
       setActiveConversationId(conversationId);
     }
-    await sendTurn.mutateAsync({ conversationId, message, context });
-    setDraft("");
+    try {
+      await sendTurn.mutateAsync({ conversationId, message, context });
+      setDraft("");
+    } catch {
+      setOptimisticUserMessage(null);
+    }
   };
 
   const createPlanFromProposal = async (turnId: string) => {
@@ -246,7 +262,21 @@ function ConversationContent() {
     if (!activeConversationId || sendTurn.isPending) return;
     await sendTurn.mutateAsync({ conversationId: activeConversationId, message, context });
   };
-  const messages = detail.data?.messages ?? [];
+  const persistedMessages = detail.data?.messages ?? [];
+  const optimisticMessagePersisted = Boolean(optimisticUserMessage && persistedMessages.some((message) => message.role === "user" && message.content === optimisticUserMessage.content));
+  const messages = optimisticUserMessage && !optimisticMessagePersisted ? [...persistedMessages, optimisticUserMessage] : persistedMessages;
+  React.useEffect(() => {
+    if (optimisticMessagePersisted) setOptimisticUserMessage(null);
+  }, [optimisticMessagePersisted]);
+  const latestMessage = messages.at(-1) ?? null;
+  const latestAssistantMessage = [...messages].reverse().find((message) => message.role === "assistant") ?? null;
+  const conversationScroll = useAssistantConversationScroll({
+    conversationId: activeConversationId,
+    latestMessageId: latestMessage?.id ?? null,
+    latestAssistantMessageId: latestAssistantMessage?.id ?? null,
+    pendingUserMessageId: optimisticUserMessage?.id ?? null,
+    completionKey: sendTurn.isError ? "send-error" : sendTurn.isPending ? "sending" : latestMessage?.id ?? "",
+  });
   const conversationItems = visibleAssistantConversations(conversations.data, activeConversationId);
   const fullComposerHelper = capabilities?.composerHelperText || capabilities?.unavailableReason || "Business questions are unavailable until AI configuration is complete.";
   const composerHelper = assistantComposerHelper(fullComposerHelper, presentation);
@@ -277,7 +307,8 @@ function ConversationContent() {
             <RefreshCw className="h-3.5 w-3.5" /> Refresh
           </Button>
         </div>
-        <div className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6" aria-live="polite">
+        <div className="relative min-h-0 flex-1">
+        <div ref={conversationScroll.containerRef} onScroll={conversationScroll.onScroll} className="h-full space-y-5 overflow-y-auto px-4 py-5 sm:px-6" aria-live="polite">
           {detail.isLoading ? <p className="text-sm text-muted-foreground">Loading conversation…</p> : null}
           {!messages.length && !detail.isLoading ? (
             <div className="mx-auto mt-8 max-w-sm text-center">
@@ -287,10 +318,12 @@ function ConversationContent() {
             </div>
           ) : messages.map((message, index) => {
             const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
-            if (message.role === "user") return <article key={message.id} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
-            return <article key={message.id} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            if (message.role === "user") return <article key={message.id} ref={message.id === latestMessage?.id ? conversationScroll.latestUserRef : undefined} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Your message wasn’t sent. Try again.</p> : null}
+        </div>
+        {conversationScroll.showJumpToLatest ? <Button type="button" variant="secondary" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-md" onClick={() => conversationScroll.scrollToLatest("assistant", true)}>Jump to latest</Button> : null}
         </div>
         <form className="border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)}>
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
