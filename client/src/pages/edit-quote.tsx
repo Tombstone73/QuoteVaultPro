@@ -83,6 +83,7 @@ export default function EditQuote() {
   // Line item editing state
   const [lineItemDialogOpen, setLineItemDialogOpen] = useState(false);
   const [editingLineItem, setEditingLineItem] = useState<QuoteLineItem | null>(null);
+  const [childParentLineItemId, setChildParentLineItemId] = useState<string | null>(null);
   const [productSearchOpen, setProductSearchOpen] = useState(false);
   const [productSearchQuery, setProductSearchQuery] = useState("");
   
@@ -463,6 +464,7 @@ export default function EditQuote() {
     setLineItemNotes("");
     setCalculatedPrice(null);
     setEditingLineItem(null);
+    setChildParentLineItemId(null);
     setLineItemError(null);
   };
 
@@ -475,6 +477,12 @@ export default function EditQuote() {
     setLineItemWidth("");
     setLineItemHeight("");
     setLineItemQuantity("1");
+    setLineItemDialogOpen(true);
+  };
+
+  const handleOpenAddChildLineItem = (parent: QuoteLineItem) => {
+    resetLineItemForm();
+    setChildParentLineItemId(parent.id);
     setLineItemDialogOpen(true);
   };
 
@@ -548,6 +556,7 @@ export default function EditQuote() {
         formula: "",
       },
       displayOrder: editingLineItem?.displayOrder ?? (lineItems.length || 0),
+      ...(childParentLineItemId ? { parentLineItemId: childParentLineItemId, lineItemRole: "child" as const } : {}),
     };
 
     console.log("[handleSaveLineItem] lineItemData:", lineItemData);
@@ -812,7 +821,7 @@ export default function EditQuote() {
                         <div className={item.lineItemRole === "child" ? "pl-5 border-l-2 border-muted" : ""}>
                           <div className="font-medium">{item.productName}</div>
                           {item.lineItemRole === "parent" && <Badge variant="secondary" className="mt-1">Bundle</Badge>}
-                          {item.lineItemRole === "child" && <span className="text-xs text-muted-foreground">Internal bundle component</span>}
+                          {item.lineItemRole === "child" && <Badge variant="outline" className="mt-1">Child item</Badge>}
                           {item.lineItemRole === "parent" && item.parentPriceMode === "manual_override" && (
                             <span className="ml-2 text-xs text-amber-600">Manual bundle price</span>
                           )}
@@ -841,6 +850,16 @@ export default function EditQuote() {
                       </TableCell>
                       <TableCell>
                         <div className="flex items-center gap-1">
+                          {item.lineItemRole !== "child" && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => handleOpenAddChildLineItem(item as QuoteLineItem)}
+                              data-testid={`button-add-child-${item.id}`}
+                            >
+                              <Plus className="mr-1 h-3.5 w-3.5" /> Add child
+                            </Button>
+                          )}
                           <Button
                             variant="ghost"
                             size="icon"
@@ -977,10 +996,10 @@ export default function EditQuote() {
         <DialogContent className="max-w-md">
           <DialogHeader>
             <DialogTitle>
-              {editingLineItem ? "Edit Line Item" : "Add Line Item"}
+              {editingLineItem ? "Edit Line Item" : childParentLineItemId ? "Add Child Item" : "Add Line Item"}
             </DialogTitle>
             <DialogDescription>
-              {editingLineItem ? "Update the product details" : "Add a new product to this quote"}
+              {editingLineItem ? "Update the product details" : childParentLineItemId ? "Add an add-on under the selected parent item" : "Add a new independent product to this quote"}
             </DialogDescription>
           </DialogHeader>
 

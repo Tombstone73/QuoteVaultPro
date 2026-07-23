@@ -6541,6 +6541,57 @@ export async function registerOrderRoutes(
         }
     });
 
+    app.post("/api/order-line-items/:id/production-bypass", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            if (req.user?.accountType === "PORTAL_CUSTOMER" || req.user?.role === "customer") {
+                return res.status(403).json({ success: false, message: "Customer portal users cannot bypass production." });
+            }
+            const parsed = z.object({ reason: z.string().trim().min(3, "A production bypass reason is required.").max(2000) }).safeParse(req.body ?? {});
+            if (!parsed.success) return res.status(400).json({ success: false, message: parsed.error.issues[0]?.message ?? "A production bypass reason is required." });
+            const userId = getUserId(req.user) ?? null;
+            const [lineItem] = await db.select({
+                id: orderLineItems.id,
+                orderId: orderLineItems.orderId,
+                productName: orderLineItems.description,
+                productionBypassed: orderLineItems.productionBypassed,
+            }).from(orderLineItems)
+                .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                .where(and(eq(orderLineItems.id, String(req.params.id)), eq(orders.organizationId, organizationId)))
+                .limit(1);
+            if (!lineItem) return res.status(404).json({ success: false, message: "Order line item not found" });
+
+            const now = new Date();
+            const [updated] = await db.update(orderLineItems).set({
+                productionBypassed: true,
+                productionBypassReason: parsed.data.reason,
+                productionBypassedByUserId: userId,
+                productionBypassedAt: now,
+                requiresDesign: false,
+                requiresPrepress: false,
+                requiresProofApproval: false,
+                workflowState: "no_production_required" as any,
+                updatedAt: now,
+            }).where(eq(orderLineItems.id, lineItem.id)).returning();
+
+            await db.insert(auditLogs).values({
+                organizationId,
+                userId,
+                actionType: "ORDER_LINE_ITEM_PRODUCTION_BYPASSED",
+                entityType: "order_line_item",
+                entityId: lineItem.id,
+                entityName: lineItem.productName ?? null,
+                description: `Production bypassed for order line item: ${parsed.data.reason}`,
+                newValues: { reason: parsed.data.reason, previousBypassed: lineItem.productionBypassed === true },
+            } as any);
+            await recomputeOrderBillingStatus({ organizationId, orderId: lineItem.orderId });
+            return res.json({ success: true, data: enrichLineItemWithEffectivePricing(updated as any) });
+        } catch (error: any) {
+            return res.status(error?.statusCode ?? 500).json({ success: false, message: error?.message ?? "Failed to bypass production" });
+        }
+    });
+
     app.patch("/api/order-line-items/:id", isAuthenticated, tenantContext, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);

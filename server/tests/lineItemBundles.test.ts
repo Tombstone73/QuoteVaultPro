@@ -41,4 +41,9 @@ describe("line item bundles", () => {
     expect(isProductionEligibleBundleLineItem({ lineItemRole: "parent", requiresProductionJob: true, workflowIntent: "standard_production" })).toBe(false);
     expect(isProductionEligibleBundleLineItem({ lineItemRole: "child", requiresProductionJob: true, workflowIntent: "standard_production" })).toBe(true);
   });
+
+  it("does not schedule a production-bypassed child or standalone line", () => {
+    expect(isProductionEligibleBundleLineItem({ lineItemRole: "standalone", requiresProductionJob: true, workflowIntent: "standard_production", productionBypassed: true })).toBe(false);
+    expect(isProductionEligibleBundleLineItem({ lineItemRole: "child", requiresProductionJob: true, workflowIntent: "standard_production", productionBypassed: true })).toBe(false);
+  });
 });

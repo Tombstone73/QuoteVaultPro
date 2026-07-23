@@ -3724,6 +3724,12 @@ export const orderLineItems = pgTable("order_line_items", {
   overrideReason: text("override_reason"),
   // Line item production notes (migration 0040)
   productionNotes: text("production_notes"),
+  // Explicit operational override for non-produced sales (blank media, hardware,
+  // raw materials, etc.). This never represents production completion.
+  productionBypassed: boolean("production_bypassed").notNull().default(false),
+  productionBypassReason: text("production_bypass_reason"),
+  productionBypassedByUserId: varchar("production_bypassed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  productionBypassedAt: timestamp("production_bypassed_at", { withTimezone: true }),
   // Bundle metadata copied from quote lines on conversion (migration 0131).
   parentLineItemId: varchar("parent_line_item_id").references((): AnyPgColumn => orderLineItems.id, { onDelete: 'set null' }),
   lineItemRole: lineItemRoleEnum("line_item_role").notNull().default("standalone"),
@@ -3741,6 +3747,7 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_requires_design_idx").on(table.requiresDesign),
   index("order_line_items_requires_proof_approval_idx").on(table.requiresProofApproval),
   index("order_line_items_requires_prepress_idx").on(table.requiresPrepress),
+  index("order_line_items_production_bypassed_idx").on(table.productionBypassed),
   index("order_line_items_approved_proof_version_idx").on(table.approvedProofVersionId),
   index("order_line_items_product_type_idx").on(table.productType),
   index("order_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
