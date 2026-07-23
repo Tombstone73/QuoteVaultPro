@@ -2,6 +2,7 @@ import OAuthClient from 'intuit-oauth';
 import crypto from 'crypto';
 import { db } from './db';
 import { oauthConnections, accountingSyncJobs, customers, customerContacts, customerContactLinks, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
+import { getBillableBundleRoots } from './services/lineItemBundles';
 import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
 import { generateNextInvoiceNumber } from './invoicesService';
@@ -1292,7 +1293,7 @@ export async function syncSingleInvoiceToQuickBooksForOrganization(organizationI
     DocNumber: invoiceDisplayNumber,
     TxnDate: new Date(txnDate).toISOString().split('T')[0],
     DueDate: invoice.dueDate ? new Date(invoice.dueDate as any).toISOString().split('T')[0] : undefined,
-    Line: buildQuickBooksInvoiceLinePayloads(lineItems as any[]),
+    Line: buildQuickBooksInvoiceLinePayloads(getBillableBundleRoots(lineItems as any[])),
   };
 
   // Remove undefined properties for QB API

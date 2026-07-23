@@ -14,6 +14,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Textarea } from "@/components/ui/textarea";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Separator } from "@/components/ui/separator";
 import { useToast } from "@/hooks/use-toast";
 import { 
@@ -55,6 +56,11 @@ type QuoteLineItem = {
   linePrice: string;
   priceBreakdown: any;
   displayOrder: number;
+  parentLineItemId?: string | null;
+  lineItemRole?: "standalone" | "parent" | "child";
+  childDisplayMode?: "hidden" | "visible_summary" | "visible_detail";
+  parentPriceMode?: "sum_children" | "manual_override";
+  childCalculatedTotalCents?: number | null;
 };
 
 export default function EditQuote() {
@@ -72,6 +78,7 @@ export default function EditQuote() {
   const [discountAmount, setDiscountAmount] = useState(0);
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
   const [recipientEmail, setRecipientEmail] = useState("");
+  const [selectedBundleLineIds, setSelectedBundleLineIds] = useState<Set<string>>(new Set());
 
   // Line item editing state
   const [lineItemDialogOpen, setLineItemDialogOpen] = useState(false);
@@ -166,7 +173,7 @@ export default function EditQuote() {
 
   // Calculate totals
   const lineItems = quote?.lineItems ?? [];
-  const subtotal = lineItems.reduce(
+  const subtotal = lineItems.filter((item: any) => item.lineItemRole !== "child" && !item.parentLineItemId).reduce(
     (sum: number, item: (typeof lineItems)[number]) =>
       sum + parseFloat(item.linePrice),
     0
@@ -400,6 +407,31 @@ export default function EditQuote() {
       });
     },
   });
+
+  const createBundleMutation = useMutation({
+    mutationFn: async ({ lineItemIds, name }: { lineItemIds: string[]; name: string }) => {
+      const response = await apiRequest("POST", `/api/quotes/${quoteId}/line-item-bundles`, {
+        lineItemIds,
+        name,
+        childDisplayMode: "hidden",
+      });
+      return response.json();
+    },
+    onSuccess: () => {
+      setSelectedBundleLineIds(new Set());
+      queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+      toast({ title: "Bundle created", description: "The selected items now share one customer-facing line." });
+    },
+    onError: (error: Error) => toast({ title: "Could not group items", description: error.message, variant: "destructive" }),
+  });
+
+  const handleCreateBundle = () => {
+    const lineItemIds = Array.from(selectedBundleLineIds);
+    if (lineItemIds.length < 2) return;
+    const name = window.prompt("Customer-facing bundle name", "Combined item")?.trim();
+    if (!name) return;
+    createBundleMutation.mutate({ lineItemIds, name });
+  };
 
   const emailQuoteMutation = useMutation({
     mutationFn: async (email: string) => {
@@ -710,15 +742,26 @@ export default function EditQuote() {
               <CardTitle>Line Items</CardTitle>
               <CardDescription>Products included in this quote</CardDescription>
             </div>
-            <Button 
-              variant="outline" 
-              size="sm" 
-              onClick={handleOpenAddLineItem}
-              data-testid="button-add-line-item"
-            >
-              <Plus className="w-4 h-4 mr-2" />
-              Add Item
-            </Button>
+            <div className="flex items-center gap-2">
+              <Button
+                variant="outline"
+                size="sm"
+                disabled={selectedBundleLineIds.size < 2 || createBundleMutation.isPending}
+                onClick={handleCreateBundle}
+                data-testid="button-group-line-items"
+              >
+                Group selected ({selectedBundleLineIds.size})
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleOpenAddLineItem}
+                data-testid="button-add-line-item"
+              >
+                <Plus className="w-4 h-4 mr-2" />
+                Add Item
+              </Button>
+            </div>
           </div>
         </CardHeader>
         <CardContent>
@@ -739,6 +782,7 @@ export default function EditQuote() {
               <Table>
                 <TableHeader>
                   <TableRow>
+                    <TableHead className="w-10" />
                     <TableHead>Product</TableHead>
                     <TableHead>Dimensions</TableHead>
                     <TableHead>Qty</TableHead>
@@ -752,8 +796,26 @@ export default function EditQuote() {
                   {lineItems.map((item: (typeof lineItems)[number]) => (
                     <TableRow key={item.id} data-testid={`row-line-item-${item.id}`}>
                       <TableCell>
-                        <div>
+                        {item.lineItemRole === "standalone" || !item.lineItemRole ? (
+                          <Checkbox
+                            checked={selectedBundleLineIds.has(item.id)}
+                            onCheckedChange={(checked) => setSelectedBundleLineIds((current) => {
+                              const next = new Set(current);
+                              if (checked) next.add(item.id); else next.delete(item.id);
+                              return next;
+                            })}
+                            aria-label={`Select ${item.productName} for grouping`}
+                          />
+                        ) : null}
+                      </TableCell>
+                      <TableCell>
+                        <div className={item.lineItemRole === "child" ? "pl-5 border-l-2 border-muted" : ""}>
                           <div className="font-medium">{item.productName}</div>
+                          {item.lineItemRole === "parent" && <Badge variant="secondary" className="mt-1">Bundle</Badge>}
+                          {item.lineItemRole === "child" && <span className="text-xs text-muted-foreground">Internal bundle component</span>}
+                          {item.lineItemRole === "parent" && item.parentPriceMode === "manual_override" && (
+                            <span className="ml-2 text-xs text-amber-600">Manual bundle price</span>
+                          )}
                           {item.variantName && (
                             <div className="text-xs text-muted-foreground">{item.variantName}</div>
                           )}

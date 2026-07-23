@@ -12,6 +12,7 @@ import {
   type CompanyDocumentBrandingInput,
 } from './documentCompanyBranding';
 import { DEFAULT_INVOICE_PDF_THEME, type InvoicePdfTheme, type Rgb } from './invoicePdfTheme';
+import { getCustomerVisibleBundleLines } from '../services/lineItemBundles';
 
 type CompanySettingsLike = CompanyDocumentBrandingInput & {
   remittanceAddress?: RemittanceAddress | null;
@@ -67,6 +68,9 @@ type InvoiceLineItemLike = {
   sku?: string | null;
   // v1-safe thumbnail strategy: data URLs only (no remote fetch)
   thumbnailDataUrl?: string | null;
+  parentLineItemId?: string | null;
+  lineItemRole?: "standalone" | "parent" | "child" | null;
+  childDisplayMode?: "hidden" | "visible_summary" | "visible_detail" | null;
 } | null;
 
 type InvoicePdfParams = {
@@ -759,7 +763,7 @@ export async function generateInvoicePdfBytes(
 
   drawTableHeader();
 
-  const lineItems = params.lineItems || [];
+  const lineItems = getCustomerVisibleBundleLines((params.lineItems || []).filter((line): line is NonNullable<InvoiceLineItemLike> => Boolean(line)));
   for (const li of lineItems) {
     ensureSpace(bottomSafeY + 170);
 

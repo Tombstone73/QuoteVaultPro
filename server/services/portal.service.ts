@@ -35,6 +35,7 @@ import { getPortalFileCategoryLabel, normalizePortalFileCategory } from "@shared
 import { getStripeClient } from "../lib/stripe";
 import { refreshInvoiceStatus } from "../invoicesService";
 import { generateInvoicePdfBytes } from "./invoicePdf";
+import { getBillableBundleRoots, getCustomerVisibleBundleLines } from "./lineItemBundles";
 import { getInvoiceOrderContext } from "./invoiceOrderContext";
 import { storage } from "../storage";
 import { resolveOriginalFileAccess } from "../lib/supabaseObjectHelpers";
@@ -513,6 +514,9 @@ type OrderLineItemPortalRow = Pick<
   | "workflowState"
   | "requiresProofApproval"
   | "approvedProofVersionId"
+  | "parentLineItemId"
+  | "lineItemRole"
+  | "childDisplayMode"
 >;
 
 type ShipmentPortalRow = Pick<
@@ -548,7 +552,7 @@ type QuotePortalRow = Pick<
 
 type QuoteLineItemPortalRow = Pick<
   typeof quoteLineItems.$inferSelect,
-  "id" | "quoteId" | "productName" | "description" | "width" | "height" | "quantity" | "linePrice" | "selectedOptions"
+  "id" | "quoteId" | "productName" | "description" | "width" | "height" | "quantity" | "linePrice" | "selectedOptions" | "parentLineItemId" | "lineItemRole" | "childDisplayMode"
 >;
 
 type QuoteWorkflowPortalRow = Pick<
@@ -3005,7 +3009,8 @@ function mapOrderDetail(
     shippingMethod: order.shippingMethod,
     proofActionRequired: proofSummary.actionRequired,
   });
-  const safeLineItems = lineItems.map((lineItem) => ({
+  const customerLineItems = getCustomerVisibleBundleLines(lineItems);
+  const safeLineItems = customerLineItems.map((lineItem) => ({
     id: lineItem.id,
     name: lineItem.description,
     description: null,
@@ -3041,7 +3046,7 @@ function mapOrderDetail(
     displayStatus,
     rawStatus: null,
     total: toMoney(order.total),
-    itemCount: lineItems.length,
+    itemCount: getBillableBundleRoots(lineItems).length,
     proofStatusSummary: proofSummary,
     fulfillmentSummary,
     lineItems: safeLineItems,
@@ -3071,6 +3076,9 @@ async function loadOrderLineItems(orderIds: string[]) {
       approvedProofVersionId: orderLineItems.approvedProofVersionId,
       sortOrder: orderLineItems.sortOrder,
       createdAt: orderLineItems.createdAt,
+      parentLineItemId: orderLineItems.parentLineItemId,
+      lineItemRole: orderLineItems.lineItemRole,
+      childDisplayMode: orderLineItems.childDisplayMode,
     })
     .from(orderLineItems)
     .where(inArray(orderLineItems.orderId, orderIds))
@@ -3221,7 +3229,8 @@ function mapQuoteDetail(
     convertedToOrderId: quote.convertedToOrderId,
     workflowStatus: workflowState?.status,
   });
-  const mappedLineItems = lineItems.map((lineItem) => {
+  const customerLineItems = getCustomerVisibleBundleLines(lineItems);
+  const mappedLineItems = customerLineItems.map((lineItem) => {
     const quantity = Math.max(1, Number(lineItem.quantity || 0));
     const lineTotal = toMoney(lineItem.linePrice);
     return {
@@ -3251,7 +3260,7 @@ function mapQuoteDetail(
     validUntil: toIso(quote.validUntil),
     displayStatus,
     total: toMoney(quote.totalPrice),
-    itemCount: mappedLineItems.length,
+    itemCount: getBillableBundleRoots(lineItems).length,
     customerVisibleActions: mapQuoteActions(displayStatus),
     subtotal: toMoney(quote.subtotal),
     tax: toMoney(quote.taxAmount),
@@ -3279,6 +3288,9 @@ async function loadQuoteLineItems(quoteIds: string[]) {
       quantity: quoteLineItems.quantity,
       linePrice: quoteLineItems.linePrice,
       selectedOptions: quoteLineItems.selectedOptions,
+      parentLineItemId: quoteLineItems.parentLineItemId,
+      lineItemRole: quoteLineItems.lineItemRole,
+      childDisplayMode: quoteLineItems.childDisplayMode,
       displayOrder: quoteLineItems.displayOrder,
       createdAt: quoteLineItems.createdAt,
     })

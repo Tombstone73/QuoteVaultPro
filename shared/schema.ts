@@ -1673,6 +1673,9 @@ export const quotes = pgTable("quotes", {
 
 // Quote Line Items table
 export const quoteLineItemStatusEnum = pgEnum("quote_line_item_status", ["draft", "active", "canceled"]);
+export const lineItemRoleEnum = pgEnum("line_item_role", ["standalone", "parent", "child"]);
+export const lineItemChildDisplayModeEnum = pgEnum("line_item_child_display_mode", ["hidden", "visible_summary", "visible_detail"]);
+export const lineItemParentPriceModeEnum = pgEnum("line_item_parent_price_mode", ["sum_children", "manual_override"]);
 export const quoteLineItems = pgTable("quote_line_items", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'cascade' }),
@@ -1754,12 +1757,21 @@ export const quoteLineItems = pgTable("quote_line_items", {
   requiresPrepress: boolean("requires_prepress"),
   // Proof-approval snapshot (migration 0032). NULL = legacy row, falls back to live product on conversion.
   requiresProofApproval: boolean("requires_proof_approval"),
+  // Bundle metadata (migration 0131). Parent wrappers are pricing/display-only;
+  // their production requirements are always disabled by the bundle service.
+  parentLineItemId: varchar("parent_line_item_id").references((): AnyPgColumn => quoteLineItems.id, { onDelete: 'set null' }),
+  lineItemRole: lineItemRoleEnum("line_item_role").notNull().default("standalone"),
+  childDisplayMode: lineItemChildDisplayModeEnum("child_display_mode").notNull().default("hidden"),
+  parentPriceMode: lineItemParentPriceModeEnum("parent_price_mode").notNull().default("sum_children"),
+  childCalculatedTotalCents: integer("child_calculated_total_cents"),
 }, (table) => [
   index("quote_line_items_quote_id_idx").on(table.quoteId),
   index("quote_line_items_product_id_idx").on(table.productId),
   index("quote_line_items_product_type_idx").on(table.productType),
   index("quote_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
   index("quote_line_items_priced_at_idx").on(table.pricedAt),
+  index("quote_line_items_parent_line_item_id_idx").on(table.parentLineItemId),
+  index("quote_line_items_role_idx").on(table.lineItemRole),
 ]);
 
 export const insertQuoteSchema = createInsertSchema(quotes).omit({
@@ -3712,6 +3724,12 @@ export const orderLineItems = pgTable("order_line_items", {
   overrideReason: text("override_reason"),
   // Line item production notes (migration 0040)
   productionNotes: text("production_notes"),
+  // Bundle metadata copied from quote lines on conversion (migration 0131).
+  parentLineItemId: varchar("parent_line_item_id").references((): AnyPgColumn => orderLineItems.id, { onDelete: 'set null' }),
+  lineItemRole: lineItemRoleEnum("line_item_role").notNull().default("standalone"),
+  childDisplayMode: lineItemChildDisplayModeEnum("child_display_mode").notNull().default("hidden"),
+  parentPriceMode: lineItemParentPriceModeEnum("parent_price_mode").notNull().default("sum_children"),
+  childCalculatedTotalCents: integer("child_calculated_total_cents"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -3726,6 +3744,8 @@ export const orderLineItems = pgTable("order_line_items", {
   index("order_line_items_approved_proof_version_idx").on(table.approvedProofVersionId),
   index("order_line_items_product_type_idx").on(table.productType),
   index("order_line_items_pbv2_tree_version_id_idx").on(table.pbv2TreeVersionId),
+  index("order_line_items_parent_line_item_id_idx").on(table.parentLineItemId),
+  index("order_line_items_role_idx").on(table.lineItemRole),
 ]);
 
 export const lineItemDesignBriefs = pgTable("line_item_design_briefs", {
@@ -4815,6 +4835,12 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
   specsJson: jsonb("specs_json").$type<Record<string, any>>(),
   // NEW: v2 canonical option selections (additive)
   optionSelectionsJson: jsonb("option_selections_json").$type<any>(),
+  // Immutable bundle display snapshot (migration 0131).
+  parentLineItemId: varchar("parent_line_item_id"),
+  lineItemRole: lineItemRoleEnum("line_item_role").notNull().default("standalone"),
+  childDisplayMode: lineItemChildDisplayModeEnum("child_display_mode").notNull().default("hidden"),
+  parentPriceMode: lineItemParentPriceModeEnum("parent_price_mode").notNull().default("sum_children"),
+  childCalculatedTotalCents: integer("child_calculated_total_cents"),
   selectedOptions: jsonb("selected_options").$type<Array<{
     optionId: string;
     optionName: string;
@@ -4827,6 +4853,7 @@ export const invoiceLineItems = pgTable("invoice_line_items", {
 }, (table) => [
   index("invoice_line_items_invoice_id_idx").on(table.invoiceId),
   index("invoice_line_items_product_id_idx").on(table.productId),
+  index("invoice_line_items_parent_line_item_id_idx").on(table.parentLineItemId),
 ]);
 
 export const insertInvoiceLineItemSchema = createInsertSchema(invoiceLineItems).omit({

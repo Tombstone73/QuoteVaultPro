@@ -1,4 +1,5 @@
 import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from "pdf-lib";
+import { getCustomerVisibleBundleLines } from "../services/lineItemBundles";
 
 export class OrderPdfEligibilityError extends Error {
   statusCode: number;
@@ -29,6 +30,9 @@ type OrderPdfLineItem = {
   specsJson?: Record<string, unknown> | null;
   materialUsageJson?: Array<{ materialName?: string | null }> | null;
   materialUsages?: Array<{ materialName?: string | null; materialLabel?: string | null; name?: string | null }> | null;
+  parentLineItemId?: string | null;
+  lineItemRole?: "standalone" | "parent" | "child" | null;
+  childDisplayMode?: "hidden" | "visible_summary" | "visible_detail" | null;
 };
 
 type OrderPdfInput = {
@@ -126,7 +130,7 @@ function isValidPdfLineItem(lineItem: OrderPdfLineItem): boolean {
 
 export function getOrderPdfEligibility(order: OrderPdfInput["order"]): OrderPdfEligibility {
   const lineItems = Array.isArray(order.lineItems)
-    ? order.lineItems.filter((lineItem) => lineItem.status !== "canceled")
+    ? getCustomerVisibleBundleLines(order.lineItems).filter((lineItem) => lineItem.status !== "canceled")
     : [];
 
   if (!hasText(order.id)) {

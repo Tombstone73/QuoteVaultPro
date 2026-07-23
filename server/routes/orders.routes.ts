@@ -262,12 +262,15 @@ async function recomputeOrderTotalsFromPersistedLineItems(orderId: string, organ
         .select({
             totalPrice: orderLineItems.totalPrice,
             isTaxableSnapshot: orderLineItems.isTaxableSnapshot,
+            parentLineItemId: orderLineItems.parentLineItemId,
+            lineItemRole: orderLineItems.lineItemRole,
         })
         .from(orderLineItems)
         .where(eq(orderLineItems.orderId, orderId));
 
-    const subtotal = lineItems.reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0);
-    const taxableSubtotal = lineItems
+    const billableLineItems = lineItems.filter((item) => item.lineItemRole !== "child" && !item.parentLineItemId);
+    const subtotal = billableLineItems.reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0);
+    const taxableSubtotal = billableLineItems
         .filter((item) => item.isTaxableSnapshot !== false)
         .reduce((sum, item) => sum + (Number(item.totalPrice) || 0), 0);
     const discount = Number(orderRow.discount) || 0;
