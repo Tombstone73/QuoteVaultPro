@@ -9,7 +9,7 @@
  */
 
 import { db } from "./db";
-import { lineItemFiles, orders, orderLineItems, orderAttachments, organizations, productionJobs } from "../shared/schema";
+import { lineItemFiles, orders, orderLineItems, orderAttachments, organizations, productionJobs, localFileDestinations, localFileCopyJobs } from "../shared/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { getStorageClient } from "./objectStorage";
 import type { Response } from "express";
@@ -369,6 +369,13 @@ export async function uploadLineItemFile(params: {
       organizationId,
       actorUserId: createdByUserId,
     }).completion;
+    try {
+      const [order] = await db.select({ customerId: orders.customerId, orderNumber: orders.orderNumber }).from(orders).where(eq(orders.id, orderId)).limit(1);
+      if (order?.customerId) {
+        const [destination] = await db.select({ id: localFileDestinations.id }).from(localFileDestinations).where(and(eq(localFileDestinations.organizationId, organizationId), eq(localFileDestinations.customerId, order.customerId), eq(localFileDestinations.enabled, true))).limit(1);
+        if (destination) await db.insert(localFileCopyJobs).values({ organizationId, destinationId: destination.id, sourceFileId: stored.linkedRecord.id, orderId, orderLineItemId: lineItemId, customerId: order.customerId, outputFilename: `${order.orderNumber || orderId}_${originalFilename}` });
+      }
+    } catch (error) { console.error("[LocalBridge] Failed to enqueue final-file copy job", { organizationId, lineItemId, error: error instanceof Error ? error.message : String(error) }); }
   }
 
   return stored.linkedRecord;
