@@ -54,6 +54,7 @@ import {
   listProofingQueue,
   markProofVersionSent,
   recordManualProofApprovalOverride,
+  recordManualProofApprovalOverrides,
   recordProofResponse,
   resolveLineItemProofingTruth,
 } from "../services/proofingService";
@@ -732,6 +733,39 @@ function createTestApp() {
       return res.json({ success: true, data: result });
     } catch (error: any) {
       return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to record manual approval override" });
+    }
+  });
+
+  app.post("/api/proofing/line-items/manual-approval-override", isAuthenticated, tenantContext, isAdmin, async (req: any, res: Response) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        lineItemIds: z.array(z.string().trim().min(1)).min(1, "Select at least one proof item to override"),
+        overrideReason: z.string().trim().min(1, "Override reason is required"),
+        internalNote: z.string().optional().nullable(),
+      }).safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+      if (new Set(parsed.data.lineItemIds).size !== parsed.data.lineItemIds.length) {
+        return res.status(400).json({ error: "Selected proof items must not contain duplicates" });
+      }
+
+      const overrides = await db.transaction((tx) => recordManualProofApprovalOverrides(tx, {
+        organizationId,
+        lineItemIds: parsed.data.lineItemIds,
+        actorUserId: userId,
+        actorName: req.user?.name ?? null,
+        actorEmail: req.user?.email ?? null,
+        overrideReason: parsed.data.overrideReason,
+        internalNote: parsed.data.internalNote ?? null,
+      }));
+      return res.json({ success: true, data: { items: overrides.map((override, index) => ({ lineItemId: parsed.data.lineItemIds[index], ...override })) } });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ error: error?.message || "Failed to record manual approval overrides" });
     }
   });
 
@@ -2375,6 +2409,79 @@ describe("proofing route integration", () => {
       .limit(1);
 
     expect(auditRow?.entityType).toBe("line_item_proof_manual_approval_override");
+  });
+
+  test("bulk override approves only the selected proof items", async () => {
+    const first = await createLineItemFixture("bulk_override_first");
+    const second = await createLineItemFixture("bulk_override_second");
+    const untouched = await createLineItemFixture("bulk_override_untouched");
+    const firstProof = await createAndSendProof(first.lineItemId, first.proofFileA);
+    const secondProof = await createAndSendProof(second.lineItemId, second.proofFileA);
+    await createAndSendProof(untouched.lineItemId, untouched.proofFileA);
+
+    const response = await request(app)
+      .post("/api/proofing/line-items/manual-approval-override")
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ lineItemIds: [first.lineItemId, second.lineItemId], overrideReason: "Combined proof approved by phone" })
+      .expect(200);
+
+    expect(response.body).toMatchObject({ success: true, data: { items: [{ lineItemId: first.lineItemId }, { lineItemId: second.lineItemId }] } });
+    const overriddenRows = await db
+      .select({ lineItemId: lineItemProofManualApprovalOverrides.lineItemId, proofVersionId: lineItemProofManualApprovalOverrides.proofVersionId })
+      .from(lineItemProofManualApprovalOverrides)
+      .where(inArray(lineItemProofManualApprovalOverrides.lineItemId, [first.lineItemId, second.lineItemId]));
+    expect(overriddenRows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ lineItemId: first.lineItemId, proofVersionId: firstProof.proofVersionId }),
+      expect.objectContaining({ lineItemId: second.lineItemId, proofVersionId: secondProof.proofVersionId }),
+    ]));
+
+    const [untouchedLineItem] = await db
+      .select({ approvedProofVersionId: orderLineItems.approvedProofVersionId })
+      .from(orderLineItems)
+      .where(eq(orderLineItems.id, untouched.lineItemId));
+    expect(untouchedLineItem?.approvedProofVersionId).toBeNull();
+  });
+
+  test("bulk override rejects empty, cross-tenant, and partially invalid selections without changes", async () => {
+    const valid = await createLineItemFixture("bulk_override_atomic_valid");
+    await createAndSendProof(valid.lineItemId, valid.proofFileA);
+
+    await request(app)
+      .post("/api/proofing/line-items/manual-approval-override")
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ lineItemIds: [], overrideReason: "No items" })
+      .expect(400);
+
+    await request(app)
+      .post("/api/proofing/line-items/manual-approval-override")
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", "other_tenant")
+      .send({ lineItemIds: [valid.lineItemId], overrideReason: "Wrong tenant" })
+      .expect(404);
+
+    await request(app)
+      .post("/api/proofing/line-items/manual-approval-override")
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ lineItemIds: [valid.lineItemId, "missing_line_item"], overrideReason: "All or none" })
+      .expect(404);
+
+    const [validLineItem] = await db
+      .select({ approvedProofVersionId: orderLineItems.approvedProofVersionId })
+      .from(orderLineItems)
+      .where(eq(orderLineItems.id, valid.lineItemId));
+    expect(validLineItem?.approvedProofVersionId).toBeNull();
+    const overrides = await db
+      .select({ id: lineItemProofManualApprovalOverrides.id })
+      .from(lineItemProofManualApprovalOverrides)
+      .where(eq(lineItemProofManualApprovalOverrides.lineItemId, valid.lineItemId));
+    expect(overrides).toHaveLength(0);
   });
 
   test("manual approval override recovers a proof-blocked rejected line item", async () => {

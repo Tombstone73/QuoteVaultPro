@@ -3718,6 +3718,42 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
   }
 }
 
+export async function recordManualProofApprovalOverrides(tx: any, args: {
+  organizationId: string;
+  lineItemIds: string[];
+  actorUserId: string;
+  actorName?: string | null;
+  actorEmail?: string | null;
+  overrideReason: string;
+  internalNote?: string | null;
+}) {
+  if (!Array.isArray(args.lineItemIds) || args.lineItemIds.length === 0) {
+    throwProofingBadRequest("Select at least one proof item to override");
+  }
+
+  const lineItemIds = args.lineItemIds.map((lineItemId) => trimNullable(lineItemId));
+  if (lineItemIds.some((lineItemId) => !lineItemId)) {
+    throwProofingBadRequest("Each selected proof item must have a valid id");
+  }
+  if (new Set(lineItemIds).size !== lineItemIds.length) {
+    throwProofingBadRequest("Selected proof items must not contain duplicates");
+  }
+
+  const results = [];
+  for (const lineItemId of lineItemIds) {
+    results.push(await recordManualProofApprovalOverride(tx, {
+      organizationId: args.organizationId,
+      lineItemId: lineItemId!,
+      actorUserId: args.actorUserId,
+      actorName: args.actorName ?? null,
+      actorEmail: args.actorEmail ?? null,
+      overrideReason: args.overrideReason,
+      internalNote: args.internalNote ?? null,
+    }));
+  }
+  return results;
+}
+
 export async function markLineItemProofNotRequired(tx: any, args: {
   organizationId: string;
   lineItemId: string;

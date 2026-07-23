@@ -39,6 +39,7 @@ import {
   markLineItemProofNotRequired,
   markProofVersionSent,
   recordManualProofApprovalOverride,
+  recordManualProofApprovalOverrides,
   recordProofResponse,
   resendProofVersion,
   resolveLineItemProofingTruth,
@@ -1018,6 +1019,81 @@ export function registerProofingRoutes(
       const status = error?.statusCode || 500;
       console.error("[Proofing] Error recording manual approval override:", error);
       return res.status(status).json({ error: error?.message || "Failed to record manual approval override" });
+    }
+  });
+
+  app.post("/api/proofing/line-items/manual-approval-override", isAuthenticated, tenantContext, isAdmin, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const parsed = z.object({
+        lineItemIds: z.array(z.string().trim().min(1, "Each selected proof item must have a valid id")).min(1, "Select at least one proof item to override").max(100),
+        overrideReason: z.string().trim().min(1, "Override reason is required"),
+        internalNote: z.string().optional().nullable(),
+      }).superRefine((value, ctx) => {
+        if (new Set(value.lineItemIds).size !== value.lineItemIds.length) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["lineItemIds"], message: "Selected proof items must not contain duplicates" });
+        }
+      }).safeParse(req.body);
+
+      if (!parsed.success) {
+        return res.status(400).json({ error: fromZodError(parsed.error).message });
+      }
+
+      const result = await db.transaction(async (tx) => {
+        const overrides = await recordManualProofApprovalOverrides(tx, {
+          organizationId,
+          lineItemIds: parsed.data.lineItemIds,
+          actorUserId: userId,
+          actorName: req.user?.name ?? null,
+          actorEmail: req.user?.email ?? null,
+          overrideReason: parsed.data.overrideReason,
+          internalNote: parsed.data.internalNote ?? null,
+        });
+
+        const items = [];
+        for (let index = 0; index < overrides.length; index += 1) {
+          const lineItemId = parsed.data.lineItemIds[index]!;
+          const overrideResult = overrides[index]!;
+          await tx.insert(auditLogs).values({
+            organizationId,
+            userId,
+            userName: req.user?.email || req.user?.name || null,
+            actionType: "CREATE",
+            entityType: "line_item_proof_manual_approval_override",
+            entityId: overrideResult.manualApprovalOverride.id,
+            entityName: `Manual proof override ${overrideResult.manualApprovalOverride.id}`,
+            description: `Manual approval override recorded for proof version ${overrideResult.manualApprovalOverride.proofVersionId}`,
+            newValues: {
+              source: "manual_override",
+              lineItemId,
+              proofVersionId: overrideResult.manualApprovalOverride.proofVersionId,
+              overrideReason: overrideResult.manualApprovalOverride.overrideReason,
+              internalNote: overrideResult.manualApprovalOverride.internalNote,
+              workflowState: overrideResult.workflowTransition.toState,
+            },
+            ipAddress: req.ip || null,
+            userAgent: req.headers["user-agent"] || null,
+          } as any);
+
+          items.push({
+            lineItemId,
+            ...overrideResult,
+            proofing: await resolveLineItemProofingTruth(tx, { organizationId, lineItemId }),
+          });
+        }
+        return { items };
+      });
+
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error recording bulk manual approval override:", error);
+      return res.status(status).json({ error: error?.message || "Failed to record manual approval overrides" });
     }
   });
 
