@@ -13,6 +13,8 @@ export type BasicProofPdfArgs = {
   orderNumber: string | null;
   lineItemLabel: string;
   displaySizeLabel: string | null;
+  finishedWidth?: number | null;
+  finishedHeight?: number | null;
   quantity: number | null;
   finishingSummary: string[];
   printSides: ProductionSides;
@@ -23,6 +25,36 @@ export type BasicProofPdfArgs = {
 };
 
 type BasicProofSinglePageArgs = Omit<BasicProofPdfArgs, "artworkPreviews"> & ProofArtworkPreview;
+
+export type ProofArtworkMediaBox = {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+export function resolveProofArtworkMediaBox(args: {
+  x: number;
+  y: number;
+  maxWidth: number;
+  maxHeight: number;
+  finishedWidth?: number | null;
+  finishedHeight?: number | null;
+}): ProofArtworkMediaBox {
+  const finishedWidth = Number(args.finishedWidth);
+  const finishedHeight = Number(args.finishedHeight);
+  const hasFinishedAspectRatio = Number.isFinite(finishedWidth) && finishedWidth > 0
+    && Number.isFinite(finishedHeight) && finishedHeight > 0;
+  const aspectRatio = hasFinishedAspectRatio ? finishedWidth / finishedHeight : args.maxWidth / args.maxHeight;
+  const width = Math.min(args.maxWidth, args.maxHeight * aspectRatio);
+  const height = width / aspectRatio;
+  return {
+    x: args.x + (args.maxWidth - width) / 2,
+    y: args.y + (args.maxHeight - height) / 2,
+    width,
+    height,
+  };
+}
 
 export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promise<{ bytes: Uint8Array; renderStatus: BasicProofRenderStatus }> {
   const panels = args.artworkPreviews.length > 0
@@ -174,7 +206,20 @@ async function generateSingleArtworkProofPdfBytes(args: BasicProofSinglePageArgs
     color: rgb(0.39, 0.44, 0.55),
   });
 
-  page.drawRectangle({ x: margin, y: pageHeight - 132 - previewHeight, width: previewWidth, height: previewHeight, borderColor: rgb(0.78, 0.82, 0.9), borderWidth: 1, color: rgb(1, 1, 1) });
+  const previewX = margin;
+  const previewY = pageHeight - 132 - previewHeight;
+  page.drawRectangle({ x: previewX, y: previewY, width: previewWidth, height: previewHeight, borderColor: rgb(0.78, 0.82, 0.9), borderWidth: 1, color: rgb(1, 1, 1) });
+  const mediaBox = resolveProofArtworkMediaBox({
+    x: previewX + 12,
+    y: previewY + 12,
+    maxWidth: previewWidth - 24,
+    maxHeight: previewHeight - 24,
+    finishedWidth: args.finishedWidth,
+    finishedHeight: args.finishedHeight,
+  });
+  const mediaInset = 6;
+  const artworkMaxWidth = Math.max(1, mediaBox.width - mediaInset * 2);
+  const artworkMaxHeight = Math.max(1, mediaBox.height - mediaInset * 2);
 
   let previewRendered = false;
   if (args.preview?.bytes?.length) {
@@ -182,11 +227,11 @@ async function generateSingleArtworkProofPdfBytes(args: BasicProofSinglePageArgs
       const mime = String(args.preview.mimeType || "").toLowerCase();
       if (mime.includes("application/pdf")) {
         const [embeddedPage] = await pdfDoc.embedPdf(args.preview.bytes, [0]);
-        const scale = Math.min((previewWidth - 24) / embeddedPage.width, (previewHeight - 24) / embeddedPage.height);
+        const scale = Math.min(artworkMaxWidth / embeddedPage.width, artworkMaxHeight / embeddedPage.height);
         const drawWidth = embeddedPage.width * scale;
         const drawHeight = embeddedPage.height * scale;
-        const drawX = margin + (previewWidth - drawWidth) / 2;
-        const drawY = pageHeight - 132 - previewHeight + (previewHeight - drawHeight) / 2;
+        const drawX = mediaBox.x + (mediaBox.width - drawWidth) / 2;
+        const drawY = mediaBox.y + (mediaBox.height - drawHeight) / 2;
         page.drawPage(embeddedPage, { x: drawX, y: drawY, xScale: scale, yScale: scale });
         previewRendered = true;
       } else {
@@ -198,11 +243,11 @@ async function generateSingleArtworkProofPdfBytes(args: BasicProofSinglePageArgs
 
         if (image) {
           const dims = image.scale(1);
-          const scale = Math.min((previewWidth - 24) / dims.width, (previewHeight - 24) / dims.height);
+          const scale = Math.min(artworkMaxWidth / dims.width, artworkMaxHeight / dims.height);
           const drawWidth = dims.width * scale;
           const drawHeight = dims.height * scale;
-          const drawX = margin + (previewWidth - drawWidth) / 2;
-          const drawY = pageHeight - 132 - previewHeight + (previewHeight - drawHeight) / 2;
+          const drawX = mediaBox.x + (mediaBox.width - drawWidth) / 2;
+          const drawY = mediaBox.y + (mediaBox.height - drawHeight) / 2;
           page.drawImage(image, { x: drawX, y: drawY, width: drawWidth, height: drawHeight });
           previewRendered = true;
         }
@@ -213,7 +258,7 @@ async function generateSingleArtworkProofPdfBytes(args: BasicProofSinglePageArgs
   }
 
   if (!previewRendered) {
-    page.drawRectangle({ x: margin + 18, y: pageHeight - 132 - previewHeight + 18, width: previewWidth - 36, height: previewHeight - 36, color: rgb(1, 0.97, 0.93) });
+    page.drawRectangle({ x: mediaBox.x + mediaInset, y: mediaBox.y + mediaInset, width: artworkMaxWidth, height: artworkMaxHeight, color: rgb(1, 0.97, 0.93) });
     page.drawText("Incomplete Draft Proof", { x: margin + 32, y: pageHeight - 188, font: fontBold, size: 16, color: rgb(0.66, 0.21, 0.07) });
     drawWrappedText({
       page,
@@ -231,6 +276,13 @@ async function generateSingleArtworkProofPdfBytes(args: BasicProofSinglePageArgs
       color: rgb(0.48, 0.24, 0.12),
     });
   }
+
+  page.drawRectangle({
+    ...mediaBox,
+    borderColor: rgb(0.31, 0.45, 0.74),
+    borderWidth: 1.25,
+    borderOpacity: 0.9,
+  });
 
   page.drawText("Proof Basis", { x: panelX, y: pageHeight - 154, font: fontBold, size: 15, color: rgb(0.14, 0.17, 0.23) });
 

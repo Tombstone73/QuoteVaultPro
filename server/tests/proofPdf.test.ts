@@ -1,7 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
 import { PDFDocument } from "pdf-lib";
-import { buildProofPdfFacts, generateBasicProofPdfBytes, generateCombinedProofPdfBytes } from "../lib/proofPdf";
+import { buildProofPdfFacts, generateBasicProofPdfBytes, generateCombinedProofPdfBytes, resolveProofArtworkMediaBox } from "../lib/proofPdf";
 
 const ONE_PIXEL_PNG = Buffer.from(
   "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Wn6v0sAAAAASUVORK5CYII=",
@@ -130,5 +130,29 @@ describe("proof PDF facts", () => {
     });
     expect(facts).toContainEqual({ label: "Print Sides", value: "Double-sided" });
     expect(facts).toContainEqual({ label: "Artwork Sides", value: "Same artwork used on front and back." });
+  });
+});
+
+describe("proof artwork media boundary", () => {
+  const previewPanel = { x: 54, y: 258, maxWidth: 276, maxHeight: 366 };
+
+  test("uses the finished-size aspect ratio for a wide 96 by 48 panel", () => {
+    const box = resolveProofArtworkMediaBox({ ...previewPanel, finishedWidth: 96, finishedHeight: 48 });
+    expect(box.width / box.height).toBeCloseTo(2, 6);
+    expect(box.width).toBeCloseTo(previewPanel.maxWidth, 6);
+  });
+
+  test("renders square and tall finished media without distortion", () => {
+    const square = resolveProofArtworkMediaBox({ ...previewPanel, finishedWidth: 24, finishedHeight: 24 });
+    const tall = resolveProofArtworkMediaBox({ ...previewPanel, finishedWidth: 24, finishedHeight: 48 });
+    expect(square.width / square.height).toBeCloseTo(1, 6);
+    expect(tall.width / tall.height).toBeCloseTo(0.5, 6);
+    expect(square.width).toBeLessThanOrEqual(previewPanel.maxWidth);
+    expect(tall.height).toBeLessThanOrEqual(previewPanel.maxHeight);
+  });
+
+  test("falls back to the preview panel when finished dimensions are unavailable", () => {
+    const box = resolveProofArtworkMediaBox({ ...previewPanel, finishedWidth: null, finishedHeight: null });
+    expect(box).toEqual({ x: previewPanel.x, y: previewPanel.y, width: previewPanel.maxWidth, height: previewPanel.maxHeight });
   });
 });
