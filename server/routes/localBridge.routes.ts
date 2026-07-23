@@ -3,10 +3,10 @@ import path from "path";
 import fs from "fs";
 import archiver from "archiver";
 import type { Express } from "express";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { ObjectStorageService } from "../objectStorage";
-import { localBridgeAgents, localFileCopyJobs, localFileDestinations, lineItemFiles } from "@shared/schema";
+import { customers, localBridgeAgents, localFileCopyJobs, localFileDestinations, lineItemFiles } from "@shared/schema";
 import { getRequestOrganizationId } from "../tenantContext";
 
 const tokenHash = (token: string) => crypto.createHash("sha256").update(token).digest("hex");
@@ -16,8 +16,26 @@ export function registerLocalBridgeRoutes(app: Express, deps: { isAuthenticated:
   app.post("/api/local-bridge/admin/agents", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); const rawToken = crypto.randomBytes(32).toString("base64url"); const [agent] = await db.insert(localBridgeAgents).values({ organizationId, name: String(req.body?.name || "Local Bridge"), tokenHash: tokenHash(rawToken), status: "active" }).returning(); res.json({ success: true, data: { agent, token: rawToken } }); });
   app.get("/api/local-bridge/admin/agents", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); res.json({ success: true, data: await db.select().from(localBridgeAgents).where(eq(localBridgeAgents.organizationId, organizationId)) }); });
   app.post("/api/local-bridge/admin/agents/:id/revoke", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); await db.update(localBridgeAgents).set({ status: "revoked", revokedAt: new Date(), updatedAt: new Date() }).where(and(eq(localBridgeAgents.id, req.params.id), eq(localBridgeAgents.organizationId, organizationId))); res.json({ success: true, data: {} }); });
-  app.post("/api/local-bridge/admin/destinations", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); const customerId = String(req.body?.customerId || ""); const localPath = String(req.body?.localPath || "").trim(); if (!customerId || !localPath) return res.status(400).json({ error: "customerId and localPath are required" }); const [destination] = await db.insert(localFileDestinations).values({ organizationId, customerId, localPath, destinationType: "customer_art_folder", enabled: req.body?.enabled !== false }).returning(); res.json({ success: true, data: destination }); });
-  app.get("/api/local-bridge/admin/destinations", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); const customerId = String(req.query.customerId || ""); if (!customerId) return res.status(400).json({ error: "customerId is required" }); const [destination] = await db.select().from(localFileDestinations).where(and(eq(localFileDestinations.organizationId, organizationId), eq(localFileDestinations.customerId, customerId), eq(localFileDestinations.destinationType, "customer_art_folder"))).limit(1); res.json({ success: true, data: destination ?? null }); });
+  app.post("/api/local-bridge/admin/destinations", ...admin, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req); const customerId = String(req.body?.customerId || ""); const localPath = String(req.body?.localPath || "").trim();
+    if (!customerId || !localPath) return res.status(400).json({ success: false, error: "customerId and localPath are required" });
+    const [customer] = await db.select({ id: customers.id }).from(customers).where(and(eq(customers.id, customerId), eq(customers.organizationId, organizationId))).limit(1);
+    if (!customer) return res.status(404).json({ success: false, error: "Customer not found" });
+    const [existing] = await db.select({ id: localFileDestinations.id }).from(localFileDestinations).where(and(eq(localFileDestinations.organizationId, organizationId), eq(localFileDestinations.customerId, customerId), eq(localFileDestinations.destinationType, "customer_art_folder"))).orderBy(desc(localFileDestinations.updatedAt)).limit(1);
+    const [destination] = existing
+      ? await db.update(localFileDestinations).set({ localPath, enabled: req.body?.enabled !== false, updatedAt: new Date() }).where(eq(localFileDestinations.id, existing.id)).returning()
+      : await db.insert(localFileDestinations).values({ organizationId, customerId, localPath, destinationType: "customer_art_folder", enabled: req.body?.enabled !== false }).returning();
+    res.json({ success: true, data: destination });
+  });
+  app.delete("/api/local-bridge/admin/destinations", ...admin, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req); const customerId = String(req.body?.customerId || "");
+    if (!customerId) return res.status(400).json({ success: false, error: "customerId is required" });
+    const [customer] = await db.select({ id: customers.id }).from(customers).where(and(eq(customers.id, customerId), eq(customers.organizationId, organizationId))).limit(1);
+    if (!customer) return res.status(404).json({ success: false, error: "Customer not found" });
+    const updated = await db.update(localFileDestinations).set({ enabled: false, updatedAt: new Date() }).where(and(eq(localFileDestinations.organizationId, organizationId), eq(localFileDestinations.customerId, customerId), eq(localFileDestinations.destinationType, "customer_art_folder"))).returning();
+    res.json({ success: true, data: updated[0] ?? null });
+  });
+  app.get("/api/local-bridge/admin/destinations", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); const customerId = String(req.query.customerId || ""); if (!customerId) return res.status(400).json({ error: "customerId is required" }); const [destination] = await db.select().from(localFileDestinations).where(and(eq(localFileDestinations.organizationId, organizationId), eq(localFileDestinations.customerId, customerId), eq(localFileDestinations.destinationType, "customer_art_folder"))).orderBy(desc(localFileDestinations.updatedAt)).limit(1); res.json({ success: true, data: destination ?? null }); });
   app.get("/api/local-bridge/admin/jobs", ...admin, async (req: any, res) => { const organizationId = getRequestOrganizationId(req); res.json({ success: true, data: await db.select().from(localFileCopyJobs).where(eq(localFileCopyJobs.organizationId, organizationId)).limit(50) }); });
   app.get("/api/local-bridge/admin/agent-package", ...admin, async (_req: any, res) => { const dir = [path.resolve(process.cwd(), "dist/local-bridge-agent"), path.resolve(process.cwd(), "local-bridge-agent")].find(fs.existsSync); if (!dir) return res.status(404).json({ error: "Agent package unavailable" }); res.attachment("printershero-local-bridge-agent-v1.zip"); const zip = archiver("zip"); zip.pipe(res); zip.directory(dir, "printershero-local-bridge-agent"); await zip.finalize(); });
   app.post("/api/local-bridge/heartbeat", bridgeAuth, async (req: any, res) => { const agent = req.bridgeAgent; await db.update(localBridgeAgents).set({ lastSeenAt: new Date(), machineLabel: String(req.body?.name || agent.name), agentVersion: req.body?.agentVersion || null, updatedAt: new Date() }).where(eq(localBridgeAgents.id, agent.id)); res.json({ success: true, data: { status: "active" } }); });

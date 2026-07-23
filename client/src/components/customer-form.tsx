@@ -334,7 +334,15 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       });
       if (!response.ok) throw new Error("Failed to update customer");
       const result = await response.json();
-      if (customer?.id && artOutputFolder.trim()) await fetch("/api/local-bridge/admin/destinations", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ customerId: customer.id, localPath: artOutputFolder.trim(), enabled: true }) });
+      if (customer?.id) {
+        const destinationResponse = await fetch("/api/local-bridge/admin/destinations", {
+          method: artOutputFolder.trim() ? "POST" : "DELETE",
+          headers: { "Content-Type": "application/json" },
+          credentials: "include",
+          body: JSON.stringify(artOutputFolder.trim() ? { customerId: customer.id, localPath: artOutputFolder.trim(), enabled: true } : { customerId: customer.id }),
+        });
+        if (!destinationResponse.ok) throw new Error("Failed to save Art Output Folder");
+      }
       return result;
     },
     onSuccess: () => {
