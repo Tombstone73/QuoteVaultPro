@@ -1,4 +1,5 @@
 import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
+import { getBillableBundleRoots } from "../../services/lineItemBundles";
 
 export type QuoteAggregateLineItem = {
   linePrice: unknown;
@@ -9,6 +10,8 @@ export type QuoteAggregateLineItem = {
   pbv2SnapshotJson?: unknown;
   overridePriceCents?: unknown;
   effectiveTotalCents?: unknown;
+  parentLineItemId?: string | null;
+  lineItemRole?: string | null;
 };
 
 export type QuoteAggregateInput = {
@@ -28,7 +31,7 @@ function roundCurrency(value: number): number {
 }
 
 export function calculateQuoteAggregateTotals(input: QuoteAggregateInput) {
-  const activeRows = input.lineItems.filter((line) => line.status !== "canceled");
+  const activeRows = getBillableBundleRoots(input.lineItems).filter((line) => line.status !== "canceled");
   const effectiveLineTotal = (line: QuoteAggregateLineItem) => (
     hydrateLineItemEditPricingState(line).effectiveTotalCents / 100
   );

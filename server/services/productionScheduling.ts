@@ -20,6 +20,7 @@ type SchedulingCandidateLineItem = {
   approvedProofVersionId: string | null;
   requiresProductionJob: boolean;
   workflowIntent: string | null;
+  lineItemRole?: string | null;
 };
 
 type ScheduledItem = {
@@ -54,6 +55,10 @@ const toFailedItem = (lineItemId: string, traceId: string, step: string, error: 
 });
 
 const WORKFLOW_STATES_REQUIRING_APPROVED_PROOF = new Set(["ready_for_production", "in_production"]);
+
+export function isProductionEligibleBundleLineItem(item: Pick<SchedulingCandidateLineItem, "lineItemRole" | "requiresProductionJob" | "workflowIntent">): boolean {
+  return item.lineItemRole !== "parent" && item.requiresProductionJob === true && item.workflowIntent !== "service_fee";
+}
 
 function logProofSchedulingBlock(args: {
   traceId: string;
@@ -194,6 +199,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
         approvedProofVersionId: orderLineItems.approvedProofVersionId,
         requiresProductionJob: products.requiresProductionJob,
         workflowIntent: products.workflowIntent,
+        lineItemRole: orderLineItems.lineItemRole,
       })
       .from(orderLineItems)
       .innerJoin(products, eq(orderLineItems.productId, products.id))
@@ -239,7 +245,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
   }
 
   const productionRequiredItems = loaded.lineItemRecords.filter(
-    (item) => item.requiresProductionJob === true && item.workflowIntent !== "service_fee",
+    isProductionEligibleBundleLineItem,
   );
   const skippedCount = loaded.lineItemRecords.length - productionRequiredItems.length;
 

@@ -10,6 +10,7 @@ import {
   toDocumentNumberConflictError,
 } from './services/documentNumberingService';
 import { resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePricing';
+import { getBillableBundleRoots } from './services/lineItemBundles';
 import type { BillingInvoiceMilestone, InvoiceCreationSource } from '../shared/billingInvoicePolicy';
 
 // Map payment terms to days offset
@@ -498,7 +499,9 @@ export async function createInvoiceFromOrderInTransaction(
       lineItem: li,
       pricing: resolveOrderLineItemInvoicePricing(li as any),
     }));
-    const subtotalCents = pricedLineItems.reduce((sum: number, item: any) => sum + item.pricing.effectiveTotalCents, 0);
+    const billablePricedLineItems = getBillableBundleRoots(pricedLineItems.map((item: any) => item.lineItem))
+      .map((lineItem: any) => pricedLineItems.find((item: any) => item.lineItem.id === lineItem.id)!);
+    const subtotalCents = billablePricedLineItems.reduce((sum: number, item: any) => sum + item.pricing.effectiveTotalCents, 0);
     const subtotal = subtotalCents / 100;
     const tax = Number(order.tax || '0');
     const shippingCents = Number((order as any).shippingCents ?? 0) || 0;
@@ -568,6 +571,11 @@ export async function createInvoiceFromOrderInTransaction(
         specsJson: li.specsJson as any,
         selectedOptions: li.selectedOptions as any,
         optionSelectionsJson: (li as any).optionSelectionsJson ?? null,
+        parentLineItemId: (li as any).parentLineItemId ?? null,
+        lineItemRole: (li as any).lineItemRole ?? "standalone",
+        childDisplayMode: (li as any).childDisplayMode ?? "hidden",
+        parentPriceMode: (li as any).parentPriceMode ?? "sum_children",
+        childCalculatedTotalCents: (li as any).childCalculatedTotalCents ?? null,
       } as any));
       if (snapshotRows.length) {
         await tx.insert(invoiceLineItems).values(snapshotRows as any);

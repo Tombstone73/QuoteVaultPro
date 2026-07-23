@@ -7,6 +7,7 @@ import {
   type CompanyDocumentBrandingInput,
 } from "./documentCompanyBranding";
 import { hydrateLineItemEditPricingState } from "@shared/lineItemPriceOverrides";
+import { getBillableBundleRoots, getCustomerVisibleBundleLines } from "../services/lineItemBundles";
 
 export class QuotePdfEligibilityError extends Error {
   statusCode: number;
@@ -33,6 +34,9 @@ type QuotePdfLineItem = {
   effectiveTotalCents?: string | number | null;
   status?: string | null;
   description?: string | null;
+  parentLineItemId?: string | null;
+  lineItemRole?: "standalone" | "parent" | "child" | null;
+  childDisplayMode?: "hidden" | "visible_summary" | "visible_detail" | null;
 };
 
 type QuotePdfInput = {
@@ -138,7 +142,7 @@ function getPdfLineItemTotalCents(lineItem: QuotePdfLineItem): number {
 
 export function getQuotePdfEligibility(quote: QuotePdfInput["quote"]): QuotePdfEligibility {
   const lineItems = Array.isArray(quote.lineItems)
-    ? quote.lineItems.filter((lineItem) => lineItem.status !== "canceled")
+    ? getCustomerVisibleBundleLines(quote.lineItems).filter((lineItem) => lineItem.status !== "canceled")
     : [];
 
   if (!hasText(quote.id)) {
@@ -360,7 +364,7 @@ export async function generateQuotePdfBytes(input: QuotePdfInput): Promise<Uint8
   page.drawLine({ start: { x: 350, y }, end: { x: PAGE_WIDTH - MARGIN, y }, thickness: 1, color: rgb(0.82, 0.86, 0.9) });
   y -= 18;
 
-  const subtotalCents = eligibility.lineItems.reduce(
+  const subtotalCents = getBillableBundleRoots(eligibility.lineItems).reduce(
     (sum, lineItem) => sum + getPdfLineItemTotalCents(lineItem),
     0,
   );

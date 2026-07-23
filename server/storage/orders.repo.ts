@@ -1546,6 +1546,10 @@ export class OrdersRepository {
                     overrideAt: effectivePricing.hasPriceOverride ? new Date() : null,
                     overrideByUserId: effectivePricing.hasPriceOverride ? data.createdByUserId : null,
                     overrideReason: (li as any).overrideReason ?? null,
+                    lineItemRole: (li as any).lineItemRole ?? "standalone",
+                    childDisplayMode: (li as any).childDisplayMode ?? "hidden",
+                    parentPriceMode: (li as any).parentPriceMode ?? "sum_children",
+                    childCalculatedTotalCents: (li as any).childCalculatedTotalCents ?? null,
                     // Tax fields
                     taxAmount: taxAmountSafe.toString(),
                     isTaxableSnapshot: isTaxableSnapshotSafe,
@@ -1563,6 +1567,7 @@ export class OrdersRepository {
         // job record until they operationally advance to prepress or production.
         const PRE_PRODUCTION_STATES = new Set(["new", "needs_design", "in_design", "awaiting_proof_approval"]);
         await Promise.all(created.lineItems.map(async (li) => {
+            if ((li as any).lineItemRole === "parent") return;
             if (PRE_PRODUCTION_STATES.has(String(li.workflowState ?? "new"))) return;
             const [existing] = await this.dbInstance.select().from(jobs).where(eq(jobs.orderLineItemId as any, li.id));
             if (!existing) {
@@ -1769,7 +1774,7 @@ export class OrdersRepository {
                 productId: ql.productId,
                 productVariantId: ql.variantId,
                 productType: ql.productType,
-                description: ql.productName,
+                description: (ql as any).description ?? ql.productName,
                 width: ql.width ? Number(ql.width) : 0,
                 height: ql.height ? Number(ql.height) : 0,
                 quantity: ql.quantity,
@@ -1804,6 +1809,12 @@ export class OrdersRepository {
                 overrideAt: (ql as any).overrideAt ?? null,
                 overrideByUserId: (ql as any).overrideByUserId ?? null,
                 overrideReason: (ql as any).overrideReason ?? null,
+                lineItemRole: (ql as any).lineItemRole ?? "standalone",
+                childDisplayMode: (ql as any).childDisplayMode ?? "hidden",
+                parentPriceMode: (ql as any).parentPriceMode ?? "sum_children",
+                childCalculatedTotalCents: (ql as any).childCalculatedTotalCents ?? null,
+                // Resolved after insert because quote and order line IDs differ.
+                parentLineItemId: null,
                 nestingConfigSnapshot: null,
                 requiresInventory: false,
                 materialId: null,
@@ -1850,6 +1861,26 @@ export class OrdersRepository {
         });
 
         const createdOrder = await this.createOrder(organizationId, orderData);
+
+        // Quote and order line IDs differ, so bundle edges are restored only
+        // after all order rows have been inserted.
+        const createdOrderLines = await this.dbInstance
+            .select({ id: orderLineItems.id, quoteLineItemId: orderLineItems.quoteLineItemId })
+            .from(orderLineItems)
+            .where(eq(orderLineItems.orderId, createdOrder.id));
+        const orderIdByQuoteLineId = new Map(createdOrderLines
+            .filter((line) => line.quoteLineItemId)
+            .map((line) => [String(line.quoteLineItemId), line.id]));
+        for (const quoteLine of activeQuoteLines) {
+            if ((quoteLine as any).lineItemRole !== "child" || !(quoteLine as any).parentLineItemId) continue;
+            const childOrderId = orderIdByQuoteLineId.get(String(quoteLine.id));
+            const parentOrderId = orderIdByQuoteLineId.get(String((quoteLine as any).parentLineItemId));
+            if (!childOrderId || !parentOrderId) throw new Error("Unable to preserve quote line item bundle during conversion");
+            await this.dbInstance
+                .update(orderLineItems)
+                .set({ parentLineItemId: parentOrderId, lineItemRole: "child" })
+                .where(eq(orderLineItems.id, childOrderId));
+        }
 
         try {
             const [quoteListNote] = await this.dbInstance
@@ -2224,6 +2255,11 @@ export class OrdersRepository {
             overrideAt: effectivePricing.hasPriceOverride ? new Date() : null,
             overrideByUserId: effectivePricing.hasPriceOverride ? ((lineItem as any).overrideByUserId ?? null) : null,
             overrideReason: (lineItem as any).overrideReason ?? null,
+            parentLineItemId: (lineItem as any).parentLineItemId ?? null,
+            lineItemRole: (lineItem as any).lineItemRole ?? "standalone",
+            childDisplayMode: (lineItem as any).childDisplayMode ?? "hidden",
+            parentPriceMode: (lineItem as any).parentPriceMode ?? "sum_children",
+            childCalculatedTotalCents: (lineItem as any).childCalculatedTotalCents ?? null,
         };
         const [created] = await this.dbInstance.insert(orderLineItems).values(lineItemInsert).returning();
         return created;
