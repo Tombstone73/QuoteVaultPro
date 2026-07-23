@@ -1099,6 +1099,8 @@ async function buildGeneratedProofRenderInput(tx: any, args: {
       orderNumber: args.snapshot.orderNumber,
       lineItemLabel: args.snapshot.lineItemLabel,
       displaySizeLabel: args.snapshot.displaySizeLabel,
+      finishedWidth: args.snapshot.finishedWidth,
+      finishedHeight: args.snapshot.finishedHeight,
       quantity: args.snapshot.quantity,
       finishingSummary: args.snapshot.finishingSummary,
       printSides: layout.printSides,
