@@ -18,7 +18,7 @@ class MockPaymentProviderError extends Error {
   }
 }
 
-jest.unstable_mockModule("../services/payments/paymentProvider.service", () => ({
+jest.mock("../services/payments/paymentProvider.service", () => ({
   createHostedSession,
   getPaymentSettings,
   recordHostedResult,

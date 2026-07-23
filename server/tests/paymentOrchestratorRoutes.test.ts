@@ -4,7 +4,7 @@ import request from "supertest";
 
 const resolveOrderPayment = jest.fn<(...args: any[]) => Promise<any>>();
 
-jest.unstable_mockModule("../services/payments/paymentOrchestrator.service", () => ({
+jest.mock("../services/payments/paymentOrchestrator.service", () => ({
   resolveOrderPayment,
 }));
 
