@@ -4,6 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -584,6 +585,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const { preferences: orgPreferences } = useOrgPreferences();
   const canSeeDebug = isAdmin || isPlatformAdmin || isPlatformDeveloper;
   const [showLineItemDebug, setShowLineItemDebug] = useState(false);
+  const [productionBypassTarget, setProductionBypassTarget] = useState<OrderLineItem | null>(null);
+  const [productionBypassReason, setProductionBypassReason] = useState("");
 
   const [pbv2CurrentSignatureByLineItemId, setPbv2CurrentSignatureByLineItemId] = useState<Record<string, string>>({});
   const [pbv2SnapshotSignatureByLineItemId, setPbv2SnapshotSignatureByLineItemId] = useState<Record<string, string>>({});
@@ -675,6 +678,21 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       });
       toast({ title: "Workflow action failed", description: error.message, variant: "destructive" });
     },
+  });
+
+  const productionBypass = useMutation({
+    mutationFn: async ({ lineItemId, reason }: { lineItemId: string; reason: string }) => {
+      const response = await apiRequest("POST", `/api/order-line-items/${lineItemId}/production-bypass`, { reason });
+      return response.json();
+    },
+    onSuccess: async () => {
+      toast({ title: "Production bypassed", description: "This line no longer requires artwork, prepress, or production scheduling." });
+      setProductionBypassTarget(null);
+      setProductionBypassReason("");
+      await queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      await onAfterLineItemsChange?.();
+    },
+    onError: (error: Error) => toast({ title: "Unable to bypass production", description: error.message, variant: "destructive" }),
   });
 
   const acceptPbv2Components = useMutation({
@@ -3055,6 +3073,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         {lineItemProofSummary.label}
                                       </Badge>
                                     ) : null}
+                                    {(item as any).productionBypassed ? (
+                                      <Badge variant="secondary" className="h-5 px-1.5 text-[11px] font-medium">No production required</Badge>
+                                    ) : null}
                                     <span className="text-muted-foreground">
                                       Next: <span className="text-foreground">{operationalNextStep}</span>
                                     </span>
@@ -3956,6 +3977,17 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         </Button>
                                       ))
                                     : null}
+                                  {canSeeDebug && !(item as any).productionBypassed ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8"
+                                      onClick={() => { setProductionBypassTarget(item); setProductionBypassReason(""); }}
+                                    >
+                                      Bypass Production
+                                    </Button>
+                                  ) : null}
                                 </div>
                               ) : null}
                             </div>
@@ -4063,6 +4095,32 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           if (!open) setArtworkViewerLineItemId(null);
         }}
       />
+      <Dialog open={productionBypassTarget !== null} onOpenChange={(open) => { if (!open && !productionBypass.isPending) setProductionBypassTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Bypass production?</DialogTitle>
+            <DialogDescription>
+              This marks the selected line as No Production Required. It does not mark production complete or remove any existing production history.
+            </DialogDescription>
+          </DialogHeader>
+          <Textarea
+            value={productionBypassReason}
+            onChange={(event) => setProductionBypassReason(event.target.value)}
+            placeholder="Reason required (for example: blank substrate sold without printing)"
+            aria-label="Production bypass reason"
+          />
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setProductionBypassTarget(null)} disabled={productionBypass.isPending}>Cancel</Button>
+            <Button
+              variant="destructive"
+              disabled={productionBypass.isPending || productionBypassReason.trim().length < 3 || !productionBypassTarget}
+              onClick={() => productionBypassTarget && productionBypass.mutate({ lineItemId: String(productionBypassTarget.id), reason: productionBypassReason.trim() })}
+            >
+              {productionBypass.isPending ? "Bypassing..." : "Mark No Production Required"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
     </Popover>
   );

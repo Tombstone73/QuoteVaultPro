@@ -2075,6 +2075,19 @@ export function registerQuoteRoutes(
 
       if (!assertQuoteEditable(res, quote)) return;
 
+      const requestedParentLineItemId = typeof lineItem.parentLineItemId === "string" && lineItem.parentLineItemId.trim()
+        ? lineItem.parentLineItemId.trim()
+        : null;
+      if (requestedParentLineItemId) {
+        const [parent] = await db.select({ id: quoteLineItems.id, lineItemRole: quoteLineItems.lineItemRole })
+          .from(quoteLineItems)
+          .where(and(eq(quoteLineItems.id, requestedParentLineItemId), eq(quoteLineItems.quoteId, id)))
+          .limit(1);
+        if (!parent || parent.lineItemRole === "child") {
+          return res.status(400).json({ message: "Child items must belong to a parent line item on this quote." });
+        }
+      }
+
       // Validate required fields for pricing
       if (!lineItem.productId || lineItem.quantity == null) {
         return res.status(400).json({ message: "Missing required fields: productId, quantity" });
@@ -2167,9 +2180,12 @@ export function registerQuoteRoutes(
         requiresDesign: requestedRequiresDesign ?? workflowDefaults.requiresDesign ?? false,
         requiresPrepress: requestedRequiresPrepress ?? workflowDefaults.requiresPrepress ?? null,
         requiresProofApproval,
+        parentLineItemId: requestedParentLineItemId,
+        lineItemRole: requestedParentLineItemId ? "child" as const : "standalone" as const,
       };
 
       const createdLineItem = await storage.addLineItem(id, validatedLineItem);
+      if (requestedParentLineItemId) await recalculateQuoteBundleParent(requestedParentLineItemId);
       if (proofApproval.manualOverride) {
         await createProofApprovalManualOverrideAuditLog({
           organizationId,
