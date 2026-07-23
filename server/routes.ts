@@ -32,6 +32,7 @@ import { registerAssistantRoutes } from "./routes/assistant.routes";
 import { registerAiReportsRoutes } from "./routes/aiReports.routes";
 import { registerAssistantExecutionRoutes } from "./routes/assistantExecution.routes";
 import { registerProofingRoutes } from "./routes/proofing.routes";
+import { registerLocalBridgeRoutes } from "./routes/localBridge.routes";
 import { registerPortalProofRoutes } from "./routes/portalProof.routes";
 import { registerProductionConfigRoutes } from "./routes/productionConfig.routes";
 import { registerProductionJobsRoutes } from "./routes/productionJobs.routes";
@@ -430,6 +431,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Proofing routes extracted to ./routes/proofing.routes.ts (do NOT re-add here)
   registerProofingRoutes(app, { isAuthenticated, tenantContext, isAdmin, assertInternalUser });
+  registerLocalBridgeRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
   // Portal proof routes extracted to ./routes/portalProof.routes.ts (do NOT re-add here)
   registerPortalProofRoutes(app);
   // Production config routes extracted to ./routes/productionConfig.routes.ts (do NOT re-add here)

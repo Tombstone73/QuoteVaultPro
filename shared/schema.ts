@@ -7897,6 +7897,21 @@ export const lineItemProofVersions = pgTable("line_item_proof_versions", {
   uniqueIndex("line_item_proof_versions_line_item_version_uidx").on(table.lineItemId, table.versionNumber),
 ]);
 
+export const localBridgeAgentStatusEnum = pgEnum("local_bridge_agent_status", ["pending", "active", "disabled", "revoked"]);
+export const localFileDestinationTypeEnum = pgEnum("local_file_destination_type", ["customer_art_folder", "onyx_hot_folder_future"]);
+export const localFileCopyJobStatusEnum = pgEnum("local_file_copy_job_status", ["pending", "claimed", "succeeded", "failed", "canceled"]);
+export const localBridgeAgents = pgTable("local_bridge_agents", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`), organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  name: varchar("name", { length: 255 }).notNull(), status: localBridgeAgentStatusEnum("status").notNull().default("pending"), tokenHash: varchar("token_hash", { length: 128 }).notNull(),
+  machineLabel: varchar("machine_label", { length: 255 }), agentVersion: varchar("agent_version", { length: 64 }), lastSeenAt: timestamp("last_seen_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(), revokedAt: timestamp("revoked_at", { withTimezone: true }),
+});
+export const localFileDestinations = pgTable("local_file_destinations", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`), organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }), customerId: varchar("customer_id").references(() => customers.id, { onDelete: "cascade" }), destinationType: localFileDestinationTypeEnum("destination_type").notNull().default("customer_art_folder"), localPath: text("local_path").notNull(), enabled: boolean("enabled").notNull().default(true), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+export const localFileCopyJobs = pgTable("local_file_copy_jobs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`), organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }), destinationId: varchar("destination_id").notNull().references(() => localFileDestinations.id, { onDelete: "cascade" }), sourceFileId: varchar("source_file_id").notNull().references(() => lineItemFiles.id, { onDelete: "restrict" }), orderId: varchar("order_id").references(() => orders.id, { onDelete: "set null" }), orderLineItemId: varchar("order_line_item_id").references(() => orderLineItems.id, { onDelete: "set null" }), customerId: varchar("customer_id").references(() => customers.id, { onDelete: "set null" }), status: localFileCopyJobStatusEnum("status").notNull().default("pending"), attempts: integer("attempts").notNull().default(0), lastError: text("last_error"), claimedByAgentId: varchar("claimed_by_agent_id").references(() => localBridgeAgents.id, { onDelete: "set null" }), claimedAt: timestamp("claimed_at", { withTimezone: true }), completedAt: timestamp("completed_at", { withTimezone: true }), nextAttemptAt: timestamp("next_attempt_at", { withTimezone: true }), outputFilename: varchar("output_filename", { length: 512 }).notNull(), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+});
+
 /**
  * Durable membership for proof packages. The primary line_item_id on
  * line_item_proof_versions is retained for backwards compatibility and for
