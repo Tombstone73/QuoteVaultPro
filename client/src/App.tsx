@@ -2,6 +2,7 @@ import { useEffect, useRef } from "react";
 import { Routes, Route, Navigate, useLocation, useParams } from "react-router-dom";
 import { AppLayout } from "@/components/layout/AppLayout";
 import { SettingsLayout, CompanySettings, PreferencesSettings, AccountingSettings, ProductionSettings, InventorySettings, NotificationsSettings, AppearanceSettings } from "@/pages/settings/SettingsLayout";
+import LocalBridgeSettings from "@/pages/settings/LocalBridgeSettings";
 import EmailSettings from "@/pages/settings/email";
 import UsersSettings from "@/pages/settings/users";
 import { queryClient } from "./lib/queryClient";
@@ -341,6 +342,7 @@ function Router() {
           <Route path="email" element={<EmailSettings />} />
           <Route path="ai" element={<AiSettingsPage />} />
           <Route path="storage" element={<StorageSettingsPage />} />
+          <Route path="local-bridge" element={<LocalBridgeSettings />} />
           <Route path="production" element={<ProductionSettings />} />
           <Route path="printers" element={<PrinterSettingsPage />} />
           <Route path="inventory" element={<InventorySettings />} />
