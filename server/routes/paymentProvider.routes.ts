@@ -92,9 +92,13 @@ export function sendEpsPhase1Disabled(res: any, action: string) {
 const paymentSettingsPatchSchema = z.object({
   provider: z.enum(["none", "stripe", "eps"]).optional(),
   epsEnabled: z.boolean().optional(),
-  epsAccountNumber: z.string().trim().max(100).nullable().optional(),
-  epsApiKey: z.string().trim().max(500).nullable().optional(),
-  epsCnpBaseUrl: z.string().url().optional(),
+  epsMode: z.enum(["test", "live"]).optional(),
+  epsTestAccountNumber: z.string().trim().max(100).nullable().optional(),
+  epsTestApiKey: z.string().trim().max(500).nullable().optional(),
+  epsTestBaseUrl: z.string().url().optional(),
+  epsLiveAccountNumber: z.string().trim().max(100).nullable().optional(),
+  epsLiveApiKey: z.string().trim().max(500).nullable().optional(),
+  epsLiveBaseUrl: z.string().url().optional(),
   epsSupportedModes: z.array(z.enum(["hosted_cnp", "token_cnp", "card_present", "ach", "gift_card"])).optional(),
 });
 

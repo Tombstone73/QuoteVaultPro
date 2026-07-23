@@ -415,17 +415,25 @@ export default function SettingsIntegrations() {
   const updatePaymentSettingsMutation = useUpdatePaymentSettings();
   const [paymentProvider, setPaymentProvider] = useState<PaymentProvider>('none');
   const [epsEnabled, setEpsEnabled] = useState(false);
-  const [epsAccountNumber, setEpsAccountNumber] = useState('');
-  const [epsApiKey, setEpsApiKey] = useState('');
-  const [epsCnpBaseUrl, setEpsCnpBaseUrl] = useState('https://postransactions.com/cnp');
+  const [epsMode, setEpsMode] = useState<'test' | 'live'>('test');
+  const [epsTestAccountNumber, setEpsTestAccountNumber] = useState('');
+  const [epsTestApiKey, setEpsTestApiKey] = useState('');
+  const [epsTestBaseUrl, setEpsTestBaseUrl] = useState('https://postransactions.com/cnp');
+  const [epsLiveAccountNumber, setEpsLiveAccountNumber] = useState('');
+  const [epsLiveApiKey, setEpsLiveApiKey] = useState('');
+  const [epsLiveBaseUrl, setEpsLiveBaseUrl] = useState('https://postransactions.com/cnp');
 
   useEffect(() => {
     if (!paymentSettings) return;
     setPaymentProvider(paymentSettings.provider);
     setEpsEnabled(paymentSettings.epsEnabled);
-    setEpsAccountNumber(paymentSettings.epsAccountNumber || '');
-    setEpsApiKey('');
-    setEpsCnpBaseUrl(paymentSettings.epsCnpBaseUrl || 'https://postransactions.com/cnp');
+    setEpsMode(paymentSettings.epsMode || 'test');
+    setEpsTestAccountNumber(paymentSettings.epsTestAccountNumber || '');
+    setEpsTestApiKey('');
+    setEpsTestBaseUrl(paymentSettings.epsTestBaseUrl || 'https://postransactions.com/cnp');
+    setEpsLiveAccountNumber(paymentSettings.epsLiveAccountNumber || '');
+    setEpsLiveApiKey('');
+    setEpsLiveBaseUrl(paymentSettings.epsLiveBaseUrl || 'https://postransactions.com/cnp');
   }, [paymentSettings]);
 
   const savePaymentProviderDefault = async (provider: PaymentProvider) => {
@@ -445,12 +453,16 @@ export default function SettingsIntegrations() {
       await updatePaymentSettingsMutation.mutateAsync({
         provider: paymentProvider,
         epsEnabled,
-        epsAccountNumber: epsAccountNumber.trim() || null,
-        ...(epsApiKey.trim() ? { epsApiKey: epsApiKey.trim() } : {}),
-        epsCnpBaseUrl: epsCnpBaseUrl.trim() || 'https://postransactions.com/cnp',
+        epsMode,
+        epsTestAccountNumber: epsTestAccountNumber.trim() || null,
+        ...(epsTestApiKey.trim() ? { epsTestApiKey: epsTestApiKey.trim() } : {}),
+        epsTestBaseUrl: epsTestBaseUrl.trim() || 'https://postransactions.com/cnp',
+        epsLiveAccountNumber: epsLiveAccountNumber.trim() || null,
+        ...(epsLiveApiKey.trim() ? { epsLiveApiKey: epsLiveApiKey.trim() } : {}),
+        epsLiveBaseUrl: epsLiveBaseUrl.trim() || 'https://postransactions.com/cnp',
         epsSupportedModes: ["hosted_cnp"],
       });
-      setEpsApiKey('');
+      setEpsTestApiKey(''); setEpsLiveApiKey('');
       toast({ title: 'EPS settings saved' });
     } catch (error: any) {
       toast({ title: 'EPS settings failed', description: error.message, variant: 'destructive' });
@@ -1717,29 +1729,17 @@ export default function SettingsIntegrations() {
               <p className="mt-1 text-xs text-muted-foreground">Only one default processor can be saved at a time.</p>
             </div>
 
-            <div className="space-y-2">
-              <Label htmlFor="eps-account">EPS account number</Label>
-              <Input id="eps-account" value={epsAccountNumber} onChange={(event) => setEpsAccountNumber(event.target.value)} />
+            <div className="space-y-2 md:col-span-2">
+              <Label>Active EPS environment</Label>
+              <div className="flex gap-2"><Button type="button" variant={epsMode === 'test' ? 'default' : 'outline'} onClick={() => setEpsMode('test')}>Test</Button><Button type="button" variant={epsMode === 'live' ? 'destructive' : 'outline'} onClick={() => setEpsMode('live')}>Live</Button></div>
+              {epsMode === 'live' ? <p className="rounded border border-red-300 bg-red-50 p-2 text-xs text-red-900">LIVE MODE routes hosted payments to live EPS credentials.</p> : null}
             </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="eps-api-key">EPS API key</Label>
-              <Input
-                id="eps-api-key"
-                type="password"
-                value={epsApiKey}
-                onChange={(event) => setEpsApiKey(event.target.value)}
-                placeholder={paymentSettings?.epsApiKeyConfigured ? "Configured. Enter a new key to replace." : "Required"}
-              />
-              <p className="text-xs text-muted-foreground">
-                {paymentSettings?.epsApiKeyConfigured ? "Stored server-side only." : "Not configured."}
-              </p>
-            </div>
-
-            <div className="space-y-2">
-              <Label htmlFor="eps-cnp-base">Hosted CNP base URL</Label>
-              <Input id="eps-cnp-base" value={epsCnpBaseUrl} onChange={(event) => setEpsCnpBaseUrl(event.target.value)} />
-            </div>
+            <div className="space-y-2"><Label htmlFor="eps-test-account">Test account number</Label><Input id="eps-test-account" value={epsTestAccountNumber} onChange={(event) => setEpsTestAccountNumber(event.target.value)} /></div>
+            <div className="space-y-2"><Label htmlFor="eps-test-api-key">Test API key</Label><Input id="eps-test-api-key" type="password" value={epsTestApiKey} onChange={(event) => setEpsTestApiKey(event.target.value)} placeholder={paymentSettings?.epsTestApiKeyConfigured ? "Configured. Enter a new key to replace." : "Required for test mode"} /></div>
+            <div className="space-y-2 md:col-span-2"><Label htmlFor="eps-test-base">Test hosted base URL</Label><Input id="eps-test-base" value={epsTestBaseUrl} onChange={(event) => setEpsTestBaseUrl(event.target.value)} /></div>
+            <div className="space-y-2"><Label htmlFor="eps-live-account">Live account number</Label><Input id="eps-live-account" value={epsLiveAccountNumber} onChange={(event) => setEpsLiveAccountNumber(event.target.value)} /></div>
+            <div className="space-y-2"><Label htmlFor="eps-live-api-key">Live API key</Label><Input id="eps-live-api-key" type="password" value={epsLiveApiKey} onChange={(event) => setEpsLiveApiKey(event.target.value)} placeholder={paymentSettings?.epsLiveApiKeyConfigured ? "Configured. Enter a new key to replace." : "Required for live mode"} /></div>
+            <div className="space-y-2 md:col-span-2"><Label htmlFor="eps-live-base">Live hosted base URL</Label><Input id="eps-live-base" value={epsLiveBaseUrl} onChange={(event) => setEpsLiveBaseUrl(event.target.value)} /></div>
           </div>
 
           <Separator />
