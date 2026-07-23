@@ -13,6 +13,15 @@ export function isCombinedProofLineSelectable(row: {
     && row.currentQueueStatus !== "approved_by_override";
 }
 
+export function isProofingSelectionSelectable(row: {
+  requiresProofApproval: boolean;
+  currentQueueStatus: string;
+}) {
+  return row.requiresProofApproval
+    && row.currentQueueStatus !== "approved"
+    && row.currentQueueStatus !== "approved_by_override";
+}
+
 export function selectAllCombinedProofLinesForOrder(args: {
   selectedIds: string[];
   anchorRow: CombinedProofSelectableLine;

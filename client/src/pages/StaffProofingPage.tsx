@@ -65,6 +65,7 @@ import {
   combinedProofReviewIsReady,
   getCombinedProofJobLabel,
   isCombinedProofLineSelectable,
+  isProofingSelectionSelectable,
   selectAllCombinedProofLinesForOrder,
   updateCombinedProofSelection,
 } from "@/lib/combinedProofSelection";
@@ -675,6 +676,7 @@ export default function StaffProofingPage() {
   const [internalNotesDirty, setInternalNotesDirty] = useState(false);
 
   const [overrideDialogOpen, setOverrideDialogOpen] = useState(false);
+  const [bulkOverrideDialogOpen, setBulkOverrideDialogOpen] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
   const [overrideNote, setOverrideNote] = useState("");
   const [cancelDialogOpen, setCancelDialogOpen] = useState(false);
@@ -732,13 +734,14 @@ export default function StaffProofingPage() {
   const batchSelectionJobLabel = getCombinedProofJobLabel(batchSelectedRows);
   const matchingJobSelectableRows = batchSelectionOrderId
     ? baseQueueRows
-      .filter((row) => row.orderId === batchSelectionOrderId && isCombinedProofLineSelectable(row))
+      .filter((row) => row.orderId === batchSelectionOrderId && isProofingSelectionSelectable(row))
       .sort((left, right) => left.lineItemSortOrder - right.lineItemSortOrder || left.lineItemId.localeCompare(right.lineItemId))
     : [];
+  const canCreateCombinedProof = batchSelectedRows.length >= 2 && batchSelectedRows.every(isCombinedProofLineSelectable);
 
   useEffect(() => {
     if (!queueQuery.data) return;
-    const validIds = new Set(baseQueueRows.filter(isCombinedProofLineSelectable).map((row) => row.lineItemId));
+    const validIds = new Set(baseQueueRows.filter(isProofingSelectionSelectable).map((row) => row.lineItemId));
     setBatchSelectedLineItemIds((current) => {
       const next = current.filter((id) => validIds.has(id));
       return next.length === current.length ? current : next;
@@ -1165,7 +1168,7 @@ export default function StaffProofingPage() {
   });
 
   function openCombinedProofDialog() {
-    if (batchSelectedRows.length < 2) return;
+    if (!canCreateCombinedProof) return;
     setCombinedProofReview([]);
     setCreateInternalNotes("");
     setCombinedProofDialogOpen(true);
@@ -1453,6 +1456,36 @@ export default function StaffProofingPage() {
     },
   });
 
+  const bulkOverrideMutation = useMutation({
+    mutationFn: async () => {
+      if (batchSelectedRows.length === 0) throw new Error("Select at least one proof item to override");
+      return readJson<JsonEnvelope<{ items: Array<{ lineItemId: string }> }>>("/api/proofing/line-items/manual-approval-override", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          lineItemIds: batchSelectedRows.map((row) => row.lineItemId),
+          overrideReason: overrideReason.trim(),
+          internalNote: overrideNote.trim() || null,
+        }),
+      });
+    },
+    onSuccess: async (result) => {
+      await Promise.all(result.data.items.map(({ lineItemId }) =>
+        queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId] }),
+      ));
+      await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? batchSelectionOrderId);
+      queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      setBulkOverrideDialogOpen(false);
+      setOverrideReason("");
+      setOverrideNote("");
+      setBatchSelectedLineItemIds([]);
+      toast({ title: "Selected proof items overridden", description: `${result.data.items.length} proof item${result.data.items.length === 1 ? " was" : "s were"} approved by manual override.` });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Failed to override selected proof items", description: error.message, variant: "destructive" });
+    },
+  });
+
   const cancelProofMutation = useMutation({
     mutationFn: async () => {
       if (!displayedVersion?.id) throw new Error("Select an active sent proof version first");
@@ -1559,10 +1592,21 @@ export default function StaffProofingPage() {
                 variant="outline"
                 className="h-9 rounded-lg border-[#3b4660] bg-[#141824] px-4 text-sm font-bold text-white hover:bg-[#20263a]"
                 onClick={openCombinedProofDialog}
-                disabled={batchSelectedRows.length < 2}
+                disabled={!canCreateCombinedProof}
               >
                 Create Combined Proof{batchSelectedRows.length > 0 ? ` (${batchSelectedRows.length} lines)` : ""}
               </Button>
+              {canOverride ? (
+                <Button
+                  variant="outline"
+                  className="h-9 rounded-lg border-rose-500/60 bg-rose-500/10 px-4 text-sm font-bold text-rose-100 hover:bg-rose-500/20"
+                  onClick={() => setBulkOverrideDialogOpen(true)}
+                  disabled={batchSelectedRows.length === 0 || bulkOverrideMutation.isPending}
+                >
+                  {bulkOverrideMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldAlert className="mr-2 h-4 w-4" />}
+                  Mark Selected Overridden{batchSelectedRows.length > 0 ? ` (${batchSelectedRows.length})` : ""}
+                </Button>
+              ) : null}
               <Button
                 className="h-9 rounded-lg bg-[#1337ec] px-4 text-sm font-bold text-white transition-all hover:bg-[#1a43ff]"
                 onClick={() => openCreateProofDialog("generated")}
@@ -1635,7 +1679,7 @@ export default function StaffProofingPage() {
               ) : (
                 visibleQueueRows.map((row) => {
                   const isSelected = row.lineItemId === activeRow?.lineItemId;
-                  const isBatchSelectable = isCombinedProofLineSelectable(row);
+                  const isBatchSelectable = isProofingSelectionSelectable(row);
                   const printJobId = row.activeOwnerJobId ?? row.productionJobId;
                   return (
                     <div
@@ -1659,10 +1703,10 @@ export default function StaffProofingPage() {
                         <div className="flex items-center gap-2">
                           <input
                             type="checkbox"
-                            aria-label={`Select ${row.lineItemLabel} for combined proof`}
+                            aria-label={`Select ${row.lineItemLabel} for proof actions`}
                             checked={batchSelectedLineItemIds.includes(row.lineItemId)}
                             disabled={!isBatchSelectable}
-                            title={isBatchSelectable ? "Include in a combined proof" : "This line is not available for a new proof package"}
+                            title={isBatchSelectable ? "Select for combined proof or bulk override" : "This line is already approved"}
                             onClick={(event) => event.stopPropagation()}
                             onChange={(event) => toggleBatchLineItem(row, event.target.checked)}
                             className="h-4 w-4 rounded border-[#3b4660] bg-[#0B1120] text-[#1337ec]"
@@ -2519,6 +2563,34 @@ export default function StaffProofingPage() {
             >
               {createCombinedProofMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileText className="mr-2 h-4 w-4" />}
               Create Proof Package
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={bulkOverrideDialogOpen} onOpenChange={setBulkOverrideDialogOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>Mark Selected Proof Items Overridden</DialogTitle>
+            <DialogDescription>
+              This approves {batchSelectedRows.length} selected proof item{batchSelectedRows.length === 1 ? "" : "s"} using the same manual override rules as an individual override. If any selected item is ineligible, none will be changed.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="grid gap-4">
+            <div className="grid gap-2">
+              <Label htmlFor="bulk-proof-override-reason">Override reason</Label>
+              <Input id="bulk-proof-override-reason" value={overrideReason} onChange={(event) => setOverrideReason(event.target.value)} placeholder="Why are these proofs being approved manually?" />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="bulk-proof-override-note">Internal note</Label>
+              <Textarea id="bulk-proof-override-note" value={overrideNote} onChange={(event) => setOverrideNote(event.target.value)} placeholder="Optional internal note" />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setBulkOverrideDialogOpen(false)} disabled={bulkOverrideMutation.isPending}>Cancel</Button>
+            <Button variant="destructive" onClick={() => bulkOverrideMutation.mutate()} disabled={bulkOverrideMutation.isPending || !overrideReason.trim() || batchSelectedRows.length === 0}>
+              {bulkOverrideMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <ShieldAlert className="mr-2 h-4 w-4" />}
+              Mark Selected Overridden
             </Button>
           </DialogFooter>
         </DialogContent>

@@ -2,6 +2,7 @@ import {
   combinedProofReviewIsReady,
   getCombinedProofJobLabel,
   isCombinedProofLineSelectable,
+  isProofingSelectionSelectable,
   selectAllCombinedProofLinesForOrder,
   updateCombinedProofSelection,
 } from "@/lib/combinedProofSelection";
@@ -59,5 +60,11 @@ describe("combined proof selection", () => {
     expect(isCombinedProofLineSelectable({ requiresProofApproval: true, currentQueueStatus: "awaiting_send" })).toBe(true);
     expect(isCombinedProofLineSelectable({ requiresProofApproval: true, currentQueueStatus: "awaiting_approval" })).toBe(false);
     expect(isCombinedProofLineSelectable({ requiresProofApproval: true, currentQueueStatus: "approved" })).toBe(false);
+  });
+
+  test("keeps sent proof items selectable for a bulk override while excluding completed items", () => {
+    expect(isProofingSelectionSelectable({ requiresProofApproval: true, currentQueueStatus: "awaiting_approval" })).toBe(true);
+    expect(isProofingSelectionSelectable({ requiresProofApproval: true, currentQueueStatus: "approved" })).toBe(false);
+    expect(isProofingSelectionSelectable({ requiresProofApproval: true, currentQueueStatus: "approved_by_override" })).toBe(false);
   });
 });
