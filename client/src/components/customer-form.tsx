@@ -129,6 +129,8 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [showDuplicateWarning, setShowDuplicateWarning] = useState(false);
   const [pendingData, setPendingData] = useState<CustomerFormData | null>(null);
+  const [artOutputFolder, setArtOutputFolder] = useState("");
+  useQuery({ queryKey: ["/api/local-bridge/admin/destinations", customer?.id], enabled: !!customer?.id, queryFn: async () => { const response = await fetch(`/api/local-bridge/admin/destinations?customerId=${customer!.id}`, { credentials: "include" }); if (!response.ok) return null; const json = await response.json(); setArtOutputFolder(json.data?.localPath || ""); return json.data; } });
 
   // Extract existing primary contact from customer if editing
   const existingPrimaryContact = customer?.contacts?.find((c) => c.isPrimary) || customer?.contacts?.[0];
@@ -331,7 +333,9 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
         credentials: "include",
       });
       if (!response.ok) throw new Error("Failed to update customer");
-      return response.json();
+      const result = await response.json();
+      if (customer?.id && artOutputFolder.trim()) await fetch("/api/local-bridge/admin/destinations", { method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ customerId: customer.id, localPath: artOutputFolder.trim(), enabled: true }) });
+      return result;
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["/api/customers"] });
@@ -933,6 +937,12 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
                 placeholder="12-3456789"
               />
             </div>
+          </div>
+
+          <div className="space-y-2">
+            <Label htmlFor="art-output-folder">Art Output Folder</Label>
+            <Input id="art-output-folder" value={artOutputFolder} onChange={(event) => setArtOutputFolder(event.target.value)} placeholder="\\\\server\\share\\Customer Art" />
+            <p className="text-sm text-muted-foreground">Used by the optional local bridge agent to copy final production files to your local/network storage.</p>
           </div>
 
           {/* 6. Notes */}
