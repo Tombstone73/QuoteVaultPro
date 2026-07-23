@@ -308,7 +308,30 @@ export async function scheduleOrderLineItemsForProduction(args: {
             ? "ready_for_prepress"
             : "ready_for_production";
 
-      if (WORKFLOW_STATES_REQUIRING_APPROVED_PROOF.has(targetWorkflowState)) {
+      const proofRequiredWithoutApproval = item.lineItemRequiresProofApprovalSnapshot === true && !item.approvedProofVersionId;
+      if (proofRequiredWithoutApproval) {
+        blockedByProofCount++;
+        lineItemDiagnostics[item.lineItemId] = {
+          stationKey: "proofing",
+          stepKey: currentWorkflowState === "awaiting_proof_approval" ? "awaiting_proof_approval" : "approved_proof_required",
+          routingReason: "proof_approval_required_before_scheduling",
+          idempotencyNote: "Blocked scheduling until an approved proof is recorded",
+        };
+        logProofSchedulingBlock({
+          traceId: requestTraceId,
+          orderId,
+          lineItemId: item.lineItemId,
+          currentWorkflowState,
+          targetWorkflowState,
+          requiresProofApproval: true,
+          approvedProofVersionId: item.approvedProofVersionId,
+          routingReason: route.reason,
+          reason: currentWorkflowState === "awaiting_proof_approval" ? "awaiting_proof_approval" : "missing_approved_proof",
+        });
+        continue;
+      }
+
+      if (WORKFLOW_STATES_REQUIRING_APPROVED_PROOF.has(targetWorkflowState) && item.lineItemRequiresProofApprovalSnapshot !== false) {
         const proofGate = await resolveLineItemProofReleaseGate(db, {
           organizationId,
           lineItemId: item.lineItemId,
@@ -367,13 +390,15 @@ export async function scheduleOrderLineItemsForProduction(args: {
           })
           .where(eq(orderLineItems.id, item.lineItemId));
 
-        await syncParentOrderForOperationalChildren(tx, {
-          organizationId,
-          orderId,
-          lineItemId: item.lineItemId,
-          actorUserId: args.actorUserId,
-          source: `production_schedule:${targetWorkflowState}`,
-        });
+        if (item.lineItemRole === "child") {
+          await syncParentOrderForOperationalChildren(tx, {
+            organizationId,
+            orderId,
+            lineItemId: item.lineItemId,
+            actorUserId: args.actorUserId,
+            source: `production_schedule:${targetWorkflowState}`,
+          });
+        }
 
         if (routingResult.outcome === "existing" && routingResult.reason) {
           console.warn(
