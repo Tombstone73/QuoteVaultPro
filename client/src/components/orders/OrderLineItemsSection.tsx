@@ -3977,7 +3977,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         </Button>
                                       ))
                                     : null}
-                                  {canSeeDebug && !(item as any).productionBypassed ? (
+                                  {!(item as any).productionBypassed ? (
                                     <Button
                                       type="button"
                                       variant="outline"
