@@ -13,10 +13,13 @@ import path from "path";
 const root = path.join(path.dirname(fileURLToPath(import.meta.url)), "..");
 const src = path.join(root, "server", "db", "migrations_v2");
 const dest = path.join(root, "dist", "db", "migrations_v2");
+const bridgeSrc = path.join(root, "local-bridge-agent");
+const bridgeDest = path.join(root, "dist", "local-bridge-agent");
 
 mkdirSync(path.dirname(dest), { recursive: true });
 rmSync(dest, { recursive: true, force: true });
 cpSync(src, dest, { recursive: true });
+if (readFileSync && (() => { try { return !!readFileSync(path.join(bridgeSrc, "agent.mjs")); } catch { return false; } })()) { rmSync(bridgeDest, { recursive: true, force: true }); cpSync(bridgeSrc, bridgeDest, { recursive: true }); }
 console.log("[Build] Copied server/db/migrations_v2 → dist/db/migrations_v2");
 
 // Verify the copy: read the packaged journal and emit its highest idx.
