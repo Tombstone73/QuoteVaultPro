@@ -174,4 +174,46 @@ describe("customer portal bulk onboarding policy", () => {
     expect(rows[0].contacts).toHaveLength(0);
     expect(rows[0].warnings).toContain("no_contacts");
   });
+
+  test("surfaces a sole emailed contact as auto eligible and multi-contact companies for review", () => {
+    const rows = buildPortalOnboardingRows({
+      now,
+      customers: [
+        { id: "single", companyName: "Single Contact", status: "active" },
+        { id: "multiple", companyName: "Multiple Contacts", status: "active" },
+      ],
+      contacts: [
+        { id: "single_contact", email: "single@acme.co", status: "active", flags: [] },
+        { id: "multi_one", email: "one@acme.co", status: "active", flags: [] },
+        { id: "multi_two", email: "two@acme.co", status: "active", flags: [] },
+      ],
+      relationships: [
+        { customerId: "single", contactId: "single_contact", status: "active" },
+        { customerId: "multiple", contactId: "multi_one", status: "active" },
+        { customerId: "multiple", contactId: "multi_two", status: "active" },
+      ],
+      accesses: [],
+      inviteTokens: [],
+      companySettings: [],
+    });
+
+    expect(rows.find((row: any) => row.customerId === "single").rolloutStatus).toBe("auto_eligible");
+    expect(rows.find((row: any) => row.customerId === "multiple").rolloutStatus).toBe("needs_contact_review");
+    expect(filterPortalOnboardingRows(rows, "auto_eligible", "")).toHaveLength(1);
+  });
+
+  test("no-contact and no-email companies are not auto enabled", () => {
+    const rows = buildPortalOnboardingRows({
+      now,
+      customers: [{ id: "missing", companyName: "Missing Email", status: "active" }],
+      contacts: [{ id: "missing_contact", email: null, status: "active", flags: [] }],
+      relationships: [{ customerId: "missing", contactId: "missing_contact", status: "active" }],
+      accesses: [],
+      inviteTokens: [],
+      companySettings: [],
+    });
+
+    expect(rows[0].rolloutStatus).toBe("missing_email");
+    expect(rows[0].companyPortalState).toBe("disabled");
+  });
 });

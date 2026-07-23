@@ -109,6 +109,7 @@ export type PortalOnboardingCompanyRow = {
   activeCount: number;
   warnings: string[];
   recommendedContactId: string | null;
+  rolloutStatus: "auto_eligible" | "needs_contact_review" | "invited" | "portal_active" | "missing_email";
   contacts: PortalOnboardingContact[];
 };
 
@@ -321,6 +322,14 @@ export function buildPortalOnboardingRows(input: {
       for (const contact of mappedContacts) {
         contact.warnings.forEach((warning) => rowWarnings.add(warning));
       }
+      const invitedCount = mappedContacts.filter((contact) => contact.contactPortalState === "invited" || contact.contactPortalState === "invitation_expired").length;
+      const activeCount = mappedContacts.filter((contact) => contact.contactPortalState === "active").length;
+      const emailedContacts = mappedContacts.filter((contact) => Boolean(contact.email));
+      const rolloutStatus: PortalOnboardingCompanyRow["rolloutStatus"] = activeCount > 0 ? "portal_active"
+        : invitedCount > 0 ? "invited"
+        : emailedContacts.length === 0 ? "missing_email"
+        : emailedContacts.length === 1 && emailedContacts[0].eligible ? "auto_eligible"
+        : "needs_contact_review";
 
       return {
         customerId: company.id,
@@ -329,10 +338,11 @@ export function buildPortalOnboardingRows(input: {
         primaryContactName: primary?.name ?? null,
         primaryContactEmail: primary?.email ?? null,
         eligibleContactsCount: mappedContacts.filter((contact) => contact.eligible).length,
-        alreadyInvitedCount: mappedContacts.filter((contact) => contact.contactPortalState === "invited" || contact.contactPortalState === "invitation_expired").length,
-        activeCount: mappedContacts.filter((contact) => contact.contactPortalState === "active").length,
+        alreadyInvitedCount: invitedCount,
+        activeCount,
         warnings: Array.from(rowWarnings),
         recommendedContactId: recommended?.contact.id ?? null,
+        rolloutStatus,
         contacts: mappedContacts,
       };
     })
@@ -354,7 +364,9 @@ export function filterPortalOnboardingRows(rows: PortalOnboardingCompanyRow[], f
     if (filter === "no_portal_access") return row.companyPortalState === "disabled" && row.activeCount === 0 && row.alreadyInvitedCount === 0;
     if (filter === "portal_enabled") return row.companyPortalState === "enabled";
     if (filter === "no_eligible_email") return row.eligibleContactsCount === 0;
-    if (filter === "multiple_contacts") return row.contacts.length > 1;
+    if (filter === "multiple_contacts" || filter === "needs_contact_review") return row.rolloutStatus === "needs_contact_review";
+    if (filter === "auto_eligible") return row.rolloutStatus === "auto_eligible";
+    if (filter === "missing_email") return row.rolloutStatus === "missing_email";
     if (filter === "already_active") return row.activeCount > 0;
     if (filter === "invitation_pending") return row.alreadyInvitedCount > 0;
     if (filter === "invitation_failed") return row.warnings.includes("invitation_failed");
@@ -412,6 +424,9 @@ export async function listPortalOnboardingCompanies(organizationId: string, args
       eligibleContacts: rows.reduce((sum, row) => sum + row.eligibleContactsCount, 0),
       invited: rows.reduce((sum, row) => sum + row.alreadyInvitedCount, 0),
       active: rows.reduce((sum, row) => sum + row.activeCount, 0),
+      autoEligible: rows.filter((row) => row.rolloutStatus === "auto_eligible").length,
+      needsContactReview: rows.filter((row) => row.rolloutStatus === "needs_contact_review").length,
+      missingEmail: rows.filter((row) => row.rolloutStatus === "missing_email").length,
     },
   };
 }
@@ -513,10 +528,6 @@ export async function runPortalOnboardingAction(input: {
   actionInput: PortalOnboardingActionInput;
   req?: Request;
 }) {
-  if (input.actionInput.confirmation !== "CONFIRM") {
-    throw Object.assign(new Error("Bulk portal onboarding requires explicit CONFIRM confirmation."), { status: 400, code: "PORTAL_ONBOARDING_CONFIRMATION_REQUIRED" });
-  }
-
   if (input.actionInput.action === "enable_companies") {
     return { action: "enable_companies", ...(await enablePortalForCompanies({ organizationId: input.organizationId, customerIds: input.actionInput.customerIds ?? [], actorUserId: input.actorUserId, req: input.req })) };
   }

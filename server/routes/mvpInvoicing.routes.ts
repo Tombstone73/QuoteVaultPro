@@ -25,6 +25,7 @@ import { getPublicWebOrigin } from "../lib/appRuntimeConfig";
 import { createInvoicePdfEmailAttachment } from "../services/invoiceEmailAttachment";
 import { buildInvoiceEmailHtml, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
 import { getInvoiceOrderContext } from "../services/invoiceOrderContext";
+import { prepareSingleContactPortalAccessForInvoice } from "../services/customerPortalAccessService";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -330,6 +331,12 @@ export async function registerMvpInvoicingRoutes(
     const invoiceStatusForOnlinePayment = String((inv as any).status || "").trim().toLowerCase();
     const canInvoiceBePaidOnline = rollup.amountDueCents > 0
       && ["finalized", "billed", "sent", "partially_paid", "overdue"].includes(invoiceStatusForOnlinePayment);
+    const portalUrl = await prepareSingleContactPortalAccessForInvoice({
+      organizationId: input.organizationId,
+      customerId: inv.customerId,
+      recipientEmail,
+      actorUserId: input.userId,
+    });
     let paymentUrl: string | null = null;
     if (canInvoiceBePaidOnline) {
       const [portalAccessRows, paymentSettings, stripeConnections] = await Promise.all([
@@ -388,6 +395,7 @@ export async function registerMvpInvoicingRoutes(
       poNumber: orderContext?.poNumber,
       jobLabel: orderContext?.jobLabel,
       paymentUrl,
+      portalUrl,
     });
 
     const now = new Date();

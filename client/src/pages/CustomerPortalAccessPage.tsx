@@ -51,6 +51,7 @@ type PortalCompanyRow = {
   activeCount: number;
   warnings: string[];
   recommendedContactId: string | null;
+  rolloutStatus: "auto_eligible" | "needs_contact_review" | "invited" | "portal_active" | "missing_email";
   contacts: PortalContact[];
 };
 
@@ -63,11 +64,17 @@ type PortalOnboardingResponse = {
     eligibleContacts: number;
     invited: number;
     active: number;
+    autoEligible: number;
+    needsContactReview: number;
+    missingEmail: number;
   };
 };
 
 const filters = [
   ["all", "All"],
+  ["auto_eligible", "Auto-eligible single contact"],
+  ["needs_contact_review", "Needs contact review"],
+  ["missing_email", "Missing email / contact"],
   ["no_portal_access", "No portal access"],
   ["portal_enabled", "Portal enabled"],
   ["no_eligible_email", "No eligible email"],
@@ -92,6 +99,16 @@ function stateBadgeVariant(state: string): "default" | "secondary" | "destructiv
   return "outline";
 }
 
+function rolloutStatusLabel(status: PortalCompanyRow["rolloutStatus"]) {
+  return {
+    auto_eligible: "Auto eligible",
+    needs_contact_review: "Needs contact review",
+    invited: "Invited",
+    portal_active: "Portal active",
+    missing_email: "Missing email",
+  }[status];
+}
+
 function parseApiError(error: unknown) {
   const message = error instanceof Error ? error.message : "Request failed.";
   const jsonStart = message.indexOf("{");
@@ -114,7 +131,6 @@ export default function CustomerPortalAccessPage() {
   const [selectedContacts, setSelectedContacts] = useState<Set<string>>(new Set());
   const [accessRoles, setAccessRoles] = useState<Record<string, PortalAccessRole>>({});
   const [reviewAction, setReviewAction] = useState<BulkAction | null>(null);
-  const [confirmation, setConfirmation] = useState("");
 
   const query = useQuery<{ success: true; data: PortalOnboardingResponse }>({
     queryKey: ["/api/customer-portal-onboarding/companies", filter, search],
@@ -170,7 +186,6 @@ export default function CustomerPortalAccessPage() {
           : `Enabled ${data?.enabled ?? 0} companies.`,
       });
       setReviewAction(null);
-      setConfirmation("");
     },
     onError: (error) => {
       toast({ title: "Portal onboarding failed", description: parseApiError(error), variant: "destructive" });
@@ -219,23 +234,17 @@ export default function CustomerPortalAccessPage() {
     actionMutation.mutate({
       action: "enable_companies",
       customerIds: Array.from(selectedCompanies),
-      confirmation: "CONFIRM",
     });
   };
 
   const submitReviewAction = () => {
     if (!reviewAction) return;
-    if (confirmation !== "CONFIRM") {
-      toast({ title: "Confirmation required", description: "Enter CONFIRM before running this bulk action.", variant: "destructive" });
-      return;
-    }
     actionMutation.mutate({
       action: reviewAction,
       customerIds: Array.from(selectedCompanies),
       contactIds: Array.from(selectedContacts),
       accessIds: reviewTargets.map(({ contact }) => contact.accessId).filter(Boolean),
       accessRoles,
-      confirmation,
     });
   };
 
@@ -248,15 +257,15 @@ export default function CustomerPortalAccessPage() {
     <Page>
       <PageHeader
         title="Customer Portal"
-        subtitle="Bulk-enable company portal access and invite eligible contacts with a controlled review step."
+        subtitle="Single-contact customers receive secure setup through invoice email. Review multi-contact companies before inviting a portal contact."
       />
       <ContentLayout>
         <div className="grid gap-3 md:grid-cols-6">
           {[
             ["Companies", summary?.companies ?? 0],
-            ["No Access", summary?.noPortalAccess ?? 0],
-            ["Enabled", summary?.portalEnabled ?? 0],
-            ["Eligible", summary?.eligibleContacts ?? 0],
+            ["Auto eligible", summary?.autoEligible ?? 0],
+            ["Needs review", summary?.needsContactReview ?? 0],
+            ["Missing email", summary?.missingEmail ?? 0],
             ["Invited", summary?.invited ?? 0],
             ["Active", summary?.active ?? 0],
           ].map(([label, value]) => (
@@ -332,6 +341,7 @@ export default function CustomerPortalAccessPage() {
                 <TableHead>Eligible</TableHead>
                 <TableHead>Invited</TableHead>
                 <TableHead>Active</TableHead>
+                <TableHead>Access rollout</TableHead>
                 <TableHead>Company State</TableHead>
                 <TableHead>Warnings</TableHead>
               </TableRow>
@@ -339,14 +349,14 @@ export default function CustomerPortalAccessPage() {
             <TableBody>
               {query.isLoading && (
                 <TableRow>
-                  <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">
+                  <TableCell colSpan={10} className="h-24 text-center text-muted-foreground">
                     <Loader2 className="mx-auto h-5 w-5 animate-spin" />
                   </TableCell>
                 </TableRow>
               )}
               {!query.isLoading && rows.length === 0 && (
                 <TableRow>
-                  <TableCell colSpan={9} className="h-24 text-center text-muted-foreground">No companies match this review.</TableCell>
+                  <TableCell colSpan={10} className="h-24 text-center text-muted-foreground">No companies match this review.</TableCell>
                 </TableRow>
               )}
               {rows.map((row) => (
@@ -379,6 +389,7 @@ export default function CustomerPortalAccessPage() {
                   <TableCell className="tabular-nums">{row.eligibleContactsCount}</TableCell>
                   <TableCell className="tabular-nums">{row.alreadyInvitedCount}</TableCell>
                   <TableCell className="tabular-nums">{row.activeCount}</TableCell>
+                  <TableCell><Badge variant={stateBadgeVariant(row.rolloutStatus)}>{rolloutStatusLabel(row.rolloutStatus)}</Badge></TableCell>
                   <TableCell>
                     <Badge variant={stateBadgeVariant(row.companyPortalState)}>{row.companyPortalState}</Badge>
                   </TableCell>
@@ -403,7 +414,7 @@ export default function CustomerPortalAccessPage() {
           <DialogHeader>
             <DialogTitle>Review Portal Invitations</DialogTitle>
             <DialogDescription>
-              Confirm the selected contacts and access roles before any invitations are sent.
+              Review the selected contacts and access roles before invitations are sent.
             </DialogDescription>
           </DialogHeader>
           <div className="max-h-[420px] overflow-auto rounded-md border">
@@ -450,13 +461,10 @@ export default function CustomerPortalAccessPage() {
               </TableBody>
             </Table>
           </div>
-          <div className="grid gap-2">
-            <div className="text-sm text-muted-foreground">Total invitations/actions: {reviewTargets.length}</div>
-            <Input value={confirmation} onChange={(event) => setConfirmation(event.target.value)} placeholder="Type CONFIRM" />
-          </div>
+          <div className="text-sm text-muted-foreground">Total invitations/actions: {reviewTargets.length}</div>
           <DialogFooter>
             <Button variant="outline" onClick={() => setReviewAction(null)}>Cancel</Button>
-            <Button onClick={submitReviewAction} disabled={actionMutation.isPending || reviewTargets.length === 0 || confirmation !== "CONFIRM"}>
+            <Button onClick={submitReviewAction} disabled={actionMutation.isPending || reviewTargets.length === 0}>
               {actionMutation.isPending && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
               Confirm
             </Button>

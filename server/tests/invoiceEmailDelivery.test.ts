@@ -104,6 +104,22 @@ describe("invoice email delivery", () => {
     expect(unavailableHtml).not.toContain("Job:</strong>");
   });
 
+  test("includes the secure customer portal CTA when a portal setup or login URL is available", () => {
+    const portalUrl = "https://app.example.test/accept-invite?token=opaque-token&kind=portal";
+    const html = buildInvoiceEmailHtml({
+      invoiceNumber: "INV-20001",
+      companyName: "Test Print Shop",
+      customerName: "Test Customer",
+      totalFormatted: "25.00",
+      dueDate: "Aug 15, 2026",
+      portalUrl,
+    });
+
+    expect(html).toContain("View and manage your account, invoices, orders, and payments in the customer portal.");
+    expect(html).toContain("Open Customer Portal");
+    expect(html).toContain(portalUrl.replace(/&/g, "&amp;"));
+  });
+
   test("includes available PO and job context in invoice reminder emails", () => {
     const html = buildReminderEmailHtml({
       invoiceNumber: "INV-20000",
