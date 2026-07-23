@@ -37,7 +37,6 @@ const portalOnboardingActionSchema = z.object({
   contactIds: z.array(z.string()).optional(),
   accessIds: z.array(z.string()).optional(),
   accessRoles: z.record(z.enum(["COMPANY_ADMIN", "BUYER", "BILLING", "VIEWER"])).optional(),
-  confirmation: z.string().optional(),
 });
 
 function getActorUserId(req: any): string {

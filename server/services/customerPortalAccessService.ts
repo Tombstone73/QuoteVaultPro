@@ -10,6 +10,7 @@ import {
   auditLogs,
   authIdentities,
   customerContacts,
+  customerContactLinks,
   customerPortalAccess,
   customerPortalCompanySettings,
   customerPortalInviteTokens,
@@ -66,7 +67,7 @@ function makeInviteToken(): string {
   return crypto.randomBytes(32).toString("hex");
 }
 
-function getInviteUrl(rawToken: string): string {
+export function getPortalInviteUrl(rawToken: string): string {
   const baseUrl = getPublicWebOrigin() || "https://www.printershero.com";
   return `${baseUrl.replace(/\/$/, "")}/accept-invite?token=${encodeURIComponent(rawToken)}&kind=portal`;
 }
@@ -147,7 +148,7 @@ async function createInviteToken(input: {
 }
 
 async function sendPortalInviteEmail(access: typeof customerPortalAccess.$inferSelect, rawToken: string) {
-  const inviteUrl = getInviteUrl(rawToken);
+  const inviteUrl = getPortalInviteUrl(rawToken);
   await emailService.sendEmail(access.organizationId, {
     to: access.email,
     subject: "Your PrintersHero customer portal invite",
@@ -222,8 +223,9 @@ export async function createCustomerPortalAccess(input: {
   organizationId: string;
   customerId: string;
   contactId: string;
-  actorUserId: string;
+  actorUserId?: string | null;
   accessRole?: "COMPANY_ADMIN" | "BUYER" | "BILLING" | "VIEWER";
+  sendEmail?: boolean;
   req?: Request;
 }) {
   const [contact] = await db
@@ -272,7 +274,11 @@ export async function createCustomerPortalAccess(input: {
     .limit(1))[0];
 
   if (access) {
-    assertCustomerPortalTransition(access.status as CustomerPortalAccessStatus, "PENDING_INVITE");
+    // Invoice emails may safely refresh an unaccepted setup token. This keeps
+    // the same access record and revokes the older one-time token.
+    if (!(input.sendEmail === false && access.status === "PENDING_INVITE")) {
+      assertCustomerPortalTransition(access.status as CustomerPortalAccessStatus, "PENDING_INVITE");
+    }
     [access] = await db
       .update(customerPortalAccess)
       .set({
@@ -311,15 +317,17 @@ export async function createCustomerPortalAccess(input: {
     actorUserId: input.actorUserId,
   });
 
-  try {
-    await sendPortalInviteEmail(access, rawToken);
-  } catch (error) {
-    await handlePortalInviteSendFailure({
-      access,
-      actorUserId: input.actorUserId,
-      req: input.req,
-      error,
-    });
+  if (input.sendEmail !== false) {
+    try {
+      await sendPortalInviteEmail(access, rawToken);
+    } catch (error) {
+      await handlePortalInviteSendFailure({
+        access,
+        actorUserId: input.actorUserId,
+        req: input.req,
+        error,
+      });
+    }
   }
 
   await writePortalAudit({
@@ -332,18 +340,104 @@ export async function createCustomerPortalAccess(input: {
     contactId: input.contactId,
     req: input.req,
   });
+  if (input.sendEmail !== false) {
+    await writePortalAudit({
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      actionType: "PORTAL_INVITE_SENT",
+      description: `Portal invite sent to ${access.email}`,
+      accessId: access.id,
+      customerId: input.customerId,
+      contactId: input.contactId,
+      req: input.req,
+    });
+  }
+
+  return input.sendEmail === false ? { ...access, portalSetupUrl: getPortalInviteUrl(rawToken) } : access;
+}
+
+/**
+ * Prepares a secure setup link for the sole emailed contact of a customer.
+ * It deliberately returns null for any ambiguous contact list.
+ */
+export async function prepareSingleContactPortalAccessForInvoice(input: {
+  organizationId: string;
+  customerId: string;
+  recipientEmail: string;
+  actorUserId?: string | null;
+  req?: Request;
+}): Promise<string | null> {
+  const recipientEmail = input.recipientEmail.trim().toLowerCase();
+  if (!recipientEmail) return null;
+
+  const contacts = (await db.select({
+    contactId: customerContacts.id,
+    email: customerContacts.email,
+    isPrimary: customerContactLinks.isPrimary,
+  })
+    .from(customerContactLinks)
+    .innerJoin(customerContacts, eq(customerContactLinks.contactId, customerContacts.id))
+    .innerJoin(customers, eq(customerContactLinks.customerId, customers.id))
+    .where(and(
+      eq(customerContactLinks.organizationId, input.organizationId),
+      eq(customerContactLinks.customerId, input.customerId),
+      eq(customers.organizationId, input.organizationId),
+      ne(customerContactLinks.status, "removed"),
+    ))).filter((contact) => Boolean(contact.email?.trim()));
+
+  if (contacts.length !== 1 || contacts[0].email!.trim().toLowerCase() !== recipientEmail) return null;
+
+  const [companySetting] = await db.select({ state: customerPortalCompanySettings.state })
+    .from(customerPortalCompanySettings)
+    .where(and(
+      eq(customerPortalCompanySettings.organizationId, input.organizationId),
+      eq(customerPortalCompanySettings.customerId, input.customerId),
+    ))
+    .limit(1);
+  if (companySetting?.state === "suspended") return null;
+
+  const [existing] = await db.select().from(customerPortalAccess).where(and(
+    eq(customerPortalAccess.organizationId, input.organizationId),
+    eq(customerPortalAccess.contactId, contacts[0].contactId),
+  )).limit(1);
+  if (existing?.status === "ACTIVE") return getPortalLoginUrl();
+  if (existing?.status === "SUSPENDED") return null;
+
+  const now = new Date();
+  await db.insert(customerPortalCompanySettings).values({
+    organizationId: input.organizationId,
+    customerId: input.customerId,
+    state: "enabled",
+    enabledAt: now,
+    updatedByUserId: input.actorUserId ?? null,
+  }).onConflictDoUpdate({
+    target: [customerPortalCompanySettings.organizationId, customerPortalCompanySettings.customerId],
+    set: { state: "enabled", enabledAt: now, suspendedAt: null, updatedAt: now, updatedByUserId: input.actorUserId ?? null },
+  });
+
+  const access = await createCustomerPortalAccess({
+    organizationId: input.organizationId,
+    customerId: input.customerId,
+    contactId: contacts[0].contactId,
+    actorUserId: input.actorUserId,
+    accessRole: contacts[0].isPrimary ? "COMPANY_ADMIN" : "VIEWER",
+    sendEmail: false,
+    req: input.req,
+  });
+  const portalSetupUrl = "portalSetupUrl" in access ? access.portalSetupUrl : null;
+  if (!portalSetupUrl) return null;
+
   await writePortalAudit({
     organizationId: input.organizationId,
     actorUserId: input.actorUserId,
-    actionType: "PORTAL_INVITE_SENT",
-    description: `Portal invite sent to ${access.email}`,
+    actionType: "PORTAL_ACCESS_PREPARED_FROM_INVOICE",
+    description: `Portal setup link prepared for invoice recipient ${access.email}`,
     accessId: access.id,
     customerId: input.customerId,
-    contactId: input.contactId,
+    contactId: contacts[0].contactId,
     req: input.req,
   });
-
-  return access;
+  return portalSetupUrl;
 }
 
 async function getAccessForAdmin(organizationId: string, accessId: string) {
@@ -822,6 +916,11 @@ export async function getPortalAccessForLogin(userId: string) {
     .limit(1);
   if (companySetting?.state === "suspended") return null;
   return access;
+}
+
+function getPortalLoginUrl(): string {
+  const baseUrl = getPublicWebOrigin() || "https://www.printershero.com";
+  return `${baseUrl.replace(/\/$/, "")}/portal`;
 }
 
 export async function recordPortalLogin(input: { userId: string; req?: Request }) {

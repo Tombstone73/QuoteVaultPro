@@ -31,6 +31,7 @@ export function buildInvoiceEmailHtml(input: {
   poNumber?: string | null;
   jobLabel?: string | null;
   paymentUrl?: string | null;
+  portalUrl?: string | null;
 }): string {
   const invoiceNumber = escapeHtml(input.invoiceNumber);
   const companyName = escapeHtml(input.companyName);
@@ -49,6 +50,11 @@ export function buildInvoiceEmailHtml(input: {
       <a href="${paymentUrl}" style="display: inline-block; background: #2563eb; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">Pay Invoice Online</a>
     </p>
     <p style="font-size: 13px; color: #666; word-break: break-all;">If the button does not work, copy and paste this secure payment link into your browser:<br><a href="${paymentUrl}">${paymentUrl}</a></p>`
+    : "";
+  const portalUrl = input.portalUrl ? escapeHtml(input.portalUrl) : null;
+  const portalSection = portalUrl
+    ? `<p style="margin: 24px 0 12px 0;">View and manage your account, invoices, orders, and payments in the customer portal.</p>
+      <p style="margin: 12px 0;"><a href="${portalUrl}" style="display: inline-block; background: #475569; color: #ffffff; padding: 12px 18px; border-radius: 6px; font-weight: 600; text-decoration: none;">Open Customer Portal</a></p>`
     : "";
 
   return `
@@ -71,7 +77,7 @@ export function buildInvoiceEmailHtml(input: {
   <div style="padding: 20px 0;">
     <p>Dear ${customerName},</p>
     <p>Please find attached Invoice #${invoiceNumber} for the amount of <strong>$${totalFormatted}</strong>.</p>
-    <p>Payment is due ${dueDate}.</p>${orderContextSection}${paymentSection}
+    <p>Payment is due ${dueDate}.</p>${orderContextSection}${paymentSection}${portalSection}
     <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
   </div>
 
