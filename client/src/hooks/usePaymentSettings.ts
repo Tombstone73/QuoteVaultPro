@@ -16,11 +16,21 @@ export type PaymentSettingsView = {
   epsSupportedModes: EpsPaymentMode[];
   epsReady: boolean;
   missing: string[];
+  epsMode: "test" | "live";
+  epsTestAccountNumber: string | null;
+  epsTestApiKeyConfigured: boolean;
+  epsTestApiKeyMasked: string | null;
+  epsTestBaseUrl: string;
+  epsLiveAccountNumber: string | null;
+  epsLiveApiKeyConfigured: boolean;
+  epsLiveApiKeyMasked: string | null;
+  epsLiveBaseUrl: string;
 };
 
 export type UpdatePaymentSettingsInput = Partial<
-  Omit<PaymentSettingsView, "epsApiKeyConfigured" | "epsReady" | "missing"> & {
-    epsApiKey: string | null;
+  Omit<PaymentSettingsView, "epsApiKeyConfigured" | "epsReady" | "missing" | "epsTestApiKeyConfigured" | "epsTestApiKeyMasked" | "epsLiveApiKeyConfigured" | "epsLiveApiKeyMasked"> & {
+    epsTestApiKey: string | null;
+    epsLiveApiKey: string | null;
   }
 >;
 

@@ -10,6 +10,7 @@ import {
 } from "../../../shared/schema";
 import { normalizeInvoiceAccountingDisplay } from "../../../shared/invoiceAccountingDisplay";
 import { refreshInvoiceStatus } from "../../invoicesService";
+import { decryptAiSecret, encryptAiSecret } from "../ai/aiSecretsEncryption";
 import {
   buildHostedPtkRequest,
   EpsGatewayClient,
@@ -62,6 +63,15 @@ export type SafePaymentSettings = {
   epsSupportedModes: EpsMode[];
   epsReady: boolean;
   missing: string[];
+  epsMode: "test" | "live";
+  epsTestAccountNumber: string | null;
+  epsTestApiKeyConfigured: boolean;
+  epsTestApiKeyMasked: string | null;
+  epsTestBaseUrl: string;
+  epsLiveAccountNumber: string | null;
+  epsLiveApiKeyConfigured: boolean;
+  epsLiveApiKeyMasked: string | null;
+  epsLiveBaseUrl: string;
 };
 
 export class PaymentProviderError extends Error {
@@ -97,6 +107,9 @@ function getDefaultSafeSettings(): SafePaymentSettings {
     epsSupportedModes: ["hosted_cnp"],
     epsReady: false,
     missing: ["provider"],
+    epsMode: "test", epsTestAccountNumber: null, epsTestApiKeyConfigured: false, epsTestApiKeyMasked: null,
+    epsTestBaseUrl: "https://postransactions.com/cnp", epsLiveAccountNumber: null, epsLiveApiKeyConfigured: false,
+    epsLiveApiKeyMasked: null, epsLiveBaseUrl: "https://postransactions.com/cnp",
   };
 }
 
@@ -111,8 +124,11 @@ export function toSafePaymentSettings(row: OrganizationPaymentSettings | null | 
   const provider = row.provider === "eps" || row.provider === "stripe" ? row.provider : "none";
   const epsMissing: string[] = [];
   if (!row.epsEnabled) epsMissing.push("epsEnabled");
-  if (!asString(row.epsAccountNumber)) epsMissing.push("epsAccountNumber");
-  if (!asString(row.epsApiKey)) epsMissing.push("epsApiKey");
+  const epsMode = (row as any).epsMode === "live" ? "live" as const : "test" as const;
+  const activeAccount = epsMode === "live" ? (row as any).epsLiveAccountNumber : (row as any).epsTestAccountNumber;
+  const activeEncryptedKey = epsMode === "live" ? (row as any).epsLiveEncryptedApiKey : (row as any).epsTestEncryptedApiKey;
+  if (!asString(activeAccount)) epsMissing.push(`eps${epsMode === "live" ? "Live" : "Test"}AccountNumber`);
+  if (!asString(activeEncryptedKey)) epsMissing.push(`eps${epsMode === "live" ? "Live" : "Test"}ApiKey`);
   const missing = provider === "none"
     ? ["provider"]
     : provider === "eps" || row.epsEnabled
@@ -122,9 +138,9 @@ export function toSafePaymentSettings(row: OrganizationPaymentSettings | null | 
   return {
     provider,
     epsEnabled: Boolean(row.epsEnabled),
-    epsAccountNumber: asString(row.epsAccountNumber) || null,
-    epsApiKeyConfigured: Boolean(asString(row.epsApiKey)),
-    epsCnpBaseUrl: asString(row.epsCnpBaseUrl) || "https://postransactions.com/cnp",
+    epsAccountNumber: asString(activeAccount) || null,
+    epsApiKeyConfigured: Boolean(asString(activeEncryptedKey)),
+    epsCnpBaseUrl: asString(epsMode === "live" ? (row as any).epsLiveBaseUrl : (row as any).epsTestBaseUrl) || "https://postransactions.com/cnp",
     epsCardPresentBaseUrl: asString(row.epsCardPresentBaseUrl) || "https://postransactions.com/connet",
     epsAchBaseUrl: asString(row.epsAchBaseUrl) || "https://postransactions.com/ach",
     epsGiftBaseUrl: asString(row.epsGiftBaseUrl) || "https://postransactions.com/gift",
@@ -132,6 +148,15 @@ export function toSafePaymentSettings(row: OrganizationPaymentSettings | null | 
     epsSupportedModes: supportedModes,
     epsReady: epsMissing.length === 0,
     missing,
+    epsMode,
+    epsTestAccountNumber: asString((row as any).epsTestAccountNumber) || null,
+    epsTestApiKeyConfigured: Boolean(asString((row as any).epsTestEncryptedApiKey)),
+    epsTestApiKeyMasked: asString((row as any).epsTestEncryptedApiKey) ? "Configured" : null,
+    epsTestBaseUrl: asString((row as any).epsTestBaseUrl) || "https://postransactions.com/cnp",
+    epsLiveAccountNumber: asString((row as any).epsLiveAccountNumber) || null,
+    epsLiveApiKeyConfigured: Boolean(asString((row as any).epsLiveEncryptedApiKey)),
+    epsLiveApiKeyMasked: asString((row as any).epsLiveEncryptedApiKey) ? "Configured" : null,
+    epsLiveBaseUrl: asString((row as any).epsLiveBaseUrl) || "https://postransactions.com/cnp",
   };
 }
 
@@ -161,7 +186,7 @@ async function requireEpsSettings(organizationId: string, mode: EpsMode): Promis
     throw new PaymentProviderError(`EPS mode ${mode} is not enabled for this organization.`, "EPS_MODE_DISABLED", 409);
   }
   if (!safe.epsAccountNumber || !safe.epsApiKeyConfigured) {
-    throw new PaymentProviderError("EPS account number and API key are required before taking payments.", "EPS_SETTINGS_INCOMPLETE", 409);
+    throw new PaymentProviderError(`EPS ${safe.epsMode} credentials are incomplete. Add the active account number and API key before taking payments.`, "EPS_ACTIVE_CREDENTIALS_INCOMPLETE", 409);
   }
   if (mode === "card_present" && !safe.epsDeviceSerialNumber) {
     throw new PaymentProviderError("EPS card-present device serial number is required.", "EPS_DEVICE_MISSING", 409);
@@ -169,15 +194,32 @@ async function requireEpsSettings(organizationId: string, mode: EpsMode): Promis
   return row;
 }
 
+export function resolveActiveEpsCredentials(settings: Pick<OrganizationPaymentSettings, "epsMode" | "epsTestAccountNumber" | "epsTestEncryptedApiKey" | "epsTestBaseUrl" | "epsLiveAccountNumber" | "epsLiveEncryptedApiKey" | "epsLiveBaseUrl">) {
+  const activeMode = (settings as any).epsMode === "live" ? "live" : "test";
+  const encryptedApiKey = activeMode === "live" ? (settings as any).epsLiveEncryptedApiKey : (settings as any).epsTestEncryptedApiKey;
+  const apiKey = encryptedApiKey ? decryptAiSecret(asString(encryptedApiKey)) : "";
+  return {
+    mode: activeMode,
+    apiKey,
+    accountNumber: asString(activeMode === "live" ? (settings as any).epsLiveAccountNumber : (settings as any).epsTestAccountNumber),
+    baseUrl: asString(activeMode === "live" ? (settings as any).epsLiveBaseUrl : (settings as any).epsTestBaseUrl),
+  };
+}
+
 function createEpsClient(settings: OrganizationPaymentSettings): EpsGatewayClient {
+  const active = resolveActiveEpsCredentials(settings);
   return new EpsGatewayClient({
-    apiKey: asString(settings.epsApiKey),
-    accountNumber: asString(settings.epsAccountNumber),
-    cnpBaseUrl: asString(settings.epsCnpBaseUrl),
+    apiKey: active.apiKey,
+    accountNumber: active.accountNumber,
+    cnpBaseUrl: active.baseUrl,
     cardPresentBaseUrl: asString(settings.epsCardPresentBaseUrl),
     achBaseUrl: asString(settings.epsAchBaseUrl),
     giftBaseUrl: asString(settings.epsGiftBaseUrl),
   });
+}
+
+function getActiveEpsAccount(settings: OrganizationPaymentSettings): string {
+  return asString((settings as any).epsMode === "live" ? (settings as any).epsLiveAccountNumber : (settings as any).epsTestAccountNumber);
 }
 
 async function getInvoiceContext(organizationId: string, invoiceId: string) {
@@ -397,6 +439,13 @@ export async function updatePaymentSettings(
   input: Partial<{
     provider: "none" | "stripe" | "eps";
     epsEnabled: boolean;
+    epsMode: "test" | "live";
+    epsTestAccountNumber: string | null;
+    epsTestApiKey: string | null;
+    epsTestBaseUrl: string;
+    epsLiveAccountNumber: string | null;
+    epsLiveApiKey: string | null;
+    epsLiveBaseUrl: string;
     epsAccountNumber: string | null;
     epsApiKey: string | null;
     epsCnpBaseUrl: string;
@@ -409,19 +458,28 @@ export async function updatePaymentSettings(
 ): Promise<SafePaymentSettings> {
   const existing = await getSettingsRow(organizationId);
   const now = new Date();
-  const nextApiKey =
-    Object.prototype.hasOwnProperty.call(input, "epsApiKey")
-      ? asString(input.epsApiKey) || null
-      : existing?.epsApiKey ?? null;
+  const nextTestApiKey = Object.prototype.hasOwnProperty.call(input, "epsTestApiKey")
+    ? (asString(input.epsTestApiKey) ? encryptAiSecret(asString(input.epsTestApiKey)).encrypted : null)
+    : (existing as any)?.epsTestEncryptedApiKey ?? null;
+  const nextLiveApiKey = Object.prototype.hasOwnProperty.call(input, "epsLiveApiKey")
+    ? (asString(input.epsLiveApiKey) ? encryptAiSecret(asString(input.epsLiveApiKey)).encrypted : null)
+    : (existing as any)?.epsLiveEncryptedApiKey ?? null;
 
   const values = {
     organizationId,
     provider: input.provider ?? existing?.provider ?? "none",
     epsEnabled: input.epsEnabled ?? existing?.epsEnabled ?? false,
+    epsMode: input.epsMode ?? (existing as any)?.epsMode ?? "test",
+    epsTestAccountNumber: Object.prototype.hasOwnProperty.call(input, "epsTestAccountNumber") ? asString(input.epsTestAccountNumber) || null : (existing as any)?.epsTestAccountNumber ?? null,
+    epsTestEncryptedApiKey: nextTestApiKey,
+    epsTestBaseUrl: asString(input.epsTestBaseUrl) || (existing as any)?.epsTestBaseUrl || "https://postransactions.com/cnp",
+    epsLiveAccountNumber: Object.prototype.hasOwnProperty.call(input, "epsLiveAccountNumber") ? asString(input.epsLiveAccountNumber) || null : (existing as any)?.epsLiveAccountNumber ?? null,
+    epsLiveEncryptedApiKey: nextLiveApiKey,
+    epsLiveBaseUrl: asString(input.epsLiveBaseUrl) || (existing as any)?.epsLiveBaseUrl || "https://postransactions.com/cnp",
     epsAccountNumber: Object.prototype.hasOwnProperty.call(input, "epsAccountNumber")
       ? asString(input.epsAccountNumber) || null
       : existing?.epsAccountNumber ?? null,
-    epsApiKey: nextApiKey,
+    epsApiKey: null,
     epsCnpBaseUrl: asString(input.epsCnpBaseUrl) || existing?.epsCnpBaseUrl || "https://postransactions.com/cnp",
     epsCardPresentBaseUrl: asString(input.epsCardPresentBaseUrl) || existing?.epsCardPresentBaseUrl || "https://postransactions.com/connet",
     epsAchBaseUrl: asString(input.epsAchBaseUrl) || existing?.epsAchBaseUrl || "https://postransactions.com/ach",
@@ -442,6 +500,13 @@ export async function updatePaymentSettings(
       set: {
         provider: values.provider,
         epsEnabled: values.epsEnabled,
+        epsMode: values.epsMode,
+        epsTestAccountNumber: values.epsTestAccountNumber,
+        epsTestEncryptedApiKey: values.epsTestEncryptedApiKey,
+        epsTestBaseUrl: values.epsTestBaseUrl,
+        epsLiveAccountNumber: values.epsLiveAccountNumber,
+        epsLiveEncryptedApiKey: values.epsLiveEncryptedApiKey,
+        epsLiveBaseUrl: values.epsLiveBaseUrl,
         epsAccountNumber: values.epsAccountNumber,
         epsApiKey: values.epsApiKey,
         epsCnpBaseUrl: values.epsCnpBaseUrl,
@@ -454,6 +519,21 @@ export async function updatePaymentSettings(
       } as any,
     })
     .returning();
+
+  const credentialsUpdated = Object.prototype.hasOwnProperty.call(input, "epsTestApiKey") || Object.prototype.hasOwnProperty.call(input, "epsLiveApiKey");
+  const modeChanged = (existing as any)?.epsMode !== values.epsMode;
+  if (credentialsUpdated || modeChanged) {
+    await db.insert(auditLogs).values({
+      organizationId,
+      actionType: "eps_settings_updated",
+      entityType: "organization_payment_settings",
+      entityId: organizationId,
+      entityName: "EPS payment settings",
+      description: modeChanged ? `EPS active mode changed to ${values.epsMode}.` : "EPS credentials updated.",
+      newValues: { epsMode: values.epsMode, testCredentialsUpdated: Object.prototype.hasOwnProperty.call(input, "epsTestApiKey"), liveCredentialsUpdated: Object.prototype.hasOwnProperty.call(input, "epsLiveApiKey") },
+      createdAt: now,
+    } as any);
+  }
 
   return assertNoApiKeyLeak(toSafePaymentSettings(row as OrganizationPaymentSettings));
 }
@@ -497,7 +577,7 @@ export async function createHostedSession(input: {
 
   const client = createEpsClient(settings);
   const payload = buildHostedPtkRequest({
-    accountNumber: asString(settings.epsAccountNumber),
+    accountNumber: getActiveEpsAccount(settings),
     amountCents: input.amountCents,
     ticketId: asString(invoice.displayNumber) || String(invoice.invoiceNumber || invoice.id),
     userId: input.actor?.userName || input.actor?.userId || "TitanOS",
@@ -757,7 +837,7 @@ export async function createTokenSale(input: {
   const client = createEpsClient(settings);
   const response = await client.tokenCnpRequest({
     method: "creditsale",
-    account: asString(settings.epsAccountNumber),
+    account: getActiveEpsAccount(settings),
     paysource: asString(input.paySource) || "PHONE",
     amount: formatCentsAsEpsAmount(input.amountCents),
     firstname: input.firstName || "",
@@ -816,7 +896,7 @@ export async function createCardPresentSale(input: {
   const response = await createEpsClient(settings).cardPresentTransact({
     method: "creditsale",
     amount: formatCentsAsEpsAmount(input.amountCents),
-    account: asString(settings.epsAccountNumber),
+    account: getActiveEpsAccount(settings),
     sn: asString(settings.epsDeviceSerialNumber),
   });
   const payment = await insertEpsPayment({
@@ -875,7 +955,7 @@ export async function createAchSale(input: {
 
   const response = await createEpsClient(settings).achProcess({
     method: "sale",
-    account: asString(settings.epsAccountNumber),
+    account: getActiveEpsAccount(settings),
     checkaccount: input.checkAccount,
     checkrouting: input.checkRouting,
     checktype: input.checkType || "Checking",
@@ -939,7 +1019,7 @@ export async function createGiftCardSale(input: {
 
   const response = await createEpsClient(settings).giftRequest({
     method: "giftredeem",
-    account: asString(settings.epsAccountNumber),
+    account: getActiveEpsAccount(settings),
     token: input.giftCardToken,
     amount: formatCentsAsEpsAmount(input.amountCents),
     user: input.actor?.userName || input.actor?.userId || "TitanOS",
@@ -1012,7 +1092,7 @@ export async function runEpsFollowOn(input: {
   } as const;
   const response = await createEpsClient(settings).tokenCnpRequest({
     method: methodByAction[input.action],
-    account: asString(settings.epsAccountNumber),
+    account: getActiveEpsAccount(settings),
     transactionid: transactionId,
     ...(amountCents > 0 ? { amount: formatCentsAsEpsAmount(amountCents) } : {}),
     ticketid: asString(invoice.displayNumber) || String(invoice.invoiceNumber || invoice.id),
@@ -1057,7 +1137,7 @@ export async function closeEpsBatch(input: { organizationId: string; idempotency
   const settings = await requireEpsSettings(input.organizationId, "token_cnp");
   const response = await createEpsClient(settings).tokenCnpRequest({
     method: "closebatch",
-    account: asString(settings.epsAccountNumber),
+    account: getActiveEpsAccount(settings),
     userid: input.actor?.userName || input.actor?.userId || "TitanOS",
     json: "no",
   });

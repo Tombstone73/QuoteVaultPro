@@ -1618,7 +1618,7 @@ export default function InvoiceDetailPage() {
                         disabled={createEpsHostedSessionMutation.isPending}
                       >
                         <ExternalLink className="mr-2 h-4 w-4" />
-                        {createEpsHostedSessionMutation.isPending ? 'Opening EPS...' : 'Pay with EPS Hosted Form'}
+                        {createEpsHostedSessionMutation.isPending ? 'Opening EPS...' : paymentSettings.data?.epsMode === 'test' ? 'TEST MODE · Pay with EPS' : 'LIVE · Pay with EPS Hosted Form'}
                       </Button>
                     ) : null}
 
@@ -2357,7 +2357,7 @@ export default function InvoiceDetailPage() {
                               onClick={openEpsHostedPayment}
                               disabled={createEpsHostedSessionMutation.isPending}
                             >
-                              {createEpsHostedSessionMutation.isPending ? 'Opening EPS...' : 'Pay with EPS Hosted Form'}
+                              {createEpsHostedSessionMutation.isPending ? 'Opening EPS...' : paymentSettings.data?.epsMode === 'test' ? 'TEST MODE · Pay with EPS' : 'LIVE · Pay with EPS Hosted Form'}
                             </Button>
                           )}
                         </div>
