@@ -70,8 +70,12 @@ import {
   moveOrderLineItemIds,
   persistOrderLineItemReorder,
   buildOrderLineItemProductionActionRequests,
+  getLineItemWorkflowActionLabel,
+  getGroupedOrderLineItemProductionActions,
   getOrderLineItemProductionActions,
+  getProductionScheduleTargetIds,
   getSelectableProductionLineItemIds,
+  isChildLineItem,
   resolveOrderLineItemOperationalDisplay,
   sortOrderLineItemsByPersistedOrder,
   type OrderLineItemProductionAction,
@@ -609,11 +613,16 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const productionAction = useMutation({
     mutationFn: async (input: {
       action: OrderLineItemProductionAction;
-      lineItemId: string;
-      jobId: string;
-      stationKey?: string | null;
+      targets: Array<{
+        lineItemId: string;
+        jobId: string;
+        stationKey?: string | null;
+      }>;
     }) => {
-      const requests = buildOrderLineItemProductionActionRequests(input);
+      const requests = input.targets.flatMap((target) => buildOrderLineItemProductionActionRequests({
+        action: input.action,
+        ...target,
+      }));
       let result: any = null;
       for (const request of requests) {
         const response = await fetch(request.url, {
@@ -628,24 +637,27 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       return result;
     },
     onMutate: (input) => {
-      const previous = productionOwnerOverrides[input.lineItemId];
-      setProductionOwnerOverrides((current) => ({
-        ...current,
-        [input.lineItemId]: input.action === "return_to_prepress"
-          ? {
-              activeOwnerJobId: input.jobId,
-              activeOwnerStationKey: "prepress",
-              activeOwnerStepKey: "prepress",
-              activeOwnerStatus: "queued",
-              workflowState: "in_prepress",
-            }
-          : {
-              activeOwnerJobId: input.jobId,
-              activeOwnerStationKey: input.stationKey ?? null,
-              activeOwnerStatus: input.action === "hold" ? "paused" : "in_progress",
-              workflowState: "in_production",
-            },
-      }));
+      const previous = Object.fromEntries(input.targets.map((target) => [target.lineItemId, productionOwnerOverrides[target.lineItemId]]));
+      setProductionOwnerOverrides((current) => {
+        const next = { ...current };
+        for (const target of input.targets) {
+          next[target.lineItemId] = input.action === "return_to_prepress"
+            ? {
+                activeOwnerJobId: target.jobId,
+                activeOwnerStationKey: "prepress",
+                activeOwnerStepKey: "prepress",
+                activeOwnerStatus: "queued",
+                workflowState: "in_prepress",
+              }
+            : {
+                activeOwnerJobId: target.jobId,
+                activeOwnerStationKey: target.stationKey ?? null,
+                activeOwnerStatus: input.action === "hold" ? "paused" : "in_progress",
+                workflowState: "in_production",
+              };
+        }
+        return next;
+      });
       return { previous };
     },
     onSuccess: async (_result, input) => {
@@ -668,15 +680,17 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       await onAfterLineItemsChange?.();
       setProductionOwnerOverrides((current) => {
         const next = { ...current };
-        delete next[input.lineItemId];
+        input.targets.forEach((target) => delete next[target.lineItemId]);
         return next;
       });
     },
     onError: (error: Error, input, context) => {
       setProductionOwnerOverrides((current) => {
         const next = { ...current };
-        if (context?.previous) next[input.lineItemId] = context.previous;
-        else delete next[input.lineItemId];
+        input.targets.forEach((target) => {
+          if (context?.previous?.[target.lineItemId]) next[target.lineItemId] = context.previous[target.lineItemId];
+          else delete next[target.lineItemId];
+        });
         return next;
       });
       toast({ title: "Workflow action failed", description: error.message, variant: "destructive" });
@@ -2605,8 +2619,16 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const handleSendSelectedToProduction = async () => {
     if (selectedForProduction.size === 0) return;
-    
-    const lineItemIds = Array.from(selectedForProduction);
+
+    const lineItemIds = Array.from(new Set(
+      Array.from(selectedForProduction).flatMap((lineItemId) =>
+        getProductionScheduleTargetIds(lineItemId, activeLineItems, products),
+      ),
+    ));
+    if (lineItemIds.length === 0) {
+      setSelectedForProduction(new Set());
+      return;
+    }
     await scheduleProduction.mutateAsync(lineItemIds);
     setSelectedForProduction(new Set());
   };
@@ -2636,6 +2658,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
   const actionNeededCount = useMemo(() => {
     return activeLineItems.filter((item) => {
+      if (isChildLineItem(item)) return false;
       const operational = resolveOrderLineItemOperationalDisplay(item as any);
       if (operational.isProductionOwned) {
         return ["queued", "paused"].includes(String((item as any).activeOwnerStatus ?? "queued").toLowerCase());
@@ -2735,6 +2758,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
               <div className="space-y-1 overflow-x-hidden">
                 {nestedOrderedLineItems.map((item) => {
                   const itemKey = item.id;
+                  const childItem = isChildLineItem(item);
+                  const groupChildren = childItem
+                    ? []
+                    : activeLineItems.filter((candidate) => String((candidate as any).parentLineItemId || "") === String(item.id));
+                  const hasGroupChildren = groupChildren.length > 0;
+                  const groupScheduleTargetIds = getProductionScheduleTargetIds(String(item.id), activeLineItems, products);
                   const isExpanded = itemKey === expandedId;
                   const contentId = `line-item-${itemKey}-details`;
 
@@ -2918,7 +2947,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                     <LineItemThumbnail parentId={orderId} lineItemId={item.id} parentType="order" />
                   );
 
-                  const itemRequiresProduction = selectableProductionLineItemIdSet.has(String(item.id));
+                  const itemRequiresProduction = !childItem && selectableProductionLineItemIdSet.has(String(item.id));
                   const isSelectedForProduction = selectedForProduction.has(item.id);
                   const isProductionFocused = productionFocusLineItemIds.includes(String(item.id));
                   const expandedBriefDetail = isExpanded && expandedItem && expandedItem.id === item.id ? designBriefQuery.data : null;
@@ -2942,6 +2971,34 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   const operationalDisplay = resolveOrderLineItemOperationalDisplay(operationalItem);
                   const ownerLabel = operationalDisplay.ownerLabel;
                   const activeProductionActions = getOrderLineItemProductionActions(operationalItem);
+                  const groupProductionActionTargets = hasGroupChildren
+                    ? groupChildren
+                        .filter((child) => {
+                          const childOperational = productionOwnerOverrides[String(child.id)]
+                            ? { ...(child as any), ...productionOwnerOverrides[String(child.id)] }
+                            : child as any;
+                          return Boolean(childOperational.activeOwnerJobId) && resolveOrderLineItemOperationalDisplay(childOperational).isProductionOwned;
+                        })
+                        .map((child) => {
+                          const childOperational = productionOwnerOverrides[String(child.id)]
+                            ? { ...(child as any), ...productionOwnerOverrides[String(child.id)] }
+                            : child as any;
+                          return {
+                            lineItemId: String(child.id),
+                            jobId: String(childOperational.activeOwnerJobId),
+                            stationKey: childOperational.activeOwnerStationKey,
+                          };
+                        })
+                    : [{
+                        lineItemId: String(item.id),
+                        jobId: String(operationalItem.activeOwnerJobId),
+                        stationKey: operationalItem.activeOwnerStationKey,
+                      }];
+                  const displayedProductionActions = hasGroupChildren
+                    ? getGroupedOrderLineItemProductionActions(groupChildren.map((child) => productionOwnerOverrides[String(child.id)]
+                      ? { ...(child as any), ...productionOwnerOverrides[String(child.id)] }
+                      : child as any))
+                    : activeProductionActions;
                   const operationalBadgeState = operationalDisplay.isProductionOwned
                     ? String(operationalItem.activeOwnerStatus || "").toLowerCase() === "paused" ? "on_hold" : "in_production"
                     : workflowState;
@@ -3049,7 +3106,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                         <div
                           className={cn(
                             "rounded-md overflow-x-hidden",
-                            (item as any).parentLineItemId && "ml-5 border-l-2 border-primary/30 pl-2",
+                            childItem && "ml-5 border-l-2 border-primary/30 pl-2",
                             isProductionFocused && "ring-1 ring-amber-300/80 bg-amber-50/40",
                             isOver && !isDragging && "ring-1 ring-ring/40",
                             isDragging && "opacity-60"
@@ -3066,8 +3123,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                               </div>
                             )}
                             <div className="flex-1 min-w-0">
-                              {(item as any).parentLineItemId ? (
-                                <div className="px-2 pt-2"><Badge variant="outline">Child item</Badge></div>
+                              {childItem ? (
+                                <div className="px-2 pt-2">
+                                  <Badge variant="outline">
+                                    Child item · Runs with Line {lineNumberById.get(String((item as any).parentLineItemId)) ?? "parent"}
+                                  </Badge>
+                                </div>
                               ) : null}
                               <LineItemCard
                                 id={String(item.id)}
@@ -3120,6 +3181,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                     {(item as any).productionBypassed ? (
                                       <Badge variant="secondary" className="h-5 px-1.5 text-[11px] font-medium">No production required</Badge>
                                     ) : null}
+                                    {childItem ? <span className="text-muted-foreground">Included with parent workflow</span> : null}
                                     <span className="text-muted-foreground">
                                       Next: <span className="text-foreground">{operationalNextStep}</span>
                                     </span>
@@ -3967,7 +4029,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
                               {!readOnly && !serviceFee ? (
                                 <div className="mt-2 flex flex-wrap justify-end gap-2">
-                                  {!(item as any).parentLineItemId && (
+                                  {!childItem && (
                                     <Button
                                       type="button"
                                       variant="outline"
@@ -4009,12 +4071,12 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       Unlink
                                     </Button>
                                   ) : null}
-                                  {showOpenProofingAction ? (
+                                  {!childItem && showOpenProofingAction ? (
                                     <Button asChild type="button" variant="outline" size="sm" className="h-8">
                                       <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>
                                     </Button>
                                   ) : null}
-                                  {activeProductionActions.map((action) => (
+                                  {!childItem && displayedProductionActions.map((action) => (
                                     <Button
                                       key={`${item.id}-${action}`}
                                       type="button"
@@ -4024,27 +4086,28 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       disabled={productionAction.isPending}
                                       onClick={() => productionAction.mutate({
                                         action,
-                                        lineItemId: String(item.id),
-                                        jobId: String(operationalItem.activeOwnerJobId),
-                                        stationKey: operationalItem.activeOwnerStationKey,
+                                        targets: groupProductionActionTargets,
                                       })}
                                     >
-                                      {{ start: "Start Production", resume: "Resume Production", hold: "Hold", complete: "Complete", return_to_prepress: "Return to Prepress" }[action]}
+                                      {getLineItemWorkflowActionLabel(
+                                        ({ start: "Start Production", resume: "Resume Production", hold: "Hold", complete: "Complete", return_to_prepress: "Return to Prepress" }[action]),
+                                        hasGroupChildren,
+                                      )}
                                     </Button>
                                   ))}
-                                  {!operationalDisplay.isProductionOwned && workflowState === "ready_for_production" && !fulfillmentOnly ? (
+                                  {!childItem && !operationalDisplay.isProductionOwned && !fulfillmentOnly && groupScheduleTargetIds.length > 0 && (workflowState === "ready_for_production" || hasGroupChildren) ? (
                                     <Button
                                       type="button"
                                       variant="outline"
                                       size="sm"
                                       className="h-8"
                                       disabled={scheduleProduction.isPending}
-                                      onClick={() => scheduleProduction.mutate([String(item.id)])}
+                                      onClick={() => scheduleProduction.mutate(groupScheduleTargetIds)}
                                     >
-                                      Send to Production
+                                      {getLineItemWorkflowActionLabel("Send to Production", hasGroupChildren)}
                                     </Button>
                                   ) : null}
-                                  {!operationalDisplay.isProductionOwned && workflowState !== "ready_for_production"
+                                  {!childItem && !operationalDisplay.isProductionOwned && workflowState !== "ready_for_production"
                                     ? getWorkflowActions(workflowState).map((action, index) => (
                                         <Button
                                           key={`${item.id}-${index}`}
@@ -4059,11 +4122,13 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                             action: (action as any).action,
                                           })}
                                         >
-                                          {fulfillmentOnly && action.label === "Start Production" ? "Start Fulfillment" : action.label}
+                                          {fulfillmentOnly && action.label === "Start Production"
+                                            ? "Start Fulfillment"
+                                            : getLineItemWorkflowActionLabel(action.label, hasGroupChildren)}
                                         </Button>
                                       ))
                                     : null}
-                                  {!(item as any).productionBypassed ? (
+                                  {!childItem && !(item as any).productionBypassed ? (
                                     <Button
                                       type="button"
                                       variant="outline"
@@ -4071,7 +4136,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       className="h-8"
                                       onClick={() => { setProductionBypassTarget(item); setProductionBypassReason(""); }}
                                     >
-                                      Bypass Production
+                                      {getLineItemWorkflowActionLabel("Bypass Production", hasGroupChildren)}
                                     </Button>
                                   ) : null}
                                 </div>
@@ -4192,7 +4257,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           <DialogHeader>
             <DialogTitle>Bypass production?</DialogTitle>
             <DialogDescription>
-              This marks the selected line as No Production Required. It does not mark production complete or remove any existing production history.
+              {productionBypassTarget?.lineItemRole === "parent"
+                ? "This marks the parent group and its child items as No Production Required. It does not mark production complete or remove existing production history."
+                : "This marks the selected line as No Production Required. It does not mark production complete or remove any existing production history."}
             </DialogDescription>
           </DialogHeader>
           <Textarea
@@ -4208,7 +4275,11 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
               disabled={productionBypass.isPending || productionBypassReason.trim().length < 3 || !productionBypassTarget}
               onClick={() => productionBypassTarget && productionBypass.mutate({ lineItemId: String(productionBypassTarget.id), reason: productionBypassReason.trim() })}
             >
-              {productionBypass.isPending ? "Bypassing..." : "Mark No Production Required"}
+              {productionBypass.isPending
+                ? "Bypassing..."
+                : productionBypassTarget?.lineItemRole === "parent"
+                  ? "Mark Group No Production Required"
+                  : "Mark No Production Required"}
             </Button>
           </DialogFooter>
         </DialogContent>

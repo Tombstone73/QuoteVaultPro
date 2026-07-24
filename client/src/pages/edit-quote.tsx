@@ -853,7 +853,7 @@ export default function EditQuote() {
                         <div className={item.lineItemRole === "child" ? "pl-5 border-l-2 border-muted" : ""}>
                           <div className="font-medium">{item.productName}</div>
                           {item.lineItemRole === "parent" && <Badge variant="secondary" className="mt-1">Bundle</Badge>}
-                          {item.lineItemRole === "child" && <Badge variant="outline" className="mt-1">Child item</Badge>}
+                          {item.lineItemRole === "child" && <Badge variant="outline" className="mt-1">Child item · Included with parent</Badge>}
                           {item.lineItemRole === "parent" && item.parentPriceMode === "manual_override" && (
                             <span className="ml-2 text-xs text-amber-600">Manual bundle price</span>
                           )}

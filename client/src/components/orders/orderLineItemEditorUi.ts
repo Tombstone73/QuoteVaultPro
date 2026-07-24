@@ -120,6 +120,8 @@ export function getSelectableProductionLineItemIds(
     id: string;
     productId: string;
     status?: string | null;
+    parentLineItemId?: string | null;
+    lineItemRole?: string | null;
     activeOwnerJobId?: string | null;
     activeOwnerStationKey?: string | null;
     activeOwnerStepKey?: string | null;
@@ -131,14 +133,91 @@ export function getSelectableProductionLineItemIds(
   }>,
 ): string[] {
   const productsById = new Map(products.map((product) => [String(product.id), product]));
+  const lineItemById = new Map(lineItems.map((lineItem) => [String(lineItem.id), lineItem]));
+  const selectable = new Set<string>();
+
+  for (const lineItem of lineItems) {
+    if (!isProductionSelectableLineItem(lineItem, productsById)) continue;
+    const parentId = String(lineItem.parentLineItemId || "");
+    if (parentId && lineItemById.has(parentId)) {
+      // Children run with their parent by default. Select the parent as the
+      // group-level control instead of exposing an independent child checkbox.
+      selectable.add(parentId);
+    } else if (!isChildLineItem(lineItem)) {
+      selectable.add(String(lineItem.id));
+    }
+  }
+
   return lineItems
-    .filter((lineItem) => {
-      if (lineItem.status === "canceled") return false;
-      if (lineItem.activeOwnerJobId || lineItem.activeOwnerStationKey || lineItem.activeOwnerStepKey) return false;
-      const product = productsById.get(String(lineItem.productId));
-      return product?.requiresProductionJob === true && product.workflowIntent !== "service_fee";
-    })
+    .map((lineItem) => String(lineItem.id))
+    .filter((lineItemId) => selectable.has(lineItemId));
+}
+
+export function isChildLineItem(input: {
+  parentLineItemId?: string | null;
+  lineItemRole?: string | null;
+}): boolean {
+  return input.lineItemRole === "child" || Boolean(input.parentLineItemId);
+}
+
+export function getProductionScheduleTargetIds(
+  displayLineItemId: string,
+  lineItems: ReadonlyArray<{
+    id: string;
+    productId: string;
+    status?: string | null;
+    parentLineItemId?: string | null;
+    lineItemRole?: string | null;
+    activeOwnerJobId?: string | null;
+    activeOwnerStationKey?: string | null;
+    activeOwnerStepKey?: string | null;
+  }>,
+  products: ReadonlyArray<{
+    id: string;
+    requiresProductionJob?: boolean | null;
+    workflowIntent?: string | null;
+  }>,
+): string[] {
+  const productsById = new Map(products.map((product) => [String(product.id), product]));
+  const displayLineItem = lineItems.find((lineItem) => String(lineItem.id) === String(displayLineItemId));
+  if (!displayLineItem || isChildLineItem(displayLineItem)) return [];
+
+  const groupedChildren = lineItems.filter(
+    (lineItem) => String(lineItem.parentLineItemId || "") === String(displayLineItem.id),
+  );
+  const targets = groupedChildren.length > 0 ? groupedChildren : [displayLineItem];
+  return targets
+    .filter((lineItem) => isProductionSelectableLineItem(lineItem, productsById))
     .map((lineItem) => String(lineItem.id));
+}
+
+export function getLineItemWorkflowActionLabel(label: string, appliesToGroup: boolean): string {
+  if (!appliesToGroup) return label;
+  const groupLabels: Record<string, string> = {
+    "Send to Production": "Send Group to Production",
+    "Start Production": "Start Production for Group",
+    "Return to Prepress": "Return Group to Prepress",
+    "Bypass Production": "Bypass Production for Group",
+    "Hold": "Hold Group",
+    "Resume Production": "Resume Group Production",
+  };
+  return groupLabels[label] ?? `${label} for Group`;
+}
+
+function isProductionSelectableLineItem(
+  lineItem: {
+    productId: string;
+    status?: string | null;
+    activeOwnerJobId?: string | null;
+    activeOwnerStationKey?: string | null;
+    activeOwnerStepKey?: string | null;
+  },
+  productsById: ReadonlyMap<string, { requiresProductionJob?: boolean | null; workflowIntent?: string | null }>,
+): boolean {
+  if (lineItem.status === "canceled") return false;
+  if (lineItem.activeOwnerJobId || lineItem.activeOwnerStationKey || lineItem.activeOwnerStepKey) return false;
+  const product = productsById.get(String(lineItem.productId));
+  return product?.requiresProductionJob === true && product.workflowIntent !== "service_fee";
 }
 
 export type OrderLineItemOperationalDisplay = {
@@ -264,6 +343,20 @@ export function getOrderLineItemProductionActions(input: {
   if (status === "paused") return ["resume", "return_to_prepress"];
   if (status === "queued") return ["start", "hold", "return_to_prepress"];
   return ["hold", "complete", "return_to_prepress"];
+}
+
+export function getGroupedOrderLineItemProductionActions(items: ReadonlyArray<{
+  activeOwnerJobId?: string | null;
+  activeOwnerStationKey?: string | null;
+  activeOwnerStepKey?: string | null;
+  activeOwnerStatus?: string | null;
+}>): OrderLineItemProductionAction[] {
+  const actionableItems = items.filter((item) => Boolean(item.activeOwnerJobId) && isLineItemOwnedByProduction(item));
+  if (actionableItems.length === 0) return [];
+
+  const actionsByItem = actionableItems.map((item) => new Set(getOrderLineItemProductionActions(item)));
+  return (["start", "resume", "hold", "complete", "return_to_prepress"] as const)
+    .filter((action) => actionsByItem.every((actions) => actions.has(action)));
 }
 
 const PRODUCTION_WARNING_STATES = new Set([
