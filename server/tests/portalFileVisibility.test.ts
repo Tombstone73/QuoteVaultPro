@@ -45,6 +45,6 @@ describe("portal file visibility classification", () => {
     expect(service).toContain('portalFileCategory: "customer_upload"');
     expect(service).toContain('role: "reference"');
     expect(service).toContain("isPrimary: false");
-    expect(service).toContain('reviewStatus: "awaiting_staff_review"');
+    expect(service).toContain('reviewStatus: "pending_review"');
   });
 });

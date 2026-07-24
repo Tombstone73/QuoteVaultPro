@@ -67,6 +67,9 @@ export type PortalFileDto = {
   categoryLabel: string;
   previewAvailable: boolean;
   downloadAvailable: boolean;
+  customerUploadReviewStatus: "pending_review" | "accepted" | "rejected" | null;
+  customerUploadReviewStatusLabel: string | null;
+  customerUploadReviewNote: string | null;
 };
 
 export type PortalOrderProofSummaryDto = {

@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { isValidHttpUrl } from "@/lib/utils";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { CustomerUploadReviewPanel } from "@/components/CustomerUploadReviewPanel";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
 import { invalidateCachedAssetUrl } from "@/lib/assetUrlCache";
@@ -47,6 +48,9 @@ type QuoteAttachment = {
   objectPath?: string | null;
   downloadUrl?: string | null;
   pages?: Array<{ thumbUrl?: string | null; thumbStatus?: string | null }>;
+  portalFileCategory?: string | null;
+  customerUploadReviewStatus?: "pending_review" | "accepted" | "rejected" | null;
+  customerUploadReviewNote?: string | null;
 };
 
 function formatFileSize(bytes: number | null | undefined): string {
@@ -391,6 +395,13 @@ export function QuoteAttachmentsPanel({ quoteId, locked = false }: { quoteId: st
           )}
         </div>
       )}
+
+      <CustomerUploadReviewPanel
+        entityLabel="Quote"
+        reviewUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-review`}
+        attachments={attachments}
+        onReviewed={() => queryClient.invalidateQueries({ queryKey: [attachmentsApiPath] })}
+      />
 
       {/* Thumbnail grid - show when attachments exist */}
       {isLoading ? (

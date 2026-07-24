@@ -2007,6 +2007,10 @@ export const quoteAttachments = pgTable("quote_attachments", {
   portalDescription: text("portal_description"),
   portalVisibilityUpdatedAt: timestamp("portal_visibility_updated_at"),
   portalVisibilityUpdatedBy: varchar("portal_visibility_updated_by").references(() => users.id, { onDelete: 'set null' }),
+  customerUploadReviewStatus: varchar("customer_upload_review_status", { length: 32 }),
+  customerUploadReviewedByUserId: varchar("customer_upload_reviewed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  customerUploadReviewedAt: timestamp("customer_upload_reviewed_at"),
+  customerUploadReviewNote: text("customer_upload_review_note"),
   bucket: varchar("bucket", { length: 100 }).default('titan-private'),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -2018,6 +2022,7 @@ export const quoteAttachments = pgTable("quote_attachments", {
   index("quote_attachments_thumb_status_idx").on(table.thumbStatus),
   index("quote_attachments_page_count_status_idx").on(table.pageCountStatus),
   index("quote_attachments_portal_visible_idx").on(table.organizationId, table.quoteId, table.customerVisible),
+  index("quote_attachments_customer_upload_review_idx").on(table.organizationId, table.customerUploadReviewStatus),
 ]);
 
 export const insertQuoteAttachmentSchema = createInsertSchema(quoteAttachments).omit({
@@ -5621,6 +5626,10 @@ export const orderAttachments = pgTable("order_attachments", {
   portalDescription: text("portal_description"),
   portalVisibilityUpdatedAt: timestamp("portal_visibility_updated_at"),
   portalVisibilityUpdatedBy: varchar("portal_visibility_updated_by").references(() => users.id, { onDelete: 'set null' }),
+  customerUploadReviewStatus: varchar("customer_upload_review_status", { length: 32 }),
+  customerUploadReviewedByUserId: varchar("customer_upload_reviewed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  customerUploadReviewedAt: timestamp("customer_upload_reviewed_at"),
+  customerUploadReviewNote: text("customer_upload_review_note"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -5631,6 +5640,7 @@ export const orderAttachments = pgTable("order_attachments", {
   index("order_attachments_role_idx").on(table.role),
   index("order_attachments_thumb_status_idx").on(table.thumbStatus),
   index("order_attachments_portal_visible_idx").on(table.orderId, table.customerVisible),
+  index("order_attachments_customer_upload_review_idx").on(table.orderId, table.customerUploadReviewStatus),
 ]);
 
 export const insertOrderAttachmentSchema = createInsertSchema(orderAttachments).omit({

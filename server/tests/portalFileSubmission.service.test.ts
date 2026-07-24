@@ -97,6 +97,7 @@ describe("portal file submission service", () => {
       isPrimary: false,
       customerVisible: true,
       portalFileCategory: "customer_upload",
+      customerUploadReviewStatus: "pending_review",
     });
     expect(writes[1]?.values).toMatchObject({
       actionType: "portal_customer_file_submitted",
@@ -104,7 +105,7 @@ describe("portal file submission service", () => {
       newValues: expect.objectContaining({
         relatedEntityType: "order",
         relatedEntityId: "order_1",
-        reviewStatus: "awaiting_staff_review",
+        reviewStatus: "pending_review",
         finalArtwork: false,
       }),
     });

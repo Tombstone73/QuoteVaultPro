@@ -133,7 +133,7 @@ describe("customer portal contract boundary", () => {
     expect(service).toContain("getScopedPortalOrderId(scope, args.entityId)");
     expect(service).toContain("storageApplicationService.finalizeUpload");
     expect(service).toContain('portalFileCategory: "customer_upload"');
-    expect(service).toContain('reviewStatus: "awaiting_staff_review"');
+    expect(service).toContain('reviewStatus: "pending_review"');
     expect(service).toContain("finalArtwork: false");
   });
 

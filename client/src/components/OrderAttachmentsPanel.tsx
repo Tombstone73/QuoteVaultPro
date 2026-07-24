@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { isValidHttpUrl } from "@/lib/utils";
 import { AttachmentViewerDialog } from "@/components/AttachmentViewerDialog";
+import { CustomerUploadReviewPanel } from "@/components/CustomerUploadReviewPanel";
 import { ViewAllAttachmentsDialog } from "@/components/ViewAllAttachmentsDialog";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { getThumbSrc } from "@/lib/getThumbSrc";
@@ -47,6 +48,10 @@ type OrderAttachment = {
   objectPath?: string | null;
   downloadUrl?: string | null;
   pages?: Array<{ thumbUrl?: string | null; thumbStatus?: string | null }>;
+  portalFileCategory?: string | null;
+  customerUploadReviewStatus?: "pending_review" | "accepted" | "rejected" | null;
+  customerUploadReviewNote?: string | null;
+  isPrimary?: boolean | null;
 };
 
 function formatFileSize(bytes: number | null | undefined): string {
@@ -429,6 +434,14 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
           </div>
         )}
       </div>
+
+      <CustomerUploadReviewPanel
+        entityLabel="Order"
+        reviewUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-review`}
+        attachments={attachments}
+        orderPromotionAllowed
+        onReviewed={() => queryClient.invalidateQueries({ queryKey: [attachmentsApiPath] })}
+      />
 
       {/* Thumbnail grid - show when attachments exist */}
       {isLoading ? (

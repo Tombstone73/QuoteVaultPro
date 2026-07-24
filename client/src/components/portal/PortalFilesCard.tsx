@@ -65,6 +65,7 @@ export default function PortalFilesCard({
                       <p className="font-medium">{file.displayName}</p>
                       <Badge variant="outline">{file.categoryLabel}</Badge>
                       <Badge variant="secondary">{file.fileTypeLabel}</Badge>
+                      {file.customerUploadReviewStatusLabel ? <Badge variant={file.customerUploadReviewStatus === "rejected" ? "destructive" : "outline"}>{file.customerUploadReviewStatusLabel}</Badge> : null}
                     </div>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {formatDate(file.uploadedAt)}
@@ -72,6 +73,9 @@ export default function PortalFilesCard({
                     </p>
                     {file.description ? (
                       <p className="mt-1 text-sm text-muted-foreground">{file.description}</p>
+                    ) : null}
+                    {file.customerUploadReviewNote ? (
+                      <p className="mt-1 text-sm text-muted-foreground">Staff review note: {file.customerUploadReviewNote}</p>
                     ) : null}
                   </div>
                   {file.downloadAvailable ? (

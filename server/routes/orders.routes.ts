@@ -144,6 +144,7 @@ import { getFileUploadNamingPolicy } from "../prepressFileService";
 import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
 import { generateOrderPdfBytes, orderPdfFilename, OrderPdfEligibilityError } from "../lib/orderPdf";
 import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineItemCreationPolicy";
+import { CustomerUploadReviewError, reviewCustomerUpload } from "../services/customerUploadReview.service";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -194,6 +195,12 @@ const portalAttachmentVisibilitySchema = z.object({
     portalFileCategory: z.string().trim().optional().nullable(),
     portalDisplayName: z.string().trim().max(500).optional().nullable(),
     portalDescription: z.string().trim().max(2000).optional().nullable(),
+});
+
+const customerUploadReviewSchema = z.object({
+    status: z.enum(["accepted", "rejected"]),
+    promotion: z.enum(["reference", "artwork"]).optional(),
+    reviewNote: z.string().trim().max(2000).optional().nullable(),
 });
 
 function assertInternalStaffUser(req: any, res: any): boolean {
@@ -3570,6 +3577,38 @@ export async function registerOrderRoutes(
         } catch (error) {
             console.error('[OrderAttachmentsUnified:GET] Error:', error);
             return res.status(500).json({ error: 'Failed to fetch attachments' });
+        }
+    });
+
+    app.post("/api/orders/:orderId/attachments/:attachmentId/customer-upload-review", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+            if (!userId) return res.status(401).json({ error: "Authentication required" });
+
+            const parsed = customerUploadReviewSchema.safeParse(req.body);
+            if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+
+            const updated = await reviewCustomerUpload({
+                organizationId,
+                entityType: "order",
+                entityId: req.params.orderId,
+                attachmentId: req.params.attachmentId,
+                status: parsed.data.status,
+                promotion: parsed.data.promotion,
+                reviewNote: parsed.data.reviewNote,
+                actorUserId: userId,
+                actorUserName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+                ipAddress: req.ip,
+                userAgent: req.get?.("user-agent") || null,
+            });
+            return res.json({ success: true, data: await enrichAttachmentWithUrls(updated) });
+        } catch (error: any) {
+            if (error instanceof CustomerUploadReviewError) return res.status(error.statusCode).json({ error: error.message });
+            console.error("[OrderAttachments:CustomerUploadReview] Error:", error);
+            return res.status(500).json({ error: "Failed to review customer upload" });
         }
     });
 

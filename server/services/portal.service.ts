@@ -106,6 +106,9 @@ export type PortalFileDto = {
   categoryLabel: string;
   previewAvailable: boolean;
   downloadAvailable: boolean;
+  customerUploadReviewStatus: "pending_review" | "accepted" | "rejected" | null;
+  customerUploadReviewStatusLabel: string | null;
+  customerUploadReviewNote: string | null;
 };
 
 export type PortalFileDownloadResult = {
@@ -615,6 +618,8 @@ type PortalAttachmentRow = {
   portalFileCategory?: string | null;
   portalDisplayName?: string | null;
   portalDescription?: string | null;
+  customerUploadReviewStatus?: string | null;
+  customerUploadReviewNote?: string | null;
 };
 
 type PortalProofRow = {
@@ -2138,12 +2143,25 @@ function fileTypeLabel(mimeType: unknown, filename: unknown): string {
   return "File";
 }
 
+function normalizeCustomerUploadReviewStatus(value: unknown): "pending_review" | "accepted" | "rejected" {
+  return value === "accepted" || value === "rejected" ? value : "pending_review";
+}
+
+function customerUploadReviewStatusLabel(status: "pending_review" | "accepted" | "rejected"): string {
+  if (status === "accepted") return "Accepted by staff";
+  if (status === "rejected") return "Not accepted";
+  return "Pending staff review";
+}
+
 function mapPortalAttachmentFile(
   attachment: PortalAttachmentRow,
   categoryLabel: string,
   idPrefix = "",
 ): PortalFileDto {
   const displayName = sanitizeDownloadFilename(attachment.portalDisplayName || attachment.originalFilename || attachment.fileName, `file-${attachment.id}`);
+  const reviewStatus = attachment.portalFileCategory === "customer_upload"
+    ? normalizeCustomerUploadReviewStatus(attachment.customerUploadReviewStatus)
+    : null;
   return {
     id: `${idPrefix}${attachment.id}`,
     displayName,
@@ -2154,6 +2172,11 @@ function mapPortalAttachmentFile(
     categoryLabel,
     previewAvailable: Boolean(attachment.previewKey || attachment.thumbKey || attachment.thumbnailUrl),
     downloadAvailable: Boolean(attachment.fileRecordId || attachment.fileUrl),
+    customerUploadReviewStatus: reviewStatus,
+    customerUploadReviewStatusLabel: reviewStatus ? customerUploadReviewStatusLabel(reviewStatus) : null,
+    customerUploadReviewNote: reviewStatus === "accepted" || reviewStatus === "rejected"
+      ? attachment.customerUploadReviewNote || null
+      : null,
   };
 }
 
@@ -2169,6 +2192,9 @@ function mapInvoicePdfFile(invoice: InvoicePaymentPortalRow): PortalFileDto {
     categoryLabel: "Invoice",
     previewAvailable: true,
     downloadAvailable: true,
+    customerUploadReviewStatus: null,
+    customerUploadReviewStatusLabel: null,
+    customerUploadReviewNote: null,
   };
 }
 
@@ -2270,6 +2296,7 @@ async function submitPortalFile(args: {
         portalFileCategory: "customer_upload",
         portalDisplayName: submission.fileName,
         portalDescription: description,
+        customerUploadReviewStatus: "pending_review" as const,
       };
       const [attachment] = args.entityType === "quote"
         ? await tx.insert(quoteAttachments).values({
@@ -2309,7 +2336,7 @@ async function submitPortalFile(args: {
           originalFilename: submission.fileName,
           mimeType: submission.mimeType,
           category: "customer_upload",
-          reviewStatus: "awaiting_staff_review",
+          reviewStatus: "pending_review",
           customerNote: submission.note,
           finalArtwork: false,
         },
@@ -2390,6 +2417,8 @@ async function loadVisibleOrderAttachments(scope: PortalScope, orderId: string):
       portalFileCategory: orderAttachments.portalFileCategory,
       portalDisplayName: orderAttachments.portalDisplayName,
       portalDescription: orderAttachments.portalDescription,
+      customerUploadReviewStatus: orderAttachments.customerUploadReviewStatus,
+      customerUploadReviewNote: orderAttachments.customerUploadReviewNote,
     })
     .from(orderAttachments)
     .where(eq(orderAttachments.orderId, scopedOrderId))
@@ -2420,6 +2449,8 @@ async function loadVisibleQuoteAttachments(scope: PortalScope, quoteId: string):
       portalFileCategory: quoteAttachments.portalFileCategory,
       portalDisplayName: quoteAttachments.portalDisplayName,
       portalDescription: quoteAttachments.portalDescription,
+      customerUploadReviewStatus: quoteAttachments.customerUploadReviewStatus,
+      customerUploadReviewNote: quoteAttachments.customerUploadReviewNote,
     })
     .from(quoteAttachments)
     .where(and(eq(quoteAttachments.quoteId, scopedQuoteId), eq(quoteAttachments.organizationId, scope.organizationId)))
