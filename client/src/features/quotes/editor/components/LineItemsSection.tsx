@@ -3,6 +3,7 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Dialog, DialogContent, DialogDescription, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
@@ -329,6 +330,10 @@ export function LineItemsSection({
   // TEMP UI-only reorder state (not persisted)
   const [uiOrderKeys, setUiOrderKeys] = useState<string[] | null>(null);
   const [isSavingOrder, setIsSavingOrder] = useState(false);
+  const [parentLinkTargetKey, setParentLinkTargetKey] = useState<string | null>(null);
+  const [selectedParentLineItemId, setSelectedParentLineItemId] = useState("");
+  const [isSavingParentLink, setIsSavingParentLink] = useState(false);
+  const [parentLinkError, setParentLinkError] = useState<string | null>(null);
 
   // Reset UI order when lineItems change
   useEffect(() => {
@@ -345,6 +350,63 @@ export function LineItemsSection({
       .filter(Boolean) as typeof lineItems;
     return ordered.length === lineItems.length ? ordered : lineItems;
   }, [orderedKeys, lineItems]);
+
+  const displayLineItems = useMemo(() => {
+    const childrenByParent = new Map<string, QuoteLineItemDraft[]>();
+    const topLevel: QuoteLineItemDraft[] = [];
+    for (const item of orderedLineItems) {
+      if (item.parentLineItemId) {
+        const children = childrenByParent.get(item.parentLineItemId) ?? [];
+        children.push(item);
+        childrenByParent.set(item.parentLineItemId, children);
+      } else {
+        topLevel.push(item);
+      }
+    }
+    const grouped = topLevel.flatMap((item) => [item, ...(item.id ? childrenByParent.get(item.id) ?? [] : [])]);
+    const renderedKeys = new Set(grouped.map(getItemKey));
+    return [...grouped, ...orderedLineItems.filter((item) => !renderedKeys.has(getItemKey(item)))];
+  }, [orderedLineItems]);
+
+  const parentLinkTarget = useMemo(
+    () => lineItems.find((item) => getItemKey(item) === parentLinkTargetKey) ?? null,
+    [lineItems, parentLinkTargetKey],
+  );
+  const eligibleParentLineItems = useMemo(() => lineItems.filter((candidate) =>
+    !!candidate.id && candidate.id !== parentLinkTarget?.id && !candidate.parentLineItemId,
+  ), [lineItems, parentLinkTarget]);
+  const openParentLinkDialog = useCallback((item: QuoteLineItemDraft) => {
+    setParentLinkTargetKey(getItemKey(item));
+    setSelectedParentLineItemId(item.parentLineItemId ?? "");
+    setParentLinkError(null);
+  }, []);
+  const updateParentRelationship = useCallback(async (child: QuoteLineItemDraft, parentLineItemId: string | null) => {
+    if (!quoteId || !child.id) return;
+    setIsSavingParentLink(true);
+    setParentLinkError(null);
+    try {
+      await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${child.id}/parent`, { parentLineItemId });
+      const priorParentId = child.parentLineItemId ?? null;
+      onUpdateLineItem(getItemKey(child), { parentLineItemId, lineItemRole: parentLineItemId ? "child" : "standalone" });
+      if (parentLineItemId) {
+        const parent = lineItems.find((item) => item.id === parentLineItemId);
+        if (parent) onUpdateLineItem(getItemKey(parent), { lineItemRole: "parent" });
+      }
+      if (priorParentId && priorParentId !== parentLineItemId) {
+        const stillHasChildren = lineItems.some((item) => item.id !== child.id && item.parentLineItemId === priorParentId);
+        if (!stillHasChildren) {
+          const priorParent = lineItems.find((item) => item.id === priorParentId);
+          if (priorParent) onUpdateLineItem(getItemKey(priorParent), { lineItemRole: "standalone" });
+        }
+      }
+      setParentLinkTargetKey(null);
+      void queryClient.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+    } catch (error) {
+      setParentLinkError(error instanceof Error ? error.message : "Unable to update the line item relationship.");
+    } finally {
+      setIsSavingParentLink(false);
+    }
+  }, [lineItems, onUpdateLineItem, queryClient, quoteId]);
 
   // Configure drag sensors
   const sensors = useSensors(
@@ -1135,7 +1197,7 @@ export function LineItemsSection({
           <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
             <SortableContext items={orderedKeys} strategy={verticalListSortingStrategy}>
               <div className="space-y-2">
-                {orderedLineItems
+                {displayLineItems
                   .filter((li) => li.status !== "canceled")
                   .map((item, itemIndex) => {
                     const itemKey = getItemKey(item);
@@ -1167,6 +1229,10 @@ export function LineItemsSection({
                     });
                     const editorPriceValue = overrideValueCents != null ? overrideValueCents / 100 : visiblePrice.displayTotal;
                     const hasProductionNotes = !!(item.productionNotes && item.productionNotes.trim());
+                    const childCount = item.id ? lineItems.filter((candidate) => candidate.parentLineItemId === item.id).length : 0;
+                    const parentLineNumber = item.parentLineItemId
+                      ? displayLineItems.findIndex((candidate) => candidate.id === item.parentLineItemId) + 1
+                      : 0;
                     const productRequiresProofApproval = Boolean((product as any)?.requiresProofApproval);
                     const renderedRequiresProofApproval = isExpanded
                       ? requiresProofApproval
@@ -1241,6 +1307,12 @@ export function LineItemsSection({
                               override: hasOverride,
                               internal: hasProductionNotes,
                             }}
+                            summaryFooter={item.parentLineItemId ? (
+                              <Badge variant="outline" className="text-[10px] py-0 px-1.5">Child item · Runs with Line {parentLineNumber || "parent"}</Badge>
+                            ) : childCount > 0 ? (
+                              <Badge variant="secondary" className="text-[10px] py-0 px-1.5">Group · {childCount} child {childCount === 1 ? "item" : "items"}</Badge>
+                            ) : undefined}
+                            containerClassName={item.parentLineItemId ? "ml-5 border-l-2 border-l-muted-foreground/30" : undefined}
                             descriptionPreview={item.description}
                             optionChips={optionChips.map((chip, idx) => ({ text: chip, key: `${itemKey}-chip-${idx}` }))}
                             overflowCount={overflowCount}
@@ -1490,6 +1562,20 @@ export function LineItemsSection({
                             onSave={onSaveLineItem ? handleSaveItem : undefined}
                             onDuplicate={() => onDuplicateLineItem(itemKey)}
                             onRemove={() => onRemoveLineItem(itemKey)}
+                            relationshipActionsSlot={!quoteId || !item.id ? undefined : item.parentLineItemId ? (
+                              <>
+                                <Button type="button" variant="ghost" size="sm" className="h-auto min-h-8" onClick={() => openParentLinkDialog(item)} disabled={isSavingParentLink} data-testid={`button-link-parent-${item.id}`}>
+                                  Change parent
+                                </Button>
+                                <Button type="button" variant="ghost" size="sm" className="h-auto min-h-8" onClick={() => void updateParentRelationship(item, null)} disabled={isSavingParentLink} data-testid={`button-unlink-parent-${item.id}`}>
+                                  Unlink
+                                </Button>
+                              </>
+                            ) : childCount === 0 ? (
+                              <Button type="button" variant="ghost" size="sm" className="h-auto min-h-8" onClick={() => openParentLinkDialog(item)} disabled={isSavingParentLink} data-testid={`button-link-parent-${item.id}`}>
+                                Link to parent
+                              </Button>
+                            ) : undefined}
                             readOnly={readOnly}
                           />
                         )}
@@ -1567,7 +1653,32 @@ export function LineItemsSection({
           </div>
         )}
       </CardContent>
-      
+      <Dialog open={parentLinkTarget !== null} onOpenChange={(open) => { if (!open && !isSavingParentLink) setParentLinkTargetKey(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{parentLinkTarget?.parentLineItemId ? "Change parent line item" : "Link line item to parent"}</DialogTitle>
+            <DialogDescription>Select an eligible line item in this quote. The item keeps its price, files, and identity.</DialogDescription>
+          </DialogHeader>
+          <select
+            aria-label="Parent line item"
+            value={selectedParentLineItemId}
+            onChange={(event) => setSelectedParentLineItemId(event.target.value)}
+            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+          >
+            <option value="">Choose a parent line item</option>
+            {eligibleParentLineItems.map((candidate, index) => (
+              <option key={candidate.id} value={candidate.id}>Line {index + 1}: {candidate.productName}</option>
+            ))}
+          </select>
+          {parentLinkError ? <p className="text-sm text-destructive">{parentLinkError}</p> : null}
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setParentLinkTargetKey(null)} disabled={isSavingParentLink}>Cancel</Button>
+            <Button disabled={!parentLinkTarget || !selectedParentLineItemId || isSavingParentLink} onClick={() => parentLinkTarget && void updateParentRelationship(parentLinkTarget, selectedParentLineItemId)}>
+              {isSavingParentLink ? "Saving..." : "Save parent"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Card>
   );
 }

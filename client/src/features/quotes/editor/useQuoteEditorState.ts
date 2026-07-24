@@ -60,6 +60,8 @@ function mapQuoteApiLineItemToDraft(item: any, idx: number): QuoteLineItemDraft 
     const hasExplicitOverride = hasExplicitLineItemPriceOverride(item);
     return {
         id: item.id,
+        parentLineItemId: item.parentLineItemId ?? null,
+        lineItemRole: item.lineItemRole ?? "standalone",
         productId: item.productId,
         productName: item.productName,
         variantId: item.variantId,

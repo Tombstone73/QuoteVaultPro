@@ -5,6 +5,8 @@
 export type QuoteLineItemDraft = {
   tempId?: string;
   id?: string;
+  parentLineItemId?: string | null;
+  lineItemRole?: "standalone" | "parent" | "child" | null;
   productId: string;
   productName: string;
   variantId: string | null;
