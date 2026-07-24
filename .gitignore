@@ -22,6 +22,9 @@ uploads/**
 # Local tooling output (never commit)
 tmp/.env
 .env
+.env.*
+!.env.example
+!.env.playwright.example
 codex-artifacts/
 tmp-smoke-screenshots/
 
