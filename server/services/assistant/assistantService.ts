@@ -22,6 +22,7 @@ import { orderIntakeService } from "./orderIntakeService";
 import { crmManagementService } from "./crmManagementService";
 import { productionOperationsService } from "./productionOperationsService";
 import { fulfillmentOperationsService } from "./fulfillmentOperationsService";
+import { billingInvoiceOperationsService } from "./billingInvoiceOperationsService";
 import {
   assistantCapabilityCommandDescriptions,
   assistantCapabilityCommandPermissions,
@@ -529,6 +530,8 @@ export class AssistantService {
       } else {
       const fulfillmentIntake = await fulfillmentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
       if (fulfillmentIntake.handled) { response = fulfillmentIntake.response; cards = fulfillmentIntake.cards as AssistantResultCard[]; provider = "local_fulfillment_intake"; model = "conversational-fulfillment-intake-v1"; } else {
+      const billingIntake = await billingInvoiceOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
+      if (billingIntake.handled) { response = billingIntake.response; cards = billingIntake.cards as AssistantResultCard[]; provider = "local_billing_intake"; model = "conversational-billing-intake-v1"; } else {
       const productManagement = await productManagementSkillService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
@@ -628,6 +631,7 @@ export class AssistantService {
         );
         response = rendered.response;
         cards = rendered.cards;
+      }
       }
       }
       }

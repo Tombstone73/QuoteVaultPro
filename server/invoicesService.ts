@@ -1,5 +1,5 @@
 import { db } from './db';
-import { customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems } from '../shared/schema';
+import { auditLogs, customerContacts, customers, invoices, invoiceEmailLogs, invoiceLineItems, payments, orders, orderLineItems } from '../shared/schema';
 import { asc, desc, eq, and, ilike, inArray, or, sql } from 'drizzle-orm';
 import { InsertInvoice, InsertInvoiceEmailLog, InsertInvoiceLineItem, InsertPayment, type Invoice } from '../shared/schema';
 import { computeInvoicePaymentRollup } from '../shared/rollups/invoicePaymentRollup';
@@ -632,6 +632,65 @@ export async function createInvoiceFromOrder(
   const userId = c as string;
   const opts = d;
   return createInvoiceFromOrderImpl(organizationId, orderId, userId, opts);
+}
+
+export type AssistantSafeInvoiceDraftPatch = {
+  terms?: "due_on_receipt" | "net_15" | "net_30" | "net_45" | "custom";
+  customDueDate?: Date | null;
+  notesPublic?: string;
+};
+
+/** Canonical, non-financial draft edit boundary for assistant operations. */
+export async function updateInvoiceSafeDraftForAssistant(input: {
+  organizationId: string;
+  invoiceId: string;
+  userId: string;
+  patch: AssistantSafeInvoiceDraftPatch;
+}) {
+  const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
+  if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
+  if (String(invoice.status || "").toLowerCase() !== "draft") throw Object.assign(new Error("Only draft invoices can be edited."), { code: "INVOICE_NOT_EDITABLE" });
+  if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") throw Object.assign(new Error("Imported QuickBooks invoices are read-only."), { code: "INVOICE_IMPORTED_READ_ONLY" });
+
+  const updates: Record<string, unknown> = { updatedAt: new Date() };
+  if (input.patch.terms !== undefined) updates.terms = input.patch.terms;
+  if (input.patch.customDueDate !== undefined) updates.dueDate = input.patch.customDueDate;
+  if (input.patch.notesPublic !== undefined) updates.notesPublic = input.patch.notesPublic;
+  if (Object.keys(updates).length === 1) throw Object.assign(new Error("Provide at least one safe draft field to update."), { code: "INVOICE_PATCH_EMPTY" });
+
+  const [updated] = await db.update(invoices).set(updates as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
+  await db.insert(auditLogs).values({
+    organizationId: input.organizationId, userId: input.userId, actionType: "assistant_invoice_draft_updated", entityType: "invoice", entityId: invoice.id,
+    entityName: String(invoice.invoiceNumber), description: "Assistant updated safe draft invoice details.",
+    oldValues: { terms: invoice.terms, dueDate: invoice.dueDate, notesPublic: invoice.notesPublic } as any,
+    newValues: { terms: updated.terms, dueDate: updated.dueDate, notesPublic: updated.notesPublic } as any,
+  } as any);
+  return { previous: invoice, updated };
+}
+
+/** Canonical status-only send marker; never changes payment or financial state. */
+export async function markInvoiceSentForAssistant(input: { organizationId: string; invoiceId: string; userId: string }) {
+  const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
+  if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
+  const status = String(invoice.status || "").toLowerCase();
+  if (["void", "paid", "partially_paid"].includes(status)) throw Object.assign(new Error("This invoice cannot be marked sent in its current status."), { code: "INVOICE_NOT_SENDABLE" });
+  const now = new Date();
+  const [updated] = await db.update(invoices).set({ status: "sent", lastSentAt: now, lastSentVersion: Number((invoice as any).invoiceVersion || 1), lastSentVia: "manual", updatedAt: now } as any)
+    .where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
+  await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "assistant_invoice_marked_sent", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Assistant marked invoice as sent manually.", newValues: { via: "manual" } as any } as any);
+  return updated;
+}
+
+/** Appends an internal-only billing note without touching workflow or payment state. */
+export async function appendInvoiceInternalNoteForAssistant(input: { organizationId: string; invoiceId: string; userId: string; note: string }) {
+  const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
+  if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
+  if (String(invoice.status || "").toLowerCase() === "void") throw Object.assign(new Error("Void invoices cannot be updated."), { code: "INVOICE_NOT_EDITABLE" });
+  const previous = String(invoice.notesInternal || "").trim();
+  const notesInternal = previous ? `${previous}\n${input.note}` : input.note;
+  const [updated] = await db.update(invoices).set({ notesInternal, updatedAt: new Date() } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
+  await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "assistant_invoice_internal_note_added", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Assistant added an internal invoice note.", newValues: { noteLength: input.note.length } as any } as any);
+  return { previousNotesInternal: invoice.notesInternal ?? null, updated };
 }
 
 export async function getInvoiceWithRelations(id: string) {
