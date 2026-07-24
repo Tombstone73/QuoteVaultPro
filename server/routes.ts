@@ -31,6 +31,7 @@ import { registerAiFoundationRoutes } from "./routes/aiFoundation.routes";
 import { registerAssistantRoutes } from "./routes/assistant.routes";
 import { registerAiReportsRoutes } from "./routes/aiReports.routes";
 import { registerAssistantExecutionRoutes } from "./routes/assistantExecution.routes";
+import { registerAiKnowledgeRoutes } from "./routes/aiKnowledge.routes";
 import { registerProofingRoutes } from "./routes/proofing.routes";
 import { registerLocalBridgeRoutes } from "./routes/localBridge.routes";
 import { registerPortalProofRoutes } from "./routes/portalProof.routes";
@@ -343,6 +344,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // AI triage routes must be registered before Bug Reports' /:id detail route.
   registerAiTriageBriefRoutes(app, { isAuthenticated, tenantContext });
   registerAiReportsRoutes(app, { isAuthenticated, tenantContext });
+  registerAiKnowledgeRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
 
   // Bug report routes extracted to ./routes/bugReports.ts (do NOT re-add here)
   registerBugReportRoutes(app, { isAuthenticated, tenantContext });

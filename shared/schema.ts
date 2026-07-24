@@ -8155,6 +8155,95 @@ export const aiReportViews = pgTable("ai_report_views", {
   index("ai_report_views_share_viewed_idx").on(table.shareId, table.viewedAt),
 ]);
 
+/**
+ * Versioned, non-executable System Guide content. A null organization ID is
+ * curated global PrintersHero knowledge; repositories must always select it
+ * together with (or instead of) the caller's explicit organization scope.
+ */
+export const aiKnowledgeDocuments = pgTable("ai_knowledge_documents", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  organizationId: varchar("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
+  slug: varchar("slug", { length: 180 }).notNull(),
+  title: varchar("title", { length: 240 }).notNull(),
+  category: varchar("category", { length: 80 }).notNull(),
+  summary: text("summary"),
+  sourceType: varchar("source_type", { length: 64 }).notNull(),
+  sourcePath: varchar("source_path", { length: 500 }),
+  sourceVersion: varchar("source_version", { length: 80 }).notNull(),
+  contentHash: varchar("content_hash", { length: 128 }).notNull(),
+  content: text("content").notNull(),
+  status: varchar("status", { length: 32 }).notNull().default("active"),
+  audience: varchar("audience", { length: 32 }).notNull().default("staff"),
+  permissionTags: jsonb("permission_tags").$type<string[]>().notNull().default(sql.raw("'[]'::jsonb")),
+  routePatterns: jsonb("route_patterns").$type<string[]>().notNull().default(sql.raw("'[]'::jsonb")),
+  entityTypes: jsonb("entity_types").$type<string[]>().notNull().default(sql.raw("'[]'::jsonb")),
+  featureTags: jsonb("feature_tags").$type<string[]>().notNull().default(sql.raw("'[]'::jsonb")),
+  effectiveFrom: timestamp("effective_from", { withTimezone: true }),
+  deprecatedAt: timestamp("deprecated_at", { withTimezone: true }),
+  replacedByDocumentId: varchar("replaced_by_document_id").references((): AnyPgColumn => aiKnowledgeDocuments.id, { onDelete: "set null" }),
+  indexedAt: timestamp("indexed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_knowledge_documents_scope_status_category_idx").on(table.organizationId, table.status, table.category, table.updatedAt),
+  index("ai_knowledge_documents_source_path_idx").on(table.sourceType, table.sourcePath),
+]);
+
+/** Deterministic chunks used by bounded PostgreSQL lexical retrieval. */
+export const aiKnowledgeChunks = pgTable("ai_knowledge_chunks", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  documentId: varchar("document_id").notNull().references(() => aiKnowledgeDocuments.id, { onDelete: "cascade" }),
+  chunkIndex: integer("chunk_index").notNull(),
+  headingPath: text("heading_path"),
+  content: text("content").notNull(),
+  contentHash: varchar("content_hash", { length: 128 }).notNull(),
+  tokenEstimate: integer("token_estimate").notNull().default(0),
+  embeddingModel: varchar("embedding_model", { length: 160 }),
+  embeddingVersion: varchar("embedding_version", { length: 80 }),
+  // Generated tsvector is deliberately queried through sql in the repository.
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("ai_knowledge_chunks_document_index_uidx").on(table.documentId, table.chunkIndex),
+  index("ai_knowledge_chunks_document_idx").on(table.documentId, table.chunkIndex),
+]);
+
+export const aiKnowledgeSyncRuns = pgTable("ai_knowledge_sync_runs", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  organizationId: varchar("organization_id").references(() => organizations.id, { onDelete: "cascade" }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  sourceType: varchar("source_type", { length: 64 }).notNull(),
+  status: varchar("status", { length: 32 }).notNull().default("running"),
+  dryRun: boolean("dry_run").notNull().default(false),
+  sourceVersion: varchar("source_version", { length: 80 }),
+  documentsDiscovered: integer("documents_discovered").notNull().default(0),
+  documentsCreated: integer("documents_created").notNull().default(0),
+  documentsUpdated: integer("documents_updated").notNull().default(0),
+  documentsDeprecated: integer("documents_deprecated").notNull().default(0),
+  chunksWritten: integer("chunks_written").notNull().default(0),
+  errorSummary: varchar("error_summary", { length: 1000 }),
+  startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_knowledge_sync_runs_scope_started_idx").on(table.organizationId, table.startedAt),
+]);
+
+export const aiKnowledgeFeedback = pgTable("ai_knowledge_feedback", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").references(() => users.id, { onDelete: "set null" }),
+  conversationId: varchar("conversation_id").references(() => aiConversations.id, { onDelete: "set null" }),
+  documentIds: jsonb("document_ids").$type<string[]>().notNull().default(sql.raw("'[]'::jsonb")),
+  questionCategory: varchar("question_category", { length: 80 }),
+  feedbackType: varchar("feedback_type", { length: 32 }).notNull(),
+  comment: varchar("comment", { length: 2000 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_knowledge_feedback_org_created_idx").on(table.organizationId, table.createdAt),
+  index("ai_knowledge_feedback_org_type_created_idx").on(table.organizationId, table.feedbackType, table.createdAt),
+]);
+
 export const insertProofVersionLineItemSchema = createInsertSchema(proofVersionLineItems).omit({
   id: true,
   createdAt: true,

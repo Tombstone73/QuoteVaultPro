@@ -35,11 +35,11 @@ function readNavigationQuestion(message: string): boolean {
 }
 
 function currentOrderQuestion(message: string): boolean {
-  return /^(?:what(?:'s| is) blocking this order|why is this order blocked|what still needs to happen on this order|what is preventing (?:fulfillment|billing)|summari[sz]e (?:this|the current) order|give me (?:a )?summary of (?:this|the current) order|tell me about (?:this|the current) order|give me (?:an )?overview of (?:this|the current) order|what(?:'s| is) (?:this|the current) order|what is the production status|what is the artwork status)$/i.test(message);
+  return /^(?:what(?:'s| is) blocking this order|why is this order blocked|why can(?:'t|not) this order be invoiced|what still needs to happen on this order|what is preventing (?:fulfillment|billing)|summari[sz]e (?:this|the current) order|give me (?:a )?summary of (?:this|the current) order|tell me about (?:this|the current) order|give me (?:an )?overview of (?:this|the current) order|what(?:'s| is) (?:this|the current) order|what is the production status|what is the artwork status)$/i.test(message);
 }
 
 function currentOrderBlockingQuestion(message: string): boolean {
-  return /^(?:what(?:'s| is) blocking this order|why is this order blocked|what still needs to happen on this order|what is preventing (?:fulfillment|billing))\??$/i.test(message);
+  return /^(?:what(?:'s| is) blocking this order|why is this order blocked|why can(?:'t|not) this order be invoiced|what still needs to happen on this order|what is preventing (?:fulfillment|billing))\??$/i.test(message);
 }
 
 function currentOrderId(context: AssistantContextEnvelope | undefined): string | null {

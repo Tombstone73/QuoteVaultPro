@@ -1,4 +1,5 @@
 import * as React from "react";
+import { Link } from "react-router-dom";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Brain, KeyRound, Loader2, ShieldCheck } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
@@ -148,6 +149,7 @@ export default function AiSettingsPage() {
             </Badge>
             <Badge variant="outline">{draft.mode.replace(/_/g, " ")}</Badge>
             {settings?.hasApiKey ? <Badge variant="outline">BYOK key saved</Badge> : null}
+            <Button asChild size="sm" variant="outline"><Link to="/settings/ai/knowledge">Knowledge Center</Link></Button>
           </div>
 
           <div className="grid gap-4 md:grid-cols-3">
