@@ -185,9 +185,9 @@ export default function PortalInvoiceDetailPage() {
             <RefreshCcw className="mr-2 h-4 w-4" />
             Refresh
           </Button>
-          <Button onClick={() => setPayOpen(true)} disabled={!payable}>
-            Pay {formatCurrency(invoice.amountDue, invoice.currency)}
-          </Button>
+          {payable ? (
+            <Button onClick={() => setPayOpen(true)}>Pay {formatCurrency(invoice.amountDue, invoice.currency)}</Button>
+          ) : null}
         </div>
       </div>
 

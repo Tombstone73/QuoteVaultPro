@@ -172,7 +172,7 @@ export default function PortalProofDetailPage() {
                   </Button>
                 </div>
                 {!proof.previewAvailable ? (
-                  <p className="text-xs text-muted-foreground">Approval is unavailable until the proof preview is ready.</p>
+                  <p className="text-xs text-muted-foreground">Approval is unavailable until the proof file is ready to review.</p>
                 ) : null}
               </>
             ) : (

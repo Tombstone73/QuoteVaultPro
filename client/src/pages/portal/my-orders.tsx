@@ -41,7 +41,7 @@ function OrderRow({ order }: { order: PortalOrderListDto }) {
           {order.proofStatusSummary.actionRequired ? (
             <Badge variant="secondary">
               <AlertCircle className="mr-1 h-3 w-3" />
-              Proof needed
+              Your approval needed
             </Badge>
           ) : null}
         </div>
@@ -64,9 +64,9 @@ function OrderRow({ order }: { order: PortalOrderListDto }) {
         <p className="font-medium text-foreground">{formatCurrency(order.total)}</p>
       </div>
 
-      <div className="flex md:justify-end">
-        <Button asChild variant="outline" size="sm">
-          <Link to={`/portal/orders/${order.id}`}>View</Link>
+      <div className="flex w-full md:w-auto md:justify-end">
+        <Button asChild variant="outline" size="sm" className="w-full md:w-auto">
+          <Link to={`/portal/orders/${order.id}`}>View order</Link>
         </Button>
       </div>
     </div>
@@ -88,7 +88,7 @@ export default function MyOrders() {
     <div className="mx-auto w-full max-w-5xl space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-normal">Orders</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Track order progress, proofs, and fulfillment.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Track order status, review proofs, and follow fulfillment progress.</p>
       </div>
 
       {error ? (

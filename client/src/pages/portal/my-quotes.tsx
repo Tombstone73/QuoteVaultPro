@@ -51,9 +51,9 @@ function QuoteRow({ quote }: { quote: PortalQuoteListDto }) {
         <p className="font-medium text-foreground">{formatCurrency(quote.total)}</p>
       </div>
 
-      <div className="flex md:justify-end">
-        <Button asChild variant="outline" size="sm">
-          <Link to={`/portal/quotes/${quote.id}`}>View</Link>
+      <div className="flex w-full md:w-auto md:justify-end">
+        <Button asChild variant="outline" size="sm" className="w-full md:w-auto">
+          <Link to={`/portal/quotes/${quote.id}`}>Review quote</Link>
         </Button>
       </div>
     </div>
@@ -75,7 +75,7 @@ export default function MyQuotes() {
     <div className="mx-auto w-full max-w-5xl space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-normal">Quotes</h1>
-        <p className="mt-1 text-sm text-muted-foreground">Review quote details and expiration dates.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Review quote details, pricing, and expiration dates.</p>
       </div>
 
       {error ? (

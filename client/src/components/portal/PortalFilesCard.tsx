@@ -49,7 +49,9 @@ export default function PortalFilesCard({
             Loading documents
           </div>
         ) : error ? (
-          <p className="text-sm text-muted-foreground">Documents are unavailable right now.</p>
+          <p className="rounded-md border border-destructive/30 p-3 text-sm text-destructive" role="alert">
+            Documents are unavailable right now. Please try again shortly.
+          </p>
         ) : files.length === 0 ? (
           <p className="text-sm text-muted-foreground">No customer documents are available.</p>
         ) : (
@@ -73,14 +75,14 @@ export default function PortalFilesCard({
                     ) : null}
                   </div>
                   {file.downloadAvailable ? (
-                    <Button asChild variant="outline">
-                      <a href={portalFileDownloadUrl(entity, entityId, file.id)}>
+                    <Button asChild variant="outline" className="w-full md:w-auto">
+                      <a href={portalFileDownloadUrl(entity, entityId, file.id)} aria-label={`Download ${file.displayName}`}>
                         <Download className="mr-2 h-4 w-4" />
                         Download
                       </a>
                     </Button>
                   ) : (
-                    <Button variant="outline" disabled>
+                    <Button variant="outline" className="w-full md:w-auto" disabled>
                       <Download className="mr-2 h-4 w-4" />
                       Unavailable
                     </Button>

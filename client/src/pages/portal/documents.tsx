@@ -36,7 +36,7 @@ export default function PortalDocumentsPage() {
       <div>
         <h1 className="text-2xl font-semibold tracking-normal">Business Documents</h1>
         <p className="mt-1 max-w-3xl text-sm text-muted-foreground">
-          Upload tax forms, resale certificates, or account documents. Artwork should be uploaded with the related quote/order/proof.
+          View tax forms, resale certificates, and other account documents shared by your print partner. Artwork is available with the related quote, order, or proof.
         </p>
       </div>
 

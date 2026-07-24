@@ -53,13 +53,18 @@ function InvoiceRow({ invoice }: { invoice: PortalInvoiceDto }) {
         <p className="font-medium text-foreground">{formatCurrency(invoice.total, invoice.currency)}</p>
       </div>
 
-      <div className="flex gap-2 md:justify-end">
+      <div className="flex w-full gap-2 md:w-auto md:justify-end">
         <Button asChild variant="outline" size="sm">
-          <Link to={`/portal/invoices/${invoice.id}`}>View</Link>
+          <Link to={`/portal/invoices/${invoice.id}`}>View invoice</Link>
         </Button>
         {invoice.pdfAvailable ? (
           <Button asChild variant="ghost" size="icon" title="Download invoice PDF">
-            <a href={portalInvoicePdfUrl(invoice.id, true)} target="_blank" rel="noreferrer">
+            <a
+              href={portalInvoicePdfUrl(invoice.id, true)}
+              target="_blank"
+              rel="noreferrer"
+              aria-label={`Download PDF for invoice ${invoice.displayNumber || invoice.invoiceNumber}`}
+            >
               <Download className="h-4 w-4" />
             </a>
           </Button>
@@ -84,7 +89,7 @@ export default function PortalInvoicesPage() {
     <div className="mx-auto w-full max-w-5xl space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-normal">Invoices</h1>
-        <p className="mt-1 text-sm text-muted-foreground">View balances, payments, and invoice PDFs.</p>
+        <p className="mt-1 text-sm text-muted-foreground">Review balances, payment history, and available invoice documents.</p>
       </div>
 
       {error ? (

@@ -99,8 +99,8 @@ function InvoiceItem({ invoice }: { invoice: PortalInvoiceDto }) {
           <p className="text-xs text-muted-foreground">Amount due</p>
           <p className="font-semibold">{formatCurrency(invoice.amountDue, invoice.currency)}</p>
         </div>
-        <Button asChild size="sm">
-          <Link to={`/portal/invoices/${invoice.id}`}>Pay</Link>
+        <Button asChild size="sm" className="w-full sm:w-auto">
+          <Link to={`/portal/invoices/${invoice.id}`}>Pay invoice</Link>
         </Button>
       </div>
     </div>
@@ -121,8 +121,8 @@ function QuoteItem({ quote }: { quote: PortalQuoteListDto }) {
       </div>
       <div className="flex items-center gap-3 sm:justify-end">
         <p className="font-semibold">{formatCurrency(quote.total)}</p>
-        <Button asChild variant="outline" size="sm">
-          <Link to={`/portal/quotes/${quote.id}`}>Review</Link>
+        <Button asChild variant="outline" size="sm" className="w-full sm:w-auto">
+          <Link to={`/portal/quotes/${quote.id}`}>Review quote</Link>
         </Button>
       </div>
     </div>
@@ -150,8 +150,8 @@ function OrderItem({ order }: { order: PortalOrderListDto }) {
             {order.itemCount} item{order.itemCount === 1 ? "" : "s"} / {order.fulfillmentSummary.statusLabel}
           </p>
         </div>
-        <Button asChild variant="outline" size="sm">
-          <Link to={`/portal/orders/${order.id}`}>Open</Link>
+        <Button asChild variant="outline" size="sm" className="w-full sm:w-auto">
+          <Link to={`/portal/orders/${order.id}`}>View order</Link>
         </Button>
       </div>
     </div>
@@ -170,8 +170,8 @@ function ProofItem({ proof }: { proof: PortalProofDto }) {
         </div>
         <p className="mt-1 text-sm text-muted-foreground">{proof.lineItemSummary.name}</p>
       </div>
-      <Button asChild variant="outline" size="sm">
-        <Link to={`/portal/proofs/${proof.id}`}>Review</Link>
+        <Button asChild variant="outline" size="sm" className="w-full sm:w-auto">
+          <Link to={`/portal/proofs/${proof.id}`}>Review proof</Link>
       </Button>
     </div>
   );
@@ -187,8 +187,11 @@ function FileItem({ file }: { file: PortalDashboardFileDto }) {
         </p>
       </div>
       {file.downloadAvailable ? (
-        <Button asChild variant="outline" size="icon" title="Download document">
-          <a href={portalFileDownloadUrl(`${file.entityType}s` as "invoices" | "orders" | "quotes", file.entityId, file.id)}>
+        <Button asChild variant="outline" size="icon" title={`Download ${file.displayName}`}>
+          <a
+            href={portalFileDownloadUrl(`${file.entityType}s` as "invoices" | "orders" | "quotes", file.entityId, file.id)}
+            aria-label={`Download ${file.displayName}`}
+          >
             <Download className="h-4 w-4" />
           </a>
         </Button>
