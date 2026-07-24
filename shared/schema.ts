@@ -2011,6 +2011,9 @@ export const quoteAttachments = pgTable("quote_attachments", {
   customerUploadReviewedByUserId: varchar("customer_upload_reviewed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   customerUploadReviewedAt: timestamp("customer_upload_reviewed_at"),
   customerUploadReviewNote: text("customer_upload_review_note"),
+  customerUploadPromotionType: varchar("customer_upload_promotion_type", { length: 32 }),
+  customerUploadPromotedByUserId: varchar("customer_upload_promoted_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  customerUploadPromotedAt: timestamp("customer_upload_promoted_at"),
   bucket: varchar("bucket", { length: 100 }).default('titan-private'),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
@@ -2023,6 +2026,7 @@ export const quoteAttachments = pgTable("quote_attachments", {
   index("quote_attachments_page_count_status_idx").on(table.pageCountStatus),
   index("quote_attachments_portal_visible_idx").on(table.organizationId, table.quoteId, table.customerVisible),
   index("quote_attachments_customer_upload_review_idx").on(table.organizationId, table.customerUploadReviewStatus),
+  index("quote_attachments_customer_upload_promotion_idx").on(table.organizationId, table.customerUploadPromotionType),
 ]);
 
 export const insertQuoteAttachmentSchema = createInsertSchema(quoteAttachments).omit({
@@ -5630,6 +5634,9 @@ export const orderAttachments = pgTable("order_attachments", {
   customerUploadReviewedByUserId: varchar("customer_upload_reviewed_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   customerUploadReviewedAt: timestamp("customer_upload_reviewed_at"),
   customerUploadReviewNote: text("customer_upload_review_note"),
+  customerUploadPromotionType: varchar("customer_upload_promotion_type", { length: 32 }),
+  customerUploadPromotedByUserId: varchar("customer_upload_promoted_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  customerUploadPromotedAt: timestamp("customer_upload_promoted_at"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -5641,6 +5648,7 @@ export const orderAttachments = pgTable("order_attachments", {
   index("order_attachments_thumb_status_idx").on(table.thumbStatus),
   index("order_attachments_portal_visible_idx").on(table.orderId, table.customerVisible),
   index("order_attachments_customer_upload_review_idx").on(table.orderId, table.customerUploadReviewStatus),
+  index("order_attachments_customer_upload_promotion_idx").on(table.orderId, table.customerUploadPromotionType),
 ]);
 
 export const insertOrderAttachmentSchema = createInsertSchema(orderAttachments).omit({

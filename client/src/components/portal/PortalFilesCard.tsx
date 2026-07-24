@@ -66,6 +66,7 @@ export default function PortalFilesCard({
                       <Badge variant="outline">{file.categoryLabel}</Badge>
                       <Badge variant="secondary">{file.fileTypeLabel}</Badge>
                       {file.customerUploadReviewStatusLabel ? <Badge variant={file.customerUploadReviewStatus === "rejected" ? "destructive" : "outline"}>{file.customerUploadReviewStatusLabel}</Badge> : null}
+                      {file.customerUploadPromotionLabel ? <Badge variant="outline">{file.customerUploadPromotionLabel}</Badge> : null}
                     </div>
                     <p className="mt-1 text-sm text-muted-foreground">
                       {formatDate(file.uploadedAt)}

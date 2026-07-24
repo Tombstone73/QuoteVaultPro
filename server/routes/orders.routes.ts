@@ -144,7 +144,7 @@ import { getFileUploadNamingPolicy } from "../prepressFileService";
 import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
 import { generateOrderPdfBytes, orderPdfFilename, OrderPdfEligibilityError } from "../lib/orderPdf";
 import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineItemCreationPolicy";
-import { CustomerUploadReviewError, reviewCustomerUpload } from "../services/customerUploadReview.service";
+import { CustomerUploadReviewError, promoteCustomerUpload, reviewCustomerUpload } from "../services/customerUploadReview.service";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -199,8 +199,12 @@ const portalAttachmentVisibilitySchema = z.object({
 
 const customerUploadReviewSchema = z.object({
     status: z.enum(["accepted", "rejected"]),
-    promotion: z.enum(["reference", "artwork"]).optional(),
     reviewNote: z.string().trim().max(2000).optional().nullable(),
+});
+
+const customerUploadPromotionSchema = z.object({
+    promotion: z.enum(["reference", "artwork"]),
+    confirmPromotion: z.literal(true),
 });
 
 function assertInternalStaffUser(req: any, res: any): boolean {
@@ -3597,7 +3601,6 @@ export async function registerOrderRoutes(
                 entityId: req.params.orderId,
                 attachmentId: req.params.attachmentId,
                 status: parsed.data.status,
-                promotion: parsed.data.promotion,
                 reviewNote: parsed.data.reviewNote,
                 actorUserId: userId,
                 actorUserName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
@@ -3609,6 +3612,36 @@ export async function registerOrderRoutes(
             if (error instanceof CustomerUploadReviewError) return res.status(error.statusCode).json({ error: error.message });
             console.error("[OrderAttachments:CustomerUploadReview] Error:", error);
             return res.status(500).json({ error: "Failed to review customer upload" });
+        }
+    });
+
+    app.post("/api/orders/:orderId/attachments/:attachmentId/customer-upload-promotion", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+            if (!userId) return res.status(401).json({ error: "Authentication required" });
+
+            const parsed = customerUploadPromotionSchema.safeParse(req.body);
+            if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+
+            const updated = await promoteCustomerUpload({
+                organizationId,
+                entityType: "order",
+                entityId: req.params.orderId,
+                attachmentId: req.params.attachmentId,
+                promotion: parsed.data.promotion,
+                actorUserId: userId,
+                actorUserName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+                ipAddress: req.ip,
+                userAgent: req.get?.("user-agent") || null,
+            });
+            return res.json({ success: true, data: await enrichAttachmentWithUrls(updated) });
+        } catch (error: any) {
+            if (error instanceof CustomerUploadReviewError) return res.status(error.statusCode).json({ error: error.message });
+            console.error("[OrderAttachments:CustomerUploadPromotion] Error:", error);
+            return res.status(500).json({ error: "Failed to promote customer upload" });
         }
     });
 

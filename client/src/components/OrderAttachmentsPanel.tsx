@@ -438,6 +438,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
       <CustomerUploadReviewPanel
         entityLabel="Order"
         reviewUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-review`}
+        promotionUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-promotion`}
         attachments={attachments}
         orderPromotionAllowed
         onReviewed={() => queryClient.invalidateQueries({ queryKey: [attachmentsApiPath] })}

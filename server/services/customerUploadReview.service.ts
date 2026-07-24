@@ -19,7 +19,6 @@ export type ReviewCustomerUploadInput = {
   entityId: string;
   attachmentId: string;
   status: Exclude<CustomerUploadReviewStatus, "pending_review">;
-  promotion?: CustomerUploadPromotion;
   reviewNote?: string | null;
   actorUserId: string;
   actorUserName: string | null;
@@ -33,15 +32,10 @@ function normalizeNote(value: string | null | undefined): string | null {
 }
 
 /**
- * Reviews a portal customer upload without changing quote/order workflow state.
- * Order artwork promotion intentionally remains non-primary and does not create
- * production, prepress, or proof records.
+ * Reviews a portal customer upload without changing attachment usage or
+ * quote/order workflow state. Promotion is deliberately a separate action.
  */
 export async function reviewCustomerUpload(input: ReviewCustomerUploadInput) {
-  if (input.entityType === "quote" && input.promotion === "artwork") {
-    throw new CustomerUploadReviewError(400, "Quote uploads can only be accepted as reviewed attachments.");
-  }
-
   return db.transaction(async (tx) => {
     const entity = input.entityType === "quote"
       ? await tx
@@ -90,7 +84,6 @@ export async function reviewCustomerUpload(input: ReviewCustomerUploadInput) {
 
     const reviewedAt = new Date();
     const reviewNote = normalizeNote(input.reviewNote);
-    const existingOrder = existing as typeof orderAttachments.$inferSelect;
     const commonPatch = {
       customerUploadReviewStatus: input.status,
       customerUploadReviewedByUserId: input.actorUserId,
@@ -111,12 +104,7 @@ export async function reviewCustomerUpload(input: ReviewCustomerUploadInput) {
         .returning()
       : await tx
         .update(orderAttachments)
-        .set({
-          ...commonPatch,
-          // Even when classified as artwork, this is not primary/final art and is not routed.
-          role: input.status === "accepted" && input.promotion === "artwork" ? "artwork" : existingOrder.role,
-          isPrimary: false,
-        })
+        .set(commonPatch)
         .where(and(eq(orderAttachments.id, input.attachmentId), eq(orderAttachments.orderId, input.entityId)))
         .returning();
 
@@ -137,15 +125,162 @@ export async function reviewCustomerUpload(input: ReviewCustomerUploadInput) {
         : `Customer ${input.entityType} upload rejected.`,
       oldValues: {
         reviewStatus: existing.customerUploadReviewStatus,
-        role: input.entityType === "order" ? existingOrder.role : null,
-        isPrimary: input.entityType === "order" ? existingOrder.isPrimary : false,
+        role: input.entityType === "order" ? (existing as typeof orderAttachments.$inferSelect).role : null,
+        isPrimary: input.entityType === "order" ? (existing as typeof orderAttachments.$inferSelect).isPrimary : false,
       },
       newValues: {
         reviewStatus: input.status,
         reviewNote,
-        promotion: input.entityType === "order" && input.status === "accepted" ? input.promotion || "reference" : null,
+        promotion: null,
         finalArtwork: false,
         workflowStateChanged: false,
+      },
+      ipAddress: input.ipAddress || null,
+      userAgent: input.userAgent || null,
+    });
+
+    return updated;
+  });
+}
+
+export type PromoteCustomerUploadInput = {
+  organizationId: string;
+  entityType: "quote" | "order";
+  entityId: string;
+  attachmentId: string;
+  promotion: CustomerUploadPromotion;
+  actorUserId: string;
+  actorUserName: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+};
+
+/**
+ * Deliberately promotes an accepted customer upload to a safe usable reference.
+ * This only updates attachment metadata; it never assigns a line item, makes
+ * artwork primary/final, or advances a quote/order workflow.
+ */
+export async function promoteCustomerUpload(input: PromoteCustomerUploadInput) {
+  if (input.entityType === "quote" && input.promotion === "artwork") {
+    throw new CustomerUploadReviewError(400, "Quote uploads can only be promoted as approved references.");
+  }
+
+  return db.transaction(async (tx) => {
+    const entity = input.entityType === "quote"
+      ? await tx
+        .select({ id: quotes.id })
+        .from(quotes)
+        .where(and(eq(quotes.id, input.entityId), eq(quotes.organizationId, input.organizationId)))
+        .limit(1)
+      : await tx
+        .select({ id: orders.id })
+        .from(orders)
+        .where(and(eq(orders.id, input.entityId), eq(orders.organizationId, input.organizationId)))
+        .limit(1);
+
+    if (!entity[0]) {
+      throw new CustomerUploadReviewError(404, "Customer upload not found.");
+    }
+
+    const attachment = input.entityType === "quote"
+      ? await tx
+        .select()
+        .from(quoteAttachments)
+        .where(and(
+          eq(quoteAttachments.id, input.attachmentId),
+          eq(quoteAttachments.quoteId, input.entityId),
+          eq(quoteAttachments.organizationId, input.organizationId),
+          isNull(quoteAttachments.quoteLineItemId),
+        ))
+        .limit(1)
+      : await tx
+        .select()
+        .from(orderAttachments)
+        .where(and(
+          eq(orderAttachments.id, input.attachmentId),
+          eq(orderAttachments.orderId, input.entityId),
+          isNull(orderAttachments.orderLineItemId),
+        ))
+        .limit(1);
+
+    const existing = attachment[0];
+    if (!existing || existing.portalFileCategory !== "customer_upload") {
+      throw new CustomerUploadReviewError(404, "Customer upload not found.");
+    }
+    if (existing.customerUploadReviewStatus !== "accepted") {
+      throw new CustomerUploadReviewError(409, "Only accepted customer uploads can be promoted.");
+    }
+    if (existing.customerUploadPromotionType) {
+      throw new CustomerUploadReviewError(409, "This customer upload has already been promoted.");
+    }
+
+    const promotedAt = new Date();
+    const commonPatch = {
+      customerUploadPromotionType: input.promotion,
+      customerUploadPromotedByUserId: input.actorUserId,
+      customerUploadPromotedAt: promotedAt,
+      updatedAt: promotedAt,
+    };
+    const existingOrder = existing as typeof orderAttachments.$inferSelect;
+    const [updated] = input.entityType === "quote"
+      ? await tx
+        .update(quoteAttachments)
+        .set(commonPatch)
+        .where(and(
+          eq(quoteAttachments.id, input.attachmentId),
+          eq(quoteAttachments.quoteId, input.entityId),
+          eq(quoteAttachments.organizationId, input.organizationId),
+          isNull(quoteAttachments.customerUploadPromotionType),
+        ))
+        .returning()
+      : await tx
+        .update(orderAttachments)
+        .set({
+          ...commonPatch,
+          role: input.promotion === "artwork" ? "artwork" : "reference",
+          isPrimary: false,
+        })
+        .where(and(
+          eq(orderAttachments.id, input.attachmentId),
+          eq(orderAttachments.orderId, input.entityId),
+          isNull(orderAttachments.customerUploadPromotionType),
+        ))
+        .returning();
+
+    if (!updated) {
+      throw new CustomerUploadReviewError(409, "This customer upload has already been promoted.");
+    }
+
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId,
+      userName: input.actorUserName,
+      actionType: "customer_upload.promoted",
+      entityType: `${input.entityType}_attachment`,
+      entityId: input.attachmentId,
+      entityName: updated.originalFilename || updated.fileName || input.attachmentId,
+      description: `Accepted customer ${input.entityType} upload promoted as ${input.promotion === "artwork" ? "artwork reference" : "approved reference"}.`,
+      oldValues: {
+        reviewStatus: existing.customerUploadReviewStatus,
+        promotion: existing.customerUploadPromotionType || null,
+        role: input.entityType === "order" ? existingOrder.role : null,
+        isPrimary: input.entityType === "order" ? existingOrder.isPrimary : false,
+      },
+      newValues: {
+        actorUserId: input.actorUserId,
+        promotedAt: promotedAt.toISOString(),
+        sourceUploadId: input.attachmentId,
+        targetEntityType: input.entityType,
+        targetEntityId: input.entityId,
+        promotionType: input.promotion,
+        outcome: "promoted",
+        finalArtwork: false,
+        workflowStateChanged: false,
+        prepressChanged: false,
+        proofChanged: false,
+        productionChanged: false,
+        billingChanged: false,
+        paymentChanged: false,
       },
       ipAddress: input.ipAddress || null,
       userAgent: input.userAgent || null,

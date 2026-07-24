@@ -19,6 +19,7 @@ export type CustomerUploadReviewAttachment = {
   portalFileCategory?: string | null;
   customerUploadReviewStatus?: "pending_review" | "accepted" | "rejected" | null;
   customerUploadReviewNote?: string | null;
+  customerUploadPromotionType?: "reference" | "artwork" | null;
   isPrimary?: boolean | null;
 };
 
@@ -31,18 +32,21 @@ function statusLabel(status: CustomerUploadReviewAttachment["customerUploadRevie
 export function CustomerUploadReviewPanel({
   entityLabel,
   reviewUrl,
+  promotionUrl,
   attachments,
   orderPromotionAllowed = false,
   onReviewed,
 }: {
   entityLabel: "Quote" | "Order";
   reviewUrl: (attachmentId: string) => string;
+  promotionUrl: (attachmentId: string) => string;
   attachments: CustomerUploadReviewAttachment[];
   orderPromotionAllowed?: boolean;
   onReviewed: () => void;
 }) {
   const { toast } = useToast();
   const [target, setTarget] = useState<CustomerUploadReviewAttachment | null>(null);
+  const [promotionTarget, setPromotionTarget] = useState<CustomerUploadReviewAttachment | null>(null);
   const [decision, setDecision] = useState<"accepted" | "rejected">("accepted");
   const [promotion, setPromotion] = useState<"reference" | "artwork">("reference");
   const [reviewNote, setReviewNote] = useState("");
@@ -68,7 +72,6 @@ export function CustomerUploadReviewPanel({
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           status: decision,
-          ...(orderPromotionAllowed && decision === "accepted" ? { promotion } : {}),
           reviewNote: reviewNote.trim() || null,
         }),
       });
@@ -84,6 +87,36 @@ export function CustomerUploadReviewPanel({
       onReviewed();
     } catch (error: any) {
       toast({ title: "Review failed", description: error?.message || "Unable to review this customer upload.", variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitPromotion = async () => {
+    if (!promotionTarget) return;
+    setSubmitting(true);
+    try {
+      const response = await fetch(promotionUrl(promotionTarget.id), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          promotion: orderPromotionAllowed ? promotion : "reference",
+          confirmPromotion: true,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || "Unable to promote this customer upload.");
+      }
+      toast({
+        title: "Customer upload promoted",
+        description: "The file remains non-primary and is not final art. No workflow state changed.",
+      });
+      setPromotionTarget(null);
+      onReviewed();
+    } catch (error: any) {
+      toast({ title: "Promotion failed", description: error?.message || "Unable to promote this customer upload.", variant: "destructive" });
     } finally {
       setSubmitting(false);
     }
@@ -109,10 +142,16 @@ export function CustomerUploadReviewPanel({
               {entityLabel} attachment / Customer: {attachment.uploadedByName || "Customer"} / {attachment.mimeType || "File"} / {format(new Date(attachment.createdAt), "PP p")}
             </p>
             {attachment.customerUploadReviewNote ? <p className="mt-1 text-xs text-muted-foreground">Review note: {attachment.customerUploadReviewNote}</p> : null}
+            {attachment.customerUploadPromotionType ? <p className="mt-1 text-xs text-muted-foreground">Promoted as {attachment.customerUploadPromotionType === "artwork" ? "artwork reference" : "approved reference"}; not primary or final art.</p> : null}
             {pending ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 <Button size="sm" onClick={() => openReview(attachment, "accepted")}>Accept for review</Button>
                 <Button size="sm" variant="outline" onClick={() => openReview(attachment, "rejected")}>Reject</Button>
+              </div>
+            ) : null}
+            {attachment.customerUploadReviewStatus === "accepted" && !attachment.customerUploadPromotionType ? (
+              <div className="mt-2">
+                <Button size="sm" variant="outline" onClick={() => { setPromotionTarget(attachment); setPromotion("reference"); }}>Promote for use</Button>
               </div>
             ) : null}
           </div>
@@ -127,18 +166,6 @@ export function CustomerUploadReviewPanel({
               This records a staff review only. It does not mark final art, complete prepress, approve a proof, or route production.
             </DialogDescription>
           </DialogHeader>
-          {orderPromotionAllowed && decision === "accepted" ? (
-            <div className="space-y-2">
-              <Label htmlFor="customer-upload-promotion">Attachment classification</Label>
-              <Select value={promotion} onValueChange={(value) => setPromotion(value as "reference" | "artwork")}>
-                <SelectTrigger id="customer-upload-promotion"><SelectValue /></SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="reference">Approved reference (safe default)</SelectItem>
-                  <SelectItem value="artwork">Artwork reference (not primary or final art)</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-          ) : null}
           <div className="space-y-2">
             <Label htmlFor="customer-upload-review-note">Customer-visible review note {decision === "rejected" ? "(recommended)" : "(optional)"}</Label>
             <Textarea id="customer-upload-review-note" value={reviewNote} onChange={(event) => setReviewNote(event.target.value)} maxLength={2000} />
@@ -148,6 +175,33 @@ export function CustomerUploadReviewPanel({
             <Button variant={decision === "rejected" ? "destructive" : "default"} disabled={submitting} onClick={submitReview}>
               {submitting ? "Saving…" : decision === "accepted" ? "Accept upload" : "Reject upload"}
             </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(promotionTarget)} onOpenChange={(open) => !open && !submitting && setPromotionTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm customer upload promotion</DialogTitle>
+            <DialogDescription>
+              This explicit staff action makes the accepted upload usable as a safe reference. It does not mark final art, complete prepress, approve proof, route production, or change billing or payments.
+            </DialogDescription>
+          </DialogHeader>
+          {orderPromotionAllowed ? (
+            <div className="space-y-2">
+              <Label htmlFor="customer-upload-promotion">Promotion type</Label>
+              <Select value={promotion} onValueChange={(value) => setPromotion(value as "reference" | "artwork")}>
+                <SelectTrigger id="customer-upload-promotion"><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="reference">Approved reference (safe default)</SelectItem>
+                  <SelectItem value="artwork">Artwork reference (not primary or final art)</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          ) : <p className="text-sm text-muted-foreground">This quote upload will be promoted as an approved reference.</p>}
+          <DialogFooter>
+            <Button variant="outline" disabled={submitting} onClick={() => setPromotionTarget(null)}>Cancel</Button>
+            <Button disabled={submitting} onClick={submitPromotion}>{submitting ? "Promotingâ€¦" : "Confirm promotion"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

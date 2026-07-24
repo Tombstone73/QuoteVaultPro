@@ -61,7 +61,7 @@ import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
-import { CustomerUploadReviewError, reviewCustomerUpload } from "../services/customerUploadReview.service";
+import { CustomerUploadReviewError, promoteCustomerUpload, reviewCustomerUpload } from "../services/customerUploadReview.service";
 import { storageRegistry } from "../services/storage/StorageRegistry";
 import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
@@ -193,6 +193,11 @@ const portalAttachmentVisibilitySchema = z.object({
 const customerUploadReviewSchema = z.object({
   status: z.enum(["accepted", "rejected"]),
   reviewNote: z.string().trim().max(2000).optional().nullable(),
+});
+
+const customerUploadPromotionSchema = z.object({
+  promotion: z.literal("reference"),
+  confirmPromotion: z.literal(true),
 });
 
 function assertInternalStaffUser(req: any, res: any): boolean {
@@ -2072,6 +2077,36 @@ export async function registerAttachmentRoutes(
       if (error instanceof CustomerUploadReviewError) return res.status(error.statusCode).json({ error: error.message });
       console.error("[QuoteAttachments:CustomerUploadReview] Error:", error);
       return res.status(500).json({ error: "Failed to review customer upload" });
+    }
+  });
+
+  app.post("/api/quotes/:quoteId/attachments/:attachmentId/customer-upload-promotion", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalStaffUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      if (!userId) return res.status(401).json({ error: "Authentication required" });
+
+      const parsed = customerUploadPromotionSchema.safeParse(req.body);
+      if (!parsed.success) return res.status(400).json({ error: parsed.error.issues.map((issue) => issue.message).join("; ") });
+
+      const updated = await promoteCustomerUpload({
+        organizationId,
+        entityType: "quote",
+        entityId: req.params.quoteId,
+        attachmentId: req.params.attachmentId,
+        promotion: parsed.data.promotion,
+        actorUserId: userId,
+        actorUserName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+        ipAddress: req.ip,
+        userAgent: req.get?.("user-agent") || null,
+      });
+      return res.json({ success: true, data: await enrichAttachmentWithUrls(updated) });
+    } catch (error: any) {
+      if (error instanceof CustomerUploadReviewError) return res.status(error.statusCode).json({ error: error.message });
+      console.error("[QuoteAttachments:CustomerUploadPromotion] Error:", error);
+      return res.status(500).json({ error: "Failed to promote customer upload" });
     }
   });
 

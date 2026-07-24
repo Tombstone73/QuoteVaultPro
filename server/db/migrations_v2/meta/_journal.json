@@ -967,6 +967,13 @@
       "when": 1787011200000,
       "tag": "0142_customer_upload_staff_review",
       "breakpoints": true
+    },
+    {
+      "idx": 143,
+      "version": "7",
+      "when": 1787097600000,
+      "tag": "0143_customer_upload_promotion",
+      "breakpoints": true
     }
   ]
 }

@@ -70,6 +70,8 @@ export type PortalFileDto = {
   customerUploadReviewStatus: "pending_review" | "accepted" | "rejected" | null;
   customerUploadReviewStatusLabel: string | null;
   customerUploadReviewNote: string | null;
+  customerUploadPromotionType: "reference" | "artwork" | null;
+  customerUploadPromotionLabel: string | null;
 };
 
 export type PortalOrderProofSummaryDto = {

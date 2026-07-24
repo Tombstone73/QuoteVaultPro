@@ -109,6 +109,8 @@ export type PortalFileDto = {
   customerUploadReviewStatus: "pending_review" | "accepted" | "rejected" | null;
   customerUploadReviewStatusLabel: string | null;
   customerUploadReviewNote: string | null;
+  customerUploadPromotionType: "reference" | "artwork" | null;
+  customerUploadPromotionLabel: string | null;
 };
 
 export type PortalFileDownloadResult = {
@@ -620,6 +622,7 @@ type PortalAttachmentRow = {
   portalDescription?: string | null;
   customerUploadReviewStatus?: string | null;
   customerUploadReviewNote?: string | null;
+  customerUploadPromotionType?: string | null;
 };
 
 type PortalProofRow = {
@@ -2153,6 +2156,14 @@ function customerUploadReviewStatusLabel(status: "pending_review" | "accepted" |
   return "Pending staff review";
 }
 
+function normalizeCustomerUploadPromotionType(value: unknown): "reference" | "artwork" | null {
+  return value === "reference" || value === "artwork" ? value : null;
+}
+
+function customerUploadPromotionLabel(promotion: "reference" | "artwork"): string {
+  return promotion === "artwork" ? "Promoted as artwork reference" : "Promoted as approved reference";
+}
+
 function mapPortalAttachmentFile(
   attachment: PortalAttachmentRow,
   categoryLabel: string,
@@ -2161,6 +2172,9 @@ function mapPortalAttachmentFile(
   const displayName = sanitizeDownloadFilename(attachment.portalDisplayName || attachment.originalFilename || attachment.fileName, `file-${attachment.id}`);
   const reviewStatus = attachment.portalFileCategory === "customer_upload"
     ? normalizeCustomerUploadReviewStatus(attachment.customerUploadReviewStatus)
+    : null;
+  const promotion = reviewStatus === "accepted"
+    ? normalizeCustomerUploadPromotionType(attachment.customerUploadPromotionType)
     : null;
   return {
     id: `${idPrefix}${attachment.id}`,
@@ -2177,6 +2191,8 @@ function mapPortalAttachmentFile(
     customerUploadReviewNote: reviewStatus === "accepted" || reviewStatus === "rejected"
       ? attachment.customerUploadReviewNote || null
       : null,
+    customerUploadPromotionType: promotion,
+    customerUploadPromotionLabel: promotion ? customerUploadPromotionLabel(promotion) : null,
   };
 }
 
@@ -2195,6 +2211,8 @@ function mapInvoicePdfFile(invoice: InvoicePaymentPortalRow): PortalFileDto {
     customerUploadReviewStatus: null,
     customerUploadReviewStatusLabel: null,
     customerUploadReviewNote: null,
+    customerUploadPromotionType: null,
+    customerUploadPromotionLabel: null,
   };
 }
 
@@ -2419,6 +2437,7 @@ async function loadVisibleOrderAttachments(scope: PortalScope, orderId: string):
       portalDescription: orderAttachments.portalDescription,
       customerUploadReviewStatus: orderAttachments.customerUploadReviewStatus,
       customerUploadReviewNote: orderAttachments.customerUploadReviewNote,
+      customerUploadPromotionType: orderAttachments.customerUploadPromotionType,
     })
     .from(orderAttachments)
     .where(eq(orderAttachments.orderId, scopedOrderId))
@@ -2451,6 +2470,7 @@ async function loadVisibleQuoteAttachments(scope: PortalScope, quoteId: string):
       portalDescription: quoteAttachments.portalDescription,
       customerUploadReviewStatus: quoteAttachments.customerUploadReviewStatus,
       customerUploadReviewNote: quoteAttachments.customerUploadReviewNote,
+      customerUploadPromotionType: quoteAttachments.customerUploadPromotionType,
     })
     .from(quoteAttachments)
     .where(and(eq(quoteAttachments.quoteId, scopedQuoteId), eq(quoteAttachments.organizationId, scope.organizationId)))
