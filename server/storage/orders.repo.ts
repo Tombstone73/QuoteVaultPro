@@ -62,6 +62,11 @@ import {
     isDocumentNumberUniqueViolation,
     toDocumentNumberConflictError,
 } from "../services/documentNumberingService";
+import {
+    shouldApplyQuoteConversionProductionIntake,
+    shouldCreateLegacyProductionJob,
+    type ProductionIntakePolicy,
+} from "../services/productionIntakePolicy";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
 
@@ -1255,6 +1260,8 @@ export class OrdersRepository {
         shippingInstructions?: string | null;
         trackingNumber?: string | null;
         shippingCents?: number | null;
+        /** Opt-in policy for workflows that must defer all production intake. */
+        productionIntakePolicy?: ProductionIntakePolicy;
     }): Promise<OrderWithRelations> {
         if (!data.customerId) throw new Error('customerId required');
         if (!data.lineItems || data.lineItems.length === 0) throw new Error('At least one line item required');
@@ -1562,13 +1569,15 @@ export class OrdersRepository {
             throw error;
         });
 
-        // Auto-create legacy job record only for line items that enter the production pipeline immediately.
-        // Items in pre-production workflow states (design, proof-approval, or unrouted) must NOT receive a
-        // job record until they operationally advance to prepress or production.
-        const PRE_PRODUCTION_STATES = new Set(["new", "needs_design", "in_design", "awaiting_proof_approval"]);
+        // Auto-create legacy job records only when the caller did not explicitly
+        // defer production intake. Deferred orders retain their canonical line
+        // workflow state, but create neither legacy jobs nor production ownership.
         await Promise.all(created.lineItems.map(async (li) => {
-            if ((li as any).lineItemRole === "parent") return;
-            if (PRE_PRODUCTION_STATES.has(String(li.workflowState ?? "new"))) return;
+            if (!shouldCreateLegacyProductionJob({
+                policy: data.productionIntakePolicy,
+                lineItemRole: (li as any).lineItemRole,
+                workflowState: li.workflowState,
+            })) return;
             const [existing] = await this.dbInstance.select().from(jobs).where(eq(jobs.orderLineItemId as any, li.id));
             if (!existing) {
                 // Fetch product with productType relation
@@ -1665,6 +1674,7 @@ export class OrdersRepository {
         priority?: string;
         notesInternal?: string | null;
         poNumber?: string | null;
+        productionIntakePolicy?: ProductionIntakePolicy;
     }): Promise<OrderWithRelations> {
         // Fetch the quote with line items
         const [quote] = await this.dbInstance.select().from(quotes).where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
@@ -1849,6 +1859,7 @@ export class OrdersRepository {
             taxAmount: quote.taxAmount ? parseFloat(quote.taxAmount) : undefined,
             taxableSubtotal: quote.taxableSubtotal ? parseFloat(quote.taxableSubtotal) : undefined,
             shippingCents: quote.shippingCents ?? 0,
+            productionIntakePolicy: options?.productionIntakePolicy,
             ...orderSnapshot,
         };
 
@@ -1926,7 +1937,7 @@ export class OrdersRepository {
             })
             .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
 
-        if ((createdOrder.lineItems?.length ?? 0) > 0) {
+        if (shouldApplyQuoteConversionProductionIntake(options?.productionIntakePolicy) && (createdOrder.lineItems?.length ?? 0) > 0) {
             await this.dbInstance.transaction(async (tx) => {
                 for (const lineItem of createdOrder.lineItems || []) {
                     const targetWorkflowState = (lineItem.workflowState ?? getInitialWorkflowState({

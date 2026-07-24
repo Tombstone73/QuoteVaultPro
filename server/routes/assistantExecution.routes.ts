@@ -27,6 +27,8 @@ import { createQuoteDraftCreateExecutionCommand } from "../services/assistant/ex
 import { createQuoteDraftUpdateCommandDefinition, quoteDraftUpdateCommandName } from "../services/assistant/execution/quoteDraftUpdateCommand";
 import { createQuoteDraftUpdateExecutionCommand } from "../services/assistant/execution/quoteDraftUpdateExecutionCommand";
 import { quoteDraftIntakeService } from "../services/assistant/quoteDraftIntakeService";
+import { orderIntakeService } from "../services/assistant/orderIntakeService";
+import { assistantOrderCreateCommandName, assistantOrderUpdateEditableCommandName, assistantQuoteConvertOrderCommandName, createDeferredOrderCommandDefinition, createDeferredOrderExecutionCommand, createEditableOrderUpdateCommandDefinition, createQuoteConvertOrderCommandDefinition } from "../services/assistant/execution/deferredOrderCommands";
 
 function userId(req: Request): string | null {
   const user = req.user as { id?: unknown; claims?: { sub?: unknown } } | undefined;
@@ -41,7 +43,7 @@ function scope(req: Request): ExecutionActorScope {
   const internal = ["owner", "admin", "manager", "member", "employee"].includes(role);
   return {
     organizationId: getRequestOrganizationId(req), userId: id,
-    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft"] : [])] : [],
+    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", "assistant.orders.create", "assistant.orders.update_editable", "assistant.quotes.convert_to_order", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft"] : [])] : [],
     environment: process.env.NODE_ENV || "development",
   };
 }
@@ -106,6 +108,9 @@ function createProductionExecutionService(): ExecutionPlanningService {
     createProductInactiveDraftUpdateCommandDefinition(productUpdateService),
     createQuoteDraftCreateCommandDefinition(quoteDraftIntakeService),
     createQuoteDraftUpdateCommandDefinition(quoteDraftIntakeService),
+    createDeferredOrderCommandDefinition(orderIntakeService),
+    createEditableOrderUpdateCommandDefinition(orderIntakeService),
+    createQuoteConvertOrderCommandDefinition(orderIntakeService),
   );
   const executionCommands = new Map<string, ExecutionCommandDefinition>([
     [quoteInternalNoteCommandName, createQuoteInternalNoteExecutionCommand(quoteInternalNotesService)],
@@ -113,6 +118,9 @@ function createProductionExecutionService(): ExecutionPlanningService {
     [productInactiveDraftUpdateCommandName, createProductInactiveDraftUpdateExecutionCommand(productUpdateService)],
     [quoteDraftCreateCommandName, createQuoteDraftCreateExecutionCommand(quoteDraftIntakeService)],
     [quoteDraftUpdateCommandName, createQuoteDraftUpdateExecutionCommand(quoteDraftIntakeService)],
+    [assistantOrderCreateCommandName, createDeferredOrderExecutionCommand(assistantOrderCreateCommandName, orderIntakeService)],
+    [assistantOrderUpdateEditableCommandName, createDeferredOrderExecutionCommand(assistantOrderUpdateEditableCommandName, orderIntakeService)],
+    [assistantQuoteConvertOrderCommandName, createDeferredOrderExecutionCommand(assistantQuoteConvertOrderCommandName, orderIntakeService)],
   ]);
   const executionRegistry = {
     get: (name: string) => metadataRegistry.has(name) ? executionCommands.get(name) : undefined,
@@ -160,6 +168,30 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       const quoteDraftUpdateProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === quoteDraftUpdateCommandName)?.plan
         : null;
+      const directOrderProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === assistantOrderCreateCommandName)?.plan
+        : null;
+      const conversionProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === assistantQuoteConvertOrderCommandName)?.plan
+        : null;
+      const orderUpdateProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === assistantOrderUpdateEditableCommandName)?.plan
+        : null;
+      if (orderUpdateProposal && typeof orderUpdateProposal.orderIntakeSessionId === "string" && typeof orderUpdateProposal.proposalFingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: assistantOrderUpdateEditableCommandName, arguments: { orderIntakeSessionId: orderUpdateProposal.orderIntakeSessionId, proposalFingerprint: orderUpdateProposal.proposalFingerprint }, context: input.context });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
+      if (conversionProposal && typeof conversionProposal.orderIntakeSessionId === "string" && typeof conversionProposal.proposalFingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: assistantQuoteConvertOrderCommandName, arguments: { orderIntakeSessionId: conversionProposal.orderIntakeSessionId, proposalFingerprint: conversionProposal.proposalFingerprint }, context: input.context });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
+      if (directOrderProposal && typeof directOrderProposal.orderIntakeSessionId === "string" && typeof directOrderProposal.proposalFingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: assistantOrderCreateCommandName, arguments: { orderIntakeSessionId: directOrderProposal.orderIntakeSessionId, proposalFingerprint: directOrderProposal.proposalFingerprint }, context: input.context });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
       if (quoteDraftUpdateProposal && typeof quoteDraftUpdateProposal.quoteId === "string" && typeof quoteDraftUpdateProposal.quoteIntakeSessionId === "string" && typeof quoteDraftUpdateProposal.proposalFingerprint === "string" && typeof quoteDraftUpdateProposal.expectedQuoteFingerprint === "string") {
         const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: quoteDraftUpdateCommandName, arguments: { quoteId: quoteDraftUpdateProposal.quoteId, quoteIntakeSessionId: quoteDraftUpdateProposal.quoteIntakeSessionId, proposalFingerprint: quoteDraftUpdateProposal.proposalFingerprint, expectedQuoteFingerprint: quoteDraftUpdateProposal.expectedQuoteFingerprint }, context: input.context });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
