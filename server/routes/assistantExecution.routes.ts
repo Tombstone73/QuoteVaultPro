@@ -37,6 +37,8 @@ import { createFulfillmentOperationCommandDefinition, createFulfillmentOperation
 import { fulfillmentOperationCommandNames, fulfillmentOperationsService } from "../services/assistant/fulfillmentOperationsService";
 import { billingInvoiceOperationCommandNames, billingInvoiceOperationsService } from "../services/assistant/billingInvoiceOperationsService";
 import { createBillingInvoiceOperationCommandDefinition, createBillingInvoiceOperationExecutionCommand } from "../services/assistant/execution/billingInvoiceOperationsCommands";
+import { paymentOperationCommandNames, paymentOperationsService } from "../services/assistant/paymentOperationsService";
+import { createPaymentOperationCommandDefinition, createPaymentOperationExecutionCommand } from "../services/assistant/execution/paymentOperationsCommands";
 
 function userId(req: Request): string | null {
   const user = req.user as { id?: unknown; claims?: { sub?: unknown } } | undefined;
@@ -51,7 +53,7 @@ function scope(req: Request): ExecutionActorScope {
   const internal = ["owner", "admin", "manager", "member", "employee"].includes(role);
   return {
     organizationId: getRequestOrganizationId(req), userId: id,
-    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", "assistant.orders.create", "assistant.orders.update_editable", "assistant.quotes.convert_to_order", "assistant.customers.create", "assistant.customers.update_profile", "assistant.customers.update_commercial_terms", "assistant.contacts.create", "assistant.contacts.update", "assistant.production.intake_line_items", "assistant.production.send_to_prepress", "assistant.production.update_job_status", "assistant.production.add_job_note", "assistant.fulfillment.create_shipment", "assistant.fulfillment.update_shipment_details", "assistant.fulfillment.mark_shipped", "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.add_note", "assistant.billing.create_invoice", "assistant.billing.update_invoice_draft", "assistant.billing.send_invoice", "assistant.billing.add_invoice_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft"] : [])] : [],
+    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", "assistant.orders.create", "assistant.orders.update_editable", "assistant.quotes.convert_to_order", "assistant.customers.create", "assistant.customers.update_profile", "assistant.customers.update_commercial_terms", "assistant.contacts.create", "assistant.contacts.update", "assistant.production.intake_line_items", "assistant.production.send_to_prepress", "assistant.production.update_job_status", "assistant.production.add_job_note", "assistant.fulfillment.create_shipment", "assistant.fulfillment.update_shipment_details", "assistant.fulfillment.mark_shipped", "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.add_note", "assistant.billing.create_invoice", "assistant.billing.update_invoice_draft", "assistant.billing.send_invoice", "assistant.billing.add_invoice_note", "assistant.payments.record_manual_payment", "assistant.payments.add_payment_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft"] : [])] : [],
     environment: process.env.NODE_ENV || "development",
   };
 }
@@ -123,6 +125,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
     ...productionOperationCommandNames.map((name) => createProductionOperationCommandDefinition(name, productionOperationsService)),
     ...fulfillmentOperationCommandNames.map((name) => createFulfillmentOperationCommandDefinition(name, fulfillmentOperationsService)),
     ...billingInvoiceOperationCommandNames.map((name) => createBillingInvoiceOperationCommandDefinition(name, billingInvoiceOperationsService)),
+    ...paymentOperationCommandNames.map((name) => createPaymentOperationCommandDefinition(name, paymentOperationsService)),
   );
   const executionCommands = new Map<string, ExecutionCommandDefinition>([
     [quoteInternalNoteCommandName, createQuoteInternalNoteExecutionCommand(quoteInternalNotesService)],
@@ -137,6 +140,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
     ...productionOperationCommandNames.map((name) => [name, createProductionOperationExecutionCommand(name, productionOperationsService)] as [string, ExecutionCommandDefinition]),
     ...fulfillmentOperationCommandNames.map((name) => [name, createFulfillmentOperationExecutionCommand(name, fulfillmentOperationsService)] as [string, ExecutionCommandDefinition]),
     ...billingInvoiceOperationCommandNames.map((name) => [name, createBillingInvoiceOperationExecutionCommand(name, billingInvoiceOperationsService)] as [string, ExecutionCommandDefinition]),
+    ...paymentOperationCommandNames.map((name) => [name, createPaymentOperationExecutionCommand(name, paymentOperationsService)] as [string, ExecutionCommandDefinition]),
   ]);
   const executionRegistry = {
     get: (name: string) => metadataRegistry.has(name) ? executionCommands.get(name) : undefined,
@@ -205,6 +209,10 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       const billingProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && typeof card?.plan?.action === "string" && billingInvoiceOperationCommandNames.includes(card.plan.action) && typeof card?.plan?.billingIntakeSessionId === "string" && typeof card?.plan?.proposalFingerprint === "string")?.plan
         : null;
+      const paymentProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && typeof card?.plan?.action === "string" && paymentOperationCommandNames.includes(card.plan.action) && typeof card?.plan?.paymentIntakeSessionId === "string" && typeof card?.plan?.proposalFingerprint === "string")?.plan
+        : null;
+      if (paymentProposal) { const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: paymentProposal.action, arguments: { paymentIntakeSessionId: paymentProposal.paymentIntakeSessionId, proposalFingerprint: paymentProposal.proposalFingerprint }, context: input.context }); const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } }); }
       if (billingProposal) { const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: billingProposal.action, arguments: { billingIntakeSessionId: billingProposal.billingIntakeSessionId, proposalFingerprint: billingProposal.proposalFingerprint }, context: input.context }); const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } }); }
       if (fulfillmentProposal) { const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: fulfillmentProposal.action, arguments: { fulfillmentIntakeSessionId: fulfillmentProposal.fulfillmentIntakeSessionId, proposalFingerprint: fulfillmentProposal.proposalFingerprint }, context: input.context }); const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } }); }
       if (productionProposal) {

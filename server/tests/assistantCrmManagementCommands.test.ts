@@ -8,8 +8,8 @@ const proposal = { crmIntakeSessionId: "crm_1", commandName: "customers.update_c
 const service: any = { revalidateProposal: async () => ({ valid: true as const, proposal }), executeConfirmed: async () => ({ id: "customer_1", entityType: "customer", sourceLink: "/customers/customer_1" }) };
 
 describe("assistant CRM management commands", () => {
-  it("preserves the CRM commands within the final twenty-six-command production allowlist", () => {
-    expect(assistantProductionCommandAllowlist).toHaveLength(26);
+  it("preserves the CRM commands within the final twenty-eight-command production allowlist", () => {
+    expect(assistantProductionCommandAllowlist).toHaveLength(28);
     const registry = createProductionAssistantCommandRegistry(...crmCommandNames.map((name) => createCrmManagementCommandDefinition(name, service)));
     expect(registry.list().map((command) => command.name).sort()).toEqual([...crmCommandNames].sort());
     for (const command of registry.list()) {

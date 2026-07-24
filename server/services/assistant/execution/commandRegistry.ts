@@ -57,6 +57,8 @@ export const assistantProductionCommandAllowlist = [
   "billing.update_invoice_draft",
   "billing.send_invoice",
   "billing.add_invoice_note",
+  "payments.record_manual_payment",
+  "payments.add_payment_note",
 ] as const;
 /** The only injected command name accepted by the isolated test registry. */
 export const assistantTestCommandAllowlist = ["test.assistant.synthetic_command"] as const;

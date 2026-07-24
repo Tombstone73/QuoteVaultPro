@@ -40,6 +40,8 @@ export const assistantCapabilityCommandPermissions = {
   "billing.update_invoice_draft": "assistant.billing.update_invoice_draft",
   "billing.send_invoice": "assistant.billing.send_invoice",
   "billing.add_invoice_note": "assistant.billing.add_invoice_note",
+  "payments.record_manual_payment": "assistant.payments.record_manual_payment",
+  "payments.add_payment_note": "assistant.payments.add_payment_note",
   "products.create_inactive_draft": "assistant.products.create_inactive_draft",
   "products.update_inactive_draft": "assistant.products.update_inactive_draft",
 } as const;
@@ -69,6 +71,8 @@ export const assistantCapabilityCommandDescriptions = {
   "billing.update_invoice_draft": "update safe draft invoice details after your confirmation",
   "billing.send_invoice": "mark an eligible invoice sent after your confirmation",
   "billing.add_invoice_note": "add one internal invoice note after your confirmation",
+  "payments.record_manual_payment": "record one internal manual payment after your confirmation",
+  "payments.add_payment_note": "add one internal payment note after your confirmation",
   "products.create_inactive_draft": "help create an inactive product draft after your confirmation",
   "products.update_inactive_draft": "update an inactive product draft after your confirmation",
 } as const;

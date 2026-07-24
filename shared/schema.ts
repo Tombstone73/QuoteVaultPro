@@ -1105,6 +1105,22 @@ export const assistantBillingIntakeSessions = pgTable("assistant_billing_intake_
 }, (table) => [index("assistant_billing_intake_org_user_idx").on(table.organizationId, table.userId, table.updatedAt)]);
 export type AssistantBillingIntakeSessionRow = typeof assistantBillingIntakeSessions.$inferSelect;
 
+// Payment proposals retain only normalized, non-authoritative payment intent
+// until an authenticated user confirms the dedicated assistant action.
+export const assistantPaymentIntakeSessions = pgTable("assistant_payment_intake_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull(),
+  commandName: varchar("command_name", { length: 64 }).notNull(),
+  status: varchar("status", { length: 32 }).$type<"preview_ready" | "created" | "abandoned">().notNull().default("preview_ready"),
+  intakeJson: jsonb("intake_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  proposalFingerprint: varchar("proposal_fingerprint", { length: 64 }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [index("assistant_payment_intake_org_user_idx").on(table.organizationId, table.userId, table.updatedAt)]);
+export type AssistantPaymentIntakeSessionRow = typeof assistantPaymentIntakeSessions.$inferSelect;
+
 export const productIntakeAiDiagnostics = pgTable("product_intake_ai_diagnostics", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),

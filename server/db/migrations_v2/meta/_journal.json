@@ -953,6 +953,13 @@
       "when": 1786838400000,
       "tag": "0140_ai_conversational_invoicing_operations",
       "breakpoints": true
+    },
+    {
+      "idx": 141,
+      "version": "7",
+      "when": 1786924800000,
+      "tag": "0141_ai_conversational_payment_recording",
+      "breakpoints": true
     }
   ]
 }
