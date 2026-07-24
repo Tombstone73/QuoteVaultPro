@@ -62,6 +62,7 @@ import AdminTools from "@/pages/settings/admin-tools";
 import SetupSettings from "@/pages/settings/SetupSettings";
 import StorageSettingsPage from "@/pages/settings/storage";
 import AiSettingsPage from "@/pages/settings/ai";
+import AiKnowledgePage from "@/pages/settings/ai-knowledge";
 import PrinterSettingsPage from "@/pages/settings/printers";
 import InvoicesListPage from "@/pages/invoices";
 import InvoiceDetailPage from "@/pages/invoice-detail";
@@ -341,6 +342,7 @@ function Router() {
           <Route path="integrations" element={<SettingsIntegrations />} />
           <Route path="email" element={<EmailSettings />} />
           <Route path="ai" element={<AiSettingsPage />} />
+          <Route path="ai/knowledge" element={<AiKnowledgePage />} />
           <Route path="storage" element={<StorageSettingsPage />} />
           <Route path="local-bridge" element={<LocalBridgeSettings />} />
           <Route path="production" element={<ProductionSettings />} />

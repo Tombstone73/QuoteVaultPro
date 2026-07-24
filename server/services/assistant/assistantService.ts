@@ -26,6 +26,7 @@ import {
 } from "./assistantCapabilities";
 import { deterministicOrderLookupTarget, deterministicSearchTarget, resolveDeterministicReadPlan } from "./deterministicReadRouting";
 import { AnalyticalCustomerResolutionService, type PersistedAnalyticalResolution } from "./analyticalCustomerResolution";
+import { resolveSystemGuideAnswer } from "./systemGuide";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
@@ -284,11 +285,11 @@ export class AssistantService {
       activeProductEditingEnabled: false,
       diagnosticsEnabled: hasPermission(actor, "assistant.diagnostics.view"),
       composerHelperText: !readToolsEnabled
-        ? (resolved.unavailableReason ?? "Business questions are unavailable until AI configuration is complete.")
+        ? "System Guide help is available. " + (resolved.unavailableReason ?? "Business record questions are unavailable until AI configuration is complete.")
         : writeActionsEnabled
           ? "Business lookups and confirmed actions are enabled. Changes require a preview and the dedicated GO button. External research is disabled."
           : "Business lookups are enabled. Write actions and external research are disabled.",
-      assistantVersion: "stage-7",
+      assistantVersion: "stage-9-system-guide",
       unavailableReason: resolved.unavailableReason ?? (resolved.enabled ? null : "The assistant is disabled for this organization."),
       actorScope: scope,
     };
@@ -431,6 +432,19 @@ export class AssistantService {
     }
 
     const correlationId = crypto.randomUUID();
+    // System Guide answers are local, read-only, and sourced from the
+    // versioned manifest/approved corpus. They intentionally remain useful
+    // when a configured provider is unavailable; no business tool or mutation
+    // is involved in this path.
+    const systemGuide = resolveSystemGuideAnswer(request.message, request.context);
+    if (systemGuide) {
+      return this.persistResponse({
+        scope, conversationId, actor, request, correlationId,
+        response: systemGuide.response,
+        status: "responded",
+        structuredCards: systemGuide.cards,
+      });
+    }
     if (!capability.toolsEnabled) {
       return this.persistResponse({
         scope, conversationId, actor, request, correlationId,
