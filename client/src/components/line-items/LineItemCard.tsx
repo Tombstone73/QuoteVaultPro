@@ -65,6 +65,8 @@ export type LineItemCardProps = {
   optionChips?: Array<{ text: string; key: string }>;
   overflowCount?: number;
   summaryFooter?: ReactNode;
+  relationshipActionsSlot?: ReactNode;
+  containerClassName?: string;
 
   // Thumbnail
   thumbnail?: ReactNode;
@@ -241,6 +243,8 @@ export function LineItemCard({
   optionChips = [],
   overflowCount = 0,
   summaryFooter,
+  relationshipActionsSlot,
+  containerClassName,
   thumbnail,
   dragHandleProps,
   showDragHandle = false,
@@ -469,7 +473,7 @@ export function LineItemCard({
 
   const actionsRow = (
     <>
-      {!readOnly && (onSave || onDuplicate || onRemove) && (
+      {!readOnly && (onSave || onDuplicate || onRemove || relationshipActionsSlot) && (
         <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-border/50 pt-3 text-sm">
           <div className="flex flex-wrap items-center gap-2">
             {onSave && isDirty && (
@@ -512,6 +516,7 @@ export function LineItemCard({
               </Button>
             )}
             {onRemove && <RemoveLineItemButton onRemove={onRemove} />}
+            {relationshipActionsSlot}
           </div>
           {isDirty && (
             <div className="text-xs text-amber-600">Unsaved</div>
@@ -607,7 +612,7 @@ export function LineItemCard({
     <div
       id={`line-item-${id}`}
       tabIndex={-1}
-      className={cn("relative rounded-lg border border-border/40 bg-background/30 focus:outline-none", isExpanded && "bg-background/40 border-border/60")}
+      className={cn("relative rounded-lg border border-border/40 bg-background/30 focus:outline-none", isExpanded && "bg-background/40 border-border/60", containerClassName)}
     >
       {/* Collapsed Summary Row - Enterprise Dense Layout */}
       <div
