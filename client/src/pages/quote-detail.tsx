@@ -163,6 +163,23 @@ export default function QuoteDetail() {
   }
 
   const isApprovedLocked = workflowState === 'approved' || workflowState === 'converted';
+  const displayLineItems = (() => {
+    const lineItems = quote.lineItems ?? [];
+    const byId = new Map(lineItems.map((item: any) => [String(item.id), item] as const));
+    const childrenByParent = new Map<string, typeof lineItems>();
+    const roots: typeof lineItems = [];
+    for (const item of lineItems) {
+      const parentId = (item as any).parentLineItemId as string | null | undefined;
+      if (parentId && byId.has(String(parentId))) {
+        const children = childrenByParent.get(String(parentId)) ?? [];
+        children.push(item);
+        childrenByParent.set(String(parentId), children);
+      } else {
+        roots.push(item);
+      }
+    }
+    return roots.flatMap((parent) => [parent, ...(childrenByParent.get(String(parent.id)) ?? [])]);
+  })();
   const lockedHint = workflowState === 'approved' 
     ? 'Approved quotes are locked. Revise to change.'
     : workflowState === 'converted'
@@ -476,10 +493,12 @@ export default function QuoteDetail() {
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {quote.lineItems?.map((item: any, idx: number) => (
+                    {displayLineItems.map((item: any, idx: number) => (
                       <TableRow key={item.id} className="border-b border-titan-border-subtle hover:bg-titan-bg-card-elevated/50">
                         <TableCell>
+                          <div className={item.parentLineItemId ? "ml-4 border-l-2 border-titan-accent/40 pl-3" : ""}>
                           <div className="font-medium text-titan-text-primary">{item.productName}</div>
+                          {item.lineItemRole === "child" && <Badge variant="outline" className="mt-1">Add-on</Badge>}
                           {item.selectedOptions && item.selectedOptions.length > 0 && (
                             <div className="text-xs text-titan-text-muted mt-1">
                               {item.selectedOptions.map((opt: any) => (
@@ -491,6 +510,7 @@ export default function QuoteDetail() {
                               ))}
                             </div>
                           )}
+                          </div>
                         </TableCell>
                         <TableCell className="text-titan-text-secondary">
                           {item.variantName || <span className="text-titan-text-muted">—</span>}
