@@ -34,6 +34,8 @@ export const assistantProductionCommandAllowlist = [
   "quotes.add_internal_note",
   "products.create_inactive_draft",
   "products.update_inactive_draft",
+  "quotes.create_draft",
+  "quotes.update_draft",
 ] as const;
 /** The only injected command name accepted by the isolated test registry. */
 export const assistantTestCommandAllowlist = ["test.assistant.synthetic_command"] as const;

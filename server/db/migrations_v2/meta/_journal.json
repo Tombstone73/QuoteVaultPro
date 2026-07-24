@@ -911,6 +911,13 @@
       "when": 1786320000000,
       "tag": "0134_ai_knowledge_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 135,
+      "version": "7",
+      "when": 1786406400000,
+      "tag": "0135_ai_conversational_quote_intake",
+      "breakpoints": true
     }
   ]
 }
