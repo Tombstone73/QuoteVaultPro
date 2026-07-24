@@ -17,6 +17,7 @@ import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { resolveQuoteInternalNoteIntent } from "./execution/quoteInternalNoteIntent";
 import { productManagementSkillService } from "./productManagementSkill";
+import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import {
   assistantCapabilityCommandDescriptions,
   assistantCapabilityCommandPermissions,
@@ -479,6 +480,18 @@ export class AssistantService {
       // service revalidation.
       const conversation = await this.repo.getConversation({ ...scope, conversationId });
       if (!conversation) throw this.notFound();
+      const quoteDraft = await quoteDraftIntakeService.respond({
+        organizationId: scope.organizationId,
+        userId: actor.userId,
+        conversationId,
+        message: request.message,
+      });
+      if (quoteDraft.handled) {
+        response = quoteDraft.response;
+        cards = quoteDraft.cards as AssistantResultCard[];
+        provider = "local_quote_intake";
+        model = "conversational-quote-intake-v1";
+      } else {
       const productManagement = await productManagementSkillService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
@@ -578,6 +591,7 @@ export class AssistantService {
         );
         response = rendered.response;
         cards = rendered.cards;
+      }
       }
       }
       }

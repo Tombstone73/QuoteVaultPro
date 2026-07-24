@@ -72,6 +72,29 @@ export interface ExecutionPlanPreview {
     validationErrors: readonly string[];
     unchanged: readonly string[];
   };
+  /** Server-validated create proposal presentation; no quote exists yet. */
+  quoteDraftCreate?: {
+    quoteIntakeSessionId: string;
+    proposalFingerprint: string;
+    customerName: string;
+    contactName: string | null;
+    totalCents: number;
+    validationErrors: readonly string[];
+    warnings: readonly string[];
+    downstreamActionsExcluded: readonly string[];
+  };
+  /** Server-validated before/after presentation for one editable draft. */
+  quoteDraftUpdate?: {
+    quoteId: string;
+    quoteNumber: string;
+    quoteIntakeSessionId: string;
+    proposalFingerprint: string;
+    totalCentsBefore: number;
+    totalCentsAfter: number;
+    validationErrors: readonly string[];
+    warnings: readonly string[];
+    downstreamActionsExcluded: readonly string[];
+  };
 }
 
 export interface ExecutionPlanRecord {

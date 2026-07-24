@@ -29,6 +29,20 @@ import {
   productInactiveDraftUpdateCommandResultSchema,
   productInactiveDraftUpdateCommandVersion,
 } from "../services/assistant/execution/productInactiveDraftUpdateCommand";
+import {
+  createQuoteDraftCreateCommandDefinition,
+  quoteDraftCreateCommandInputSchema,
+  quoteDraftCreateCommandName,
+  quoteDraftCreateCommandResultSchema,
+  quoteDraftCreateCommandVersion,
+} from "../services/assistant/execution/quoteDraftCreateCommand";
+import {
+  createQuoteDraftUpdateCommandDefinition,
+  quoteDraftUpdateCommandInputSchema,
+  quoteDraftUpdateCommandName,
+  quoteDraftUpdateCommandResultSchema,
+  quoteDraftUpdateCommandVersion,
+} from "../services/assistant/execution/quoteDraftUpdateCommand";
 
 const inputSchema = z.object({ recordId: z.string().uuid() }).strict();
 const resultSchema = z.object({ changed: z.literal(true) }).strict();
@@ -242,5 +256,51 @@ describe("assistant command registry", () => {
       assistantPlanId: "plan_3",
     });
     expect(receivedInput).not.toHaveProperty("active");
+  });
+
+  it("registers reference-only canonical draft quote create and update commands", async () => {
+    const proposalFingerprint = "c".repeat(64);
+    const quoteFingerprint = "d".repeat(64);
+    let createInput: Record<string, unknown> | undefined;
+    let updateInput: Record<string, unknown> | undefined;
+    const createService = {
+      createDraft: async (input: Record<string, unknown>) => {
+        createInput = input;
+        return quoteDraftCreateCommandResultSchema.parse({
+          quote: { id: "quote_1", displayNumber: "Q-1042", status: "draft", totalCents: 12500, sourceLink: "/quotes/quote_1" },
+          domainAuditReference: "audit_quote_create",
+        });
+      },
+    };
+    const updateService = {
+      updateDraft: async (input: Record<string, unknown>) => {
+        updateInput = input;
+        return quoteDraftUpdateCommandResultSchema.parse({
+          quote: { id: "quote_1", displayNumber: "Q-1042", status: "draft", totalCents: 15000, sourceLink: "/quotes/quote_1" },
+          domainAuditReference: "audit_quote_update",
+        });
+      },
+    };
+    const createCommand = createQuoteDraftCreateCommandDefinition(createService);
+    const updateCommand = createQuoteDraftUpdateCommandDefinition(updateService);
+    const registry = createProductionAssistantCommandRegistry(createCommand, updateCommand);
+    const context = { organizationId: "org_1", actorUserId: "user_1", planId: "plan_4", idempotencyKey: "aicmd_123e4567-e89b-12d3-a456-426614174003", correlationId: "corr_4", signal: new AbortController().signal };
+
+    expect(registry.list().map((command) => command.name)).toEqual([quoteDraftCreateCommandName, quoteDraftUpdateCommandName]);
+    expect(createCommand).toMatchObject({ name: quoteDraftCreateCommandName, version: quoteDraftCreateCommandVersion, risk: "high", maxAffectedRecords: 1, bulkAllowed: false, confirmationRequired: true, transactionPolicy: "required" });
+    expect(updateCommand).toMatchObject({ name: quoteDraftUpdateCommandName, version: quoteDraftUpdateCommandVersion, risk: "high", recordFingerprintStrategy: "updated_at_and_critical_fields", transactionPolicy: "required" });
+    expect(() => quoteDraftCreateCommandInputSchema.parse({ quoteIntakeSessionId: "session_1", proposalFingerprint, finalPrice: 1 })).toThrow();
+    expect(() => quoteDraftUpdateCommandInputSchema.parse({ quoteId: "quote_1", quoteIntakeSessionId: "session_1", proposalFingerprint, expectedQuoteFingerprint: quoteFingerprint, patch: {} })).toThrow();
+
+    await expect(createCommand.adapter.execute(
+      quoteDraftCreateCommandInputSchema.parse({ quoteIntakeSessionId: "session_1", proposalFingerprint }), context,
+    )).resolves.toMatchObject({ quote: { id: "quote_1", status: "draft" } });
+    await expect(updateCommand.adapter.execute(
+      quoteDraftUpdateCommandInputSchema.parse({ quoteId: "quote_1", quoteIntakeSessionId: "session_1", proposalFingerprint, expectedQuoteFingerprint: quoteFingerprint }), context,
+    )).resolves.toMatchObject({ quote: { id: "quote_1", totalCents: 15000 } });
+    expect(createInput).toMatchObject({ quoteIntakeSessionId: "session_1", proposalFingerprint, organizationId: "org_1", actorUserId: "user_1", assistantPlanId: "plan_4" });
+    expect(createInput).not.toHaveProperty("finalPrice");
+    expect(updateInput).toMatchObject({ quoteId: "quote_1", expectedQuoteFingerprint: quoteFingerprint, organizationId: "org_1", actorUserId: "user_1", assistantPlanId: "plan_4" });
+    expect(updateInput).not.toHaveProperty("patch");
   });
 });

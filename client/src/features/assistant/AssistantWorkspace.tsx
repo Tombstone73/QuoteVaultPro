@@ -9,7 +9,7 @@ import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
 import type { AssistantStructuredCard } from "@shared/assistantContracts";
 import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
-import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
+import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantQuoteDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantQuoteDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
 import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
@@ -386,6 +386,16 @@ export function ResultCards({
         return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
       }
       return <AssistantProductDraftProposalCard key={`proposal-${productProposal.turnId}-${index}`} proposal={productProposal} onCreatePlan={onCreatePlan} />;
+    }
+    const quoteDraftProposal = toAssistantQuoteDraftProposal(card);
+    if (quoteDraftProposal) {
+      const created = executionPlans[quoteDraftProposal.turnId];
+      if (created) {
+        const planCard = { kind: "action_plan", title: quoteDraftProposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
+        const plan = toAssistantPlanCardModel(planCard);
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
+      }
+      return <AssistantQuoteDraftProposalCard key={`proposal-${quoteDraftProposal.turnId}-${index}`} proposal={quoteDraftProposal} onCreatePlan={onCreatePlan} />;
     }
     const proposal = toAssistantQuoteNoteProposal(card);
     if (proposal) {

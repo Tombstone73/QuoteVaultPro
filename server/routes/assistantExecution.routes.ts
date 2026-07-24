@@ -22,6 +22,11 @@ import { createProductInactiveDraftCanonicalService, createProductInactiveDraftE
 import { productInactiveDraftCommandName } from "../services/assistant/execution/productInactiveDraftCommand";
 import { createProductInactiveDraftUpdateCommandDefinition, productInactiveDraftUpdateCommandName } from "../services/assistant/execution/productInactiveDraftUpdateCommand";
 import { createProductInactiveDraftUpdateCanonicalService, createProductInactiveDraftUpdateExecutionCommand } from "../services/assistant/execution/productInactiveDraftUpdateExecutionCommand";
+import { createQuoteDraftCreateCommandDefinition, quoteDraftCreateCommandName } from "../services/assistant/execution/quoteDraftCreateCommand";
+import { createQuoteDraftCreateExecutionCommand } from "../services/assistant/execution/quoteDraftCreateExecutionCommand";
+import { createQuoteDraftUpdateCommandDefinition, quoteDraftUpdateCommandName } from "../services/assistant/execution/quoteDraftUpdateCommand";
+import { createQuoteDraftUpdateExecutionCommand } from "../services/assistant/execution/quoteDraftUpdateExecutionCommand";
+import { quoteDraftIntakeService } from "../services/assistant/quoteDraftIntakeService";
 
 function userId(req: Request): string | null {
   const user = req.user as { id?: unknown; claims?: { sub?: unknown } } | undefined;
@@ -36,7 +41,7 @@ function scope(req: Request): ExecutionActorScope {
   const internal = ["owner", "admin", "manager", "member", "employee"].includes(role);
   return {
     organizationId: getRequestOrganizationId(req), userId: id,
-    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft"] : [])] : [],
+    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft"] : [])] : [],
     environment: process.env.NODE_ENV || "development",
   };
 }
@@ -99,11 +104,15 @@ function createProductionExecutionService(): ExecutionPlanningService {
     createQuoteInternalNoteCommandDefinition(quoteInternalNotesService),
     createProductInactiveDraftCommandDefinition(productService),
     createProductInactiveDraftUpdateCommandDefinition(productUpdateService),
+    createQuoteDraftCreateCommandDefinition(quoteDraftIntakeService),
+    createQuoteDraftUpdateCommandDefinition(quoteDraftIntakeService),
   );
   const executionCommands = new Map<string, ExecutionCommandDefinition>([
     [quoteInternalNoteCommandName, createQuoteInternalNoteExecutionCommand(quoteInternalNotesService)],
     [productInactiveDraftCommandName, createProductInactiveDraftExecutionCommand(productService)],
     [productInactiveDraftUpdateCommandName, createProductInactiveDraftUpdateExecutionCommand(productUpdateService)],
+    [quoteDraftCreateCommandName, createQuoteDraftCreateExecutionCommand(quoteDraftIntakeService)],
+    [quoteDraftUpdateCommandName, createQuoteDraftUpdateExecutionCommand(quoteDraftIntakeService)],
   ]);
   const executionRegistry = {
     get: (name: string) => metadataRegistry.has(name) ? executionCommands.get(name) : undefined,
@@ -145,6 +154,22 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       const productUpdateProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === productInactiveDraftUpdateCommandName)?.plan
         : null;
+      const quoteDraftCreateProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === quoteDraftCreateCommandName)?.plan
+        : null;
+      const quoteDraftUpdateProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === quoteDraftUpdateCommandName)?.plan
+        : null;
+      if (quoteDraftUpdateProposal && typeof quoteDraftUpdateProposal.quoteId === "string" && typeof quoteDraftUpdateProposal.quoteIntakeSessionId === "string" && typeof quoteDraftUpdateProposal.proposalFingerprint === "string" && typeof quoteDraftUpdateProposal.expectedQuoteFingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: quoteDraftUpdateCommandName, arguments: { quoteId: quoteDraftUpdateProposal.quoteId, quoteIntakeSessionId: quoteDraftUpdateProposal.quoteIntakeSessionId, proposalFingerprint: quoteDraftUpdateProposal.proposalFingerprint, expectedQuoteFingerprint: quoteDraftUpdateProposal.expectedQuoteFingerprint }, context: input.context });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
+      if (quoteDraftCreateProposal && typeof quoteDraftCreateProposal.quoteIntakeSessionId === "string" && typeof quoteDraftCreateProposal.proposalFingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: quoteDraftCreateCommandName, arguments: { quoteIntakeSessionId: quoteDraftCreateProposal.quoteIntakeSessionId, proposalFingerprint: quoteDraftCreateProposal.proposalFingerprint }, context: input.context });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
       if (productUpdateProposal && typeof productUpdateProposal.productIntakeSessionId === "string" && typeof productUpdateProposal.proposalFingerprint === "string" && productUpdateProposal.patch && typeof productUpdateProposal.patch === "object") {
         const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: productInactiveDraftUpdateCommandName, arguments: { productIntakeSessionId: productUpdateProposal.productIntakeSessionId, proposalFingerprint: productUpdateProposal.proposalFingerprint, patch: productUpdateProposal.patch }, context: input.context });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
