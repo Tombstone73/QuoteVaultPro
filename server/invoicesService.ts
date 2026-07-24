@@ -12,6 +12,7 @@ import {
 import { resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePricing';
 import { getBillableBundleRoots } from './services/lineItemBundles';
 import type { BillingInvoiceMilestone, InvoiceCreationSource } from '../shared/billingInvoicePolicy';
+import { isCanceledOrder } from '../shared/operationalState';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -775,6 +776,127 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
   }
 
   return result.payment;
+}
+
+export const assistantManualPaymentMethodValues = ["cash", "check", "wire", "bank_transfer", "other"] as const;
+export type AssistantManualPaymentMethod = typeof assistantManualPaymentMethodValues[number];
+
+/**
+ * Canonical assistant boundary for internal/manual payment recording. It is
+ * intentionally separate from provider flows: it cannot call EPS, the portal,
+ * or a card/ACH processor, and it uses the payment provider idempotency key
+ * already protected by a tenant-scoped unique index.
+ */
+export async function recordManualPaymentForAssistant(input: {
+  organizationId: string;
+  invoiceId: string;
+  userId: string;
+  amount: number;
+  method: AssistantManualPaymentMethod;
+  paidAt?: Date;
+  notes?: string;
+  idempotencyKey: string;
+}) {
+  if (!Number.isFinite(input.amount) || toCents(input.amount) <= 0) {
+    throw Object.assign(new Error("Payment amount must be greater than zero."), { code: "PAYMENT_AMOUNT_INVALID" });
+  }
+  if (!assistantManualPaymentMethodValues.includes(input.method)) {
+    throw Object.assign(new Error("This payment method is not available for assistant payment recording."), { code: "PAYMENT_METHOD_NOT_ALLOWED" });
+  }
+
+  const result = await db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`payment:${input.organizationId}:${input.invoiceId}`}))`);
+    const [existing] = await tx.select().from(payments).where(and(
+      eq(payments.organizationId, input.organizationId),
+      eq(payments.provider, "manual"),
+      eq(payments.providerIdempotencyKey, input.idempotencyKey),
+    )).limit(1);
+    if (existing) return { payment: existing, becamePaid: false, orderId: null as string | null, reused: true };
+
+    const [invoice] = await tx.select().from(invoices).where(and(
+      eq(invoices.id, input.invoiceId),
+      eq(invoices.organizationId, input.organizationId),
+    )).limit(1);
+    if (!invoice) throw Object.assign(new Error("Invoice not found."), { code: "INVOICE_NOT_FOUND" });
+    const invoiceStatus = String(invoice.status || "").toLowerCase();
+    if (["void", "voided", "cancelled", "canceled", "paid"].includes(invoiceStatus)) {
+      throw Object.assign(new Error("This invoice cannot receive a manual payment in its current status."), { code: "INVOICE_NOT_PAYABLE" });
+    }
+    if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") {
+      throw Object.assign(new Error("Imported QuickBooks invoices must be reconciled from QuickBooks."), { code: "IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED" });
+    }
+    if (invoice.orderId) {
+      const [order] = await tx.select().from(orders).where(and(eq(orders.id, invoice.orderId), eq(orders.organizationId, input.organizationId))).limit(1);
+      if (!order) throw Object.assign(new Error("The invoice order is unavailable."), { code: "ORDER_NOT_FOUND" });
+      if (isCanceledOrder(order)) throw Object.assign(new Error("Cancelled orders cannot receive payments."), { code: "ORDER_CANCELLED" });
+    }
+
+    const paymentRows = await tx.select().from(payments).where(and(eq(payments.invoiceId, invoice.id), eq(payments.organizationId, input.organizationId)));
+    const financialState = computeInvoiceFinancialState(invoice as any, paymentRows as any);
+    const amountCents = toCents(input.amount);
+    if (financialState.amountDueCents <= 0 || amountCents > financialState.amountDueCents) {
+      throw Object.assign(new Error("Overpayment not allowed."), { code: "OVERPAYMENT_NOT_ALLOWED" });
+    }
+
+    const [payment] = await tx.insert(payments).values({
+      organizationId: input.organizationId,
+      invoiceId: invoice.id,
+      provider: "manual",
+      providerIdempotencyKey: input.idempotencyKey,
+      status: "succeeded",
+      currency: (invoice as any).currency || "USD",
+      amount: input.amount,
+      amountCents,
+      method: input.method,
+      notes: input.notes?.trim() || null,
+      note: input.notes?.trim() || null,
+      paidAt: input.paidAt ?? new Date(),
+      createdByUserId: input.userId,
+      syncStatus: "pending",
+      metadata: { source: "assistant_manual_payment" },
+    } as any).returning();
+    const nextRows = [...paymentRows, payment] as any;
+    const nextState = computeInvoiceFinancialState(invoice as any, nextRows);
+    await tx.update(invoices).set({
+      amountPaid: centsToDecimalString(nextState.amountPaidCents),
+      balanceDue: centsToDecimalString(nextState.amountDueCents),
+      status: nextState.status as any,
+      updatedAt: new Date(),
+    }).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId)));
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId, userId: input.userId, actionType: "assistant_manual_payment_recorded",
+      entityType: "payment", entityId: payment.id, entityName: String(invoice.invoiceNumber),
+      description: "Assistant recorded an internal manual payment through the canonical billing service.",
+      newValues: { invoiceId: invoice.id, amountCents, method: input.method } as any,
+    } as any);
+    return { payment, becamePaid: String(nextState.status).toLowerCase() === "paid", orderId: invoice.orderId ? String(invoice.orderId) : null, reused: false };
+  });
+
+  if (result.becamePaid && result.orderId) {
+    const { applyWorkflowStatusPillFailSoft } = await import('./services/workflowStatusPillService');
+    await applyWorkflowStatusPillFailSoft({
+      organizationId: input.organizationId, orderId: result.orderId, triggerKey: 'payment_received', actorUserId: input.userId,
+      actorUserName: 'System', source: 'system', reason: 'Invoice paid', metadata: { invoiceId: input.invoiceId, paymentId: result.payment.id },
+    });
+  }
+  return result.payment;
+}
+
+/** Canonical internal note boundary; it never changes payment or invoice state. */
+export async function appendPaymentNoteForAssistant(input: { organizationId: string; paymentId: string; userId: string; note: string }) {
+  const [payment] = await db.select().from(payments).where(and(eq(payments.id, input.paymentId), eq(payments.organizationId, input.organizationId))).limit(1);
+  if (!payment) throw Object.assign(new Error("Payment not found."), { code: "PAYMENT_NOT_FOUND" });
+  const trimmed = input.note.trim();
+  if (!trimmed) throw Object.assign(new Error("A payment note is required."), { code: "PAYMENT_NOTE_REQUIRED" });
+  const previous = String(payment.notes ?? payment.note ?? "").trim();
+  const notes = previous ? `${previous}\n${trimmed}` : trimmed;
+  const [updated] = await db.update(payments).set({ notes, note: notes, updatedAt: new Date() }).where(and(eq(payments.id, payment.id), eq(payments.organizationId, input.organizationId))).returning();
+  await db.insert(auditLogs).values({
+    organizationId: input.organizationId, userId: input.userId, actionType: "assistant_payment_note_added",
+    entityType: "payment", entityId: payment.id, entityName: payment.id,
+    description: "Assistant added an internal payment note without changing financial state.", newValues: { noteLength: trimmed.length } as any,
+  } as any);
+  return { previousNotes: payment.notes ?? payment.note ?? null, updated };
 }
 
 export async function markInvoiceSent(id: string) {

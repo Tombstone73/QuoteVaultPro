@@ -23,6 +23,7 @@ import { crmManagementService } from "./crmManagementService";
 import { productionOperationsService } from "./productionOperationsService";
 import { fulfillmentOperationsService } from "./fulfillmentOperationsService";
 import { billingInvoiceOperationsService } from "./billingInvoiceOperationsService";
+import { paymentOperationsService } from "./paymentOperationsService";
 import {
   assistantCapabilityCommandDescriptions,
   assistantCapabilityCommandPermissions,
@@ -532,6 +533,8 @@ export class AssistantService {
       if (fulfillmentIntake.handled) { response = fulfillmentIntake.response; cards = fulfillmentIntake.cards as AssistantResultCard[]; provider = "local_fulfillment_intake"; model = "conversational-fulfillment-intake-v1"; } else {
       const billingIntake = await billingInvoiceOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
       if (billingIntake.handled) { response = billingIntake.response; cards = billingIntake.cards as AssistantResultCard[]; provider = "local_billing_intake"; model = "conversational-billing-intake-v1"; } else {
+      const paymentIntake = await paymentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
+      if (paymentIntake.handled) { response = paymentIntake.response; cards = paymentIntake.cards as AssistantResultCard[]; provider = "local_payment_intake"; model = "conversational-payment-intake-v1"; } else {
       const productManagement = await productManagementSkillService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
@@ -631,6 +634,7 @@ export class AssistantService {
         );
         response = rendered.response;
         cards = rendered.cards;
+      }
       }
       }
       }
