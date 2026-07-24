@@ -42,3 +42,9 @@ cleanup_migrations.py
 
 # Stray legacy migration (never commit; v2 chain is authoritative)
 server/db/migrations/0061_quote_line_item_routing.sql
+
+# Local environment files
+.env
+.env.*
+!.env.example
+!.env.playwright.example
