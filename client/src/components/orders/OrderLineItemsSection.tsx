@@ -588,6 +588,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [productionBypassTarget, setProductionBypassTarget] = useState<OrderLineItem | null>(null);
   const [productionBypassReason, setProductionBypassReason] = useState("");
   const [childParentLineItemId, setChildParentLineItemId] = useState<string | null>(null);
+  const [parentLinkTarget, setParentLinkTarget] = useState<OrderLineItem | null>(null);
+  const [selectedParentLineItemId, setSelectedParentLineItemId] = useState<string | null>(null);
 
   const [pbv2CurrentSignatureByLineItemId, setPbv2CurrentSignatureByLineItemId] = useState<Record<string, string>>({});
   const [pbv2SnapshotSignatureByLineItemId, setPbv2SnapshotSignatureByLineItemId] = useState<Record<string, string>>({});
@@ -694,6 +696,21 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       await onAfterLineItemsChange?.();
     },
     onError: (error: Error) => toast({ title: "Unable to bypass production", description: error.message, variant: "destructive" }),
+  });
+
+  const parentLinkMutation = useMutation({
+    mutationFn: async ({ lineItemId, parentLineItemId }: { lineItemId: string; parentLineItemId: string | null }) => {
+      const response = await apiRequest("PATCH", `/api/order-line-items/${lineItemId}/parent`, { parentLineItemId });
+      return response.json();
+    },
+    onSuccess: async () => {
+      toast({ title: "Line item relationship updated" });
+      setParentLinkTarget(null);
+      setSelectedParentLineItemId(null);
+      await queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      await onAfterLineItemsChange?.();
+    },
+    onError: (error: Error) => toast({ title: "Unable to update parent", description: error.message, variant: "destructive" }),
   });
 
   const acceptPbv2Components = useMutation({
@@ -3049,6 +3066,9 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                               </div>
                             )}
                             <div className="flex-1 min-w-0">
+                              {(item as any).parentLineItemId ? (
+                                <div className="px-2 pt-2"><Badge variant="outline">Child item</Badge></div>
+                              ) : null}
                               <LineItemCard
                                 id={String(item.id)}
                                 itemKey={itemKey}
@@ -3963,6 +3983,32 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                       Add child item
                                     </Button>
                                   )}
+                                  <Button
+                                    type="button"
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8"
+                                    onClick={() => {
+                                      setParentLinkTarget(item);
+                                      setSelectedParentLineItemId((item as any).parentLineItemId ?? null);
+                                    }}
+                                    data-testid={`button-link-parent-${item.id}`}
+                                  >
+                                    {(item as any).parentLineItemId ? "Change parent" : "Link to parent"}
+                                  </Button>
+                                  {(item as any).parentLineItemId ? (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8"
+                                      disabled={parentLinkMutation.isPending}
+                                      onClick={() => parentLinkMutation.mutate({ lineItemId: String(item.id), parentLineItemId: null })}
+                                      data-testid={`button-unlink-parent-${item.id}`}
+                                    >
+                                      Unlink
+                                    </Button>
+                                  ) : null}
                                   {showOpenProofingAction ? (
                                     <Button asChild type="button" variant="outline" size="sm" className="h-8">
                                       <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>
@@ -4163,6 +4209,31 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
               onClick={() => productionBypassTarget && productionBypass.mutate({ lineItemId: String(productionBypassTarget.id), reason: productionBypassReason.trim() })}
             >
               {productionBypass.isPending ? "Bypassing..." : "Mark No Production Required"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={parentLinkTarget !== null} onOpenChange={(open) => { if (!open && !parentLinkMutation.isPending) setParentLinkTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{(parentLinkTarget as any)?.parentLineItemId ? "Change parent line item" : "Link line item to parent"}</DialogTitle>
+            <DialogDescription>Select another eligible line item in this order. No line item, artwork, or production history is recreated.</DialogDescription>
+          </DialogHeader>
+          <select
+            className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm"
+            value={selectedParentLineItemId ?? ""}
+            onChange={(event) => setSelectedParentLineItemId(event.target.value || null)}
+            aria-label="Parent line item"
+          >
+            <option value="">Choose a parent line item</option>
+            {orderedLineItems.filter((candidate) => String(candidate.id) !== String(parentLinkTarget?.id) && (candidate as any).lineItemRole !== "child").map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>{(candidate as any).description ?? `Line item ${candidate.id}`}</option>
+            ))}
+          </select>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setParentLinkTarget(null)} disabled={parentLinkMutation.isPending}>Cancel</Button>
+            <Button disabled={!selectedParentLineItemId || parentLinkMutation.isPending} onClick={() => parentLinkTarget && parentLinkMutation.mutate({ lineItemId: String(parentLinkTarget.id), parentLineItemId: selectedParentLineItemId })}>
+              {parentLinkMutation.isPending ? "Saving..." : "Save parent"}
             </Button>
           </DialogFooter>
         </DialogContent>

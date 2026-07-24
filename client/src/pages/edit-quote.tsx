@@ -84,6 +84,8 @@ export default function EditQuote() {
   const [lineItemDialogOpen, setLineItemDialogOpen] = useState(false);
   const [editingLineItem, setEditingLineItem] = useState<QuoteLineItem | null>(null);
   const [childParentLineItemId, setChildParentLineItemId] = useState<string | null>(null);
+  const [parentLinkTarget, setParentLinkTarget] = useState<QuoteLineItem | null>(null);
+  const [selectedParentLineItemId, setSelectedParentLineItemId] = useState<string | null>(null);
   const [productSearchOpen, setProductSearchOpen] = useState(false);
   const [productSearchQuery, setProductSearchQuery] = useState("");
   
@@ -423,6 +425,20 @@ export default function EditQuote() {
         variant: "destructive"
       });
     },
+  });
+
+  const parentLinkMutation = useMutation({
+    mutationFn: async ({ lineItemId, parentLineItemId }: { lineItemId: string; parentLineItemId: string | null }) => {
+      const response = await apiRequest("PATCH", `/api/quotes/${quoteId}/line-items/${lineItemId}/parent`, { parentLineItemId });
+      return response.json();
+    },
+    onSuccess: () => {
+      toast({ title: "Line item relationship updated" });
+      queryClientInstance.invalidateQueries({ queryKey: ["/api/quotes", quoteId] });
+      setParentLinkTarget(null);
+      setSelectedParentLineItemId(null);
+    },
+    onError: (error: Error) => toast({ title: "Unable to update parent", description: error.message, variant: "destructive" }),
   });
 
   const createBundleMutation = useMutation({
@@ -878,6 +894,28 @@ export default function EditQuote() {
                           )}
                           <Button
                             variant="ghost"
+                            size="sm"
+                            onClick={() => {
+                              setParentLinkTarget(item as QuoteLineItem);
+                              setSelectedParentLineItemId(item.parentLineItemId ?? null);
+                            }}
+                            data-testid={`button-link-parent-${item.id}`}
+                          >
+                            {item.parentLineItemId ? "Change parent" : "Link to parent"}
+                          </Button>
+                          {item.parentLineItemId && (
+                            <Button
+                              variant="ghost"
+                              size="sm"
+                              onClick={() => parentLinkMutation.mutate({ lineItemId: item.id, parentLineItemId: null })}
+                              disabled={parentLinkMutation.isPending}
+                              data-testid={`button-unlink-parent-${item.id}`}
+                            >
+                              Unlink
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
                             size="icon"
                             onClick={() => handleOpenEditLineItem(item as any)}
                             data-testid={`button-edit-${item.id}`}
@@ -902,6 +940,29 @@ export default function EditQuote() {
           )}
         </CardContent>
       </Card>
+
+      <Dialog open={parentLinkTarget !== null} onOpenChange={(open) => { if (!open && !parentLinkMutation.isPending) setParentLinkTarget(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>{parentLinkTarget?.parentLineItemId ? "Change parent line item" : "Link line item to parent"}</DialogTitle>
+            <DialogDescription>Select another eligible line item in this quote. The item keeps its price, files, production history, and identity.</DialogDescription>
+          </DialogHeader>
+          <Select value={selectedParentLineItemId ?? ""} onValueChange={setSelectedParentLineItemId}>
+            <SelectTrigger><SelectValue placeholder="Choose a parent line item" /></SelectTrigger>
+            <SelectContent>
+              {lineItems.filter((candidate) => candidate.id !== parentLinkTarget?.id && candidate.lineItemRole !== "child").map((candidate) => (
+                <SelectItem key={candidate.id} value={candidate.id}>{candidate.productName}</SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+          <DialogFooter>
+            <Button variant="outline" onClick={() => setParentLinkTarget(null)} disabled={parentLinkMutation.isPending}>Cancel</Button>
+            <Button disabled={!selectedParentLineItemId || parentLinkMutation.isPending} onClick={() => parentLinkTarget && parentLinkMutation.mutate({ lineItemId: parentLinkTarget.id, parentLineItemId: selectedParentLineItemId })}>
+              {parentLinkMutation.isPending ? "Saving..." : "Save parent"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Totals Card with integrated Price Adjustments (FIX #4) */}
       <Card data-testid="card-totals">

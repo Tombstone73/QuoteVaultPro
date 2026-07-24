@@ -128,6 +128,8 @@ import { assessOrderCloseEligibility } from "../services/orderCloseEligibility";
 import { assessOrderOperationalCompletion } from "../services/orderCompletionPolicy";
 import { cancelOrderRequestSchema } from "@shared/orderCancellation";
 import { isCanceledOrder } from "@shared/operationalState";
+import { assertValidParentLink } from "../services/lineItemParentLinking";
+import { parentBundlePricingUpdate } from "../services/lineItemBundles";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
@@ -290,6 +292,18 @@ async function recomputeOrderTotalsFromPersistedLineItems(orderId: string, organ
         .returning();
 
     return updated;
+}
+
+async function recalculateOrderBundleParent(parentLineItemId: string) {
+    const [parent] = await db.select().from(orderLineItems).where(eq(orderLineItems.id, parentLineItemId)).limit(1);
+    if (!parent || parent.lineItemRole !== "parent") return null;
+    const children = await db.select().from(orderLineItems).where(eq(orderLineItems.parentLineItemId, parent.id));
+    const pricing = parentBundlePricingUpdate(parent as any, children as any);
+    const [updated] = await db.update(orderLineItems).set({
+        childCalculatedTotalCents: pricing.childCalculatedTotalCents,
+        unitPrice: pricing.unitPrice.toFixed(2), totalPrice: pricing.totalPrice.toFixed(2), updatedAt: new Date(),
+    }).where(eq(orderLineItems.id, parent.id)).returning();
+    return updated ?? null;
 }
 
 const productionLineItemStatusRuleSchema = z
@@ -6314,6 +6328,16 @@ export async function registerOrderRoutes(
             if (isCanceledOrder(order)) {
                 return res.status(409).json({ message: "Cannot add line items to a cancelled order.", code: "ORDER_CANCELLED" });
             }
+            if (lineItemData.parentLineItemId) {
+                const [parent] = await db.select({ id: orderLineItems.id, lineItemRole: orderLineItems.lineItemRole })
+                    .from(orderLineItems)
+                    .where(and(eq(orderLineItems.id, String(lineItemData.parentLineItemId)), eq(orderLineItems.orderId, String(order.id))))
+                    .limit(1);
+                if (!parent || parent.lineItemRole === "child") {
+                    return res.status(400).json({ message: "Child items must belong to a parent line item on this order." });
+                }
+                lineItemData.lineItemRole = "child";
+            }
 
             if (duplicateSourceLineItemId) {
                 const [sourceLineItem] = await db
@@ -6457,6 +6481,16 @@ export async function registerOrderRoutes(
                 totalPrice: effectivePricing.effectiveTotalCents / 100,
             });
 
+            if (lineItemData.parentLineItemId) {
+                const [parent] = await db.select().from(orderLineItems).where(eq(orderLineItems.id, String(lineItemData.parentLineItemId))).limit(1);
+                if (parent?.lineItemRole === "parent") {
+                    await recalculateOrderBundleParent(parent.id);
+                } else if (parent) {
+                    const totalPrice = (Number(parent.totalPrice) || 0) + (Number((created as any).totalPrice) || 0);
+                    await db.update(orderLineItems).set({ totalPrice: totalPrice.toFixed(2), updatedAt: new Date() }).where(eq(orderLineItems.id, parent.id));
+                }
+            }
+
             if (routing.proofApprovalManualOverride) {
                 await createProofApprovalManualOverrideAuditLog({
                     organizationId,
@@ -6589,6 +6623,55 @@ export async function registerOrderRoutes(
             return res.json({ success: true, data: enrichLineItemWithEffectivePricing(updated as any) });
         } catch (error: any) {
             return res.status(error?.statusCode ?? 500).json({ success: false, message: error?.message ?? "Failed to bypass production" });
+        }
+    });
+
+    app.patch("/api/order-line-items/:id/parent", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            const { parentLineItemId } = z.object({ parentLineItemId: z.string().min(1).nullable() }).parse(req.body ?? {});
+            const childId = String(req.params.id);
+            const [ownership] = await db.select({ orderId: orderLineItems.orderId, state: orders.state, status: orders.status, canceledAt: orders.canceledAt })
+                .from(orderLineItems).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+                .where(and(eq(orderLineItems.id, childId), eq(orders.organizationId, organizationId))).limit(1);
+            if (!ownership) return res.status(404).json({ success: false, message: "Order line item not found" });
+            if (isCanceledOrder({ state: ownership.state, status: ownership.status, canceledAt: ownership.canceledAt })) {
+                return res.status(409).json({ success: false, message: "Cannot edit line items on a cancelled order." });
+            }
+            const lines = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, ownership.orderId));
+            assertValidParentLink(lines as any, childId, parentLineItemId);
+            const child = lines.find((line) => line.id === childId)!;
+            const priorParentId = child.parentLineItemId ? String(child.parentLineItemId) : null;
+            if (priorParentId === parentLineItemId) return res.json({ success: true, data: enrichLineItemWithEffectivePricing(child as any) });
+            const childAmount = Number(child.totalPrice) || 0;
+            for (const parent of [priorParentId, parentLineItemId]
+                .filter((id): id is string => Boolean(id)).map((id) => lines.find((line) => line.id === id))
+                .filter((line): line is typeof lines[number] => Boolean(line && line.lineItemRole !== "parent"))) {
+                const delta = parent.id === priorParentId ? -childAmount : childAmount;
+                const totalPrice = Math.max(0, (Number(parent.totalPrice) || 0) + delta);
+                await db.update(orderLineItems).set({ totalPrice: totalPrice.toFixed(2), updatedAt: new Date() }).where(eq(orderLineItems.id, parent.id));
+            }
+            const [updated] = await db.update(orderLineItems).set({
+                parentLineItemId,
+                lineItemRole: parentLineItemId ? "child" : "standalone",
+                updatedAt: new Date(),
+            }).where(eq(orderLineItems.id, childId)).returning();
+            for (const parentId of [priorParentId, parentLineItemId].filter((id): id is string => Boolean(id))) {
+                await recalculateOrderBundleParent(parentId);
+            }
+            await recomputeOrderTotalsFromPersistedLineItems(String(ownership.orderId), organizationId);
+            await recomputeOrderBillingStatus({ organizationId, orderId: String(ownership.orderId) });
+            await db.insert(auditLogs).values({
+                organizationId, userId: getUserId(req.user) ?? null,
+                actionType: parentLineItemId ? "ORDER_LINE_ITEM_PARENT_LINKED" : "ORDER_LINE_ITEM_PARENT_UNLINKED",
+                entityType: "order_line_item", entityId: childId, entityName: child.description ?? null,
+                description: parentLineItemId ? "Order line item linked to a parent line item." : "Order line item unlinked from its parent.",
+                newValues: { parentLineItemId }, oldValues: { parentLineItemId: priorParentId },
+            } as any);
+            return res.json({ success: true, data: enrichLineItemWithEffectivePricing(updated as any) });
+        } catch (error: any) {
+            return res.status(error?.statusCode ?? 400).json({ success: false, message: error?.message ?? "Failed to update line item parent" });
         }
     });
 
