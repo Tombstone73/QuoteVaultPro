@@ -27,6 +27,10 @@ export const assistantCapabilityCommandPermissions = {
   "customers.update_commercial_terms": "assistant.customers.update_commercial_terms",
   "contacts.create": "assistant.contacts.create",
   "contacts.update": "assistant.contacts.update",
+  "production.intake_line_items": "assistant.production.intake_line_items",
+  "production.send_to_prepress": "assistant.production.send_to_prepress",
+  "production.update_job_status": "assistant.production.update_job_status",
+  "production.add_job_note": "assistant.production.add_job_note",
   "products.create_inactive_draft": "assistant.products.create_inactive_draft",
   "products.update_inactive_draft": "assistant.products.update_inactive_draft",
 } as const;
@@ -43,6 +47,10 @@ export const assistantCapabilityCommandDescriptions = {
   "customers.update_commercial_terms": "update one customer’s commercial terms after your confirmation",
   "contacts.create": "create one customer contact after your confirmation",
   "contacts.update": "update one customer contact after your confirmation",
+  "production.intake_line_items": "route selected line items to production after your confirmation",
+  "production.send_to_prepress": "send one selected line item to Prepress after your confirmation",
+  "production.update_job_status": "start one queued production job after your confirmation",
+  "production.add_job_note": "add one internal production note after your confirmation",
   "products.create_inactive_draft": "help create an inactive product draft after your confirmation",
   "products.update_inactive_draft": "update an inactive product draft after your confirmation",
 } as const;

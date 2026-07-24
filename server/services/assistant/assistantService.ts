@@ -20,6 +20,7 @@ import { productManagementSkillService } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
 import { crmManagementService } from "./crmManagementService";
+import { productionOperationsService } from "./productionOperationsService";
 import {
   assistantCapabilityCommandDescriptions,
   assistantCapabilityCommandPermissions,
@@ -518,6 +519,13 @@ export class AssistantService {
         provider = "local_crm_intake";
         model = "conversational-crm-intake-v1";
       } else {
+      const productionIntake = await productionOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
+      if (productionIntake.handled) {
+        response = productionIntake.response;
+        cards = productionIntake.cards as AssistantResultCard[];
+        provider = "local_production_intake";
+        model = "conversational-production-intake-v1";
+      } else {
       const productManagement = await productManagementSkillService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
@@ -617,6 +625,7 @@ export class AssistantService {
         );
         response = rendered.response;
         cards = rendered.cards;
+      }
       }
       }
       }
