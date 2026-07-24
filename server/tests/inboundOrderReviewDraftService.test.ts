@@ -1510,7 +1510,7 @@ describe("InboundOrderService editable review draft", () => {
           quantity: 1,
           quantitySource: "staff_selected",
         }],
-        reviewedArtworkJson: initialized.reviewedArtworkJson,
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "to_follow" },
         missingDecisionsJson: initialized.missingDecisionsJson,
         warningsJson: initialized.warningsJson,
         reviewNotes: "Staff confirmed quantity from follow-up.",
@@ -1575,7 +1575,7 @@ describe("InboundOrderService editable review draft", () => {
           dimensionsUnit: "in",
           dimensionsSource: "staff_selected",
         }],
-        reviewedArtworkJson: initialized.reviewedArtworkJson,
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "to_follow" },
         missingDecisionsJson: initialized.missingDecisionsJson,
         warningsJson: initialized.warningsJson,
         reviewNotes: "Staff confirmed the finished size.",
@@ -1647,7 +1647,7 @@ describe("InboundOrderService editable review draft", () => {
         reviewedCustomerJson: initialized.reviewedCustomerJson,
         reviewedOrderJson: initialized.reviewedOrderJson,
         reviewedLineItemsJson: [initialized.reviewedLineItemsJson[0]],
-        reviewedArtworkJson: initialized.reviewedArtworkJson,
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "to_follow" },
         missingDecisionsJson: initialized.missingDecisionsJson,
         warningsJson: initialized.warningsJson,
         reviewNotes: "Removed the incomplete second line item.",
@@ -1828,6 +1828,43 @@ describe("InboundOrderService editable review draft", () => {
       effectiveUnitPriceCents: 1500,
       priceOverrideMode: null,
     });
+  });
+
+  test("normalizes fixed PBV2 dimensions before pricing an inbound line", async () => {
+    const { repo } = makeRepository();
+    (repo.getProduct as jest.Mock).mockResolvedValue({
+      id: "product_pvc",
+      name: "PVC Signs",
+      measurementMode: "dimensions_required",
+      pricingProfileKey: "sheet",
+    });
+    (repo.getProductActivePbv2Tree as jest.Mock).mockResolvedValue({
+      product: { id: "product_pvc", name: "PVC Signs", pbv2ActiveTreeVersionId: "tree_pvc" },
+      activeTree: {
+        id: "tree_pvc",
+        treeJson: {
+          schemaVersion: 2,
+          rootNodeIds: [],
+          nodes: {},
+          meta: { fixedDimensions: { widthIn: 48, heightIn: 96 } },
+        },
+      },
+    });
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+
+    await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(mockPriceLineItem).toHaveBeenCalledWith(expect.objectContaining({
+      organizationId: "org_1",
+      productId: "product_pvc",
+      quantity: 3,
+      widthIn: 48,
+      heightIn: 96,
+    }));
   });
 
   test("surfaces the actual system pricing failure reason", async () => {
@@ -2371,6 +2408,45 @@ describe("InboundOrderService editable review draft", () => {
     });
   }
 
+  test("allows a draft quote with missing artwork and carries the warning in conversion metadata", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any, undefined as any, mockPriceLineItem);
+    await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    (repo.createQuoteDraftFromInboundReview as jest.Mock).mockResolvedValue({
+      quote: {
+        id: "quote_missing_artwork",
+        quoteNumber: 1004,
+        status: "draft",
+        totalPrice: "45.00",
+        createdAt: new Date("2026-06-09T12:30:00.000Z"),
+      },
+      lineItems: [{ id: "quote_line_missing_artwork" }],
+      skippedLineItems: [],
+    });
+
+    await service.createQuoteDraftFromInbound({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    const conversionInput = (repo.createQuoteDraftFromInboundReview as jest.Mock).mock.calls[0][1];
+    expect(conversionInput.conversionMetadata).toMatchObject({
+      artworkStatus: "missing",
+      artworkWarning: "Artwork is missing and remains required before production.",
+    });
+    expect(conversionInput.lineItems[0].snapshotJson).toMatchObject({
+      inboundArtwork: {
+        status: "missing",
+        warning: "Artwork is missing and remains required before production.",
+      },
+    });
+  });
+
   test("maps inbound quote provenance without copying source email into the list note", async () => {
     const sourceBody = "Please quote these signs. This full customer email must remain inbound-only.";
     const { repo } = makeRepository(inboundRecord({
@@ -2590,6 +2666,41 @@ describe("InboundOrderService editable review draft", () => {
     });
   });
 
+  test("blocks marking an order draft ready when artwork is missing until staff selects the bypass", async () => {
+    const { repo } = makeRepository();
+    const service = new InboundOrderService(repo as any, makeOrderRepository() as any, mockPriceLineItem);
+    const initialized = await service.getReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+    await service.saveReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        ...initialized,
+        status: "draft",
+        reviewedArtworkJson: { ...initialized.reviewedArtworkJson, status: "missing" },
+        missingDecisionsJson: initialized.missingDecisionsJson.map((decision) => ({
+          ...decision,
+          status: "acknowledged",
+          resolutionNote: "Artwork has not been received.",
+        })),
+      },
+    });
+
+    await expect(service.markReviewDraftReady({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    })).rejects.toMatchObject({
+      errors: expect.arrayContaining([
+        "Artwork is missing. Assign artwork or select Bypass artwork before marking the draft ready for order conversion.",
+      ]),
+    });
+  });
+
   test("blocks order conversion when customer or line item data is missing", async () => {
     const { repo } = makeRepository();
     const orderRepo = makeOrderRepository();
@@ -2786,6 +2897,40 @@ describe("InboundOrderService editable review draft", () => {
         overridePriceCents: 6000,
         overrideReason: "Inbound PO price override",
       })],
+    }));
+  });
+
+  test("allows an intentional artwork bypass while retaining the pending-artwork prepress signal", async () => {
+    const { repo } = makeRepository();
+    const orderRepo = makeOrderRepository();
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+    await prepareReadyDraft(service, {
+      lineItem: {
+        optionSelectionsJson: completePbv2Selections(),
+        pbv2TreeVersionId: "tree_pvc",
+      },
+    });
+
+    await service.convertInboundReviewDraftToOrder({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(orderRepo.createOrder).toHaveBeenCalledWith("org_1", expect.objectContaining({
+      notesInternal: expect.stringContaining("Artwork: intentionally bypassed during inbound order conversion"),
+      lineItems: [expect.objectContaining({
+        requiresPrepress: true,
+        specsJson: expect.objectContaining({
+          inbound: expect.objectContaining({
+            artworkStatus: "to_follow",
+            artworkBypassed: true,
+          }),
+        }),
+      })],
+    }));
+    expect(orderRepo.createOrderAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      metadata: expect.objectContaining({ artworkStatus: "to_follow", artworkBypassed: true }),
     }));
   });
 

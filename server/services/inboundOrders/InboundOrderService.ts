@@ -59,6 +59,8 @@ import {
   hasUsableInboundLinePrice,
   resolveInboundLineEffectivePricing,
 } from "@shared/inboundOrderPricing";
+import { resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
+import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import {
   inboundOrdersRepository,
   type InboundOrdersRepository,
@@ -586,7 +588,12 @@ function hasAssignedClassifiedArtwork(payload: Pick<InboundOrderReviewDraftPaylo
 }
 
 function hasCompleteDoubleSidedArtwork(lineItem: InboundOrderReviewDraftPayload["reviewedLineItemsJson"][number]): boolean {
-  if (resolveProductionSides(lineItem) !== "Double-sided") return true;
+  const selected = lineItem.optionSelectionsJson?.selected ?? {};
+  const rawSelectionIndicatesDoubleSided = Object.entries(selected).some(([key, entry]) => (
+    /side|sides|print[_\s-]*side/i.test(key)
+    && /double|two|2[_\s-]*sided|\bds\b/i.test(String(entry?.value ?? ""))
+  ));
+  if (resolveProductionSides(lineItem) !== "Double-sided" && !rawSelectionIndicatesDoubleSided) return true;
   const artwork = lineItem.artworkLinks.filter(isActiveClassifiedArtworkLink);
   return artwork.some((link) => link.assignmentSide === "both")
     || (artwork.some((link) => link.assignmentSide === "front") && artwork.some((link) => link.assignmentSide === "back"));
@@ -698,6 +705,21 @@ function draftHasArtworkThatNeedsAssignment(payload: InboundOrderReviewDraftPayl
   if (payload.reviewedArtworkJson.unassignedAttachments.some(isActiveClassifiedArtworkLink)) return true;
   if (payload.reviewedArtworkJson.refs.some((reference) => reference.purpose === "artwork")) return true;
   return payload.reviewedArtworkJson.status === "supplied";
+}
+
+/**
+ * "to_follow" is the staff-confirmed inbound order bypass. It deliberately
+ * remains distinct from supplied artwork so downstream work can see that the
+ * source file is still outstanding.
+ */
+function hasArtworkBypassForOrder(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
+  return !hasAssignedClassifiedArtwork(payload)
+    && payload.reviewedArtworkJson.status === "to_follow";
+}
+
+function artworkIsRequiredForOrder(payload: InboundOrderReviewDraftPayload | InboundOrderReviewDraftDto): boolean {
+  return !hasAssignedClassifiedArtwork(payload)
+    && payload.reviewedArtworkJson.status !== "not_required";
 }
 
 function centsFromUnknown(value: unknown): number | null {
@@ -3847,6 +3869,8 @@ export class InboundOrderService {
             convertedAt: new Date().toISOString(),
             parseConfidence: latestParseAttempt?.confidence ?? null,
             poNumber: payload.reviewedOrderJson.poNumber ?? null,
+            artworkStatus: payload.reviewedArtworkJson.status,
+            artworkBypassed: hasArtworkBypassForOrder(payload),
             releasesProduction: false,
             createsProofs: false,
             createsInvoices: false,
@@ -3936,6 +3960,13 @@ export class InboundOrderService {
 
     const { record, latestReviewSnapshot } = detail;
     const preview = this.buildQuoteDraftPreview(detail);
+    const reviewedPayload = latestReviewSnapshot ? this.reviewDraftPayloadFromSnapshot(latestReviewSnapshot) : null;
+    const artworkStatus = reviewedPayload?.reviewedArtworkJson.status ?? null;
+    const artworkWarning = artworkStatus === "missing"
+      ? "Artwork is missing and remains required before production."
+      : artworkStatus === "to_follow"
+        ? "Artwork is to follow and remains required before production."
+        : null;
 
     if (record.createdQuoteId) {
       const existingQuote = await this.repository.getQuote(args.organizationId, record.createdQuoteId);
@@ -3992,6 +4023,8 @@ export class InboundOrderService {
       contactName: preview.contact.contactName ?? null,
       customerMappingSource: preview.customer.source,
       contactMappingSource: preview.contact.source,
+      artworkStatus,
+      artworkWarning,
     };
     // quote_list_notes is a compact, staff-editable list annotation. The
     // inbound record and review.quote_created event own source evidence and
@@ -4013,14 +4046,14 @@ export class InboundOrderService {
       let pricing: Awaited<ReturnType<typeof priceLineItem>> | null = null;
       let pricingError: unknown = null;
       try {
-        pricing = await this.priceLineItemFn({
+        pricing = await this.priceInboundReviewLine({
           organizationId: args.organizationId,
           productId: lineItem.productId,
           quantity: lineItem.quantity,
-          widthIn: lineItem.width,
-          heightIn: lineItem.height,
-          pbv2ExplicitSelections: optionSelections.selected,
-          pbv2TreeVersionIdOverride: pbv2TreeVersionId ?? undefined,
+          width: lineItem.width,
+          height: lineItem.height,
+          optionSelections,
+          pbv2TreeVersionId,
         });
       } catch (error) {
         pricingError = error;
@@ -4044,6 +4077,13 @@ export class InboundOrderService {
       };
       pricedLineItems.push({
         ...lineItem,
+        snapshotJson: {
+          ...(asRecord(lineItem.snapshotJson) ?? {}),
+          inboundArtwork: {
+            status: artworkStatus,
+            warning: artworkWarning,
+          },
+        },
         pricing: {
           lineTotalCents: effectivePricing.effectiveTotalCents,
           calculatedLineTotalCents,
@@ -4637,14 +4677,14 @@ export class InboundOrderService {
 
       if (lineItem.selectedProductId && lineItem.quantity) {
         try {
-          const pricing = await this.priceLineItemFn({
+          const pricing = await this.priceInboundReviewLine({
             organizationId: args.organizationId,
             productId: lineItem.selectedProductId,
             quantity: lineItem.quantity,
-            widthIn: lineItem.width ?? undefined,
-            heightIn: lineItem.height ?? undefined,
-            pbv2ExplicitSelections: this.normalizePbv2Selections(lineItem.optionSelectionsJson).selected,
-            pbv2TreeVersionIdOverride: lineItem.pbv2TreeVersionId ?? undefined,
+            width: lineItem.width,
+            height: lineItem.height,
+            optionSelections: lineItem.optionSelectionsJson,
+            pbv2TreeVersionId: lineItem.pbv2TreeVersionId,
           });
           const systemPriceCents = Number.isFinite(pricing.lineTotalCents) ? Math.round(pricing.lineTotalCents) : null;
           const systemUnitPriceCents = systemPriceCents != null && quantity > 0 ? Math.round(systemPriceCents / quantity) : null;
@@ -5308,6 +5348,12 @@ export class InboundOrderService {
       errors.push("At least one reviewed line item is required.");
     }
 
+    const artworkBypassed = hasArtworkBypassForOrder(normalizedPayload);
+    const artworkRequired = artworkIsRequiredForOrder(normalizedPayload);
+    if (artworkRequired && !artworkBypassed) {
+      errors.push("Artwork is missing. Assign artwork or select Bypass artwork before creating a draft order.");
+    }
+
     for (let index = 0; index < normalizedPayload.reviewedLineItemsJson.length; index += 1) {
       const lineItem = normalizedPayload.reviewedLineItemsJson[index];
       const label = lineItem.productName || lineItem.sourceText || `Line item ${index + 1}`;
@@ -5329,12 +5375,12 @@ export class InboundOrderService {
       if (!hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)) {
         errors.push(`${label}: system pricing is unavailable or zero. Enter a valid unit or total price override before conversion.`);
       }
-      if (!hasCompleteDoubleSidedArtwork(lineItem)) {
+      if (!artworkBypassed && normalizedPayload.reviewedArtworkJson.status !== "not_required" && !hasCompleteDoubleSidedArtwork(lineItem)) {
         errors.push(`${label}: assign Back artwork or choose the same artwork for both sides.`);
       }
     }
 
-    if (draftHasArtworkThatNeedsAssignment(normalizedPayload)) {
+    if (!artworkBypassed && draftHasArtworkThatNeedsAssignment(normalizedPayload)) {
       const targetLineIndex = normalizedPayload.reviewedLineItemsJson.findIndex((lineItem) => !lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
       errors.push(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`);
     }
@@ -5450,6 +5496,7 @@ export class InboundOrderService {
     const order = payload.reviewedOrderJson;
     const customer = payload.reviewedCustomerJson;
     const artwork = payload.reviewedArtworkJson;
+    const artworkBypassed = hasArtworkBypassForOrder(payload);
     const reference = order.poNumber || detail.record.externalReference || detail.record.id.slice(0, 8);
     const unsupportedRequestNotes = payload.unsupportedRequestsJson
       .map((finding) => {
@@ -5479,7 +5526,8 @@ export class InboundOrderService {
       order.internalNotes ? `Internal notes: ${order.internalNotes}` : null,
       order.customerNotes ? `Customer notes: ${order.customerNotes}` : null,
       payload.reviewNotes ? `Review notes: ${payload.reviewNotes}` : null,
-      artwork.status === "to_follow" ? "Artwork: to follow." : null,
+      artworkBypassed ? "Artwork: intentionally bypassed during inbound order conversion; still required before prepress or proofing." : null,
+      !artworkBypassed && artwork.status === "to_follow" ? "Artwork: to follow." : null,
       artwork.status === "missing" ? "Artwork: missing at conversion." : null,
       artwork.notes ? `Artwork notes: ${artwork.notes}` : null,
       ...unsupportedRequestNotes,
@@ -5494,14 +5542,14 @@ export class InboundOrderService {
       let pricing: Awaited<ReturnType<typeof priceLineItem>> | null = null;
       let pricingError: unknown = null;
       try {
-        pricing = await this.priceLineItemFn({
+        pricing = await this.priceInboundReviewLine({
           organizationId: detail.record.organizationId,
           productId: lineItem.selectedProductId!,
           quantity: lineItem.quantity ?? 1,
-          widthIn: lineItem.width ?? undefined,
-          heightIn: lineItem.height ?? undefined,
-          pbv2ExplicitSelections: selections.selected,
-          pbv2TreeVersionIdOverride: lineItem.pbv2TreeVersionId ?? undefined,
+          width: lineItem.width,
+          height: lineItem.height,
+          optionSelections: selections,
+          pbv2TreeVersionId: lineItem.pbv2TreeVersionId,
         });
       } catch (error) {
         pricingError = error;
@@ -5539,7 +5587,7 @@ export class InboundOrderService {
         status: "new",
         workflowState: "new",
         requiresDesign: false,
-        requiresPrepress: false,
+        requiresPrepress: artworkBypassed,
         requiresProofApproval: false,
         productionNotes: lineItem.notes ?? null,
         specsJson: {
@@ -5555,6 +5603,10 @@ export class InboundOrderService {
             optionTexts: lineItem.optionTexts,
             finishingTexts: lineItem.finishingTexts,
             artworkStatus: artwork.status,
+            artworkBypassed,
+            artworkStatusNote: artworkBypassed
+              ? "Artwork was intentionally bypassed during inbound order conversion and remains required before prepress or proofing."
+              : null,
             artworkReferences: artwork.refs,
             artworkLinks: lineItem.artworkLinks,
             artworkQuantityMode: lineItem.artworkQuantityMode,
@@ -5750,12 +5802,19 @@ export class InboundOrderService {
       if (!hasUsableInboundLinePrice(lineItem.pricingReviewJson, lineItem.quantity)) {
         errors.push(`${label}: system pricing is unavailable or zero. Enter a valid unit or total price override before conversion.`);
       }
-      if (!hasCompleteDoubleSidedArtwork(lineItem)) {
+      const artworkBypassed = hasArtworkBypassForOrder(draft);
+      if (!artworkBypassed && draft.reviewedArtworkJson.status !== "not_required" && !hasCompleteDoubleSidedArtwork(lineItem)) {
         errors.push(`${label}: assign Back artwork or choose the same artwork for both sides.`);
       }
     });
 
-    if (draftHasArtworkThatNeedsAssignment(draft)) {
+    const artworkBypassed = hasArtworkBypassForOrder(draft);
+    const artworkRequired = artworkIsRequiredForOrder(draft);
+    if (artworkRequired && !artworkBypassed) {
+      errors.push("Artwork is missing. Assign artwork or select Bypass artwork before marking the draft ready for order conversion.");
+    }
+
+    if (!artworkBypassed && draftHasArtworkThatNeedsAssignment(draft)) {
       const targetLineIndex = draft.reviewedLineItemsJson.findIndex((lineItem) => !lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
       errors.push(`Line ${Math.max(0, targetLineIndex) + 1} needs artwork assignment.`);
     }
@@ -5766,7 +5825,7 @@ export class InboundOrderService {
       if (isDimensionsDecision(decision) && dimensionsDecisionIsResolvedByLineItem(draft, decision)) return;
       if (decision.severity === "blocking") {
         errors.push(`${decision.label}: resolve or acknowledge this blocking decision.`);
-      } else if (isArtworkDecision(decision)) {
+      } else if (!artworkBypassed && isArtworkDecision(decision)) {
         errors.push(`Line ${(artworkLineIndex(decision.field) ?? 0) + 1} needs artwork assignment or an explicit artwork-status decision.`);
       }
     });
@@ -5826,6 +5885,58 @@ export class InboundOrderService {
       ...lineItem.finishingTexts,
       lineItem.notes,
     ].filter(Boolean).join(" ");
+  }
+
+  /**
+   * Keep inbound pricing inputs aligned with the direct quote-entry path before
+   * delegating to the authoritative PricingService. Inbound captures raw
+   * dimensions, while quote entry normalizes quantity-only and PBV2 fixed-size
+   * products first.
+   */
+  private async priceInboundReviewLine(args: {
+    organizationId: string;
+    productId: string;
+    quantity: number;
+    width: number | null | undefined;
+    height: number | null | undefined;
+    optionSelections: LineItemOptionSelectionsV2 | Record<string, unknown> | null | undefined;
+    pbv2TreeVersionId: string | null | undefined;
+  }): Promise<Awaited<ReturnType<typeof priceLineItem>>> {
+    const product = await this.repository.getProduct(args.organizationId, args.productId);
+    if (!product) {
+      throw new Error("Selected product was not found for this organization.");
+    }
+
+    const selections = this.normalizePbv2Selections(args.optionSelections);
+    let { widthIn, heightIn } = dimensionsForProductPricing(product, args.width, args.height);
+    const activeTree = await this.repository.getProductActivePbv2Tree(args.organizationId, args.productId);
+    const activeTreeVersionId = activeTree?.activeTree?.id ?? null;
+
+    // Match direct quote entry when its active PBV2 tree is in use. A historic
+    // explicit version is still handed to PricingService, which loads that
+    // exact version and remains the authority for its runtime dimensions.
+    if (
+      product.measurementMode !== "quantity_only"
+      && product.pricingProfileKey !== "fee"
+      && activeTree?.activeTree?.treeJson
+      && (!args.pbv2TreeVersionId || args.pbv2TreeVersionId === activeTreeVersionId)
+    ) {
+      ({ widthIn, heightIn } = resolvePbv2RuntimeDimensions({
+        treeJson: activeTree.activeTree.treeJson,
+        widthIn,
+        heightIn,
+      }));
+    }
+
+    return this.priceLineItemFn({
+      organizationId: args.organizationId,
+      productId: args.productId,
+      quantity: args.quantity,
+      widthIn,
+      heightIn,
+      pbv2ExplicitSelections: selections.selected,
+      pbv2TreeVersionIdOverride: args.pbv2TreeVersionId ?? undefined,
+    });
   }
 
   private normalizePbv2Selections(input: LineItemOptionSelectionsV2 | Record<string, unknown> | null | undefined): LineItemOptionSelectionsV2 {

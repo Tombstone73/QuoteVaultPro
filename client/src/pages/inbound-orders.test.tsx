@@ -6605,6 +6605,9 @@ describe("InboundOrdersPage", () => {
     await waitForCondition(() => refreshFromLatestParseCalled, "refresh from latest parse called");
 
     const artworkStatus = labeledControl("Artwork status", "select") as HTMLSelectElement;
+    expect(Array.from(artworkStatus.options).map((option) => option.text)).toContain(
+      "Bypass artwork for order (artwork to follow)",
+    );
     act(() => {
       Simulate.change(artworkStatus, { target: { value: "to_follow" } } as any);
     });

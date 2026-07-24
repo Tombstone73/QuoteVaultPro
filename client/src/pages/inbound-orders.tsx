@@ -6696,6 +6696,10 @@ function CleanOrderWorkstation({
     ...form.reviewedLineItemsJson.flatMap((lineItem) => lineItem.artworkLinks),
   ]).filter((link) => link.source !== "staff_removed" && classificationForLink(link) === "ARTWORK");
   const anyArtworkAssigned = form.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+  const artworkBypassSelected = !anyArtworkAssigned && form.reviewedArtworkJson.status === "to_follow";
+  const artworkBlocksDraftOrder = !anyArtworkAssigned
+    && form.reviewedArtworkJson.status !== "not_required"
+    && !artworkBypassSelected;
   const rawValidationErrors = markReadyError?.errors ?? reviewDraft.validationErrors ?? [];
   const validationErrors = rawValidationErrors.filter((error) => {
     if (validationErrorReferencesRemovedLine(error, form.reviewedLineItemsJson.length)) return false;
@@ -6727,7 +6731,7 @@ function CleanOrderWorkstation({
   const minimumConversionIssues = [
     !form.reviewedCustomerJson.selectedCustomerId && !form.reviewedCustomerJson.unresolvedCustomer ? "Select a customer or mark customer unresolved." : null,
     form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
-    artworkNeedsAssignment ? "Line 1 needs artwork assignment." : null,
+    artworkNeedsAssignment ? "Line 1 needs artwork assignment." : artworkBlocksDraftOrder ? "Artwork is missing. Assign it or select Bypass artwork for order conversion." : null,
     ...form.reviewedLineItemsJson.flatMap((lineItem, index) => [
       !lineItem.quantity ? `Line ${index + 1}: enter quantity.` : null,
       !lineItem.selectedProductId && !lineItem.productUnresolved ? `Line ${index + 1}: select a product or mark unresolved.` : null,
@@ -8936,7 +8940,7 @@ function DraftBuilderPanel({
                   <OrderEntryField label="Artwork status">
                     <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedArtworkJson.status} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: event.target.value as ReviewDraftFormState["reviewedArtworkJson"]["status"] } })}>
                       <option value="supplied">Supplied</option>
-                      <option value="to_follow">To follow</option>
+                      <option value="to_follow">Bypass artwork for order (artwork to follow)</option>
                       <option value="missing">Missing</option>
                       <option value="not_required">Not required</option>
                     </select>
@@ -9466,7 +9470,7 @@ function DraftBuilderPanel({
               Artwork status
               <select className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground" value={form.reviewedArtworkJson.status} onChange={(event) => updateForm({ reviewedArtworkJson: { ...form.reviewedArtworkJson, status: event.target.value as ReviewDraftFormState["reviewedArtworkJson"]["status"] } })}>
                 <option value="supplied">Supplied</option>
-                <option value="to_follow">To follow</option>
+                <option value="to_follow">Bypass artwork for order (artwork to follow)</option>
                 <option value="missing">Missing</option>
                 <option value="not_required">Not required</option>
               </select>
