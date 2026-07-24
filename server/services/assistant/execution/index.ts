@@ -11,5 +11,6 @@ export * from "./quoteDraftCreateCommand";
 export * from "./quoteDraftUpdateCommand";
 export * from "./quoteDraftCreateExecutionCommand";
 export * from "./quoteDraftUpdateExecutionCommand";
+export * from "./deferredOrderCommands";
 export * from "./stateMachine";
 export * from "./types";

@@ -19,6 +19,9 @@ export const assistantCapabilityCommandPermissions = {
   "quotes.add_internal_note": "assistant.quotes.add_internal_note",
   "quotes.create_draft": "assistant.quotes.create_draft",
   "quotes.update_draft": "assistant.quotes.update_draft",
+  "orders.create": "assistant.orders.create",
+  "orders.update_editable": "assistant.orders.update_editable",
+  "quotes.convert_to_order": "assistant.quotes.convert_to_order",
   "products.create_inactive_draft": "assistant.products.create_inactive_draft",
   "products.update_inactive_draft": "assistant.products.update_inactive_draft",
 } as const;
@@ -27,6 +30,9 @@ export const assistantCapabilityCommandDescriptions = {
   "quotes.add_internal_note": "add an internal quote note after your confirmation",
   "quotes.create_draft": "create one draft quote after your confirmation",
   "quotes.update_draft": "update one editable draft quote after your confirmation",
+  "orders.create": "create one order with production deferred after your confirmation",
+  "orders.update_editable": "update one editable order after your confirmation",
+  "quotes.convert_to_order": "convert one quote to an order with production deferred after your confirmation",
   "products.create_inactive_draft": "help create an inactive product draft after your confirmation",
   "products.update_inactive_draft": "update an inactive product draft after your confirmation",
 } as const;

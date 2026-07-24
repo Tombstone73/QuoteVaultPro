@@ -1019,6 +1019,31 @@ export const assistantQuoteIntakeSessions = pgTable("assistant_quote_intake_sess
 
 export type AssistantQuoteIntakeSessionRow = typeof assistantQuoteIntakeSessions.$inferSelect;
 
+// Order intake has its own durable proposal record.  Keeping it distinct from
+// quote intake prevents a confirmed order command from accepting a quote draft
+// session or bypassing the deferred-production creation policy.
+export const assistantOrderIntakeSessions = pgTable("assistant_order_intake_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull(),
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: "set null" }),
+  quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: "set null" }),
+  status: varchar("status", { length: 32 }).$type<"collecting" | "preview_ready" | "created" | "abandoned">().notNull().default("collecting"),
+  intakeJson: jsonb("intake_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  proposalFingerprint: varchar("proposal_fingerprint", { length: 64 }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("assistant_order_intake_org_user_idx").on(table.organizationId, table.userId, table.updatedAt),
+  index("assistant_order_intake_org_conversation_idx").on(table.organizationId, table.conversationId, table.updatedAt),
+  index("assistant_order_intake_order_idx").on(table.orderId),
+  index("assistant_order_intake_quote_idx").on(table.quoteId),
+]);
+
+export type AssistantOrderIntakeSessionRow = typeof assistantOrderIntakeSessions.$inferSelect;
+
 export const productIntakeAiDiagnostics = pgTable("product_intake_ai_diagnostics", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),

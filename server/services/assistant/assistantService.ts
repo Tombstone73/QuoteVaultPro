@@ -18,6 +18,7 @@ import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredPro
 import { resolveQuoteInternalNoteIntent } from "./execution/quoteInternalNoteIntent";
 import { productManagementSkillService } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
+import { orderIntakeService } from "./orderIntakeService";
 import {
   assistantCapabilityCommandDescriptions,
   assistantCapabilityCommandPermissions,
@@ -492,6 +493,18 @@ export class AssistantService {
         provider = "local_quote_intake";
         model = "conversational-quote-intake-v1";
       } else {
+      const orderIntake = await orderIntakeService.respond({
+        organizationId: scope.organizationId,
+        userId: actor.userId,
+        conversationId,
+        message: request.message,
+      });
+      if (orderIntake.handled) {
+        response = orderIntake.response;
+        cards = orderIntake.cards as AssistantResultCard[];
+        provider = "local_order_intake";
+        model = "conversational-order-intake-v1";
+      } else {
       const productManagement = await productManagementSkillService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
@@ -591,6 +604,7 @@ export class AssistantService {
         );
         response = rendered.response;
         cards = rendered.cards;
+      }
       }
       }
       }
