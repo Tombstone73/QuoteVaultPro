@@ -587,6 +587,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const [showLineItemDebug, setShowLineItemDebug] = useState(false);
   const [productionBypassTarget, setProductionBypassTarget] = useState<OrderLineItem | null>(null);
   const [productionBypassReason, setProductionBypassReason] = useState("");
+  const [childParentLineItemId, setChildParentLineItemId] = useState<string | null>(null);
 
   const [pbv2CurrentSignatureByLineItemId, setPbv2CurrentSignatureByLineItemId] = useState<Record<string, string>>({});
   const [pbv2SnapshotSignatureByLineItemId, setPbv2SnapshotSignatureByLineItemId] = useState<Record<string, string>>({});
@@ -931,9 +932,28 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
     });
   }, [activeLineItems, orderedKeys, productionPriorityLineItemIds]);
 
+  const nestedOrderedLineItems = useMemo(() => {
+    const byId = new Map(orderedLineItems.map((item) => [String(item.id), item] as const));
+    const childrenByParent = new Map<string, OrderLineItem[]>();
+    const roots: OrderLineItem[] = [];
+
+    for (const item of orderedLineItems) {
+      const parentId = (item as any).parentLineItemId as string | null | undefined;
+      if (parentId && byId.has(String(parentId))) {
+        const children = childrenByParent.get(String(parentId)) ?? [];
+        children.push(item);
+        childrenByParent.set(String(parentId), children);
+      } else {
+        roots.push(item);
+      }
+    }
+
+    return roots.flatMap((parent) => [parent, ...(childrenByParent.get(String(parent.id)) ?? [])]);
+  }, [orderedLineItems]);
+
   const sortableItems = useMemo(
-    () => orderedLineItems.map((lineItem) => String(lineItem.id)),
-    [orderedLineItems]
+    () => nestedOrderedLineItems.map((lineItem) => String(lineItem.id)),
+    [nestedOrderedLineItems]
   );
 
   const lineNumberById = useMemo(
@@ -2612,7 +2632,10 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
       open={searchOpen}
       onOpenChange={(open) => {
         setSearchOpen(open);
-        if (!open) setSearchQuery("");
+        if (!open) {
+          setSearchQuery("");
+          setChildParentLineItemId(null);
+        }
       }}
     >
     <Card className="border-0 bg-transparent shadow-none">
@@ -2693,7 +2716,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
           >
             <SortableContext items={sortableItems} strategy={verticalListSortingStrategy}>
               <div className="space-y-1 overflow-x-hidden">
-                {orderedLineItems.map((item) => {
+                {nestedOrderedLineItems.map((item) => {
                   const itemKey = item.id;
                   const isExpanded = itemKey === expandedId;
                   const contentId = `line-item-${itemKey}-details`;
@@ -3009,6 +3032,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                         <div
                           className={cn(
                             "rounded-md overflow-x-hidden",
+                            (item as any).parentLineItemId && "ml-5 border-l-2 border-primary/30 pl-2",
                             isProductionFocused && "ring-1 ring-amber-300/80 bg-amber-50/40",
                             isOver && !isDragging && "ring-1 ring-ring/40",
                             isDragging && "opacity-60"
@@ -3923,6 +3947,22 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
 
                               {!readOnly && !serviceFee ? (
                                 <div className="mt-2 flex flex-wrap justify-end gap-2">
+                                  {!(item as any).parentLineItemId && (
+                                    <Button
+                                      type="button"
+                                      variant="outline"
+                                      size="sm"
+                                      className="h-8"
+                                      onClick={() => {
+                                        setChildParentLineItemId(String(item.id));
+                                        setSearchQuery("");
+                                        setSearchOpen(true);
+                                      }}
+                                    >
+                                      <Plus className="mr-1 h-3.5 w-3.5" />
+                                      Add child item
+                                    </Button>
+                                  )}
                                   {showOpenProofingAction ? (
                                     <Button asChild type="button" variant="outline" size="sm" className="h-8">
                                       <Link to={buildProofingLineItemPath(item.id)}>Open Proofing</Link>
@@ -4014,7 +4054,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                   className="h-10 w-full justify-center border-primary/40 bg-primary/5 font-medium text-primary hover:bg-primary/10"
                 >
                   <Plus className="mr-2 h-4 w-4 shrink-0" />
-                  <span>{searchQuery ? "Searching: " + searchQuery : "Add Product"}</span>
+                  <span>{searchQuery ? "Searching: " + searchQuery : childParentLineItemId ? "Add child item" : "Add Product"}</span>
                   <ChevronDown className="ml-2 h-4 w-4 shrink-0 opacity-60" />
                 </Button>
               </PopoverTrigger>
@@ -4029,7 +4069,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                 }}
               >
                 <Command shouldFilter={false}>
-                  <CommandInput placeholder="Search by name, SKU, or category..." value={searchQuery} onValueChange={setSearchQuery} />
+                  <CommandInput placeholder={childParentLineItemId ? "Choose a product for this child item..." : "Search by name, SKU, or category..."} value={searchQuery} onValueChange={setSearchQuery} />
                   <CommandList>
                     <CommandEmpty>No products found.</CommandEmpty>
                     <CommandGroup>
@@ -4049,10 +4089,16 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                 requiresProductionJob: _requiresProductionJob,
                                 ...createPayload
                               } = initialDraft;
-                              const created = await createLineItem.mutateAsync(createPayload);
+                              const created = await createLineItem.mutateAsync({
+                                ...createPayload,
+                                ...(childParentLineItemId
+                                  ? { parentLineItemId: childParentLineItemId, lineItemRole: "child" as const }
+                                  : {}),
+                              });
                               const nextId = created?.data?.id ?? created?.id ?? null;
                               setSearchQuery("");
                               setSearchOpen(false);
+                              setChildParentLineItemId(null);
                               if (typeof nextId === "string" && nextId.length) {
                                 setInitialDraftDebugByLineItemId((prev) => ({ ...prev, [nextId]: initialDraft.debug }));
                                 setUserEditedOptionsByLineItemId((prev) => ({ ...prev, [nextId]: false }));

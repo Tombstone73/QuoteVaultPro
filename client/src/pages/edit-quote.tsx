@@ -174,6 +174,22 @@ export default function EditQuote() {
 
   // Calculate totals
   const lineItems = quote?.lineItems ?? [];
+  const displayLineItems = (() => {
+    const byId = new Map(lineItems.map((item: any) => [String(item.id), item] as const));
+    const childrenByParent = new Map<string, typeof lineItems>();
+    const roots: typeof lineItems = [];
+    for (const item of lineItems) {
+      const parentId = (item as any).parentLineItemId as string | null | undefined;
+      if (parentId && byId.has(String(parentId))) {
+        const children = childrenByParent.get(String(parentId)) ?? [];
+        children.push(item);
+        childrenByParent.set(String(parentId), children);
+      } else {
+        roots.push(item);
+      }
+    }
+    return roots.flatMap((parent) => [parent, ...(childrenByParent.get(String(parent.id)) ?? [])]);
+  })();
   const subtotal = lineItems.filter((item: any) => item.lineItemRole !== "child" && !item.parentLineItemId).reduce(
     (sum: number, item: (typeof lineItems)[number]) =>
       sum + parseFloat(item.linePrice),
@@ -802,7 +818,7 @@ export default function EditQuote() {
                   </TableRow>
                 </TableHeader>
                 <TableBody>
-                  {lineItems.map((item: (typeof lineItems)[number]) => (
+                  {displayLineItems.map((item: (typeof lineItems)[number]) => (
                     <TableRow key={item.id} data-testid={`row-line-item-${item.id}`}>
                       <TableCell>
                         {item.lineItemRole === "standalone" || !item.lineItemRole ? (
@@ -857,7 +873,7 @@ export default function EditQuote() {
                               onClick={() => handleOpenAddChildLineItem(item as QuoteLineItem)}
                               data-testid={`button-add-child-${item.id}`}
                             >
-                              <Plus className="mr-1 h-3.5 w-3.5" /> Add child
+                              <Plus className="mr-1 h-3.5 w-3.5" /> Add child item
                             </Button>
                           )}
                           <Button
