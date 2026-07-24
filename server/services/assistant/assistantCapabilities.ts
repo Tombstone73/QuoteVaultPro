@@ -36,6 +36,10 @@ export const assistantCapabilityCommandPermissions = {
   "fulfillment.mark_shipped": "assistant.fulfillment.mark_shipped",
   "fulfillment.create_pickup_ticket": "assistant.fulfillment.create_pickup_ticket",
   "fulfillment.add_note": "assistant.fulfillment.add_note",
+  "billing.create_invoice": "assistant.billing.create_invoice",
+  "billing.update_invoice_draft": "assistant.billing.update_invoice_draft",
+  "billing.send_invoice": "assistant.billing.send_invoice",
+  "billing.add_invoice_note": "assistant.billing.add_invoice_note",
   "products.create_inactive_draft": "assistant.products.create_inactive_draft",
   "products.update_inactive_draft": "assistant.products.update_inactive_draft",
 } as const;
@@ -61,6 +65,10 @@ export const assistantCapabilityCommandDescriptions = {
   "fulfillment.mark_shipped": "mark one eligible shipment shipped after your confirmation",
   "fulfillment.create_pickup_ticket": "create or reuse one eligible pickup ticket after your confirmation",
   "fulfillment.add_note": "add one internal fulfillment note after your confirmation",
+  "billing.create_invoice": "create an eligible invoice after your confirmation",
+  "billing.update_invoice_draft": "update safe draft invoice details after your confirmation",
+  "billing.send_invoice": "mark an eligible invoice sent after your confirmation",
+  "billing.add_invoice_note": "add one internal invoice note after your confirmation",
   "products.create_inactive_draft": "help create an inactive product draft after your confirmation",
   "products.update_inactive_draft": "update an inactive product draft after your confirmation",
 } as const;

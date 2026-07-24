@@ -53,6 +53,10 @@ export const assistantProductionCommandAllowlist = [
   "fulfillment.mark_shipped",
   "fulfillment.create_pickup_ticket",
   "fulfillment.add_note",
+  "billing.create_invoice",
+  "billing.update_invoice_draft",
+  "billing.send_invoice",
+  "billing.add_invoice_note",
 ] as const;
 /** The only injected command name accepted by the isolated test registry. */
 export const assistantTestCommandAllowlist = ["test.assistant.synthetic_command"] as const;
