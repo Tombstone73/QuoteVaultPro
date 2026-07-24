@@ -22,6 +22,7 @@ function readPortalFrontendSource(): string {
     "client/src/pages/portal/quote-detail.tsx",
     "client/src/components/portal/PortalLayout.tsx",
     "client/src/components/portal/PortalFilesCard.tsx",
+    "client/src/components/portal/PortalFileSubmissionCard.tsx",
   ];
 
   return files.map((file) => `\n/* ${file} */\n${read(file)}`).join("\n");

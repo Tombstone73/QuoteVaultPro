@@ -71,6 +71,8 @@ describe("customer portal contract boundary", () => {
       "/api/portal/invoices/:id/payments/stripe/confirm",
       "/api/portal/proofs/:id/approve",
       "/api/portal/quotes/:id/approve",
+      "/api/portal/quotes/:id/files",
+      "/api/portal/orders/:id/files",
     ]) {
       expect(contract).toContain(path);
     }
@@ -118,6 +120,21 @@ describe("customer portal contract boundary", () => {
     expect(service).toContain("loadVisibleQuoteAttachments(scope, quoteId)");
     expect(sourceForExport(service, "getPortalProofFileDownload")).toContain("loadPortalProofRows(scope, proofId)");
     expect(frontend).not.toContain("/api/objects/");
+  });
+
+  test("customer file submissions stay inside the portal boundary and are scoped before canonical storage writes", () => {
+    const routes = read("server/routes/portal.routes.ts");
+    const service = read("server/services/portal.service.ts");
+
+    expect(routes).toContain('app.post("/api/portal/orders/:id/files", ...portalMiddlewares, portalPostById("id", submitPortalOrderFile))');
+    expect(routes).toContain('app.post("/api/portal/quotes/:id/files", ...portalMiddlewares, portalPostById("id", submitPortalQuoteFile))');
+    expect(service).toContain("const scope = getPortalScope(args.req)");
+    expect(service).toContain("getScopedPortalQuoteId(scope, args.entityId)");
+    expect(service).toContain("getScopedPortalOrderId(scope, args.entityId)");
+    expect(service).toContain("storageApplicationService.finalizeUpload");
+    expect(service).toContain('portalFileCategory: "customer_upload"');
+    expect(service).toContain('reviewStatus: "awaiting_staff_review"');
+    expect(service).toContain("finalArtwork: false");
   });
 
   test("quote actions are scoped, serialized, audited, and use the canonical quote conversion service", () => {

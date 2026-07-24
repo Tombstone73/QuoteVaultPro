@@ -1,5 +1,6 @@
 import { and, asc, desc, eq, inArray, ne, or, sql } from "drizzle-orm";
 import type { Request } from "express";
+import { z } from "zod";
 
 import { db } from "../db";
 import {
@@ -44,6 +45,7 @@ import { recordPortalFollowUpItem } from "./portalFollowUps";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@shared/paymentProviderResolution";
 import { getPaymentSettings } from "./payments/paymentProvider.service";
+import { storageApplicationService } from "./storage/StorageApplicationService";
 
 export type PortalSessionDto = {
   userId: string;
@@ -111,6 +113,39 @@ export type PortalFileDownloadResult = {
   mimeType: string;
   bytes?: Buffer;
   objectPath?: string;
+};
+
+export type PortalFileSubmissionResultDto = {
+  id: string;
+  entityType: "quote" | "order";
+  entityId: string;
+  displayName: string;
+  statusLabel: "Submitted for review";
+  message: string;
+};
+
+export const PORTAL_FILE_SUBMISSION_MAX_BYTES = 1024 * 1024;
+export const PORTAL_FILE_SUBMISSION_MAX_SIZE_LABEL = "1 MB";
+export const PORTAL_FILE_SUBMISSION_ACCEPTED_MIME_TYPES = [
+  "application/pdf",
+  "image/jpeg",
+  "image/png",
+  "image/tiff",
+] as const;
+export const PORTAL_FILE_SUBMISSION_ACCEPT_ATTRIBUTE = ".pdf,.jpg,.jpeg,.png,.tif,.tiff";
+
+const portalFileSubmissionSchema = z.object({
+  fileName: z.string().trim().min(1, "Choose a file to submit.").max(512, "File name is too long."),
+  mimeType: z.string().trim().min(1, "File type is required.").max(255),
+  dataBase64: z.string().min(1, "File is empty."),
+  note: z.string().trim().max(1000, "Note must be 1,000 characters or fewer.").nullable().optional(),
+}).strict();
+
+const portalFileExtensionsByMimeType: Record<(typeof PORTAL_FILE_SUBMISSION_ACCEPTED_MIME_TYPES)[number], readonly string[]> = {
+  "application/pdf": ["pdf"],
+  "image/jpeg": ["jpg", "jpeg"],
+  "image/png": ["png"],
+  "image/tiff": ["tif", "tiff"],
 };
 
 export type PortalDashboardFileDto = PortalFileDto & {
@@ -641,6 +676,86 @@ const PROFILE_UPDATE_SHAPE = {
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function portalSubmissionError(message: string, statusCode = 400): never {
+  throw new PortalAccessError(statusCode, message);
+}
+
+function normalizePortalSubmissionFilename(value: string): string {
+  const baseName = value.split(/[\\/]+/).pop() ?? "";
+  const normalized = baseName
+    .normalize("NFKC")
+    .replace(/[\u0000-\u001f\u007f]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+
+  if (!normalized || normalized === "." || normalized === "..") {
+    return portalSubmissionError("File name is invalid.");
+  }
+
+  if (normalized.length > 255) {
+    return portalSubmissionError("File name is too long.");
+  }
+
+  return normalized;
+}
+
+function extensionForPortalSubmission(filename: string): string {
+  const suffix = filename.match(/\.([a-z0-9]+)$/i)?.[1]?.toLowerCase() ?? "";
+  if (!suffix) {
+    return portalSubmissionError("File name must include a supported extension.");
+  }
+  return suffix;
+}
+
+function decodePortalSubmissionBase64(dataBase64: string): Buffer {
+  if (!/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(dataBase64)) {
+    return portalSubmissionError("File content is invalid.");
+  }
+
+  const buffer = Buffer.from(dataBase64, "base64");
+  if (!buffer.length) {
+    return portalSubmissionError("File is empty.");
+  }
+  if (buffer.length > PORTAL_FILE_SUBMISSION_MAX_BYTES) {
+    return portalSubmissionError(`Files must be ${PORTAL_FILE_SUBMISSION_MAX_SIZE_LABEL} or smaller.`, 413);
+  }
+  if (buffer.toString("base64") !== dataBase64) {
+    return portalSubmissionError("File content is invalid.");
+  }
+  return buffer;
+}
+
+export function parsePortalFileSubmissionPayload(payload: unknown): {
+  fileName: string;
+  mimeType: (typeof PORTAL_FILE_SUBMISSION_ACCEPTED_MIME_TYPES)[number];
+  buffer: Buffer;
+  note: string | null;
+} {
+  const parsed = portalFileSubmissionSchema.safeParse(payload);
+  if (!parsed.success) {
+    return portalSubmissionError(parsed.error.issues[0]?.message || "File submission is invalid.");
+  }
+
+  const mimeType = parsed.data.mimeType.toLowerCase();
+  if (!(PORTAL_FILE_SUBMISSION_ACCEPTED_MIME_TYPES as readonly string[]).includes(mimeType)) {
+    return portalSubmissionError("Use a PDF, JPG, PNG, or TIFF file.");
+  }
+
+  const typedMime = mimeType as (typeof PORTAL_FILE_SUBMISSION_ACCEPTED_MIME_TYPES)[number];
+  const fileName = normalizePortalSubmissionFilename(parsed.data.fileName);
+  const extension = extensionForPortalSubmission(fileName);
+  if (!portalFileExtensionsByMimeType[typedMime].includes(extension)) {
+    return portalSubmissionError("File name and file type do not match.");
+  }
+
+  return {
+    fileName,
+    mimeType: typedMime,
+    buffer: decodePortalSubmissionBase64(parsed.data.dataBase64),
+    note: parsed.data.note?.trim() || null,
+  };
 }
 
 function normalizeEditableText(value: unknown, fieldLabel: string, maxLength: number): string | null {
@@ -2091,6 +2206,137 @@ async function getScopedPortalQuoteId(scope: PortalScope, quoteId: string): Prom
   })
     ? quote.id
     : null;
+}
+
+function portalSubmissionDescription(note: string | null): string {
+  return [
+    "Customer file submission — awaiting staff review.",
+    note ? `Customer note: ${note}` : null,
+  ].filter(Boolean).join(" ");
+}
+
+function portalSubmissionActorName(req: Request, scope: PortalScope): string {
+  return getUserName((req as any).user) || scope.customer.companyName || scope.customer.email || "Portal customer";
+}
+
+async function submitPortalFile(args: {
+  req: Request;
+  entityType: "quote" | "order";
+  entityId: string;
+}): Promise<PortalFileSubmissionResultDto | null> {
+  const scope = getPortalScope(args.req);
+  const submission = parsePortalFileSubmissionPayload(args.req.body);
+  const scopedEntityId = args.entityType === "quote"
+    ? await getScopedPortalQuoteId(scope, args.entityId)
+    : await getScopedPortalOrderId(scope, args.entityId);
+  if (!scopedEntityId) return null;
+
+  const actorName = portalSubmissionActorName(args.req, scope);
+  const description = portalSubmissionDescription(submission.note);
+  const finalized = await storageApplicationService.finalizeUpload({
+    organizationId: scope.organizationId,
+    createdByUserId: scope.userId,
+    resource: {
+      organizationId: scope.organizationId,
+      resourceType: args.entityType,
+      resourceId: scopedEntityId,
+    },
+    source: {
+      kind: "buffer",
+      buffer: submission.buffer,
+      originalFilename: submission.fileName,
+      mimeType: submission.mimeType,
+    },
+    persistLink: async (tx, stored) => {
+      const attachmentValues = {
+        organizationId: scope.organizationId,
+        fileRecordId: stored.fileRecord.id,
+        uploadedByUserId: scope.userId,
+        uploadedByName: actorName,
+        fileName: stored.storedObject.originalFilename,
+        fileUrl: null,
+        fileSize: stored.storedObject.sizeBytes,
+        mimeType: stored.storedObject.mimeType,
+        description,
+        originalFilename: stored.storedObject.originalFilename,
+        storedFilename: stored.storedObject.storedFilename,
+        relativePath: null,
+        storageProvider: null,
+        extension: stored.storedObject.extension,
+        sizeBytes: stored.storedObject.sizeBytes,
+        checksum: stored.storedObject.checksum,
+        thumbStatus: "uploaded" as const,
+        customerVisible: true,
+        portalFileCategory: "customer_upload",
+        portalDisplayName: submission.fileName,
+        portalDescription: description,
+      };
+      const [attachment] = args.entityType === "quote"
+        ? await tx.insert(quoteAttachments).values({
+            ...attachmentValues,
+            quoteId: scopedEntityId,
+            quoteLineItemId: null,
+            bucket: stored.storedObject.bucket ?? "titan-private",
+          }).returning()
+        : await tx.insert(orderAttachments).values({
+            ...attachmentValues,
+            orderId: scopedEntityId,
+            orderLineItemId: null,
+            quoteId: null,
+            role: "reference",
+            side: "na",
+            isPrimary: false,
+          }).returning();
+
+      if (!attachment) {
+        throw new Error("Failed to save customer file submission.");
+      }
+
+      await tx.insert(auditLogs).values({
+        organizationId: scope.organizationId,
+        userId: scope.userId,
+        userName: actorName,
+        actionType: "portal_customer_file_submitted",
+        entityType: `${args.entityType}_attachment`,
+        entityId: attachment.id,
+        entityName: submission.fileName,
+        description: `Customer submitted a file for ${args.entityType} review.`,
+        oldValues: null,
+        newValues: {
+          relatedEntityType: args.entityType,
+          relatedEntityId: scopedEntityId,
+          fileRecordId: stored.fileRecord.id,
+          originalFilename: submission.fileName,
+          mimeType: submission.mimeType,
+          category: "customer_upload",
+          reviewStatus: "awaiting_staff_review",
+          customerNote: submission.note,
+          finalArtwork: false,
+        },
+        ipAddress: args.req.ip || null,
+        userAgent: args.req.get("user-agent") || null,
+      });
+
+      return attachment;
+    },
+  });
+
+  return {
+    id: String(finalized.linkedRecord.id),
+    entityType: args.entityType,
+    entityId: scopedEntityId,
+    displayName: submission.fileName,
+    statusLabel: "Submitted for review",
+    message: "Your file was submitted for staff review. It will not be used for production until your team confirms it.",
+  };
+}
+
+export async function submitPortalQuoteFile(req: Request, quoteId: string): Promise<PortalFileSubmissionResultDto | null> {
+  return submitPortalFile({ req, entityType: "quote", entityId: quoteId });
+}
+
+export async function submitPortalOrderFile(req: Request, orderId: string): Promise<PortalFileSubmissionResultDto | null> {
+  return submitPortalFile({ req, entityType: "order", entityId: orderId });
 }
 
 async function getCustomerVisibleProofAttachmentIds(scope: PortalScope, orderId: string): Promise<Set<string>> {

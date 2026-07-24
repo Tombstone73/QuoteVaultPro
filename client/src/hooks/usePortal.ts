@@ -1,4 +1,5 @@
 import { useMutation, useQuery } from "@tanstack/react-query";
+import { fileToBase64 } from "@/lib/uploads/fileToBase64";
 
 type PortalEnvelope<T> = {
   success: boolean;
@@ -318,6 +319,21 @@ export type PortalProofActionResultDto = {
   message: string;
 };
 
+export type PortalFileSubmissionResultDto = {
+  id: string;
+  entityType: "quote" | "order";
+  entityId: string;
+  displayName: string;
+  statusLabel: "Submitted for review";
+  message: string;
+};
+
+// Keep this customer-facing limit aligned with the server's conservative
+// first-release boundary. The server remains authoritative.
+export const PORTAL_FILE_SUBMISSION_MAX_BYTES = 1024 * 1024;
+export const PORTAL_FILE_SUBMISSION_ACCEPT_ATTRIBUTE = ".pdf,.jpg,.jpeg,.png,.tif,.tiff";
+export const PORTAL_FILE_SUBMISSION_GUIDANCE = "PDF, JPG, PNG, or TIFF up to 1 MB.";
+
 export const portalDashboardKeys = {
   all: ["portal", "dashboard"] as const,
 };
@@ -569,12 +585,28 @@ export function usePortalProofAction(proofId: string | undefined) {
   });
 }
 
-export function useUploadOrderFile(_orderId: string) {
+export function usePortalFileSubmission(entity: "orders" | "quotes", entityId: string | undefined) {
   return useMutation({
-    mutationFn: async () => {
-      throw new Error("Portal uploads are not available yet");
+    mutationFn: async ({ file, note }: { file: File; note?: string | null }) => {
+      if (!entityId) throw new Error("Record ID required");
+      if (file.size <= 0) throw new Error("Choose a file to submit.");
+      if (file.size > PORTAL_FILE_SUBMISSION_MAX_BYTES) throw new Error("Files must be 1 MB or smaller.");
+
+      return portalFetch<PortalFileSubmissionResultDto>(`/api/portal/${entity}/${encodeURIComponent(entityId)}/files`, {
+        method: "POST",
+        body: JSON.stringify({
+          fileName: file.name,
+          mimeType: file.type,
+          dataBase64: await fileToBase64(file),
+          note: note?.trim() || null,
+        }),
+      });
     },
   });
+}
+
+export function useUploadOrderFile(orderId: string) {
+  return usePortalFileSubmission("orders", orderId);
 }
 
 export function useOrderFiles(orderId: string | undefined) {

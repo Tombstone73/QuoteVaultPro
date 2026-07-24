@@ -7,6 +7,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import PortalFilesCard from "@/components/portal/PortalFilesCard";
+import PortalFileSubmissionCard from "@/components/portal/PortalFileSubmissionCard";
 import {
   Dialog,
   DialogContent,
@@ -287,6 +288,8 @@ export default function PortalQuoteDetailPage() {
         entity="quotes"
         entityId={quote.id}
       />
+
+      <PortalFileSubmissionCard entity="quotes" entityId={quote.id} />
 
       <Dialog open={!!selectedAction} onOpenChange={(open) => !open && setSelectedAction(null)}>
         <DialogContent>

@@ -23,11 +23,20 @@
 | Area | Read paths | Customer actions |
 | --- | --- | --- |
 | Invoices | `/invoices`, `/:id`, `/:id/pdf`, `/:id/files`, `/:id/files/:fileId`, `/:id/payments` | Stripe intent creation/confirmation only, when the scoped invoice is payable. |
-| Orders | `/orders`, `/:id`, `/:id/files`, `/:id/files/:fileId` | None. |
+| Orders | `/orders`, `/:id`, `/:id/files`, `/:id/files/:fileId` | Submit a customer file through `POST /orders/:id/files`. |
 | Proofs | `/proofs`, `/:id`, `/:id/file` | Approve, reject, or request revision through the proofing service. |
-| Quotes | `/quotes`, `/:id`, `/:id/files`, `/:id/files/:fileId` | Approve, decline, or request revision through scoped quote actions. |
+| Quotes | `/quotes`, `/:id`, `/:id/files`, `/:id/files/:fileId` | Approve, decline, request revision, or submit a customer file through `POST /quotes/:id/files`. |
 
 All file URLs are portal backend routes. A download first verifies record ownership and customer visibility, then the backend obtains or streams the permitted object. Storage keys, buckets, and arbitrary `/objects/*` URLs are not part of the portal contract.
+
+## Customer file submission
+
+- `POST /api/portal/quotes/:id/files` and `POST /api/portal/orders/:id/files` require the same authenticated `portalContext` boundary as every other portal mutation. The server resolves the organization and customer from the session, then verifies that the target quote or order belongs to that customer.
+- The first release accepts PDF, JPG, PNG, and TIFF files up to 1 MB. The backend validates the MIME type, matching filename extension, sanitized filename, encoded content, and size before storing through the canonical storage service.
+- A submission is stored as a customer-visible `customer_upload` attachment with uploader identity, original filename, entity link, optional customer note, and an audit event. It is marked as awaiting staff review in its stored description/audit metadata.
+- Customer submissions are reference files only: they are not linked to a production line item, are never primary artwork, and do not advance quote, order, proof, fulfillment, invoice, or payment state.
+- Proof revision requests currently support a scoped note-only workflow. The existing proof model has no safe attachment relationship for a customer upload, so proof-specific uploads are intentionally out of scope until that relationship is designed.
+- No malware scanning or quarantine service is implied by this release. Accepted types and size are deliberately conservative; staff must review each submission before using it operationally.
 
 ## Workflow and preview rules
 
@@ -45,7 +54,7 @@ All file URLs are portal backend routes. A download first verifies record owners
 
 - No second portal application, separate auth/router/query client, draft API client, or client-side authorization filtering.
 - No direct portal database writes, direct object-storage access, MCP dependency, MCP mutation path, or non-portal internal record endpoints.
-- No portal product browsing, checkout conversion endpoint, customer upload surface, or automatic EPS settlement in this contract.
+- No portal product browsing, checkout conversion endpoint, proof-specific upload surface, or automatic EPS settlement in this contract.
 
 ## Regression coverage
 

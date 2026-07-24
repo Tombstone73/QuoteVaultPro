@@ -19,6 +19,7 @@ describe("portal file visibility classification", () => {
     expect(getPortalFileCategoryLabel("bad_internal_category")).toBe("Customer Document");
     expect(portalFileCategoryValues).toContain("approved_artwork");
     expect(portalFileCategoryValues).toContain("shipping_document");
+    expect(portalFileCategoryValues).toContain("customer_upload");
   });
 
   test("migration defaults attachment visibility to hidden", () => {
@@ -36,5 +37,14 @@ describe("portal file visibility classification", () => {
     expect(service).not.toContain("objectPath: attachment");
     expect(service).not.toContain("bucket: attachment");
     expect(service).not.toContain("fileUrl: attachment");
+  });
+
+  test("customer submissions are retained as visible review-needed attachments, not final artwork", () => {
+    const service = read("server/services/portal.service.ts");
+
+    expect(service).toContain('portalFileCategory: "customer_upload"');
+    expect(service).toContain('role: "reference"');
+    expect(service).toContain("isPrimary: false");
+    expect(service).toContain('reviewStatus: "awaiting_staff_review"');
   });
 });

@@ -5,6 +5,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import PortalFilesCard from "@/components/portal/PortalFilesCard";
+import PortalFileSubmissionCard from "@/components/portal/PortalFileSubmissionCard";
 import { Separator } from "@/components/ui/separator";
 import { usePortalOrder, usePortalOrderFiles, usePortalProofs } from "@/hooks/usePortal";
 
@@ -264,6 +265,8 @@ export default function PortalOrderDetailPage() {
         entity="orders"
         entityId={order.id}
       />
+
+      <PortalFileSubmissionCard entity="orders" entityId={order.id} />
     </div>
   );
 }

@@ -33,6 +33,8 @@ import {
   rejectPortalProof,
   requestPortalProofRevision,
   requestPortalQuoteRevision,
+  submitPortalOrderFile,
+  submitPortalQuoteFile,
   toPortalErrorResponse,
   updatePortalProfile,
 } from "../services/portal.service";
@@ -348,6 +350,7 @@ export function registerPortalRoutes(
   app.get("/api/portal/invoices/:id", ...portalMiddlewares, portalGetById("id", getPortalInvoice));
 
   app.get("/api/portal/orders", ...portalMiddlewares, portalGet(listPortalOrders));
+  app.post("/api/portal/orders/:id/files", ...portalMiddlewares, portalPostById("id", submitPortalOrderFile));
   app.get("/api/portal/orders/:id/files", ...portalMiddlewares, portalGetById("id", listPortalOrderFiles));
   app.get("/api/portal/orders/:id/files/:fileId", ...portalMiddlewares, portalFileDownload(getPortalOrderFileDownload));
   app.get("/api/portal/orders/:id", ...portalMiddlewares, portalGetById("id", getPortalOrder));
@@ -363,6 +366,7 @@ export function registerPortalRoutes(
   app.post("/api/portal/quotes/:id/approve", ...portalMiddlewares, portalPostById("id", approvePortalQuote));
   app.post("/api/portal/quotes/:id/decline", ...portalMiddlewares, portalPostById("id", declinePortalQuote));
   app.post("/api/portal/quotes/:id/request-revision", ...portalMiddlewares, portalPostById("id", requestPortalQuoteRevision));
+  app.post("/api/portal/quotes/:id/files", ...portalMiddlewares, portalPostById("id", submitPortalQuoteFile));
   app.get("/api/portal/quotes/:id/files", ...portalMiddlewares, portalGetById("id", listPortalQuoteFiles));
   app.get("/api/portal/quotes/:id/files/:fileId", ...portalMiddlewares, portalFileDownload(getPortalQuoteFileDownload));
   app.get("/api/portal/quotes/:id", ...portalMiddlewares, portalGetById("id", getPortalQuote));
