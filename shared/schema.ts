@@ -1044,6 +1044,32 @@ export const assistantOrderIntakeSessions = pgTable("assistant_order_intake_sess
 
 export type AssistantOrderIntakeSessionRow = typeof assistantOrderIntakeSessions.$inferSelect;
 
+// CRM proposals are deliberately separate from quote/order intake. They hold
+// server-normalized customer/contact changes until an authenticated user uses
+// the dedicated confirmation control.
+export const assistantCrmIntakeSessions = pgTable("assistant_crm_intake_sessions", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull(),
+  customerId: varchar("customer_id").references(() => customers.id, { onDelete: "set null" }),
+  contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: "set null" }),
+  commandName: varchar("command_name", { length: 64 }).notNull(),
+  status: varchar("status", { length: 32 }).$type<"collecting" | "preview_ready" | "created" | "abandoned">().notNull().default("collecting"),
+  intakeJson: jsonb("intake_json").$type<Record<string, unknown>>().notNull().default(sql`'{}'::jsonb`),
+  proposalFingerprint: varchar("proposal_fingerprint", { length: 64 }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("assistant_crm_intake_org_user_idx").on(table.organizationId, table.userId, table.updatedAt),
+  index("assistant_crm_intake_org_conversation_idx").on(table.organizationId, table.conversationId, table.updatedAt),
+  index("assistant_crm_intake_customer_idx").on(table.customerId),
+  index("assistant_crm_intake_contact_idx").on(table.contactId),
+]);
+
+export type AssistantCrmIntakeSessionRow = typeof assistantCrmIntakeSessions.$inferSelect;
+
 export const productIntakeAiDiagnostics = pgTable("product_intake_ai_diagnostics", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -2490,6 +2516,9 @@ export const customers = pgTable("customers", {
   taxRateOverride: decimal("tax_rate_override", { precision: 5, scale: 4 }),
   taxExemptReason: text("tax_exempt_reason"),
   taxExemptCertificateRef: text("tax_exempt_certificate_ref"),
+  // Commercial defaults used for future quote/order context only.
+  paymentTerms: varchar("payment_terms", { length: 50 }).notNull().default("due_on_receipt"),
+  blindShipping: boolean("blind_shipping").notNull().default(false),
 
   // 🔥 SAFETY FIX — add back is_active so Drizzle stops trying to drop it
   isActive: boolean("is_active").default(true),
@@ -2539,6 +2568,8 @@ export const insertCustomerSchema = createInsertSchema(customers).omit({
   taxRateOverride: z.coerce.number().min(0).max(0.30).optional().nullable().transform(val => val === undefined || isNaN(val as any) ? null : val),
   taxExemptReason: z.string().max(255).optional().nullable(),
   taxExemptCertificateRef: z.string().max(512).optional().nullable(),
+  paymentTerms: z.enum(["due_on_receipt", "net_15", "net_30", "net_45", "custom"]).default("due_on_receipt"),
+  blindShipping: z.boolean().default(false),
   // All structured address fields are optional
   billingStreet1: z.string().max(255).optional(),
   billingStreet2: z.string().max(255).optional(),

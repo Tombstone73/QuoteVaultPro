@@ -22,6 +22,11 @@ export const assistantCapabilityCommandPermissions = {
   "orders.create": "assistant.orders.create",
   "orders.update_editable": "assistant.orders.update_editable",
   "quotes.convert_to_order": "assistant.quotes.convert_to_order",
+  "customers.create": "assistant.customers.create",
+  "customers.update_profile": "assistant.customers.update_profile",
+  "customers.update_commercial_terms": "assistant.customers.update_commercial_terms",
+  "contacts.create": "assistant.contacts.create",
+  "contacts.update": "assistant.contacts.update",
   "products.create_inactive_draft": "assistant.products.create_inactive_draft",
   "products.update_inactive_draft": "assistant.products.update_inactive_draft",
 } as const;
@@ -33,6 +38,11 @@ export const assistantCapabilityCommandDescriptions = {
   "orders.create": "create one order with production deferred after your confirmation",
   "orders.update_editable": "update one editable order after your confirmation",
   "quotes.convert_to_order": "convert one quote to an order with production deferred after your confirmation",
+  "customers.create": "create one customer after your confirmation",
+  "customers.update_profile": "update one customer profile after your confirmation",
+  "customers.update_commercial_terms": "update one customer’s commercial terms after your confirmation",
+  "contacts.create": "create one customer contact after your confirmation",
+  "contacts.update": "update one customer contact after your confirmation",
   "products.create_inactive_draft": "help create an inactive product draft after your confirmation",
   "products.update_inactive_draft": "update an inactive product draft after your confirmation",
 } as const;
