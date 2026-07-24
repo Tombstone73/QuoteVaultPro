@@ -91,6 +91,7 @@ import {
 import { generateQuotePdfBytes, QuotePdfEligibilityError } from "../lib/quotePdf";
 import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValidation";
 import { parentBundlePricingUpdate } from "../services/lineItemBundles";
+import { assertValidParentLink } from "../services/lineItemParentLinking";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -2185,7 +2186,18 @@ export function registerQuoteRoutes(
       };
 
       const createdLineItem = await storage.addLineItem(id, validatedLineItem);
-      if (requestedParentLineItemId) await recalculateQuoteBundleParent(requestedParentLineItemId);
+      if (requestedParentLineItemId) {
+        const [parent] = await db.select().from(quoteLineItems).where(eq(quoteLineItems.id, requestedParentLineItemId)).limit(1);
+        if (parent?.lineItemRole === "parent") {
+          await recalculateQuoteBundleParent(requestedParentLineItemId);
+        } else if (parent) {
+          const linePrice = (Number(parent.linePrice) || 0) + (Number((createdLineItem as any).linePrice) || 0);
+          await db.update(quoteLineItems).set({
+            linePrice: linePrice.toFixed(2), formulaLinePrice: linePrice.toFixed(2),
+            priceBreakdown: { ...(parent.priceBreakdown as any), total: linePrice, formula: "linked_children" },
+          }).where(eq(quoteLineItems.id, parent.id));
+        }
+      }
       if (proofApproval.manualOverride) {
         await createProofApprovalManualOverrideAuditLog({
           organizationId,
@@ -2479,6 +2491,57 @@ export function registerQuoteRoutes(
         });
       }
       res.status(500).json({ message: "Failed to create temporary line item", error: (error as Error).message });
+    }
+  });
+
+  app.patch("/api/quotes/:id/line-items/:lineItemId/parent", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+      const { parentLineItemId } = z.object({ parentLineItemId: z.string().min(1).nullable() }).parse(req.body ?? {});
+      const quoteId = String(req.params.id);
+      const childId = String(req.params.lineItemId);
+      const quote = await storage.getQuoteById(organizationId, quoteId);
+      if (!quote) return res.status(404).json({ message: "Quote not found" });
+      if (!assertQuoteEditable(res, quote)) return;
+      const lines = await db.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quoteId));
+      assertValidParentLink(lines as any, childId, parentLineItemId);
+      const child = lines.find((line) => line.id === childId)!;
+      const priorParentId = child.parentLineItemId ? String(child.parentLineItemId) : null;
+      if (priorParentId === parentLineItemId) return res.json({ success: true, data: child });
+
+      const affectedStandaloneParents = [priorParentId, parentLineItemId]
+        .filter((id): id is string => Boolean(id))
+        .map((id) => lines.find((line) => line.id === id))
+        .filter((line): line is typeof lines[number] => Boolean(line && line.lineItemRole !== "parent"));
+      const childAmount = Number(child.linePrice) || 0;
+      for (const parent of affectedStandaloneParents) {
+        const delta = parent.id === priorParentId ? -childAmount : childAmount;
+        const linePrice = Math.max(0, (Number(parent.linePrice) || 0) + delta);
+        await db.update(quoteLineItems).set({
+          linePrice: linePrice.toFixed(2),
+          formulaLinePrice: linePrice.toFixed(2),
+          priceBreakdown: { ...(parent.priceBreakdown as any), total: linePrice, formula: "linked_children" },
+        }).where(eq(quoteLineItems.id, parent.id));
+      }
+      const [updated] = await db.update(quoteLineItems).set({
+        parentLineItemId,
+        lineItemRole: parentLineItemId ? "child" : "standalone",
+      }).where(eq(quoteLineItems.id, childId)).returning();
+      for (const parentId of Array.from(new Set([priorParentId, parentLineItemId].filter(Boolean) as string[]))) {
+        await recalculateQuoteBundleParent(parentId);
+      }
+      await refreshQuoteAggregateTotals(organizationId, quoteId);
+      await db.insert(auditLogs).values({
+        organizationId, userId: getUserId(req.user) ?? null, userName: getAuditUserName(req.user),
+        actionType: parentLineItemId ? "QUOTE_LINE_ITEM_PARENT_LINKED" : "QUOTE_LINE_ITEM_PARENT_UNLINKED",
+        entityType: "quote_line_item", entityId: childId, entityName: child.productName,
+        description: parentLineItemId ? "Quote line item linked to a parent line item." : "Quote line item unlinked from its parent.",
+        newValues: { parentLineItemId }, oldValues: { parentLineItemId: priorParentId },
+      } as any);
+      return res.json({ success: true, data: updated });
+    } catch (error: any) {
+      return res.status(error?.statusCode ?? 400).json({ success: false, message: error?.message ?? "Failed to update line item parent" });
     }
   });
 
