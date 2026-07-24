@@ -14,5 +14,6 @@ export * from "./quoteDraftUpdateExecutionCommand";
 export * from "./deferredOrderCommands";
 export * from "./crmManagementCommands";
 export * from "./productionOperationsCommands";
+export * from "./fulfillmentOperationsCommands";
 export * from "./stateMachine";
 export * from "./types";

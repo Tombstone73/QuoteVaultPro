@@ -290,7 +290,7 @@ export class FulfillmentService {
     return this.shipmentRepo.getShipmentById(orgId, shipmentId);
   }
 
-  async markShipmentShipped(orgId: string, shipmentId: string, actorUserId?: string | null) {
+  async markShipmentShipped(orgId: string, shipmentId: string, actorUserId?: string | null, options: { suppressBillingAutomation?: boolean } = {}) {
     const existing = await this.shipmentRepo.getShipmentById(orgId, shipmentId);
     if (!existing) {
       throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
@@ -317,13 +317,15 @@ export class FulfillmentService {
     const billingAutomationResults: BillingInvoiceAutomationResult[] = [];
     for (const orderId of orderIds) {
       await this.dashboardRepo.logChecklistVerified(orgId, orderId, actorUserId, { terminalAction: 'SHIPMENT_SHIPPED', shipmentId });
-      billingAutomationResults.push(await billingInvoiceAutomationService.ensureDraftInvoiceForOrderTrigger({
-        organizationId: orgId,
-        orderId,
-        trigger: 'picked_up_or_shipped',
-        sourceEvent: 'SHIPMENT_SHIPPED',
-        actorUserId,
-      }));
+      if (!options.suppressBillingAutomation) {
+        billingAutomationResults.push(await this.billingAutomationService.ensureDraftInvoiceForOrderTrigger({
+          organizationId: orgId,
+          orderId,
+          trigger: 'picked_up_or_shipped',
+          sourceEvent: 'SHIPMENT_SHIPPED',
+          actorUserId,
+        }));
+      }
     }
     return { ...(result.shipment as any), billingAutomation: billingAutomationResults };
   }

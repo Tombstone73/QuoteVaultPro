@@ -31,6 +31,11 @@ export const assistantCapabilityCommandPermissions = {
   "production.send_to_prepress": "assistant.production.send_to_prepress",
   "production.update_job_status": "assistant.production.update_job_status",
   "production.add_job_note": "assistant.production.add_job_note",
+  "fulfillment.create_shipment": "assistant.fulfillment.create_shipment",
+  "fulfillment.update_shipment_details": "assistant.fulfillment.update_shipment_details",
+  "fulfillment.mark_shipped": "assistant.fulfillment.mark_shipped",
+  "fulfillment.create_pickup_ticket": "assistant.fulfillment.create_pickup_ticket",
+  "fulfillment.add_note": "assistant.fulfillment.add_note",
   "products.create_inactive_draft": "assistant.products.create_inactive_draft",
   "products.update_inactive_draft": "assistant.products.update_inactive_draft",
 } as const;
@@ -51,6 +56,11 @@ export const assistantCapabilityCommandDescriptions = {
   "production.send_to_prepress": "send one selected line item to Prepress after your confirmation",
   "production.update_job_status": "start one queued production job after your confirmation",
   "production.add_job_note": "add one internal production note after your confirmation",
+  "fulfillment.create_shipment": "create one eligible draft shipment after your confirmation",
+  "fulfillment.update_shipment_details": "update safe draft shipment details after your confirmation",
+  "fulfillment.mark_shipped": "mark one eligible shipment shipped after your confirmation",
+  "fulfillment.create_pickup_ticket": "create or reuse one eligible pickup ticket after your confirmation",
+  "fulfillment.add_note": "add one internal fulfillment note after your confirmation",
   "products.create_inactive_draft": "help create an inactive product draft after your confirmation",
   "products.update_inactive_draft": "update an inactive product draft after your confirmation",
 } as const;

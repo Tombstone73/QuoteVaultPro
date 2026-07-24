@@ -48,6 +48,11 @@ export const assistantProductionCommandAllowlist = [
   "production.send_to_prepress",
   "production.update_job_status",
   "production.add_job_note",
+  "fulfillment.create_shipment",
+  "fulfillment.update_shipment_details",
+  "fulfillment.mark_shipped",
+  "fulfillment.create_pickup_ticket",
+  "fulfillment.add_note",
 ] as const;
 /** The only injected command name accepted by the isolated test registry. */
 export const assistantTestCommandAllowlist = ["test.assistant.synthetic_command"] as const;
