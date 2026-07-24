@@ -95,6 +95,15 @@ export interface ExecutionPlanPreview {
     warnings: readonly string[];
     downstreamActionsExcluded: readonly string[];
   };
+  crmManagement?: {
+    commandName: string;
+    crmIntakeSessionId: string;
+    proposalFingerprint: string;
+    changes: readonly { field: string; before: string | number | boolean | null; after: string | number | boolean | null }[];
+    warnings: readonly string[];
+    duplicateCandidates: readonly string[];
+    sourceLinks: readonly { label: string; href: string }[];
+  };
 }
 
 export interface ExecutionPlanRecord {
