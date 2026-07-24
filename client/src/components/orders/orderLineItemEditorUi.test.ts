@@ -7,8 +7,12 @@ import {
   buildOrderLineItemProductionActionRequests,
   getOrderLineItemEditorUiPolicy,
   getOrderLineItemSelectAllState,
+  getLineItemWorkflowActionLabel,
+  getGroupedOrderLineItemProductionActions,
+  getProductionScheduleTargetIds,
   getSelectableProductionLineItemIds,
   getOrderLineItemProductionActions,
+  isChildLineItem,
   resolveOrderLineItemOperationalDisplay,
   toggleAllOrderLineItemSelections,
   moveOrderLineItemIds,
@@ -128,6 +132,27 @@ describe("order line item editor UI policy", () => {
     ], [{ id: "print", requiresProductionJob: true, workflowIntent: "standard_production" }])).toEqual([]);
   });
 
+  it("uses a parent as the production control for its child lines", () => {
+    const products = [{ id: "print", requiresProductionJob: true, workflowIntent: "standard_production" }];
+    const lines = [
+      { id: "parent", productId: "print", status: "new", lineItemRole: "parent" },
+      { id: "child", productId: "print", status: "new", lineItemRole: "child", parentLineItemId: "parent" },
+      { id: "standalone", productId: "print", status: "new", lineItemRole: "standalone" },
+    ];
+
+    expect(isChildLineItem(lines[1])).toBe(true);
+    expect(getSelectableProductionLineItemIds(lines, products)).toEqual(["parent", "standalone"]);
+    expect(getProductionScheduleTargetIds("parent", lines, products)).toEqual(["child"]);
+    expect(getProductionScheduleTargetIds("child", lines, products)).toEqual([]);
+    expect(getProductionScheduleTargetIds("standalone", lines, products)).toEqual(["standalone"]);
+  });
+
+  it("makes parent workflow labels explicit without changing standalone terminology", () => {
+    expect(getLineItemWorkflowActionLabel("Send to Production", true)).toBe("Send Group to Production");
+    expect(getLineItemWorkflowActionLabel("Return to Prepress", true)).toBe("Return Group to Prepress");
+    expect(getLineItemWorkflowActionLabel("Bypass Production", false)).toBe("Bypass Production");
+  });
+
   it("uses the active Flatbed job as the operational display authority", () => {
     expect(resolveOrderLineItemOperationalDisplay({
       workflowState: "ready_for_production",
@@ -147,6 +172,17 @@ describe("order line item editor UI policy", () => {
       .toEqual(["start", "hold", "return_to_prepress"]);
     expect(getOrderLineItemProductionActions({ activeOwnerJobId: "job-1", activeOwnerStationKey: "flatbed", activeOwnerStatus: "paused" }))
       .toEqual(["resume", "return_to_prepress"]);
+  });
+
+  it("only exposes a group production action when every active child supports it", () => {
+    expect(getGroupedOrderLineItemProductionActions([
+      { activeOwnerJobId: "job-1", activeOwnerStationKey: "flatbed", activeOwnerStatus: "queued" },
+      { activeOwnerJobId: "job-2", activeOwnerStationKey: "roll", activeOwnerStatus: "queued" },
+    ])).toEqual(["start", "hold", "return_to_prepress"]);
+    expect(getGroupedOrderLineItemProductionActions([
+      { activeOwnerJobId: "job-1", activeOwnerStationKey: "flatbed", activeOwnerStatus: "queued" },
+      { activeOwnerJobId: "job-2", activeOwnerStationKey: "roll", activeOwnerStatus: "paused" },
+    ])).toEqual(["return_to_prepress"]);
   });
 
   it("routes production actions through the production and prepress workflow endpoints", () => {

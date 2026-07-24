@@ -6590,6 +6590,7 @@ export async function registerOrderRoutes(
                 orderId: orderLineItems.orderId,
                 productName: orderLineItems.description,
                 productionBypassed: orderLineItems.productionBypassed,
+                lineItemRole: orderLineItems.lineItemRole,
             }).from(orderLineItems)
                 .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
                 .where(and(eq(orderLineItems.id, String(req.params.id)), eq(orders.organizationId, organizationId)))
@@ -6597,7 +6598,10 @@ export async function registerOrderRoutes(
             if (!lineItem) return res.status(404).json({ success: false, message: "Order line item not found" });
 
             const now = new Date();
-            const [updated] = await db.update(orderLineItems).set({
+            const groupCondition = lineItem.lineItemRole === "parent"
+                ? or(eq(orderLineItems.id, lineItem.id), eq(orderLineItems.parentLineItemId, lineItem.id))
+                : eq(orderLineItems.id, lineItem.id);
+            const updated = await db.transaction(async (tx) => tx.update(orderLineItems).set({
                 productionBypassed: true,
                 productionBypassReason: parsed.data.reason,
                 productionBypassedByUserId: userId,
@@ -6607,7 +6611,7 @@ export async function registerOrderRoutes(
                 requiresProofApproval: false,
                 workflowState: "no_production_required" as any,
                 updatedAt: now,
-            }).where(eq(orderLineItems.id, lineItem.id)).returning();
+            }).where(and(eq(orderLineItems.orderId, lineItem.orderId), groupCondition)).returning());
 
             await db.insert(auditLogs).values({
                 organizationId,
@@ -6616,11 +6620,16 @@ export async function registerOrderRoutes(
                 entityType: "order_line_item",
                 entityId: lineItem.id,
                 entityName: lineItem.productName ?? null,
-                description: `Production bypassed for order line item: ${parsed.data.reason}`,
-                newValues: { reason: parsed.data.reason, previousBypassed: lineItem.productionBypassed === true },
+                description: `Production bypassed for ${lineItem.lineItemRole === "parent" ? "order line item group" : "order line item"}: ${parsed.data.reason}`,
+                newValues: {
+                    reason: parsed.data.reason,
+                    previousBypassed: lineItem.productionBypassed === true,
+                    groupedChildCount: Math.max(0, updated.length - 1),
+                },
             } as any);
             await recomputeOrderBillingStatus({ organizationId, orderId: lineItem.orderId });
-            return res.json({ success: true, data: enrichLineItemWithEffectivePricing(updated as any) });
+            const updatedParent = updated.find((item) => item.id === lineItem.id) ?? updated[0];
+            return res.json({ success: true, data: enrichLineItemWithEffectivePricing(updatedParent as any), groupedChildCount: Math.max(0, updated.length - 1) });
         } catch (error: any) {
             return res.status(error?.statusCode ?? 500).json({ success: false, message: error?.message ?? "Failed to bypass production" });
         }
