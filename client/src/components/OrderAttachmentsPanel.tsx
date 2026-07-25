@@ -51,6 +51,9 @@ type OrderAttachment = {
   portalFileCategory?: string | null;
   customerUploadReviewStatus?: "pending_review" | "accepted" | "rejected" | null;
   customerUploadReviewNote?: string | null;
+  customerUploadPromotionType?: "reference" | "artwork" | null;
+  customerUploadAssignedToOrderLineItemId?: string | null;
+  customerUploadAssignmentType?: "reference_for_line_item" | null;
   isPrimary?: boolean | null;
 };
 
@@ -61,7 +64,7 @@ function formatFileSize(bytes: number | null | undefined): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: string; locked?: boolean }) {
+export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] }: { orderId: string; locked?: boolean; lineItems?: Array<{ id: string; description: string; sortOrder?: number | null }> }) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
   const isPageVisible = usePageVisible();
@@ -439,6 +442,9 @@ export function OrderAttachmentsPanel({ orderId, locked = false }: { orderId: st
         entityLabel="Order"
         reviewUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-review`}
         promotionUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-promotion`}
+        assignmentUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-assignment`}
+        orderId={orderId}
+        orderLineItems={lineItems}
         attachments={attachments}
         orderPromotionAllowed
         onReviewed={() => queryClient.invalidateQueries({ queryKey: [attachmentsApiPath] })}

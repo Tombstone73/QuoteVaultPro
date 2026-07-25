@@ -3827,7 +3827,11 @@ export default function OrderDetail() {
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                <OrderAttachmentsPanel orderId={order.id} locked={false} />
+                <OrderAttachmentsPanel
+                  orderId={order.id}
+                  locked={false}
+                  lineItems={order.lineItems.map((lineItem: any) => ({ id: lineItem.id, description: lineItem.description, sortOrder: lineItem.sortOrder }))}
+                />
                 {inboundAttachmentAudit.length > 0 && (
                   <div className="mt-4 border-t pt-4" data-testid="order-inbound-attachment-history">
                     <div className="text-sm font-medium">Attached inbound messages</div>

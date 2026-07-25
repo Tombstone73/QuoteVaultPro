@@ -5637,6 +5637,11 @@ export const orderAttachments = pgTable("order_attachments", {
   customerUploadPromotionType: varchar("customer_upload_promotion_type", { length: 32 }),
   customerUploadPromotedByUserId: varchar("customer_upload_promoted_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   customerUploadPromotedAt: timestamp("customer_upload_promoted_at"),
+  customerUploadAssignedToOrderLineItemId: varchar("customer_upload_assigned_to_order_line_item_id").references(() => orderLineItems.id, { onDelete: 'set null' }),
+  customerUploadAssignmentType: varchar("customer_upload_assignment_type", { length: 32 }),
+  customerUploadAssignedByUserId: varchar("customer_upload_assigned_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  customerUploadAssignedAt: timestamp("customer_upload_assigned_at"),
+  customerUploadAssignmentNote: text("customer_upload_assignment_note"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -5649,6 +5654,7 @@ export const orderAttachments = pgTable("order_attachments", {
   index("order_attachments_portal_visible_idx").on(table.orderId, table.customerVisible),
   index("order_attachments_customer_upload_review_idx").on(table.orderId, table.customerUploadReviewStatus),
   index("order_attachments_customer_upload_promotion_idx").on(table.orderId, table.customerUploadPromotionType),
+  index("order_attachments_customer_upload_assignment_idx").on(table.orderId, table.customerUploadAssignedToOrderLineItemId),
 ]);
 
 export const insertOrderAttachmentSchema = createInsertSchema(orderAttachments).omit({

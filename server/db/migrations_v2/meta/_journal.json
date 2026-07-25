@@ -974,6 +974,13 @@
       "when": 1787097600000,
       "tag": "0143_customer_upload_promotion",
       "breakpoints": true
+    },
+    {
+      "idx": 144,
+      "version": "7",
+      "when": 1787184000000,
+      "tag": "0144_customer_upload_line_item_assignment",
+      "breakpoints": true
     }
   ]
 }

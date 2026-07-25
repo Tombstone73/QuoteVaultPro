@@ -1,11 +1,12 @@
 import { and, eq, isNull } from "drizzle-orm";
 
 import { db } from "../db";
-import { auditLogs, orderAttachments, orders, quoteAttachments, quotes } from "@shared/schema";
+import { auditLogs, orderAttachments, orderLineItems, orders, quoteAttachments, quotes } from "@shared/schema";
 
 export const customerUploadReviewStatuses = ["pending_review", "accepted", "rejected"] as const;
 export type CustomerUploadReviewStatus = typeof customerUploadReviewStatuses[number];
 export type CustomerUploadPromotion = "reference" | "artwork";
+export type CustomerUploadAssignmentType = "reference_for_line_item";
 
 export class CustomerUploadReviewError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -281,6 +282,140 @@ export async function promoteCustomerUpload(input: PromoteCustomerUploadInput) {
         productionChanged: false,
         billingChanged: false,
         paymentChanged: false,
+      },
+      ipAddress: input.ipAddress || null,
+      userAgent: input.userAgent || null,
+    });
+
+    return updated;
+  });
+}
+
+export type AssignPromotedCustomerUploadInput = {
+  organizationId: string;
+  sourceOrderId: string;
+  targetOrderId: string;
+  targetLineItemId: string;
+  attachmentId: string;
+  assignmentType: CustomerUploadAssignmentType;
+  assignmentNote?: string | null;
+  actorUserId: string;
+  actorUserName: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+};
+
+/**
+ * Assigns a promoted customer artwork reference to an order line item as a
+ * reference only. It deliberately does not attach the file to the production
+ * artwork-side workflow, set primary artwork, or invoke proof/prepress logic.
+ */
+export async function assignPromotedCustomerUpload(input: AssignPromotedCustomerUploadInput) {
+  return db.transaction(async (tx) => {
+    const [sourceOrder] = await tx
+      .select({ id: orders.id, customerId: orders.customerId })
+      .from(orders)
+      .where(and(eq(orders.id, input.sourceOrderId), eq(orders.organizationId, input.organizationId)))
+      .limit(1);
+    if (!sourceOrder) {
+      throw new CustomerUploadReviewError(404, "Customer upload not found.");
+    }
+
+    const [targetOrder] = await tx
+      .select({ id: orders.id, customerId: orders.customerId })
+      .from(orders)
+      .where(and(eq(orders.id, input.targetOrderId), eq(orders.organizationId, input.organizationId)))
+      .limit(1);
+    if (!targetOrder || targetOrder.id !== sourceOrder.id || targetOrder.customerId !== sourceOrder.customerId) {
+      throw new CustomerUploadReviewError(404, "Target order is not available for this customer upload.");
+    }
+
+    const [lineItem] = await tx
+      .select({ id: orderLineItems.id })
+      .from(orderLineItems)
+      .where(and(eq(orderLineItems.id, input.targetLineItemId), eq(orderLineItems.orderId, input.targetOrderId)))
+      .limit(1);
+    if (!lineItem) {
+      throw new CustomerUploadReviewError(404, "Target order line item not found.");
+    }
+
+    const [existing] = await tx
+      .select()
+      .from(orderAttachments)
+      .where(and(
+        eq(orderAttachments.id, input.attachmentId),
+        eq(orderAttachments.orderId, input.sourceOrderId),
+        isNull(orderAttachments.orderLineItemId),
+      ))
+      .limit(1);
+
+    if (!existing || existing.portalFileCategory !== "customer_upload") {
+      throw new CustomerUploadReviewError(404, "Customer upload not found.");
+    }
+    if (existing.customerUploadReviewStatus !== "accepted" || existing.customerUploadPromotionType !== "artwork") {
+      throw new CustomerUploadReviewError(409, "Only promoted artwork-reference customer uploads can be assigned.");
+    }
+    if (existing.customerUploadAssignmentType) {
+      throw new CustomerUploadReviewError(409, "This customer upload is already assigned to a line item reference.");
+    }
+
+    const assignedAt = new Date();
+    const assignmentNote = normalizeNote(input.assignmentNote);
+    const [updated] = await tx
+      .update(orderAttachments)
+      .set({
+        customerUploadAssignedToOrderLineItemId: input.targetLineItemId,
+        customerUploadAssignmentType: input.assignmentType,
+        customerUploadAssignedByUserId: input.actorUserId,
+        customerUploadAssignedAt: assignedAt,
+        customerUploadAssignmentNote: assignmentNote,
+        updatedAt: assignedAt,
+      })
+      .where(and(
+        eq(orderAttachments.id, input.attachmentId),
+        eq(orderAttachments.orderId, input.sourceOrderId),
+        isNull(orderAttachments.orderLineItemId),
+        isNull(orderAttachments.customerUploadAssignmentType),
+      ))
+      .returning();
+    if (!updated) {
+      throw new CustomerUploadReviewError(409, "This customer upload is already assigned to a line item reference.");
+    }
+
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId,
+      userName: input.actorUserName,
+      actionType: "customer_upload.assigned",
+      entityType: "order_attachment",
+      entityId: input.attachmentId,
+      entityName: updated.originalFilename || updated.fileName || input.attachmentId,
+      description: "Promoted customer artwork reference assigned to an order line item as a reference only.",
+      oldValues: {
+        assignmentType: existing.customerUploadAssignmentType || null,
+        targetOrderId: null,
+        targetLineItemId: existing.customerUploadAssignedToOrderLineItemId || null,
+        orderLineItemId: existing.orderLineItemId || null,
+        isPrimary: existing.isPrimary,
+      },
+      newValues: {
+        actorUserId: input.actorUserId,
+        assignedAt: assignedAt.toISOString(),
+        sourceUploadId: input.attachmentId,
+        targetOrderId: input.targetOrderId,
+        targetLineItemId: input.targetLineItemId,
+        assignmentType: input.assignmentType,
+        assignmentNote,
+        outcome: "assigned",
+        finalArtwork: false,
+        primaryArtworkChanged: false,
+        workflowStateChanged: false,
+        prepressChanged: false,
+        proofChanged: false,
+        productionChanged: false,
+        billingChanged: false,
+        paymentChanged: false,
+        epsChanged: false,
       },
       ipAddress: input.ipAddress || null,
       userAgent: input.userAgent || null,
