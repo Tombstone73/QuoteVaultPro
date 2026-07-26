@@ -23,6 +23,8 @@ export type CustomerUploadReviewAttachment = {
   customerUploadAssignedToOrderLineItemId?: string | null;
   customerUploadAssignmentType?: "reference_for_line_item" | null;
   customerUploadArtworkSelectionType?: "artwork_side_intake" | null;
+  customerUploadPrimaryCandidateSide?: "front" | "back" | "both" | null;
+  orderLineItemId?: string | null;
   side?: "front" | "back" | "both" | "na" | null;
   isPrimary?: boolean | null;
 };
@@ -47,6 +49,7 @@ export function CustomerUploadReviewPanel({
   assignmentUrl,
   artworkSelectionUrl,
   artworkSideDesignationUrl,
+  primaryArtworkCandidateUrl,
   orderId,
   orderLineItems = [],
   attachments,
@@ -59,6 +62,7 @@ export function CustomerUploadReviewPanel({
   assignmentUrl?: (attachmentId: string) => string;
   artworkSelectionUrl?: (attachmentId: string) => string;
   artworkSideDesignationUrl?: (attachmentId: string) => string;
+  primaryArtworkCandidateUrl?: (attachmentId: string) => string;
   orderId?: string;
   orderLineItems?: Array<{ id: string; description: string; sortOrder?: number | null }>;
   attachments: CustomerUploadReviewAttachment[];
@@ -71,6 +75,7 @@ export function CustomerUploadReviewPanel({
   const [assignmentTarget, setAssignmentTarget] = useState<CustomerUploadReviewAttachment | null>(null);
   const [artworkSelectionTarget, setArtworkSelectionTarget] = useState<CustomerUploadReviewAttachment | null>(null);
   const [artworkSideDesignationTarget, setArtworkSideDesignationTarget] = useState<CustomerUploadReviewAttachment | null>(null);
+  const [primaryArtworkCandidateTarget, setPrimaryArtworkCandidateTarget] = useState<CustomerUploadReviewAttachment | null>(null);
   const [decision, setDecision] = useState<"accepted" | "rejected">("accepted");
   const [promotion, setPromotion] = useState<"reference" | "artwork">("reference");
   const [reviewNote, setReviewNote] = useState("");
@@ -79,6 +84,7 @@ export function CustomerUploadReviewPanel({
   const [artworkSelectionNote, setArtworkSelectionNote] = useState("");
   const [artworkSide, setArtworkSide] = useState<"front" | "back" | "both">("front");
   const [artworkSideDesignationNote, setArtworkSideDesignationNote] = useState("");
+  const [primaryArtworkCandidateNote, setPrimaryArtworkCandidateNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const customerUploads = attachments.filter((attachment) => attachment.portalFileCategory === "customer_upload");
@@ -189,6 +195,50 @@ export function CustomerUploadReviewPanel({
     }
   };
 
+  const candidateConflictSides = (side: CustomerUploadReviewAttachment["side"]) => side === "both" ? ["front", "back", "both"] : side === "front" ? ["front", "both"] : ["back", "both"];
+  const primaryCandidateConflicts = primaryArtworkCandidateTarget
+    ? customerUploads.filter((attachment) => (
+      attachment.id !== primaryArtworkCandidateTarget.id
+      && attachment.orderLineItemId === primaryArtworkCandidateTarget.customerUploadAssignedToOrderLineItemId
+      && attachment.customerUploadPrimaryCandidateSide
+      && candidateConflictSides(primaryArtworkCandidateTarget.side).includes(attachment.customerUploadPrimaryCandidateSide)
+    ))
+    : [];
+
+  const submitPrimaryArtworkCandidate = async () => {
+    if (!primaryArtworkCandidateTarget || !primaryArtworkCandidateUrl || !orderId || !primaryArtworkCandidateTarget.customerUploadAssignedToOrderLineItemId || !primaryArtworkCandidateTarget.side || primaryArtworkCandidateTarget.side === "na") return;
+    setSubmitting(true);
+    try {
+      const response = await fetch(primaryArtworkCandidateUrl(primaryArtworkCandidateTarget.id), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetOrderId: orderId,
+          targetLineItemId: primaryArtworkCandidateTarget.customerUploadAssignedToOrderLineItemId,
+          side: primaryArtworkCandidateTarget.side,
+          candidateNote: primaryArtworkCandidateNote.trim() || null,
+          confirmPrimaryArtworkCandidate: true,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || "Unable to select this primary artwork candidate.");
+      }
+      toast({
+        title: "Primary artwork candidate selected",
+        description: "The file remains non-primary and not final art. No proof, prepress, production, or billing workflow changed.",
+      });
+      setPrimaryArtworkCandidateTarget(null);
+      setPrimaryArtworkCandidateNote("");
+      onReviewed();
+    } catch (error: any) {
+      toast({ title: "Primary artwork candidate selection failed", description: error?.message || "Unable to select this primary artwork candidate.", variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
   const submitAssignment = async () => {
     if (!assignmentTarget || !assignmentUrl || !orderId || !assignmentLineItemId) return;
     setSubmitting(true);
@@ -279,6 +329,7 @@ export function CustomerUploadReviewPanel({
             {attachment.customerUploadAssignmentType ? <p className="mt-1 text-xs text-muted-foreground">Assigned as a reference for line item: {assignedLineItem?.description || attachment.customerUploadAssignedToOrderLineItemId}. It is not primary or final art.</p> : null}
             {attachment.customerUploadArtworkSelectionType && (attachment.side === "na" || !attachment.side) ? <p className="mt-1 text-xs text-muted-foreground">Selected for artwork-side intake; no side, primary, or final-art state has been selected.</p> : null}
             {attachment.customerUploadArtworkSelectionType && attachment.side && attachment.side !== "na" ? <p className="mt-1 text-xs text-muted-foreground">Artwork side designated: {artworkSideLabel(attachment.side)}. It is still not primary or final art.</p> : null}
+            {attachment.customerUploadPrimaryCandidateSide ? <p className="mt-1 text-xs text-muted-foreground">Primary artwork candidate for {artworkSideLabel(attachment.customerUploadPrimaryCandidateSide)}. It is still not primary or final art.</p> : null}
             {pending ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 <Button size="sm" onClick={() => openReview(attachment, "accepted")}>Accept for review</Button>
@@ -304,6 +355,11 @@ export function CustomerUploadReviewPanel({
             {orderPromotionAllowed && attachment.customerUploadArtworkSelectionType === "artwork_side_intake" && attachment.side === "na" && !attachment.isPrimary ? (
               <div className="mt-2">
                 <Button size="sm" variant="outline" disabled={!artworkSideDesignationUrl || !orderId} onClick={() => { setArtworkSideDesignationTarget(attachment); setArtworkSide("front"); setArtworkSideDesignationNote(""); }}>Designate artwork side</Button>
+              </div>
+            ) : null}
+            {orderPromotionAllowed && attachment.customerUploadArtworkSelectionType === "artwork_side_intake" && attachment.side && attachment.side !== "na" && !attachment.isPrimary && !attachment.customerUploadPrimaryCandidateSide ? (
+              <div className="mt-2">
+                <Button size="sm" variant="outline" disabled={!primaryArtworkCandidateUrl || !orderId} onClick={() => { setPrimaryArtworkCandidateTarget(attachment); setPrimaryArtworkCandidateNote(""); }}>Select as primary artwork candidate</Button>
               </div>
             ) : null}
           </div>
@@ -396,6 +452,38 @@ export function CustomerUploadReviewPanel({
           <DialogFooter>
             <Button variant="outline" disabled={submitting} onClick={() => setArtworkSideDesignationTarget(null)}>Cancel</Button>
             <Button disabled={submitting} onClick={submitArtworkSideDesignation}>{submitting ? "Designatingâ€¦" : "Confirm side designation"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(primaryArtworkCandidateTarget)} onOpenChange={(open) => !open && !submitting && setPrimaryArtworkCandidateTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm primary artwork candidate</DialogTitle>
+            <DialogDescription>
+              This selects a staff-only candidate for the designated {artworkSideLabel(primaryArtworkCandidateTarget?.side)} side. It does not set the operational primary-art flag or mark final art, approve proof, complete prepress, route production, or change billing or payments.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label>Source customer upload</Label>
+            <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm break-all">{primaryArtworkCandidateTarget?.originalFilename || primaryArtworkCandidateTarget?.fileName}</p>
+          </div>
+          <div className="space-y-2">
+            <Label>Target order and line item</Label>
+            <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm">Current order: {orderId} / {orderLineItems.find((lineItem) => lineItem.id === primaryArtworkCandidateTarget?.customerUploadAssignedToOrderLineItemId)?.description || primaryArtworkCandidateTarget?.customerUploadAssignedToOrderLineItemId}</p>
+          </div>
+          <div className="space-y-2">
+            <Label>Selected candidate side</Label>
+            <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm">{artworkSideLabel(primaryArtworkCandidateTarget?.side)}</p>
+          </div>
+          {primaryCandidateConflicts.length > 0 ? <p className="rounded-md border border-amber-300/60 bg-amber-50/50 px-3 py-2 text-sm text-amber-950 dark:border-amber-900/60 dark:bg-amber-950/20 dark:text-amber-100">This will supersede {primaryCandidateConflicts.length} existing primary artwork candidate{primaryCandidateConflicts.length === 1 ? "" : "s"} for the conflicting side scope. It will not change final-art, proof, prepress, production, billing, payment, or EPS state.</p> : null}
+          <div className="space-y-2">
+            <Label htmlFor="customer-upload-primary-candidate-note">Internal candidate note (optional)</Label>
+            <Textarea id="customer-upload-primary-candidate-note" value={primaryArtworkCandidateNote} onChange={(event) => setPrimaryArtworkCandidateNote(event.target.value)} maxLength={2000} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={submitting} onClick={() => setPrimaryArtworkCandidateTarget(null)}>Cancel</Button>
+            <Button disabled={submitting} onClick={submitPrimaryArtworkCandidate}>{submitting ? "Selectingâ€¦" : "Confirm primary candidate"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

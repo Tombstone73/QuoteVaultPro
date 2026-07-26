@@ -5646,6 +5646,10 @@ export const orderAttachments = pgTable("order_attachments", {
   customerUploadArtworkSelectedByUserId: varchar("customer_upload_artwork_selected_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   customerUploadArtworkSelectedAt: timestamp("customer_upload_artwork_selected_at"),
   customerUploadArtworkSelectionNote: text("customer_upload_artwork_selection_note"),
+  customerUploadPrimaryCandidateSide: fileSideEnum("customer_upload_primary_candidate_side"),
+  customerUploadPrimaryCandidateByUserId: varchar("customer_upload_primary_candidate_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  customerUploadPrimaryCandidateAt: timestamp("customer_upload_primary_candidate_at"),
+  customerUploadPrimaryCandidateNote: text("customer_upload_primary_candidate_note"),
   createdAt: timestamp("created_at").defaultNow().notNull(),
   updatedAt: timestamp("updated_at").defaultNow().notNull(),
 }, (table) => [
@@ -5660,6 +5664,10 @@ export const orderAttachments = pgTable("order_attachments", {
   index("order_attachments_customer_upload_promotion_idx").on(table.orderId, table.customerUploadPromotionType),
   index("order_attachments_customer_upload_assignment_idx").on(table.orderId, table.customerUploadAssignedToOrderLineItemId),
   index("order_attachments_customer_upload_artwork_selection_idx").on(table.orderId, table.customerUploadArtworkSelectionType),
+  index("order_attachments_customer_upload_primary_candidate_idx").on(table.orderId, table.customerUploadPrimaryCandidateSide),
+  uniqueIndex("order_attachments_customer_upload_primary_candidate_line_side_uidx")
+    .on(table.orderLineItemId, table.customerUploadPrimaryCandidateSide)
+    .where(sql`${table.customerUploadPrimaryCandidateSide} IS NOT NULL`),
 ]);
 
 export const insertOrderAttachmentSchema = createInsertSchema(orderAttachments).omit({

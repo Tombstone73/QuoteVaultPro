@@ -55,6 +55,8 @@ type OrderAttachment = {
   customerUploadAssignedToOrderLineItemId?: string | null;
   customerUploadAssignmentType?: "reference_for_line_item" | null;
   customerUploadArtworkSelectionType?: "artwork_side_intake" | null;
+  customerUploadPrimaryCandidateSide?: "front" | "back" | "both" | null;
+  orderLineItemId?: string | null;
   side?: "front" | "back" | "both" | "na" | null;
   isPrimary?: boolean | null;
 };
@@ -447,6 +449,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] 
         assignmentUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-assignment`}
         artworkSelectionUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-artwork-selection`}
         artworkSideDesignationUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-artwork-side-designation`}
+        primaryArtworkCandidateUrl={(attachmentId) => `${attachmentsApiPath}/${attachmentId}/customer-upload-primary-artwork-candidate`}
         orderId={orderId}
         orderLineItems={lineItems}
         attachments={attachments}

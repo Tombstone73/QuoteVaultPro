@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, ne } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne, sql } from "drizzle-orm";
 
 import { db } from "../db";
 import { applyArtworkSideAssignmentToSpecs } from "@shared/artworkSideAssignment";
@@ -11,6 +11,7 @@ export type CustomerUploadPromotion = "reference" | "artwork";
 export type CustomerUploadAssignmentType = "reference_for_line_item";
 export type CustomerUploadArtworkSelectionType = "artwork_side_intake";
 export type CustomerUploadArtworkSideDesignation = OrderArtworkSide;
+export type CustomerUploadPrimaryArtworkCandidateSide = OrderArtworkSide;
 
 export class CustomerUploadReviewError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -732,6 +733,203 @@ export async function designateCustomerUploadArtworkSide(input: DesignateCustome
         workflowStateChanged: false,
         prepressChanged: false,
         proofChanged: false,
+        productionChanged: false,
+        billingChanged: false,
+        paymentChanged: false,
+        epsChanged: false,
+      },
+      ipAddress: input.ipAddress || null,
+      userAgent: input.userAgent || null,
+    });
+
+    return updated;
+  });
+}
+
+export type SelectCustomerUploadPrimaryArtworkCandidateInput = {
+  organizationId: string;
+  sourceOrderId: string;
+  targetOrderId: string;
+  targetLineItemId: string;
+  attachmentId: string;
+  side: CustomerUploadPrimaryArtworkCandidateSide;
+  candidateNote?: string | null;
+  actorUserId: string;
+  actorUserName: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+};
+
+/**
+ * Marks a side-designated customer upload as a staff-only primary artwork
+ * candidate. This intentionally uses separate candidate metadata rather than
+ * orderAttachments.isPrimary, which is consumed by operational workflows.
+ */
+export async function selectCustomerUploadPrimaryArtworkCandidate(input: SelectCustomerUploadPrimaryArtworkCandidateInput) {
+  return db.transaction(async (tx) => {
+    const [sourceOrder] = await tx
+      .select({ id: orders.id, customerId: orders.customerId })
+      .from(orders)
+      .where(and(eq(orders.id, input.sourceOrderId), eq(orders.organizationId, input.organizationId)))
+      .limit(1);
+    if (!sourceOrder) throw new CustomerUploadReviewError(404, "Customer upload not found.");
+
+    const [targetOrder] = await tx
+      .select({ id: orders.id, customerId: orders.customerId })
+      .from(orders)
+      .where(and(eq(orders.id, input.targetOrderId), eq(orders.organizationId, input.organizationId)))
+      .limit(1);
+    if (!targetOrder || targetOrder.id !== sourceOrder.id || targetOrder.customerId !== sourceOrder.customerId) {
+      throw new CustomerUploadReviewError(404, "Target order is not available for this customer upload.");
+    }
+
+    const [lineItem] = await tx
+      .select({ id: orderLineItems.id })
+      .from(orderLineItems)
+      .where(and(eq(orderLineItems.id, input.targetLineItemId), eq(orderLineItems.orderId, input.targetOrderId)))
+      .limit(1);
+    if (!lineItem) throw new CustomerUploadReviewError(404, "Target order line item not found.");
+
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`customer-upload-primary-candidate:${input.organizationId}:${input.targetOrderId}:${input.targetLineItemId}`}))`);
+
+    const [existing] = await tx
+      .select()
+      .from(orderAttachments)
+      .where(and(
+        eq(orderAttachments.id, input.attachmentId),
+        eq(orderAttachments.orderId, input.sourceOrderId),
+        eq(orderAttachments.orderLineItemId, input.targetLineItemId),
+      ))
+      .limit(1);
+    if (!existing || existing.portalFileCategory !== "customer_upload") {
+      throw new CustomerUploadReviewError(404, "Customer upload not found.");
+    }
+    if (
+      existing.customerUploadReviewStatus !== "accepted"
+      || existing.customerUploadPromotionType !== "artwork"
+      || existing.customerUploadAssignmentType !== "reference_for_line_item"
+      || existing.customerUploadAssignedToOrderLineItemId !== input.targetLineItemId
+      || existing.customerUploadArtworkSelectionType !== "artwork_side_intake"
+      || existing.role !== "artwork"
+      || existing.side !== input.side
+      || existing.isPrimary
+      || existing.customerUploadPrimaryCandidateSide
+    ) {
+      throw new CustomerUploadReviewError(409, "Only side-designated, non-primary customer artwork references can become primary artwork candidates.");
+    }
+
+    if (existing.fileRecordId) {
+      const [finalFile] = await tx
+        .select({ id: lineItemFiles.id })
+        .from(lineItemFiles)
+        .where(and(
+          eq(lineItemFiles.organizationId, input.organizationId),
+          eq(lineItemFiles.orderId, input.targetOrderId),
+          eq(lineItemFiles.lineItemId, input.targetLineItemId),
+          eq(lineItemFiles.fileRecordId, existing.fileRecordId),
+          eq(lineItemFiles.role, "final"),
+          eq(lineItemFiles.status, "active"),
+        ))
+        .limit(1);
+      if (finalFile) {
+        throw new CustomerUploadReviewError(409, "Final-art customer uploads cannot become primary artwork candidates through this workflow.");
+      }
+    }
+
+    const candidateAt = new Date();
+    const candidateNote = normalizeNote(input.candidateNote);
+    const conflictingSides = getConflictingArtworkSides(input.side);
+    const previousCandidates = await tx
+      .select({
+        id: orderAttachments.id,
+        candidateSide: orderAttachments.customerUploadPrimaryCandidateSide,
+        candidateByUserId: orderAttachments.customerUploadPrimaryCandidateByUserId,
+        candidateAt: orderAttachments.customerUploadPrimaryCandidateAt,
+      })
+      .from(orderAttachments)
+      .where(and(
+        eq(orderAttachments.orderId, input.targetOrderId),
+        eq(orderAttachments.orderLineItemId, input.targetLineItemId),
+        ne(orderAttachments.id, input.attachmentId),
+        inArray(orderAttachments.customerUploadPrimaryCandidateSide, conflictingSides),
+      ));
+
+    await tx
+      .update(orderAttachments)
+      .set({
+        customerUploadPrimaryCandidateSide: null,
+        customerUploadPrimaryCandidateByUserId: null,
+        customerUploadPrimaryCandidateAt: null,
+        customerUploadPrimaryCandidateNote: null,
+        updatedAt: candidateAt,
+      })
+      .where(and(
+        eq(orderAttachments.orderId, input.targetOrderId),
+        eq(orderAttachments.orderLineItemId, input.targetLineItemId),
+        ne(orderAttachments.id, input.attachmentId),
+        inArray(orderAttachments.customerUploadPrimaryCandidateSide, conflictingSides),
+      ));
+
+    const [updated] = await tx
+      .update(orderAttachments)
+      .set({
+        customerUploadPrimaryCandidateSide: input.side,
+        customerUploadPrimaryCandidateByUserId: input.actorUserId,
+        customerUploadPrimaryCandidateAt: candidateAt,
+        customerUploadPrimaryCandidateNote: candidateNote,
+        updatedAt: candidateAt,
+      })
+      .where(and(
+        eq(orderAttachments.id, input.attachmentId),
+        eq(orderAttachments.orderId, input.sourceOrderId),
+        eq(orderAttachments.orderLineItemId, input.targetLineItemId),
+        eq(orderAttachments.portalFileCategory, "customer_upload"),
+        eq(orderAttachments.customerUploadReviewStatus, "accepted"),
+        eq(orderAttachments.customerUploadPromotionType, "artwork"),
+        eq(orderAttachments.customerUploadAssignmentType, "reference_for_line_item"),
+        eq(orderAttachments.customerUploadAssignedToOrderLineItemId, input.targetLineItemId),
+        eq(orderAttachments.customerUploadArtworkSelectionType, "artwork_side_intake"),
+        eq(orderAttachments.role, "artwork"),
+        eq(orderAttachments.side, input.side),
+        eq(orderAttachments.isPrimary, false),
+        isNull(orderAttachments.customerUploadPrimaryCandidateSide),
+      ))
+      .returning();
+    if (!updated) {
+      throw new CustomerUploadReviewError(409, "This customer upload is no longer eligible for primary artwork candidate selection.");
+    }
+
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId,
+      userName: input.actorUserName,
+      actionType: "customer_upload.primary_artwork_candidate_selected",
+      entityType: "order_attachment",
+      entityId: input.attachmentId,
+      entityName: updated.originalFilename || updated.fileName || input.attachmentId,
+      description: `Customer artwork reference selected as the ${input.side} primary artwork candidate.`,
+      oldValues: {
+        primaryCandidateSide: existing.customerUploadPrimaryCandidateSide || null,
+        isPrimary: existing.isPrimary,
+        side: existing.side,
+        replacedCandidates: previousCandidates,
+      },
+      newValues: {
+        actorUserId: input.actorUserId,
+        candidateAt: candidateAt.toISOString(),
+        sourceAttachmentId: input.attachmentId,
+        targetOrderId: input.targetOrderId,
+        targetLineItemId: input.targetLineItemId,
+        selectedSide: input.side,
+        action: "primary_artwork_candidate_selection",
+        candidateNote,
+        outcome: "primary_candidate_selected",
+        replacedCandidateIds: previousCandidates.map((candidate) => candidate.id),
+        replacedCandidateDetails: previousCandidates,
+        finalArtwork: false,
+        primaryArtworkChanged: false,
+        proofChanged: false,
+        prepressChanged: false,
         productionChanged: false,
         billingChanged: false,
         paymentChanged: false,
