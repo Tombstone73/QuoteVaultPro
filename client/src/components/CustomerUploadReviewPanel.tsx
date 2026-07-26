@@ -23,8 +23,16 @@ export type CustomerUploadReviewAttachment = {
   customerUploadAssignedToOrderLineItemId?: string | null;
   customerUploadAssignmentType?: "reference_for_line_item" | null;
   customerUploadArtworkSelectionType?: "artwork_side_intake" | null;
+  side?: "front" | "back" | "both" | "na" | null;
   isPrimary?: boolean | null;
 };
+
+function artworkSideLabel(side: CustomerUploadReviewAttachment["side"]) {
+  if (side === "front") return "Front";
+  if (side === "back") return "Back";
+  if (side === "both") return "Both";
+  return "Unassigned";
+}
 
 function statusLabel(status: CustomerUploadReviewAttachment["customerUploadReviewStatus"]) {
   if (status === "accepted") return "Accepted";
@@ -38,6 +46,7 @@ export function CustomerUploadReviewPanel({
   promotionUrl,
   assignmentUrl,
   artworkSelectionUrl,
+  artworkSideDesignationUrl,
   orderId,
   orderLineItems = [],
   attachments,
@@ -49,6 +58,7 @@ export function CustomerUploadReviewPanel({
   promotionUrl: (attachmentId: string) => string;
   assignmentUrl?: (attachmentId: string) => string;
   artworkSelectionUrl?: (attachmentId: string) => string;
+  artworkSideDesignationUrl?: (attachmentId: string) => string;
   orderId?: string;
   orderLineItems?: Array<{ id: string; description: string; sortOrder?: number | null }>;
   attachments: CustomerUploadReviewAttachment[];
@@ -60,12 +70,15 @@ export function CustomerUploadReviewPanel({
   const [promotionTarget, setPromotionTarget] = useState<CustomerUploadReviewAttachment | null>(null);
   const [assignmentTarget, setAssignmentTarget] = useState<CustomerUploadReviewAttachment | null>(null);
   const [artworkSelectionTarget, setArtworkSelectionTarget] = useState<CustomerUploadReviewAttachment | null>(null);
+  const [artworkSideDesignationTarget, setArtworkSideDesignationTarget] = useState<CustomerUploadReviewAttachment | null>(null);
   const [decision, setDecision] = useState<"accepted" | "rejected">("accepted");
   const [promotion, setPromotion] = useState<"reference" | "artwork">("reference");
   const [reviewNote, setReviewNote] = useState("");
   const [assignmentLineItemId, setAssignmentLineItemId] = useState("");
   const [assignmentNote, setAssignmentNote] = useState("");
   const [artworkSelectionNote, setArtworkSelectionNote] = useState("");
+  const [artworkSide, setArtworkSide] = useState<"front" | "back" | "both">("front");
+  const [artworkSideDesignationNote, setArtworkSideDesignationNote] = useState("");
   const [submitting, setSubmitting] = useState(false);
 
   const customerUploads = attachments.filter((attachment) => attachment.portalFileCategory === "customer_upload");
@@ -137,6 +150,40 @@ export function CustomerUploadReviewPanel({
       onReviewed();
     } catch (error: any) {
       toast({ title: "Artwork-side selection failed", description: error?.message || "Unable to select this customer upload for artwork-side handling.", variant: "destructive" });
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const submitArtworkSideDesignation = async () => {
+    if (!artworkSideDesignationTarget || !artworkSideDesignationUrl || !orderId || !artworkSideDesignationTarget.customerUploadAssignedToOrderLineItemId) return;
+    setSubmitting(true);
+    try {
+      const response = await fetch(artworkSideDesignationUrl(artworkSideDesignationTarget.id), {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          targetOrderId: orderId,
+          targetLineItemId: artworkSideDesignationTarget.customerUploadAssignedToOrderLineItemId,
+          side: artworkSide,
+          designationNote: artworkSideDesignationNote.trim() || null,
+          confirmArtworkSideDesignation: true,
+        }),
+      });
+      if (!response.ok) {
+        const payload = await response.json().catch(() => ({}));
+        throw new Error(payload.error || "Unable to designate an artwork side for this customer upload.");
+      }
+      toast({
+        title: `Customer upload designated for ${artworkSideLabel(artworkSide)}`,
+        description: "The file remains non-primary and not final art. No proof, prepress, production, or billing workflow changed.",
+      });
+      setArtworkSideDesignationTarget(null);
+      setArtworkSideDesignationNote("");
+      onReviewed();
+    } catch (error: any) {
+      toast({ title: "Artwork-side designation failed", description: error?.message || "Unable to designate an artwork side for this customer upload.", variant: "destructive" });
     } finally {
       setSubmitting(false);
     }
@@ -230,7 +277,8 @@ export function CustomerUploadReviewPanel({
             {attachment.customerUploadReviewNote ? <p className="mt-1 text-xs text-muted-foreground">Review note: {attachment.customerUploadReviewNote}</p> : null}
             {attachment.customerUploadPromotionType ? <p className="mt-1 text-xs text-muted-foreground">Promoted as {attachment.customerUploadPromotionType === "artwork" ? "artwork reference" : "approved reference"}; not primary or final art.</p> : null}
             {attachment.customerUploadAssignmentType ? <p className="mt-1 text-xs text-muted-foreground">Assigned as a reference for line item: {assignedLineItem?.description || attachment.customerUploadAssignedToOrderLineItemId}. It is not primary or final art.</p> : null}
-            {attachment.customerUploadArtworkSelectionType ? <p className="mt-1 text-xs text-muted-foreground">Available for existing artwork-side selection; no side, primary, or final-art state has been selected.</p> : null}
+            {attachment.customerUploadArtworkSelectionType && (attachment.side === "na" || !attachment.side) ? <p className="mt-1 text-xs text-muted-foreground">Selected for artwork-side intake; no side, primary, or final-art state has been selected.</p> : null}
+            {attachment.customerUploadArtworkSelectionType && attachment.side && attachment.side !== "na" ? <p className="mt-1 text-xs text-muted-foreground">Artwork side designated: {artworkSideLabel(attachment.side)}. It is still not primary or final art.</p> : null}
             {pending ? (
               <div className="mt-2 flex flex-wrap gap-2">
                 <Button size="sm" onClick={() => openReview(attachment, "accepted")}>Accept for review</Button>
@@ -251,6 +299,11 @@ export function CustomerUploadReviewPanel({
             {orderPromotionAllowed && attachment.customerUploadPromotionType === "artwork" && attachment.customerUploadAssignmentType === "reference_for_line_item" && !attachment.customerUploadArtworkSelectionType ? (
               <div className="mt-2">
                 <Button size="sm" variant="outline" disabled={!artworkSelectionUrl || !orderId} onClick={() => { setArtworkSelectionTarget(attachment); setArtworkSelectionNote(""); }}>Make available for artwork-side selection</Button>
+              </div>
+            ) : null}
+            {orderPromotionAllowed && attachment.customerUploadArtworkSelectionType === "artwork_side_intake" && attachment.side === "na" && !attachment.isPrimary ? (
+              <div className="mt-2">
+                <Button size="sm" variant="outline" disabled={!artworkSideDesignationUrl || !orderId} onClick={() => { setArtworkSideDesignationTarget(attachment); setArtworkSide("front"); setArtworkSideDesignationNote(""); }}>Designate artwork side</Button>
               </div>
             ) : null}
           </div>
@@ -301,6 +354,48 @@ export function CustomerUploadReviewPanel({
           <DialogFooter>
             <Button variant="outline" disabled={submitting} onClick={() => setArtworkSelectionTarget(null)}>Cancel</Button>
             <Button disabled={submitting} onClick={submitArtworkSelection}>{submitting ? "Selectingâ€¦" : "Confirm artwork-side intake"}</Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={Boolean(artworkSideDesignationTarget)} onOpenChange={(open) => !open && !submitting && setArtworkSideDesignationTarget(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirm artwork-side designation</DialogTitle>
+            <DialogDescription>
+              This explicitly designates Front, Back, or Both for the intake-selected reference. Existing side-conflict rules can clear conflicting side labels from other files on this line item. It does not set primary or final art, complete prepress, approve proof, route production, or change billing or payments.
+            </DialogDescription>
+          </DialogHeader>
+          <div className="space-y-2">
+            <Label>Source customer upload</Label>
+            <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm break-all">{artworkSideDesignationTarget?.originalFilename || artworkSideDesignationTarget?.fileName}</p>
+          </div>
+          <div className="space-y-2">
+            <Label>Target order</Label>
+            <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm">Current order: {orderId}</p>
+          </div>
+          <div className="space-y-2">
+            <Label>Target line item</Label>
+            <p className="rounded-md border bg-muted/30 px-3 py-2 text-sm">{orderLineItems.find((lineItem) => lineItem.id === artworkSideDesignationTarget?.customerUploadAssignedToOrderLineItemId)?.description || artworkSideDesignationTarget?.customerUploadAssignedToOrderLineItemId}</p>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="customer-upload-artwork-side">Artwork side</Label>
+            <Select value={artworkSide} onValueChange={(value) => setArtworkSide(value as "front" | "back" | "both")}>
+              <SelectTrigger id="customer-upload-artwork-side"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="front">Front</SelectItem>
+                <SelectItem value="back">Back</SelectItem>
+                <SelectItem value="both">Both</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-2">
+            <Label htmlFor="customer-upload-artwork-side-note">Internal designation note (optional)</Label>
+            <Textarea id="customer-upload-artwork-side-note" value={artworkSideDesignationNote} onChange={(event) => setArtworkSideDesignationNote(event.target.value)} maxLength={2000} />
+          </div>
+          <DialogFooter>
+            <Button variant="outline" disabled={submitting} onClick={() => setArtworkSideDesignationTarget(null)}>Cancel</Button>
+            <Button disabled={submitting} onClick={submitArtworkSideDesignation}>{submitting ? "Designatingâ€¦" : "Confirm side designation"}</Button>
           </DialogFooter>
         </DialogContent>
       </Dialog>

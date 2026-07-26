@@ -144,7 +144,7 @@ import { getFileUploadNamingPolicy } from "../prepressFileService";
 import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
 import { generateOrderPdfBytes, orderPdfFilename, OrderPdfEligibilityError } from "../lib/orderPdf";
 import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineItemCreationPolicy";
-import { assignPromotedCustomerUpload, CustomerUploadReviewError, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork } from "../services/customerUploadReview.service";
+import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork } from "../services/customerUploadReview.service";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -221,6 +221,14 @@ const customerUploadArtworkSelectionSchema = z.object({
     artworkSelectionType: z.literal("artwork_side_intake"),
     artworkSelectionNote: z.string().trim().max(2000).optional().nullable(),
     confirmArtworkSelection: z.literal(true),
+});
+
+const customerUploadArtworkSideDesignationSchema = z.object({
+    targetOrderId: z.string().trim().min(1),
+    targetLineItemId: z.string().trim().min(1),
+    side: z.enum(["front", "back", "both"]),
+    designationNote: z.string().trim().max(2000).optional().nullable(),
+    confirmArtworkSideDesignation: z.literal(true),
 });
 
 function assertInternalStaffUser(req: any, res: any): boolean {
@@ -3724,6 +3732,38 @@ export async function registerOrderRoutes(
             if (error instanceof CustomerUploadReviewError) return res.status(error.statusCode).json({ error: error.message });
             console.error("[OrderAttachments:CustomerUploadArtworkSelection] Error:", error);
             return res.status(500).json({ error: "Failed to select customer upload for artwork-side handling" });
+        }
+    });
+
+    app.post("/api/orders/:orderId/attachments/:attachmentId/customer-upload-artwork-side-designation", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+            if (!userId) return res.status(401).json({ error: "Authentication required" });
+
+            const parsed = customerUploadArtworkSideDesignationSchema.safeParse(req.body);
+            if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+
+            const updated = await designateCustomerUploadArtworkSide({
+                organizationId,
+                sourceOrderId: req.params.orderId,
+                targetOrderId: parsed.data.targetOrderId,
+                targetLineItemId: parsed.data.targetLineItemId,
+                attachmentId: req.params.attachmentId,
+                side: parsed.data.side,
+                designationNote: parsed.data.designationNote,
+                actorUserId: userId,
+                actorUserName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+                ipAddress: req.ip,
+                userAgent: req.get?.("user-agent") || null,
+            });
+            return res.json({ success: true, data: await enrichAttachmentWithUrls(updated) });
+        } catch (error: any) {
+            if (error instanceof CustomerUploadReviewError) return res.status(error.statusCode).json({ error: error.message });
+            console.error("[OrderAttachments:CustomerUploadArtworkSideDesignation] Error:", error);
+            return res.status(500).json({ error: "Failed to designate customer upload artwork side" });
         }
     });
 

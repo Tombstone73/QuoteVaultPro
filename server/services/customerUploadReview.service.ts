@@ -1,13 +1,16 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull, ne } from "drizzle-orm";
 
 import { db } from "../db";
-import { auditLogs, orderAttachments, orderLineItems, orders, quoteAttachments, quotes } from "@shared/schema";
+import { applyArtworkSideAssignmentToSpecs } from "@shared/artworkSideAssignment";
+import { auditLogs, lineItemFiles, orderAttachments, orderLineItems, orders, quoteAttachments, quotes } from "@shared/schema";
+import { getConflictingArtworkSides, type OrderArtworkSide } from "./orderLineItemArtworkAssignmentService";
 
 export const customerUploadReviewStatuses = ["pending_review", "accepted", "rejected"] as const;
 export type CustomerUploadReviewStatus = typeof customerUploadReviewStatuses[number];
 export type CustomerUploadPromotion = "reference" | "artwork";
 export type CustomerUploadAssignmentType = "reference_for_line_item";
 export type CustomerUploadArtworkSelectionType = "artwork_side_intake";
+export type CustomerUploadArtworkSideDesignation = OrderArtworkSide;
 
 export class CustomerUploadReviewError extends Error {
   constructor(public readonly statusCode: number, message: string) {
@@ -546,6 +549,184 @@ export async function selectAssignedCustomerUploadForArtwork(input: SelectAssign
         artworkSideAction: input.artworkSelectionType,
         artworkSelectionNote,
         outcome: "selected_for_artwork_side_intake",
+        finalArtwork: false,
+        primaryArtworkChanged: false,
+        workflowStateChanged: false,
+        prepressChanged: false,
+        proofChanged: false,
+        productionChanged: false,
+        billingChanged: false,
+        paymentChanged: false,
+        epsChanged: false,
+      },
+      ipAddress: input.ipAddress || null,
+      userAgent: input.userAgent || null,
+    });
+
+    return updated;
+  });
+}
+
+export type DesignateCustomerUploadArtworkSideInput = {
+  organizationId: string;
+  sourceOrderId: string;
+  targetOrderId: string;
+  targetLineItemId: string;
+  attachmentId: string;
+  side: CustomerUploadArtworkSideDesignation;
+  designationNote?: string | null;
+  actorUserId: string;
+  actorUserName: string | null;
+  ipAddress?: string | null;
+  userAgent?: string | null;
+};
+
+/**
+ * Explicitly designates Front, Back, or Both for an intake-selected customer
+ * artwork reference. This deliberately follows the established order-side
+ * conflict behavior, but never invokes proof, prepress, final-art, primary,
+ * production, billing, payment, or EPS workflows.
+ */
+export async function designateCustomerUploadArtworkSide(input: DesignateCustomerUploadArtworkSideInput) {
+  return db.transaction(async (tx) => {
+    const [sourceOrder] = await tx
+      .select({ id: orders.id, customerId: orders.customerId })
+      .from(orders)
+      .where(and(eq(orders.id, input.sourceOrderId), eq(orders.organizationId, input.organizationId)))
+      .limit(1);
+    if (!sourceOrder) throw new CustomerUploadReviewError(404, "Customer upload not found.");
+
+    const [targetOrder] = await tx
+      .select({ id: orders.id, customerId: orders.customerId })
+      .from(orders)
+      .where(and(eq(orders.id, input.targetOrderId), eq(orders.organizationId, input.organizationId)))
+      .limit(1);
+    if (!targetOrder || targetOrder.id !== sourceOrder.id || targetOrder.customerId !== sourceOrder.customerId) {
+      throw new CustomerUploadReviewError(404, "Target order is not available for this customer upload.");
+    }
+
+    const [lineItem] = await tx
+      .select({ id: orderLineItems.id, specsJson: orderLineItems.specsJson })
+      .from(orderLineItems)
+      .where(and(eq(orderLineItems.id, input.targetLineItemId), eq(orderLineItems.orderId, input.targetOrderId)))
+      .limit(1);
+    if (!lineItem) throw new CustomerUploadReviewError(404, "Target order line item not found.");
+
+    const [existing] = await tx
+      .select()
+      .from(orderAttachments)
+      .where(and(
+        eq(orderAttachments.id, input.attachmentId),
+        eq(orderAttachments.orderId, input.sourceOrderId),
+        eq(orderAttachments.orderLineItemId, input.targetLineItemId),
+      ))
+      .limit(1);
+    if (!existing || existing.portalFileCategory !== "customer_upload") {
+      throw new CustomerUploadReviewError(404, "Customer upload not found.");
+    }
+    if (
+      existing.customerUploadReviewStatus !== "accepted"
+      || existing.customerUploadPromotionType !== "artwork"
+      || existing.customerUploadAssignmentType !== "reference_for_line_item"
+      || existing.customerUploadAssignedToOrderLineItemId !== input.targetLineItemId
+      || existing.customerUploadArtworkSelectionType !== "artwork_side_intake"
+      || existing.role !== "artwork"
+      || existing.side !== "na"
+      || existing.isPrimary
+    ) {
+      throw new CustomerUploadReviewError(409, "Only intake-selected artwork-reference customer uploads can have an artwork side designated.");
+    }
+
+    if (existing.fileRecordId) {
+      const [finalFile] = await tx
+        .select({ id: lineItemFiles.id })
+        .from(lineItemFiles)
+        .where(and(
+          eq(lineItemFiles.organizationId, input.organizationId),
+          eq(lineItemFiles.orderId, input.targetOrderId),
+          eq(lineItemFiles.lineItemId, input.targetLineItemId),
+          eq(lineItemFiles.fileRecordId, existing.fileRecordId),
+          eq(lineItemFiles.role, "final"),
+          eq(lineItemFiles.status, "active"),
+        ))
+        .limit(1);
+      if (finalFile) {
+        throw new CustomerUploadReviewError(409, "Final-art customer uploads cannot have an artwork side designated through this workflow.");
+      }
+    }
+
+    const designatedAt = new Date();
+    const designationNote = normalizeNote(input.designationNote);
+    const conflictingSides = getConflictingArtworkSides(input.side);
+    await tx
+      .update(orderAttachments)
+      .set({ side: "na", updatedAt: designatedAt })
+      .where(and(
+        eq(orderAttachments.orderId, input.targetOrderId),
+        eq(orderAttachments.orderLineItemId, input.targetLineItemId),
+        ne(orderAttachments.id, input.attachmentId),
+        inArray(orderAttachments.side, conflictingSides),
+      ));
+
+    const [updated] = await tx
+      .update(orderAttachments)
+      .set({ side: input.side, updatedAt: designatedAt })
+      .where(and(
+        eq(orderAttachments.id, input.attachmentId),
+        eq(orderAttachments.orderId, input.sourceOrderId),
+        eq(orderAttachments.orderLineItemId, input.targetLineItemId),
+        eq(orderAttachments.portalFileCategory, "customer_upload"),
+        eq(orderAttachments.customerUploadReviewStatus, "accepted"),
+        eq(orderAttachments.customerUploadPromotionType, "artwork"),
+        eq(orderAttachments.customerUploadAssignmentType, "reference_for_line_item"),
+        eq(orderAttachments.customerUploadAssignedToOrderLineItemId, input.targetLineItemId),
+        eq(orderAttachments.customerUploadArtworkSelectionType, "artwork_side_intake"),
+        eq(orderAttachments.role, "artwork"),
+        eq(orderAttachments.side, "na"),
+        eq(orderAttachments.isPrimary, false),
+      ))
+      .returning();
+    if (!updated) {
+      throw new CustomerUploadReviewError(409, "This customer upload is no longer eligible for artwork-side designation.");
+    }
+
+    await tx
+      .update(orderLineItems)
+      .set({
+        specsJson: applyArtworkSideAssignmentToSpecs({
+          specsJson: lineItem.specsJson,
+          fileId: updated.id,
+          fileRecordId: updated.fileRecordId,
+          side: input.side,
+        }),
+        updatedAt: designatedAt,
+      })
+      .where(and(eq(orderLineItems.id, input.targetLineItemId), eq(orderLineItems.orderId, input.targetOrderId)));
+
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId,
+      userName: input.actorUserName,
+      actionType: "customer_upload.artwork_side_designated",
+      entityType: "order_attachment",
+      entityId: input.attachmentId,
+      entityName: updated.originalFilename || updated.fileName || input.attachmentId,
+      description: `Customer artwork reference explicitly designated as ${input.side}.`,
+      oldValues: {
+        side: existing.side,
+        isPrimary: existing.isPrimary,
+        artworkSelectionType: existing.customerUploadArtworkSelectionType,
+      },
+      newValues: {
+        actorUserId: input.actorUserId,
+        designatedAt: designatedAt.toISOString(),
+        sourceAttachmentId: input.attachmentId,
+        targetOrderId: input.targetOrderId,
+        targetLineItemId: input.targetLineItemId,
+        selectedSide: input.side,
+        action: "artwork_side_designation",
+        designationNote,
+        outcome: "side_designated",
         finalArtwork: false,
         primaryArtworkChanged: false,
         workflowStateChanged: false,
