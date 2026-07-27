@@ -1,5 +1,12 @@
 import type { Express, RequestHandler } from "express";
 import { z } from "zod";
+import { and, eq } from "drizzle-orm";
+import { db } from "../db";
+import { customerContacts, customers } from "../../shared/schema";
+import {
+  assertStage18PDevFixtureAccess,
+  isStage18PDevFixtureCustomer,
+} from "../lib/stage18pDevFixtureAccess";
 import {
   acceptCustomerPortalInvite,
   activateCustomerPortalAccess,
@@ -188,6 +195,79 @@ export function registerCustomerPortalAccessAdminRoutes(app: Express, deps: Admi
         req,
       });
       return res.status(201).json({ success: true, data: access });
+    } catch (err) {
+      return sendRouteError(res, err);
+    }
+  });
+
+  app.post("/api/customers/:customerId/contacts/:contactId/dev-stage18p-portal-setup", ...adminGuards, async (req, res) => {
+    const parsed = z.object({ confirmDevFixtureSetup: z.literal(true) }).safeParse(req.body);
+    if (!parsed.success) {
+      return res.status(400).json({
+        success: false,
+        code: "DEV_STAGE_18P_FIXTURE_CONFIRMATION_REQUIRED",
+        message: "confirmDevFixtureSetup: true is required.",
+      });
+    }
+
+    try {
+      assertStage18PDevFixtureAccess({
+        requestHost: req.get("host"),
+        requestOrigin: req.get("origin"),
+      });
+
+      const [fixtureContact] = await db
+        .select({
+          customerId: customers.id,
+          companyName: customers.companyName,
+          contactId: customerContacts.id,
+          email: customerContacts.email,
+        })
+        .from(customers)
+        .innerJoin(customerContacts, eq(customerContacts.customerId, customers.id))
+        .where(and(
+          eq(customers.id, req.params.customerId),
+          eq(customers.organizationId, req.organizationId!),
+          eq(customerContacts.id, req.params.contactId),
+        ))
+        .limit(1);
+
+      if (!fixtureContact || !fixtureContact.email || !isStage18PDevFixtureCustomer(fixtureContact.companyName)) {
+        return res.status(404).json({
+          success: false,
+          code: "DEV_STAGE_18P_FIXTURE_NOT_FOUND",
+          message: "A labelled DEV Stage 18P fixture customer contact is required.",
+        });
+      }
+
+      const access = await createCustomerPortalAccess({
+        organizationId: req.organizationId!,
+        customerId: fixtureContact.customerId,
+        contactId: fixtureContact.contactId,
+        actorUserId: getActorUserId(req),
+        accessRole: "VIEWER",
+        sendEmail: false,
+        req,
+      });
+
+      const portalSetupUrl = (access as { portalSetupUrl?: string }).portalSetupUrl;
+      if (!portalSetupUrl) {
+        throw Object.assign(new Error("DEV fixture portal setup link was not created."), {
+          status: 500,
+          code: "DEV_STAGE_18P_FIXTURE_SETUP_FAILED",
+        });
+      }
+
+      return res.status(201).json({
+        success: true,
+        data: {
+          customerId: fixtureContact.customerId,
+          contactId: fixtureContact.contactId,
+          accessId: access.id,
+          email: fixtureContact.email,
+          portalSetupUrl,
+        },
+      });
     } catch (err) {
       return sendRouteError(res, err);
     }

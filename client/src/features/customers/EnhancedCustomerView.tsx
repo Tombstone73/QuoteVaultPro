@@ -67,6 +67,7 @@ import {
 import {
   Dialog,
   DialogContent,
+  DialogDescription,
   DialogHeader,
   DialogTitle,
   DialogFooter,
@@ -1162,9 +1163,14 @@ function portalStatusClass(status: PortalStatus): string {
 function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
+  const [devFixtureSetupUrl, setDevFixtureSetupUrl] = useState<string | null>(null);
   const isEmbedded = layoutMode === "embedded";
   const contacts = customer.contacts || [];
   const queryKey = [`/api/customers/${customer.id}/portal-access`];
+  const canUseDevFixtureSetup =
+    typeof window !== "undefined" &&
+    window.location.hostname === "dev.printershero.com" &&
+    String(customer.companyName || "").trim().startsWith("DEV TEST ONLY - Stage 18P");
 
   const { data: portalAccessData, isLoading } = useQuery<{ success: boolean; data: PortalAccessRecord[] }>({
     queryKey,
@@ -1203,6 +1209,33 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
   });
 
   const runAction = (path: string, label: string) => portalMutation.mutate({ path, label });
+
+  const devFixtureSetupMutation = useMutation({
+    mutationFn: async (contactId: string) => {
+      const response = await fetch(`/api/customers/${customer.id}/contacts/${contactId}/dev-stage18p-portal-setup`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmDevFixtureSetup: true }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.message || "DEV fixture portal setup failed");
+      return payload as { data?: { portalSetupUrl?: string } };
+    },
+    onSuccess: (payload) => {
+      const setupUrl = payload.data?.portalSetupUrl;
+      if (!setupUrl) {
+        toast({ title: "DEV fixture setup error", description: "No setup link was returned.", variant: "destructive" });
+        return;
+      }
+      setDevFixtureSetupUrl(setupUrl);
+      queryClient.invalidateQueries({ queryKey });
+      toast({ title: "DEV fixture setup link created", description: "No invite email was sent." });
+    },
+    onError: (error: Error) => {
+      toast({ title: "DEV fixture setup error", description: error.message, variant: "destructive" });
+    },
+  });
 
   if (isEmbedded) return null;
 
@@ -1271,6 +1304,18 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
                     >
                       <Mail className="mr-1 h-3.5 w-3.5" />
                       Create Access
+                    </Button>
+                  )}
+
+                  {canUseDevFixtureSetup && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-8 text-titan-xs"
+                      disabled={actionDisabled || devFixtureSetupMutation.isPending}
+                      onClick={() => devFixtureSetupMutation.mutate(contact.id)}
+                    >
+                      Create DEV Setup Link
                     </Button>
                   )}
 
@@ -1358,6 +1403,23 @@ function PortalAccessPanel({ customer, layoutMode }: ContactsPanelProps) {
           })}
         </div>
       )}
+
+      <Dialog open={Boolean(devFixtureSetupUrl)} onOpenChange={(open) => !open && setDevFixtureSetupUrl(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>DEV Stage 18P Portal Setup</DialogTitle>
+            <DialogDescription>
+              This one-time link is available only for the labelled DEV fixture and no invite email was sent.
+            </DialogDescription>
+          </DialogHeader>
+          <Input value={devFixtureSetupUrl || ""} readOnly aria-label="DEV portal setup link" />
+          {devFixtureSetupUrl && (
+            <Button asChild>
+              <a href={devFixtureSetupUrl}>Open DEV Setup Link</a>
+            </Button>
+          )}
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
