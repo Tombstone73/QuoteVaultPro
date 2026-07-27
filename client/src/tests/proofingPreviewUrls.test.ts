@@ -2,6 +2,7 @@ import { describe, expect, test } from "@jest/globals";
 
 import {
   getStaffProofDownloadUrl,
+  getStaffArtworkThumbnailUrl,
   getStaffProofPreviewUrl,
   normalizeStaffProofFileUrl,
   shouldFetchStaffPreviewAsBlob,
@@ -31,5 +32,16 @@ describe("proofing preview urls", () => {
 
     expect(getStaffProofPreviewUrl(file, false)).toBe("/objects/uploads/proof.png");
     expect(getStaffProofDownloadUrl(file)).toBe("/objects/uploads/proof.png?download=1");
+  });
+
+  test("never supplies a raw PDF as an artwork image source", () => {
+    expect(getStaffArtworkThumbnailUrl({ originalUrl: "/objects/artwork.pdf", mimeType: "application/pdf" }, true)).toBeNull();
+    expect(getStaffArtworkThumbnailUrl({ originalUrl: "/objects/artwork.pdf", thumbUrl: "/objects/artwork.thumb.jpg" }, true))
+      .toBe("/objects/artwork.thumb.jpg");
+  });
+
+  test("keeps an authenticated original image as a valid artwork preview fallback", () => {
+    expect(getStaffArtworkThumbnailUrl({ originalUrl: "/objects/artwork.png", mimeType: "image/png" }, false))
+      .toBe("/objects/artwork.png");
   });
 });

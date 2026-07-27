@@ -5,6 +5,7 @@ export type ProofPreviewFileLike = {
   downloadUrl?: string | null;
   fileUrl?: string | null;
   thumbUrl?: string | null;
+  thumbnailUrl?: string | null;
   objectPath?: string | null;
   mimeType?: string | null;
   originalFilename?: string | null;
@@ -71,6 +72,21 @@ export function getStaffProofPreviewUrl(file: ProofPreviewFileLike | null | unde
   }
 
   return normalizeStaffProofFileUrl(file.thumbUrl ?? null);
+}
+
+/**
+ * Returns an image-capable preview for artwork tiles. PDFs must never fall back
+ * to their original URL here: an <img> cannot render a PDF and staff object
+ * routes may require credentials. The proof viewer deliberately uses
+ * getStaffProofPreviewUrl instead because it renders PDFs through its blob
+ * fetch/iframe contract.
+ */
+export function getStaffArtworkThumbnailUrl(file: ProofPreviewFileLike | null | undefined, isPdf: boolean) {
+  if (!file) return null;
+  const derivative = file.thumbUrl || file.thumbnailUrl || file.previewUrl || null;
+  if (derivative) return normalizeStaffProofFileUrl(derivative);
+  if (isPdf) return null;
+  return normalizeStaffProofFileUrl(file.authenticatedUrl || file.originalUrl || file.downloadUrl || file.fileUrl || null);
 }
 
 export function getStaffProofDownloadUrl(file: ProofPreviewFileLike | null | undefined) {

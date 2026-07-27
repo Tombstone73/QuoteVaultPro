@@ -59,7 +59,7 @@ import {
   getProofVersionRecoveryStatusLabel,
   getProofVersionRecoveryStatusNote,
 } from "@/lib/proofingRecovery";
-import { getStaffProofDownloadUrl, getStaffProofPreviewUrl, shouldFetchStaffPreviewAsBlob } from "@/lib/proofingPreviewUrls";
+import { getStaffArtworkThumbnailUrl, getStaffProofDownloadUrl, getStaffProofPreviewUrl, shouldFetchStaffPreviewAsBlob } from "@/lib/proofingPreviewUrls";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import {
   combinedProofReviewIsReady,
@@ -114,6 +114,7 @@ type ProofFileRow = OrderFileWithUser & {
   previewUrl?: string | null;
   originalUrl?: string | null;
   thumbUrl?: string | null;
+  thumbnailUrl?: string | null;
   displayFilename?: string | null;
   computedDisplayFilename?: string | null;
   checksum?: string | null;
@@ -661,6 +662,7 @@ export default function StaffProofingPage() {
   const [createMode, setCreateMode] = useState<"generated" | "uploaded">("generated");
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
   const [selectedArtworkSourceIds, setSelectedArtworkSourceIds] = useState<string[]>([]);
+  const [failedArtworkPreviewIds, setFailedArtworkPreviewIds] = useState<Set<string>>(() => new Set());
   const artworkSelectionLineItemRef = useRef<string | null>(null);
   const [createInternalNotes, setCreateInternalNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
@@ -869,16 +871,25 @@ export default function StaffProofingPage() {
     const file = getArtworkSourceFile(source);
     if (!file) return null;
     // Deliberately use only the authenticated URLs supplied by the order-files contract.
-    return getStaffProofPreviewUrl({
+    return getStaffArtworkThumbnailUrl({
       authenticatedUrl: file.authenticatedUrl,
       originalUrl: file.originalUrl,
       previewUrl: file.previewUrl,
       downloadUrl: file.downloadUrl,
       thumbUrl: file.thumbUrl,
+      thumbnailUrl: file.thumbnailUrl,
       mimeType: file.mimeType,
       originalFilename: file.originalFilename,
       fileName: file.fileName,
     }, isPdfFile(file.mimeType, file.originalFilename || file.fileName));
+  };
+  const retryArtworkPreview = async (sourceId: string) => {
+    setFailedArtworkPreviewIds((current) => {
+      const next = new Set(current);
+      next.delete(sourceId);
+      return next;
+    });
+    await Promise.all([filesQuery.refetch(), eligibleArtworkQuery.refetch()]);
   };
 
   const selectableArtworkFiles = useMemo(
@@ -1129,8 +1140,10 @@ export default function StaffProofingPage() {
     if (lineItemId) {
       await queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId] });
       await queryClient.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId, "eligible-artwork"] });
+      await queryClient.refetchQueries({ queryKey: ["/api/proofing/line-item", lineItemId], type: "active" });
       if (orderId) {
         await queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId, "line-items", lineItemId, "files"] });
+        await queryClient.refetchQueries({ queryKey: ["/api/orders", orderId, "line-items", lineItemId, "files"], type: "active" });
       }
     }
   }
@@ -1963,14 +1976,17 @@ export default function StaffProofingPage() {
                           ) : eligibleArtworkSources.map((source) => {
                             const displayName = source.computedDisplayFilename || source.displayFilename || source.originalFilename || source.fileName;
                             const previewUrl = getArtworkSourcePreviewUrl(source);
+                            const previewFailed = failedArtworkPreviewIds.has(source.id);
                             const selected = selectedArtworkSourceIds.includes(source.id);
                             return (
                               <div key={`${source.sourceType}:${source.id}`} className={`flex gap-3 rounded-lg border p-3 ${source.eligible ? "border-[#2a3157] bg-[#111622]" : "border-amber-400/30 bg-amber-500/5"}`}>
                                 <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded border border-[#30385d] bg-slate-900">
-                                  {previewUrl && isPdfFile(source.mimeType, displayName) ? (
-                                    <iframe title={`Artwork preview: ${displayName}`} src={previewUrl} className="h-full w-full bg-white" />
-                                  ) : previewUrl ? (
-                                    <img src={previewUrl} alt={`Artwork preview for ${displayName}`} className="h-full w-full object-cover" />
+                                  {previewUrl && !previewFailed ? (
+                                    <img src={previewUrl} alt={`Artwork preview for ${displayName}`} className="h-full w-full object-cover" onError={() => setFailedArtworkPreviewIds((current) => new Set(current).add(source.id))} />
+                                  ) : source.previewStatus === "generation_failed" || previewFailed ? (
+                                    <span className="px-2 text-center text-[10px] text-amber-200">Preview unavailable — retry below</span>
+                                  ) : isPdfFile(source.mimeType, displayName) ? (
+                                    <span className="px-2 text-center text-[10px] text-slate-400">PDF preview generating</span>
                                   ) : (
                                     <FileImage className="h-7 w-7 text-slate-500" />
                                   )}
@@ -2002,6 +2018,10 @@ export default function StaffProofingPage() {
                                     <Button type="button" variant="outline" size="sm" className="mt-2 border-amber-400/40 text-amber-100 hover:bg-amber-500/10" onClick={() => generatePreviewMutation.mutate(source.id)} disabled={generatePreviewMutation.isPending || !source.eligible}>
                                       {generatePreviewMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <FileImage className="mr-2 h-3.5 w-3.5" />}
                                       Generate Preview
+                                    </Button>
+                                  ) : previewFailed ? (
+                                    <Button type="button" variant="outline" size="sm" className="mt-2" onClick={() => void retryArtworkPreview(source.id)}>
+                                      Retry preview
                                     </Button>
                                   ) : null}
                                 </div>
@@ -2772,6 +2792,8 @@ export default function StaffProofingPage() {
                     {eligibleArtworkSources.map((source) => {
                       const isSelected = selectedArtworkSourceIds.includes(source.id);
                       const displayName = source.computedDisplayFilename || source.displayFilename || source.originalFilename || source.fileName;
+                      const previewUrl = getArtworkSourcePreviewUrl(source);
+                      const previewFailed = failedArtworkPreviewIds.has(source.id);
                       return (
                         <label
                           key={`${source.sourceType}:${source.id}`}
@@ -2790,8 +2812,12 @@ export default function StaffProofingPage() {
                             }}
                             className="h-4 w-4"
                           />
-                          {getArtworkSourcePreviewUrl(source) ? (
-                            <img src={getArtworkSourcePreviewUrl(source) || undefined} alt="" className="h-10 w-10 rounded border object-cover" />
+                          {previewUrl && !previewFailed ? (
+                            <img src={previewUrl} alt="" className="h-10 w-10 rounded border object-cover" onError={() => setFailedArtworkPreviewIds((current) => new Set(current).add(source.id))} />
+                          ) : previewFailed || source.previewStatus === "generation_failed" ? (
+                            <Button type="button" variant="outline" size="sm" className="h-10 px-2 text-[10px]" onClick={(event) => { event.preventDefault(); event.stopPropagation(); void retryArtworkPreview(source.id); }}>Retry preview</Button>
+                          ) : isPdfFile(source.mimeType, displayName) ? (
+                            <span className="flex h-10 w-10 items-center justify-center rounded border px-1 text-center text-[9px] text-muted-foreground">Preview generating</span>
                           ) : (
                             <FileImage className="h-10 w-10 rounded border p-2 text-muted-foreground" />
                           )}
