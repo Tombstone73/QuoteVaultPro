@@ -121,8 +121,19 @@ export type EligibleProofArtworkSource = {
   displayFilename?: string | null;
   computedDisplayFilename?: string | null;
   role: string | null;
+  side: "front" | "back" | "both" | "na";
+  previewStatus: "ready" | "missing_preview" | "generation_failed";
+  recoveryAction: "generate_preview" | null;
   eligible: boolean;
   eligibilityReason: string | null;
+};
+
+export type ProofArtworkPreparation = {
+  totalQuantity: number | null;
+  artworkCount: number;
+  allocationMode: "one_each_per_file" | "same_quantity_each" | "unspecified";
+  allocationIssue: string | null;
+  sources: Array<EligibleProofArtworkSource & { allocatedQuantity: number | null }>;
 };
 
 type LoadedProofSnapshotLineItem = {
@@ -1629,6 +1640,7 @@ function buildEligibleArtworkSource(source: ArtworkProofSource, args: {
     namingPolicy: args.namingPolicy,
   });
   const eligibility = isSupportedProofArtworkSource(source);
+  const preview = derivePreviewStatusFromSource(source);
 
   return {
     id: source.sourceId,
@@ -1639,12 +1651,17 @@ function buildEligibleArtworkSource(source: ArtworkProofSource, args: {
     fileName: displayName,
     originalFilename: source.originalFilename ?? null,
     mimeType: source.mimeType ?? null,
-    fileUrl: source.fileUrl ?? null,
-    thumbnailUrl: source.thumbnailUrl ?? null,
-    previewUrl: source.previewKey ?? null,
+    // Artwork is rendered through the authenticated order-files contract. Do not
+    // expose storage keys or derivative keys in this proofing DTO.
+    fileUrl: null,
+    thumbnailUrl: null,
+    previewUrl: null,
     displayFilename: displayFile.displayFilename,
     computedDisplayFilename: displayFile.computedDisplayFilename,
     role: args.role,
+    side: source.side === "front" || source.side === "back" || source.side === "both" ? source.side : "na",
+    previewStatus: preview.status === "ready" ? "ready" : preview.status === "generation_failed" ? "generation_failed" : "missing_preview",
+    recoveryAction: preview.status === "ready" ? null : "generate_preview",
     eligible: eligibility.eligible,
     eligibilityReason: eligibility.reason,
     artworkSource: eligibility.eligible ? source : null,
@@ -1962,6 +1979,41 @@ export async function listEligibleProofArtworkSources(tx: any, args: {
   return rows.map(({ artworkSource: _artworkSource, ...publicSource }) => publicSource);
 }
 
+export async function getProofArtworkPreparation(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+}): Promise<ProofArtworkPreparation> {
+  const [lineItem, sources] = await Promise.all([
+    loadProofSnapshotLineItem(tx, args),
+    listEligibleProofArtworkSources(tx, args),
+  ]);
+  const inbound = lineItem.specsJson && typeof lineItem.specsJson === "object"
+    ? (lineItem.specsJson as Record<string, any>).inbound
+    : null;
+  const allocationMode = inbound?.artworkQuantityMode === "one_each_per_file"
+    ? "one_each_per_file"
+    : inbound?.artworkQuantityMode === "same_quantity_each"
+      ? "same_quantity_each"
+      : "unspecified";
+  const totalQuantity = Number.isFinite(lineItem.quantity) ? lineItem.quantity : null;
+  const artworkCount = sources.length;
+  const allocationIssue = allocationMode === "one_each_per_file" && totalQuantity !== artworkCount
+    ? `Allocation expects 1 each across ${artworkCount} artwork files, but the ordered quantity is ${totalQuantity ?? "not specified"}.`
+    : null;
+  const allocatedQuantity = allocationMode === "one_each_per_file" && !allocationIssue
+    ? 1
+    : allocationMode === "same_quantity_each"
+      ? totalQuantity
+      : null;
+  return {
+    totalQuantity,
+    artworkCount,
+    allocationMode,
+    allocationIssue,
+    sources: sources.map((source) => ({ ...source, allocatedQuantity })),
+  };
+}
+
 export async function buildEligibleProofArtworkDebugSummary(tx: any, args: {
   organizationId: string;
   lineItemId: string;
@@ -2039,8 +2091,9 @@ async function loadProofArtworkSources(tx: any, args: {
 export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
   organizationId: string;
   lineItemId: string;
+  sourceId?: string | null;
 }): Promise<PreviewDerivativeGenerationResult> {
-  const source = await loadLatestArtworkProofSource(tx, args);
+  const source = await loadLatestArtworkProofSource(tx, { ...args, selectedSourceIds: args.sourceId ? [args.sourceId] : null });
 
   if (!source) {
     throwProofingBadRequest("No artwork file is attached to this line item.");
@@ -2065,7 +2118,10 @@ export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
 
     await assetPreviewGenerator.generatePreviews(asset);
 
-    const refreshedSource = await loadLatestArtworkProofSource(tx, args);
+    const refreshedSource = await loadLatestArtworkProofSource(tx, {
+      ...args,
+      selectedSourceIds: args.sourceId ? [args.sourceId] : null,
+    });
     if (sourceHasUsablePreviewDerivative(refreshedSource)) {
       return {
         sourceType: source.sourceType,
@@ -2123,7 +2179,10 @@ export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
     throwProofingConflict(`Preview generation failed. Unsupported artwork type: ${source.fileName}.`);
   }
 
-  const refreshedSource = await loadLatestArtworkProofSource(tx, args);
+  const refreshedSource = await loadLatestArtworkProofSource(tx, {
+    ...args,
+    selectedSourceIds: args.sourceId ? [args.sourceId] : null,
+  });
   if (sourceHasUsablePreviewDerivative(refreshedSource)) {
     return {
       sourceType: source.sourceType,

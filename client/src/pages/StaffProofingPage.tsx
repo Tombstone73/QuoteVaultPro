@@ -143,8 +143,19 @@ type EligibleProofArtworkSource = {
   displayFilename?: string | null;
   computedDisplayFilename?: string | null;
   role: string | null;
+  side: "front" | "back" | "both" | "na";
+  previewStatus: "ready" | "missing_preview" | "generation_failed";
+  recoveryAction: "generate_preview" | null;
+  allocatedQuantity: number | null;
   eligible: boolean;
   eligibilityReason: string | null;
+};
+
+type ProofArtworkSummary = {
+  totalQuantity: number | null;
+  artworkCount: number;
+  allocationMode: "one_each_per_file" | "same_quantity_each" | "unspecified";
+  allocationIssue: string | null;
 };
 
 type ProofRecipientOption = {
@@ -650,6 +661,7 @@ export default function StaffProofingPage() {
   const [createMode, setCreateMode] = useState<"generated" | "uploaded">("generated");
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
   const [selectedArtworkSourceIds, setSelectedArtworkSourceIds] = useState<string[]>([]);
+  const artworkSelectionLineItemRef = useRef<string | null>(null);
   const [createInternalNotes, setCreateInternalNotes] = useState("");
   const [uploadFile, setUploadFile] = useState<File | null>(null);
   const [previewImageError, setPreviewImageError] = useState(false);
@@ -799,10 +811,11 @@ export default function StaffProofingPage() {
     eligibleCount: number;
     disabledReason: string | null;
     disabledReasonCode: string | null;
+    artworkSummary: ProofArtworkSummary;
   }>>({
     queryKey: ["/api/proofing/line-item", activeLineItemId, "eligible-artwork"],
     queryFn: () => readJson(`/api/proofing/line-item/${activeLineItemId}/eligible-artwork`),
-    enabled: Boolean(isInternalUser && activeLineItemId && createDialogOpen),
+    enabled: Boolean(isInternalUser && activeLineItemId),
     staleTime: 10_000,
   });
   const eligibleArtworkSources = useMemo(
@@ -845,6 +858,28 @@ export default function StaffProofingPage() {
 
   const filesQuery = useOrderLineItemFiles(activeOrderId ?? undefined, activeLineItemId ?? undefined);
   const lineItemFiles = (filesQuery.data?.data ?? []) as ProofFileRow[];
+  const artworkSummary = eligibleArtworkQuery.data?.data?.artworkSummary ?? null;
+  const sourceFileById = useMemo(() => new Map(lineItemFiles.map((file) => [file.id, file])), [lineItemFiles]);
+  const getArtworkSourceFile = (source: EligibleProofArtworkSource) =>
+    sourceFileById.get(source.attachmentId || "") ||
+    sourceFileById.get(source.sourceId) ||
+    lineItemFiles.find((file) => file.fileRecordId && file.fileRecordId === source.fileRecordId) ||
+    null;
+  const getArtworkSourcePreviewUrl = (source: EligibleProofArtworkSource) => {
+    const file = getArtworkSourceFile(source);
+    if (!file) return null;
+    // Deliberately use only the authenticated URLs supplied by the order-files contract.
+    return getStaffProofPreviewUrl({
+      authenticatedUrl: file.authenticatedUrl,
+      originalUrl: file.originalUrl,
+      previewUrl: file.previewUrl,
+      downloadUrl: file.downloadUrl,
+      thumbUrl: file.thumbUrl,
+      mimeType: file.mimeType,
+      originalFilename: file.originalFilename,
+      fileName: file.fileName,
+    }, isPdfFile(file.mimeType, file.originalFilename || file.fileName));
+  };
 
   const selectableArtworkFiles = useMemo(
     () =>
@@ -1065,18 +1100,12 @@ export default function StaffProofingPage() {
   }, [createDialogOpen, selectableDraftSourceFiles, selectedExistingAttachmentId, displayedFile?.id]);
 
   useEffect(() => {
-    if (!createDialogOpen || createMode !== "generated") return;
+    if (!activeLineItemId || artworkSelectionLineItemRef.current === activeLineItemId) return;
     const eligibleIds = selectableGeneratedArtworkSources.map((source) => source.id);
-    setSelectedArtworkSourceIds((current) => {
-      const currentValid = current.filter((id) => eligibleIds.includes(id));
-      if (currentValid.length > 0) {
-        return currentValid.length === current.length && currentValid.every((id, index) => id === current[index])
-          ? current
-          : currentValid;
-      }
-      return eligibleIds;
-    });
-  }, [createDialogOpen, createMode, selectableGeneratedArtworkSources]);
+    if (eligibleIds.length === 0) return;
+    artworkSelectionLineItemRef.current = activeLineItemId;
+    setSelectedArtworkSourceIds(eligibleIds);
+  }, [activeLineItemId, selectableGeneratedArtworkSources]);
 
   useEffect(() => {
     setPreviewRecoveryState((current) => {
@@ -1308,7 +1337,7 @@ export default function StaffProofingPage() {
   });
 
   const generatePreviewMutation = useMutation({
-    mutationFn: async () => {
+    mutationFn: async (sourceId?: string) => {
       if (!selectedRow?.lineItemId) {
         throw new Error("Select a proofing queue row first");
       }
@@ -1322,6 +1351,8 @@ export default function StaffProofingPage() {
         message: string;
       }>>(`/api/proofing/line-items/${selectedRow.lineItemId}/generate-preview`, {
         method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(sourceId ? { sourceId } : {}),
       });
     },
     onSuccess: async (result) => {
@@ -1613,7 +1644,7 @@ export default function StaffProofingPage() {
                 disabled={!selectedRow}
               >
                 <Upload className="mr-2 h-4 w-4" />
-                New Proof
+                Create Proof Draft
               </Button>
             </div>
           </div>
@@ -1876,9 +1907,109 @@ export default function StaffProofingPage() {
                     No max-width cap here; the proof fills the available pane. */}
                 <div className="flex flex-1 overflow-auto bg-[radial-gradient(circle_at_center,_#141824,_#0b0e14)]">
                   {!displayedVersion ? (
-                    <div className="flex flex-1 items-center justify-center p-8 text-slate-500">
-                      <div className="w-full max-w-sm rounded-xl bg-slate-900/60 py-14 text-center">
-                        No proof version selected.
+                    <div className="flex flex-1 items-start justify-center overflow-auto p-5 text-slate-200">
+                      <div className="w-full max-w-5xl rounded-xl border border-[#2a3157] bg-slate-950/80 p-5 shadow-2xl">
+                        <div className="flex flex-wrap items-start justify-between gap-4 border-b border-[#232948] pb-4">
+                          <div>
+                            <p className="text-xs font-bold uppercase tracking-[0.16em] text-[#9baeff]">Artwork preparation</p>
+                            <h2 className="mt-1 text-lg font-bold text-white">Select the artwork included in this proof package</h2>
+                            <p className="mt-1 text-sm text-slate-400">Every checked eligible file will be embedded in the generated draft; nothing is silently omitted.</p>
+                          </div>
+                          <Button
+                            className="bg-[#1337ec] font-bold text-white hover:bg-[#1a43ff]"
+                            onClick={() => openCreateProofDialog("generated")}
+                            disabled={!activeRow || Boolean(effectiveGeneratedDraftDisabledReason)}
+                          >
+                            <Upload className="mr-2 h-4 w-4" />
+                            Create Proof Draft
+                          </Button>
+                        </div>
+
+                        <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                          <div className="rounded-lg border border-[#232948] bg-[#111622] p-3">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Ordered quantity</p>
+                            <p className="mt-1 text-lg font-bold text-white">{artworkSummary?.totalQuantity ?? "Not specified"}</p>
+                          </div>
+                          <div className="rounded-lg border border-[#232948] bg-[#111622] p-3">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Artwork files</p>
+                            <p className="mt-1 text-lg font-bold text-white">{artworkSummary?.artworkCount ?? eligibleArtworkSources.length}</p>
+                          </div>
+                          <div className="rounded-lg border border-[#232948] bg-[#111622] p-3">
+                            <p className="text-[10px] font-bold uppercase tracking-wider text-slate-500">Allocation</p>
+                            <p className="mt-1 text-sm font-semibold text-white">
+                              {artworkSummary?.allocationMode === "one_each_per_file"
+                                ? "1 unit per artwork file"
+                                : artworkSummary?.allocationMode === "same_quantity_each"
+                                  ? "Full quantity on each artwork file"
+                                  : "Needs staff confirmation"}
+                            </p>
+                          </div>
+                        </div>
+
+                        {artworkSummary?.allocationIssue ? (
+                          <div className="mt-4 rounded-lg border border-amber-400/40 bg-amber-500/10 p-3 text-sm text-amber-100">
+                            <p className="font-bold">Artwork allocation needs review</p>
+                            <p className="mt-1 text-amber-100/90">{artworkSummary.allocationIssue}</p>
+                          </div>
+                        ) : null}
+
+                        <div className="mt-4 space-y-3">
+                          {eligibleArtworkQuery.isLoading ? (
+                            <div className="rounded-lg border border-[#232948] p-5 text-sm text-slate-400">Loading attached artwork…</div>
+                          ) : eligibleArtworkSources.length === 0 ? (
+                            <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 p-5 text-sm text-amber-100">
+                              No artwork is available for this line item. Attach supported artwork before creating a proof draft.
+                            </div>
+                          ) : eligibleArtworkSources.map((source) => {
+                            const displayName = source.computedDisplayFilename || source.displayFilename || source.originalFilename || source.fileName;
+                            const previewUrl = getArtworkSourcePreviewUrl(source);
+                            const selected = selectedArtworkSourceIds.includes(source.id);
+                            return (
+                              <div key={`${source.sourceType}:${source.id}`} className={`flex gap-3 rounded-lg border p-3 ${source.eligible ? "border-[#2a3157] bg-[#111622]" : "border-amber-400/30 bg-amber-500/5"}`}>
+                                <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded border border-[#30385d] bg-slate-900">
+                                  {previewUrl && isPdfFile(source.mimeType, displayName) ? (
+                                    <iframe title={`Artwork preview: ${displayName}`} src={previewUrl} className="h-full w-full bg-white" />
+                                  ) : previewUrl ? (
+                                    <img src={previewUrl} alt={`Artwork preview for ${displayName}`} className="h-full w-full object-cover" />
+                                  ) : (
+                                    <FileImage className="h-7 w-7 text-slate-500" />
+                                  )}
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-start justify-between gap-2">
+                                    <div>
+                                      <p className="truncate font-semibold text-white">{displayName}</p>
+                                      <p className="mt-0.5 text-xs text-slate-400">{source.mimeType || "Unknown file type"} · {source.side === "na" ? "Side not specified" : source.side}</p>
+                                    </div>
+                                    {source.eligible ? <Badge variant="outline" className="border-emerald-400/40 text-emerald-200">Eligible</Badge> : <Badge variant="outline" className="border-amber-400/40 text-amber-100">Needs attention</Badge>}
+                                  </div>
+                                  <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-xs">
+                                    <label className={`inline-flex items-center gap-2 ${source.eligible ? "cursor-pointer text-slate-200" : "text-slate-500"}`}>
+                                      <input
+                                        type="checkbox"
+                                        checked={selected}
+                                        disabled={!source.eligible || createDraftMutation.isPending}
+                                        onChange={(event) => setSelectedArtworkSourceIds((current) => event.target.checked ? Array.from(new Set([...current, source.id])) : current.filter((id) => id !== source.id))}
+                                        className="h-4 w-4"
+                                      />
+                                      Include in proof package
+                                    </label>
+                                    <span className="text-slate-400">Allocation: {source.allocatedQuantity === null ? "Not specified" : `${source.allocatedQuantity} unit${source.allocatedQuantity === 1 ? "" : "s"}`}</span>
+                                    {!source.eligible && source.eligibilityReason ? <span className="text-amber-200">{source.eligibilityReason}</span> : null}
+                                    {source.previewStatus !== "ready" ? <span className="text-amber-200">Preview unavailable</span> : null}
+                                  </div>
+                                  {source.recoveryAction === "generate_preview" ? (
+                                    <Button type="button" variant="outline" size="sm" className="mt-2 border-amber-400/40 text-amber-100 hover:bg-amber-500/10" onClick={() => generatePreviewMutation.mutate(source.id)} disabled={generatePreviewMutation.isPending || !source.eligible}>
+                                      {generatePreviewMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <FileImage className="mr-2 h-3.5 w-3.5" />}
+                                      Generate Preview
+                                    </Button>
+                                  ) : null}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                        {effectiveGeneratedDraftDisabledReason ? <p className="mt-4 text-sm text-amber-200">Create Draft is disabled: {effectiveGeneratedDraftDisabledReason}.</p> : null}
                       </div>
                     </div>
                   ) : !displayedFile ? (
@@ -2112,7 +2243,7 @@ export default function StaffProofingPage() {
                         <Button
                           variant="outline"
                           className="h-10 rounded-xl border-amber-400/40 bg-amber-500/10 text-[10px] font-bold uppercase tracking-wider text-amber-100 transition-all hover:bg-amber-500/15"
-                          onClick={() => generatePreviewMutation.mutate()}
+                          onClick={() => generatePreviewMutation.mutate(undefined)}
                           disabled={generatePreviewMutation.isPending || regenerateProofMutation.isPending || !selectedRow?.lineItemId}
                         >
                           {generatePreviewMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <FileImage className="mr-2 h-4 w-4" />}
@@ -2599,9 +2730,9 @@ export default function StaffProofingPage() {
       <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Create Proof Draft</DialogTitle>
+            <DialogTitle>Create Artwork Proof Draft</DialogTitle>
             <DialogDescription>
-              Generate a proof from saved data or attach an uploaded file. You will confirm the recipient before it is sent.
+              Review exactly which artwork is included, then create a draft. You will confirm the recipient before it is sent.
             </DialogDescription>
           </DialogHeader>
 
@@ -2613,7 +2744,7 @@ export default function StaffProofingPage() {
                 onClick={() => setCreateMode("generated")}
                 disabled={createDraftMutation.isPending}
               >
-                Generate Basic Proof
+                Artwork Proof Package
               </Button>
               <Button
                 type="button"
@@ -2627,8 +2758,8 @@ export default function StaffProofingPage() {
 
             {createMode === "generated" ? (
               <div className="rounded-lg border p-4 text-sm text-muted-foreground">
-                <p className="font-medium text-foreground">Generated proof uses permanent saved data only.</p>
-                <p className="mt-2">It will build a normalized proof snapshot from the saved line item, use selected eligible artwork, render a basic PDF artifact, and create a draft proof version. You will confirm the recipient before it is sent.</p>
+                <p className="font-medium text-foreground">The selected artwork becomes one proof package.</p>
+                <p className="mt-2">The draft uses saved line-item data and every selected eligible artwork file, then renders one proof PDF artifact. You will confirm the recipient before it is sent.</p>
                 <p className="mt-2 font-medium text-foreground">
                   {selectableGeneratedArtworkSources.length > 0
                     ? `Eligible artwork: ${selectableGeneratedArtworkSources.length} file${selectableGeneratedArtworkSources.length === 1 ? "" : "s"} found`
@@ -2659,15 +2790,15 @@ export default function StaffProofingPage() {
                             }}
                             className="h-4 w-4"
                           />
-                          {source.thumbnailUrl ? (
-                            <img src={source.thumbnailUrl} alt="" className="h-10 w-10 rounded border object-cover" />
+                          {getArtworkSourcePreviewUrl(source) ? (
+                            <img src={getArtworkSourcePreviewUrl(source) || undefined} alt="" className="h-10 w-10 rounded border object-cover" />
                           ) : (
                             <FileImage className="h-10 w-10 rounded border p-2 text-muted-foreground" />
                           )}
                           <span className="min-w-0 flex-1">
                             <span className="block truncate font-medium text-foreground">{displayName}</span>
                             <span className="block text-xs text-muted-foreground">
-                              {source.mimeType || "unknown type"} / {source.sourceType.replace(/_/g, " ")}
+                              {source.mimeType || "unknown type"} / {source.sourceType.replace(/_/g, " ")} / allocation: {source.allocatedQuantity ?? "not specified"}
                               {!source.eligible && source.eligibilityReason ? ` / ${source.eligibilityReason}` : ""}
                             </span>
                           </span>

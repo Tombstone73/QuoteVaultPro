@@ -49,6 +49,29 @@ describe("generateBasicProofPdfBytes", () => {
     expect(result.renderStatus).toBe("metadata_only");
     expect(result.bytes.byteLength).toBeGreaterThan(0);
   });
+
+  test("renders every selected artwork file for a one-sided proof package", async () => {
+    const preview = { bytes: ONE_PIXEL_PNG, mimeType: "image/png", fileName: "artwork.png" };
+    const result = await generateBasicProofPdfBytes({
+      orderNumber: "SO-125",
+      lineItemLabel: "Coroplast signs",
+      displaySizeLabel: "24 x 18 in",
+      quantity: 2,
+      finishingSummary: [],
+      printSides: "Single-sided",
+      useSameArtworkBothSides: false,
+      preflightStatus: "ready",
+      generatedAt: new Date("2025-01-01T00:00:00.000Z"),
+      artworkPreviews: [
+        { label: "Artwork", sourceFileName: "sign-one.png", preview },
+        { label: "Artwork", sourceFileName: "sign-two.png", preview },
+      ],
+    });
+
+    const document = await PDFDocument.load(result.bytes);
+    expect(result.renderStatus).toBe("ready");
+    expect(document.getPageCount()).toBe(2);
+  });
 });
 
 describe("generateCombinedProofPdfBytes", () => {

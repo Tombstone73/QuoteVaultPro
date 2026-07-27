@@ -61,7 +61,10 @@ export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promi
     ? args.artworkPreviews
     : [{ label: "Artwork" as const, sourceFileName: null, preview: null, previewError: "Artwork not assigned." }];
 
-  if (args.printSides !== "Double-sided" || args.useSameArtworkBothSides || panels.length === 1) {
+  // A selected source must always have a place in the proof package.  In particular,
+  // one-sided jobs can still legitimately have several artwork files (for example,
+  // one Coroplast sign per file); rendering only panels[0] silently dropped the rest.
+  if (args.useSameArtworkBothSides || panels.length === 1) {
     return generateSingleArtworkProofPdfBytes({ ...args, ...panels[0] });
   }
 

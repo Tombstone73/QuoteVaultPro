@@ -49,6 +49,7 @@ import {
   createLineItemProofVersion,
   createLineItemProofVersionFromExistingAttachment,
   generateLineItemArtworkPreviewDerivative,
+  getProofArtworkPreparation,
   INCOMPLETE_PROOF_MESSAGE,
   listEligibleProofArtworkSources,
   listProofingQueue,
@@ -316,9 +317,12 @@ function createTestApp() {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
+      const parsed = z.object({ sourceId: z.string().trim().min(1).optional() }).safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json({ success: false, message: fromZodError(parsed.error).message });
       const result = await db.transaction(async (tx) => generateLineItemArtworkPreviewDerivative(tx, {
         organizationId,
         lineItemId: String(req.params.lineItemId),
+        sourceId: parsed.data.sourceId ?? null,
       }));
 
       return res.json({ success: true, data: result, message: result.message });
@@ -333,16 +337,23 @@ function createTestApp() {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const sources = await listEligibleProofArtworkSources(db, {
+      const preparation = await getProofArtworkPreparation(db, {
         organizationId,
         lineItemId: String(req.params.lineItemId),
       });
+      const sources = preparation.sources;
       const eligibleCount = sources.filter((source) => source.eligible).length;
 
       return res.json({
         success: true,
         data: {
           sources,
+          artworkSummary: {
+            totalQuantity: preparation.totalQuantity,
+            artworkCount: preparation.artworkCount,
+            allocationMode: preparation.allocationMode,
+            allocationIssue: preparation.allocationIssue,
+          },
           eligibleCount,
           disabledReason: eligibleCount > 0 ? null : "no eligible artwork found",
           disabledReasonCode: eligibleCount > 0 ? null : "no_eligible_artwork_found",
@@ -1335,12 +1346,20 @@ describe("proofing route integration", () => {
       .expect(200);
 
     expect(res.body?.data?.eligibleCount).toBeGreaterThan(0);
+    expect(res.body?.data?.artworkSummary).toEqual(expect.objectContaining({
+      artworkCount: expect.any(Number),
+      allocationMode: "unspecified",
+    }));
     expect(res.body?.data?.sources).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: artworkFileId,
           sourceType: "line_item_artwork",
           eligible: true,
+          side: "na",
+          previewStatus: "ready",
+          recoveryAction: null,
+          allocatedQuantity: null,
         }),
       ]),
     );

@@ -34,6 +34,7 @@ import {
   generateLineItemArtworkPreviewDerivative,
   INCOMPLETE_PROOF_MESSAGE,
   buildEligibleProofArtworkDebugSummary,
+  getProofArtworkPreparation,
   listEligibleProofArtworkSources,
   listProofingQueue,
   markLineItemProofNotRequired,
@@ -198,10 +199,11 @@ export function registerProofingRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
-      const sources = await listEligibleProofArtworkSources(db, {
+      const preparation = await getProofArtworkPreparation(db, {
         organizationId,
         lineItemId: String(req.params.lineItemId),
       });
+      const sources = preparation.sources;
       const eligibleCount = sources.filter((source) => source.eligible).length;
       const debug =
         eligibleCount === 0 && process.env.NODE_ENV !== "production"
@@ -216,6 +218,12 @@ export function registerProofingRoutes(
         success: true,
         data: {
           sources,
+          artworkSummary: {
+            totalQuantity: preparation.totalQuantity,
+            artworkCount: preparation.artworkCount,
+            allocationMode: preparation.allocationMode,
+            allocationIssue: preparation.allocationIssue,
+          },
           eligibleCount,
           disabledReason: eligibleCount > 0 ? null : "no eligible artwork found",
           disabledReasonCode: eligibleCount > 0 ? null : "no_eligible_artwork_found",
@@ -239,9 +247,12 @@ export function registerProofingRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
 
+      const parsed = z.object({ sourceId: z.string().trim().min(1).optional() }).safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json({ success: false, message: fromZodError(parsed.error).message });
       const result = await db.transaction(async (tx) => generateLineItemArtworkPreviewDerivative(tx, {
         organizationId,
         lineItemId: String(req.params.lineItemId),
+        sourceId: parsed.data.sourceId ?? null,
       }));
 
       return res.json({ success: true, data: result, message: result.message });
