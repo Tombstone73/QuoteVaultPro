@@ -17,6 +17,7 @@ import { inactiveProductDraftUpdateService, InactiveProductDraftUpdateError, typ
 import { productIntakeDraftReadinessService } from "../productIntakeWizard/productIntakeDraftReadinessService";
 import { applyProductDraftBatchCollisions, fingerprintProductInactiveDraftBatch, parseProductInactiveDraftBatch } from "./productInactiveDraftBatchService";
 import { productInactiveDraftBatchCommandName } from "./execution/productInactiveDraftBatchCommand";
+import { productInactiveDraftBatchHistoryService } from "./productInactiveDraftBatchHistoryService";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
@@ -257,7 +258,7 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
 export class ProductManagementSkillService {
   constructor(private readonly deps: ProductManagementSkillDependencies = { sessions: createDbProductIntakeSessionStore(), references: loadReferences }) {}
 
-  private async prepareBatch(input: { organizationId: string; userId: string; message: string }): Promise<{ response: string; cards: ProductManagementCard[] }> {
+  private async prepareBatch(input: { organizationId: string; userId: string; conversationId?: string; message: string }): Promise<{ response: string; cards: ProductManagementCard[] }> {
     const parsed = parseProductInactiveDraftBatch(input.message);
     const existing = await db.select({ name: products.name }).from(products).where(eq(products.organizationId, input.organizationId));
     const rows = applyProductDraftBatchCollisions(parsed.rows, existing.map((product) => product.name));
@@ -281,17 +282,19 @@ export class ProductManagementSkillService {
       cards: [{ kind: "product_batch_preview", title: "Inactive product draft batch needs Product Intake review", summary: `${prepared.length} row(s) prepared; ${notReady.length} require Product Intake clarification.`, sourceLinks: prepared.map((row) => ({ label: `Open ${row.productName} review`, href: row.sourceLink })), details: { rows: prepared, confirmationAvailable: false, unchanged: ["product_activation", "publication", "existing_products"] } }],
     };
     const children = prepared.map(({ rowNumber, productName, intakeSessionId, proposalFingerprint }) => ({ rowNumber, productName, intakeSessionId, proposalFingerprint }));
-    const batchFingerprint = fingerprintProductInactiveDraftBatch(children);
+    const batchFingerprint = fingerprintProductInactiveDraftBatch(children, parsed.sharedDefaults);
+    const label = children.length ? `${children[0].productName.split(/\s+(?:at|[-:])/i)[0]} Products` : "Product batch";
+    const persisted = input.conversationId ? await productInactiveDraftBatchHistoryService.createProposal({ organizationId: input.organizationId, conversationId: input.conversationId, actorUserId: input.userId, label, sourceFormat: input.message.includes("|") ? "markdown_table" : input.message.includes(",") ? "csv" : "list", sharedDefaults: parsed.sharedDefaults, fingerprint: batchFingerprint, rows: children.map((child) => ({ sourceRowNumber: child.rowNumber, productName: child.productName, intakeSessionId: child.intakeSessionId, proposalFingerprint: child.proposalFingerprint, resolvedPayload: child, provenance: { productName: "row_value", sharedDefaults: parsed.sharedDefaults } })) }) : null;
     return {
       response: `I prepared ${children.length} server-validated inactive product drafts. Review the complete batch and use its dedicated GO control to create all rows.`,
       cards: [
-        { kind: "product_batch_preview", title: "Inactive product draft batch preview", summary: `All ${children.length} rows will create inactive products with PBV2 DRAFT trees.`, sourceLinks: prepared.map((row) => ({ label: `Open ${row.productName} review`, href: row.sourceLink })), details: { batchFingerprint, rows: prepared, confirmationAvailable: true, unchanged: ["product_activation", "publication", "active_product_modification", "quotes_orders_production"] } },
-        { kind: "action_proposal", title: "Create inactive product draft batch", summary: "Review the complete server-generated batch and use its dedicated GO control once. If a child fails, execution stops and reports the completed rows.", sourceLinks: [], plan: { action: productInactiveDraftBatchCommandName, batchFingerprint, children } },
+        { kind: "product_batch_preview", title: "Inactive product draft batch preview", summary: `All ${children.length} rows will create inactive products with PBV2 DRAFT trees.`, sourceLinks: prepared.map((row) => ({ label: `Open ${row.productName} review`, href: row.sourceLink })), details: { batchId: persisted?.id ?? null, label, sharedDefaults: parsed.sharedDefaults, batchFingerprint, rows: prepared, confirmationAvailable: true, unchanged: ["product_activation", "publication", "active_product_modification", "quotes_orders_production"] } },
+        { kind: "action_proposal", title: "Create inactive product draft batch", summary: "Review the complete server-generated batch and use its dedicated GO control once. If a child fails, execution stops and reports the completed rows.", sourceLinks: [], plan: { action: productInactiveDraftBatchCommandName, ...(persisted ? { batchId: persisted.id } : {}), batchFingerprint, children } },
       ],
     };
   }
 
-  async respond(input: { organizationId: string; userId: string; message: string; activeSessionId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+  async respond(input: { organizationId: string; userId: string; conversationId?: string; message: string; activeSessionId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
     if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation, publication, and active-product editing are not available through the assistant. I can prepare a new inactive draft instead.", cards: [{ kind: "product_validation_errors", title: "Unsupported product action", summary: "Only a new inactive product draft can be proposed.", sourceLinks: [], details: { errors: ["Activation, publication, and active-product editing are disabled."] } }] };
     const listRequest = draftReadinessListRequest(input.message);
     if (listRequest && !input.activeSessionId) {

@@ -29,5 +29,13 @@ describe("Product inactive draft batch intake", () => {
     const children = [{ rowNumber: 1, productName: "Banner", intakeSessionId: "session_1", proposalFingerprint: "a".repeat(64) }, { rowNumber: 2, productName: "Sign", intakeSessionId: "session_2", proposalFingerprint: "b".repeat(64) }];
     expect(fingerprintProductInactiveDraftBatch(children)).toBe(fingerprintProductInactiveDraftBatch(children));
     expect(fingerprintProductInactiveDraftBatch(children)).not.toBe(fingerprintProductInactiveDraftBatch([...children].reverse()));
+    expect(fingerprintProductInactiveDraftBatch(children, { route: "Flatbed" })).not.toBe(fingerprintProductInactiveDraftBatch(children));
+  });
+
+  test("applies only explicit Shared settings and records them in the batch contract", () => {
+    const parsed = parseProductInactiveDraftBatch("Shared settings:\n- Category: Rigid Substrates\n- Sold by square foot\n- Route to flatbed\n- Minimum charge: $25\n- Allow rotation\nProducts:\n- 3mm PVC at $4.50\n- 6mm PVC at $6.25");
+    expect(parsed.sharedDefaults).toMatchObject({ category: { value: "Rigid Substrates", source: "shared_default" }, pricingModel: { value: "per_sqft" }, route: { value: "Flatbed" }, minimumChargeCents: { value: 2500 }, allowRotation: { value: true } });
+    expect(parsed.rows).toHaveLength(2);
+    expect(parsed.rows.every((row) => row.provenance.description === "shared")).toBe(true);
   });
 });

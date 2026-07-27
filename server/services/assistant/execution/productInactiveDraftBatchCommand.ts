@@ -12,6 +12,7 @@ const childSchema = z.object({
   proposalFingerprint: z.string().regex(/^[a-f0-9]{64}$/i),
 }).strict();
 export const productInactiveDraftBatchCommandInputSchema = z.object({
+  batchId: z.string().trim().min(1).max(128).optional(),
   batchFingerprint: z.string().regex(/^[a-f0-9]{64}$/i),
   children: z.array(childSchema).min(2).max(25),
 }).strict().superRefine((value, context) => {

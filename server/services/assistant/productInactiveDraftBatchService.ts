@@ -14,9 +14,22 @@ export type ProductDraftBatchRow = {
 
 export type ProductDraftBatchParseResult = {
   rows: ProductDraftBatchRow[];
-  sharedDefaults: string[];
+  sharedDefaults: Record<string, { value: string | boolean | number; source: "shared_default" }>;
   errors: string[];
 };
+
+function sharedDefaultsFrom(lines: string[]): Record<string, { value: string | boolean | number; source: "shared_default" }> {
+  const source = lines.join("\n"); const found: Record<string, { value: string | boolean | number; source: "shared_default" }> = {};
+  const set = (key: string, value: string | boolean | number) => { found[key] = { value, source: "shared_default" }; };
+  const category = source.match(/\bcategory\s*:\s*([^\n*]{1,100})/i); if (category) set("category", category[1].trim());
+  if (/\b(?:sold by|per)\s+(?:square\s*foot|sq\s*ft)\b/i.test(source)) set("pricingModel", "per_sqft");
+  if (/\ball\s+products?\s+(?:use|route to)|\broute\s+to\s+flatbed\b/i.test(source) && /\bflatbed\b/i.test(source)) set("route", "Flatbed");
+  if (/\ballow\s+rotation\b/i.test(source)) set("allowRotation", true);
+  const sheet = source.match(/\b(\d{1,3}(?:\.\d+)?)\s*[x×]\s*(\d{1,3}(?:\.\d+)?)\s*sheets?\b/i); if (sheet) set("sheetSize", `${sheet[1]}x${sheet[2]}`);
+  const minimum = source.match(/\bminimum(?:\s+charge)?\s*(?:is|:)?\s*\$([0-9]+(?:\.[0-9]{1,2})?)/i); if (minimum) set("minimumChargeCents", Math.round(Number(minimum[1]) * 100));
+  if (/\bcontour\s+cutting\b/i.test(source)) set("options", "Contour cutting");
+  return found;
+}
 
 /** Normalization is deliberately conservative: it is used only to identify a
  * collision that must be reviewed, never to rename a product. */
@@ -46,7 +59,12 @@ function splitCsv(line: string): string[] {
  * files, formulas, or implicit columns, which keeps the confirmation preview
  * explainable and safe. */
 export function parseProductInactiveDraftBatch(source: string): ProductDraftBatchParseResult {
-  const lines = source.replace(/\r/g, "").split("\n").map((line) => line.trim()).filter(Boolean);
+  const originalLines = source.replace(/\r/g, "").split("\n").map((line) => line.trim()).filter(Boolean);
+  const sharedStart = originalLines.findIndex((line) => /^shared\s+settings?\s*:?$/i.test(line));
+  const productsStart = originalLines.findIndex((line) => /^products?\s*:?$/i.test(line));
+  const sharedLines = sharedStart >= 0 ? originalLines.slice(sharedStart + 1, productsStart > sharedStart ? productsStart : undefined) : originalLines.filter((line) => /\b(?:all products?|every row|unless specified otherwise)\b/i.test(line));
+  const sharedDefaults = sharedDefaultsFrom(sharedLines);
+  const lines = productsStart >= 0 ? originalLines.slice(productsStart + 1) : originalLines.filter((line) => !sharedLines.includes(line) && !/^shared\s+settings?\s*:?$/i.test(line));
   const errors: string[] = [];
   const table = lines.filter((line) => line.includes("|"));
   const csv = table.length === 0 ? lines.filter((line) => line.includes(",")) : [];
@@ -79,10 +97,11 @@ export function parseProductInactiveDraftBatch(source: string): ProductDraftBatc
     const normalized = normalizeProductDraftBatchName(cleanName);
     if (normalized && seen.has(normalized)) { status = "duplicate"; reasons.push("Duplicate normalized product name within this batch."); }
     seen.add(normalized);
-    return { rowNumber: offset + 1, productName: cleanName, description: description.trim().slice(0, 8_000), status, reasons, provenance: { name: "row", description: "row" } };
+    const inherited = Object.keys(sharedDefaults).length > 0;
+    return { rowNumber: offset + 1, productName: cleanName, description: `${description.trim()}${inherited ? `\nShared settings: ${Object.entries(sharedDefaults).map(([key, item]) => `${key}=${item.value}`).join("; ")}` : ""}`.slice(0, 8_000), status, reasons, provenance: { name: "row", description: inherited ? "shared" : "row" } };
   });
   if (errors.length) rows.forEach((row) => { if (row.status === "ready") { row.status = "invalid"; row.reasons.push(errors[0]); } });
-  return { rows, sharedDefaults: [], errors };
+  return { rows, sharedDefaults, errors };
 }
 
 export function applyProductDraftBatchCollisions(rows: ProductDraftBatchRow[], existingNames: readonly string[]): ProductDraftBatchRow[] {
@@ -92,6 +111,6 @@ export function applyProductDraftBatchCollisions(rows: ProductDraftBatchRow[], e
     : row);
 }
 
-export function fingerprintProductInactiveDraftBatch(rows: readonly { rowNumber: number; productName: string; intakeSessionId: string; proposalFingerprint: string }[]): string {
-  return createHash("sha256").update(JSON.stringify(rows.map((row) => ({ ...row, productName: normalizeProductDraftBatchName(row.productName) })))).digest("hex");
+export function fingerprintProductInactiveDraftBatch(rows: readonly { rowNumber: number; productName: string; intakeSessionId: string; proposalFingerprint: string }[], sharedDefaults: Record<string, unknown> = {}): string {
+  return createHash("sha256").update(JSON.stringify({ sharedDefaults, rows: rows.map((row) => ({ ...row, productName: normalizeProductDraftBatchName(row.productName) })) })).digest("hex");
 }

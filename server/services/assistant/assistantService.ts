@@ -538,6 +538,7 @@ export class AssistantService {
       const productManagement = await productManagementSkillService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
+        conversationId,
         message: request.message,
         activeSessionId: activeProductIntakeSession(conversation.messages),
       });

@@ -275,7 +275,7 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
         return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }
       if (productBatchProposal && typeof productBatchProposal.batchFingerprint === "string" && Array.isArray(productBatchProposal.children)) {
-        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: productInactiveDraftBatchCommandName, arguments: { batchFingerprint: productBatchProposal.batchFingerprint, children: productBatchProposal.children }, context: input.context });
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: productInactiveDraftBatchCommandName, arguments: { ...(typeof productBatchProposal.batchId === "string" ? { batchId: productBatchProposal.batchId } : {}), batchFingerprint: productBatchProposal.batchFingerprint, children: productBatchProposal.children }, context: input.context });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
         return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }

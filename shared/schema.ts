@@ -8079,6 +8079,43 @@ export const localBridgeAgents = pgTable("local_bridge_agents", {
   name: varchar("name", { length: 255 }).notNull(), status: localBridgeAgentStatusEnum("status").notNull().default("pending"), tokenHash: varchar("token_hash", { length: 128 }).notNull(),
   machineLabel: varchar("machine_label", { length: 255 }), agentVersion: varchar("agent_version", { length: 64 }), lastSeenAt: timestamp("last_seen_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(), revokedAt: timestamp("revoked_at", { withTimezone: true }),
 });
+
+// Stage 19G: authoritative batch/child state is separate from generic plans.
+// A plan describes one confirmed action; these records retain row payloads,
+// retry state, and tenant-scoped history without relying on message text.
+export const aiProductDraftBatches = pgTable("ai_product_draft_batches", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  planId: varchar("plan_id").references(() => aiExecutionPlans.id, { onDelete: "set null" }),
+  conversationId: varchar("conversation_id").references(() => aiConversations.id, { onDelete: "set null" }),
+  sourceTurnId: varchar("source_turn_id").references(() => aiTurns.id, { onDelete: "set null" }),
+  actorUserId: varchar("actor_user_id").references(() => users.id, { onDelete: "set null" }),
+  commandName: varchar("command_name", { length: 120 }).notNull(),
+  commandVersion: varchar("command_version", { length: 64 }).notNull(),
+  label: varchar("label", { length: 255 }).notNull(),
+  sourceFormat: varchar("source_format", { length: 32 }).notNull(),
+  sharedDefaults: jsonb("shared_defaults").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  sourceMetadata: jsonb("source_metadata").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  fingerprint: varchar("fingerprint", { length: 128 }).notNull(),
+  proposalStatus: varchar("proposal_status", { length: 32 }).notNull().default("proposed"),
+  executionStatus: varchar("execution_status", { length: 32 }).notNull().default("proposed"),
+  submittedCount: integer("submitted_count").notNull(), includedCount: integer("included_count").notNull(), excludedCount: integer("excluded_count").notNull().default(0),
+  correlationId: varchar("correlation_id", { length: 128 }), idempotencyKey: varchar("idempotency_key", { length: 160 }),
+  confirmedAt: timestamp("confirmed_at", { withTimezone: true }), startedAt: timestamp("started_at", { withTimezone: true }), completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [index("ai_product_draft_batches_org_created_idx").on(table.orgId, table.createdAt), index("ai_product_draft_batches_org_conversation_created_idx").on(table.orgId, table.conversationId, table.createdAt), index("ai_product_draft_batches_org_status_created_idx").on(table.orgId, table.executionStatus, table.createdAt)]);
+
+export const aiProductDraftBatchRows = pgTable("ai_product_draft_batch_rows", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  batchId: varchar("batch_id").notNull().references(() => aiProductDraftBatches.id, { onDelete: "cascade" }),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  sourceRowNumber: integer("source_row_number").notNull(), sourceRowLabel: varchar("source_row_label", { length: 255 }), productName: varchar("product_name", { length: 255 }).notNull(),
+  resolvedPayload: jsonb("resolved_payload").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")), provenance: jsonb("provenance").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  fingerprint: varchar("fingerprint", { length: 128 }).notNull(), idempotencyKey: varchar("idempotency_key", { length: 160 }).notNull(),
+  executionState: varchar("execution_state", { length: 32 }).notNull().default("pending"), productId: varchar("product_id").references(() => products.id, { onDelete: "set null" }), readinessResult: jsonb("readiness_result").$type<Record<string, unknown> | null>(),
+  attemptCount: integer("attempt_count").notNull().default(0), lastErrorCode: varchar("last_error_code", { length: 120 }), lastErrorMessage: varchar("last_error_message", { length: 1000 }), retryable: boolean("retryable").notNull().default(false),
+  startedAt: timestamp("started_at", { withTimezone: true }), completedAt: timestamp("completed_at", { withTimezone: true }), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [uniqueIndex("ai_product_draft_batch_rows_batch_source_row_uidx").on(table.batchId, table.sourceRowNumber), uniqueIndex("ai_product_draft_batch_rows_org_idempotency_uidx").on(table.orgId, table.idempotencyKey), index("ai_product_draft_batch_rows_org_batch_state_idx").on(table.orgId, table.batchId, table.executionState)]);
 export const localFileDestinations = pgTable("local_file_destinations", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`), organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }), customerId: varchar("customer_id").references(() => customers.id, { onDelete: "cascade" }), destinationType: localFileDestinationTypeEnum("destination_type").notNull().default("customer_art_folder"), localPath: text("local_path").notNull(), enabled: boolean("enabled").notNull().default(true), createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(), updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 });
