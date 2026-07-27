@@ -4,11 +4,16 @@ import { createProductInactiveDraftBatchCommandDefinition, productInactiveDraftB
 import type { ProductInactiveDraftPlanningService } from "./productInactiveDraftExecutionCommand";
 import { fingerprintProductInactiveDraftBatch } from "../productInactiveDraftBatchService";
 
+type DraftReadinessReader = { reviewDraft(input: { organizationId: string; sessionId: string }): Promise<{ status: string }> };
+
 export interface ProductInactiveDraftBatchPlanningService extends ProductInactiveDraftBatchCanonicalService {
   single: ProductInactiveDraftPlanningService;
 }
 
-export function createProductInactiveDraftBatchCanonicalService(single: ProductInactiveDraftPlanningService): ProductInactiveDraftBatchPlanningService {
+export function createProductInactiveDraftBatchCanonicalService(
+  single: ProductInactiveDraftPlanningService,
+  readiness?: DraftReadinessReader,
+): ProductInactiveDraftBatchPlanningService {
   return {
     single,
     async createInactiveDraftBatch(input) {
@@ -16,7 +21,9 @@ export function createProductInactiveDraftBatchCanonicalService(single: ProductI
       for (const child of input.children) {
         const result = await single.createInactiveDraft({ organizationId: input.organizationId, actorUserId: input.actorUserId, assistantPlanId: `${input.assistantPlanId}:row:${child.rowNumber}`, idempotencyKey: `${input.idempotencyKey}:row:${child.rowNumber}`, correlationId: input.correlationId, intakeSessionId: child.intakeSessionId, proposalFingerprint: child.proposalFingerprint });
         if (!result.pbv2DraftTreeVersionId) throw new ExecutionPlanError("PBV2_DRAFT_MISSING", `Row ${child.rowNumber} did not return a PBV2 DRAFT tree reference.`);
-        children.push({ rowNumber: child.rowNumber, productId: result.product.id, productName: result.product.name, pbv2TreeVersionId: result.pbv2DraftTreeVersionId, reused: false });
+        const draftReadiness = await (readiness?.reviewDraft({ organizationId: input.organizationId, sessionId: child.intakeSessionId })
+          ?? import("../../productIntakeWizard/productIntakeDraftReadinessService").then(({ productIntakeDraftReadinessService }) => productIntakeDraftReadinessService.reviewDraft({ organizationId: input.organizationId, sessionId: child.intakeSessionId })));
+        children.push({ rowNumber: child.rowNumber, productId: result.product.id, productName: result.product.name, pbv2TreeVersionId: result.pbv2DraftTreeVersionId, readinessStatus: draftReadiness.status, reused: false });
       }
       return { children };
     },
@@ -47,7 +54,7 @@ export function createProductInactiveDraftBatchExecutionCommand(service: Product
       const input = productInactiveDraftBatchCommandInputSchema.parse(plan.sanitizedArguments);
       try {
         const result = await command.adapter.execute(input, { organizationId: scope.organizationId, actorUserId: scope.userId, planId: plan.id, idempotencyKey: plan.idempotencyKey, correlationId: plan.correlationId, signal: new AbortController().signal });
-        return { status: "succeeded", summary: `Created ${result.children.length} inactive product drafts. Activation and publication remain unavailable in the assistant.`, steps: result.children.map((child) => ({ commandName: `${productInactiveDraftBatchCommandName}@v1`, status: "succeeded", summary: `Row ${child.rowNumber}: created inactive product ${child.productId} with PBV2 DRAFT ${child.pbv2TreeVersionId}.` })) };
+        return { status: "succeeded", summary: `Created ${result.children.length} inactive product drafts. Activation and publication remain unavailable in the assistant.`, steps: result.children.map((child) => ({ commandName: `${productInactiveDraftBatchCommandName}@v1`, status: "succeeded", summary: `Row ${child.rowNumber}: created inactive product ${child.productId} with PBV2 DRAFT ${child.pbv2TreeVersionId}; readiness is ${child.readinessStatus.replaceAll("_", " ")}.` })) };
       } catch (error) {
         return { status: "partially_failed", summary: error instanceof Error ? `Batch stopped safely: ${error.message}` : "Batch stopped safely.", steps: [{ commandName: `${productInactiveDraftBatchCommandName}@v1`, status: "failed", summary: "Stopped at the first failing child. Existing child drafts remain inactive and are not retried automatically." }] };
       }

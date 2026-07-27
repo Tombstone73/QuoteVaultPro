@@ -20,7 +20,7 @@ export const productInactiveDraftBatchCommandInputSchema = z.object({
 export type ProductInactiveDraftBatchCommandInput = z.infer<typeof productInactiveDraftBatchCommandInputSchema>;
 
 export const productInactiveDraftBatchResultSchema = z.object({
-  children: z.array(z.object({ rowNumber: z.number().int(), productId: z.string().min(1), productName: z.string().min(1), pbv2TreeVersionId: z.string().min(1), reused: z.boolean() }).strict()).max(25),
+  children: z.array(z.object({ rowNumber: z.number().int(), productId: z.string().min(1), productName: z.string().min(1), pbv2TreeVersionId: z.string().min(1), readinessStatus: z.string().min(1), reused: z.boolean() }).strict()).max(25),
 }).strict();
 export type ProductInactiveDraftBatchResult = z.infer<typeof productInactiveDraftBatchResultSchema>;
 
