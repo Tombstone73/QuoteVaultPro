@@ -61,6 +61,9 @@ export type ProductIntakeDraftReview = {
     measurementMode: "dimensions_required" | "quantity_only";
     workflowIntent: "standard_production" | "fulfillment_only" | "service_fee";
     isTaxable: boolean;
+    allowZeroPrice: boolean;
+    requiresProductionJob: boolean;
+    pricingMode: "area" | "quantity" | "flat";
     useNestingCalculator: boolean;
     sheetWidth: string | null;
     sheetHeight: string | null;
@@ -397,6 +400,9 @@ async function buildReview(database: any, organizationId: string, sessionId: str
       measurementMode: products.measurementMode,
       workflowIntent: products.workflowIntent,
       isTaxable: products.isTaxable,
+      allowZeroPrice: products.allowZeroPrice,
+      requiresProductionJob: products.requiresProductionJob,
+      pricingMode: products.pricingMode,
       useNestingCalculator: products.useNestingCalculator,
       sheetWidth: products.sheetWidth,
       sheetHeight: products.sheetHeight,

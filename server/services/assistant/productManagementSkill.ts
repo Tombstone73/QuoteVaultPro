@@ -14,6 +14,7 @@ import {
 import { createDbProductIntakeSessionStore, type ProductIntakeSessionStore } from "../productIntakeWizard/productIntakeSessionService";
 import { assistantProductIntakeAdapter } from "./productIntakeAdapter";
 import { inactiveProductDraftUpdateService, InactiveProductDraftUpdateError, type InactiveProductDraftPatch } from "./inactiveProductDraftUpdateService";
+import { productIntakeDraftReadinessService } from "../productIntakeWizard/productIntakeDraftReadinessService";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
@@ -34,7 +35,7 @@ export const productManagementSkill = Object.freeze({
 });
 
 export type ProductManagementCard = {
-  kind: "product_intake_summary" | "product_missing_information" | "product_material_selection" | "product_options_summary" | "product_pricing_summary" | "product_routing_summary" | "product_validation_errors" | "product_validation_warnings" | "product_draft_preview" | "product_draft_snapshot" | "product_draft_update_preview" | "product_draft_update_unsupported" | "product_active_product_unsupported" | "action_proposal";
+  kind: "product_intake_summary" | "product_missing_information" | "product_material_selection" | "product_options_summary" | "product_pricing_summary" | "product_routing_summary" | "product_validation_errors" | "product_validation_warnings" | "product_draft_preview" | "product_draft_snapshot" | "product_draft_readiness" | "product_draft_update_preview" | "product_draft_update_unsupported" | "product_active_product_unsupported" | "action_proposal";
   title: string;
   summary: string;
   sourceLinks: Array<{ label: string; href: string }>;
@@ -164,6 +165,43 @@ function unsupportedDraftChange(message: string): boolean {
   return /\b(option|grommet|hem|pole\s*pocket|single[-\s]?sided|double[-\s]?sided|material|route|routing|prepress|station|default)\b/i.test(message);
 }
 
+function isDraftReadinessRequest(message: string): boolean {
+  return /\b(?:ready\s+to\s+activate|what(?:'s|\s+is)\s+(?:still\s+)?missing|incomplete|readiness|finish\s+before\s+activat)/i.test(message);
+}
+
+function draftReadinessListRequest(message: string): { filter: "incomplete" | "pricing" | "routing" | "material" | "dimensions" | "review_warnings" | "ready" | "needs_review"; category?: string; productName?: string } | null {
+  if (!/\b(?:drafts?|products?)\b/i.test(message) || !/\b(?:incomplete|missing|need|ready|review|pricing|routing|material|dimension)\b/i.test(message)) return null;
+  const category = message.match(/\bcategory\s*[=:]?\s*[“"]?([^,.”"]{1,100})/i)?.[1]?.trim();
+  const productName = message.match(/\b(?:named|matching)\s*[“"]([^”"]{1,160})[”"]/i)?.[1]?.trim();
+  const filter = /\bpricing\b/i.test(message) ? "pricing" : /\b(?:routing|route|station)\b/i.test(message) ? "routing" : /\bmaterials?\b/i.test(message) ? "material" : /\bdimensions?\b/i.test(message) ? "dimensions" : /\bneed(?:s)?\s+review\b/i.test(message) ? "needs_review" : /\breview\b/i.test(message) ? "review_warnings" : /\bready\b/i.test(message) ? "ready" : "incomplete";
+  return { filter, ...(category ? { category } : {}), ...(productName ? { productName } : {}) };
+}
+
+function readinessCard(readiness: Awaited<ReturnType<typeof productIntakeDraftReadinessService.reviewDraft>>, editorLink: string): ProductManagementCard {
+  return {
+    kind: "product_draft_readiness",
+    title: `Draft readiness: ${readiness.productName}`,
+    summary: readiness.status === "ready_for_human_activation"
+      ? "This inactive PBV2 DRAFT is ready for human activation review; the assistant did not activate it."
+      : `This inactive PBV2 DRAFT is ${readiness.status.replaceAll("_", " ")}.`,
+    sourceLinks: [{ label: "Open existing product editor", href: editorLink }],
+    details: {
+      productId: readiness.productId,
+      status: readiness.status,
+      blockers: readiness.blockers.map((item) => item.message),
+      warnings: readiness.warnings.map((item) => item.message),
+      unknowns: readiness.unknowns.map((item) => item.message),
+      completed: readiness.completed,
+      supportedAutomaticFixes: readiness.supportedAutomaticFixes.map((item) => ({ code: item.code, action: item.suggestedAction })),
+      unsupportedManualFixes: readiness.unsupportedManualFixes.map((item) => ({ code: item.code, action: item.suggestedAction })),
+      internalSetupNote: readiness.internalSetupNote,
+      reviewWarnings: readiness.reviewWarnings,
+      derivedMissingFieldWarnings: readiness.derivedMissingFieldWarnings,
+      fingerprint: readiness.fingerprint,
+    },
+  };
+}
+
 function answerFor(question: ProductIntakeSessionDetail["questions"][number], message: string): ProductIntakeAnswerPatchItem | null {
   const text = message.trim();
   if (!text || /^go[.!\s]*$/i.test(text)) return null;
@@ -214,6 +252,15 @@ export class ProductManagementSkillService {
 
   async respond(input: { organizationId: string; userId: string; message: string; activeSessionId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
     if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation, publication, and active-product editing are not available through the assistant. I can prepare a new inactive draft instead.", cards: [{ kind: "product_validation_errors", title: "Unsupported product action", summary: "Only a new inactive product draft can be proposed.", sourceLinks: [], details: { errors: ["Activation, publication, and active-product editing are disabled."] } }] };
+    const listRequest = draftReadinessListRequest(input.message);
+    if (listRequest && !input.activeSessionId) {
+      const result = await productIntakeDraftReadinessService.listDrafts({ organizationId: input.organizationId, ...listRequest });
+      return {
+        handled: true,
+        response: result.items.length ? `Found ${result.items.length} inactive PBV2 DRAFT product(s) matching this readiness filter. No product was changed.` : "No inactive PBV2 DRAFT products matched this readiness filter.",
+        cards: [{ kind: "product_draft_readiness", title: "Inactive draft readiness", summary: "Read-only readiness list. Products remain inactive DRAFT.", sourceLinks: [], details: { filter: listRequest.filter, items: result.items, hasMore: result.hasMore, limit: result.limit, offset: result.offset } }],
+      };
+    }
     if (!input.activeSessionId) {
       const lookup = draftLookupFromMessage(input.message);
       if (lookup) {
@@ -233,7 +280,21 @@ export class ProductManagementSkillService {
         try {
           const snapshot = await inactiveProductDraftUpdateService.loadSnapshot({ organizationId: input.organizationId, sessionId: existing.session.id });
           const snapshotCard: ProductManagementCard = { kind: "product_draft_snapshot", title: "Current inactive draft", summary: `Loaded the current inactive draft for ${snapshot.productName}.`, sourceLinks: [{ label: "Open existing product editor", href: snapshot.editorLink }], details: { productName: snapshot.productName, draftStatus: "inactive_draft", editorPath: snapshot.editorLink, fields: { "PBV2 status": snapshot.pbv2Status, "Readiness": snapshot.readiness.status, "Base rate / sq ft": money(snapshot.pricingBase.perSqftCents), "Base rate / piece": money(snapshot.pricingBase.perPieceCents), "Minimum charge": money(snapshot.pricingBase.minimumChargeCents), "Primary routing station": snapshot.relationships.routing?.stationName ?? "Not set", "Option templates": snapshot.relationships.optionTemplates.map((item) => item.name).join(", ") || "None", "Internal setup note": snapshot.relationships.setupNote ?? "None" }, warnings: [...snapshot.readiness.warnings, ...snapshot.relationships.reviewWarnings, ...snapshot.relationships.missingFieldWarnings], validationErrors: snapshot.readiness.findings } };
-          if (/\b(what\s+is\s+missing|show\s+(?:me\s+)?(?:what\s+is\s+)?missing|validation|readiness)\b/i.test(input.message)) return { handled: true, response: snapshot.readiness.findings.length ? "Here are the current server-derived draft readiness blockers." : "The inactive draft has no current server-derived readiness blockers.", cards: [snapshotCard] };
+          if (isDraftReadinessRequest(input.message)) {
+            const readiness = await productIntakeDraftReadinessService.reviewDraft({ organizationId: input.organizationId, sessionId: existing.session.id });
+            const response = readiness.status === "ready_for_human_activation"
+              ? `${readiness.productName} is ready for human activation review. It remains inactive with a PBV2 DRAFT tree; activation must use the normal product administration workflow.`
+              : `${readiness.productName} is not ready for human activation. I found ${readiness.blockers.length} blocker(s), ${readiness.warnings.length} warning(s), and ${readiness.unknowns.length} unknown check(s).`;
+            return { handled: true, response, cards: [snapshotCard, readinessCard(readiness, snapshot.editorLink)] };
+          }
+          if (/\bfix\s+(?:everything|all)\s+safe\b/i.test(input.message)) {
+            const readiness = await productIntakeDraftReadinessService.reviewDraft({ organizationId: input.organizationId, sessionId: existing.session.id });
+            const fixable = readiness.supportedAutomaticFixes;
+            const response = fixable.length
+              ? "I reviewed the draft. The remaining supported changes must use separate confirmation plans for pricing, core configuration, and routing/options. I need explicit safe values for missing prices, materials, or stations before I can prepare any plan; nothing was changed."
+              : "I found no safely inferable change to plan. The draft remains inactive DRAFT and any manual findings should be resolved in the product editor.";
+            return { handled: true, response, cards: [snapshotCard, readinessCard(readiness, snapshot.editorLink)] };
+          }
           const patch = pricingPatchFromMessage(input.message);
           const configurationPatch = patch ? null : configurationPatchFromMessage(input.message);
           const relationshipPatch = patch || configurationPatch ? null : relationshipPatchFromMessage(input.message);
