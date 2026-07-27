@@ -52,6 +52,12 @@ import { useOrder, useUpdateOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { artworkPreviewLabel, shouldPollArtworkPreview } from "@/lib/artworkPreviewLifecycle";
+import {
+  getCanonicalProofWorkspaceMode,
+  getDisplayedProofVersionId,
+  getHistoryPreviewLabel,
+  type ProofWorkspaceMode,
+} from "@/lib/proofWorkspaceState";
 import { apiFetchBlob } from "@/lib/queryClient";
 import {
   canGeneratePreviewRecovery,
@@ -280,16 +286,6 @@ function getProofPreviewUrl(file: ProofFileRow | null | undefined) {
 
 function getDownloadUrl(file: ProofFileRow | null | undefined) {
   return getStaffProofDownloadUrl(file);
-}
-
-function getDefaultVersionId(detail: ProofingReadModel | undefined, row: ProofingQueueRow | undefined) {
-  return (
-    detail?.currentActionableProofVersionId ||
-    detail?.approvedProofVersionId ||
-    row?.currentDisplayedProofVersionId ||
-    detail?.proofVersionHistory[0]?.id ||
-    null
-  );
 }
 
 function getRoleSummary(userRole: string | null | undefined) {
@@ -654,7 +650,12 @@ export default function StaffProofingPage() {
     sources: EligibleProofArtworkSource[];
     eligibleCount: number;
   }>>([]);
-  const [selectedVersionId, setSelectedVersionId] = useState<string | null>(null);
+  // History inspection is intentionally independent from the server-authoritative
+  // active proof. A cancelled version must never remain selected as active.
+  const [selectedHistoryVersionId, setSelectedHistoryVersionId] = useState<string | null>(null);
+  const [workspaceMode, setWorkspaceMode] = useState<ProofWorkspaceMode>("preparing");
+  const workspaceLineItemRef = useRef<string | null>(null);
+  const workspaceActiveProofIdRef = useRef<string | null | undefined>(undefined);
   const [viewerOpen, setViewerOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
@@ -668,6 +669,7 @@ export default function StaffProofingPage() {
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
   const previewGenerationRequestedRef = useRef(new Set<string>());
   const [createMode, setCreateMode] = useState<"generated" | "uploaded">("generated");
+  const [proofCreationIntent, setProofCreationIntent] = useState<"new_draft" | "revision">("new_draft");
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
   const [selectedArtworkSourceIds, setSelectedArtworkSourceIds] = useState<string[]>([]);
   const [failedArtworkPreviewIds, setFailedArtworkPreviewIds] = useState<Set<string>>(() => new Set());
@@ -687,7 +689,7 @@ export default function StaffProofingPage() {
   // "send" = send a draft for the first time; "resend" = re-notify for an awaiting_response version
   const [sendDialogMode, setSendDialogMode] = useState<"send" | "resend">("send");
   // versionIdForSend allows the resend flow to target a specific version without
-  // changing selectedVersionId (which drives the main preview panel).
+  // changing the inspected history selection that drives the main preview panel.
   const [versionIdForSend, setVersionIdForSend] = useState<string | null>(null);
   const [sendEmailSource, setSendEmailSource] = useState<"prefilled" | "">("");
   const [sendToName, setSendToName] = useState("");
@@ -858,18 +860,33 @@ export default function StaffProofingPage() {
     [activeLineItemId, selectedOrder],
   );
 
+  const activeProofId = detail?.currentActionableProofVersionId ?? null;
+
   useEffect(() => {
-    const defaultVersionId = getDefaultVersionId(detail, selectedRow ?? undefined);
-    if (!detail) {
-      if (selectedVersionId !== null) setSelectedVersionId(null);
+    const lineItemChanged = workspaceLineItemRef.current !== activeLineItemId;
+    if (lineItemChanged) {
+      workspaceLineItemRef.current = activeLineItemId;
+      workspaceActiveProofIdRef.current = activeProofId;
+      setSelectedHistoryVersionId(null);
+      setWorkspaceMode(getCanonicalProofWorkspaceMode(activeProofId));
       return;
     }
 
-    const exists = selectedVersionId ? detail.proofVersionHistory.some((version) => version.id === selectedVersionId) : false;
-    if (!exists) {
-      setSelectedVersionId(defaultVersionId);
+    if (workspaceActiveProofIdRef.current !== activeProofId) {
+      workspaceActiveProofIdRef.current = activeProofId;
+      setSelectedHistoryVersionId(null);
+      setWorkspaceMode(getCanonicalProofWorkspaceMode(activeProofId));
+      return;
     }
-  }, [detail, selectedRow, selectedVersionId]);
+
+    const selectedHistoryStillExists = selectedHistoryVersionId
+      ? detail?.proofVersionHistory.some((version) => version.id === selectedHistoryVersionId)
+      : false;
+    if (workspaceMode === "history_preview" && selectedHistoryStillExists) return;
+
+    setSelectedHistoryVersionId(null);
+    setWorkspaceMode(getCanonicalProofWorkspaceMode(activeProofId));
+  }, [activeLineItemId, activeProofId, detail?.proofVersionHistory, selectedHistoryVersionId, workspaceMode]);
 
   const filesQuery = useOrderLineItemFiles(activeOrderId ?? undefined, activeLineItemId ?? undefined);
   const lineItemFiles = (filesQuery.data?.data ?? []) as ProofFileRow[];
@@ -933,12 +950,18 @@ export default function StaffProofingPage() {
     [selectableArtworkFiles, selectableProofFiles],
   );
 
-  const displayedVersion = detail?.proofVersionHistory.find((version) => version.id === selectedVersionId) ?? null;
+  const displayedVersionId = getDisplayedProofVersionId({
+    workspaceMode,
+    activeProofId,
+    selectedHistoryVersionId,
+  });
+  const displayedVersion = detail?.proofVersionHistory.find((version) => version.id === displayedVersionId) ?? null;
+  const isHistoryPreview = workspaceMode === "history_preview";
   const displayedFile = displayedVersion
     ? lineItemFiles.find((file) => file.id === displayedVersion.proofFileId) ?? null
     : null;
   const currentSnapshot = detail?.currentProofInputSnapshot ?? null;
-  const currentArtifact = detail?.currentDisplayedProofArtifact ?? null;
+  const currentArtifact = workspaceMode === "active_proof" ? detail?.currentDisplayedProofArtifact ?? null : null;
   const rawPreviewUrl = getProofPreviewUrl(displayedFile);
   const previewUrl = staffPreviewBlobUrl || (rawPreviewUrl && !shouldFetchStaffPreviewAsBlob(rawPreviewUrl) ? rawPreviewUrl : null);
   const downloadUrl = getDownloadUrl(displayedFile);
@@ -1024,7 +1047,7 @@ export default function StaffProofingPage() {
     ];
     return candidates.find((value) => value && `${value}`.trim().length > 0) ?? null;
   }, [detail?.manualApprovalOverrideHistory, selectedOrder?.notesInternal, statusNote]);
-  const canSendCurrentVersion = displayedVersion?.status === "draft";
+  const canSendCurrentVersion = workspaceMode === "active_proof" && displayedVersion?.status === "draft";
   const currentProofIssue = getProofPreviewIssue({
     artifact: currentArtifact,
     sourceFileName: currentSnapshot?.sourceArtwork?.fileName ?? null,
@@ -1099,10 +1122,14 @@ export default function StaffProofingPage() {
     setViewerZoom(previewIsPdf ? 85 : 100);
     setViewerPage(1);
     setPreviewImageError(false);
-  }, [previewIsPdf, rawPreviewUrl, selectedVersionId]);
+  }, [previewIsPdf, rawPreviewUrl, displayedVersionId]);
 
-  function openCreateProofDialog(mode: "generated" | "uploaded" = "generated") {
+  function openCreateProofDialog(mode: "generated" | "uploaded" = "generated", intent: "new_draft" | "revision" = "new_draft") {
+    setSelectedHistoryVersionId(null);
+    setWorkspaceMode("preparing");
+    setVersionIdForSend(null);
     setCreateMode(mode);
+    setProofCreationIntent(intent);
     setCreateDialogOpen(true);
   }
 
@@ -1241,7 +1268,8 @@ export default function StaffProofingPage() {
       ));
       await refreshProofing(primaryLineItemId, batchSelectionOrderId);
       setSelectedLineItemId(primaryLineItemId);
-      setSelectedVersionId(result.data.proofVersion.id);
+      setSelectedHistoryVersionId(null);
+      setWorkspaceMode("active_proof");
       setCombinedProofDialogOpen(false);
       setCreateInternalNotes("");
       setBatchSelectedLineItemIds([]);
@@ -1323,9 +1351,11 @@ export default function StaffProofingPage() {
     },
     onSuccess: async ({ data, isDraft }) => {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
-      setSelectedVersionId(data.proofVersion.id);
+      setSelectedHistoryVersionId(null);
+      setWorkspaceMode("active_proof");
       setCreateDialogOpen(false);
       setCreateMode("generated");
+      setProofCreationIntent("new_draft");
       setSelectedExistingAttachmentId("");
       setSelectedArtworkSourceIds([]);
       setCreateInternalNotes("");
@@ -1429,7 +1459,8 @@ export default function StaffProofingPage() {
     },
     onSuccess: async ({ data }) => {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
-      setSelectedVersionId(data.proofVersion.id);
+      setSelectedHistoryVersionId(null);
+      setWorkspaceMode("active_proof");
       setPreviewRecoveryState(null);
       toast({ title: "Proof regenerated", description: "A new generated draft is ready for review and send." });
     },
@@ -1572,6 +1603,15 @@ export default function StaffProofingPage() {
     },
     onSuccess: async () => {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
+      setSelectedHistoryVersionId(null);
+      setWorkspaceMode("preparing");
+      setViewerPage(1);
+      setPreviewImageError(false);
+      setStaffPreviewBlobUrl(null);
+      setStaffPreviewError(null);
+      setPreviewRecoveryState(null);
+      setVersionIdForSend(null);
+      setSendDialogOpen(false);
       setCancelDialogOpen(false);
       setCancelReason("");
       toast({
@@ -1847,7 +1887,7 @@ export default function StaffProofingPage() {
                 <div className="z-10 flex items-center justify-between border-b border-[#232948] bg-[#0B1120]/60 p-3 backdrop-blur-md">
                   <div className="flex items-center gap-4">
                     <div className="rounded-full bg-rose-500/20 px-3 py-1 text-[10px] font-bold tracking-wider text-rose-500">
-                      Customer Visible Proof
+                      {workspaceMode === "preparing" ? "Proof Preparation" : isHistoryPreview ? getHistoryPreviewLabel(displayedVersion?.status) : "Customer Visible Proof"}
                     </div>
                     <div>
                       <h2 className="text-xs font-bold uppercase tracking-tight text-white">{previewName}</h2>
@@ -2250,6 +2290,30 @@ export default function StaffProofingPage() {
             <div className="space-y-0">
               <div className="space-y-4 border-b border-[#232948] p-6">
                 <div>
+                  {isHistoryPreview ? (
+                    <div className="space-y-2">
+                      <Button
+                        className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#1337ec] text-sm font-bold text-white shadow-lg shadow-[#1337ec]/20 transition-all hover:bg-[#1a43ff]"
+                        onClick={() => {
+                          setSelectedHistoryVersionId(null);
+                          setWorkspaceMode(getCanonicalProofWorkspaceMode(activeProofId));
+                        }}
+                      >
+                        <ChevronLeft className="h-4 w-4" />
+                        {activeProofId ? "Back to Active Proof" : "Back to Proof Setup"}
+                      </Button>
+                      {(displayedVersion?.status === "rejected" || displayedVersion?.status === "revision_requested") ? (
+                        <Button
+                          variant="outline"
+                          className="h-10 w-full rounded-xl border-[#232948] bg-transparent text-[10px] font-bold uppercase tracking-wider text-slate-200 transition-all hover:bg-slate-800"
+                          onClick={() => openCreateProofDialog("generated", "revision")}
+                          disabled={Boolean(hasBlockingSentProof)}
+                        >
+                          Create New Revision
+                        </Button>
+                      ) : null}
+                    </div>
+                  ) : (
                   <Button
                     className="flex h-12 w-full items-center justify-center gap-2 rounded-xl bg-[#1337ec] text-sm font-bold text-white shadow-lg shadow-[#1337ec]/20 transition-all hover:bg-[#1a43ff]"
                     onClick={() => {
@@ -2272,6 +2336,7 @@ export default function StaffProofingPage() {
                     {canSendCurrentVersion ? <Send className="h-4 w-4" /> : <Upload className="h-4 w-4" />}
                     {primaryActionLabel}
                   </Button>
+                  )}
                   {canSendCurrentVersion && currentProofIssue ? (
                     <p className="mt-3 text-center text-[10px] text-amber-300">
                       This proof does not include an artwork preview and cannot be sent to the customer.
@@ -2325,7 +2390,7 @@ export default function StaffProofingPage() {
                       {displayedVersion?.status === "draft" ? "Discard Draft" : "Cancel Sent Proof"}
                     </Button>
                   ) : null}
-                  {detail && !canSendCurrentVersion ? (
+                  {detail && workspaceMode === "active_proof" && !canSendCurrentVersion ? (
                     <Button
                       variant="outline"
                       className="mt-3 h-10 w-full rounded-xl border-[#232948] bg-transparent text-[10px] font-bold uppercase tracking-wider text-slate-200 transition-all hover:bg-slate-800"
@@ -2593,14 +2658,17 @@ export default function StaffProofingPage() {
                   <ScrollArea className="max-h-[26rem] pr-3">
                     <div className="space-y-3">
                       {detail.proofVersionHistory.map((version) => {
-                        const isSelected = version.id === selectedVersionId;
+                        const isSelected = version.id === displayedVersionId;
                         const isDraftVersion = version.status === "draft";
                         const isAwaitingResponse = version.status === "awaiting_response";
                         return (
                           <div key={version.id} className="space-y-1">
                             <button
                               type="button"
-                              onClick={() => setSelectedVersionId(version.id)}
+                              onClick={() => {
+                                setSelectedHistoryVersionId(version.id);
+                                setWorkspaceMode("history_preview");
+                              }}
                               className={`w-full rounded-lg border p-3 text-left transition-all ${isSelected ? "border-[#1337ec] bg-[#1337ec]/10" : "border-[#232948] bg-[#141824]/40 hover:border-slate-600"}`}
                             >
                               <div className="flex items-center justify-between gap-2">
@@ -2617,11 +2685,12 @@ export default function StaffProofingPage() {
                                 <p className="mt-0.5 text-[11px] text-slate-400">To: {version.sentToEmail}</p>
                               ) : null}
                             </button>
-                            {isDraftVersion ? (
+                            {isDraftVersion && version.id === activeProofId ? (
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setSelectedVersionId(version.id);
+                                  setSelectedHistoryVersionId(null);
+                                  setWorkspaceMode("active_proof");
                                   const prefill = version.sentToEmail ?? "";
                                   setSendToEmail(prefill);
                                   setSendToName(version.sentToName ?? "");
@@ -2638,11 +2707,12 @@ export default function StaffProofingPage() {
                                 Send this draft
                               </button>
                             ) : null}
-                            {isAwaitingResponse ? (
+                            {isAwaitingResponse && version.id === activeProofId ? (
                               <button
                                 type="button"
                                 onClick={() => {
-                                  setSelectedVersionId(version.id);
+                                  setSelectedHistoryVersionId(null);
+                                  setWorkspaceMode("active_proof");
                                   const prefill = version.sentToEmail ?? "";
                                   setSendToEmail(prefill);
                                   setSendToName(version.sentToName ?? "");
@@ -2778,9 +2848,11 @@ export default function StaffProofingPage() {
       }}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
-            <DialogTitle>Create Artwork Proof Draft</DialogTitle>
+            <DialogTitle>{proofCreationIntent === "revision" ? "Create New Proof Revision" : "Create Artwork Proof Draft"}</DialogTitle>
             <DialogDescription>
-              Review exactly which artwork is included, then create a draft. You will confirm the recipient before it is sent.
+              {proofCreationIntent === "revision"
+                ? `Create a new draft revision from the current proof setup${displayedVersion ? ` after Version ${displayedVersion.versionNumber}` : ""}. The prior version remains historical.`
+                : "Review exactly which artwork is included, then create a draft. You will confirm the recipient before it is sent."}
             </DialogDescription>
           </DialogHeader>
 

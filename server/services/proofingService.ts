@@ -3110,7 +3110,9 @@ async function resolveProofingTruthMap(tx: any, args: {
 
 function buildProofingQueueRow(base: LoadedProofQueueLineItem, truth: ProofingReadModel): ProofingQueueRow {
   const currentQueueStatus = deriveProofingQueueStatus(truth);
-  const currentDisplayedProofVersion = truth.currentActionableProofVersion ?? truth.approvedProofVersion ?? truth.proofVersionHistory[0] ?? null;
+  // History is intentionally not an active display fallback. A cancelled or
+  // resolved version may be previewed only after an explicit client selection.
+  const currentDisplayedProofVersion = truth.currentActionableProofVersion ?? truth.approvedProofVersion ?? null;
 
   return {
     lineItemId: base.lineItemId,
@@ -4011,7 +4013,9 @@ export async function resolveLineItemProofingTruth(tx: any, args: {
     lineItemId: args.lineItemId,
   });
 
-  const currentDisplayedVersion = truth.currentActionableProofVersion ?? truth.approvedProofVersion ?? truth.proofVersionHistory[0] ?? null;
+  // Do not promote the newest history entry to the active workspace. This is
+  // especially important immediately after a draft is cancelled.
+  const currentDisplayedVersion = truth.currentActionableProofVersion ?? truth.approvedProofVersion ?? null;
   const currentDisplayedProofArtifact = currentDisplayedVersion
     ? buildProofArtifactSummary({
         attachment: await loadProofAttachment(tx, {
