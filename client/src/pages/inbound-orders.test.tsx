@@ -3934,7 +3934,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("Select a customer or mark customer unresolved.");
     await waitForText("Add at least one line item.");
 
-    const orderButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Convert to Draft Order")) as HTMLButtonElement;
+    const orderButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Create Order")) as HTMLButtonElement;
     const quoteButton = Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Convert to Draft Quote")) as HTMLButtonElement;
     expect(orderButton.disabled).toBe(false);
     expect(quoteButton.disabled).toBe(true);
@@ -3947,7 +3947,7 @@ describe("InboundOrdersPage", () => {
       variant: "destructive",
     }));
     expect(apiFetchMock).not.toHaveBeenCalledWith(
-      "/api/inbound-orders/inbound_1/convert-to-order",
+      "/api/inbound-orders/inbound_1/create-order",
       expect.anything(),
     );
   });
@@ -4748,7 +4748,7 @@ describe("InboundOrdersPage", () => {
     await waitForText("Order Workstation will appear after parsing.");
 
     const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Create Draft Order")
+      button.textContent?.includes("Create Order")
     ));
     expect(createDraftButton).toBeTruthy();
     expect(createDraftButton?.disabled).toBe(true);
@@ -5059,9 +5059,8 @@ describe("InboundOrdersPage", () => {
       section.className.includes("sticky") && section.textContent?.includes("Save Review Draft")
     ));
     expect(actionFooter).toBeTruthy();
-    expect(container.textContent).toContain("Mark Ready to Convert");
     const phaseFourButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Create Draft Order")
+      button.textContent?.includes("Create Order")
     ));
     expect(phaseFourButton).toBeTruthy();
     expect(phaseFourButton?.disabled).toBe(false);
@@ -5525,13 +5524,13 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).not.toContain("Installation needed");
     expect(container.textContent).not.toContain("Confirm final banner size before conversion.");
     expect(container.textContent).toContain("82% confidence");
-    expect(container.textContent).toContain("Create Draft Order");
+    expect(container.textContent).toContain("Create Order");
     expect(labeledControl("Due date", "input")).toHaveProperty("value", "2026-06-11");
     expect(labeledControl("Quantity", "input")).toHaveProperty("value", "3");
     expect(labeledControl("Material", "input")).toHaveProperty("value", "3mm White PVC");
 
     const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Create Draft Order")
+      button.textContent?.includes("Create Order")
     ));
     expect(createDraftButton?.disabled).toBe(false);
   });
@@ -5788,7 +5787,7 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).toContain("Review Required");
     expect(container.textContent).toContain("No compatible PBV2 option found.");
     expect(container.textContent).toContain("Add manually or select a different product.");
-    expect(container.textContent).toContain("Create Draft Order");
+    expect(container.textContent).toContain("Create Order");
   });
 
   test("searches and saves selected customer and contact in review draft", async () => {
@@ -6376,6 +6375,7 @@ describe("InboundOrdersPage", () => {
     const draft = parsedDraft({ missingDecisions: [], globalWarnings: [] });
     const readyDraft = reviewDraft(draft, { status: "ready_to_convert", validationErrors: [] });
     let converted = false;
+    let createOrderBody: any = null;
     const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(true);
 
     apiFetchMock.mockImplementation(async (url: any, options?: any) => {
@@ -6396,7 +6396,8 @@ describe("InboundOrdersPage", () => {
       if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search")) {
         return jsonResponse({ success: true, data: [] });
       }
-      if (path === "/api/inbound-orders/inbound_1/convert-to-order" && options?.method === "POST") {
+      if (path === "/api/inbound-orders/inbound_1/create-order" && options?.method === "POST") {
+        createOrderBody = JSON.parse(String(options.body ?? "{}"));
         converted = true;
         return jsonResponse({
           success: true,
@@ -6426,20 +6427,25 @@ describe("InboundOrdersPage", () => {
       await waitForText("Phase 4: Create draft order from reviewed inbound record.");
 
       const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
-        button.textContent?.includes("Create Draft Order")
+        button.textContent?.includes("Create Order")
       ));
       expect(createDraftButton).toBeTruthy();
       expect(createDraftButton?.disabled).toBe(false);
+
+      act(() => {
+        Simulate.change(labeledControl("PO Ref", "input"), { target: { value: "PO-CURRENT" } } as any);
+      });
 
       await act(async () => {
         Simulate.click(createDraftButton!);
       });
       await waitForText("Open order 1001");
 
-      expect(confirmSpy).toHaveBeenCalled();
+      expect(confirmSpy).not.toHaveBeenCalled();
+      expect(createOrderBody?.reviewedOrderJson?.poNumber).toBe("PO-CURRENT");
       expect(apiFetchMock).toHaveBeenCalledWith(
-        "/api/inbound-orders/inbound_1/convert-to-order",
-        expect.objectContaining({ method: "POST", body: JSON.stringify({}) }),
+        "/api/inbound-orders/inbound_1/create-order",
+        expect.objectContaining({ method: "POST", body: expect.any(String) }),
       );
       expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
         title: "Draft order created",
@@ -6500,7 +6506,7 @@ describe("InboundOrdersPage", () => {
       if (path.startsWith("/api/inbound-orders/customer-search") || path.startsWith("/api/inbound-orders/contact-search")) {
         return jsonResponse({ success: true, data: [] });
       }
-      if (path === "/api/inbound-orders/inbound_1/convert-to-order" && options?.method === "POST") {
+      if (path === "/api/inbound-orders/inbound_1/create-order" && options?.method === "POST") {
         return jsonResponse({
           success: false,
           message: "Inbound review draft is not ready for order conversion.",
@@ -6515,7 +6521,7 @@ describe("InboundOrdersPage", () => {
       await waitForText("Phase 4: Create draft order from reviewed inbound record.");
 
       const createDraftButton = Array.from(container.querySelectorAll("button")).find((button) => (
-        button.textContent?.includes("Create Draft Order")
+        button.textContent?.includes("Create Order")
       ));
       await act(async () => {
         Simulate.click(createDraftButton!);
@@ -6524,10 +6530,10 @@ describe("InboundOrdersPage", () => {
       await waitForText("Draft order creation failed");
       expect(container.textContent).toContain("Select an existing customer before creating a draft order.");
       const retryButton = Array.from(container.querySelectorAll("button")).find((button) => (
-        button.textContent?.includes("Create Draft Order")
+        button.textContent?.includes("Create Order")
       ));
       expect(retryButton?.disabled).toBe(false);
-      expect(confirmSpy).toHaveBeenCalled();
+      expect(confirmSpy).not.toHaveBeenCalled();
       expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
         title: "Draft order was not created",
         variant: "destructive",
@@ -6597,7 +6603,6 @@ describe("InboundOrdersPage", () => {
     ));
     expect(refreshButton).toBeTruthy();
     expect(container.textContent).toContain("Save Review Draft");
-    expect(container.textContent).toContain("Mark Ready to Convert");
 
     await act(async () => {
       Simulate.click(refreshButton!);
@@ -6643,25 +6648,16 @@ describe("InboundOrdersPage", () => {
     expect(savedBody.missingDecisionsJson[0].status).toBe("acknowledged");
     expect(savedBody.reviewNotes).toBe("Reviewed by staff.");
 
-    const markReadyButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Mark Ready to Convert")
+    const createOrderButton = Array.from(container.querySelectorAll("button")).find((button) => (
+      button.textContent?.includes("Create Order")
     ));
+    expect(createOrderButton?.disabled).toBe(false);
+    const confirmSpy = jest.spyOn(window, "confirm").mockReturnValue(false);
     await act(async () => {
-      Simulate.click(markReadyButton!);
+      Simulate.click(createOrderButton!);
     });
-    await waitForText("Artwork missing must be acknowledged before ready.");
-    expect(markReadyCalled).toBe(true);
-
-    const orderCreationButton = Array.from(container.querySelectorAll("button")).find((button) => (
-      button.textContent?.includes("Create Draft Order")
-    ));
-    expect(orderCreationButton?.disabled).toBe(false);
-    await act(async () => {
-      Simulate.click(orderCreationButton!);
-    });
-    expect(mockToast).toHaveBeenCalledWith(expect.objectContaining({
-      title: "Draft order is not ready",
-      variant: "destructive",
-    }));
+    expect(confirmSpy).not.toHaveBeenCalled();
+    expect(markReadyCalled).toBe(false);
+    confirmSpy.mockRestore();
   });
 });

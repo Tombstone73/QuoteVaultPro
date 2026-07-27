@@ -462,6 +462,7 @@ describe("inbound order routes", () => {
     matchLineItemProduct: jest.fn(),
     resolveWarning: jest.fn(),
     resolveDecisionFlag: jest.fn(),
+    createOrderFromReviewDraft: jest.fn<(...args: any[]) => Promise<any>>(),
     convertInboundReviewDraftToOrder: jest.fn<(...args: any[]) => Promise<any>>(),
     applyBulkQueueAction: jest.fn<(...args: any[]) => Promise<any>>(),
     combineInboundRecords: jest.fn<(...args: any[]) => Promise<any>>(),
@@ -2079,6 +2080,31 @@ describe("inbound order routes", () => {
       actorUserId: "user_1",
     });
     expect(service.createQuoteDraftFromInbound).not.toHaveBeenCalled();
+  });
+
+  test("creates an order from the current review draft in one command", async () => {
+    service.createOrderFromReviewDraft.mockResolvedValue({
+      orderId: "order_1",
+      orderNumber: "1001",
+      inboundOrderId: "inbound_1",
+      convertedAt: "2026-06-09T12:30:00.000Z",
+      order: { id: "order_1", orderNumber: "1001" },
+      inbound: inboundDetail(inboundRecord({ status: "submitted", createdOrderId: "order_1" })),
+    });
+    const draft = reviewDraft();
+
+    const response = await request(buildApp(service))
+      .post("/api/inbound-orders/inbound_1/create-order")
+      .send(draft);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data).toMatchObject({ orderId: "order_1", orderNumber: "1001" });
+    expect(service.createOrderFromReviewDraft).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: expect.objectContaining({ reviewedLineItemsJson: expect.any(Array) }),
+    });
   });
 
   test("returns safe validation JSON when inbound conversion is blocked", async () => {

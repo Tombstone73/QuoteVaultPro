@@ -1566,6 +1566,53 @@ export function registerInboundOrderRoutes(
     }
   });
 
+  // Persist the current review form, validate it, advance readiness internally,
+  // and create the tenant-scoped order as one command. Manual save/ready routes
+  // remain available for review handoff workflows.
+  app.post("/api/inbound-orders/:id/create-order", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ error: "User ID not found" });
+
+      const draft = inboundOrderReviewDraftSaveSchema.parse(req.body ?? {});
+      const result = await service.createOrderFromReviewDraft({
+        organizationId,
+        inboundRecordId: String(req.params.id),
+        actorUserId,
+        draft,
+      });
+
+      return res.json({
+        success: true,
+        data: {
+          orderId: result.orderId,
+          orderNumber: result.orderNumber,
+          inboundOrderId: result.inboundOrderId,
+          convertedAt: result.convertedAt,
+          alreadyConverted: Boolean(result.alreadyConverted),
+          order: result.order,
+          inbound: result.inbound,
+        },
+      });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ success: false, message: fromZodError(error).message, errors: error.errors.map((issue) => issue.message) });
+      }
+      if (error instanceof InboundOrderReviewDraftValidationError || error instanceof InboundOrderConversionValidationError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message, errors: error.errors });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ success: false, message: error.message });
+      }
+      if (isMissingInboundSchemaError(error)) return sendInboundSchemaUnavailable(res);
+      console.error("Error creating order from inbound review draft:", error);
+      return res.status(500).json({ success: false, message: "Failed to create order from inbound review." });
+    }
+  });
+
   app.post("/api/inbound-orders/:id/review-draft/mark-ready", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;

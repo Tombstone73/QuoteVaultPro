@@ -3082,6 +3082,31 @@ describe("InboundOrderService editable review draft", () => {
     }));
   });
 
+  test("creates an order from current draft values while advancing readiness internally", async () => {
+    const { repo, getRecord } = makeRepository();
+    const orderRepo = makeOrderRepository();
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+    await prepareReadyDraft(service, {
+      lineItem: { optionSelectionsJson: completePbv2Selections(), pbv2TreeVersionId: "tree_pvc" },
+    });
+    const current = await service.getReviewDraft({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+
+    const result = await service.createOrderFromReviewDraft({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+      draft: {
+        ...current,
+        status: "draft",
+        reviewedOrderJson: { ...current.reviewedOrderJson, poNumber: "PO-CURRENT" },
+      },
+    });
+
+    expect(result.orderId).toBe("order_1");
+    expect(orderRepo.createOrder).toHaveBeenCalledWith("org_1", expect.objectContaining({ poNumber: "PO-CURRENT" }));
+    expect(getRecord()).toMatchObject({ status: "submitted", createdOrderId: "order_1" });
+  });
+
   test("materializes one explicitly both-sided artwork file as Front and Back", async () => {
     const { repo } = makeRepository();
     const orderRepo = makeOrderRepository();

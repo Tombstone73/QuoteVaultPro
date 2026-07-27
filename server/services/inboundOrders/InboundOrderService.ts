@@ -323,6 +323,8 @@ export type SaveInboundOrderEditableReviewDraftInput = InboundOrderReviewDraftIn
   draft: InboundOrderReviewDraftSaveRequest;
 };
 
+export type CreateInboundOrderFromReviewDraftInput = SaveInboundOrderEditableReviewDraftInput;
+
 export type MatchInboundLineItemProductInput = {
   organizationId: string;
   inboundRecordId: string;
@@ -3289,6 +3291,61 @@ export class InboundOrderService {
     });
 
     return this.reviewDraftDtoFromSnapshot(record, snapshot, latestAttempt, false);
+  }
+
+  /**
+   * Coordinates the normal order-creation path from the exact form state sent
+   * by the review UI. The public save and ready commands remain available for
+   * review handoffs, but callers no longer need to sequence them themselves.
+   */
+  async createOrderFromReviewDraft(args: CreateInboundOrderFromReviewDraftInput): Promise<ConvertInboundReviewDraftToOrderResult> {
+    const current = await this.getDetail({
+      organizationId: args.organizationId,
+      inboundRecordId: args.inboundRecordId,
+    });
+    if (!current) throw new InboundOrderTransitionError("Inbound order record not found", 404);
+
+    // Idempotently resolve a repeated submission before attempting to save the
+    // now-immutable draft again.
+    if (current.record.createdOrderId) {
+      return this.convertInboundReviewDraftToOrder(args);
+    }
+
+    // A previous manual ready handoff can be reused only when no form values
+    // changed. Since this command accepts authoritative current values, reopen
+    // it internally before saving so the latest staff edits always win.
+    const currentDraftStatus = current.latestReviewSnapshot
+      ? this.reviewDraftPayloadFromSnapshot(current.latestReviewSnapshot)?.status
+      : null;
+    if (current.record.status === reviewedStatus || currentDraftStatus === "ready_to_convert") {
+      await this.reopenReviewDraft(args);
+    }
+
+    await this.saveReviewDraft(args);
+    try {
+      await this.markReviewDraftReady(args);
+      return await this.convertInboundReviewDraftToOrder(args);
+    } catch (error) {
+      // Validation failures occur before ready is persisted. If conversion
+      // fails after readiness, restore the editable draft so the record does
+      // not remain deceptively ready without an order.
+      const latest = await this.getDetail({
+        organizationId: args.organizationId,
+        inboundRecordId: args.inboundRecordId,
+      });
+      const latestDraftStatus = latest?.latestReviewSnapshot
+        ? this.reviewDraftPayloadFromSnapshot(latest.latestReviewSnapshot)?.status
+        : null;
+      if (!latest?.record.createdOrderId && (latest?.record.status === reviewedStatus || latestDraftStatus === "ready_to_convert")) {
+        try {
+          await this.reopenReviewDraft(args);
+        } catch {
+          // Preserve the original conversion error; the conversion service's
+          // own failure event remains the audit/recovery source of truth.
+        }
+      }
+      throw error;
+    }
   }
 
   async markReviewDraftReady(args: InboundOrderReviewDraftInput): Promise<InboundOrderReviewDraftDto> {

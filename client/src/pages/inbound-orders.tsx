@@ -132,7 +132,7 @@ type ClientInboundOrderReviewDraftResponse = InboundOrderReviewDraftResponse;
 type ReviewDraftFormState = InboundOrderReviewDraftSaveRequest;
 
 type DraftOrderConversionAttempt = {
-  dirty: boolean;
+  draft: ReviewDraftFormState;
   blockers: string[];
 };
 type ClientInboundOrderFile = ClientInboundOrderDetailResponse["data"]["files"][number];
@@ -6741,10 +6741,8 @@ function CleanOrderWorkstation({
   ].filter(Boolean) as string[];
   const draftOrderBlockers = cleanUniqueItems([
     ...minimumConversionIssues,
-    selectedRecord.status !== "ready" ? "Mark this inbound record ready before creating a draft order." : "",
-    reviewDraft.status !== "ready_to_convert" ? "Mark the review draft ready before creating a draft order." : "",
   ]);
-  const canCreateDraftOrder = !dirty && draftOrderBlockers.length === 0;
+  const canCreateDraftOrder = draftOrderBlockers.length === 0;
   const quoteBlockers = [
     !form.reviewedCustomerJson.selectedCustomerId ? "Assign a permanent customer before creating a draft quote." : null,
     form.reviewedLineItemsJson.length === 0 ? "Add at least one line item." : null,
@@ -7158,11 +7156,6 @@ function CleanOrderWorkstation({
         <div className="flex flex-wrap justify-end gap-2">
           <Button type="button" size="sm" variant="ghost" className="h-8 px-2 text-xs" onClick={onReject} disabled={rejectDisabled || isCleaningUp}>{isRejecting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Reject</Button>
           <Button type="button" size="sm" className="h-8 px-2 text-xs" onClick={() => { void onSave(form).catch(() => undefined); }} disabled={!dirty || isSaving}>{isSaving && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Save Draft</Button>
-          {reviewDraft.status === "ready_to_convert" ? (
-            <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" onClick={() => { void onReopen().catch(() => undefined); }}>Reopen</Button>
-          ) : (
-            <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" onClick={() => { void onMarkReady(form, dirty).catch(() => undefined); }} disabled={isMarkingReady}>{isMarkingReady && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}Mark Ready</Button>
-          )}
           <Button type="button" size="sm" variant="outline" className="h-8 px-2 text-xs" onClick={() => { void onConvertQuote().catch(() => undefined); }} disabled={!canCreateDraftQuote || isConverting} title={quoteBlockers[0] ?? quoteWarnings[0] ?? "Create draft quote"}>
             {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
             Convert to Draft Quote
@@ -7171,12 +7164,12 @@ function CleanOrderWorkstation({
             type="button"
             size="sm"
             className="h-8 px-2 text-xs"
-            onClick={() => { void onConvert({ dirty, blockers: draftOrderBlockers }).catch(() => undefined); }}
+            onClick={() => { void onConvert({ draft: form, blockers: draftOrderBlockers }).catch(() => undefined); }}
             disabled={actionPending}
-            title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : (dirty ? "Save the current edits before conversion." : draftOrderBlockers[0])}
+            title={canCreateDraftOrder ? "Create an order from the current reviewed inbound draft." : draftOrderBlockers[0]}
           >
             {isConverting && <Loader2 className="mr-1.5 h-3.5 w-3.5 animate-spin" />}
-            Convert to Draft Order
+            Create Order
           </Button>
         </div>
         {quoteBlockers.length > 0 && <div className="mt-2 truncate text-[11px] text-amber-200">{quoteBlockers[0]}</div>}
@@ -7978,11 +7971,11 @@ function DraftBuilderPanel({
               {isParsing ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : <Sparkles className="mr-2 h-4 w-4" />}
               Parse
             </Button>
-            <Button type="button" variant="outline" disabled title="Create Draft Order is available after ready review.">
-              Create Draft Order
+            <Button type="button" variant="outline" disabled title="Create Order is available after parsing and completing the review.">
+              Create Order
             </Button>
           </div>
-          <div className="mt-2 text-xs text-muted-foreground">Phase 4 conversion starts after a successful parse and ready review.</div>
+          <div className="mt-2 text-xs text-muted-foreground">Create Order becomes available after a successful parse and completed review.</div>
         </div>
       </div>
     );
@@ -9658,17 +9651,6 @@ function DraftBuilderPanel({
                 </>
               ) : "Save Review Draft"}
             </Button>
-            {reviewDraft.status === "ready_to_convert" ? (
-              <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={() => { void onReopen().catch(() => undefined); }} disabled={actionPending}>
-                {isReopening && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Reopen Draft
-              </Button>
-            ) : (
-              <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" onClick={() => { void onMarkReady(form, dirty).catch(() => undefined); }} disabled={actionPending}>
-                {isMarkingReady && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                Mark Ready<span className="sr-only"> to Convert</span>
-              </Button>
-            )}
             {isOperationalMode && (
               <Button type="button" size="sm" className="h-8 px-2 text-xs" variant="outline" disabled title="Draft quote conversion is not enabled in Phase 4.0.">
                 Convert to Draft Quote
@@ -9691,17 +9673,12 @@ function DraftBuilderPanel({
                 type="button"
                 size="sm"
                 className="h-8 px-2 text-xs"
-                onClick={() => { void onConvert({ dirty, blockers: draftOrderBlockers }).catch(() => undefined); }}
+                onClick={() => { void onConvert({ draft: form, blockers: draftOrderBlockers }).catch(() => undefined); }}
                 disabled={actionPending}
-                title={canCreateDraftOrder ? "Create a draft order from this reviewed inbound record." : (dirty ? "Save the current edits before conversion." : draftOrderBlockers[0])}
+                title={canCreateDraftOrder ? "Create an order from the current reviewed inbound draft." : draftOrderBlockers[0]}
               >
                 {isConverting && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
-                {isConverting ? "Creating..." : isOperationalMode ? (
-                  <>
-                    Convert to Draft Order
-                    <span className="sr-only"> Create Draft Order</span>
-                  </>
-                ) : "Create Draft Order"}
+                {isConverting ? "Creating..." : "Create Order"}
               </Button>
             )}
             {isOperationalMode && (
@@ -10468,8 +10445,8 @@ export default function InboundOrdersPage() {
   });
 
   const convertToOrderMutation = useMutation({
-    mutationFn: async (recordId: string) => {
-      const response = await postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/convert-to-order`, {});
+    mutationFn: async ({ recordId, draft }: { recordId: string; draft: ReviewDraftFormState }) => {
+      const response = await postJson<InboundOrderConvertToOrderResponse>(`/api/inbound-orders/${recordId}/create-order`, draft);
       const orderId = response?.data?.orderId;
       const orderNumber = response?.data?.orderNumber;
       const returnedOrderId = response?.data?.order && typeof response.data.order === "object"
@@ -10491,7 +10468,8 @@ export default function InboundOrdersPage() {
       }
       return response;
     },
-    onSuccess: async (response, recordId) => {
+    onSuccess: async (response, variables) => {
+      const recordId = variables.recordId;
       const orderId = response.data.orderId;
       const orderNumber = response.data.orderNumber;
       setLastConvertedOrderId(orderId);
@@ -10913,7 +10891,7 @@ export default function InboundOrdersPage() {
       artworkAssignments: Object.entries(attachArtworkAssignments).map(([fileId, assignment]) => ({ fileId, ...assignment })),
     });
   };
-  const convertSelectedRecordToOrder = async ({ dirty, blockers }: DraftOrderConversionAttempt) => {
+  const convertSelectedRecordToOrder = async ({ draft, blockers }: DraftOrderConversionAttempt) => {
     if (!selectedId) {
       toast({
         title: "Draft order was not created",
@@ -10923,16 +10901,6 @@ export default function InboundOrdersPage() {
       return;
     }
     if (convertToOrderMutation.isPending) return;
-    if (dirty) {
-      toast({
-        title: "Save changes before conversion",
-        description: reviewDraftQuery.data?.data.status === "ready_to_convert"
-          ? "Reopen the ready draft, save the current edits, and mark it ready again before creating the order."
-          : "Save the current inbound draft edits, then mark the draft ready before creating the order.",
-        variant: "destructive",
-      });
-      return;
-    }
     if (blockers.length > 0) {
       toast({
         title: "Draft order is not ready",
@@ -10941,9 +10909,13 @@ export default function InboundOrdersPage() {
       });
       return;
     }
-    const confirmed = window.confirm("Create a draft order from this reviewed inbound record? This will create a real order but will not release production, create proofs, invoices, fulfillment, or payments.");
-    if (!confirmed) return;
-    await convertToOrderMutation.mutateAsync(selectedId);
+    const artworkBypassed = draft.reviewedArtworkJson.status === "to_follow"
+      && !draft.reviewedLineItemsJson.some((lineItem) => lineItem.artworkLinks.some(isActiveClassifiedArtworkLink));
+    if (artworkBypassed) {
+      const confirmed = window.confirm("Create this order without artwork? Artwork is still required, and the order will remain flagged for prepress/artwork follow-up.");
+      if (!confirmed) return;
+    }
+    await convertToOrderMutation.mutateAsync({ recordId: selectedId, draft });
   };
   const convertSelectedRecordToQuote = async () => {
     if (!selectedId || convertToQuoteMutation.isPending) return;
