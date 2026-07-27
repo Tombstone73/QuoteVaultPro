@@ -133,6 +133,24 @@ function compactText(value: string | null | undefined, fallback: string): string
   return normalized || fallback;
 }
 
+/** Only persist a nesting setting when the intake source stated it explicitly. */
+function explicitAllowRotation(sourceText: string): boolean | null {
+  if (/\b(?:allow|allows|allowed)\s+rotation\b|\brotation\s+(?:allowed|enabled)\b/i.test(sourceText)) return true;
+  if (/\b(?:do not allow|no)\s+rotation\b|\brotation\s+(?:not allowed|disabled)\b/i.test(sourceText)) return false;
+  return null;
+}
+
+function explicitSheetOrRollConfig(sourceText: string): Record<string, unknown> {
+  const match = sourceText.match(/\b(\d{1,3}(?:\.\d+)?)\s*[x×]\s*(\d{1,3}(?:\.\d+)?)\s*(sheets?|sheet|rolls?|roll)\b/i);
+  if (!match) return {};
+  const width = Number(match[1]);
+  const height = Number(match[2]);
+  if (!Number.isFinite(width) || width <= 0 || !Number.isFinite(height) || height <= 0) return {};
+  return /^roll/i.test(match[3])
+    ? { rollWidthIn: width, rollLengthFt: height, materialType: "roll" }
+    : { sheetWidth: width, sheetHeight: height, materialType: "sheet" };
+}
+
 function unique(values: Array<string | null | undefined>): string[] {
   return Array.from(new Set(values.map((value) => String(value ?? "").trim()).filter(Boolean)));
 }
@@ -1966,6 +1984,8 @@ export function buildProductIntakeProductValues(args: {
   brief: ProductIntakeBrief;
   productTypeId: string | null;
   formulaAssignment?: ProductIntakeFormulaAssignment | null;
+  sourceText?: string | null;
+  sourceJson?: unknown;
 }) {
   const productName = compactText(args.brief.productIdentity.likelyProductName.value, "Product Intake Draft");
   const material = args.brief.materialAnalysis.likelyMaterialMatches
@@ -1976,6 +1996,13 @@ export function buildProductIntakeProductValues(args: {
     .filter(Boolean)
     .slice(0, 3)
     .join("; ");
+  const sourceText = collectBriefText(args.brief, args.sourceText, args.sourceJson);
+  const allowRotation = explicitAllowRotation(sourceText);
+  const sheetOrRollConfig = explicitSheetOrRollConfig(sourceText);
+  const formulaConfig = args.formulaAssignment?.config ?? {};
+  const pricingProfileConfig = Object.keys({ ...formulaConfig, ...sheetOrRollConfig }).length > 0 || allowRotation !== null
+    ? { ...formulaConfig, ...sheetOrRollConfig, ...(allowRotation === null ? {} : { allowRotation }) }
+    : null;
 
   return {
     id: args.productId,
@@ -1991,7 +2018,7 @@ export function buildProductIntakeProductValues(args: {
     pricingFormulaId: args.formulaAssignment?.pricingFormulaId ?? null,
     pricingFormula: args.formulaAssignment?.expression ?? null,
     pricingProfileKey: args.formulaAssignment?.pricingProfileKey ?? "default",
-    pricingProfileConfig: args.formulaAssignment?.config ?? null,
+    pricingProfileConfig,
     primaryMaterialId: material?.materialId ?? null,
     requiresProductionJob: true,
     requiresProofApproval: false,
@@ -2115,7 +2142,11 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
             };
           }
         }
-        const productValues = buildProductIntakeProductValues({ organizationId, productId, brief, productTypeId, formulaAssignment });
+        const productValues = buildProductIntakeProductValues({
+          organizationId, productId, brief, productTypeId, formulaAssignment,
+          sourceText: sessionRow.sourceText,
+          sourceJson: sessionRow.sourceJson,
+        });
         const treeJson = buildProductIntakeDraftTree({
           brief,
           sessionId,

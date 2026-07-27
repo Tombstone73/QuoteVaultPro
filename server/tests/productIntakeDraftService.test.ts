@@ -164,6 +164,18 @@ describe("Product Intake draft service", () => {
     });
   });
 
+  test("persists explicit sheet dimensions and allow-rotation settings for inactive nesting drafts", () => {
+    const values = buildProductIntakeProductValues({
+      organizationId: "org_1", productId: "prod_rotation", brief: brief(), productTypeId: "ptype_rigid",
+      sourceText: "3mm PVC, 48x96 sheets, allow rotation, flatbed route.",
+    });
+    expect(values.pricingProfileConfig).toMatchObject({
+      sheetWidth: 48, sheetHeight: 96, materialType: "sheet", allowRotation: true,
+    });
+    expect(values.isActive).toBe(false);
+    expect(values.pbv2ActiveTreeVersionId).toBeNull();
+  });
+
   test("builds a valid PBV2 DRAFT tree from intake options and behaviors", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief(),
