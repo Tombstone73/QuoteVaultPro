@@ -59,7 +59,14 @@ function changes(input: ProductInactiveDraftUpdateCommandInput, before: Awaited<
     before: typeof before.configuration[key] === "object" && before.configuration[key] !== null ? JSON.stringify(before.configuration[key]) : before.configuration[key] ?? null,
     after: typeof input.patch.configuration?.[key] === "object" && input.patch.configuration?.[key] !== null ? JSON.stringify(input.patch.configuration?.[key]) : input.patch.configuration?.[key] ?? null,
   }));
-  return [...pricingChanges, ...configurationChanges];
+  const relationship = input.patch.relationships;
+  const relationshipChanges = !relationship ? [] : [
+    relationship.routing ? { field: "Production routing", before: before.relationships.routing?.stationName ?? null, after: relationship.routing.operation === "clear" ? null : relationship.routing.station?.id ?? relationship.routing.station?.key ?? relationship.routing.station?.name ?? null } : null,
+    relationship.options ? { field: "Option templates", before: JSON.stringify(before.relationships.optionTemplates.map((item) => item.name)), after: `${relationship.options.operation}: ${JSON.stringify((relationship.options.templates ?? []).map((item) => item.id ?? item.key ?? item.name))}` } : null,
+    relationship.setupNote ? { field: "Internal setup note", before: before.relationships.setupNote, after: relationship.setupNote.operation === "clear" ? null : relationship.setupNote.text ?? null } : null,
+    relationship.reviewWarnings ? { field: "Review warnings", before: JSON.stringify(before.relationships.reviewWarnings), after: relationship.reviewWarnings.operation === "clear" ? "[]" : JSON.stringify(relationship.reviewWarnings.warnings ?? []) } : null,
+  ].filter(Boolean) as Array<{ field: string; before: string | number | boolean | null; after: string | number | boolean | null }>;
+  return [...pricingChanges, ...configurationChanges, ...relationshipChanges];
 }
 
 export function createProductInactiveDraftUpdateExecutionCommand(service: ProductInactiveDraftUpdatePlanningService): ExecutionCommandDefinition {
@@ -75,8 +82,8 @@ export function createProductInactiveDraftUpdateExecutionCommand(service: Produc
       const { before, fingerprint } = validation.proposal;
       const preview: ExecutionPlanPreview = {
         title: `Update inactive draft: ${before.productName}`,
-        summary: "Apply the displayed base-pricing patch to one inactive Product Intake draft. Activation and publication remain disabled.",
-        sideEffects: ["Updates the validated PBV2 DRAFT base-pricing metadata."],
+        summary: "Apply the displayed validated patch to one inactive Product Intake draft. Activation and publication remain disabled.",
+        sideEffects: [input.patch.relationships ? "Updates PBV2 DRAFT routing, template relationships, and staff-only review metadata." : "Updates the validated PBV2 DRAFT metadata."],
         affectedRecords: [{ entityType: "product", entityId: before.productId, fingerprint }],
         productInactiveDraftUpdate: {
           productId: before.productId, productName: before.productName, sessionId: before.sessionId, editorLink: before.editorLink,

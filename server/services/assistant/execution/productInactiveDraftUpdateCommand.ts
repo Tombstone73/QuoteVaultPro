@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { productDraftRelationshipPatchSchema } from "../../productIntakeWizard/productIntakeDraftRelationships";
 import type {
   AssistantCanonicalCommandAdapter,
   AssistantCommandDefinition,
@@ -47,7 +48,8 @@ export const productInactiveDraftUpdateCommandInputSchema = z.object({
   patch: z.object({
     basePricing: productInactiveDraftBasePricingPatchSchema.optional(),
     configuration: productInactiveDraftConfigurationPatchSchema.optional(),
-  }).strict().refine((patch) => Boolean(patch.basePricing || patch.configuration) && !(patch.basePricing && patch.configuration), "Provide exactly one pricing or configuration patch."),
+    relationships: productDraftRelationshipPatchSchema.optional(),
+  }).strict().refine((patch) => [patch.basePricing, patch.configuration, patch.relationships].filter(Boolean).length === 1, "Provide exactly one pricing, configuration, or relationship patch."),
 }).strict();
 export type ProductInactiveDraftUpdateCommandInput = z.infer<typeof productInactiveDraftUpdateCommandInputSchema>;
 

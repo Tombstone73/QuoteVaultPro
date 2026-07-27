@@ -1,4 +1,4 @@
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, isNull, or } from "drizzle-orm";
 import {
   auditLogs,
   materials,
@@ -6,7 +6,10 @@ import {
   productIntakeSessions,
   products,
   productTypes,
+  pbv2OptionGroupTemplates,
+  stations,
 } from "@shared/schema";
+import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
 import { validateTreeForPublish, DEFAULT_VALIDATE_OPTS } from "@shared/pbv2/validator";
 import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
 import type { Finding } from "@shared/pbv2/findings";
@@ -18,6 +21,14 @@ import {
 } from "@shared/productIntakeWizardSchemas";
 import { db as defaultDb } from "../../db";
 import { ProductIntakeSessionError } from "./productIntakeSessionService";
+import {
+  normalizeRelationshipText,
+  productDraftRelationshipPatchSchema,
+  relationshipSnapshotFromTree,
+  removeTemplateImport,
+  type DraftRelationshipSnapshot,
+  type ProductDraftRelationshipPatch,
+} from "./productIntakeDraftRelationships";
 
 export type ProductIntakeDraftReview = {
   intake: {
@@ -77,6 +88,7 @@ export type ProductIntakeDraftReview = {
     };
     requiresDimensions: boolean;
     fixedDimensions: { widthIn: number; heightIn: number; unit: "in"; label?: string } | null;
+    relationships: DraftRelationshipSnapshot;
   };
   publishReadiness: {
     productInactive: boolean;
@@ -125,6 +137,14 @@ export type ProductIntakeDraftReviewService = {
     organizationId: string;
     sessionId: string;
     patch: Record<string, unknown>;
+    userId: string | null;
+    expectedDraftUpdatedAt?: string;
+    assistantAudit?: { command: "products.update_inactive_draft@v1"; planId: string; idempotencyKey: string; correlationId: string };
+  }): Promise<ProductIntakeDraftReview>;
+  updateDraftRelationships(args: {
+    organizationId: string;
+    sessionId: string;
+    patch: ProductDraftRelationshipPatch;
     userId: string | null;
     expectedDraftUpdatedAt?: string;
     assistantAudit?: { command: "products.update_inactive_draft@v1"; planId: string; idempotencyKey: string; correlationId: string };
@@ -331,6 +351,28 @@ function pricingConfigured(treeJson: any): boolean {
   );
 }
 
+function relationshipsFromTree(treeJson: any, product: any): DraftRelationshipSnapshot {
+  const relationships = relationshipSnapshotFromTree(treeJson);
+  const missingFieldWarnings: string[] = [];
+  if (product.workflowIntent === "standard_production" && !relationships.routing) {
+    missingFieldWarnings.push("Production routing review required.");
+  }
+  if (!pricingConfigured(treeJson)) {
+    missingFieldWarnings.push("Pricing review required.");
+  }
+  if (product.measurementMode === "dimensions_required" && treeJson?.meta?.requiresDimensions !== true) {
+    const fixed = treeJson?.meta?.fixedDimensions;
+    if (!fixed || Number(fixed.widthIn) <= 0 || Number(fixed.heightIn) <= 0) {
+      missingFieldWarnings.push("Dimensions configuration is incomplete.");
+    }
+  }
+  if (product.useNestingCalculator && (!Number(product.sheetWidth) || !Number(product.sheetHeight))) {
+    missingFieldWarnings.push("Sheet size is incomplete for nesting.");
+  }
+  if (!product.primaryMaterialId) missingFieldWarnings.push("Material review required.");
+  return { ...relationships, missingFieldWarnings };
+}
+
 async function buildReview(database: any, organizationId: string, sessionId: string): Promise<ProductIntakeDraftReview> {
   const [session] = await database
     .select()
@@ -402,6 +444,7 @@ async function buildReview(database: any, organizationId: string, sessionId: str
         if (!fixed || typeof fixed !== "object" || Number(fixed.widthIn) <= 0 || Number(fixed.heightIn) <= 0) return null;
         return { widthIn: Number(fixed.widthIn), heightIn: Number(fixed.heightIn), unit: "in" as const, ...(typeof fixed.label === "string" ? { label: fixed.label } : {}) };
       })(),
+      relationships: relationshipsFromTree(treeJson, product),
     },
     publishReadiness: {
       productInactive: !product.isActive,
@@ -666,6 +709,126 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
           if (updated.length !== 1) throw new ProductIntakeSessionError(409, "The PBV2 draft changed; reload before applying this update.", "DRAFT_STALE");
         }
         await tx.insert(auditLogs).values({ organizationId, userId, actionType: "product_intake_draft_configuration_updated", entityType: "product_intake_session", entityId: sessionId, entityName: product.name, description: `Product Intake draft configuration updated for ${product.name}.`, newValues: { productId: product.id, productName: product.name, patch, before: { name: product.name, category: product.category, description: product.description, isTaxable: product.isTaxable, measurementMode: product.measurementMode, workflowIntent: product.workflowIntent, primaryMaterialId: product.primaryMaterialId, useNestingCalculator: product.useNestingCalculator, sheetWidth: product.sheetWidth, sheetHeight: product.sheetHeight, materialType: product.materialType, requiresDimensions: meta.requiresDimensions === true, fixedDimensions: currentFixed }, after: { ...productValues, ...(has("requiresDimensions") ? { requiresDimensions: patch.requiresDimensions } : {}), ...(has("fixedDimensions") ? { fixedDimensions: patch.fixedDimensions } : {}) }, statusBefore: { productActive: false, pbv2Tree: "DRAFT" }, statusAfter: { productActive: false, pbv2Tree: "DRAFT" }, assistant: assistantAudit ? { ...assistantAudit, confirmationConsumed: true } : undefined, result: "succeeded" } });
+      });
+      return buildReview(database, organizationId, sessionId);
+    },
+
+    async updateDraftRelationships({ organizationId, sessionId, patch: rawPatch, userId, expectedDraftUpdatedAt, assistantAudit }) {
+      const patch = productDraftRelationshipPatchSchema.parse(rawPatch);
+      await database.transaction(async (tx: any) => {
+        const [session] = await tx.select({ status: productIntakeSessions.status, createdProductId: productIntakeSessions.createdProductId, createdPbv2TreeVersionId: productIntakeSessions.createdPbv2TreeVersionId })
+          .from(productIntakeSessions).where(and(eq(productIntakeSessions.organizationId, organizationId), eq(productIntakeSessions.id, sessionId))).limit(1);
+        if (!session || session.status !== "draft_created" || !session.createdProductId || !session.createdPbv2TreeVersionId) throw new ProductIntakeSessionError(409, "Only an existing Product Intake draft can be updated.", "INACTIVE_DRAFT_REQUIRED");
+        const [product] = await tx.select().from(products).where(and(eq(products.organizationId, organizationId), eq(products.id, session.createdProductId))).limit(1);
+        if (!product || product.isActive || product.pbv2ActiveTreeVersionId) throw new ProductIntakeSessionError(409, "Only an inactive Product Intake draft without an active PBV2 tree can be updated.", "INACTIVE_DRAFT_REQUIRED");
+        const [tree] = await tx.select().from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, session.createdPbv2TreeVersionId), eq(pbv2TreeVersions.productId, product.id))).limit(1);
+        if (!tree || tree.status !== "DRAFT") throw new ProductIntakeSessionError(409, "Only PBV2 DRAFT trees can be updated.", "PBV2_NOT_DRAFT");
+        if (expectedDraftUpdatedAt && new Date(tree.updatedAt).toISOString() !== new Date(expectedDraftUpdatedAt).toISOString()) throw new ProductIntakeSessionError(409, "The PBV2 draft changed; reload before applying this update.", "DRAFT_STALE");
+
+        const originalTree = tree.treeJson && typeof tree.treeJson === "object" ? JSON.parse(JSON.stringify(tree.treeJson)) : {};
+        let nextTree = JSON.parse(JSON.stringify(originalTree));
+        const meta = nextTree.meta && typeof nextTree.meta === "object" ? { ...nextTree.meta } : {};
+        const intake = meta.productIntake && typeof meta.productIntake === "object" ? { ...meta.productIntake } : {};
+        const before = relationshipsFromTree(originalTree, product);
+
+        if (patch.routing) {
+          if (patch.routing.operation === "clear") {
+            delete intake.draftRouting;
+          } else {
+            if (product.workflowIntent !== "standard_production") {
+              throw new ProductIntakeSessionError(409, "Only standard-production drafts can receive production routing.", "DRAFT_ROUTING_INCOMPATIBLE");
+            }
+            const reference = patch.routing.station!;
+            const stationRows = await tx.select({ id: stations.id, key: stations.key, name: stations.name })
+              .from(stations).where(and(eq(stations.organizationId, organizationId), eq(stations.active, true)));
+            const target = reference.id
+              ? stationRows.filter((station: any) => station.id === reference.id)
+              : stationRows.filter((station: any) => {
+                const query = normalizeRelationshipText(reference.key ?? reference.name);
+                return [station.key, station.name].some((value) => normalizeRelationshipText(value) === query);
+              });
+            if (!target.length) throw new ProductIntakeSessionError(404, "The requested production station is not available to this organization.", "STATION_NOT_FOUND");
+            if (target.length > 1) throw new ProductIntakeSessionError(409, "The requested production station is ambiguous; choose a station ID.", "STATION_AMBIGUOUS");
+            intake.draftRouting = { stationId: target[0].id, stationKey: target[0].key, stationName: target[0].name };
+          }
+        }
+
+        if (patch.options) {
+          const currentOptions = Array.isArray(intake.draftOptionTemplates) ? intake.draftOptionTemplates.filter((entry: any) => entry && typeof entry.templateId === "string" && typeof entry.importInstanceId === "string") : [];
+          const resolveTemplate = async (reference: { id?: string; name?: string; key?: string }) => {
+            const rows = await tx.select({ id: pbv2OptionGroupTemplates.id, name: pbv2OptionGroupTemplates.name, slug: pbv2OptionGroupTemplates.slug, tags: pbv2OptionGroupTemplates.tags, templateTree: pbv2OptionGroupTemplates.templateTree, pricingMetadata: pbv2OptionGroupTemplates.pricingMetadata })
+              .from(pbv2OptionGroupTemplates)
+              .where(and(eq(pbv2OptionGroupTemplates.state, "active"), or(eq(pbv2OptionGroupTemplates.isSystemTemplate, true), and(eq(pbv2OptionGroupTemplates.isSystemTemplate, false), eq(pbv2OptionGroupTemplates.organizationId, organizationId)))));
+            const matches = reference.id
+              ? rows.filter((row: any) => row.id === reference.id)
+              : rows.filter((row: any) => {
+                const query = normalizeRelationshipText(reference.key ?? reference.name);
+                return [row.name, row.slug, ...(Array.isArray(row.tags) ? row.tags : [])].some((value) => normalizeRelationshipText(value) === query);
+              });
+            if (!matches.length) throw new ProductIntakeSessionError(404, "The requested option template is not available to this organization.", "OPTION_TEMPLATE_NOT_FOUND");
+            if (matches.length > 1) throw new ProductIntakeSessionError(409, "The requested option template is ambiguous; choose a template ID.", "OPTION_TEMPLATE_AMBIGUOUS");
+            const template = matches[0] as any;
+            const templateNodes = Object.values(template.templateTree?.nodes ?? {});
+            const hasEmbeddedPricing = templateNodes.some((node: any) => node?.pricing || node?.priceFormula || node?.input?.pricing || node?.input?.priceFormula)
+              || Object.keys(template.templateTree?.meta?.pricing ?? {}).length > 0;
+            if (Object.keys(template.pricingMetadata ?? {}).length || template.templateTree?.pricingMatrix || hasEmbeddedPricing) {
+              throw new ProductIntakeSessionError(409, "Option templates with pricing configuration cannot be changed by this relationship-only operation.", "OPTION_PRICING_UNSUPPORTED");
+            }
+            return template;
+          };
+          const references = patch.options.templates ?? [];
+          const resolved = [] as any[];
+          for (const reference of references) {
+            const template = await resolveTemplate(reference);
+            if (!resolved.some((item) => item.id === template.id)) resolved.push(template);
+          }
+          const requestedIds = new Set(resolved.map((template) => template.id));
+          const removeIds = patch.options.operation === "clear"
+            ? new Set(currentOptions.map((entry: any) => entry.templateId))
+            : patch.options.operation === "replace"
+              ? new Set(currentOptions.map((entry: any) => entry.templateId).filter((id: string) => !requestedIds.has(id)))
+              : patch.options.operation === "remove"
+                ? requestedIds
+                : new Set<string>();
+          for (const entry of currentOptions) {
+            if (removeIds.has(entry.templateId)) nextTree = removeTemplateImport(nextTree, entry.importInstanceId);
+          }
+          const retained = currentOptions.filter((entry: any) => !removeIds.has(entry.templateId));
+          const addTemplates = patch.options.operation === "add" || patch.options.operation === "replace" ? resolved : [];
+          for (const template of addTemplates) {
+            if (retained.some((entry: any) => entry.templateId === template.id)) continue;
+            const importInstanceId = `draft_${tree.id}_${template.id}`;
+            const cloned = cloneTemplateIntoTree(nextTree, template.templateTree, { importInstanceId, sourceTemplateId: template.id });
+            if (!cloned.ok) throw new ProductIntakeSessionError(409, "The selected option template cannot be safely added to this PBV2 draft.", "OPTION_TEMPLATE_INCOMPATIBLE");
+            nextTree = cloned.tree;
+            retained.push({ templateId: template.id, name: template.name, importInstanceId });
+          }
+          intake.draftOptionTemplates = retained;
+        }
+
+        if (patch.setupNote) {
+          const previous = typeof intake.internalSetupNote === "string" ? intake.internalSetupNote.trim() : "";
+          if (patch.setupNote.operation === "clear") delete intake.internalSetupNote;
+          else if (patch.setupNote.operation === "replace") intake.internalSetupNote = patch.setupNote.text;
+          else intake.internalSetupNote = previous.includes(patch.setupNote.text!) ? previous : [previous, patch.setupNote.text].filter(Boolean).join("\n");
+        }
+        if (patch.reviewWarnings) {
+          const previous = Array.isArray(intake.reviewWarnings) ? intake.reviewWarnings.map(String).map((warning: string) => warning.trim()).filter(Boolean) : [];
+          const requested = patch.reviewWarnings.warnings ?? [];
+          const contains = (values: string[], value: string) => values.some((item) => normalizeRelationshipText(item) === normalizeRelationshipText(value));
+          if (patch.reviewWarnings.operation === "clear") intake.reviewWarnings = [];
+          else if (patch.reviewWarnings.operation === "replace") intake.reviewWarnings = Array.from(new Map(requested.map((warning: string) => [normalizeRelationshipText(warning), warning])).values());
+          else if (patch.reviewWarnings.operation === "add") intake.reviewWarnings = [...previous, ...requested.filter((warning: string) => !contains(previous, warning))];
+          else intake.reviewWarnings = previous.filter((warning: string) => !contains(requested, warning));
+        }
+
+        nextTree.meta = { ...meta, productIntake: intake, updatedAt: new Date().toISOString(), updatedByUserId: userId ?? undefined };
+        const after = relationshipsFromTree(nextTree, product);
+        if (JSON.stringify(before) === JSON.stringify(after)) return;
+        const updated = await tx.update(pbv2TreeVersions).set({ treeJson: nextTree, updatedByUserId: userId, updatedAt: new Date() })
+          .where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, tree.id), eq(pbv2TreeVersions.status, "DRAFT"), ...(expectedDraftUpdatedAt ? [eq(pbv2TreeVersions.updatedAt, new Date(expectedDraftUpdatedAt))] : []))).returning({ id: pbv2TreeVersions.id });
+        if (updated.length !== 1) throw new ProductIntakeSessionError(409, "The PBV2 draft changed; reload before applying this update.", "DRAFT_STALE");
+        await tx.insert(auditLogs).values({ organizationId, userId, actionType: "product_intake_draft_relationships_updated", entityType: "product_intake_session", entityId: sessionId, entityName: product.name, description: `Product Intake draft relationships updated for ${product.name}.`, newValues: { productId: product.id, productName: product.name, patch, before, after, statusBefore: { productActive: false, pbv2Tree: "DRAFT" }, statusAfter: { productActive: false, pbv2Tree: "DRAFT" }, assistant: assistantAudit ? { ...assistantAudit, confirmationConsumed: true } : undefined, result: "succeeded" } });
       });
       return buildReview(database, organizationId, sessionId);
     },

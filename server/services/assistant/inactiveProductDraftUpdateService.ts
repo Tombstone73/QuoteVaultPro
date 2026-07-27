@@ -5,10 +5,15 @@ import {
   type ProductIntakeDraftReview,
   type ProductIntakeDraftReviewService,
 } from "../productIntakeWizard/productIntakeDraftReviewService";
+import {
+  productDraftRelationshipPatchSchema,
+  type DraftRelationshipSnapshot,
+  type ProductDraftRelationshipPatch,
+} from "../productIntakeWizard/productIntakeDraftRelationships";
 
-/** Stage 6 deliberately exposes only the existing canonical, transactional
- * pricing draft editor. Options, materials, and routing have no equivalent
- * narrow canonical patch service yet and are therefore never accepted here. */
+/** The assistant accepts only narrow, transactional Product Intake draft
+ * patches. Pricing, configuration, and relationship operations are kept in
+ * separate confirmation plans so their compatibility checks remain explicit. */
 export const inactiveProductDraftConfigurationPatchSchema = z.object({
   name: z.string().trim().min(1).max(255).optional(),
   category: z.string().trim().min(1).max(100).nullable().optional(),
@@ -33,7 +38,8 @@ export const inactiveProductDraftPatchSchema = z.object({
     minimumChargeCents: z.number().int().min(0).nullable().optional(),
   }).strict().optional(),
   configuration: inactiveProductDraftConfigurationPatchSchema.optional(),
-}).strict().refine((patch) => Boolean((patch.basePricing && Object.keys(patch.basePricing).length) || patch.configuration), "At least one supported draft field is required.").refine((patch) => !(patch.basePricing && patch.configuration), "Pricing and configuration updates require separate confirmation plans.");
+  relationships: productDraftRelationshipPatchSchema.optional(),
+}).strict().refine((patch) => Boolean((patch.basePricing && Object.keys(patch.basePricing).length) || patch.configuration || patch.relationships), "At least one supported draft field is required.").refine((patch) => [patch.basePricing, patch.configuration, patch.relationships].filter(Boolean).length === 1, "Pricing, configuration, and relationship updates require separate confirmation plans.");
 export type InactiveProductDraftPatch = z.infer<typeof inactiveProductDraftPatchSchema>;
 
 export type InactiveProductDraftSnapshot = {
@@ -47,6 +53,7 @@ export type InactiveProductDraftSnapshot = {
   pbv2UpdatedAt: string;
   pricingBase: { perSqftCents: number | null; perPieceCents: number | null; minimumChargeCents: number | null };
   configuration: z.infer<typeof inactiveProductDraftConfigurationPatchSchema>;
+  relationships: DraftRelationshipSnapshot;
   readiness: { status: string; findings: string[]; warnings: string[] };
   fingerprint: string;
 };
@@ -70,6 +77,34 @@ function stable(value: unknown): string {
   return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stable(record[key])}`).join(",")}}`;
 }
 
+function relationshipPatchWouldChange(before: DraftRelationshipSnapshot, patch: ProductDraftRelationshipPatch): boolean {
+  if (patch.routing) {
+    if (patch.routing.operation === "clear" && before.routing) return true;
+    if (patch.routing.operation === "set_primary") {
+      const reference = patch.routing.station!;
+      if (reference.id !== before.routing?.stationId && reference.key !== before.routing?.stationKey && reference.name !== before.routing?.stationName) return true;
+    }
+  }
+  if (patch.options) {
+    const templates = patch.options.templates ?? [];
+    if (patch.options.operation === "clear" && before.optionTemplates.length) return true;
+    if (patch.options.operation === "replace" && (templates.length || before.optionTemplates.length)) return true;
+    if ((patch.options.operation === "add" || patch.options.operation === "remove") && templates.length) return true;
+  }
+  if (patch.setupNote) {
+    if (patch.setupNote.operation === "clear" && before.setupNote) return true;
+    if (patch.setupNote.operation === "replace" && before.setupNote !== patch.setupNote.text) return true;
+    if (patch.setupNote.operation === "append" && !before.setupNote?.includes(patch.setupNote.text!)) return true;
+  }
+  if (patch.reviewWarnings) {
+    const requested = patch.reviewWarnings.warnings ?? [];
+    if (patch.reviewWarnings.operation === "clear" && before.reviewWarnings.length) return true;
+    if (patch.reviewWarnings.operation === "replace" && stable(before.reviewWarnings) !== stable(requested)) return true;
+    if ((patch.reviewWarnings.operation === "add" || patch.reviewWarnings.operation === "remove") && requested.length) return true;
+  }
+  return false;
+}
+
 function snapshotFromReview(review: ProductIntakeDraftReview): InactiveProductDraftSnapshot {
   if (review.intake.status !== "draft_created" || review.product.isActive || review.pbv2Tree.status !== "DRAFT" || review.product.pbv2ActiveTreeVersionId) {
     throw new InactiveProductDraftUpdateError("INACTIVE_DRAFT_REQUIRED", "Only an inactive Product Intake draft with a PBV2 DRAFT tree can be edited.");
@@ -88,7 +123,7 @@ function snapshotFromReview(review: ProductIntakeDraftReview): InactiveProductDr
       sheetHeight: review.product.sheetHeight === null ? null : Number(review.product.sheetHeight), materialType: review.product.materialType ?? "sheet",
       allowRotation: review.product.pricingProfileConfig?.allowRotation === true,
       requiresDimensions: review.pbv2Tree.requiresDimensions, fixedDimensions: review.pbv2Tree.fixedDimensions,
-    }, readiness: review.publishReadiness.validationStatus,
+    }, relationships: review.pbv2Tree.relationships, readiness: review.publishReadiness.validationStatus,
   };
   return {
     sessionId: review.intake.sessionId, productId: review.product.id, productName: review.product.name,
@@ -96,6 +131,7 @@ function snapshotFromReview(review: ProductIntakeDraftReview): InactiveProductDr
     productIsActive: false, pbv2Status: "DRAFT", pbv2TreeVersionId: review.pbv2Tree.id,
     pbv2UpdatedAt: review.pbv2Tree.updatedAt, pricingBase: review.pbv2Tree.basePricing,
     configuration: input.configuration,
+    relationships: input.relationships,
     readiness: { status: review.publishReadiness.validationStatus, findings, warnings },
     fingerprint: createHash("sha256").update(stable(input)).digest("hex"),
   };
@@ -119,9 +155,10 @@ export class InactiveProductDraftUpdateService {
       .some((key) => before.pricingBase[key] !== patch.basePricing?.[key]);
     const configurationChanged = (Object.keys(patch.configuration ?? {}) as Array<keyof InactiveProductDraftSnapshot["configuration"]>)
       .some((key) => stable(before.configuration[key]) !== stable(patch.configuration?.[key]));
-    const changed = pricingChanged || configurationChanged;
+    const relationshipChanged = patch.relationships ? relationshipPatchWouldChange(before.relationships, patch.relationships) : false;
+    const changed = pricingChanged || configurationChanged || relationshipChanged;
     if (!changed) {
-      throw new InactiveProductDraftUpdateError("INACTIVE_DRAFT_NO_CHANGES", "The requested draft pricing already matches the current values.");
+      throw new InactiveProductDraftUpdateError("INACTIVE_DRAFT_NO_CHANGES", "The requested inactive-draft update already matches the current values.");
     }
     return { before, after: patch, fingerprint: createHash("sha256").update(stable({ draft: before.fingerprint, patch })).digest("hex") };
   }
@@ -143,7 +180,13 @@ export class InactiveProductDraftUpdateService {
   }) {
     const validation = await this.revalidateProposal(input);
     if (!validation.valid) throw new InactiveProductDraftUpdateError(validation.code, validation.summary);
-    const review = validation.proposal.after.configuration
+    const review = validation.proposal.after.relationships
+      ? await this.review.updateDraftRelationships({
+        organizationId: input.organizationId, sessionId: input.sessionId, patch: validation.proposal.after.relationships as ProductDraftRelationshipPatch,
+        userId: input.userId, expectedDraftUpdatedAt: validation.proposal.before.pbv2UpdatedAt,
+        ...(input.assistantAudit ? { assistantAudit: input.assistantAudit } : {}),
+      })
+      : validation.proposal.after.configuration
       ? await this.review.updateDraftConfiguration({
         organizationId: input.organizationId, sessionId: input.sessionId, patch: validation.proposal.after.configuration,
         userId: input.userId, expectedDraftUpdatedAt: validation.proposal.before.pbv2UpdatedAt,

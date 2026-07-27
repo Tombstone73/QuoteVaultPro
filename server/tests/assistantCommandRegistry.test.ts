@@ -246,9 +246,18 @@ describe("assistant command registry", () => {
       proposalFingerprint,
       patch: { configuration: { isTaxable: false, allowRotation: false, fixedDimensions: { widthIn: 24, heightIn: 18 } } },
     }).patch.configuration).toMatchObject({ isTaxable: false, allowRotation: false, fixedDimensions: { widthIn: 24, heightIn: 18 } });
+    expect(productInactiveDraftUpdateCommandInputSchema.parse({
+      productIntakeSessionId: "session_1",
+      proposalFingerprint,
+      patch: { relationships: { routing: { operation: "set_primary", station: { name: "Flatbed" } }, options: { operation: "add", templates: [{ id: "template_flatbed_finish" }] } } },
+    }).patch.relationships).toMatchObject({ routing: { operation: "set_primary" }, options: { operation: "add" } });
     expect(() => productInactiveDraftUpdateCommandInputSchema.parse({
       productIntakeSessionId: "session_1", proposalFingerprint,
       patch: { basePricing: { minimumChargeCents: 1500 }, configuration: { isTaxable: true } },
+    })).toThrow();
+    expect(() => productInactiveDraftUpdateCommandInputSchema.parse({
+      productIntakeSessionId: "session_1", proposalFingerprint,
+      patch: { basePricing: { minimumChargeCents: 1500 }, relationships: { routing: { operation: "clear" } } },
     })).toThrow();
     expect(() => productInactiveDraftUpdateCommandInputSchema.parse({
       productIntakeSessionId: "session_1", proposalFingerprint,

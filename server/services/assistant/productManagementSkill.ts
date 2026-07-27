@@ -103,16 +103,55 @@ function configurationPatchFromMessage(message: string): InactiveProductDraftPat
   return Object.keys(configuration).length ? { configuration: configuration as any } : null;
 }
 
+function relationshipPatchFromMessage(message: string): InactiveProductDraftPatch | null {
+  const relationships: Record<string, unknown> = {};
+  if (/\bclear\s+(?:the\s+)?(?:route|routing|station)\b/i.test(message)) {
+    relationships.routing = { operation: "clear" };
+  } else {
+    const station = message.match(/\b(?:route|routing|station)\s+(?:the\s+)?(?:draft\s+)?(?:to|for|as)?\s*(flatbed|roll|wide[\s-]?format|wide[\s-]?roll)\b|\b(flatbed|roll|wide[\s-]?format|wide[\s-]?roll)\s+production\b/i);
+    const stationName = station?.[1] ?? station?.[2];
+    if (stationName) relationships.routing = { operation: "set_primary", station: { name: stationName } };
+  }
+  const optionNames = ["lamination", "contour cutting", "white ink", "double-sided", "grommets", "rush"];
+  const foundOptions = optionNames.filter((name) => new RegExp(`\\b${name.replace(/[\\-]/g, "[\\s-]?")}\\b`, "i").test(message));
+  if (/\bclear\s+(?:all\s+)?options\b/i.test(message)) {
+    relationships.options = { operation: "clear" };
+  } else if (/\breplace\s+(?:the\s+)?options?\s+with\b/i.test(message)) {
+    relationships.options = { operation: "replace", templates: foundOptions.map((name) => ({ name })) };
+  } else if (/\bremove\b/i.test(message) && foundOptions.length) {
+    relationships.options = { operation: "remove", templates: foundOptions.map((name) => ({ name })) };
+  } else if (/\badd\b/i.test(message) && foundOptions.length) {
+    relationships.options = { operation: "add", templates: foundOptions.map((name) => ({ name })) };
+  }
+  if (/\bclear\s+(?:the\s+)?(?:internal\s+)?(?:setup\s+)?note\b/i.test(message)) {
+    relationships.setupNote = { operation: "clear" };
+  } else {
+    const replaceNote = message.match(/\breplace\s+(?:the\s+)?(?:internal\s+)?(?:setup\s+)?note\s+(?:with|:)\s*(.+)$/i);
+    const addNote = message.match(/\b(?:add\s+(?:an?\s+)?(?:internal\s+)?(?:setup\s+)?note|note)\s+(?:that|:)?\s*(.+)$/i);
+    const note = replaceNote?.[1] ?? addNote?.[1];
+    if (note?.trim()) relationships.setupNote = { operation: replaceNote ? "replace" : "append", text: note.trim().replace(/[.]+$/, "") };
+  }
+  if (/\bclear\s+(?:all\s+)?(?:review\s+)?warnings\b/i.test(message)) {
+    relationships.reviewWarnings = { operation: "clear" };
+  } else {
+    const replaceWarnings = message.match(/\breplace\s+(?:review\s+)?warnings?\s+(?:with|:)\s*(.+)$/i);
+    const addWarning = message.match(/\b(?:add\s+(?:a\s+)?(?:review\s+)?warning|warning)\s*(?:that|:)?\s*(.+)$/i);
+    const warning = replaceWarnings?.[1] ?? addWarning?.[1] ?? (/\bpricing\s+(?:needs?|requires?)\s+(?:a\s+)?final\s+review\b/i.test(message) ? "Pricing review required" : null);
+    if (warning?.trim()) relationships.reviewWarnings = { operation: replaceWarnings ? "replace" : "add", warnings: [warning.trim().replace(/[.]+$/, "")] };
+  }
+  return Object.keys(relationships).length ? { relationships: relationships as any } : null;
+}
+
 function draftLookupFromMessage(message: string): { productId?: string; productName?: string; category?: string } | null {
   const id = message.match(/\b(?:product|draft)\s*(?:id\s*)?[#:]+\s*([a-z0-9][a-z0-9_-]{7,})\b/i);
   if (id) return { productId: id[1] };
-  const namedInCategory = message.match(/\b(?:change|update|edit)\s+(?:the\s+)?(.{1,255}?)\s+draft\s+in\s+([^,.]{1,100})/i);
+  const namedInCategory = message.match(/\b(?:change|update|edit|configure)\s+(?:the\s+)?(.{1,255}?)\s+draft\s+in\s+([^,.]{1,100})/i);
   if (namedInCategory) return { productName: namedInCategory[1].trim(), category: namedInCategory[2].trim() };
   const categoryNamed = message.match(/\b(.{1,100}?)\s+category\s+product\s+named\s+(.{1,255})\s*$/i);
   if (categoryNamed) return { category: categoryNamed[1].trim(), productName: categoryNamed[2].trim() };
   const quoted = message.match(/\b(?:product|draft)\s*[“"]([^”"]{1,255})[”"]/i);
   if (quoted) return { productName: quoted[1].trim() };
-  const namedDraft = message.match(/\b(?:change|update|edit)\s+(?:the\s+)?(.{1,255}?)\s+(?:product\s+)?draft\b/i);
+  const namedDraft = message.match(/\b(?:change|update|edit|configure)\s+(?:the\s+)?(.{1,255}?)\s+(?:product\s+)?draft\b/i);
   if (namedDraft) return { productName: namedDraft[1].trim() };
   return null;
 }
@@ -193,14 +232,20 @@ export class ProductManagementSkillService {
       if (existing?.session.status === "draft_created") {
         try {
           const snapshot = await inactiveProductDraftUpdateService.loadSnapshot({ organizationId: input.organizationId, sessionId: existing.session.id });
-          const snapshotCard: ProductManagementCard = { kind: "product_draft_snapshot", title: "Current inactive draft", summary: `Loaded the current inactive draft for ${snapshot.productName}.`, sourceLinks: [{ label: "Open existing product editor", href: snapshot.editorLink }], details: { productName: snapshot.productName, draftStatus: "inactive_draft", editorPath: snapshot.editorLink, fields: { "PBV2 status": snapshot.pbv2Status, "Readiness": snapshot.readiness.status, "Base rate / sq ft": money(snapshot.pricingBase.perSqftCents), "Base rate / piece": money(snapshot.pricingBase.perPieceCents), "Minimum charge": money(snapshot.pricingBase.minimumChargeCents) }, warnings: snapshot.readiness.warnings, validationErrors: snapshot.readiness.findings } };
+          const snapshotCard: ProductManagementCard = { kind: "product_draft_snapshot", title: "Current inactive draft", summary: `Loaded the current inactive draft for ${snapshot.productName}.`, sourceLinks: [{ label: "Open existing product editor", href: snapshot.editorLink }], details: { productName: snapshot.productName, draftStatus: "inactive_draft", editorPath: snapshot.editorLink, fields: { "PBV2 status": snapshot.pbv2Status, "Readiness": snapshot.readiness.status, "Base rate / sq ft": money(snapshot.pricingBase.perSqftCents), "Base rate / piece": money(snapshot.pricingBase.perPieceCents), "Minimum charge": money(snapshot.pricingBase.minimumChargeCents), "Primary routing station": snapshot.relationships.routing?.stationName ?? "Not set", "Option templates": snapshot.relationships.optionTemplates.map((item) => item.name).join(", ") || "None", "Internal setup note": snapshot.relationships.setupNote ?? "None" }, warnings: [...snapshot.readiness.warnings, ...snapshot.relationships.reviewWarnings, ...snapshot.relationships.missingFieldWarnings], validationErrors: snapshot.readiness.findings } };
           if (/\b(what\s+is\s+missing|show\s+(?:me\s+)?(?:what\s+is\s+)?missing|validation|readiness)\b/i.test(input.message)) return { handled: true, response: snapshot.readiness.findings.length ? "Here are the current server-derived draft readiness blockers." : "The inactive draft has no current server-derived readiness blockers.", cards: [snapshotCard] };
           const patch = pricingPatchFromMessage(input.message);
           const configurationPatch = patch ? null : configurationPatchFromMessage(input.message);
-          const requestedPatch = patch ?? configurationPatch;
+          const relationshipPatch = patch || configurationPatch ? null : relationshipPatchFromMessage(input.message);
+          const requestedPatch = patch ?? configurationPatch ?? relationshipPatch;
           if (requestedPatch) {
             const proposal = await inactiveProductDraftUpdateService.buildProposal({ organizationId: input.organizationId, sessionId: existing.session.id, patch: requestedPatch });
-            const changes = requestedPatch.basePricing ? (Object.keys(requestedPatch.basePricing) as Array<keyof typeof requestedPatch.basePricing>).map((key) => ({ field: key === "minimumChargeCents" ? "Minimum charge" : key === "perSqftCents" ? "Base rate per square foot" : "Base rate per piece", before: money(proposal.before.pricingBase[key]), after: money(requestedPatch.basePricing![key]) })) : (Object.keys(requestedPatch.configuration ?? {}) as string[]).map((key) => ({ field: key, before: (proposal.before.configuration as any)[key] ?? null, after: (requestedPatch.configuration as any)[key] ?? null }));
+            const changes = requestedPatch.basePricing ? (Object.keys(requestedPatch.basePricing) as Array<keyof typeof requestedPatch.basePricing>).map((key) => ({ field: key === "minimumChargeCents" ? "Minimum charge" : key === "perSqftCents" ? "Base rate per square foot" : "Base rate per piece", before: money(proposal.before.pricingBase[key]), after: money(requestedPatch.basePricing![key]) })) : requestedPatch.configuration ? (Object.keys(requestedPatch.configuration) as string[]).map((key) => ({ field: key, before: (proposal.before.configuration as any)[key] ?? null, after: (requestedPatch.configuration as any)[key] ?? null })) : [
+              requestedPatch.relationships?.routing ? { field: "Production routing", before: proposal.before.relationships.routing?.stationName ?? null, after: requestedPatch.relationships.routing.operation === "clear" ? null : requestedPatch.relationships.routing.station?.id ?? requestedPatch.relationships.routing.station?.key ?? requestedPatch.relationships.routing.station?.name ?? null } : null,
+              requestedPatch.relationships?.options ? { field: "Option templates", before: proposal.before.relationships.optionTemplates.map((item) => item.name).join(", ") || null, after: `${requestedPatch.relationships.options.operation}: ${(requestedPatch.relationships.options.templates ?? []).map((item) => item.id ?? item.key ?? item.name).join(", ")}` } : null,
+              requestedPatch.relationships?.setupNote ? { field: "Internal setup note", before: proposal.before.relationships.setupNote, after: requestedPatch.relationships.setupNote.operation === "clear" ? null : requestedPatch.relationships.setupNote.text ?? null } : null,
+              requestedPatch.relationships?.reviewWarnings ? { field: "Review warnings", before: proposal.before.relationships.reviewWarnings.join("; ") || null, after: requestedPatch.relationships.reviewWarnings.operation === "clear" ? null : (requestedPatch.relationships.reviewWarnings.warnings ?? []).join("; ") } : null,
+            ].filter(Boolean);
             const preview: ProductManagementCard = { kind: "product_draft_update_preview", title: "Proposed inactive-draft update", summary: "This is a server-built before-and-after preview. The product remains inactive and its PBV2 tree remains DRAFT.", sourceLinks: [{ label: "Open existing product editor", href: proposal.before.editorLink }], details: { productName: proposal.before.productName, draftStatus: "inactive_draft", editorPath: proposal.before.editorLink, changes, warnings: proposal.before.readiness.warnings, validationErrors: proposal.before.readiness.findings } };
             return { handled: true, response: "I prepared a precise inactive-draft patch. Review the before-and-after values and create a dedicated confirmation plan.", cards: [snapshotCard, preview, { kind: "action_proposal", title: "Update inactive product draft", summary: "Review the server-generated plan and use its dedicated GO control to apply this patch once.", sourceLinks: [], plan: { action: "products.update_inactive_draft", productIntakeSessionId: existing.session.id, intakeSessionId: existing.session.id, proposalFingerprint: proposal.fingerprint, patch: requestedPatch } }] };
           }
