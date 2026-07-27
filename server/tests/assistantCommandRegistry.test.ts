@@ -241,6 +241,15 @@ describe("assistant command registry", () => {
       proposalFingerprint,
       patch: { basePricing: { perSqftCents: 0, perPieceCents: null } },
     }).patch.basePricing).toEqual({ perSqftCents: 0, perPieceCents: null });
+    expect(productInactiveDraftUpdateCommandInputSchema.parse({
+      productIntakeSessionId: "session_1",
+      proposalFingerprint,
+      patch: { configuration: { isTaxable: false, allowRotation: false, fixedDimensions: { widthIn: 24, heightIn: 18 } } },
+    }).patch.configuration).toMatchObject({ isTaxable: false, allowRotation: false, fixedDimensions: { widthIn: 24, heightIn: 18 } });
+    expect(() => productInactiveDraftUpdateCommandInputSchema.parse({
+      productIntakeSessionId: "session_1", proposalFingerprint,
+      patch: { basePricing: { minimumChargeCents: 1500 }, configuration: { isTaxable: true } },
+    })).toThrow();
     expect(() => productInactiveDraftUpdateCommandInputSchema.parse({
       productIntakeSessionId: "session_1", proposalFingerprint,
       patch: { basePricing: { minimumChargeCents: 1500 } }, active: true,

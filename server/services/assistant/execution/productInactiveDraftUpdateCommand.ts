@@ -20,19 +20,34 @@ export const productInactiveDraftBasePricingPatchSchema = z.object({
   perSqftCents: z.number().int().min(0).max(10_000_000).nullable().optional(),
   perPieceCents: z.number().int().min(0).max(10_000_000).nullable().optional(),
   minimumChargeCents: z.number().int().min(0).max(10_000_000).nullable().optional(),
-}).strict().refine(
-  (patch) => patch.perSqftCents !== undefined || patch.perPieceCents !== undefined || patch.minimumChargeCents !== undefined,
-  "At least one base pricing field is required.",
-);
+}).strict().refine((patch) => Object.keys(patch).length > 0, "At least one base pricing field is required.");
 export type ProductInactiveDraftBasePricingPatch = z.infer<typeof productInactiveDraftBasePricingPatchSchema>;
+
+const productInactiveDraftConfigurationPatchSchema = z.object({
+  name: z.string().trim().min(1).max(255).optional(),
+  category: z.string().trim().min(1).max(100).nullable().optional(),
+  description: z.string().trim().min(1).max(20_000).optional(),
+  isTaxable: z.boolean().optional(),
+  measurementMode: z.enum(["dimensions_required", "quantity_only"]).optional(),
+  workflowIntent: z.enum(["standard_production", "fulfillment_only", "service_fee"]).optional(),
+  primaryMaterialId: z.string().trim().min(1).max(128).nullable().optional(),
+  useNestingCalculator: z.boolean().optional(),
+  sheetWidth: z.number().positive().max(10_000).nullable().optional(),
+  sheetHeight: z.number().positive().max(10_000).nullable().optional(),
+  materialType: z.enum(["sheet", "roll"]).optional(),
+  allowRotation: z.boolean().optional(),
+  requiresDimensions: z.boolean().optional(),
+  fixedDimensions: z.object({ widthIn: z.number().positive().max(10_000), heightIn: z.number().positive().max(10_000), label: z.string().trim().min(1).max(120).optional() }).strict().nullable().optional(),
+}).strict().refine((patch) => Object.keys(patch).length > 0, "At least one draft configuration field is required.");
 
 export const productInactiveDraftUpdateCommandInputSchema = z.object({
   productIntakeSessionId: z.string().trim().min(1).max(128),
   proposalFingerprint: z.string().trim().regex(/^[a-f0-9]{64}$/i, "Proposal fingerprint must be a SHA-256 digest."),
   /** Only allowlisted base pricing fields may be changed in this milestone. */
   patch: z.object({
-    basePricing: productInactiveDraftBasePricingPatchSchema,
-  }).strict(),
+    basePricing: productInactiveDraftBasePricingPatchSchema.optional(),
+    configuration: productInactiveDraftConfigurationPatchSchema.optional(),
+  }).strict().refine((patch) => Boolean(patch.basePricing || patch.configuration) && !(patch.basePricing && patch.configuration), "Provide exactly one pricing or configuration patch."),
 }).strict();
 export type ProductInactiveDraftUpdateCommandInput = z.infer<typeof productInactiveDraftUpdateCommandInputSchema>;
 

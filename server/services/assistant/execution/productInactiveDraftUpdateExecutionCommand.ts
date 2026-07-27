@@ -21,7 +21,7 @@ export function createProductInactiveDraftUpdateCanonicalService(
     buildProposal: ({ organizationId, sessionId, patch }) => service.buildProposal({ organizationId, sessionId, patch }),
     revalidateProposal: ({ organizationId, sessionId, patch, expectedFingerprint }) => service.revalidateProposal({ organizationId, sessionId, patch, expectedFingerprint }),
     async updateInactiveDraft(input) {
-      const patch = { basePricing: input.patch.basePricing };
+      const patch = input.patch;
       const updated = await service.updateInactiveProductDraft({
         organizationId: input.organizationId,
         sessionId: input.productIntakeSessionId,
@@ -49,11 +49,17 @@ export function createProductInactiveDraftUpdateCanonicalService(
 const unchanged = ["product_activation", "active_product_modification", "quote_or_order_pricing", "inventory_adjustment", "production_job_creation", "customer_facing_catalog_change"] as const;
 
 function changes(input: ProductInactiveDraftUpdateCommandInput, before: Awaited<ReturnType<InactiveProductDraftUpdateService["buildProposal"]>>["before"]) {
-  return (Object.keys(input.patch.basePricing) as Array<keyof ProductInactiveDraftUpdateCommandInput["patch"]["basePricing"]>).map((key) => ({
+  const pricingChanges = (Object.keys(input.patch.basePricing ?? {}) as Array<keyof NonNullable<ProductInactiveDraftUpdateCommandInput["patch"]["basePricing"]>>).map((key) => ({
     field: key === "perSqftCents" ? "Base rate per square foot" : key === "perPieceCents" ? "Base rate per piece" : "Minimum charge",
     before: before.pricingBase[key] ?? null,
-    after: input.patch.basePricing[key] ?? null,
+    after: input.patch.basePricing?.[key] ?? null,
   }));
+  const configurationChanges = (Object.keys(input.patch.configuration ?? {}) as Array<keyof NonNullable<ProductInactiveDraftUpdateCommandInput["patch"]["configuration"]>>).map((key) => ({
+    field: key,
+    before: typeof before.configuration[key] === "object" && before.configuration[key] !== null ? JSON.stringify(before.configuration[key]) : before.configuration[key] ?? null,
+    after: typeof input.patch.configuration?.[key] === "object" && input.patch.configuration?.[key] !== null ? JSON.stringify(input.patch.configuration?.[key]) : input.patch.configuration?.[key] ?? null,
+  }));
+  return [...pricingChanges, ...configurationChanges];
 }
 
 export function createProductInactiveDraftUpdateExecutionCommand(service: ProductInactiveDraftUpdatePlanningService): ExecutionCommandDefinition {
@@ -64,7 +70,7 @@ export function createProductInactiveDraftUpdateExecutionCommand(service: Produc
     requiredPermissions: [command.requiredCapability],
     async buildPreview({ scope, arguments: rawArguments }) {
       const input = productInactiveDraftUpdateCommandInputSchema.parse(rawArguments);
-      const validation = await service.revalidateProposal({ organizationId: scope.organizationId, sessionId: input.productIntakeSessionId, patch: { basePricing: input.patch.basePricing }, expectedFingerprint: input.proposalFingerprint });
+      const validation = await service.revalidateProposal({ organizationId: scope.organizationId, sessionId: input.productIntakeSessionId, patch: input.patch, expectedFingerprint: input.proposalFingerprint });
       if (!validation.valid) throw new ExecutionPlanError(validation.code, validation.summary);
       const { before, fingerprint } = validation.proposal;
       const preview: ExecutionPlanPreview = {
@@ -84,7 +90,7 @@ export function createProductInactiveDraftUpdateExecutionCommand(service: Produc
     async revalidate({ plan, scope }) {
       const input = productInactiveDraftUpdateCommandInputSchema.parse(plan.sanitizedArguments);
       const record = plan.affectedRecords[0];
-      const validation = await service.revalidateProposal({ organizationId: scope.organizationId, sessionId: input.productIntakeSessionId, patch: { basePricing: input.patch.basePricing }, expectedFingerprint: input.proposalFingerprint });
+      const validation = await service.revalidateProposal({ organizationId: scope.organizationId, sessionId: input.productIntakeSessionId, patch: input.patch, expectedFingerprint: input.proposalFingerprint });
       if (!validation.valid || !record || record.entityId !== (validation.valid ? validation.proposal.before.productId : record.entityId) || record.fingerprint !== input.proposalFingerprint) return { valid: false as const, code: validation.valid ? "INACTIVE_DRAFT_STALE" : validation.code, summary: validation.valid ? "The inactive draft changed." : validation.summary };
       return { valid: true as const };
     },

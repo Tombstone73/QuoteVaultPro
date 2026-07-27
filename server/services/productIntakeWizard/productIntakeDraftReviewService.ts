@@ -1,6 +1,7 @@
 import { and, desc, eq, isNull } from "drizzle-orm";
 import {
   auditLogs,
+  materials,
   pbv2TreeVersions,
   productIntakeSessions,
   products,
@@ -46,6 +47,14 @@ export type ProductIntakeDraftReview = {
     productTypeId: string | null;
     productTypeName: string | null;
     primaryMaterialId: string | null;
+    measurementMode: "dimensions_required" | "quantity_only";
+    workflowIntent: "standard_production" | "fulfillment_only" | "service_fee";
+    isTaxable: boolean;
+    useNestingCalculator: boolean;
+    sheetWidth: string | null;
+    sheetHeight: string | null;
+    materialType: "sheet" | "roll" | null;
+    pricingProfileConfig: Record<string, unknown> | null;
     pbv2ActiveTreeVersionId: string | null;
   };
   pbv2Tree: {
@@ -66,6 +75,8 @@ export type ProductIntakeDraftReview = {
       perPieceCents: number | null;
       minimumChargeCents: number | null;
     };
+    requiresDimensions: boolean;
+    fixedDimensions: { widthIn: number; heightIn: number; unit: "in"; label?: string } | null;
   };
   publishReadiness: {
     productInactive: boolean;
@@ -83,7 +94,7 @@ export type ProductIntakeDraftReview = {
 
 export type ProductIntakeDraftReviewService = {
   getDraftReview(args: { organizationId: string; sessionId: string }): Promise<ProductIntakeDraftReview>;
-  findInactiveDraftMatches(args: { organizationId: string; productId?: string; productName?: string }): Promise<Array<{
+  findInactiveDraftMatches(args: { organizationId: string; productId?: string; productName?: string; category?: string }): Promise<Array<{
     sessionId: string;
     productId: string;
     productName: string;
@@ -109,6 +120,14 @@ export type ProductIntakeDraftReviewService = {
       idempotencyKey: string;
       correlationId: string;
     };
+  }): Promise<ProductIntakeDraftReview>;
+  updateDraftConfiguration(args: {
+    organizationId: string;
+    sessionId: string;
+    patch: Record<string, unknown>;
+    userId: string | null;
+    expectedDraftUpdatedAt?: string;
+    assistantAudit?: { command: "products.update_inactive_draft@v1"; planId: string; idempotencyKey: string; correlationId: string };
   }): Promise<ProductIntakeDraftReview>;
   getDraftLinkForProduct(args: { organizationId: string; productId: string }): Promise<{
     sessionId: string;
@@ -333,6 +352,14 @@ async function buildReview(database: any, organizationId: string, sessionId: str
       productTypeId: products.productTypeId,
       productTypeName: productTypes.name,
       primaryMaterialId: products.primaryMaterialId,
+      measurementMode: products.measurementMode,
+      workflowIntent: products.workflowIntent,
+      isTaxable: products.isTaxable,
+      useNestingCalculator: products.useNestingCalculator,
+      sheetWidth: products.sheetWidth,
+      sheetHeight: products.sheetHeight,
+      materialType: products.materialType,
+      pricingProfileConfig: products.pricingProfileConfig,
       pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId,
     })
     .from(products)
@@ -369,6 +396,12 @@ async function buildReview(database: any, organizationId: string, sessionId: str
       publishedAt: toIso(tree.publishedAt),
       updatedAt: toIso(tree.updatedAt)!,
       ...summary,
+      requiresDimensions: treeJson?.meta?.requiresDimensions === true,
+      fixedDimensions: (() => {
+        const fixed = treeJson?.meta?.fixedDimensions;
+        if (!fixed || typeof fixed !== "object" || Number(fixed.widthIn) <= 0 || Number(fixed.heightIn) <= 0) return null;
+        return { widthIn: Number(fixed.widthIn), heightIn: Number(fixed.heightIn), unit: "in" as const, ...(typeof fixed.label === "string" ? { label: fixed.label } : {}) };
+      })(),
     },
     publishReadiness: {
       productInactive: !product.isActive,
@@ -397,8 +430,9 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
       return buildReview(database, args.organizationId, args.sessionId);
     },
 
-    async findInactiveDraftMatches({ organizationId, productId, productName }) {
+    async findInactiveDraftMatches({ organizationId, productId, productName, category }) {
       const normalizedName = productName ? normalizeProductName(productName) : null;
+      const normalizedCategory = category ? normalizeProductName(category) : null;
       if (!productId && !normalizedName) return [];
       const rows = await database
         .select({
@@ -430,6 +464,7 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
       return rows
         .filter((row) => !productId || row.productId === productId)
         .filter((row) => !normalizedName || normalizeProductName(row.productName) === normalizedName)
+        .filter((row) => !normalizedCategory || normalizeProductName(row.category ?? "") === normalizedCategory)
         .sort((left, right) => left.productName.localeCompare(right.productName) || left.productId.localeCompare(right.productId));
     },
 
@@ -580,6 +615,57 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
             result: "succeeded",
           },
         });
+      });
+      return buildReview(database, organizationId, sessionId);
+    },
+
+    async updateDraftConfiguration({ organizationId, sessionId, patch, userId, expectedDraftUpdatedAt, assistantAudit }) {
+      await database.transaction(async (tx: any) => {
+        const [session] = await tx.select({ status: productIntakeSessions.status, createdProductId: productIntakeSessions.createdProductId, createdPbv2TreeVersionId: productIntakeSessions.createdPbv2TreeVersionId })
+          .from(productIntakeSessions).where(and(eq(productIntakeSessions.organizationId, organizationId), eq(productIntakeSessions.id, sessionId))).limit(1);
+        if (!session || session.status !== "draft_created" || !session.createdProductId || !session.createdPbv2TreeVersionId) throw new ProductIntakeSessionError(409, "Only an existing Product Intake draft can be configured.", "INACTIVE_DRAFT_REQUIRED");
+        const [product] = await tx.select().from(products).where(and(eq(products.organizationId, organizationId), eq(products.id, session.createdProductId))).limit(1);
+        if (!product || product.isActive || product.pbv2ActiveTreeVersionId) throw new ProductIntakeSessionError(409, "Only an inactive Product Intake draft without an active PBV2 tree can be configured.", "INACTIVE_DRAFT_REQUIRED");
+        const [tree] = await tx.select().from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, session.createdPbv2TreeVersionId), eq(pbv2TreeVersions.productId, product.id))).limit(1);
+        if (!tree || tree.status !== "DRAFT") throw new ProductIntakeSessionError(409, "Only PBV2 DRAFT trees can be configured.", "PBV2_NOT_DRAFT");
+        if (expectedDraftUpdatedAt && new Date(tree.updatedAt).toISOString() !== new Date(expectedDraftUpdatedAt).toISOString()) throw new ProductIntakeSessionError(409, "The PBV2 draft changed; reload before applying this update.", "DRAFT_STALE");
+
+        const has = (key: string) => Object.prototype.hasOwnProperty.call(patch, key);
+        if (has("primaryMaterialId") && patch.primaryMaterialId !== null) {
+          const [material] = await tx.select({ id: materials.id }).from(materials).where(and(eq(materials.organizationId, organizationId), eq(materials.id, String(patch.primaryMaterialId)))).limit(1);
+          if (!material) throw new ProductIntakeSessionError(404, "The requested material is not available to this organization.", "MATERIAL_NOT_FOUND");
+        }
+        const treeJson = tree.treeJson && typeof tree.treeJson === "object" ? { ...(tree.treeJson as any) } : {};
+        const meta = treeJson.meta && typeof treeJson.meta === "object" ? { ...treeJson.meta } : {};
+        const currentFixed = meta.fixedDimensions && typeof meta.fixedDimensions === "object" ? meta.fixedDimensions : null;
+        const nextMeasurement = has("measurementMode") ? patch.measurementMode : product.measurementMode;
+        const nextWorkflow = has("workflowIntent") ? patch.workflowIntent : product.workflowIntent;
+        const nextRequiresDimensions = has("requiresDimensions") ? patch.requiresDimensions : meta.requiresDimensions === true;
+        const nextFixed = has("fixedDimensions") ? patch.fixedDimensions : currentFixed;
+        const nextNesting = has("useNestingCalculator") ? patch.useNestingCalculator : product.useNestingCalculator;
+        const nextSheetWidth = has("sheetWidth") ? patch.sheetWidth : product.sheetWidth === null ? null : Number(product.sheetWidth);
+        const nextSheetHeight = has("sheetHeight") ? patch.sheetHeight : product.sheetHeight === null ? null : Number(product.sheetHeight);
+        const nextMaterialType = has("materialType") ? patch.materialType : product.materialType;
+        if (nextWorkflow === "service_fee" && nextMeasurement !== "quantity_only") throw new ProductIntakeSessionError(409, "Service-fee drafts must be quantity-only; propose that related measurement change explicitly.", "DRAFT_CONFIGURATION_INCOMPATIBLE");
+        if (nextMeasurement === "quantity_only" && (nextRequiresDimensions === true || nextFixed || nextNesting === true)) throw new ProductIntakeSessionError(409, "Quantity-only drafts cannot require dimensions, fixed dimensions, or sheet nesting.", "DRAFT_CONFIGURATION_INCOMPATIBLE");
+        if (nextFixed && nextRequiresDimensions === true) throw new ProductIntakeSessionError(409, "Fixed dimensions require requiresDimensions to be false.", "DRAFT_CONFIGURATION_INCOMPATIBLE");
+        if (nextNesting === true && (nextMaterialType !== "sheet" || !Number.isFinite(Number(nextSheetWidth)) || Number(nextSheetWidth) <= 0 || !Number.isFinite(Number(nextSheetHeight)) || Number(nextSheetHeight) <= 0)) throw new ProductIntakeSessionError(409, "Sheet nesting requires positive sheet width and height on a sheet product.", "DRAFT_CONFIGURATION_INCOMPATIBLE");
+
+        const productValues: Record<string, unknown> = {};
+        for (const key of ["name", "category", "description", "isTaxable", "measurementMode", "workflowIntent", "primaryMaterialId", "useNestingCalculator", "sheetWidth", "sheetHeight", "materialType"] as const) if (has(key)) productValues[key] = patch[key];
+        if (has("allowRotation")) productValues.pricingProfileConfig = { ...(product.pricingProfileConfig && typeof product.pricingProfileConfig === "object" ? product.pricingProfileConfig : {}), allowRotation: patch.allowRotation };
+        if (Object.keys(productValues).length) {
+          const updated = await tx.update(products).set({ ...productValues, updatedAt: new Date() } as any).where(and(eq(products.organizationId, organizationId), eq(products.id, product.id), eq(products.isActive, false), isNull(products.pbv2ActiveTreeVersionId))).returning({ id: products.id });
+          if (updated.length !== 1) throw new ProductIntakeSessionError(409, "The product changed; reload before applying this update.", "DRAFT_STALE");
+        }
+        const nextMeta = { ...meta } as Record<string, unknown>;
+        if (has("requiresDimensions")) nextMeta.requiresDimensions = patch.requiresDimensions;
+        if (has("fixedDimensions")) { if (patch.fixedDimensions === null) delete nextMeta.fixedDimensions; else nextMeta.fixedDimensions = { ...(patch.fixedDimensions as any), unit: "in" }; }
+        if (has("requiresDimensions") || has("fixedDimensions")) {
+          const updated = await tx.update(pbv2TreeVersions).set({ treeJson: { ...treeJson, meta: nextMeta }, updatedByUserId: userId, updatedAt: new Date() }).where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.id, tree.id), eq(pbv2TreeVersions.status, "DRAFT"), ...(expectedDraftUpdatedAt ? [eq(pbv2TreeVersions.updatedAt, new Date(expectedDraftUpdatedAt))] : []))).returning({ id: pbv2TreeVersions.id });
+          if (updated.length !== 1) throw new ProductIntakeSessionError(409, "The PBV2 draft changed; reload before applying this update.", "DRAFT_STALE");
+        }
+        await tx.insert(auditLogs).values({ organizationId, userId, actionType: "product_intake_draft_configuration_updated", entityType: "product_intake_session", entityId: sessionId, entityName: product.name, description: `Product Intake draft configuration updated for ${product.name}.`, newValues: { productId: product.id, productName: product.name, patch, before: { name: product.name, category: product.category, description: product.description, isTaxable: product.isTaxable, measurementMode: product.measurementMode, workflowIntent: product.workflowIntent, primaryMaterialId: product.primaryMaterialId, useNestingCalculator: product.useNestingCalculator, sheetWidth: product.sheetWidth, sheetHeight: product.sheetHeight, materialType: product.materialType, requiresDimensions: meta.requiresDimensions === true, fixedDimensions: currentFixed }, after: { ...productValues, ...(has("requiresDimensions") ? { requiresDimensions: patch.requiresDimensions } : {}), ...(has("fixedDimensions") ? { fixedDimensions: patch.fixedDimensions } : {}) }, statusBefore: { productActive: false, pbv2Tree: "DRAFT" }, statusAfter: { productActive: false, pbv2Tree: "DRAFT" }, assistant: assistantAudit ? { ...assistantAudit, confirmationConsumed: true } : undefined, result: "succeeded" } });
       });
       return buildReview(database, organizationId, sessionId);
     },
