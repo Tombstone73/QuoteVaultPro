@@ -70,6 +70,12 @@ import { sortFinalProductionFiles } from "@shared/productionFileHydration";
 import { resolveProductionCompletionRoute } from "../services/productionCompletionRouting";
 import { resolveLineItemProductionDueDate } from "../services/productionDueDate";
 import { resolveProductionCompletionLineItemState } from "../services/productionCompletionLineItemState";
+import {
+  completedProductionSearchText,
+  describeCompletedArtworkSummary,
+  resolveCompletedArtworkAllocations,
+  resolveCompletedArtworkQuantityMode,
+} from "@shared/productionCompleted";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -79,6 +85,12 @@ import { resolveProductionCompletionLineItemState } from "../services/production
  */
 const FULFILLMENT_STATION_KEY = "fulfillment";
 const COMPLETION_RECOVERY_HOURS = 24;
+const completedHistoryRangeSchema = z.enum(["24h", "7d", "30d"]);
+const COMPLETED_HISTORY_RANGE_DAYS: Record<z.infer<typeof completedHistoryRangeSchema>, number> = {
+  "24h": 1,
+  "7d": 7,
+  "30d": 30,
+};
 const DEFAULT_PRINTER_OPTIONS_BY_STATION: Record<string, string[]> = {
   roll: ["S40", "S60", "Canon"],
   wide_roll: ["S40", "S60", "Canon"],
@@ -1971,7 +1983,13 @@ export function registerProductionJobsRoutes(
         : station === "flatbed"
           ? ["flatbed"]
           : station ? [station] : [];
-      const cutoff = addHours(new Date(), -COMPLETION_RECOVERY_HOURS);
+      const rangeParsed = completedHistoryRangeSchema.safeParse(req.query.range ?? "7d");
+      if (!rangeParsed.success) {
+        return res.status(400).json({ success: false, message: "Invalid completed-history range" });
+      }
+      const range = rangeParsed.data;
+      const search = typeof req.query.search === "string" ? req.query.search.trim().toLowerCase() : "";
+      const cutoff = addHours(new Date(), -(COMPLETED_HISTORY_RANGE_DAYS[range] * 24));
       const nowMs = Date.now();
 
       const rows = await db
@@ -1993,6 +2011,13 @@ export function registerProductionJobsRoutes(
           displayNumber: orders.displayNumber,
           customerName: customers.companyName,
           itemDescription: orderLineItems.description,
+          lineItemSortOrder: orderLineItems.sortOrder,
+          lineItemQuantity: orderLineItems.quantity,
+          lineItemWidth: orderLineItems.width,
+          lineItemHeight: orderLineItems.height,
+          lineItemMaterialId: orderLineItems.materialId,
+          lineItemProductId: orderLineItems.productId,
+          lineItemSpecsJson: orderLineItems.specsJson,
           productType: orderLineItems.productType,
           completedByFirstName: users.firstName,
           completedByLastName: users.lastName,
@@ -2009,24 +2034,177 @@ export function registerProductionJobsRoutes(
           gte(productionJobs.completedAt, cutoff),
           stationAliases.length > 0 ? inArray(productionJobs.stationKey as any, stationAliases) : undefined,
         ))
-        .orderBy(desc(productionJobs.completedAt), desc(productionJobs.updatedAt));
+        .orderBy(desc(productionJobs.completedAt), desc(productionJobs.updatedAt))
+        .limit(500);
 
-      return res.json({
-        success: true,
-        data: rows.map((row) => {
+      const lineItemIds = Array.from(new Set(rows
+        .map((row) => row.lineItemId)
+        .filter((id): id is string => typeof id === "string" && id.trim().length > 0)));
+      const materialIds = Array.from(new Set(rows
+        .map((row) => row.lineItemMaterialId)
+        .filter((id): id is string => typeof id === "string" && id.trim().length > 0)));
+      const productIds = Array.from(new Set(rows
+        .map((row) => row.lineItemProductId)
+        .filter((id): id is string => typeof id === "string" && id.trim().length > 0)));
+
+      const [finalFileRows, artworkAttachmentRows, artworkAssetRows, materialRows, productRows] = await Promise.all([
+        lineItemIds.length > 0
+          ? db.select({ lineItemId: lineItemFiles.lineItemId, fileRecordId: lineItemFiles.fileRecordId })
+            .from(lineItemFiles)
+            .where(and(
+              eq(lineItemFiles.organizationId, organizationId),
+              inArray(lineItemFiles.lineItemId, lineItemIds),
+              eq(lineItemFiles.role, "final"),
+              eq(lineItemFiles.status, "active"),
+            ))
+          : Promise.resolve([]),
+        lineItemIds.length > 0
+          ? db.select({
+              id: orderAttachments.id,
+              orderLineItemId: orderAttachments.orderLineItemId,
+              fileRecordId: orderAttachments.fileRecordId,
+              fileName: orderAttachments.fileName,
+              mimeType: orderAttachments.mimeType,
+              thumbKey: orderAttachments.thumbKey,
+              previewKey: orderAttachments.previewKey,
+              thumbnailUrl: orderAttachments.thumbnailUrl,
+              thumbStatus: orderAttachments.thumbStatus,
+              thumbError: orderAttachments.thumbError,
+              side: orderAttachments.side,
+              isPrimary: orderAttachments.isPrimary,
+              createdAt: orderAttachments.createdAt,
+            })
+            .from(orderAttachments)
+            .innerJoin(orders, eq(orders.id, orderAttachments.orderId))
+            .where(and(
+              eq(orders.organizationId, organizationId),
+              inArray(orderAttachments.orderLineItemId, lineItemIds),
+              eq(orderAttachments.role, "artwork"),
+            ))
+            .orderBy(desc(orderAttachments.isPrimary), asc(orderAttachments.side), desc(orderAttachments.createdAt))
+          : Promise.resolve([]),
+        lineItemIds.length > 0
+          ? db.select({ asset: assets, lineItemId: assetLinks.parentId, linkRole: assetLinks.role })
+            .from(assetLinks)
+            .innerJoin(assets, eq(assets.id, assetLinks.assetId))
+            .where(and(
+              eq(assetLinks.organizationId, organizationId),
+              eq(assetLinks.parentType, "order_line_item"),
+              inArray(assetLinks.parentId, lineItemIds),
+              inArray(assetLinks.role, ["primary", "attachment"]),
+            ))
+            .orderBy(desc(assetLinks.createdAt))
+          : Promise.resolve([]),
+        materialIds.length > 0
+          ? db.select({ id: materials.id, name: materials.name }).from(materials)
+            .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)))
+          : Promise.resolve([]),
+        productIds.length > 0
+          ? db.select({ id: products.id, name: products.name }).from(products)
+            .where(and(eq(products.organizationId, organizationId), inArray(products.id, productIds)))
+          : Promise.resolve([]),
+      ]);
+
+      const finalFileRecordIdsByLineItem = new Map<string, Set<string>>();
+      for (const file of finalFileRows) {
+        if (!file.fileRecordId) continue;
+        const ids = finalFileRecordIdsByLineItem.get(file.lineItemId) ?? new Set<string>();
+        ids.add(file.fileRecordId);
+        finalFileRecordIdsByLineItem.set(file.lineItemId, ids);
+      }
+
+      const attachmentUrls = await Promise.all(artworkAttachmentRows.map(async (attachment) => {
+        const [thumb, preview] = await Promise.all([
+          resolveDerivativeFileAccess(attachment, "thumbnail"),
+          resolveDerivativeFileAccess(attachment, "preview"),
+        ]);
+        return {
+          lineItemId: attachment.orderLineItemId,
+          id: attachment.id,
+          fileRecordId: attachment.fileRecordId,
+          fileName: attachment.fileName,
+          mimeType: attachment.mimeType,
+          thumbnailUrl: thumb.url ?? null,
+          previewUrl: preview.url ?? null,
+          previewStatus: thumb.url || preview.url ? "available" : attachment.thumbStatus === "thumb_failed" ? "failed" : attachment.thumbStatus === "thumb_pending" ? "pending" : "missing",
+          previewReason: thumb.url || preview.url ? null : attachment.thumbError || (attachment.thumbStatus === "thumb_pending" ? "Preview has not been generated yet." : "Production artwork preview is unavailable."),
+          side: attachment.side ?? "na",
+          isPrimary: !!attachment.isPrimary,
+          sourceKind: "line_item_artwork" as const,
+        };
+      }));
+      const assetUrls = await Promise.all(artworkAssetRows.map(async (linked) => {
+        const [thumb, preview] = await Promise.all([
+          resolveDerivativeFileAccess(linked.asset, "thumbnail"),
+          resolveDerivativeFileAccess(linked.asset, "preview"),
+        ]);
+        return {
+          lineItemId: linked.lineItemId,
+          id: linked.asset.id,
+          fileRecordId: linked.asset.fileRecordId,
+          fileName: linked.asset.fileName,
+          mimeType: linked.asset.mimeType,
+          thumbnailUrl: thumb.url ?? null,
+          previewUrl: preview.url ?? null,
+          previewStatus: thumb.url || preview.url ? "available" : linked.asset.previewStatus === "failed" ? "failed" : linked.asset.previewStatus === "pending" ? "pending" : "missing",
+          previewReason: thumb.url || preview.url ? null : linked.asset.previewError || (linked.asset.previewStatus === "pending" ? "Preview has not been generated yet." : "Production artwork preview is unavailable."),
+          side: "na",
+          isPrimary: linked.linkRole === "primary",
+          sourceKind: "line_item_asset" as const,
+        };
+      }));
+      const artworkByLineItem = new Map<string, Array<(typeof attachmentUrls)[number] | (typeof assetUrls)[number]>>();
+      for (const artwork of [...attachmentUrls, ...assetUrls]) {
+        if (!artwork.lineItemId) continue;
+        const list = artworkByLineItem.get(artwork.lineItemId) ?? [];
+        list.push(artwork);
+        artworkByLineItem.set(artwork.lineItemId, list);
+      }
+      const materialNameById = new Map(materialRows.map((row) => [row.id, row.name]));
+      const productNameById = new Map(productRows.map((row) => [row.id, row.name]));
+
+      const completed = rows.map((row) => {
+          const candidates = row.lineItemId ? artworkByLineItem.get(row.lineItemId) ?? [] : [];
+          const finalIds = row.lineItemId ? finalFileRecordIdsByLineItem.get(row.lineItemId) : null;
+          const productionArtwork = finalIds && finalIds.size > 0
+            ? candidates.filter((artwork) => !!artwork.fileRecordId && finalIds.has(artwork.fileRecordId))
+            : candidates;
+          const artwork = productionArtwork.length > 0 ? productionArtwork : candidates;
+          const quantity = Number(row.lineItemQuantity);
+          const totalQuantity = Number.isFinite(quantity) ? quantity : null;
+          const quantityMode = resolveCompletedArtworkQuantityMode(row.lineItemSpecsJson);
+          const allocation = resolveCompletedArtworkAllocations({ totalQuantity, artworkCount: artwork.length, quantityMode });
           const restoreUntilMs = row.restoreUntil ? new Date(row.restoreUntil as any).getTime() : Number.NaN;
+          const undoAllowed = !!row.completedAt && Number.isFinite(restoreUntilMs) && restoreUntilMs > nowMs;
+          const dimensions = row.lineItemWidth && row.lineItemHeight ? `${row.lineItemWidth} × ${row.lineItemHeight}` : null;
+          const itemName = String(row.itemDescription || productNameById.get(row.lineItemProductId ?? "") || row.productType || `Job ${String(row.id).slice(-6)}`).trim();
+          const completedArtwork = artwork.map((file, index) => ({
+            ...file,
+            allocatedQuantity: allocation.allocations[index]?.allocatedQuantity ?? null,
+          }));
           return {
             id: row.id,
             orderId: row.orderId,
             lineItemId: row.lineItemId ?? null,
             orderNumber: row.displayNumber || row.orderNumber,
             customerName: row.customerName || "Unknown Customer",
-            itemName: String(row.itemDescription || row.productType || `Job ${String(row.id).slice(-6)}`).trim(),
+            itemName,
+            productName: productNameById.get(row.lineItemProductId ?? "") ?? null,
+            lineItemSequence: row.lineItemSortOrder == null ? null : Number(row.lineItemSortOrder) + 1,
+            dimensions,
+            mediaName: materialNameById.get(row.lineItemMaterialId ?? "") ?? null,
+            totalQuantity,
+            artworkCount: completedArtwork.length,
+            artworkQuantityMode: quantityMode,
+            artworkSummary: describeCompletedArtworkSummary({ totalQuantity, artworkCount: completedArtwork.length, quantityMode, sides: completedArtwork.map((file) => file.side) }),
+            allocationIssue: allocation.allocationIssue,
+            artwork: completedArtwork,
             stationKey: row.stationKey,
             stationLabel: stationLabel(row.stationKey),
             previousStatus: row.previousStatus ?? null,
             previousStation: row.previousStation ?? null,
             previousStationLabel: stationLabel(row.previousStation ?? row.stationKey),
+            restoreStatusLabel: `${stationLabel(row.previousStation ?? row.stationKey)} · ${stationLabel(row.previousStatus ?? "in_progress")}`,
             completedAt: toIso(row.completedAt),
             completedByUserId: row.completedByUserId ?? null,
             completedBy: userDisplayName({
@@ -2037,10 +2215,22 @@ export function registerProductionJobsRoutes(
             restoreUntil: toIso(row.restoreUntil),
             restoredAt: toIso(row.restoredAt),
             restoreReason: row.restoreReason ?? null,
-            undoAllowed: !!row.completedAt && Number.isFinite(restoreUntilMs) && restoreUntilMs > nowMs,
+            undoAllowed,
+            undoUnavailableReason: undoAllowed
+              ? null
+              : !row.restoreUntil
+                ? "Undo is unavailable because this completion has no recovery window."
+                : "Undo is no longer available for this completed job.",
           };
-        }),
-        message: "Recently completed production jobs fetched",
+        });
+      const filtered = search
+        ? completed.filter((job) => completedProductionSearchText(job).includes(search))
+        : completed;
+      return res.json({
+        success: true,
+        data: filtered,
+        range,
+        message: "Completed production jobs fetched",
       });
     } catch (error: any) {
       console.error("Error fetching recently completed production jobs:", error);

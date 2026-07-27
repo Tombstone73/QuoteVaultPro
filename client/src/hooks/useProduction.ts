@@ -257,11 +257,35 @@ export type RecentlyCompletedProductionJob = {
   orderNumber: string;
   customerName: string;
   itemName: string;
+  productName: string | null;
+  lineItemSequence: number | null;
+  dimensions: string | null;
+  mediaName: string | null;
+  totalQuantity: number | null;
+  artworkCount: number;
+  artworkQuantityMode: "one_each_per_file" | "same_quantity_each" | "unspecified";
+  artworkSummary: string;
+  allocationIssue: string | null;
+  artwork: Array<{
+    id: string;
+    fileRecordId: string | null;
+    fileName: string;
+    mimeType: string | null;
+    thumbnailUrl: string | null;
+    previewUrl: string | null;
+    previewStatus: "available" | "pending" | "missing" | "failed";
+    previewReason: string | null;
+    side: string;
+    isPrimary: boolean;
+    sourceKind: "line_item_artwork" | "line_item_asset";
+    allocatedQuantity: number | null;
+  }>;
   stationKey: string;
   stationLabel: string;
   previousStatus: string | null;
   previousStation: string | null;
   previousStationLabel: string;
+  restoreStatusLabel: string;
   completedAt: string | null;
   completedByUserId: string | null;
   completedBy: string | null;
@@ -269,6 +293,7 @@ export type RecentlyCompletedProductionJob = {
   restoredAt: string | null;
   restoreReason: string | null;
   undoAllowed: boolean;
+  undoUnavailableReason: string | null;
 };
 
 export type ProductionEvent = {
@@ -548,7 +573,7 @@ function invalidateProduction(qc: ReturnType<typeof useQueryClient>, jobId?: str
 }
 
 export function useRecentlyCompletedProductionJobs(
-  filters?: { station?: string; view?: string },
+  filters?: { station?: string; view?: string; range?: "24h" | "7d" | "30d"; search?: string },
   options?: { enabled?: boolean },
 ) {
   return useQuery<RecentlyCompletedProductionJob[]>({
@@ -557,6 +582,8 @@ export function useRecentlyCompletedProductionJobs(
       const params = new URLSearchParams();
       if (filters?.station) params.set("station", filters.station);
       else if (filters?.view) params.set("view", filters.view);
+      if (filters?.range) params.set("range", filters.range);
+      if (filters?.search?.trim()) params.set("search", filters.search.trim());
       const res = await fetch(`/api/production/jobs/recently-completed${params.toString() ? `?${params.toString()}` : ""}`, {
         credentials: "include",
       });
