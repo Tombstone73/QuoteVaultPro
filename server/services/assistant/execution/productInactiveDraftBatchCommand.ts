@@ -15,7 +15,7 @@ export const productInactiveDraftBatchCommandInputSchema = z.object({
   batchId: z.string().trim().min(1).max(128).optional(),
   sharedDefaults: z.record(z.unknown()).default({}),
   batchFingerprint: z.string().regex(/^[a-f0-9]{64}$/i),
-  children: z.array(childSchema).min(2).max(25),
+  children: z.array(childSchema).min(1).max(25),
 }).strict().superRefine((value, context) => {
   if (new Set(value.children.map((child) => child.rowNumber)).size !== value.children.length) context.addIssue({ code: z.ZodIssueCode.custom, message: "Each batch row must be unique." });
 });

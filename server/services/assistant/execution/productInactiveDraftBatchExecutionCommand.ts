@@ -3,6 +3,7 @@ import type { ExecutionCommandDefinition, ExecutionCommandResult, ExecutionPlanP
 import { createProductInactiveDraftBatchCommandDefinition, productInactiveDraftBatchCommandInputSchema, productInactiveDraftBatchCommandName, type ProductInactiveDraftBatchCanonicalService, type ProductInactiveDraftBatchCommandInput } from "./productInactiveDraftBatchCommand";
 import type { ProductInactiveDraftPlanningService } from "./productInactiveDraftExecutionCommand";
 import { fingerprintProductInactiveDraftBatch } from "../productInactiveDraftBatchService";
+import { classifyProductDraftBatchFailure } from "../productInactiveDraftBatchRecovery";
 
 type DraftReadinessReader = { reviewDraft(input: { organizationId: string; sessionId: string }): Promise<{ status: string }> };
 
@@ -27,8 +28,8 @@ export function createProductInactiveDraftBatchCanonicalService(
             ?? import("../../productIntakeWizard/productIntakeDraftReadinessService").then(({ productIntakeDraftReadinessService }) => productIntakeDraftReadinessService.reviewDraft({ organizationId: input.organizationId, sessionId: child.intakeSessionId })));
           children.push({ rowNumber: child.rowNumber, productId: result.product.id, productName: result.product.name, pbv2TreeVersionId: result.pbv2DraftTreeVersionId, readinessStatus: draftReadiness.status, reused: false });
         } catch (error) {
-          const typed = error instanceof ExecutionPlanError;
-          failures.push({ rowNumber: child.rowNumber, productName: child.productName, code: typed ? error.code : "TEMPORARY_SERVICE_FAILURE", message: error instanceof Error ? error.message.slice(0, 1000) : "Product draft creation failed.", retryable: !typed });
+          const classified = classifyProductDraftBatchFailure(error);
+          failures.push({ rowNumber: child.rowNumber, productName: child.productName, ...classified });
         }
       }
       return { children, failures };
@@ -61,7 +62,12 @@ export function createProductInactiveDraftBatchExecutionCommand(service: Product
       try {
         const history = input.batchId ? await import("../productInactiveDraftBatchHistoryService").then(({ productInactiveDraftBatchHistoryService }) => productInactiveDraftBatchHistoryService) : null;
         if (history && input.batchId) await history.beginExecution({ organizationId: scope.organizationId, batchId: input.batchId, planId: plan.id, correlationId: plan.correlationId, idempotencyKey: plan.idempotencyKey });
-        const result = await command.adapter.execute(input, { organizationId: scope.organizationId, actorUserId: scope.userId, planId: plan.id, idempotencyKey: plan.idempotencyKey, correlationId: plan.correlationId, signal: new AbortController().signal });
+        const persisted = history && input.batchId ? await history.getDetail(scope.organizationId, input.batchId) : null;
+        if (history && input.batchId && !persisted) throw new ExecutionPlanError("BATCH_NOT_FOUND", "The persisted batch was not found.");
+        const eligible = persisted ? new Set(persisted.rows.filter((row) => row.executionState === "pending" || row.executionState === "failed_retryable").map((row) => row.sourceRowNumber)) : null;
+        const executionInput = eligible ? { ...input, children: input.children.filter((child) => eligible.has(child.rowNumber)) } : input;
+        if (!executionInput.children.length) return { status: "succeeded", summary: "No pending or retryable batch rows remain; created rows were safely skipped.", steps: [] };
+        const result = await command.adapter.execute(executionInput, { organizationId: scope.organizationId, actorUserId: scope.userId, planId: plan.id, idempotencyKey: plan.idempotencyKey, correlationId: plan.correlationId, signal: new AbortController().signal });
         if (history && input.batchId) {
           for (const child of result.children) await history.markRowCreated({ organizationId: scope.organizationId, batchId: input.batchId, rowNumber: child.rowNumber, productId: child.productId, readinessResult: { status: child.readinessStatus } });
           for (const failure of result.failures) await history.markRowFailure({ organizationId: scope.organizationId, batchId: input.batchId, rowNumber: failure.rowNumber, code: failure.code, message: failure.message, retryable: failure.retryable });
