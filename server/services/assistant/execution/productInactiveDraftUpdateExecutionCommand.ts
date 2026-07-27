@@ -22,12 +22,25 @@ export function createProductInactiveDraftUpdateCanonicalService(
     revalidateProposal: ({ organizationId, sessionId, patch, expectedFingerprint }) => service.revalidateProposal({ organizationId, sessionId, patch, expectedFingerprint }),
     async updateInactiveDraft(input) {
       const patch = { basePricing: input.patch.basePricing };
-      const updated = await service.updateInactiveProductDraft({ organizationId: input.organizationId, sessionId: input.productIntakeSessionId, patch, expectedFingerprint: input.proposalFingerprint, userId: input.actorUserId });
+      const updated = await service.updateInactiveProductDraft({
+        organizationId: input.organizationId,
+        sessionId: input.productIntakeSessionId,
+        patch,
+        expectedFingerprint: input.proposalFingerprint,
+        userId: input.actorUserId,
+        assistantAudit: {
+          command: "products.update_inactive_draft@v1",
+          planId: input.assistantPlanId,
+          idempotencyKey: input.idempotencyKey,
+          correlationId: input.correlationId,
+        },
+      });
       return {
         product: { id: updated.productId, name: updated.productName, active: false, sourceLink: `/products/${updated.productId}` },
         productIntakeSession: { id: updated.sessionId, sourceLink: updated.editorLink },
         pbv2DraftTreeVersionId: updated.pbv2TreeVersionId,
         readiness: updated.readiness.status === "ready" ? "ready" as const : "not_ready" as const,
+        domainAuditReference: input.assistantPlanId,
       };
     },
   };

@@ -236,6 +236,11 @@ describe("assistant command registry", () => {
       proposalFingerprint,
       patch: { basePricing: { isActive: true } },
     })).toThrow();
+    expect(productInactiveDraftUpdateCommandInputSchema.parse({
+      productIntakeSessionId: "session_1",
+      proposalFingerprint,
+      patch: { basePricing: { perSqftCents: 0, perPieceCents: null } },
+    }).patch.basePricing).toEqual({ perSqftCents: 0, perPieceCents: null });
     expect(() => productInactiveDraftUpdateCommandInputSchema.parse({
       productIntakeSessionId: "session_1", proposalFingerprint,
       patch: { basePricing: { minimumChargeCents: 1500 } }, active: true,

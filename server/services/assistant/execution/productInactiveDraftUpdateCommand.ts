@@ -17,9 +17,9 @@ export const productInactiveDraftUpdateConfirmationTtlMs = 5 * 60_000;
  * repository instructions.
  */
 export const productInactiveDraftBasePricingPatchSchema = z.object({
-  perSqftCents: z.number().int().min(0).max(10_000_000).optional(),
-  perPieceCents: z.number().int().min(0).max(10_000_000).optional(),
-  minimumChargeCents: z.number().int().min(0).max(10_000_000).optional(),
+  perSqftCents: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  perPieceCents: z.number().int().min(0).max(10_000_000).nullable().optional(),
+  minimumChargeCents: z.number().int().min(0).max(10_000_000).nullable().optional(),
 }).strict().refine(
   (patch) => patch.perSqftCents !== undefined || patch.perPieceCents !== undefined || patch.minimumChargeCents !== undefined,
   "At least one base pricing field is required.",

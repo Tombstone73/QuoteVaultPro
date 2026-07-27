@@ -28,9 +28,26 @@ describe("InactiveProductDraftUpdateService", () => {
     });
     const service = new InactiveProductDraftUpdateService({ getDraftReview: async () => current, updateDraftPricing } as any);
     const proposed = await service.buildProposal({ organizationId: "org-a", sessionId: "session-1", patch: { basePricing: { minimumChargeCents: 1500 } } });
-    const updated = await service.updateInactiveProductDraft({ organizationId: "org-a", sessionId: "session-1", patch: { basePricing: { minimumChargeCents: 1500 } }, expectedFingerprint: proposed.fingerprint, userId: "user-1" });
+    const updated = await service.updateInactiveProductDraft({
+      organizationId: "org-a", sessionId: "session-1", patch: { basePricing: { minimumChargeCents: 1500 } },
+      expectedFingerprint: proposed.fingerprint, userId: "user-1",
+      assistantAudit: { command: "products.update_inactive_draft@v1", planId: "plan-1", idempotencyKey: "key-1", correlationId: "corr-1" },
+    });
     expect(updateDraftPricing).toHaveBeenCalledTimes(1);
+    expect(updateDraftPricing).toHaveBeenCalledWith(expect.objectContaining({
+      assistantAudit: { command: "products.update_inactive_draft@v1", planId: "plan-1", idempotencyKey: "key-1", correlationId: "corr-1" },
+    }));
     expect(updated).toMatchObject({ productIsActive: false, pbv2Status: "DRAFT", pricingBase: { minimumChargeCents: 1500 } });
+  });
+
+  it("preserves omitted fields, accepts zero and explicit clears, and rejects a no-op", async () => {
+    const service = new InactiveProductDraftUpdateService({ getDraftReview: async () => review() } as any);
+    const zero = await service.buildProposal({ organizationId: "org-a", sessionId: "session-1", patch: { basePricing: { perSqftCents: 0 } } });
+    expect(zero.after).toEqual({ basePricing: { perSqftCents: 0 } });
+    const clear = await service.buildProposal({ organizationId: "org-a", sessionId: "session-1", patch: { basePricing: { perPieceCents: null } } });
+    expect(clear.after).toEqual({ basePricing: { perPieceCents: null } });
+    await expect(service.buildProposal({ organizationId: "org-a", sessionId: "session-1", patch: { basePricing: { perSqftCents: 85 } } }))
+      .rejects.toMatchObject({ code: "INACTIVE_DRAFT_NO_CHANGES" });
   });
 
   it("invalidates a proposal when the draft fingerprint changes", async () => {

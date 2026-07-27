@@ -1,4 +1,4 @@
-import { and, desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull } from "drizzle-orm";
 import {
   auditLogs,
   pbv2TreeVersions,
@@ -83,6 +83,13 @@ export type ProductIntakeDraftReview = {
 
 export type ProductIntakeDraftReviewService = {
   getDraftReview(args: { organizationId: string; sessionId: string }): Promise<ProductIntakeDraftReview>;
+  findInactiveDraftMatches(args: { organizationId: string; productId?: string; productName?: string }): Promise<Array<{
+    sessionId: string;
+    productId: string;
+    productName: string;
+    category: string | null;
+    pbv2TreeVersionId: string;
+  }>>;
   updateDraftPricing(args: {
     organizationId: string;
     sessionId: string;
@@ -95,6 +102,13 @@ export type ProductIntakeDraftReviewService = {
     userName?: string | null;
     /** Optional server-derived optimistic-concurrency guard for assistant plans. */
     expectedDraftUpdatedAt?: string;
+    /** Server-derived execution context for an assistant-confirmed update. */
+    assistantAudit?: {
+      command: "products.update_inactive_draft@v1";
+      planId: string;
+      idempotencyKey: string;
+      correlationId: string;
+    };
   }): Promise<ProductIntakeDraftReview>;
   getDraftLinkForProduct(args: { organizationId: string; productId: string }): Promise<{
     sessionId: string;
@@ -121,8 +135,12 @@ function toIso(value: Date | string | null): string | null {
 }
 
 function normalizePricingCents(value: unknown): number | null {
-  if (typeof value !== "number" || !Number.isFinite(value) || value <= 0) return null;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < 0) return null;
   return Math.round(value);
+}
+
+function normalizeProductName(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
 
 function basePricingFromTree(treeJson: any): ProductIntakeDraftReview["pbv2Tree"]["basePricing"] {
@@ -379,7 +397,43 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
       return buildReview(database, args.organizationId, args.sessionId);
     },
 
-    async updateDraftPricing({ organizationId, sessionId, base, userId, userName, expectedDraftUpdatedAt }) {
+    async findInactiveDraftMatches({ organizationId, productId, productName }) {
+      const normalizedName = productName ? normalizeProductName(productName) : null;
+      if (!productId && !normalizedName) return [];
+      const rows = await database
+        .select({
+          sessionId: productIntakeSessions.id,
+          productId: products.id,
+          productName: products.name,
+          category: products.category,
+          pbv2TreeVersionId: pbv2TreeVersions.id,
+        })
+        .from(productIntakeSessions)
+        .innerJoin(products, and(
+          eq(products.organizationId, productIntakeSessions.organizationId),
+          eq(products.id, productIntakeSessions.createdProductId),
+        ))
+        .innerJoin(pbv2TreeVersions, and(
+          eq(pbv2TreeVersions.organizationId, productIntakeSessions.organizationId),
+          eq(pbv2TreeVersions.id, productIntakeSessions.createdPbv2TreeVersionId),
+          eq(pbv2TreeVersions.productId, products.id),
+        ))
+        .where(and(
+          eq(productIntakeSessions.organizationId, organizationId),
+          eq(productIntakeSessions.status, "draft_created"),
+          eq(products.organizationId, organizationId),
+          eq(products.isActive, false),
+          isNull(products.pbv2ActiveTreeVersionId),
+          eq(pbv2TreeVersions.organizationId, organizationId),
+          eq(pbv2TreeVersions.status, "DRAFT"),
+        )) as Array<{ sessionId: string; productId: string; productName: string; category: string | null; pbv2TreeVersionId: string }>;
+      return rows
+        .filter((row) => !productId || row.productId === productId)
+        .filter((row) => !normalizedName || normalizeProductName(row.productName) === normalizedName)
+        .sort((left, right) => left.productName.localeCompare(right.productName) || left.productId.localeCompare(right.productId));
+    },
+
+    async updateDraftPricing({ organizationId, sessionId, base, userId, userName, expectedDraftUpdatedAt, assistantAudit }) {
       await database.transaction(async (tx: any) => {
         const [session] = await tx
           .select({
@@ -397,7 +451,7 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
         }
 
         const [product] = await tx
-          .select({ id: products.id, isActive: products.isActive, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+          .select({ id: products.id, name: products.name, isActive: products.isActive, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
           .from(products)
           .where(and(eq(products.organizationId, organizationId), eq(products.id, session.createdProductId)))
           .limit(1);
@@ -425,16 +479,17 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
         const treeJson = tree.treeJson && typeof tree.treeJson === "object" ? { ...(tree.treeJson as any) } : {};
         const meta = treeJson.meta && typeof treeJson.meta === "object" ? { ...treeJson.meta } : {};
         const pricingV2 = meta.pricingV2 && typeof meta.pricingV2 === "object" ? { ...meta.pricingV2 } : {};
-        const previousBase = pricingV2.base && typeof pricingV2.base === "object" ? pricingV2.base : {};
-        const nextBase = {
-          ...previousBase,
-          perSqftCents: normalizePricingCents(base.perSqftCents),
-          perPieceCents: normalizePricingCents(base.perPieceCents),
-          minimumChargeCents: normalizePricingCents(base.minimumChargeCents),
-        };
-        for (const key of ["perSqftCents", "perPieceCents", "minimumChargeCents"] as const) {
-          if (nextBase[key] == null) delete nextBase[key];
+        const previousBase = pricingV2.base && typeof pricingV2.base === "object" ? { ...pricingV2.base } : {};
+        const pricingKeys = ["perSqftCents", "perPieceCents", "minimumChargeCents"] as const;
+        const nextBase = { ...previousBase } as Record<typeof pricingKeys[number], number | undefined>;
+        const patchedFields = pricingKeys.filter((key) => Object.prototype.hasOwnProperty.call(base, key));
+        for (const key of patchedFields) {
+          const value = base[key];
+          if (value == null) delete nextBase[key];
+          else nextBase[key] = normalizePricingCents(value) ?? 0;
         }
+        const beforeBase = basePricingFromTree({ meta: { pricingV2: { base: previousBase } } });
+        const afterBase = basePricingFromTree({ meta: { pricingV2: { base: nextBase } } });
 
         const productIntake = meta.productIntake && typeof meta.productIntake === "object" ? { ...meta.productIntake } : {};
         const pricingReadiness = productIntake.pricingReadiness && typeof productIntake.pricingReadiness === "object"
@@ -502,13 +557,27 @@ export function createDbProductIntakeDraftReviewService(database: any = defaultD
           actionType: "product_intake_draft_pricing_updated",
           entityType: "product_intake_session",
           entityId: sessionId,
-          entityName: session.createdProductId,
+          entityName: product.name,
           description: `Product Intake draft pricing updated for PBV2 DRAFT tree ${tree.id}.`,
           newValues: {
             sessionId,
             productId: session.createdProductId,
+            productName: product.name,
             pbv2TreeVersionId: tree.id,
-            base: nextBase,
+            statusBefore: { productActive: false, pbv2Tree: "DRAFT", activeTreeAssigned: false },
+            statusAfter: { productActive: false, pbv2Tree: "DRAFT", activeTreeAssigned: false },
+            assistant: assistantAudit ? {
+              ...assistantAudit,
+              confirmationConsumed: true,
+            } : undefined,
+            patch: base,
+            patchedFields,
+            omittedFields: pricingKeys.filter((key) => !patchedFields.includes(key)),
+            explicitClears: patchedFields.filter((key) => base[key] === null),
+            beforeBase,
+            afterBase,
+            warnings,
+            result: "succeeded",
           },
         });
       });

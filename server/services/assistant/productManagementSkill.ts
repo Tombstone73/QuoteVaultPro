@@ -82,6 +82,16 @@ function pricingPatchFromMessage(message: string): InactiveProductDraftPatch | n
   return Object.keys(basePricing).length ? { basePricing } : null;
 }
 
+function draftLookupFromMessage(message: string): { productId?: string; productName?: string } | null {
+  const id = message.match(/\b(?:product|draft)\s*(?:id\s*)?[#:]+\s*([a-z0-9][a-z0-9_-]{7,})\b/i);
+  if (id) return { productId: id[1] };
+  const quoted = message.match(/\b(?:product|draft)\s*[“"]([^”"]{1,255})[”"]/i);
+  if (quoted) return { productName: quoted[1].trim() };
+  const namedDraft = message.match(/\b(?:change|update|edit)\s+(?:the\s+)?(.{1,255}?)\s+(?:product\s+)?draft\b/i);
+  if (namedDraft) return { productName: namedDraft[1].trim() };
+  return null;
+}
+
 function money(centsValue: number | null | undefined): string {
   return centsValue == null ? "Not set" : `$${(centsValue / 100).toFixed(2)}`;
 }
@@ -140,6 +150,19 @@ export class ProductManagementSkillService {
 
   async respond(input: { organizationId: string; userId: string; message: string; activeSessionId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
     if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation, publication, and active-product editing are not available through the assistant. I can prepare a new inactive draft instead.", cards: [{ kind: "product_validation_errors", title: "Unsupported product action", summary: "Only a new inactive product draft can be proposed.", sourceLinks: [], details: { errors: ["Activation, publication, and active-product editing are disabled."] } }] };
+    if (!input.activeSessionId) {
+      const lookup = draftLookupFromMessage(input.message);
+      if (lookup) {
+        const matches = await inactiveProductDraftUpdateService.findInactiveDraftMatches({ organizationId: input.organizationId, ...lookup });
+        if (matches.length === 1) return this.respond({ ...input, activeSessionId: matches[0].sessionId });
+        if (matches.length > 1) return {
+          handled: true,
+          response: "More than one inactive draft matches. Specify the product ID to choose one; no draft was changed.",
+          cards: [{ kind: "product_draft_update_unsupported", title: "Choose one inactive draft", summary: "The assistant will not guess when multiple inactive drafts match.", sourceLinks: [], details: { matches: matches.map((match) => ({ productId: match.productId, productName: match.productName, category: match.category })) } }],
+        };
+        return { handled: true, response: "No eligible inactive Product Intake draft matched that identifier. Active or published products cannot be updated here.", cards: [{ kind: "product_active_product_unsupported", title: "Inactive draft not found", summary: "Only an organization-owned inactive product with a PBV2 DRAFT tree can be edited.", sourceLinks: [], details: { lookup } }] };
+      }
+    }
     if (input.activeSessionId) {
       const existing = await this.deps.sessions.getSessionDetail(input.organizationId, input.activeSessionId);
       if (existing?.session.status === "draft_created") {

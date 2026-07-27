@@ -32,6 +32,14 @@ export type InactiveProductDraftSnapshot = {
   fingerprint: string;
 };
 
+export type InactiveProductDraftMatch = {
+  sessionId: string;
+  productId: string;
+  productName: string;
+  category: string | null;
+  pbv2TreeVersionId: string;
+};
+
 export class InactiveProductDraftUpdateError extends Error {
   constructor(readonly code: string, message: string) { super(message); }
 }
@@ -72,9 +80,18 @@ export class InactiveProductDraftUpdateService {
     return snapshotFromReview(await this.review.getDraftReview(input));
   }
 
+  async findInactiveDraftMatches(input: { organizationId: string; productId?: string; productName?: string }): Promise<InactiveProductDraftMatch[]> {
+    return this.review.findInactiveDraftMatches(input);
+  }
+
   async buildProposal(input: { organizationId: string; sessionId: string; patch: InactiveProductDraftPatch }): Promise<{ before: InactiveProductDraftSnapshot; after: InactiveProductDraftPatch; fingerprint: string }> {
     const before = await this.loadSnapshot(input);
     const patch = inactiveProductDraftPatchSchema.parse(input.patch);
+    const changed = (Object.keys(patch.basePricing) as Array<keyof InactiveProductDraftPatch["basePricing"]>)
+      .some((key) => before.pricingBase[key] !== patch.basePricing[key]);
+    if (!changed) {
+      throw new InactiveProductDraftUpdateError("INACTIVE_DRAFT_NO_CHANGES", "The requested draft pricing already matches the current values.");
+    }
     return { before, after: patch, fingerprint: createHash("sha256").update(stable({ draft: before.fingerprint, patch })).digest("hex") };
   }
 
@@ -84,13 +101,22 @@ export class InactiveProductDraftUpdateService {
     return { valid: true as const, proposal };
   }
 
-  async updateInactiveProductDraft(input: { organizationId: string; sessionId: string; patch: InactiveProductDraftPatch; expectedFingerprint: string; userId: string; userName?: string | null }) {
+  async updateInactiveProductDraft(input: {
+    organizationId: string;
+    sessionId: string;
+    patch: InactiveProductDraftPatch;
+    expectedFingerprint: string;
+    userId: string;
+    userName?: string | null;
+    assistantAudit?: { command: "products.update_inactive_draft@v1"; planId: string; idempotencyKey: string; correlationId: string };
+  }) {
     const validation = await this.revalidateProposal(input);
     if (!validation.valid) throw new InactiveProductDraftUpdateError(validation.code, validation.summary);
     const review = await this.review.updateDraftPricing({
       organizationId: input.organizationId, sessionId: input.sessionId, base: validation.proposal.after.basePricing,
       userId: input.userId, ...(input.userName ? { userName: input.userName } : {}),
       expectedDraftUpdatedAt: validation.proposal.before.pbv2UpdatedAt,
+      ...(input.assistantAudit ? { assistantAudit: input.assistantAudit } : {}),
     });
     return snapshotFromReview(review);
   }
