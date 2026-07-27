@@ -9,7 +9,6 @@ import { format, formatDistanceToNow } from "date-fns";
 import {
   AlertCircle,
   ChevronLeft,
-  ChevronRight,
   Download,
   ExternalLink,
   Eye,
@@ -61,7 +60,7 @@ import {
   getHistoryPreviewLabel,
   type ProofWorkspaceMode,
 } from "@/lib/proofWorkspaceState";
-import { getProofViewerNavigation } from "@/lib/proofViewerPagination";
+import { getProofPdfPageCountLabel } from "@/lib/proofViewerPageCount";
 import { apiFetchBlob } from "@/lib/queryClient";
 import {
   canGeneratePreviewRecovery,
@@ -667,7 +666,6 @@ export default function StaffProofingPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState("");
   const [viewerZoom, setViewerZoom] = useState(85);
-  const [viewerPage, setViewerPage] = useState(1);
   const [viewerPageCount, setViewerPageCount] = useState(0);
   const [viewerPageCountError, setViewerPageCountError] = useState<string | null>(null);
   const [isDragging, setIsDragging] = useState(false);
@@ -998,9 +996,15 @@ export default function StaffProofingPage() {
     const url = getEmbeddedPdfUrl(previewUrl, pdfViewerMode === "compact");
     if (!url) return null;
     const separator = url.includes("#") ? "&" : "#";
-    return `${url}${separator}page=${viewerPage}&zoom=${viewerZoom}`;
-  }, [pdfViewerMode, previewIsPdf, previewUrl, viewerPage, viewerZoom]);
-  const proofViewerNavigation = getProofViewerNavigation(viewerPage, viewerPageCount);
+    return `${url}${separator}zoom=${viewerZoom}`;
+  }, [pdfViewerMode, previewIsPdf, previewUrl, viewerZoom]);
+  const proofPdfPageCountLabel = previewIsPdf
+    ? getProofPdfPageCountLabel({
+        pageCount: viewerPageCount,
+        isLoading: staffPreviewLoading,
+        unavailable: Boolean(viewerPageCountError),
+      })
+    : null;
   const jobSpecificationRows = useMemo(() => getJobSpecificationRows(selectedLineItem, activeRow ?? undefined), [activeRow, selectedLineItem]);
 
   useEffect(() => {
@@ -1034,40 +1038,47 @@ export default function StaffProofingPage() {
         setStaffPreviewBlobUrl(objectUrl);
 
         if (previewIsPdf) {
-          const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-          if (cancelled) return;
-          pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
-          pdfLoadingTask = pdfjs.getDocument({
-            data: new Uint8Array(await blob.arrayBuffer()),
-            cMapUrl: pdfCMapUrl,
-            cMapPacked: true,
-            standardFontDataUrl: pdfStandardFontDataUrl,
-            useWorkerFetch: false,
-            isEvalSupported: false,
-            stopAtErrors: true,
-          });
-          pdfDocument = await pdfLoadingTask.promise;
-          if (cancelled) {
-            await pdfDocument.destroy();
-            return;
+          try {
+            const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
+            if (cancelled) return;
+            pdfjs.GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
+            pdfLoadingTask = pdfjs.getDocument({
+              data: new Uint8Array(await blob.arrayBuffer()),
+              cMapUrl: pdfCMapUrl,
+              cMapPacked: true,
+              standardFontDataUrl: pdfStandardFontDataUrl,
+              useWorkerFetch: false,
+              isEvalSupported: false,
+              stopAtErrors: true,
+            });
+            pdfDocument = await pdfLoadingTask.promise;
+            if (cancelled) {
+              await pdfDocument.destroy();
+              return;
+            }
+            const pageCount = Number(pdfDocument.numPages);
+            if (!Number.isInteger(pageCount) || pageCount < 1) {
+              throw new Error("The loaded proof PDF reported an invalid page count.");
+            }
+            setViewerPageCount(pageCount);
+            console.info("[ProofViewer] pdf_page_count_loaded", {
+              proofVersionId: displayedVersionId,
+              proofFileId: displayedVersion?.proofFileId ?? null,
+              pageCount,
+            });
+          } catch {
+            if (cancelled) return;
+            setViewerPageCountError("PDF page count unavailable");
+            console.warn("[ProofViewer] pdf_page_count_unavailable", {
+              proofVersionId: displayedVersionId,
+              proofFileId: displayedVersion?.proofFileId ?? null,
+            });
           }
-          const pageCount = Number(pdfDocument.numPages);
-          if (!Number.isInteger(pageCount) || pageCount < 1) {
-            throw new Error("The loaded proof PDF reported an invalid page count.");
-          }
-          setViewerPageCount(pageCount);
-          setViewerPage((currentPage) => Math.max(1, Math.min(pageCount, currentPage)));
-          console.info("[ProofViewer] pdf_page_count_loaded", {
-            proofVersionId: displayedVersionId,
-            proofFileId: displayedVersion?.proofFileId ?? null,
-            pageCount,
-          });
         }
       } catch (error) {
         if (cancelled) return;
         const message = error instanceof Error ? error.message : "Preview failed to load";
         setStaffPreviewError(message);
-        if (previewIsPdf) setViewerPageCountError("Unable to determine the proof PDF page count.");
       } finally {
         if (!cancelled) setStaffPreviewLoading(false);
       }
@@ -1172,7 +1183,6 @@ export default function StaffProofingPage() {
 
   useEffect(() => {
     setViewerZoom(previewIsPdf ? 85 : 100);
-    setViewerPage(1);
     setPreviewImageError(false);
   }, [previewIsPdf, rawPreviewUrl, displayedVersionId]);
 
@@ -1657,7 +1667,6 @@ export default function StaffProofingPage() {
       await refreshProofing(selectedRow?.lineItemId, selectedRow?.orderId ?? null);
       setSelectedHistoryVersionId(null);
       setWorkspaceMode("preparing");
-      setViewerPage(1);
       setPreviewImageError(false);
       setStaffPreviewBlobUrl(null);
       setStaffPreviewError(null);
@@ -1943,6 +1952,9 @@ export default function StaffProofingPage() {
                     </div>
                     <div>
                       <h2 className="text-xs font-bold uppercase tracking-tight text-white">{previewName}</h2>
+                      {proofPdfPageCountLabel ? (
+                        <p className="mt-0.5 text-[10px] font-semibold text-slate-300">{proofPdfPageCountLabel}</p>
+                      ) : null}
                       <p className="text-[9px] text-slate-500">
                         {displayedVersion?.sentAt ? `Sent ${formatTimestamp(displayedVersion.sentAt)}` : `Created ${formatTimestamp(displayedVersion?.createdAt)}`}
                         {activityTimestamp ? ` • Last activity ${formatRelativeTime(activityTimestamp)}` : ""}
@@ -1979,24 +1991,6 @@ export default function StaffProofingPage() {
                           100%
                         </button>
                       )}
-                      <div className="mx-1 h-3 w-px bg-[#232948]" />
-                      <button
-                        type="button"
-                        className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-700"
-                        onClick={() => setViewerPage(proofViewerNavigation.currentPage - 1)}
-                        disabled={!previewIsPdf || !proofViewerNavigation.canGoPrevious}
-                      >
-                        <ChevronLeft className="h-[18px] w-[18px]" />
-                      </button>
-                      <span className="px-2 text-[10px] font-bold text-slate-300">{previewIsPdf ? (viewerPageCount > 0 ? `${proofViewerNavigation.currentPage} / ${viewerPageCount}` : "Page —") : `${viewerPage}`}</span>
-                      <button
-                        type="button"
-                        className="rounded p-1 text-slate-400 transition-colors hover:bg-slate-700"
-                        onClick={() => setViewerPage(proofViewerNavigation.currentPage + 1)}
-                        disabled={!previewIsPdf || !proofViewerNavigation.canGoNext}
-                      >
-                        <ChevronRight className="h-[18px] w-[18px]" />
-                      </button>
                     </div>
                     <button
                       type="button"
@@ -2016,12 +2010,6 @@ export default function StaffProofingPage() {
                     </button>
                   </div>
                 </div>
-
-                {viewerPageCountError ? (
-                  <div className="border-t border-amber-400/30 bg-amber-500/10 px-5 py-2 text-xs text-amber-100">
-                    {viewerPageCountError}
-                  </div>
-                ) : null}
 
                 {currentProofIssue ? (
                   <div className="border-t border-[#232948] bg-amber-500/10 px-5 py-4 text-amber-100">
