@@ -289,12 +289,16 @@ export class ProductManagementSkillService {
       response: `I prepared ${children.length} server-validated inactive product drafts. Review the complete batch and use its dedicated GO control to create all rows.`,
       cards: [
         { kind: "product_batch_preview", title: "Inactive product draft batch preview", summary: `All ${children.length} rows will create inactive products with PBV2 DRAFT trees.`, sourceLinks: prepared.map((row) => ({ label: `Open ${row.productName} review`, href: row.sourceLink })), details: { batchId: persisted?.id ?? null, label, sharedDefaults: parsed.sharedDefaults, batchFingerprint, rows: prepared, confirmationAvailable: true, unchanged: ["product_activation", "publication", "active_product_modification", "quotes_orders_production"] } },
-        { kind: "action_proposal", title: "Create inactive product draft batch", summary: "Review the complete server-generated batch and use its dedicated GO control once. If a child fails, execution stops and reports the completed rows.", sourceLinks: [], plan: { action: productInactiveDraftBatchCommandName, ...(persisted ? { batchId: persisted.id } : {}), batchFingerprint, children } },
+        { kind: "action_proposal", title: "Create inactive product draft batch", summary: "Review the complete server-generated batch and use its dedicated GO control once. Independent child failures are recorded while later rows continue.", sourceLinks: [], plan: { action: productInactiveDraftBatchCommandName, ...(persisted ? { batchId: persisted.id } : {}), sharedDefaults: parsed.sharedDefaults, batchFingerprint, children } },
       ],
     };
   }
 
   async respond(input: { organizationId: string; userId: string; conversationId?: string; message: string; activeSessionId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    if (/\b(?:show|list|last|recent)\b[\s\S]{0,40}\bproduct(?:-entry)?\s+batches?\b|\bshow me the last product batch\b/i.test(input.message)) {
+      const batches = await productInactiveDraftBatchHistoryService.list(input.organizationId, { ...(input.conversationId && /\b(?:last|this|current)\b/i.test(input.message) ? { conversationId: input.conversationId } : {}), limit: 25 });
+      return { handled: true, response: batches.length ? `Found ${batches.length} product-entry batch record(s). No products were changed.` : "No product-entry batches were found.", cards: [{ kind: "product_batch_preview", title: "Product-entry batch history", summary: "Read-only batch history.", sourceLinks: [], details: { batches: batches.map((batch) => ({ batchId: batch.id, label: batch.label, status: batch.executionStatus, submittedCount: batch.submittedCount, includedCount: batch.includedCount, createdAt: batch.createdAt })) } }] };
+    }
     if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation, publication, and active-product editing are not available through the assistant. I can prepare a new inactive draft instead.", cards: [{ kind: "product_validation_errors", title: "Unsupported product action", summary: "Only a new inactive product draft can be proposed.", sourceLinks: [], details: { errors: ["Activation, publication, and active-product editing are disabled."] } }] };
     const listRequest = draftReadinessListRequest(input.message);
     if (listRequest && !input.activeSessionId) {

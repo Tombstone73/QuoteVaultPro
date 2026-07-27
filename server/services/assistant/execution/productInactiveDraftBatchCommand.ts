@@ -13,6 +13,7 @@ const childSchema = z.object({
 }).strict();
 export const productInactiveDraftBatchCommandInputSchema = z.object({
   batchId: z.string().trim().min(1).max(128).optional(),
+  sharedDefaults: z.record(z.unknown()).default({}),
   batchFingerprint: z.string().regex(/^[a-f0-9]{64}$/i),
   children: z.array(childSchema).min(2).max(25),
 }).strict().superRefine((value, context) => {
@@ -22,6 +23,7 @@ export type ProductInactiveDraftBatchCommandInput = z.infer<typeof productInacti
 
 export const productInactiveDraftBatchResultSchema = z.object({
   children: z.array(z.object({ rowNumber: z.number().int(), productId: z.string().min(1), productName: z.string().min(1), pbv2TreeVersionId: z.string().min(1), readinessStatus: z.string().min(1), reused: z.boolean() }).strict()).max(25),
+  failures: z.array(z.object({ rowNumber: z.number().int(), productName: z.string().min(1), code: z.string().min(1), message: z.string().min(1).max(1000), retryable: z.boolean() }).strict()).max(25).default([]),
 }).strict();
 export type ProductInactiveDraftBatchResult = z.infer<typeof productInactiveDraftBatchResultSchema>;
 
