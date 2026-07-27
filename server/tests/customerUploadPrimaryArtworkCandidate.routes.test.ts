@@ -26,6 +26,7 @@ describe("customer upload primary artwork candidate route contract", () => {
   test("does not invoke final-art, proof, prepress, production, billing, payment, or EPS workflows", () => {
     expect(service).not.toContain("autoSyncCanonicalProofForLineItem");
     expect(service).toContain('actionType: "customer_upload.primary_artwork_candidate_selected"');
+    expect(service).toContain("confirmPrimaryArtworkCandidate: true");
     expect(service).toContain("finalArtwork: false");
     expect(service).toContain("primaryArtworkChanged: false");
     expect(service).toContain("proofChanged: false");

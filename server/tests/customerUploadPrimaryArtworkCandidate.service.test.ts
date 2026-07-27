@@ -65,6 +65,7 @@ describe("customer upload primary artwork candidate service", () => {
       newValues: expect.objectContaining({
         actorUserId: "staff_1", sourceAttachmentId: "attachment_1", targetOrderId: "order_1", targetLineItemId: "line_1",
         selectedSide: "front", action: "primary_artwork_candidate_selection", outcome: "primary_candidate_selected",
+        confirmPrimaryArtworkCandidate: true,
         replacedCandidateIds: [], finalArtwork: false, primaryArtworkChanged: false, proofChanged: false, prepressChanged: false,
         productionChanged: false, billingChanged: false, paymentChanged: false, epsChanged: false,
       }),
@@ -101,6 +102,61 @@ describe("customer upload primary artwork candidate service", () => {
     expect(writes[0]?.values).toMatchObject({ customerUploadPrimaryCandidateSide: null, customerUploadPrimaryCandidateByUserId: null });
     expect(writes[2]).toMatchObject({ kind: "audit", values: { newValues: expect.objectContaining({
       replacedCandidateIds: ["attachment_previous"], replacedCandidateDetails: [previousCandidate],
+    }) } });
+  });
+
+  test.each([
+    ["Both supersedes Front and Back", "both", [
+      { id: "front_candidate", candidateSide: "front", candidateByUserId: "staff_front", candidateAt: new Date("2026-01-01T00:00:00.000Z") },
+      { id: "back_candidate", candidateSide: "back", candidateByUserId: "staff_back", candidateAt: new Date("2026-01-02T00:00:00.000Z") },
+    ]],
+    ["Front supersedes Both", "front", [
+      { id: "both_candidate", candidateSide: "both", candidateByUserId: "staff_both", candidateAt: new Date("2026-01-01T00:00:00.000Z") },
+    ]],
+    ["Back supersedes Both", "back", [
+      { id: "both_candidate", candidateSide: "both", candidateByUserId: "staff_both", candidateAt: new Date("2026-01-01T00:00:00.000Z") },
+    ]],
+  ] as const)("%s without mutating attachment side or operational primary state", async (_label, side, previousCandidates) => {
+    const writes: Array<{ kind: string; values: Record<string, unknown> }> = [];
+    const attachment = sideDesignatedArtworkReference({ side });
+    let updateIndex = 0;
+    const tx = {
+      select: jest.fn()
+        .mockReturnValueOnce(selectRows([{ id: "order_1", customerId: "customer_1" }]))
+        .mockReturnValueOnce(selectRows([{ id: "order_1", customerId: "customer_1" }]))
+        .mockReturnValueOnce(selectRows([{ id: "line_1" }]))
+        .mockReturnValueOnce(selectRows([attachment]))
+        .mockReturnValueOnce(selectRows([]))
+        .mockReturnValueOnce({ from: () => ({ where: async () => previousCandidates }) }),
+      update: jest.fn(() => {
+        const index = updateIndex++;
+        return { set: (values: Record<string, unknown>) => {
+          writes.push({ kind: index === 0 ? "clear-candidates" : "select-candidate", values });
+          return { where: () => index === 1 ? { returning: async () => [{ ...attachment, ...values }] } : undefined };
+        } };
+      }),
+      execute: jest.fn(async () => undefined),
+      insert: () => ({ values: (values: Record<string, unknown>) => { writes.push({ kind: "audit", values }); return values; } }),
+    };
+    jest.spyOn(db, "transaction").mockImplementation(async (callback: any) => callback(tx));
+
+    await selectCustomerUploadPrimaryArtworkCandidate({ ...input, side, attachmentId: attachment.id });
+
+    expect(writes[0]?.values).toMatchObject({
+      customerUploadPrimaryCandidateSide: null,
+      customerUploadPrimaryCandidateByUserId: null,
+      customerUploadPrimaryCandidateAt: null,
+      customerUploadPrimaryCandidateNote: null,
+    });
+    expect(writes[0]?.values).not.toHaveProperty("side");
+    expect(writes[0]?.values).not.toHaveProperty("isPrimary");
+    expect(writes[2]).toMatchObject({ kind: "audit", values: { newValues: expect.objectContaining({
+      selectedSide: side,
+      confirmPrimaryArtworkCandidate: true,
+      replacedCandidateIds: previousCandidates.map((candidate) => candidate.id),
+      replacedCandidateDetails: previousCandidates,
+      primaryArtworkChanged: false,
+      finalArtwork: false,
     }) } });
   });
 

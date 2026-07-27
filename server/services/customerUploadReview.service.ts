@@ -589,7 +589,8 @@ export type DesignateCustomerUploadArtworkSideInput = {
  * production, billing, payment, or EPS workflows.
  */
 export async function designateCustomerUploadArtworkSide(input: DesignateCustomerUploadArtworkSideInput) {
-  return db.transaction(async (tx) => {
+  try {
+    return await db.transaction(async (tx) => {
     const [sourceOrder] = await tx
       .select({ id: orders.id, customerId: orders.customerId })
       .from(orders)
@@ -667,6 +668,10 @@ export async function designateCustomerUploadArtworkSide(input: DesignateCustome
         eq(orderAttachments.orderLineItemId, input.targetLineItemId),
         ne(orderAttachments.id, input.attachmentId),
         inArray(orderAttachments.side, conflictingSides),
+        // Candidate supersession belongs to the separately-confirmed candidate
+        // action. Clearing an active candidate's attachment side here would
+        // violate 0146, which requires its candidate side to match `side`.
+        isNull(orderAttachments.customerUploadPrimaryCandidateSide),
       ));
 
     const [updated] = await tx
@@ -743,7 +748,16 @@ export async function designateCustomerUploadArtworkSide(input: DesignateCustome
     });
 
     return updated;
-  });
+    });
+  } catch (error: any) {
+    // A concurrent legacy/conflicting side update must be a controlled denial,
+    // never a staff-facing HTTP 500. Normal candidate conflicts are handled by
+    // the candidate-selection transaction after designation succeeds.
+    if (error?.code === "23514") {
+      throw new CustomerUploadReviewError(409, "Artwork-side designation conflicts with an active customer artwork candidate.");
+    }
+    throw error;
+  }
 }
 
 export type SelectCustomerUploadPrimaryArtworkCandidateInput = {
@@ -923,6 +937,7 @@ export async function selectCustomerUploadPrimaryArtworkCandidate(input: SelectC
         selectedSide: input.side,
         action: "primary_artwork_candidate_selection",
         candidateNote,
+        confirmPrimaryArtworkCandidate: true,
         outcome: "primary_candidate_selected",
         replacedCandidateIds: previousCandidates.map((candidate) => candidate.id),
         replacedCandidateDetails: previousCandidates,

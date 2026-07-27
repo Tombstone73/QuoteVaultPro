@@ -25,6 +25,8 @@ describe("customer upload artwork-side designation route contract", () => {
 
   test("uses side metadata and side-conflict rules without invoking proof, prepress, or final-art workflows", () => {
     expect(service).toContain("getConflictingArtworkSides(input.side)");
+    expect(service).toContain("isNull(orderAttachments.customerUploadPrimaryCandidateSide)");
+    expect(service).toContain('error?.code === "23514"');
     expect(service).toContain("applyArtworkSideAssignmentToSpecs({");
     expect(service).not.toContain("autoSyncCanonicalProofForLineItem");
     expect(service).toContain('actionType: "customer_upload.artwork_side_designated"');

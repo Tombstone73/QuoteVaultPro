@@ -90,6 +90,43 @@ describe("customer upload artwork-side designation service", () => {
     });
   });
 
+  test("preserves active candidate side metadata for the later confirmed supersession action", async () => {
+    const writes: Array<{ kind: string; values: Record<string, unknown> }> = [];
+    const attachment = intakeSelectedArtworkReference();
+    let updateIndex = 0;
+    const tx = {
+      select: jest.fn()
+        .mockReturnValueOnce(selectRows([{ id: "order_1", customerId: "customer_1" }]))
+        .mockReturnValueOnce(selectRows([{ id: "order_1", customerId: "customer_1" }]))
+        .mockReturnValueOnce(selectRows([{ id: "line_1", specsJson: {} }]))
+        .mockReturnValueOnce(selectRows([attachment]))
+        .mockReturnValueOnce(selectRows([])),
+      update: jest.fn(() => {
+        const index = updateIndex++;
+        return {
+          set: (values: Record<string, unknown>) => {
+            writes.push({ kind: index === 0 ? "clear-non-candidate-conflicts" : index === 1 ? "designate" : "specs", values });
+            return { where: () => index === 1 ? { returning: async () => [{ ...attachment, ...values }] } : undefined };
+          },
+        };
+      }),
+      insert: () => ({ values: () => undefined }),
+    };
+    jest.spyOn(db, "transaction").mockImplementation(async (callback: any) => callback(tx));
+
+    await designateCustomerUploadArtworkSide({ ...input, side: "both" });
+
+    expect(writes[0]).toMatchObject({ kind: "clear-non-candidate-conflicts", values: { side: "na" } });
+    expect(writes[0]?.values).not.toHaveProperty("customerUploadPrimaryCandidateSide");
+    expect(writes[0]?.values).not.toHaveProperty("isPrimary");
+  });
+
+  test("normalizes a candidate-side check violation into a controlled conflict", async () => {
+    jest.spyOn(db, "transaction").mockRejectedValue({ code: "23514" });
+
+    await expect(designateCustomerUploadArtworkSide(input)).rejects.toMatchObject<CustomerUploadReviewError>({ statusCode: 409 });
+  });
+
   test.each([
     ["pending", intakeSelectedArtworkReference({ customerUploadReviewStatus: "pending_review" })],
     ["rejected", intakeSelectedArtworkReference({ customerUploadReviewStatus: "rejected" })],
