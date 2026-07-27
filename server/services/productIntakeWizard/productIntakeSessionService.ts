@@ -64,6 +64,9 @@ export interface ProductIntakeSessionStore {
   createFromAnalysis(input: CreateProductIntakeSessionInput): Promise<ProductIntakeSessionDetail>;
   listSessions(organizationId: string, filters?: ProductIntakeSessionListFilters): Promise<ProductIntakeSession[]>;
   getSessionDetail(organizationId: string, sessionId: string): Promise<ProductIntakeSessionDetail | null>;
+  /** Internal, tenant-scoped source lookup used only to produce a reviewed
+   * assistant draft preview. The source is never returned to the browser. */
+  getSessionSource?(organizationId: string, sessionId: string): Promise<{ sourceText: string | null; sourceJson: unknown | null } | null>;
   upsertAnswers(args: {
     organizationId: string;
     sessionId: string;
@@ -942,6 +945,14 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
   };
 
   return {
+    async getSessionSource(organizationId, sessionId) {
+      const [row] = await database
+        .select({ sourceText: productIntakeSessions.sourceText, sourceJson: productIntakeSessions.sourceJson })
+        .from(productIntakeSessions)
+        .where(and(eq(productIntakeSessions.id, sessionId), eq(productIntakeSessions.organizationId, organizationId)))
+        .limit(1);
+      return row ? { sourceText: row.sourceText ?? null, sourceJson: row.sourceJson ?? null } : null;
+    },
     async createFromAnalysis(input) {
       const generatedQuestions = generateProductIntakeQuestions(input.brief);
       const status = resolveProductIntakeSessionStatus(input.brief, generatedQuestions);

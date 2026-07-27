@@ -59,6 +59,24 @@ export interface ExecutionPlanPreview {
     sourceLink: { label: string; href: string };
     warnings: readonly string[];
     unchanged: readonly string[];
+    proposedFields: {
+      category: string | null;
+      measurementMode: string;
+      requiresDimensions: boolean;
+      fixedDimensions: string | null;
+      pricingModel: string;
+      perSqftCents: number | null;
+      perPieceCents: number | null;
+      minimumChargeCents: number | null;
+      material: string | null;
+      productionRoute: string | null;
+      sheetOrRollConstraints: string | null;
+      allowRotation: boolean | null;
+      quantityBehavior: string;
+      taxable: true;
+      commonOptions: string[];
+      status: "inactive_draft";
+    };
   };
   productInactiveDraftUpdate?: {
     productId: string;

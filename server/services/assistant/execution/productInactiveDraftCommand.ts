@@ -22,7 +22,7 @@ export const productInactiveDraftCommandInputSchema = z.object({
 export type ProductInactiveDraftCommandInput = z.infer<typeof productInactiveDraftCommandInputSchema>;
 
 const productSourceLinkSchema = z.string().regex(/^\/products\/[^\s/]+$/);
-const productIntakeSourceLinkSchema = z.string().regex(/^\/admin\/catalog-migration-lab(?:\/[^\s/]+)?$/);
+const productIntakeSourceLinkSchema = z.string().regex(/^\/(?:admin\/catalog-migration-lab(?:\/[^\s/]+)?|admin\/product-intake\/sessions\/[^\s/]+\/review)$/);
 
 export const productInactiveDraftPreviewSchema = z.object({
   intakeSessionId: z.string().min(1),
@@ -33,6 +33,24 @@ export const productInactiveDraftPreviewSchema = z.object({
   recordsToCreate: z.array(z.enum(["product", "pbv2_draft", "pricing_draft", "option_draft"])).max(4),
   recordsToReuse: z.array(z.enum(["material", "routing", "option_template", "pricing_template"])).max(50),
   warnings: z.array(z.string().min(1).max(1_000)).max(50),
+  proposedFields: z.object({
+    category: z.string().min(1).max(160).nullable(),
+    measurementMode: z.string().min(1).max(120),
+    requiresDimensions: z.boolean(),
+    fixedDimensions: z.string().min(1).max(120).nullable(),
+    pricingModel: z.string().min(1).max(120),
+    perSqftCents: z.number().int().nonnegative().nullable(),
+    perPieceCents: z.number().int().nonnegative().nullable(),
+    minimumChargeCents: z.number().int().nonnegative().nullable(),
+    material: z.string().min(1).max(255).nullable(),
+    productionRoute: z.string().min(1).max(120).nullable(),
+    sheetOrRollConstraints: z.string().min(1).max(160).nullable(),
+    allowRotation: z.boolean().nullable(),
+    quantityBehavior: z.string().min(1).max(120),
+    taxable: z.literal(true),
+    commonOptions: z.array(z.string().min(1).max(160)).max(12),
+    status: z.literal("inactive_draft"),
+  }).strict(),
   sourceLinks: z.array(z.union([productSourceLinkSchema, productIntakeSourceLinkSchema])).min(1).max(50),
   unchanged: z.tuple([
     z.literal("product_activation"),

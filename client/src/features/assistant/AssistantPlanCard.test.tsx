@@ -158,13 +158,25 @@ describe("AssistantPlanCard", () => {
       plan: {
         id: "plan-product-1", action: "products.create_inactive_draft", status: "awaiting_confirmation", planVersion: 1,
         riskLevel: "high", confirmationAvailable: true, confirmationToken: "server-token", expiresAt: "2030-01-01T00:10:00.000Z",
-        preview: { summary: "One inactive Banner draft will be created." }, missingInformation: [], cancellationAvailable: true, steps: [],
+        preview: { summary: "One inactive Banner draft will be created.", productInactiveDraft: {
+          productName: "13 oz Banner", warnings: ["Review material association before activation."], proposedFields: {
+            category: "Banners", measurementMode: "custom_dimensions", requiresDimensions: true, fixedDimensions: null,
+            pricingModel: "square_foot", perSqftCents: 450, perPieceCents: null, minimumChargeCents: 2500,
+            material: "13 oz Banner", productionRoute: "Roll printer", sheetOrRollConstraints: "54in roll", allowRotation: true,
+            quantityBehavior: "per_piece", taxable: true, commonOptions: ["Lamination", "Grommets"], status: "inactive_draft",
+          },
+        } }, missingInformation: [], cancellationAvailable: true, steps: [],
       },
     };
     const confirmed = jest.fn();
     const onConfirm: NonNullable<React.ComponentProps<typeof AssistantPlanCard>["onConfirm"]> = (input) => { confirmed(input); };
     act(() => root.render(<AssistantPlanCard card={productPlan} context={buildSafeAssistantContext("/products", "Products")} onConfirm={onConfirm} />));
     expect(container.textContent).toContain("cannot activate, publish, or modify an active product");
+    expect(container.textContent).toContain("13 oz Banner");
+    expect(container.textContent).toContain("$4.50");
+    expect(container.textContent).toContain("$25.00");
+    expect(container.textContent).toContain("Allowed");
+    expect(container.textContent).toContain("Inactive draft");
     expect(container.textContent).not.toMatch(/Activate|Publish/);
     const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: create inactive product draft']");
     expect(go).not.toBeNull();

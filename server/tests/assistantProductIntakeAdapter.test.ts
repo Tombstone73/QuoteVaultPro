@@ -66,6 +66,21 @@ describe("AssistantProductIntakeAdapter", () => {
     expect(planResultStore.put).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org_1", planId: "plan_1" }));
   });
 
+  test("forwards confirmation-bound plan metadata to the canonical draft audit", async () => {
+    const deps = dependencies();
+    const adapter = new AssistantProductIntakeAdapter(deps as any);
+    await adapter.createInactiveDraft({
+      organizationId: "org_1", userId: "user_1", sessionId: "session_1", planId: "plan_1",
+      idempotencyKey: "plan:plan_1", correlationId: "correlation_1",
+    });
+    expect(deps.draftCreator.createDraftFromSession).toHaveBeenCalledWith(expect.objectContaining({
+      assistantAudit: {
+        command: "products.create_inactive_draft@v1", planId: "plan_1", idempotencyKey: "plan:plan_1",
+        correlationId: "correlation_1", confirmationConsumed: true,
+      },
+    }));
+  });
+
   test("reuses a durable plan-bound result without invoking the creator", async () => {
     const planResultStore = { get: jest.fn(async () => ({ productId: "product_1", pbv2TreeVersionId: "tree_1", productName: "Window Decal", productIsActive: false as const, pbv2Status: "DRAFT" as const, reused: false })), put: jest.fn() };
     const deps = dependencies({ planResultStore });

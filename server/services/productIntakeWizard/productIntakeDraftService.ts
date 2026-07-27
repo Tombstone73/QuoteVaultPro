@@ -54,6 +54,14 @@ export type ProductIntakeDraftCreator = {
     sessionId: string;
     userId: string | null;
     userName?: string | null;
+    /** Present only for a confirmation-bound assistant command. */
+    assistantAudit?: {
+      command: "products.create_inactive_draft@v1";
+      planId: string;
+      idempotencyKey: string;
+      correlationId: string;
+      confirmationConsumed: true;
+    };
   }): Promise<ProductIntakeDraftCreationResult>;
 };
 
@@ -2005,7 +2013,7 @@ function resolveProductTypeId(brief: ProductIntakeBrief, rows: Array<{ id: strin
 
 export function createDbProductIntakeDraftCreator(database: any = defaultDb): ProductIntakeDraftCreator {
   return {
-    async createDraftFromSession({ organizationId, sessionId, userId, userName }) {
+    async createDraftFromSession({ organizationId, sessionId, userId, userName, assistantAudit }) {
       return database.transaction(async (tx: any) => {
         const [sessionRow] = await tx
           .select()
@@ -2177,6 +2185,7 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
             pbv2Status: "DRAFT",
             activeTreeAssigned: false,
             draftQuality,
+            assistant: assistantAudit ?? null,
           },
         });
 

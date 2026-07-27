@@ -5,6 +5,7 @@ import {
 } from "../productIntakeWizard/productIntakeDiagnosticsService";
 import {
   createDbProductIntakeDraftCreator,
+  buildProductIntakeDraftTree,
   type ProductIntakeDraftCreationResult,
   type ProductIntakeDraftCreator,
 } from "../productIntakeWizard/productIntakeDraftService";
@@ -17,6 +18,7 @@ import {
   ProductIntakeSessionError,
   type ProductIntakeSessionStore,
 } from "../productIntakeWizard/productIntakeSessionService";
+import { productIntakeBriefSchema } from "@shared/productIntakeWizardSchemas";
 
 /** Reduced, provider-safe diagnostic information. Raw AI responses stay in the Product Intake diagnostics store. */
 export type AssistantProductIntakeDiagnosticsSummary = {
@@ -58,9 +60,29 @@ export type AssistantProductIntakeProposal = {
     summary: string;
     sideEffects: string[];
     warnings: string[];
+    proposedFields: AssistantProductIntakeProposedFields;
   };
   fingerprint: string;
   executable: boolean;
+};
+
+export type AssistantProductIntakeProposedFields = {
+  category: string | null;
+  measurementMode: string;
+  requiresDimensions: boolean;
+  fixedDimensions: string | null;
+  pricingModel: string;
+  perSqftCents: number | null;
+  perPieceCents: number | null;
+  minimumChargeCents: number | null;
+  material: string | null;
+  productionRoute: string | null;
+  sheetOrRollConstraints: string | null;
+  allowRotation: boolean | null;
+  quantityBehavior: string;
+  taxable: true;
+  commonOptions: string[];
+  status: "inactive_draft";
 };
 
 /** Optional durable bridge supplied by execution-plan integration. It is not a fallback cache. */
@@ -119,10 +141,9 @@ export class AssistantProductIntakeAdapter {
   }
 
   /**
-   * Builds a reduced, server-authoritative preview. It intentionally excludes
-   * source text/JSON, full AI diagnostics, pricing amounts, PBV2 internals,
-   * routing, and materials. The fingerprint binds the proposal to the current
-   * session/version/readiness state for execute-time revalidation.
+ * Builds a server-authoritative confirmation preview. It never returns raw
+ * source text/JSON or diagnostics; it only exposes the bounded fields staff
+ * need to review before creating an inactive draft.
    */
   async buildProposal(args: { organizationId: string; sessionId: string }): Promise<AssistantProductIntakeProposal> {
     const detail = await this.deps.sessionStore.getSessionDetail(args.organizationId, args.sessionId);
@@ -130,6 +151,49 @@ export class AssistantProductIntakeAdapter {
     const snapshot = await this.loadSession(args);
     const productName = String(detail.brief.productIdentity.likelyProductName.value ?? "Product Intake Draft").trim() || "Product Intake Draft";
     const penalties = snapshot.readiness.penalties.map((penalty) => penalty.label);
+    const source = await this.deps.sessionStore.getSessionSource?.(args.organizationId, args.sessionId) ?? null;
+    const sourceText = source?.sourceText ?? "";
+    const parsedBrief = productIntakeBriefSchema.safeParse(detail.brief);
+    const previewTree = parsedBrief.success
+      ? buildProductIntakeDraftTree({
+        brief: parsedBrief.data,
+        sessionId: detail.session.id,
+        productName,
+        userId: null,
+        sourceText,
+        sourceJson: source?.sourceJson ?? undefined,
+        answers: (detail.answers ?? []).map((answer) => ({ questionKey: answer.questionKey, answer: answer.answer })),
+      })
+      : null;
+    const intake = previewTree?.meta?.productIntake as Record<string, any> | undefined;
+    const base = previewTree?.meta?.pricingV2?.base as Record<string, unknown> | undefined;
+    const fixed = intake?.fixedDimensions as { label?: unknown } | undefined;
+    const material = intake?.materialMatch as { name?: unknown } | null | undefined;
+    const route = /\bflatbed\b/i.test(sourceText) ? "Flatbed" : /\broll\b/i.test(sourceText) ? "Roll printer" : /\brouter\b/i.test(sourceText) ? "Router" : null;
+    const constraint = sourceText.match(/\b\d{1,3}(?:\.\d+)?\s*[x×]\s*\d{1,3}(?:\.\d+)?\s*(?:sheets?|sheet|rolls?|roll)\b/i)?.[0] ?? null;
+    const rotation = /\b(?:allow|allows|allowed)\s+rotation\b|\brotation\s+(?:allowed|enabled)\b/i.test(sourceText)
+      ? true
+      : /\b(?:do not allow|no)\s+rotation\b|\brotation\s+(?:not allowed|disabled)\b/i.test(sourceText)
+        ? false
+        : null;
+    const proposedFields: AssistantProductIntakeProposedFields = {
+      category: detail.brief.productIdentity.category?.value ?? null,
+      measurementMode: String(intake?.sizeMode ?? detail.brief.sizeBehavior?.behavior ?? "review_required"),
+      requiresDimensions: previewTree?.meta?.requiresDimensions === true,
+      fixedDimensions: typeof fixed?.label === "string" ? fixed.label : null,
+      pricingModel: detail.brief.pricingAnalysis?.behavior ?? "review_required",
+      perSqftCents: typeof base?.perSqftCents === "number" ? base.perSqftCents : null,
+      perPieceCents: typeof base?.perPieceCents === "number" ? base.perPieceCents : null,
+      minimumChargeCents: typeof base?.minimumChargeCents === "number" ? base.minimumChargeCents : null,
+      material: typeof material?.name === "string" ? material.name : null,
+      productionRoute: route,
+      sheetOrRollConstraints: constraint,
+      allowRotation: rotation,
+      quantityBehavior: detail.brief.quantityBehavior?.behavior ?? "review_required",
+      taxable: true,
+      commonOptions: [...(detail.brief.requiredOptions ?? []), ...(detail.brief.optionalOptions ?? [])].map((option) => option.label).filter(Boolean).slice(0, 12),
+      status: "inactive_draft",
+    };
     const fingerprint = createHash("sha256").update(JSON.stringify({
       organizationId: args.organizationId,
       sessionId: detail.session.id,
@@ -150,6 +214,7 @@ export class AssistantProductIntakeAdapter {
         summary: "Creates one inactive product with a PBV2 DRAFT. Publishing, pricing changes, material/routing changes, and activation remain separate reviewed workflows.",
         sideEffects: ["Creates one inactive product draft.", "Creates one PBV2 DRAFT version linked to this intake session."],
         warnings: penalties,
+        proposedFields,
       },
       fingerprint,
       executable: snapshot.status === "ready_for_draft" && snapshot.readiness.canCreateDraft,
@@ -173,6 +238,8 @@ export class AssistantProductIntakeAdapter {
     userName?: string | null;
     sessionId: string;
     planId: string;
+    idempotencyKey?: string;
+    correlationId?: string;
   }): Promise<AssistantProductIntakeDraftResult> {
     const existing = await this.deps.planResultStore?.get({ organizationId: args.organizationId, planId: args.planId });
     if (existing) return { ...existing, reused: true };
@@ -187,6 +254,15 @@ export class AssistantProductIntakeAdapter {
       sessionId: args.sessionId,
       userId: args.userId,
       ...(args.userName ? { userName: args.userName } : {}),
+      ...(args.idempotencyKey && args.correlationId ? {
+        assistantAudit: {
+          command: "products.create_inactive_draft@v1" as const,
+          planId: args.planId,
+          idempotencyKey: args.idempotencyKey,
+          correlationId: args.correlationId,
+          confirmationConsumed: true as const,
+        },
+      } : {}),
     });
     const result = await this.assertInactiveDraft(args.organizationId, args.sessionId, created, false);
     await this.deps.planResultStore?.put({ organizationId: args.organizationId, planId: args.planId, result });

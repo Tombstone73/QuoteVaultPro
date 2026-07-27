@@ -36,6 +36,25 @@ export type AssistantPlanCardModel = {
     warnings: string[];
     unchangedAreas: string[];
   } | null;
+  productDraftCreate: {
+    productName: string | null;
+    category: string | null;
+    measurementMode: string | null;
+    pricingModel: string | null;
+    perSqftCents: number | null;
+    perPieceCents: number | null;
+    minimumChargeCents: number | null;
+    material: string | null;
+    productionRoute: string | null;
+    sheetOrRollConstraints: string | null;
+    allowRotation: boolean | null;
+    fixedDimensions: string | null;
+    requiresDimensions: boolean | null;
+    quantityBehavior: string | null;
+    commonOptions: string[];
+    warnings: string[];
+    status: string | null;
+  } | null;
   affectedEntities: Array<{ id: string; type: string; label: string; href: string | null }>;
   sideEffects: string[];
   missingInformation: string[];
@@ -176,6 +195,36 @@ function toProductDraftUpdate(action: string | null, preview: UnknownRecord | nu
   };
 }
 
+function toCents(value: unknown): number | null {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+}
+
+function toProductDraftCreate(action: string | null, preview: UnknownRecord | null): AssistantPlanCardModel["productDraftCreate"] {
+  if (action !== "products.create_inactive_draft" || !preview) return null;
+  const value = asRecord(preview.productInactiveDraft) ?? asRecord(preview.productDraft) ?? preview;
+  const fields = asRecord(value.proposedFields);
+  if (!fields) return null;
+  return {
+    productName: asText(value.productName),
+    category: asText(fields.category),
+    measurementMode: asText(fields.measurementMode),
+    pricingModel: asText(fields.pricingModel),
+    perSqftCents: toCents(fields.perSqftCents),
+    perPieceCents: toCents(fields.perPieceCents),
+    minimumChargeCents: toCents(fields.minimumChargeCents),
+    material: asText(fields.material),
+    productionRoute: asText(fields.productionRoute),
+    sheetOrRollConstraints: asText(fields.sheetOrRollConstraints),
+    allowRotation: typeof fields.allowRotation === "boolean" ? fields.allowRotation : null,
+    fixedDimensions: asText(fields.fixedDimensions),
+    requiresDimensions: typeof fields.requiresDimensions === "boolean" ? fields.requiresDimensions : null,
+    quantityBehavior: asText(fields.quantityBehavior),
+    commonOptions: asTextList(fields.commonOptions),
+    warnings: asTextList(value.warnings),
+    status: asText(fields.status),
+  };
+}
+
 export type AssistantQuoteNoteProposal = {
   turnId: string;
   title: string;
@@ -273,6 +322,7 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
     confirmationToken: asText(plan.confirmationToken) ?? asText(cardRecord.confirmationToken) ?? asText(confirmation?.token),
     preview: asText(plan.preview) ?? asText(cardRecord.preview) ?? getTextFromObject(previewRecord, ["summary", "description", "title"]),
     quoteInternalNote: toQuoteInternalNote(action, previewRecord),
+    productDraftCreate: toProductDraftCreate(action, previewRecord),
     productDraftUpdate: toProductDraftUpdate(action, previewRecord),
     affectedEntities: toAffectedEntities(plan.affectedEntities ?? plan.affectedRecords ?? previewRecord?.affectedEntities ?? cardRecord.affectedEntities),
     sideEffects: toSideEffects(plan.sideEffects ?? previewRecord?.sideEffects ?? cardRecord.sideEffects),
@@ -357,6 +407,37 @@ function ProductDraftUpdatePreview({ update }: { update: NonNullable<AssistantPl
     {update.validationErrors.length ? <div className="mt-3 rounded border border-destructive/30 bg-destructive/5 p-2"><p className="font-medium">Validation errors</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{update.validationErrors.map((error) => <li key={error}>{error}</li>)}</ul></div> : null}
     {update.warnings.length ? <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/10 p-2"><p className="font-medium">Warnings</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{update.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div> : null}
     {update.unchangedAreas.length ? <div className="mt-3"><p className="font-medium">Explicitly unchanged</p><ul className="mt-1 list-disc space-y-0.5 pl-4 text-muted-foreground">{update.unchangedAreas.map((area) => <li key={area}>{area}</li>)}</ul></div> : null}
+  </div>;
+}
+
+function moneyFromCents(value: number | null): string {
+  return value == null ? "Not set" : `$${(value / 100).toFixed(2)}`;
+}
+
+function ProductDraftCreatePreview({ draft }: { draft: NonNullable<AssistantPlanCardModel["productDraftCreate"]> }) {
+  const fields = [
+    ["Name", draft.productName],
+    ["Category", draft.category],
+    ["Measurement", draft.measurementMode],
+    ["Fixed dimensions", draft.fixedDimensions],
+    ["Requires dimensions", draft.requiresDimensions == null ? null : draft.requiresDimensions ? "Yes" : "No"],
+    ["Pricing model", draft.pricingModel],
+    ["Square-foot price", moneyFromCents(draft.perSqftCents)],
+    ["Per-piece price", moneyFromCents(draft.perPieceCents)],
+    ["Minimum charge", moneyFromCents(draft.minimumChargeCents)],
+    ["Material", draft.material],
+    ["Route", draft.productionRoute],
+    ["Sheet / roll constraints", draft.sheetOrRollConstraints],
+    ["Allow rotation", draft.allowRotation == null ? null : draft.allowRotation ? "Allowed" : "Not allowed"],
+    ["Quantity behavior", draft.quantityBehavior],
+    ["Status", draft.status === "inactive_draft" ? "Inactive draft" : draft.status],
+  ].filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1]));
+  return <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3">
+    <p className="font-semibold">Inactive product draft to create</p>
+    <p className="mt-1 text-muted-foreground">These server-derived fields will create one inactive product and PBV2 DRAFT only.</p>
+    <dl className="mt-2 grid gap-1 sm:grid-cols-2">{fields.map(([label, value]) => <div key={label}><dt className="inline font-medium">{label}: </dt><dd className="inline">{value}</dd></div>)}</dl>
+    {draft.commonOptions.length ? <p className="mt-2"><span className="font-medium">Options: </span>{draft.commonOptions.join(", ")}</p> : null}
+    {draft.warnings.length ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2"><p className="font-medium">Review warnings</p><ul className="mt-1 list-disc pl-4">{draft.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div> : null}
   </div>;
 }
 
@@ -449,6 +530,7 @@ export function AssistantPlanCard({
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground"><span>Status: {plan.status}</span><PlanExpiration expiresAt={plan.expiresAt} /></div>
     {plan.preview ? <p className="mt-2">{plan.preview}</p> : null}
     {plan.quoteInternalNote ? <QuoteInternalNotePreview note={plan.quoteInternalNote} /> : null}
+    {plan.productDraftCreate ? <ProductDraftCreatePreview draft={plan.productDraftCreate} /> : null}
     {plan.productDraftUpdate ? <ProductDraftUpdatePreview update={plan.productDraftUpdate} /> : null}
     {plan.quoteInternalNote && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Internal note added to {plan.quoteInternalNote.quotePath && plan.quoteInternalNote.quoteNumber ? <a className="text-primary underline-offset-2 hover:underline" href={plan.quoteInternalNote.quotePath}>Quote {plan.quoteInternalNote.quoteNumber}</a> : (plan.quoteInternalNote.quoteNumber ? `Quote ${plan.quoteInternalNote.quoteNumber}` : "the quote")}.</p> : null}
     {isProductDraft && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Inactive product draft {isProductDraftUpdate ? "updated" : "created"}. {plan.productDraftResult?.href ? <a className="text-primary underline-offset-2 hover:underline" href={plan.productDraftResult.href}>Open {plan.productDraftResult.name} in the existing editor</a> : "Activation and publication remain unavailable in the assistant."}</p> : null}

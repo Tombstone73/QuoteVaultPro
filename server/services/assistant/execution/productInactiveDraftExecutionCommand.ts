@@ -24,7 +24,14 @@ export function createProductInactiveDraftCanonicalService(
     async createInactiveDraft(input) {
       const current = await adapter.revalidateProposal({ organizationId: input.organizationId, sessionId: input.intakeSessionId, expectedFingerprint: input.proposalFingerprint });
       if (!current.valid) throw new ExecutionPlanError(current.code, current.summary);
-      const result = await adapter.createInactiveDraft({ organizationId: input.organizationId, userId: input.actorUserId, sessionId: input.intakeSessionId, planId: input.assistantPlanId });
+      const result = await adapter.createInactiveDraft({
+        organizationId: input.organizationId,
+        userId: input.actorUserId,
+        sessionId: input.intakeSessionId,
+        planId: input.assistantPlanId,
+        idempotencyKey: input.idempotencyKey,
+        correlationId: input.correlationId,
+      });
       return {
         product: { id: result.productId, name: result.productName, active: false, sourceLink: `/products/${result.productId}` },
         intakeSession: { id: input.intakeSessionId, status: "draft_created", sourceLink: current.proposal.sourceLink.href },
@@ -58,6 +65,7 @@ export function createProductInactiveDraftExecutionCommand(service: ProductInact
         productInactiveDraft: {
           intakeSessionId: proposal.sessionId, proposalFingerprint: proposal.fingerprint, productName: proposal.productName,
           sourceLink: proposal.sourceLink, warnings: proposal.preview.warnings, unchanged,
+          proposedFields: proposal.preview.proposedFields,
         },
       };
       return { arguments: { intakeSessionId: proposal.sessionId, proposalFingerprint: proposal.fingerprint, ...(input.proposalId ? { proposalId: input.proposalId } : {}) }, preview };
