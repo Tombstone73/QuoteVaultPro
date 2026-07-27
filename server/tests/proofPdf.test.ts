@@ -154,6 +154,26 @@ describe("proof PDF facts", () => {
     expect(facts).toContainEqual({ label: "Print Sides", value: "Double-sided" });
     expect(facts).toContainEqual({ label: "Artwork Sides", value: "Same artwork used on front and back." });
   });
+
+  test("keeps an artwork allocation distinct from the line-item total", () => {
+    const facts = buildProofPdfFacts({
+      orderNumber: "SO-301",
+      lineItemLabel: "Coroplast",
+      displaySizeLabel: "24 x 18 in",
+      quantity: 2,
+      allocatedQuantity: 1,
+      finishingSummary: [],
+      printSides: "Single-sided",
+      useSameArtworkBothSides: false,
+      preflightStatus: "ready",
+      generatedAt: new Date("2025-01-01T00:00:00.000Z"),
+      label: "Artwork",
+      sourceFileName: "design-a.pdf",
+      preview: null,
+    });
+    expect(facts).toContainEqual({ label: "Artwork Quantity", value: "1" });
+    expect(facts).toContainEqual({ label: "Line-item Total", value: "2" });
+  });
 });
 
 describe("proof artwork media boundary", () => {

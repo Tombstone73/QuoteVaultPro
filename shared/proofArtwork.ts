@@ -31,7 +31,10 @@ export function resolveProofArtworkLayout<T extends ProductionArtworkAssignment>
       complete: args.sources.length > 0,
       warning: args.sources.length > 0 ? null : "Artwork not assigned.",
       sameArtworkBothSides: false,
-      panels: [{ label: "Artwork" as const, source: readiness.front ?? args.sources[0] ?? null }],
+      // A single-sided product may still have several distinct designs. Keep
+      // every selected canonical source so the proof composer can append one
+      // proof page per design instead of silently using only the first file.
+      panels: args.sources.map((source) => ({ label: "Artwork" as const, source })),
     };
   }
 

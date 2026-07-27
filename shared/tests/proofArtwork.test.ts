@@ -12,6 +12,15 @@ describe("resolveProofArtworkLayout", () => {
     expect(result.panels).toEqual([{ label: "Artwork", source: { id: "art", side: "na" } }]);
   });
 
+  test("keeps every selected design for a single-sided line", () => {
+    const result = resolveProofArtworkLayout({
+      printSides: "Single-sided",
+      sources: [{ id: "art-a", side: "na" }, { id: "art-b", side: "na" }],
+      useSameArtworkBothSides: false,
+    });
+    expect(result.panels.map((panel) => panel.source?.id)).toEqual(["art-a", "art-b"]);
+  });
+
   test("uses one explicit shared panel for same artwork on both sides", () => {
     const result = resolveProofArtworkLayout({
       printSides: "Double-sided",

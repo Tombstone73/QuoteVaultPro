@@ -1,4 +1,5 @@
 import { and, desc, eq, inArray, isNotNull, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { PDFDocument } from "pdf-lib";
 
 import type {
   ManualApprovalOverrideHistoryEntry,
@@ -1102,6 +1103,37 @@ async function buildGeneratedProofRenderInput(tx: any, args: {
   generatedAt: Date;
 }) {
   const layout = resolveGeneratedProofArtworkLayout(args.snapshot, args.sources);
+  const preparation = await getProofArtworkPreparation(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.snapshot.lineItemId,
+  });
+  const allocationBySourceId = new Map(preparation.sources.map((source) => [source.sourceId, source.allocatedQuantity]));
+  const selectedAllocations = args.sources.map((source) => ({
+    sourceId: source.sourceId,
+    allocatedQuantity: allocationBySourceId.get(source.sourceId) ?? null,
+  }));
+  if (args.sources.length > 1 && selectedAllocations.some((source) => !Number.isFinite(source.allocatedQuantity) || (source.allocatedQuantity ?? 0) <= 0)) {
+    throw Object.assign(new Error("Each selected artwork file needs a positive allocation before a multi-artwork proof can be generated."), {
+      statusCode: 409,
+      code: "proof_artwork_allocation_missing",
+    });
+  }
+  if (preparation.allocationMode === "one_each_per_file" && args.snapshot.quantity != null) {
+    const allocationTotal = selectedAllocations.reduce((sum, source) => sum + (source.allocatedQuantity ?? 0), 0);
+    if (allocationTotal > args.snapshot.quantity) {
+      throw Object.assign(new Error("Selected artwork allocations exceed the line-item quantity."), {
+        statusCode: 409,
+        code: "proof_artwork_allocation_exceeds_line_quantity",
+      });
+    }
+  }
+  console.info("[ProofComposition] sources_resolved", {
+    organizationId: args.organizationId,
+    lineItemId: args.snapshot.lineItemId,
+    selectedSourceCount: args.sources.length,
+    sourceIds: selectedAllocations.map((source) => source.sourceId),
+    allocationQuantities: selectedAllocations.map((source) => source.allocatedQuantity),
+  });
   const artworkPreviews = [];
   let allPreviewsReady = true;
   for (const panel of layout.panels) {
@@ -1115,6 +1147,7 @@ async function buildGeneratedProofRenderInput(tx: any, args: {
     artworkPreviews.push({
       label: panel.label,
       sourceFileName: panel.source?.originalFilename || panel.source?.fileName || null,
+      allocatedQuantity: panel.source ? allocationBySourceId.get(panel.source.sourceId) ?? null : null,
       preview: resolvedPreview.preview,
       previewError: resolvedPreview.previewError,
     });
@@ -1156,6 +1189,19 @@ async function createGeneratedProofAttachment(tx: any, args: {
   const safeLineItem = args.snapshot.lineItemLabel.replace(/[^a-z0-9]+/gi, "-").replace(/^-+|-+$/g, "").toLowerCase() || "line-item";
   const fileName = `${safeLineItem}-proof-${timestampToken}.pdf`;
   const pdfResult = await generateBasicProofPdfBytes(renderedInput.renderInput);
+  const finalizedPdf = await PDFDocument.load(pdfResult.bytes);
+  const pageCount = finalizedPdf.getPageCount();
+  if (!Number.isInteger(pageCount) || pageCount < 1) {
+    throw Object.assign(new Error("Generated proof did not contain any pages."), { statusCode: 500, code: "proof_pdf_page_count_invalid" });
+  }
+  console.info("[ProofComposition] proof_generated", {
+    organizationId: args.organizationId,
+    orderId: args.snapshot.orderId,
+    lineItemId: args.snapshot.lineItemId,
+    selectedSourceCount: args.sources.length,
+    sourceIds: args.sources.map((source) => source.sourceId),
+    proofPageCount: pageCount,
+  });
   const finalPreviewStatus: ProofArtifactPreviewStatus = renderedInput.allPreviewsReady && pdfResult.renderStatus === "ready"
     ? "ready"
     : renderedInput.allPreviewsReady

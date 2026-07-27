@@ -88,6 +88,7 @@ export async function generateBasicProofPdfBytes(args: BasicProofPdfArgs): Promi
 export type ProofArtworkPreview = {
   label: "Artwork" | "Front" | "Back";
   sourceFileName: string | null;
+  allocatedQuantity?: number | null;
   preview: BasicProofPreview | null;
   previewError?: string | null;
 };
@@ -160,7 +161,8 @@ function drawWrappedText(args: {
 export function buildProofPdfFacts(args: BasicProofSinglePageArgs): Array<{ label: string; value: string }> {
   return [
     { label: "Finished Size", value: args.displaySizeLabel || "Not specified" },
-    { label: "Quantity", value: args.quantity != null ? String(args.quantity) : "Not specified" },
+    { label: "Artwork Quantity", value: args.allocatedQuantity != null ? String(args.allocatedQuantity) : "Not specified" },
+    { label: "Line-item Total", value: args.quantity != null ? String(args.quantity) : "Not specified" },
     { label: "Print Sides", value: args.printSides },
     ...(args.printSides === "Double-sided" && args.useSameArtworkBothSides
       ? [{ label: "Artwork Sides", value: "Same artwork used on front and back." }]
