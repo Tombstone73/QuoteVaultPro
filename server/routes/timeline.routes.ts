@@ -743,8 +743,11 @@ export function registerTimelineRoutes(
   // ---------------------------------------------------------------------------
   // Audit Logs routes (owner only)
   // ---------------------------------------------------------------------------
-  app.get("/api/audit-logs", isAuthenticated, isOwner, async (req, res) => {
+  app.get("/api/audit-logs", isAuthenticated, tenantContext, isOwner, async (req, res) => {
     try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
+
       const filters: any = {};
 
       if (req.query.userId) filters.userId = req.query.userId as string;
@@ -754,7 +757,7 @@ export function registerTimelineRoutes(
       if (req.query.endDate) filters.endDate = new Date(req.query.endDate as string);
       if (req.query.limit) filters.limit = parseInt(req.query.limit as string, 10);
 
-      const logs = await storage.getAuditLogs(filters);
+      const logs = await storage.getAuditLogs(organizationId, filters);
       res.json(logs);
     } catch (error) {
       console.error("Error fetching audit logs:", error);
