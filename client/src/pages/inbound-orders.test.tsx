@@ -3025,6 +3025,48 @@ describe("InboundOrdersPage", () => {
     expect(container.textContent).not.toContain("What size stickers are needed?");
   });
 
+  test("shows a detected PDF page size and applies it to an empty inbound line item", async () => {
+    const baseParsed = parsedDraft();
+    const pdfArtwork = {
+      id: "file_detected_pdf",
+      fileRecordId: "canonical_detected_pdf",
+      sourceFilename: "decals.pdf",
+      role: "artwork",
+      mimeType: "application/pdf",
+      sizeBytes: 2200,
+      status: "available",
+      metadataJson: {
+        pdfSizeAnalysis: {
+          status: "succeeded",
+          analyzedAt: "2026-07-27T12:00:00.000Z",
+          fileIdentity: "canonical_detected_pdf:checksum:2200",
+          pageCount: 1,
+          pages: [{ pageNumber: 1, widthInches: 7.25, heightInches: 3.5, rotation: 0, sourceBox: "MediaBox" }],
+          uniformPageSize: true,
+          effectiveWidthInches: 7.25,
+          effectiveHeightInches: 3.5,
+          units: "in",
+          errorCode: null,
+        },
+      },
+    };
+    const cleanParsed = parsedDraft({
+      lineItems: [{ ...baseParsed.lineItems[0], width: null, height: null, dimensionsUnit: "in", artworkLinks: [{ fileId: pdfArtwork.id, fileRecordId: pdfArtwork.fileRecordId, filename: pdfArtwork.sourceFilename, mimeType: pdfArtwork.mimeType, role: "artwork", source: "staff_selected", assignmentSide: "unassigned" }] }],
+      globalWarnings: [],
+    });
+    const cleanReview = reviewDraft(cleanParsed);
+    setupParsedInboundReview({ parsed: cleanParsed, review: cleanReview, detailOverrides: { files: [pdfArtwork] } });
+
+    renderPage();
+    await waitForText("Operational View");
+    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Clean View")) as HTMLButtonElement); });
+    await waitForText("Use for line item");
+    expect(container.textContent).toContain("Detected PDF size: 7.25 × 3.5 in");
+    act(() => { Simulate.click(Array.from(container.querySelectorAll("button")).find((button) => button.textContent?.includes("Use for line item")) as HTMLButtonElement); });
+    expect((container.querySelector("input[aria-label='Width']") as HTMLInputElement).value).toBe("7.25");
+    expect((container.querySelector("input[aria-label='Height']") as HTMLInputElement).value).toBe("3.5");
+  });
+
   test("collapses a completed Clean View line item into a compact summary", async () => {
     const baseParsed = parsedDraft();
     const cleanParsed = parsedDraft({

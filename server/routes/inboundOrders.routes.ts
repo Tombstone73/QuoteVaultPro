@@ -56,6 +56,7 @@ import { inboundEmailMailboxSettingsService } from "../services/inboundEmailMail
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
 import { storageRegistry } from "../services/storage/StorageRegistry";
+import { inboundPdfSizeAnalysisService } from "../services/inboundOrders/InboundPdfSizeAnalysisService";
 import { getRequestOrganizationId } from "../tenantContext";
 
 function getUserId(user: any): string | undefined {
@@ -1248,6 +1249,48 @@ export function registerInboundOrderRoutes(
       }
       console.error("Error bulk updating inbound attachment classifications:", error);
       res.status(500).json({ success: false, message: "Failed to bulk update inbound attachment classifications" });
+    }
+  });
+
+  app.post("/api/inbound-orders/:id/files/:fileId/pdf-size-scan", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+      const params = inboundAttachmentParamsSchema.parse(req.params);
+      const file = await eventRepository.getFile(organizationId, params.id, params.fileId);
+      if (!file) return res.status(404).json({ success: false, message: "Inbound attachment not found" });
+      const metadata = file.metadataJson && typeof file.metadataJson === "object" && !Array.isArray(file.metadataJson)
+        ? file.metadataJson as Record<string, unknown>
+        : {};
+      if (!file.fileRecordId || file.status === "rejected" || metadata.attachmentState === "blocked_file_type") {
+        return res.status(409).json({ success: false, code: "PDF_SIZE_UNAVAILABLE", message: "This attachment is not available for PDF size detection." });
+      }
+      if (typeof file.sizeBytes === "number" && file.sizeBytes > 25 * 1024 * 1024) {
+        return res.status(413).json({ success: false, code: "PDF_SIZE_LIMIT", message: "This PDF is too large to scan for page size." });
+      }
+      const result = await inboundPdfSizeAnalysisService.scan({
+        organizationId,
+        inboundRecordId: params.id,
+        file,
+        force: req.body?.force === true,
+        readBytes: async () => {
+          const resolved = await canonicalFileReadResolver.resolveOriginal(file.fileRecordId!);
+          if (resolved.status !== "available" || !resolved.providerConfigId) throw new Error("unavailable");
+          const providerConfig = await storageProviderConfigRepository.getByIdForOrganization(organizationId, resolved.providerConfigId);
+          if (!providerConfig) throw new Error("unavailable");
+          const handle = await storageRegistry.getAdapter(providerConfig.providerType).getDownloadHandle({ providerConfig, objectKey: resolved.objectKey, localPathRef: resolved.localPathRef });
+          const bytes = handle.kind === "local_path"
+            ? await fsPromises.readFile(handle.value)
+            : Buffer.from(await (await fetch(handle.value)).arrayBuffer());
+          return new Uint8Array(bytes);
+        },
+      });
+      const updated = await eventRepository.getFile(organizationId, params.id, params.fileId);
+      res.json({ success: true, data: { analysis: result, file: updated } });
+    } catch (error) {
+      console.error("Error scanning inbound PDF size:", error);
+      res.status(500).json({ success: false, message: "Unable to scan PDF page size." });
     }
   });
 

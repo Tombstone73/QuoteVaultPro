@@ -91,6 +91,12 @@ import {
   inboundAttachmentRoleToClassification,
   type InboundAttachmentClassification,
 } from "@shared/inboundAttachmentClassification";
+import {
+  inboundPdfFileIdentity,
+  isInboundPdfAttachment,
+  readInboundPdfSizeAnalysis,
+  type InboundPdfSizeAnalysis,
+} from "@shared/inboundPdfSizeAnalysis";
 import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { getMissingInboundPbv2RequiredOptions } from "@shared/inboundOrderPbv2Options";
 import {
@@ -178,6 +184,59 @@ type CleanInlineAttachmentSelection = {
   recordId: string;
   file: ClientInboundOrderFile;
 } | null;
+
+function pdfSizeAnalysisForFile(file: ClientInboundOrderFile): InboundPdfSizeAnalysis | null {
+  return readInboundPdfSizeAnalysis(attachmentSafetyMetadata(file).pdfSizeAnalysis);
+}
+
+function formatPdfInches(value: number) {
+  return Number.isInteger(value) ? String(value) : value.toFixed(2).replace(/0+$/, "").replace(/\.$/, "");
+}
+
+function pdfSizeLabel(analysis: InboundPdfSizeAnalysis): string {
+  if (analysis.status === "pending") return "Size scan pending";
+  if (analysis.status === "unavailable") return "PDF size unavailable";
+  if (analysis.status === "failed") return analysis.errorCode === "ENCRYPTED_PDF" ? "Encrypted PDF: size unavailable" : "Unable to detect PDF size";
+  if (analysis.uniformPageSize && analysis.effectiveWidthInches && analysis.effectiveHeightInches) {
+    const size = `${formatPdfInches(analysis.effectiveWidthInches)} × ${formatPdfInches(analysis.effectiveHeightInches)} in`;
+    return analysis.pageCount === 1 ? `Detected PDF size: ${size}` : `${analysis.pageCount} pages, all ${size}`;
+  }
+  return `Mixed page sizes: ${analysis.pages.map((page) => `Page ${page.pageNumber} ${formatPdfInches(page.widthInches)} × ${formatPdfInches(page.heightInches)} in`).join("; ")}`;
+}
+
+function InboundPdfSizeStatus({ recordId, file }: { recordId: string; file: ClientInboundOrderFile }) {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  const analysis = pdfSizeAnalysisForFile(file);
+  if (!isInboundPdfAttachment(file)) return null;
+  const canScan = Boolean(file.fileRecordId) && file.status !== "rejected" && attachmentSafetyMetadata(file).attachmentState !== "blocked_file_type";
+  const scanMutation = useMutation({
+    mutationFn: (force: boolean) => postJson<{ success: boolean; data: { file: ClientInboundOrderFile | null } }>(
+      `/api/inbound-orders/${encodeURIComponent(recordId)}/files/${encodeURIComponent(file.id)}/pdf-size-scan`,
+      force ? { force: true } : {},
+    ),
+    onSuccess: async (response) => {
+      if (response.data.file) {
+        queryClient.setQueryData<ClientInboundOrderDetailResponse | undefined>(["/api/inbound-orders", recordId], (current) => current?.data ? ({ ...current, data: { ...current.data, files: current.data.files.map((candidate) => candidate.id === file.id ? response.data.file! : candidate) } }) : current);
+      }
+      await queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", recordId] });
+    },
+    onError: (error: Error) => toast({ title: "PDF size scan failed", description: error.message || "Unable to scan PDF page size.", variant: "destructive" }),
+  });
+  return (
+    <div className="mt-1 flex flex-wrap items-center gap-2 text-xs" data-testid={`pdf-size-status-${file.id}`}>
+      <span className={analysis?.status === "failed" || analysis?.status === "unavailable" ? "text-amber-600 dark:text-amber-300" : "text-sky-700 dark:text-sky-200"} title="Detected from the PDF page. Verify when the file includes bleed, extra canvas, or multiple designs.">
+        {analysis ? pdfSizeLabel(analysis) : "PDF size not scanned"}
+      </span>
+      {canScan && (
+        <Button type="button" size="sm" variant="ghost" className="h-6 px-1.5 text-[11px]" disabled={scanMutation.isPending || analysis?.status === "pending"} onClick={() => scanMutation.mutate(analysis?.status === "succeeded" || analysis?.status === "failed") }>
+          {(scanMutation.isPending || analysis?.status === "pending") && <Loader2 className="mr-1 h-3 w-3 animate-spin" />}
+          {analysis?.status === "succeeded" || analysis?.status === "failed" ? "Re-scan size" : "Scan PDF size"}
+        </Button>
+      )}
+    </div>
+  );
+}
 
 function inboundFileDownloadUrl(recordId: string, file: ClientInboundOrderFile) {
   const metadata = attachmentSafetyMetadata(file);
@@ -1150,6 +1209,7 @@ function SourceEvidenceFileCard({
             File unavailable: {inboundFileUnavailableReason(file)}
           </div>
         )}
+        <InboundPdfSizeStatus recordId={recordId} file={file} />
       </div>
       {useInAppViewer ? (
         <CleanAttachmentFileActions recordId={recordId} file={file} onClassify={onClassify} onOpenAttachment={onOpenAttachment} />
@@ -5658,6 +5718,7 @@ function CleanLineItemCard({
   productSearch,
   isProductSearchFetching,
   attachmentLinkOptions,
+  pdfSizeAnalysesByFileId,
   onChange,
   onProductSearchChange,
   onDuplicate,
@@ -5673,6 +5734,7 @@ function CleanLineItemCard({
   productSearch: string;
   isProductSearchFetching: boolean;
   attachmentLinkOptions: InboundOrderArtworkLink[];
+  pdfSizeAnalysesByFileId: Map<string, InboundPdfSizeAnalysis>;
   onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
   onProductSearchChange: (value: string) => void;
   onDuplicate: () => void;
@@ -5756,6 +5818,18 @@ function CleanLineItemCard({
   const availableArtworkOptions = attachmentLinkOptions.filter((link) => (
     !activeArtworkLinks.some((activeLink) => artworkLinkKey(activeLink) === artworkLinkKey(link))
   ));
+  const assignedPdfSizes = activeArtworkLinks
+    .map((link) => ({ link, analysis: pdfSizeAnalysesByFileId.get(link.fileId) }))
+    .filter((entry): entry is { link: InboundOrderArtworkLink; analysis: InboundPdfSizeAnalysis } => Boolean(entry.analysis?.status === "succeeded"));
+  const uniformAssignedSizes = assignedPdfSizes.filter((entry) => entry.analysis.uniformPageSize && entry.analysis.effectiveWidthInches && entry.analysis.effectiveHeightInches);
+  const sharedAssignedSize = uniformAssignedSizes.length > 0 && uniformAssignedSizes.length === assignedPdfSizes.length
+    && uniformAssignedSizes.every((entry) => entry.analysis.effectiveWidthInches === uniformAssignedSizes[0].analysis.effectiveWidthInches && entry.analysis.effectiveHeightInches === uniformAssignedSizes[0].analysis.effectiveHeightInches)
+    ? uniformAssignedSizes[0].analysis
+    : null;
+  const applyDetectedSize = (analysis: InboundPdfSizeAnalysis) => {
+    if (!analysis.effectiveWidthInches || !analysis.effectiveHeightInches || hasDimensions) return;
+    onChange({ width: analysis.effectiveWidthInches, height: analysis.effectiveHeightInches, dimensionsUnit: "in", dimensionsSource: "source_evidence" });
+  };
   const assignArtworkLinks = (links: InboundOrderArtworkLink[]) => {
     if (links.length === 0) return;
     const nextArtworkLinks = [
@@ -6005,6 +6079,22 @@ function CleanLineItemCard({
                   <option value="ft">Ft</option>
                 </select>
               </div>
+              {assignedPdfSizes.length > 0 && (
+                <div className="mt-2 rounded border border-sky-400/30 bg-sky-400/10 p-2 text-xs text-sky-100" data-testid="detected-pdf-line-item-size">
+                  <div className="font-semibold">PDF page size</div>
+                  <div className="mt-0.5 text-sky-200">Detected from the PDF page. Verify when the file includes bleed, extra canvas, or multiple designs.</div>
+                  <div className="mt-1 space-y-1">
+                    {assignedPdfSizes.map(({ link, analysis }) => <div key={link.fileId}>{link.filename || "Artwork"}: {pdfSizeLabel(analysis)}</div>)}
+                  </div>
+                  {sharedAssignedSize ? (
+                    <div className="mt-2 flex flex-wrap items-center gap-2">
+                      <span>{assignedPdfSizes.length > 1 ? "Shared detected size" : "Detected size"}: {formatPdfInches(sharedAssignedSize.effectiveWidthInches!)} × {formatPdfInches(sharedAssignedSize.effectiveHeightInches!)} in</span>
+                      {!hasDimensions && <Button type="button" size="sm" className="h-7 px-2 text-xs" onClick={() => applyDetectedSize(sharedAssignedSize)}>Use for line item</Button>}
+                      {hasDimensions && (lineItem.width !== sharedAssignedSize.effectiveWidthInches || lineItem.height !== sharedAssignedSize.effectiveHeightInches) && <span className="text-amber-200">Entered size differs; not changed.</span>}
+                    </div>
+                  ) : <div className="mt-2 text-amber-200">Assigned PDFs have different or mixed page sizes. Choose a size deliberately.</div>}
+                </div>
+              )}
             </div>
           </section>
           <section
@@ -6455,6 +6545,7 @@ function CleanCompactAttachments({
                         {isQuarantinedAttachment(file) && <span className="text-amber-200">Quarantined</span>}
                         {!file.fileRecordId && <span>Metadata only</span>}
                       </div>
+                      <InboundPdfSizeStatus recordId={selectedRecord.id} file={file} />
                     </div>
                     <CleanAttachmentFileActions recordId={selectedRecord.id} file={file} className="text-slate-300" onOpenAttachment={onOpenAttachment} />
                   </div>
@@ -6538,6 +6629,7 @@ function CleanOrderWorkstation({
   const [newContactName, setNewContactName] = useState("");
   const [newContactEmail, setNewContactEmail] = useState("");
   const lastReportedDirtyRef = useRef<{ recordId: string | null; dirty: boolean } | null>(null);
+  const autoScannedPdfKeysRef = useRef(new Set<string>());
   useEffect(() => {
     if (reviewDraft) setBaseForm(cloneReviewDraft(reviewDraft));
   }, [reviewDraft?.snapshotId, reviewDraft?.updatedAt, reviewDraft?.status]);
@@ -6553,6 +6645,30 @@ function CleanOrderWorkstation({
     setNewContactName(form.reviewedCustomerJson.sourceName ?? "");
     setNewContactEmail(form.reviewedCustomerJson.sourceEmail ?? "");
   }, [selectedRecord?.id, form?.reviewedCustomerJson.companyName, form?.reviewedCustomerJson.sourceName, form?.reviewedCustomerJson.sourceEmail]);
+  useEffect(() => {
+    if (process.env.NODE_ENV === "test") return;
+    if (!selectedRecord || !detail) return;
+    const candidates = detail.files.filter((file) => {
+      const analysis = pdfSizeAnalysisForFile(file);
+      return isInboundPdfAttachment(file)
+        && Boolean(file.fileRecordId)
+        && file.status === "available"
+        && attachmentClassificationFromMetadata(attachmentSafetyMetadata(file), file.role).classification !== "IGNORE_INLINE"
+        && analysis?.status !== "failed"
+        && analysis?.status !== "unavailable"
+        && analysis?.fileIdentity !== inboundPdfFileIdentity(file);
+    }).slice(0, 8);
+    if (candidates.length === 0) return;
+    const requested = candidates.filter((file) => {
+      const key = `${selectedRecord.id}:${file.id}:${inboundPdfFileIdentity(file) ?? "unknown"}`;
+      if (autoScannedPdfKeysRef.current.has(key)) return false;
+      autoScannedPdfKeysRef.current.add(key);
+      return true;
+    });
+    if (requested.length === 0) return;
+    void Promise.all(requested.map((file) => postJson(`/api/inbound-orders/${encodeURIComponent(selectedRecord.id)}/files/${encodeURIComponent(file.id)}/pdf-size-scan`, {})))
+      .finally(() => queryClient.invalidateQueries({ queryKey: ["/api/inbound-orders", selectedRecord.id] }));
+  }, [detail?.files, queryClient, selectedRecord?.id]);
   const productSearchQuery = useQuery({
     queryKey: ["/api/inbound-orders/product-search", "clean", productSearch],
     queryFn: () => {
@@ -6687,6 +6803,10 @@ function CleanOrderWorkstation({
     (contactSearchQuery.data?.data ?? []).map(contactToReviewOption),
   );
   const inboundFiles = dedupeAttachmentFiles(detail?.files ?? []);
+  const pdfSizeAnalysesByFileId = new Map(inboundFiles.flatMap((file) => {
+    const analysis = pdfSizeAnalysisForFile(file);
+    return analysis ? [[file.id, analysis] as const] : [];
+  }));
   const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? [])
     .map((file) => artworkLinkFromInboundFile(file, "staff_selected"))
     .filter((link) => classificationForLink(link) === "ARTWORK");
@@ -7039,6 +7159,7 @@ function CleanOrderWorkstation({
                 productSearch={productSearch}
                 isProductSearchFetching={productSearchQuery.isFetching}
                 attachmentLinkOptions={attachmentLinkOptions}
+                pdfSizeAnalysesByFileId={pdfSizeAnalysesByFileId}
                 onChange={(patch) => updateLineItem(index, patch)}
                 onProductSearchChange={setProductSearch}
                 onDuplicate={() => duplicateLineItem(index)}
