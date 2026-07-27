@@ -51,6 +51,7 @@ import { useOrderLineItemFiles, type OrderFileWithUser } from "@/hooks/useOrderF
 import { useOrder, useUpdateOrder } from "@/hooks/useOrders";
 import { useToast } from "@/hooks/use-toast";
 import { downloadFileFromUrl } from "@/lib/downloadFile";
+import { artworkPreviewLabel, shouldPollArtworkPreview } from "@/lib/artworkPreviewLifecycle";
 import { apiFetchBlob } from "@/lib/queryClient";
 import {
   canGeneratePreviewRecovery,
@@ -146,6 +147,12 @@ type EligibleProofArtworkSource = {
   role: string | null;
   side: "front" | "back" | "both" | "na";
   previewStatus: "ready" | "missing_preview" | "generation_failed";
+  previewState: "available" | "queued" | "processing" | "failed" | "timed_out" | "unsupported" | "source_unavailable";
+  previewLastStateChangeAt: string | null;
+  previewRetryAllowed: boolean;
+  previewFailureReason: string | null;
+  previewMessage: string;
+  previewRetryAfterMs: number | null;
   recoveryAction: "generate_preview" | null;
   allocatedQuantity: number | null;
   eligible: boolean;
@@ -659,6 +666,7 @@ export default function StaffProofingPage() {
   const versionHistoryRef = useRef<HTMLDivElement | null>(null);
 
   const [createDialogOpen, setCreateDialogOpen] = useState(false);
+  const previewGenerationRequestedRef = useRef(new Set<string>());
   const [createMode, setCreateMode] = useState<"generated" | "uploaded">("generated");
   const [selectedExistingAttachmentId, setSelectedExistingAttachmentId] = useState<string>("");
   const [selectedArtworkSourceIds, setSelectedArtworkSourceIds] = useState<string[]>([]);
@@ -819,6 +827,11 @@ export default function StaffProofingPage() {
     queryFn: () => readJson(`/api/proofing/line-item/${activeLineItemId}/eligible-artwork`),
     enabled: Boolean(isInternalUser && activeLineItemId),
     staleTime: 10_000,
+    refetchInterval: (query) => {
+      const sources = (query.state.data?.data?.sources ?? []) as EligibleProofArtworkSource[];
+      return createDialogOpen && sources.some((source) => shouldPollArtworkPreview(source.previewState)) ? 3_000 : false;
+    },
+    refetchIntervalInBackground: false,
   });
   const eligibleArtworkSources = useMemo(
     () => eligibleArtworkQuery.data?.data?.sources ?? [],
@@ -883,15 +896,6 @@ export default function StaffProofingPage() {
       fileName: file.fileName,
     }, isPdfFile(file.mimeType, file.originalFilename || file.fileName));
   };
-  const retryArtworkPreview = async (sourceId: string) => {
-    setFailedArtworkPreviewIds((current) => {
-      const next = new Set(current);
-      next.delete(sourceId);
-      return next;
-    });
-    await Promise.all([filesQuery.refetch(), eligibleArtworkQuery.refetch()]);
-  };
-
   const selectableArtworkFiles = useMemo(
     () =>
       lineItemFiles.filter(
@@ -1374,7 +1378,7 @@ export default function StaffProofingPage() {
         lineItemId: selectedRow.lineItemId,
         derivativeStatus: result.data.derivativeStatus,
       });
-      await refreshProofing(selectedRow.lineItemId, selectedRow.orderId ?? null);
+      await Promise.all([eligibleArtworkQuery.refetch(), filesQuery.refetch()]);
       toast({
         title: result.message || "Preview recovery updated",
         description: result.data.derivativeStatus === "ready"
@@ -1386,6 +1390,27 @@ export default function StaffProofingPage() {
       toast({ title: "Preview generation failed", description: error.message, variant: "destructive" });
     },
   });
+
+  useEffect(() => {
+    if (!createDialogOpen || generatePreviewMutation.isPending) return;
+    const queuedSource = eligibleArtworkSources.find((source) =>
+      source.eligible && source.previewState === "queued" && !previewGenerationRequestedRef.current.has(source.id),
+    );
+    if (!queuedSource) return;
+
+    previewGenerationRequestedRef.current.add(queuedSource.id);
+    generatePreviewMutation.mutate(queuedSource.id);
+  }, [createDialogOpen, eligibleArtworkSources, generatePreviewMutation]);
+
+  const retryArtworkPreview = (sourceId: string) => {
+    setFailedArtworkPreviewIds((current) => {
+      const next = new Set(current);
+      next.delete(sourceId);
+      return next;
+    });
+    previewGenerationRequestedRef.current.delete(sourceId);
+    generatePreviewMutation.mutate(sourceId);
+  };
 
   const regenerateProofMutation = useMutation({
     mutationFn: async () => {
@@ -1981,12 +2006,12 @@ export default function StaffProofingPage() {
                             return (
                               <div key={`${source.sourceType}:${source.id}`} className={`flex gap-3 rounded-lg border p-3 ${source.eligible ? "border-[#2a3157] bg-[#111622]" : "border-amber-400/30 bg-amber-500/5"}`}>
                                 <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded border border-[#30385d] bg-slate-900">
-                                  {previewUrl && !previewFailed ? (
+                                  {previewUrl && !previewFailed && source.previewState === "available" ? (
                                     <img src={previewUrl} alt={`Artwork preview for ${displayName}`} className="h-full w-full object-cover" onError={() => setFailedArtworkPreviewIds((current) => new Set(current).add(source.id))} />
                                   ) : source.previewStatus === "generation_failed" || previewFailed ? (
                                     <span className="px-2 text-center text-[10px] text-amber-200">Preview unavailable — retry below</span>
-                                  ) : isPdfFile(source.mimeType, displayName) ? (
-                                    <span className="px-2 text-center text-[10px] text-slate-400">PDF preview generating</span>
+                                  ) : source.previewState === "queued" || source.previewState === "processing" ? (
+                                    <span className="px-2 text-center text-[10px] text-slate-400">{artworkPreviewLabel(source.previewState, source.previewMessage)}</span>
                                   ) : (
                                     <FileImage className="h-7 w-7 text-slate-500" />
                                   )}
@@ -2012,10 +2037,10 @@ export default function StaffProofingPage() {
                                     </label>
                                     <span className="text-slate-400">Allocation: {source.allocatedQuantity === null ? "Not specified" : `${source.allocatedQuantity} unit${source.allocatedQuantity === 1 ? "" : "s"}`}</span>
                                     {!source.eligible && source.eligibilityReason ? <span className="text-amber-200">{source.eligibilityReason}</span> : null}
-                                    {source.previewStatus !== "ready" ? <span className="text-amber-200">Preview unavailable</span> : null}
+                                    {source.previewState !== "available" ? <span className="text-amber-200">{artworkPreviewLabel(source.previewState, source.previewMessage)}</span> : null}
                                   </div>
-                                  {source.recoveryAction === "generate_preview" ? (
-                                    <Button type="button" variant="outline" size="sm" className="mt-2 border-amber-400/40 text-amber-100 hover:bg-amber-500/10" onClick={() => generatePreviewMutation.mutate(source.id)} disabled={generatePreviewMutation.isPending || !source.eligible}>
+                                  {source.previewRetryAllowed && source.recoveryAction === "generate_preview" ? (
+                                    <Button type="button" variant="outline" size="sm" className="mt-2 border-amber-400/40 text-amber-100 hover:bg-amber-500/10" onClick={() => retryArtworkPreview(source.id)} disabled={generatePreviewMutation.isPending || !source.eligible}>
                                       {generatePreviewMutation.isPending ? <Loader2 className="mr-2 h-3.5 w-3.5 animate-spin" /> : <FileImage className="mr-2 h-3.5 w-3.5" />}
                                       Generate Preview
                                     </Button>
@@ -2747,7 +2772,10 @@ export default function StaffProofingPage() {
         </DialogContent>
       </Dialog>
 
-      <Dialog open={createDialogOpen} onOpenChange={setCreateDialogOpen}>
+      <Dialog open={createDialogOpen} onOpenChange={(open) => {
+        setCreateDialogOpen(open);
+        if (!open) previewGenerationRequestedRef.current.clear();
+      }}>
         <DialogContent className="sm:max-w-2xl">
           <DialogHeader>
             <DialogTitle>Create Artwork Proof Draft</DialogTitle>
@@ -2812,14 +2840,12 @@ export default function StaffProofingPage() {
                             }}
                             className="h-4 w-4"
                           />
-                          {previewUrl && !previewFailed ? (
+                          {previewUrl && !previewFailed && source.previewState === "available" ? (
                             <img src={previewUrl} alt="" className="h-10 w-10 rounded border object-cover" onError={() => setFailedArtworkPreviewIds((current) => new Set(current).add(source.id))} />
-                          ) : previewFailed || source.previewStatus === "generation_failed" ? (
-                            <Button type="button" variant="outline" size="sm" className="h-10 px-2 text-[10px]" onClick={(event) => { event.preventDefault(); event.stopPropagation(); void retryArtworkPreview(source.id); }}>Retry preview</Button>
-                          ) : isPdfFile(source.mimeType, displayName) ? (
-                            <span className="flex h-10 w-10 items-center justify-center rounded border px-1 text-center text-[9px] text-muted-foreground">Preview generating</span>
+                          ) : previewFailed || source.previewRetryAllowed ? (
+                            <Button type="button" variant="outline" size="sm" className="h-10 px-2 text-[10px]" disabled={generatePreviewMutation.isPending} onClick={(event) => { event.preventDefault(); event.stopPropagation(); retryArtworkPreview(source.id); }}>Retry preview</Button>
                           ) : (
-                            <FileImage className="h-10 w-10 rounded border p-2 text-muted-foreground" />
+                            <span className="flex h-10 w-10 items-center justify-center rounded border px-1 text-center text-[9px] text-muted-foreground">{artworkPreviewLabel(source.previewState, source.previewMessage)}</span>
                           )}
                           <span className="min-w-0 flex-1">
                             <span className="block truncate font-medium text-foreground">{displayName}</span>

@@ -37,7 +37,9 @@ import {
 import { generateBasicProofPdfBytes, generateCombinedProofPdfBytes } from "../lib/proofPdf";
 import { assetRepository } from "./assets/AssetRepository";
 import { assetPreviewGenerator } from "./assets/AssetPreviewGenerator";
+import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { processPdfAttachmentDerivedData } from "./pdfProcessing";
+import { resolveArtworkPreviewLifecycle, type ArtworkPreviewState } from "./proofArtworkPreviewLifecycle";
 import { resolveProofPreviewSource, type ProofPreviewCandidate } from "./proofPreviewResolver";
 import { ensureSharp, generateImageDerivatives, isSupportedImageType } from "./thumbnailGenerator";
 import { storageApplicationService } from "./storage/StorageApplicationService";
@@ -103,6 +105,9 @@ type ArtworkProofSource = {
   updatedAt: Date | null;
   assetPreviewStatus?: "pending" | "ready" | "failed" | null;
   assetPreviewError?: string | null;
+  canonicalPreviewState?: "pending" | "ready" | "failed" | null;
+  canonicalPreviewError?: string | null;
+  canonicalPreviewUpdatedAt?: Date | null;
   side?: "front" | "back" | "both" | "na";
 };
 
@@ -123,6 +128,12 @@ export type EligibleProofArtworkSource = {
   role: string | null;
   side: "front" | "back" | "both" | "na";
   previewStatus: "ready" | "missing_preview" | "generation_failed";
+  previewState: ArtworkPreviewState;
+  previewLastStateChangeAt: string | null;
+  previewRetryAllowed: boolean;
+  previewFailureReason: string | null;
+  previewMessage: string;
+  previewRetryAfterMs: number | null;
   recoveryAction: "generate_preview" | null;
   eligible: boolean;
   eligibilityReason: string | null;
@@ -216,26 +227,28 @@ function derivePreviewStatusFromSource(source: ArtworkProofSource | null): { sta
   if (!source) {
     return { status: "missing_preview", error: "No artwork attachment is available for preview generation." };
   }
+  const lifecycle = deriveArtworkPreviewLifecycle(source);
+  if (lifecycle.state === "available") return { status: "ready", error: null };
+  if (lifecycle.state === "failed" || lifecycle.state === "timed_out") {
+    return { status: "generation_failed", error: lifecycle.staffMessage };
+  }
+  return { status: "missing_preview", error: lifecycle.staffMessage };
+}
 
+function deriveArtworkPreviewLifecycle(source: ArtworkProofSource) {
   const mime = String(source.mimeType || "").toLowerCase();
-  const hasDerivativePreview = Boolean(source.previewKey || source.thumbKey || source.thumbnailUrl);
-
-  if (source.sourceType === "asset" && source.assetPreviewStatus === "failed") {
-    return { status: "generation_failed", error: source.assetPreviewError?.trim() || "Preview generation failed for the linked artwork asset." };
-  }
-
-  if (hasDerivativePreview) {
-    return { status: "ready", error: null };
-  }
-
-  if (mime.startsWith("image/png") || mime.startsWith("image/jpeg") || mime.startsWith("image/jpg") || mime === "application/pdf") {
-    if (source.sourceType === "asset" && source.assetPreviewStatus === "pending") {
-      return { status: "missing_preview", error: "Artwork preview has not finished generating yet." };
-    }
-    return { status: "missing_preview", error: "Artwork preview is not available for the selected source file." };
-  }
-
-  return { status: "missing_preview", error: `Unsupported artwork type${source.fileName ? `: ${source.fileName}` : ""}.` };
+  const supported = mime.startsWith("image/png") || mime.startsWith("image/jpeg") || mime.startsWith("image/jpg") || mime === "application/pdf";
+  const hasPreview = sourceHasUsablePreviewDerivative(source);
+  const sourceAvailable = Boolean(source.fileRecordId || source.fileUrl || source.relativePath);
+  const pending = source.canonicalPreviewState === "pending" ||
+    source.assetPreviewStatus === "pending" ||
+    source.thumbStatus === "thumb_pending";
+  const failed = source.canonicalPreviewState === "failed" ||
+    source.assetPreviewStatus === "failed" ||
+    source.thumbStatus === "thumb_failed";
+  const error = source.canonicalPreviewError || source.assetPreviewError || source.thumbError || null;
+  const updatedAt = source.canonicalPreviewUpdatedAt || source.thumbnailGeneratedAt || source.updatedAt;
+  return resolveArtworkPreviewLifecycle({ hasPreview, isSupported: supported, sourceAvailable, pending, failed, error, updatedAt });
 }
 
 type AutoSyncProofResult =
@@ -274,6 +287,8 @@ function sourceHasUsablePreviewDerivative(source: ArtworkProofSource | null) {
     source.pageThumbFileRecordId,
   );
 }
+
+const previewGenerationRuns = new Map<string, Promise<PreviewDerivativeGenerationResult>>();
 
 function isSupportedProofArtworkSource(source: {
   fileName?: string | null;
@@ -1641,6 +1656,7 @@ function buildEligibleArtworkSource(source: ArtworkProofSource, args: {
   });
   const eligibility = isSupportedProofArtworkSource(source);
   const preview = derivePreviewStatusFromSource(source);
+  const lifecycle = deriveArtworkPreviewLifecycle(source);
 
   return {
     id: source.sourceId,
@@ -1661,7 +1677,13 @@ function buildEligibleArtworkSource(source: ArtworkProofSource, args: {
     role: args.role,
     side: source.side === "front" || source.side === "back" || source.side === "both" ? source.side : "na",
     previewStatus: preview.status === "ready" ? "ready" : preview.status === "generation_failed" ? "generation_failed" : "missing_preview",
-    recoveryAction: preview.status === "ready" ? null : "generate_preview",
+    previewState: lifecycle.state,
+    previewLastStateChangeAt: lifecycle.lastStateChangeAt?.toISOString() ?? null,
+    previewRetryAllowed: lifecycle.retryAllowed,
+    previewFailureReason: lifecycle.failureReason,
+    previewMessage: lifecycle.staffMessage,
+    previewRetryAfterMs: lifecycle.retryAfterMs,
+    recoveryAction: lifecycle.retryAllowed ? "generate_preview" : null,
     eligible: eligibility.eligible,
     eligibilityReason: eligibility.reason,
     artworkSource: eligibility.eligible ? source : null,
@@ -1947,7 +1969,9 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       extension: null,
       checksum: null,
       thumbKey: null,
-      previewKey: lineItemFile.fileRecordId ? null : (lineItemFile.fileUrl ?? lineItemFile.relativePath ?? null),
+      // A source file path is not an image derivative (and may be a PDF). Keep
+      // it separate so preview availability is never inferred from raw storage.
+      previewKey: null,
       thumbStatus: null,
       thumbError: null,
       thumbnailRelativePath: null,
@@ -1958,6 +1982,21 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       updatedAt: lineItemFile.updatedAt ?? null,
       side: "na",
     };
+    if (source.fileRecordId) {
+      const [thumbnail, preview] = await Promise.all([
+        fileDerivativeRepository.getPreferredByFileRecordIdAndType(source.fileRecordId, "thumbnail", tx),
+        fileDerivativeRepository.getPreferredByFileRecordIdAndType(source.fileRecordId, "preview", tx),
+      ]);
+      const preferred = preview?.state === "ready" ? preview : thumbnail?.state === "ready" ? thumbnail : preview ?? thumbnail ?? null;
+      source.canonicalPreviewState = preferred?.state === "ready" || preferred?.state === "pending" || preferred?.state === "failed"
+        ? preferred.state
+        : null;
+      source.canonicalPreviewError = preferred?.errorText ?? null;
+      source.canonicalPreviewUpdatedAt = preferred?.updatedAt ?? null;
+      if (preferred?.state === "ready" && preferred.objectKey) {
+        source.previewKey = preferred.objectKey;
+      }
+    }
     if (!seen.has(`line-item-file:${source.sourceId}`) && !hasSeenCanonicalOriginal(source)) {
       resolved.push(buildEligibleArtworkSource(source, {
         publicSourceType: "line_item_file",
@@ -2088,7 +2127,7 @@ async function loadProofArtworkSources(tx: any, args: {
     .map((source) => source.artworkSource as ArtworkProofSource);
 }
 
-export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
+async function generateLineItemArtworkPreviewDerivativeImpl(tx: any, args: {
   organizationId: string;
   lineItemId: string;
   sourceId?: string | null;
@@ -2099,7 +2138,18 @@ export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
     throwProofingBadRequest("No artwork file is attached to this line item.");
   }
 
+  const attemptId = `${source.sourceType}:${source.sourceId}:${Date.now()}`;
+  const startedAt = Date.now();
+  console.info("[ProofArtworkPreview] generation_requested", {
+    organizationId: args.organizationId,
+    sourceId: source.sourceId,
+    sourceType: source.sourceType,
+    derivativeType: "thumbnail_and_preview",
+    attemptId,
+  });
+
   if (sourceHasUsablePreviewDerivative(source)) {
+    console.info("[ProofArtworkPreview] generation_skipped_available", { organizationId: args.organizationId, sourceId: source.sourceId, attemptId, durationMs: Date.now() - startedAt });
     return {
       sourceType: source.sourceType,
       sourceId: source.sourceId,
@@ -2145,6 +2195,36 @@ export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
     }
 
     throwProofingConflict(buildAssetPreviewGenerationFailureMessage(refreshedSource || source));
+  }
+
+  if (source.sourceType === "line_item_file") {
+    if (!source.fileRecordId) {
+      throwProofingConflict("Preview generation failed because this artwork file has no canonical file record.");
+    }
+    const result = await assetPreviewGenerator.generateCanonicalFilePreviews({
+      organizationId: args.organizationId,
+      fileRecordId: source.fileRecordId,
+      fileName: source.originalFilename || source.fileName,
+      mimeType: source.mimeType,
+    });
+    const refreshedSource = await loadLatestArtworkProofSource(tx, {
+      ...args,
+      selectedSourceIds: args.sourceId ? [args.sourceId] : null,
+    });
+    if (result === "ready" && sourceHasUsablePreviewDerivative(refreshedSource)) {
+      return {
+        sourceType: source.sourceType,
+        sourceId: source.sourceId,
+        derivativeStatus: "ready",
+        previewStatus: "ready",
+        sourceFileName: refreshedSource?.fileName || source.fileName,
+        message: "Preview generated successfully.",
+      };
+    }
+    if (result === "unsupported") {
+      throwProofingConflict(`Preview generation failed. Unsupported artwork type: ${source.fileName}.`);
+    }
+    throwProofingConflict("Preview generation failed for the selected artwork file. Retry preview after confirming the source is available.");
   }
 
   const storageKey = source.relativePath || source.fileUrl || "";
@@ -2206,6 +2286,27 @@ export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
   }
 
   throwProofingConflict(buildAttachmentPreviewGenerationFailureMessage(refreshedSource || source));
+}
+
+/**
+ * Coalesce concurrent UI opens, polls, and retry clicks for the same source. The
+ * promise is process-local because the canonical generators persist their own
+ * durable status; a second process sees that status and returns without work.
+ */
+export async function generateLineItemArtworkPreviewDerivative(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  sourceId?: string | null;
+}): Promise<PreviewDerivativeGenerationResult> {
+  const key = `${args.organizationId}:${args.lineItemId}:${args.sourceId || "default"}`;
+  const existing = previewGenerationRuns.get(key);
+  if (existing) return existing;
+
+  const run = generateLineItemArtworkPreviewDerivativeImpl(tx, args).finally(() => {
+    previewGenerationRuns.delete(key);
+  });
+  previewGenerationRuns.set(key, run);
+  return run;
 }
 
 async function ensureProofAttachmentForSource(tx: any, args: {
