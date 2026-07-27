@@ -74,6 +74,8 @@ export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] 
   const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
+  const [devFixtureConfirmationOpen, setDevFixtureConfirmationOpen] = useState(false);
+  const [isCreatingDevFixtures, setIsCreatingDevFixtures] = useState(false);
   const [attachmentToDelete, setAttachmentToDelete] = useState<OrderAttachment | null>(null);
   const [viewerAttachment, setViewerAttachment] = useState<OrderAttachment | null>(null);
   const [viewerAttachments, setViewerAttachments] = useState<OrderAttachment[] | undefined>(undefined);
@@ -91,6 +93,7 @@ export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] 
   const deleteAttachment = useDeleteOrderAttachment(orderId);
 
   const attachmentsApiPath = `/api/orders/${orderId}/attachments`;
+  const canCreateStage18PDevFixtures = typeof window !== "undefined" && window.location.hostname === "dev.printershero.com";
 
   const isLocked = locked;
   const lockedHint = 'This order cannot be edited.';
@@ -367,6 +370,27 @@ export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] 
     }
   };
 
+  const createStage18PDevFixtures = async () => {
+    setIsCreatingDevFixtures(true);
+    try {
+      const response = await fetch(`/api/orders/${orderId}/dev-stage18p-upload-fixtures`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ confirmDevFixtureCreation: true }),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok) throw new Error(payload?.message || "DEV fixture creation failed.");
+      await queryClient.invalidateQueries({ queryKey: [attachmentsApiPath] });
+      toast({ title: "DEV Stage 18P fixtures ready", description: "Harmless labelled upload fixtures were created or reused." });
+      setDevFixtureConfirmationOpen(false);
+    } catch (error: any) {
+      toast({ title: "DEV fixture creation failed", description: error?.message || "Unable to create DEV fixtures.", variant: "destructive" });
+    } finally {
+      setIsCreatingDevFixtures(false);
+    }
+  };
+
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
@@ -409,6 +433,11 @@ export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] 
             </Button>
 
             {showEmptyText && <div className="text-xs text-titan-text-muted text-center">No attachments</div>}
+            {canCreateStage18PDevFixtures && (
+              <Button variant="outline" size="sm" onClick={() => setDevFixtureConfirmationOpen(true)} disabled={isCreatingDevFixtures}>
+                Create DEV Stage 18P Fixtures
+              </Button>
+            )}
           </div>
         ) : (
           <div className="w-full flex items-center justify-center gap-3">
@@ -438,9 +467,31 @@ export function OrderAttachmentsPanel({ orderId, locked = false, lineItems = [] 
                 </>
               )}
             </Button>
+            {canCreateStage18PDevFixtures && (
+              <Button variant="outline" size="sm" onClick={() => setDevFixtureConfirmationOpen(true)} disabled={isCreatingDevFixtures}>
+                Create DEV Stage 18P Fixtures
+              </Button>
+            )}
           </div>
         )}
       </div>
+
+      <AlertDialog open={devFixtureConfirmationOpen} onOpenChange={setDevFixtureConfirmationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Create DEV Stage 18P upload fixtures?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This DEV-only action creates or reuses harmless labelled customer-upload fixtures on this order. It does not create final art, proofs, prepress, production, invoices, payments, or EPS activity.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isCreatingDevFixtures}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={createStage18PDevFixtures} disabled={isCreatingDevFixtures}>
+              {isCreatingDevFixtures ? "Creating..." : "Create DEV fixtures"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       <CustomerUploadReviewPanel
         entityLabel="Order"

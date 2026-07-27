@@ -118,6 +118,10 @@ import {
 } from "../lib/manualInventoryReservationsRepo";
 import { createLineItemFileRecord } from "../services/lineItemFileRecordService";
 import {
+    assertStage18PDevFixtureAccess,
+    isStage18PDevFixtureCustomer,
+} from "../lib/stage18pDevFixtureAccess";
+import {
     getOrderWorkflow,
     publishOrderWorkflowDraft,
     upsertOrderWorkflowDraft,
@@ -238,6 +242,31 @@ const customerUploadPrimaryArtworkCandidateSchema = z.object({
     candidateNote: z.string().trim().max(2000).optional().nullable(),
     confirmPrimaryArtworkCandidate: z.literal(true),
 });
+
+const stage18PDevUploadFixturesSchema = z.object({
+    confirmDevFixtureCreation: z.literal(true),
+});
+
+const stage18PDevFixtureUploadDefinitions = [
+    { key: "front_candidate_a", fileName: "DEV TEST ONLY - Stage 18P - Front Candidate A.png", stage: "pending" },
+    { key: "front_candidate_b", fileName: "DEV TEST ONLY - Stage 18P - Front Candidate B.png", stage: "pending" },
+    { key: "back_candidate", fileName: "DEV TEST ONLY - Stage 18P - Back Candidate.png", stage: "pending" },
+    { key: "both_candidate", fileName: "DEV TEST ONLY - Stage 18P - Both Candidate.png", stage: "pending" },
+    { key: "negative_pending", fileName: "DEV TEST ONLY - Stage 18P - Negative Pending.png", stage: "pending" },
+    { key: "rejected", fileName: "DEV TEST ONLY - Stage 18P - Rejected Upload.png", stage: "rejected" },
+    { key: "accepted_only", fileName: "DEV TEST ONLY - Stage 18P - Accepted Only.png", stage: "accepted" },
+    { key: "promoted_unassigned", fileName: "DEV TEST ONLY - Stage 18P - Promoted Unassigned.png", stage: "promoted" },
+    { key: "assigned_not_intake", fileName: "DEV TEST ONLY - Stage 18P - Assigned Not Intake.png", stage: "assigned" },
+    { key: "intake_side_na", fileName: "DEV TEST ONLY - Stage 18P - Intake Side NA.png", stage: "intake" },
+    { key: "operational_primary", fileName: "DEV TEST ONLY - Stage 18P - Operational Primary Denial.png", stage: "operational_primary" },
+] as const;
+
+// A harmless 1×1 PNG. It is intentionally embedded so DEV fixture setup does
+// not need browser file-selection or any customer-supplied artwork.
+const stage18PDevFixturePng = Buffer.from(
+    "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVQIHWP4z8DwHwAFgAI/ScL7QgAAAABJRU5ErkJggg==",
+    "base64",
+);
 
 function assertInternalStaffUser(req: any, res: any): boolean {
     if (req.user?.role === "customer" || !req.orgRole) {
@@ -3615,6 +3644,286 @@ export async function registerOrderRoutes(
         } catch (error) {
             console.error('[OrderAttachmentsUnified:GET] Error:', error);
             return res.status(500).json({ error: 'Failed to fetch attachments' });
+        }
+    });
+
+    app.post("/api/orders/:orderId/dev-stage18p-upload-fixtures", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        const parsed = stage18PDevUploadFixturesSchema.safeParse(req.body);
+        if (!parsed.success) {
+            return res.status(400).json({
+                success: false,
+                code: "DEV_STAGE_18P_FIXTURE_CONFIRMATION_REQUIRED",
+                message: "confirmDevFixtureCreation: true is required.",
+            });
+        }
+
+        try {
+            assertStage18PDevFixtureAccess({
+                requestHost: req.get("host"),
+                requestOrigin: req.get("origin"),
+            });
+
+            const organizationId = getRequestOrganizationId(req);
+            const actorUserId = getUserId(req.user);
+            if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+            if (!actorUserId) return res.status(401).json({ error: "Authentication required" });
+
+            const [fixtureOrder] = await db
+                .select({
+                    id: orders.id,
+                    customerId: orders.customerId,
+                    orderNumber: orders.orderNumber,
+                    status: orders.status,
+                    state: orders.state,
+                    customerName: customers.companyName,
+                })
+                .from(orders)
+                .innerJoin(customers, eq(customers.id, orders.customerId))
+                .where(and(
+                    eq(orders.id, req.params.orderId),
+                    eq(orders.organizationId, organizationId),
+                    eq(customers.organizationId, organizationId),
+                ))
+                .limit(1);
+
+            if (!fixtureOrder || !isStage18PDevFixtureCustomer(fixtureOrder.customerName)) {
+                return res.status(404).json({
+                    success: false,
+                    code: "DEV_STAGE_18P_FIXTURE_NOT_FOUND",
+                    message: "A labelled DEV Stage 18P fixture order is required.",
+                });
+            }
+            if (fixtureOrder.status !== "new" || fixtureOrder.state !== "open") {
+                return res.status(409).json({
+                    success: false,
+                    code: "DEV_STAGE_18P_FIXTURE_ORDER_NOT_SAFE",
+                    message: "DEV fixture uploads can only be created on a new, open order.",
+                });
+            }
+
+            const existingInvoice = await db
+                .select({ id: invoices.id })
+                .from(invoices)
+                .where(and(eq(invoices.organizationId, organizationId), eq(invoices.orderId, fixtureOrder.id)))
+                .limit(1);
+            if (existingInvoice[0]) {
+                return res.status(409).json({
+                    success: false,
+                    code: "DEV_STAGE_18P_FIXTURE_ORDER_BILLED",
+                    message: "DEV fixture uploads cannot be created on an invoiced order.",
+                });
+            }
+
+            const lineItems = await db
+                .select({ id: orderLineItems.id, sortOrder: orderLineItems.sortOrder })
+                .from(orderLineItems)
+                .where(eq(orderLineItems.orderId, fixtureOrder.id))
+                .orderBy(asc(orderLineItems.sortOrder), asc(orderLineItems.id));
+            if (lineItems.length < 4) {
+                return res.status(409).json({
+                    success: false,
+                    code: "DEV_STAGE_18P_FIXTURE_LINE_ITEMS_REQUIRED",
+                    message: "The labelled DEV fixture order must have at least four line items.",
+                });
+            }
+
+            const actorUserName = `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || "DEV fixture staff";
+            const existingFixtures = await db
+                .select()
+                .from(orderAttachments)
+                .where(and(
+                    eq(orderAttachments.orderId, fixtureOrder.id),
+                    eq(orderAttachments.portalFileCategory, "customer_upload"),
+                    inArray(orderAttachments.portalDisplayName, stage18PDevFixtureUploadDefinitions.map((fixture) => fixture.fileName)),
+                ));
+            const existingByName = new Map(existingFixtures.map((fixture) => [fixture.portalDisplayName, fixture]));
+            const fixtureResults: Array<{ key: string; attachmentId: string; created: boolean }> = [];
+
+            for (const definition of stage18PDevFixtureUploadDefinitions) {
+                let attachment: any = existingByName.get(definition.fileName) ?? null;
+                let created = false;
+                if (!attachment) {
+                    attachment = await persistOrderAttachment({
+                        orderId: fixtureOrder.id,
+                        organizationId,
+                        userId: actorUserId,
+                        userName: "DEV TEST ONLY - Stage 18P customer fixture",
+                        description: `DEV TEST ONLY - Stage 18P. Harmless generated upload fixture: ${definition.key}.`,
+                        orderNumber: fixtureOrder.orderNumber,
+                        role: "reference",
+                        side: "na",
+                        isPrimary: false,
+                        source: {
+                            kind: "buffer",
+                            buffer: stage18PDevFixturePng,
+                            originalFilename: definition.fileName,
+                            mimeType: "image/png",
+                        },
+                    });
+                    const [updated] = await db
+                        .update(orderAttachments)
+                        .set({
+                            customerVisible: true,
+                            portalFileCategory: "customer_upload",
+                            portalDisplayName: definition.fileName,
+                            portalDescription: `DEV TEST ONLY - Stage 18P. Harmless generated upload fixture: ${definition.key}.`,
+                            customerUploadReviewStatus: "pending_review",
+                            updatedAt: new Date(),
+                        })
+                        .where(and(eq(orderAttachments.id, attachment.id), eq(orderAttachments.orderId, fixtureOrder.id)))
+                        .returning();
+                    attachment = updated ?? attachment;
+                    created = true;
+                }
+
+                if (!attachment) {
+                    throw new Error(`DEV fixture attachment could not be resolved: ${definition.key}`);
+                }
+
+                if (created && definition.stage !== "pending") {
+                    if (definition.stage === "rejected") {
+                        attachment = await reviewCustomerUpload({
+                            organizationId,
+                            entityType: "order",
+                            entityId: fixtureOrder.id,
+                            attachmentId: attachment.id,
+                            status: "rejected",
+                            reviewNote: "DEV TEST ONLY - Stage 18P rejection fixture.",
+                            actorUserId,
+                            actorUserName,
+                            ipAddress: req.ip,
+                            userAgent: req.get?.("user-agent") || null,
+                        });
+                    } else {
+                        attachment = await reviewCustomerUpload({
+                            organizationId,
+                            entityType: "order",
+                            entityId: fixtureOrder.id,
+                            attachmentId: attachment.id,
+                            status: "accepted",
+                            reviewNote: "DEV TEST ONLY - Stage 18P accepted fixture.",
+                            actorUserId,
+                            actorUserName,
+                            ipAddress: req.ip,
+                            userAgent: req.get?.("user-agent") || null,
+                        });
+                    }
+                }
+
+                if (created && ["promoted", "assigned", "intake", "operational_primary"].includes(definition.stage)) {
+                    attachment = await promoteCustomerUpload({
+                        organizationId,
+                        entityType: "order",
+                        entityId: fixtureOrder.id,
+                        attachmentId: attachment.id,
+                        promotion: "artwork",
+                        actorUserId,
+                        actorUserName,
+                        ipAddress: req.ip,
+                        userAgent: req.get?.("user-agent") || null,
+                    });
+                }
+
+                const targetLineItemId = definition.stage === "assigned" || definition.stage === "intake"
+                    ? lineItems[1]!.id
+                    : definition.stage === "operational_primary"
+                        ? lineItems[2]!.id
+                        : null;
+                if (created && targetLineItemId) {
+                    attachment = await assignPromotedCustomerUpload({
+                        organizationId,
+                        sourceOrderId: fixtureOrder.id,
+                        targetOrderId: fixtureOrder.id,
+                        targetLineItemId,
+                        attachmentId: attachment.id,
+                        assignmentType: "reference_for_line_item",
+                        assignmentNote: "DEV TEST ONLY - Stage 18P fixture assignment.",
+                        actorUserId,
+                        actorUserName,
+                        ipAddress: req.ip,
+                        userAgent: req.get?.("user-agent") || null,
+                    });
+                }
+
+                if (created && ["intake", "operational_primary"].includes(definition.stage) && targetLineItemId) {
+                    attachment = await selectAssignedCustomerUploadForArtwork({
+                        organizationId,
+                        sourceOrderId: fixtureOrder.id,
+                        targetOrderId: fixtureOrder.id,
+                        targetLineItemId,
+                        attachmentId: attachment.id,
+                        artworkSelectionType: "artwork_side_intake",
+                        artworkSelectionNote: "DEV TEST ONLY - Stage 18P fixture intake.",
+                        actorUserId,
+                        actorUserName,
+                        ipAddress: req.ip,
+                        userAgent: req.get?.("user-agent") || null,
+                    });
+                }
+
+                if (created && definition.stage === "operational_primary" && targetLineItemId) {
+                    attachment = await designateCustomerUploadArtworkSide({
+                        organizationId,
+                        sourceOrderId: fixtureOrder.id,
+                        targetOrderId: fixtureOrder.id,
+                        targetLineItemId,
+                        attachmentId: attachment.id,
+                        side: "front",
+                        designationNote: "DEV TEST ONLY - Stage 18P operational-primary denial fixture.",
+                        actorUserId,
+                        actorUserName,
+                        ipAddress: req.ip,
+                        userAgent: req.get?.("user-agent") || null,
+                    });
+                    const [primaryFixture] = await db
+                        .update(orderAttachments)
+                        .set({ isPrimary: true, updatedAt: new Date() })
+                        .where(and(eq(orderAttachments.id, attachment.id), eq(orderAttachments.orderId, fixtureOrder.id)))
+                        .returning();
+                    attachment = primaryFixture ?? attachment;
+                }
+
+                fixtureResults.push({ key: definition.key, attachmentId: attachment.id, created });
+            }
+
+            await db.insert(auditLogs).values({
+                organizationId,
+                userId: actorUserId,
+                userName: actorUserName,
+                actionType: "dev_stage18p_upload_fixtures_created",
+                entityType: "order",
+                entityId: fixtureOrder.id,
+                entityName: `DEV TEST ONLY - Stage 18P order ${fixtureOrder.orderNumber}`,
+                description: "Created or reused DEV-only Stage 18P customer-upload fixtures.",
+                oldValues: null,
+                newValues: {
+                    fixtureIds: fixtureResults,
+                    createdFixtureIds: fixtureResults.filter((fixture) => fixture.created).map((fixture) => fixture.attachmentId),
+                    reusedFixtureIds: fixtureResults.filter((fixture) => !fixture.created).map((fixture) => fixture.attachmentId),
+                    finalArtwork: false,
+                    proofChanged: false,
+                    prepressChanged: false,
+                    productionChanged: false,
+                    billingChanged: false,
+                    paymentChanged: false,
+                    epsChanged: false,
+                },
+                ipAddress: req.ip || null,
+                userAgent: req.get?.("user-agent") || null,
+            });
+
+            return res.status(201).json({
+                success: true,
+                data: {
+                    orderId: fixtureOrder.id,
+                    fixtureIds: fixtureResults,
+                },
+            });
+        } catch (error: any) {
+            if (error?.status) return res.status(error.status).json({ success: false, code: error.code, message: error.message });
+            if (error instanceof CustomerUploadReviewError) return res.status(error.statusCode).json({ success: false, message: error.message });
+            console.error("[OrderAttachments:Stage18PDevFixtures] Error:", error);
+            return res.status(500).json({ success: false, message: "Failed to create DEV Stage 18P upload fixtures." });
         }
     });
 
