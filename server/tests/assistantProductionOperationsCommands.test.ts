@@ -7,7 +7,7 @@ const fingerprint = "d".repeat(64);
 const service: any = { revalidateProposal: async () => ({ valid: true, proposal: { productionIntakeSessionId: "production_1", proposalFingerprint: fingerprint, summary: "Route selected line item.", sourceLinks: [{ label: "Open order", href: "/orders/order_1" }] } }), executeConfirmed: async () => ({ sourceLinks: [], summary: "Routed." }) };
 describe("assistant production operations commands", () => {
   it("preserves production operations within the final twenty-eight-command allowlist", () => {
-    expect(assistantProductionCommandAllowlist).toHaveLength(28);
+    expect(assistantProductionCommandAllowlist).toHaveLength(29);
     const registry = createProductionAssistantCommandRegistry(...productionOperationCommandNames.map((name) => createProductionOperationCommandDefinition(name, service)));
     expect(registry.list().map((command) => command.name).sort()).toEqual([...productionOperationCommandNames].sort());
     expect(registry.list().every((command) => command.confirmationRequired && command.idempotencyPolicy === "server_generated_with_request_hash")).toBe(true);

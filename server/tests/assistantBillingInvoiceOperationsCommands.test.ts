@@ -11,7 +11,7 @@ const service: any = {
 
 describe("assistant billing invoice operations commands", () => {
   it("extends the reviewed registry to twenty-eight implemented commands", () => {
-    expect(assistantProductionCommandAllowlist).toHaveLength(28);
+    expect(assistantProductionCommandAllowlist).toHaveLength(29);
     const registry = createProductionAssistantCommandRegistry(...billingInvoiceOperationCommandNames.map((name) => createBillingInvoiceOperationCommandDefinition(name, service)));
     expect(registry.list().map((item) => item.name).sort()).toEqual([...billingInvoiceOperationCommandNames].sort());
     expect(registry.list().every((item) => item.confirmationRequired && item.idempotencyPolicy === "server_generated_with_request_hash")).toBe(true);

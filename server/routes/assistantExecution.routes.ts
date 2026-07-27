@@ -20,6 +20,8 @@ import { quoteInternalNotesService } from "../services/quoteInternalNotesService
 import { createProductInactiveDraftCommandDefinition } from "../services/assistant/execution/productInactiveDraftCommand";
 import { createProductInactiveDraftCanonicalService, createProductInactiveDraftExecutionCommand } from "../services/assistant/execution/productInactiveDraftExecutionCommand";
 import { productInactiveDraftCommandName } from "../services/assistant/execution/productInactiveDraftCommand";
+import { createProductInactiveDraftBatchCommandDefinition, productInactiveDraftBatchCommandName } from "../services/assistant/execution/productInactiveDraftBatchCommand";
+import { createProductInactiveDraftBatchCanonicalService, createProductInactiveDraftBatchExecutionCommand } from "../services/assistant/execution/productInactiveDraftBatchExecutionCommand";
 import { createProductInactiveDraftUpdateCommandDefinition, productInactiveDraftUpdateCommandName } from "../services/assistant/execution/productInactiveDraftUpdateCommand";
 import { createProductInactiveDraftUpdateCanonicalService, createProductInactiveDraftUpdateExecutionCommand } from "../services/assistant/execution/productInactiveDraftUpdateExecutionCommand";
 import { createQuoteDraftCreateCommandDefinition, quoteDraftCreateCommandName } from "../services/assistant/execution/quoteDraftCreateCommand";
@@ -53,7 +55,7 @@ function scope(req: Request): ExecutionActorScope {
   const internal = ["owner", "admin", "manager", "member", "employee"].includes(role);
   return {
     organizationId: getRequestOrganizationId(req), userId: id,
-    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", "assistant.orders.create", "assistant.orders.update_editable", "assistant.quotes.convert_to_order", "assistant.customers.create", "assistant.customers.update_profile", "assistant.customers.update_commercial_terms", "assistant.contacts.create", "assistant.contacts.update", "assistant.production.intake_line_items", "assistant.production.send_to_prepress", "assistant.production.update_job_status", "assistant.production.add_job_note", "assistant.fulfillment.create_shipment", "assistant.fulfillment.update_shipment_details", "assistant.fulfillment.mark_shipped", "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.add_note", "assistant.billing.create_invoice", "assistant.billing.update_invoice_draft", "assistant.billing.send_invoice", "assistant.billing.add_invoice_note", "assistant.payments.record_manual_payment", "assistant.payments.add_payment_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft"] : [])] : [],
+    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", "assistant.orders.create", "assistant.orders.update_editable", "assistant.quotes.convert_to_order", "assistant.customers.create", "assistant.customers.update_profile", "assistant.customers.update_commercial_terms", "assistant.contacts.create", "assistant.contacts.update", "assistant.production.intake_line_items", "assistant.production.send_to_prepress", "assistant.production.update_job_status", "assistant.production.add_job_note", "assistant.fulfillment.create_shipment", "assistant.fulfillment.update_shipment_details", "assistant.fulfillment.mark_shipped", "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.add_note", "assistant.billing.create_invoice", "assistant.billing.update_invoice_draft", "assistant.billing.send_invoice", "assistant.billing.add_invoice_note", "assistant.payments.record_manual_payment", "assistant.payments.add_payment_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft"] : [])] : [],
     environment: process.env.NODE_ENV || "development",
   };
 }
@@ -111,10 +113,12 @@ export interface AssistantExecutionRouteDependencies {
 
 function createProductionExecutionService(): ExecutionPlanningService {
   const productService = createProductInactiveDraftCanonicalService();
+  const productBatchService = createProductInactiveDraftBatchCanonicalService(productService);
   const productUpdateService = createProductInactiveDraftUpdateCanonicalService();
   const metadataRegistry = createProductionAssistantCommandRegistry(
     createQuoteInternalNoteCommandDefinition(quoteInternalNotesService),
     createProductInactiveDraftCommandDefinition(productService),
+    createProductInactiveDraftBatchCommandDefinition(productBatchService),
     createProductInactiveDraftUpdateCommandDefinition(productUpdateService),
     createQuoteDraftCreateCommandDefinition(quoteDraftIntakeService),
     createQuoteDraftUpdateCommandDefinition(quoteDraftIntakeService),
@@ -130,6 +134,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
   const executionCommands = new Map<string, ExecutionCommandDefinition>([
     [quoteInternalNoteCommandName, createQuoteInternalNoteExecutionCommand(quoteInternalNotesService)],
     [productInactiveDraftCommandName, createProductInactiveDraftExecutionCommand(productService)],
+    [productInactiveDraftBatchCommandName, createProductInactiveDraftBatchExecutionCommand(productBatchService)],
     [productInactiveDraftUpdateCommandName, createProductInactiveDraftUpdateExecutionCommand(productUpdateService)],
     [quoteDraftCreateCommandName, createQuoteDraftCreateExecutionCommand(quoteDraftIntakeService)],
     [quoteDraftUpdateCommandName, createQuoteDraftUpdateExecutionCommand(quoteDraftIntakeService)],
@@ -178,6 +183,9 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       if (!userMessage || !assistantMessage) throw new ExecutionPlanError("PLAN_PROPOSAL_NOT_FOUND", "The proposed action is no longer available.");
       const productProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === productInactiveDraftCommandName)?.plan
+        : null;
+      const productBatchProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === productInactiveDraftBatchCommandName)?.plan
         : null;
       const productUpdateProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === productInactiveDraftUpdateCommandName)?.plan
@@ -263,6 +271,11 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
           arguments: { intakeSessionId: productProposal.intakeSessionId, proposalFingerprint: productProposal.proposalFingerprint },
           context: input.context,
         });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
+      if (productBatchProposal && typeof productBatchProposal.batchFingerprint === "string" && Array.isArray(productBatchProposal.children)) {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: productInactiveDraftBatchCommandName, arguments: { batchFingerprint: productBatchProposal.batchFingerprint, children: productBatchProposal.children }, context: input.context });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
         return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }

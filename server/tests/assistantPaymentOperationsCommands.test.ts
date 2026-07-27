@@ -12,7 +12,7 @@ const service: any = {
 
 describe("assistant payment operations commands", () => {
   it("extends the reviewed registry to twenty-eight implemented commands", () => {
-    expect(assistantProductionCommandAllowlist).toHaveLength(28);
+    expect(assistantProductionCommandAllowlist).toHaveLength(29);
     expect(assistantProductionCommandAllowlist).toEqual(expect.arrayContaining([...paymentOperationCommandNames]));
     const registry = createProductionAssistantCommandRegistry(...paymentOperationCommandNames.map((name) => createPaymentOperationCommandDefinition(name, service)));
     expect(registry.list().map((item) => item.name).sort()).toEqual([...paymentOperationCommandNames].sort());

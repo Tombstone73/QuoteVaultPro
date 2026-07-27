@@ -1,5 +1,5 @@
 import { eq } from "drizzle-orm";
-import { materials, pbv2OptionGroupTemplates } from "@shared/schema";
+import { materials, pbv2OptionGroupTemplates, products } from "@shared/schema";
 import {
   productIntakeWizardAnalyzeRequestSchema,
   type ProductIntakeSessionDetail,
@@ -15,17 +15,19 @@ import { createDbProductIntakeSessionStore, type ProductIntakeSessionStore } fro
 import { assistantProductIntakeAdapter } from "./productIntakeAdapter";
 import { inactiveProductDraftUpdateService, InactiveProductDraftUpdateError, type InactiveProductDraftPatch } from "./inactiveProductDraftUpdateService";
 import { productIntakeDraftReadinessService } from "../productIntakeWizard/productIntakeDraftReadinessService";
+import { applyProductDraftBatchCollisions, fingerprintProductInactiveDraftBatch, parseProductInactiveDraftBatch } from "./productInactiveDraftBatchService";
+import { productInactiveDraftBatchCommandName } from "./execution/productInactiveDraftBatchCommand";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
   version: "v1",
-  purpose: "Conversationally create or continue one validated inactive product draft using the existing Product Intake workflow.",
+  purpose: "Conversationally create or continue validated inactive product drafts using the existing Product Intake workflow.",
   allowedReadDomains: ["products", "product_categories", "pbv2_definitions", "pricing_methods", "materials", "production_routing", "option_definitions", "formula_library_metadata"],
-  allowedCommands: ["products.create_inactive_draft@v1", "products.update_inactive_draft@v1"],
-  requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.update_inactive_draft"],
+  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1"],
+  requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft"],
   requiredContext: ["organization", "authenticated_internal_actor", "conversation"],
   confirmationPolicy: "dedicated_plan_confirmation",
-  maximumProductScope: 1,
+  maximumProductScope: 25,
   promptVersion: "product-management-skill-v1",
   diagnosticsVersion: "product-intake-v1",
   dependencies: ["product-intake", "pbv2", "pricing", "materials", "routing"],
@@ -35,7 +37,7 @@ export const productManagementSkill = Object.freeze({
 });
 
 export type ProductManagementCard = {
-  kind: "product_intake_summary" | "product_missing_information" | "product_material_selection" | "product_options_summary" | "product_pricing_summary" | "product_routing_summary" | "product_validation_errors" | "product_validation_warnings" | "product_draft_preview" | "product_draft_snapshot" | "product_draft_readiness" | "product_draft_update_preview" | "product_draft_update_unsupported" | "product_active_product_unsupported" | "action_proposal";
+  kind: "product_intake_summary" | "product_missing_information" | "product_material_selection" | "product_options_summary" | "product_pricing_summary" | "product_routing_summary" | "product_validation_errors" | "product_validation_warnings" | "product_draft_preview" | "product_draft_snapshot" | "product_draft_readiness" | "product_draft_update_preview" | "product_draft_update_unsupported" | "product_active_product_unsupported" | "product_batch_preview" | "action_proposal";
   title: string;
   summary: string;
   sourceLinks: Array<{ label: string; href: string }>;
@@ -61,6 +63,11 @@ async function loadReferences(organizationId: string) {
 
 function isProductIntent(message: string): boolean {
   return /\b(create|build|add|clone|configure|continue)\b[\s\S]{0,80}\b(product|banner|sign|print|draft)\b/i.test(message);
+}
+
+function isBatchProductIntent(message: string): boolean {
+  const rowCount = (message.match(/^\s*(?:[-*]|\d+[.)])\s+/gm) ?? []).length;
+  return /\b(?:batch|multiple|several|list of)\s+(?:new\s+)?products?\b/i.test(message) || message.includes("|") || (rowCount >= 2 && /\b(?:product|draft|banner|sign)\b/i.test(message));
 }
 
 function isUnsupportedProductMutation(message: string): boolean {
@@ -250,6 +257,40 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
 export class ProductManagementSkillService {
   constructor(private readonly deps: ProductManagementSkillDependencies = { sessions: createDbProductIntakeSessionStore(), references: loadReferences }) {}
 
+  private async prepareBatch(input: { organizationId: string; userId: string; message: string }): Promise<{ response: string; cards: ProductManagementCard[] }> {
+    const parsed = parseProductInactiveDraftBatch(input.message);
+    const existing = await db.select({ name: products.name }).from(products).where(eq(products.organizationId, input.organizationId));
+    const rows = applyProductDraftBatchCollisions(parsed.rows, existing.map((product) => product.name));
+    const blocked = rows.filter((row) => row.status !== "ready");
+    if (blocked.length) return {
+      response: "I did not prepare a mutation-ready batch. Resolve every highlighted row first; no existing product was changed or renamed.",
+      cards: [{ kind: "product_batch_preview", title: "Inactive product draft batch needs review", summary: `${rows.length} row(s) parsed; ${blocked.length} require clarification, are unsupported, or collide with an existing product.`, sourceLinks: [], details: { rows, errors: parsed.errors, confirmationAvailable: false, unchanged: ["existing_products", "product_activation", "publication", "quotes_orders_production"] } }],
+    };
+    const references = await this.deps.references(input.organizationId);
+    const prepared = [] as Array<{ rowNumber: number; productName: string; intakeSessionId: string; proposalFingerprint: string; sourceLink: string; ready: boolean; reasons: string[] }>;
+    for (const row of rows) {
+      const request = productIntakeWizardAnalyzeRequestSchema.parse({ sourceType: "text_description", description: `Product name: ${row.productName}\n${row.description}` });
+      const generated = await generateProductIntakeBriefWithRun({ orgId: input.organizationId, request, analyzer: null, templates: references.templates, materials: references.materials, createdByUserId: input.userId });
+      const detail = await this.deps.sessions.createFromAnalysis({ organizationId: input.organizationId, userId: input.userId, request, analyzer: null, brief: generated.brief });
+      const proposal = await assistantProductIntakeAdapter.buildProposal({ organizationId: input.organizationId, sessionId: detail.session.id });
+      prepared.push({ rowNumber: row.rowNumber, productName: row.productName, intakeSessionId: detail.session.id, proposalFingerprint: proposal.fingerprint, sourceLink: proposal.sourceLink.href, ready: proposal.executable, reasons: proposal.preview.warnings });
+    }
+    const notReady = prepared.filter((row) => !row.ready);
+    if (notReady.length) return {
+      response: "I created Product Intake sessions for review, but the batch is not executable until every row is ready. No products were created.",
+      cards: [{ kind: "product_batch_preview", title: "Inactive product draft batch needs Product Intake review", summary: `${prepared.length} row(s) prepared; ${notReady.length} require Product Intake clarification.`, sourceLinks: prepared.map((row) => ({ label: `Open ${row.productName} review`, href: row.sourceLink })), details: { rows: prepared, confirmationAvailable: false, unchanged: ["product_activation", "publication", "existing_products"] } }],
+    };
+    const children = prepared.map(({ rowNumber, productName, intakeSessionId, proposalFingerprint }) => ({ rowNumber, productName, intakeSessionId, proposalFingerprint }));
+    const batchFingerprint = fingerprintProductInactiveDraftBatch(children);
+    return {
+      response: `I prepared ${children.length} server-validated inactive product drafts. Review the complete batch and use its dedicated GO control to create all rows.`,
+      cards: [
+        { kind: "product_batch_preview", title: "Inactive product draft batch preview", summary: `All ${children.length} rows will create inactive products with PBV2 DRAFT trees.`, sourceLinks: prepared.map((row) => ({ label: `Open ${row.productName} review`, href: row.sourceLink })), details: { batchFingerprint, rows: prepared, confirmationAvailable: true, unchanged: ["product_activation", "publication", "active_product_modification", "quotes_orders_production"] } },
+        { kind: "action_proposal", title: "Create inactive product draft batch", summary: "Review the complete server-generated batch and use its dedicated GO control once. If a child fails, execution stops and reports the completed rows.", sourceLinks: [], plan: { action: productInactiveDraftBatchCommandName, batchFingerprint, children } },
+      ],
+    };
+  }
+
   async respond(input: { organizationId: string; userId: string; message: string; activeSessionId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
     if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation, publication, and active-product editing are not available through the assistant. I can prepare a new inactive draft instead.", cards: [{ kind: "product_validation_errors", title: "Unsupported product action", summary: "Only a new inactive product draft can be proposed.", sourceLinks: [], details: { errors: ["Activation, publication, and active-product editing are disabled."] } }] };
     const listRequest = draftReadinessListRequest(input.message);
@@ -324,6 +365,10 @@ export class ProductManagementSkillService {
         const detail = answer ? await this.deps.sessions.upsertAnswers({ organizationId: input.organizationId, sessionId: existing.session.id, userId: input.userId, answers: [answer] }) : existing;
         if (detail) return { handled: true, response: detail.readiness.canCreateDraft ? "The Product Intake proposal is ready for a dedicated inactive-draft plan review." : "I saved that answer. I will ask only the next required Product Intake question.", cards: await cardsFor(detail) };
       }
+    }
+    if (isBatchProductIntent(input.message)) {
+      const batch = await this.prepareBatch(input);
+      return { handled: true, ...batch };
     }
     if (!isProductIntent(input.message)) return { handled: false, response: "", cards: [] };
     const request = productIntakeWizardAnalyzeRequestSchema.parse({ sourceType: "text_description", description: input.message });

@@ -33,6 +33,7 @@ export type AssistantCommandRuntime = (typeof assistantCommandRuntimeValues)[num
 export const assistantProductionCommandAllowlist = [
   "quotes.add_internal_note",
   "products.create_inactive_draft",
+  "products.create_inactive_draft_batch",
   "products.update_inactive_draft",
   "quotes.create_draft",
   "quotes.update_draft",

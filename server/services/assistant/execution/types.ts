@@ -78,6 +78,12 @@ export interface ExecutionPlanPreview {
       status: "inactive_draft";
     };
   };
+  /** Bounded multi-row presentation for the confirmed batch draft command. */
+  productInactiveDraftBatch?: {
+    batchFingerprint: string;
+    children: readonly { rowNumber: number; productName: string; intakeSessionId: string }[];
+    unchanged: readonly string[];
+  };
   productInactiveDraftUpdate?: {
     productId: string;
     productName: string;
