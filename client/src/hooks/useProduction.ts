@@ -763,6 +763,69 @@ export function useStartProductionTimer(jobId: string) {
   });
 }
 
+export type BulkProductionStation = "flatbed" | "roll";
+export type BulkProductionStatus = "queued" | "in_progress" | "done";
+
+type BulkProductionResult = {
+  requestedItemCount: number;
+  uniqueItemCount: number;
+  updatedItemCount: number;
+  updatedJobIds: string[];
+  status: BulkProductionStatus;
+  runId: string | null;
+};
+
+export function useBulkStartProductionJobs() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { station: BulkProductionStation; jobIds: string[] }) => {
+      const res = await fetch("/api/production/jobs/bulk-start", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to start selected jobs");
+      return json.data as BulkProductionResult;
+    },
+    onSuccess: (data) => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      qc.invalidateQueries({ queryKey: ["/api/fulfillment"] });
+      toast({ title: `${data.updatedItemCount} jobs put into production` });
+    },
+    onError: (error: Error) => toast({ title: "Bulk start failed", description: error.message, variant: "destructive" }),
+  });
+}
+
+export function useBulkUpdateProductionJobStatus() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { station: BulkProductionStation; jobIds: string[]; status: BulkProductionStatus }) => {
+      const res = await fetch("/api/production/jobs/bulk-status", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to update selected jobs");
+      return json.data as BulkProductionResult;
+    },
+    onSuccess: (data) => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      qc.invalidateQueries({ queryKey: ["/api/fulfillment"] });
+      qc.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+      toast({ title: `${data.updatedItemCount} jobs updated to ${data.status.replace("_", " ")}` });
+    },
+    onError: (error: Error) => toast({ title: "Bulk update failed", description: error.message, variant: "destructive" }),
+  });
+}
+
 export function useStopProductionTimer(jobId: string) {
   const qc = useQueryClient();
   const { toast } = useToast();

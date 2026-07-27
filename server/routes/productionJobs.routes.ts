@@ -51,6 +51,7 @@ import { assertParentOrderInProductionForJob } from "../services/orderProduction
 import { isCanceledOrder, isTerminalProductionStatus } from "@shared/operationalState";
 import { documentNumberMatchesSearch } from "@shared/documentNumbering";
 import { normalizeProductionStationKey } from "@shared/productionStations";
+import { MAX_PRODUCTION_BULK_ITEMS, dedupeProductionJobIds, validateProductionBulkSelection } from "@shared/productionBulk";
 import {
   buildPrepressOptionRows,
   extractFinishingBullets,
@@ -539,6 +540,144 @@ async function completeProductionJobWorkflow(
     nextStationKey: completionRoute.kind === "route" ? completionRoute.route.stationKey : null,
     nextStepKey: completionRoute.kind === "route" ? completionRoute.route.stepKey : null,
   };
+}
+
+/**
+ * Shared status transition used by the single-job and bulk endpoints. Keeping
+ * this in one workflow is important because a bulk action must produce the
+ * same events and audit trail as an individual change.
+ */
+async function updateProductionJobStatusWorkflow(
+  tx: any,
+  args: {
+    organizationId: string;
+    userId?: string | null;
+    jobId: string;
+    status: string;
+    stepKey?: string | null;
+    auditUserName?: string | null;
+    ipAddress?: string | null;
+    userAgent?: string | null;
+  },
+) {
+  const now = new Date();
+  const jobRows = await tx
+    .select()
+    .from(productionJobs)
+    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
+    .limit(1);
+  const job = jobRows[0];
+  if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+  if (isTerminalProductionStatus(job.status) && args.status !== job.status) {
+    throw Object.assign(new Error("Cannot advance a terminal production job."), { statusCode: 409 });
+  }
+
+  const stepKeyUnchanged = args.stepKey === undefined || job.stepKey === args.stepKey;
+  if (job.status === args.status && stepKeyUnchanged) return job;
+
+  if (args.status !== "canceled") {
+    await assertParentOrderInProductionForJob(tx, {
+      organizationId: args.organizationId,
+      job,
+      action: "update production job status",
+    });
+  }
+
+  const updateData: any = { status: args.status, updatedAt: now };
+  if (args.stepKey !== undefined) updateData.stepKey = args.stepKey;
+  if (args.status === "in_progress" && !job.startedAt) updateData.startedAt = now;
+
+  await tx
+    .update(productionJobs)
+    .set(updateData)
+    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)));
+
+  await appendEvent({
+    tx,
+    organizationId: args.organizationId,
+    productionJobId: args.jobId,
+    type: "status_changed",
+    payload: {
+      previousStatus: job.status,
+      newStatus: args.status,
+      previousStepKey: job.stepKey,
+      newStepKey: args.stepKey === undefined ? job.stepKey : args.stepKey,
+      actorUserId: args.userId ?? null,
+    },
+  });
+
+  await tx.insert(auditLogs).values({
+    organizationId: args.organizationId,
+    userId: args.userId ?? null,
+    userName: args.auditUserName || null,
+    actionType: "UPDATE",
+    entityType: "production_job",
+    entityId: args.jobId,
+    entityName: args.jobId,
+    description: `Production job status changed to ${args.status}`,
+    oldValues: { status: job.status },
+    newValues: { status: args.status },
+    ipAddress: args.ipAddress || null,
+    userAgent: args.userAgent || null,
+  } as any);
+
+  const updatedRows = await tx
+    .select()
+    .from(productionJobs)
+    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
+    .limit(1);
+  return updatedRows[0];
+}
+
+async function startProductionJobWorkflow(
+  tx: any,
+  args: { organizationId: string; userId?: string | null; jobId: string },
+) {
+  const now = new Date();
+  const jobRows = await tx
+    .select()
+    .from(productionJobs)
+    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
+    .limit(1);
+  const job = jobRows[0];
+  if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+  if (!job.orderId || !job.lineItemId) {
+    throw Object.assign(new Error("Production job is missing its order line item"), { statusCode: 409 });
+  }
+  if (isTerminalProductionStatus(job.status)) {
+    throw Object.assign(new Error("Job is terminal; reopen or restore first"), { statusCode: 400 });
+  }
+  await assertParentOrderInProductionForJob(tx, {
+    organizationId: args.organizationId,
+    job,
+    action: "start production job",
+  });
+
+  const timerState = await getTimerStateForJob(args.organizationId, args.jobId, tx);
+  if (timerState.isRunning) return job;
+
+  await appendEvent({
+    tx,
+    organizationId: args.organizationId,
+    productionJobId: args.jobId,
+    type: "timer_started",
+    actorUserId: args.userId ?? null,
+  });
+  await tx
+    .update(productionJobs)
+    .set({
+      status: job.status === "queued" ? "in_progress" : job.status,
+      startedAt: job.startedAt ?? now,
+      updatedAt: now,
+    })
+    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)));
+
+  const updatedRows = await tx
+    .select()
+    .from(productionJobs)
+    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
+    .limit(1);
+  return updatedRows[0];
 }
 
 /**
@@ -2902,6 +3041,155 @@ export function registerProductionJobsRoutes(
     }
   });
 
+  const bulkProductionSelectionSchema = z.object({
+    station: z.enum(["flatbed", "roll"]),
+    jobIds: z.array(z.string().trim().min(1)).min(1).max(100),
+  });
+
+  const bulkActiveStatusSchema = bulkProductionSelectionSchema.extend({
+    status: z.enum(["queued", "in_progress", "done"]),
+  });
+
+  const loadAndValidateBulkJobs = async (
+    tx: any,
+    args: { organizationId: string; jobIds: string[]; station: "flatbed" | "roll"; allowedStatuses: string[]; action: string },
+  ) => {
+    const jobs = await tx
+      .select()
+      .from(productionJobs)
+      .where(and(eq(productionJobs.organizationId, args.organizationId), inArray(productionJobs.id, args.jobIds)))
+      .for("update");
+
+    const validation = validateProductionBulkSelection({
+      jobIds: args.jobIds,
+      jobs,
+      station: args.station,
+      allowedStatuses: args.allowedStatuses,
+    });
+    if (!validation.ok) {
+      throw Object.assign(new Error("One or more selected jobs are no longer eligible for this station."), {
+        statusCode: 422,
+        code: "invalid_bulk_selection",
+      });
+    }
+
+    for (const job of jobs) {
+      await assertParentOrderInProductionForJob(tx, {
+        organizationId: args.organizationId,
+        job,
+        action: args.action,
+      });
+    }
+    return jobs;
+  };
+
+  // Starts independent queued jobs together; no run or nesting record is created.
+  app.post("/api/production/jobs/bulk-start", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const parsed = bulkProductionSelectionSchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+      const jobIds = dedupeProductionJobIds(parsed.data.jobIds);
+      if (jobIds.length > MAX_PRODUCTION_BULK_ITEMS) return res.status(400).json({ error: `A maximum of ${MAX_PRODUCTION_BULK_ITEMS} jobs can be started at once.` });
+
+      const updated = await db.transaction(async (tx) => {
+        await loadAndValidateBulkJobs(tx, {
+          organizationId,
+          jobIds,
+          station: parsed.data.station,
+          allowedStatuses: ["queued"],
+          action: "bulk start production jobs",
+        });
+        const results = [];
+        for (const jobId of jobIds) {
+          results.push(await startProductionJobWorkflow(tx, {
+            organizationId,
+            userId: getUserId(req.user) ?? null,
+            jobId,
+          }));
+        }
+        return results;
+      });
+
+      return res.json({ success: true, data: {
+        requestedItemCount: parsed.data.jobIds.length,
+        uniqueItemCount: jobIds.length,
+        updatedItemCount: updated.length,
+        updatedJobIds: updated.map((job) => job.id),
+        status: "in_progress",
+        runId: null,
+      } });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({
+        error: error?.message || "Failed to start selected production jobs",
+        code: error?.code,
+      });
+    }
+  });
+
+  app.patch("/api/production/jobs/bulk-status", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      const parsed = bulkActiveStatusSchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+      if (parsed.data.status === "done" && !userId) return res.status(401).json({ error: "User ID not found" });
+      const jobIds = dedupeProductionJobIds(parsed.data.jobIds);
+      if (jobIds.length > MAX_PRODUCTION_BULK_ITEMS) return res.status(400).json({ error: `A maximum of ${MAX_PRODUCTION_BULK_ITEMS} jobs can be updated at once.` });
+
+      const updated = await db.transaction(async (tx) => {
+        await loadAndValidateBulkJobs(tx, {
+          organizationId,
+          jobIds,
+          station: parsed.data.station,
+          allowedStatuses: ["in_progress", "paused"],
+          action: "bulk update production job status",
+        });
+        const results = [];
+        for (const jobId of jobIds) {
+          results.push(await (parsed.data.status === "done"
+            ? completeProductionJobWorkflow(tx, {
+              organizationId,
+              userId: userId!,
+              jobId,
+              skipProduction: "auto",
+              auditUserName: req.user?.email || req.user?.name || null,
+              ipAddress: req.ip || null,
+              userAgent: req.headers["user-agent"] || null,
+            })
+            : updateProductionJobStatusWorkflow(tx, {
+              organizationId,
+              userId: userId ?? null,
+              jobId,
+              status: parsed.data.status,
+              auditUserName: req.user?.email || req.user?.name || null,
+              ipAddress: req.ip || null,
+              userAgent: req.headers["user-agent"] || null,
+            })));
+        }
+        return results;
+      });
+
+      return res.json({ success: true, data: {
+        requestedItemCount: parsed.data.jobIds.length,
+        uniqueItemCount: jobIds.length,
+        updatedItemCount: updated.length,
+        updatedJobIds: updated.map((job) => job.id),
+        status: parsed.data.status,
+        runId: null,
+      } });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({
+        error: error?.message || "Failed to update selected production jobs",
+        code: error?.code,
+      });
+    }
+  });
+
   // 3) POST /api/production/jobs/:jobId/start
   app.post("/api/production/jobs/:jobId/start", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
@@ -2911,52 +3199,11 @@ export function registerProductionJobsRoutes(
       const userId = getUserId(req.user);
 
       const jobId = req.params.jobId;
-      const now = new Date();
-
-      const result = await db.transaction(async (tx) => {
-        const jobRows = await tx
-          .select()
-          .from(productionJobs)
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
-          .limit(1);
-        const job = jobRows[0];
-        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
-        if (isTerminalProductionStatus(job.status)) throw Object.assign(new Error("Job is terminal; reopen or restore first"), { statusCode: 400 });
-        await assertParentOrderInProductionForJob(tx, {
-          organizationId,
-          job,
-          action: "start production job",
-        });
-
-        const timerState = await getTimerStateForJob(organizationId, jobId, tx);
-        if (timerState.isRunning) {
-          return job;
-        }
-
-        await appendEvent({
-          tx,
-          organizationId,
-          productionJobId: jobId,
-          type: "timer_started",
-          actorUserId: userId ?? null,
-        });
-
-        await tx
-          .update(productionJobs)
-          .set({
-            status: job.status === "queued" ? "in_progress" : job.status,
-            startedAt: job.startedAt ?? now,
-            updatedAt: now,
-          })
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
-
-        const updatedRows = await tx
-          .select()
-          .from(productionJobs)
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
-          .limit(1);
-        return updatedRows[0];
-      });
+      const result = await db.transaction((tx) => startProductionJobWorkflow(tx, {
+        organizationId,
+        userId: userId ?? null,
+        jobId,
+      }));
 
       res.json({ success: true, data: result });
     } catch (error: any) {
@@ -3692,92 +3939,16 @@ export function registerProductionJobsRoutes(
         return res.json({ success: true, data: completedJob, message: "Production job completed" });
       }
 
-      const now = new Date();
-
-      const result = await db.transaction(async (tx) => {
-        const jobRows = await tx
-          .select()
-          .from(productionJobs)
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
-          .limit(1);
-        const job = jobRows[0];
-        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
-        if (isTerminalProductionStatus(job.status) && newStatus !== job.status) {
-          throw Object.assign(new Error("Cannot advance a terminal production job."), { statusCode: 409 });
-        }
-
-        // IDEMPOTENCY: If status and stepKey unchanged, return success without DB writes
-        const stepKeyUnchanged = newStepKey === undefined || job.stepKey === newStepKey;
-        if (job.status === newStatus && stepKeyUnchanged) {
-          if (process.env.NODE_ENV === "development") {
-            console.log(`[Production] Status/stepKey update no-op (already ${newStatus}/${job.stepKey}):`, {
-              organizationId,
-              jobId,
-              status: newStatus,
-              stepKey: newStepKey
-            });
-          }
-          return job;
-        }
-
-        if (newStatus !== "canceled") {
-          await assertParentOrderInProductionForJob(tx, {
-            organizationId,
-            job,
-            action: "update production job status",
-          });
-        }
-
-        // Update status and stepKey
-        const updateData: any = { status: newStatus, updatedAt: now };
-        if (newStepKey !== undefined) {
-          updateData.stepKey = newStepKey;
-        }
-        if (newStatus === "in_progress" && !job.startedAt) {
-          updateData.startedAt = now;
-        }
-
-        await tx
-          .update(productionJobs)
-          .set(updateData)
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
-
-        await appendEvent({
-          tx,
-          organizationId,
-          productionJobId: jobId,
-          type: "status_changed",
-          payload: {
-            previousStatus: job.status,
-            newStatus,
-            previousStepKey: job.stepKey,
-            newStepKey: newStepKey === undefined ? job.stepKey : newStepKey,
-            actorUserId: userId ?? null,
-          },
-        });
-
-        await tx.insert(auditLogs).values({
-          organizationId,
-          userId: userId ?? null,
-          userName: req.user?.email || req.user?.name || null,
-          actionType: "UPDATE",
-          entityType: "production_job",
-          entityId: jobId,
-          entityName: jobId,
-          description: `Production job status changed to ${newStatus}`,
-          oldValues: { status: job.status },
-          newValues: { status: newStatus },
-          ipAddress: req.ip || null,
-          userAgent: req.headers["user-agent"] || null,
-        } as any);
-
-        const updatedRows = await tx
-          .select()
-          .from(productionJobs)
-          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)))
-          .limit(1);
-        return updatedRows[0];
-      });
+      const result = await db.transaction((tx) => updateProductionJobStatusWorkflow(tx, {
+        organizationId,
+        userId: userId ?? null,
+        jobId,
+        status: newStatus,
+        stepKey: newStepKey,
+        auditUserName: req.user?.email || req.user?.name || null,
+        ipAddress: req.ip || null,
+        userAgent: req.headers["user-agent"] || null,
+      }));
 
       res.json({ success: true, data: result });
     } catch (error: any) {

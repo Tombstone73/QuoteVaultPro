@@ -18,6 +18,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
   Select,
   SelectContent,
@@ -73,6 +74,7 @@ import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsP
 import { ProductionNotesSection } from "@/components/production/ProductionNotesSection";
 import { ProductionPreviewArea, type ProductionPreviewSize } from "@/components/production/ProductionPreviewArea";
 import { RecentlyCompletedProductionJobs } from "@/components/production/RecentlyCompletedProductionJobs";
+import { ProductionBulkActions } from "@/features/production/ProductionBulkActions";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/productionBoard";
@@ -1460,6 +1462,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     { enabled: shouldFetchJobs },
   );
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
+  const [bulkSelectedJobIds, setBulkSelectedJobIds] = useState<Set<string>>(new Set());
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
   const [previewSide, setPreviewSide] = useState<"front" | "back">("front");
   const [productionPreviewFile, setProductionPreviewFile] = useState<ProductionFileSummary | null>(null);
@@ -1516,6 +1519,10 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   const sortedJobs = useMemo(() => {
     return [...jobsSafe];
   }, [jobsSafe]);
+  const bulkEligibleJobs = useMemo(
+    () => sortedJobs.filter((job) => !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
+    [props.status, sortedJobs],
+  );
 
   useEffect(() => {
     if (sortedJobs.length === 0) {
@@ -1724,10 +1731,18 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
               </select>
             </div>
           </div>
+          <ProductionBulkActions
+            station="flatbed"
+            status={props.status}
+            eligibleJobs={bulkEligibleJobs}
+            selectedJobIds={bulkSelectedJobIds}
+            onSelectedJobIdsChange={setBulkSelectedJobIds}
+          />
           <div className="mt-2 rounded-lg border border-titan-border-subtle bg-titan-bg-card overflow-hidden">
             <Table>
               <TableHeader>
                 <TableRow>
+                  <TableHead className="w-[44px]">SELECT</TableHead>
                   <TableHead>CLIENT</TableHead>
                   <TableHead className="w-[100px]">ORDER #</TableHead>
                   <TableHead className="w-[120px]">ART</TableHead>
@@ -1742,13 +1757,15 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
               <TableBody>
                 {sortedJobs.length === 0 ? (
                   <TableRow>
-                    <TableCell colSpan={9} className="py-8 text-center text-sm text-titan-text-muted">
+                    <TableCell colSpan={10} className="py-8 text-center text-sm text-titan-text-muted">
                       No jobs match this printer filter.
                     </TableCell>
                   </TableRow>
                 ) : null}
                 {sortedJobs.map((job) => {
                   const selected = job.id === selectedJobId;
+                  const bulkEligible = bulkEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id);
+                  const bulkSelected = bulkEligible && bulkSelectedJobIds.has(job.id);
                   const li = primaryLineItem(job);
                   const qty = li?.quantity ?? job.order.lineItems?.totalQuantity ?? null;
                   const due = dueMeta(job.order.dueDate);
@@ -1775,6 +1792,21 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       onClick={() => setSelectedJobId(job.id)}
                       style={{ cursor: "pointer" }}
                     >
+                      <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
+                        <Checkbox
+                          checked={bulkSelected}
+                          onCheckedChange={(checked) => {
+                            setBulkSelectedJobIds((current) => {
+                              const next = new Set(current);
+                              if (checked === true) next.add(job.id);
+                              else next.delete(job.id);
+                              return next;
+                            });
+                          }}
+                          aria-label={`Select production job ${orderNumber}`}
+                          disabled={!bulkEligible}
+                        />
+                      </TableCell>
                       <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
                         {customerId ? (
                           <Link
