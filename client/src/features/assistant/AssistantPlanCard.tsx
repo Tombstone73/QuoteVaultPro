@@ -78,6 +78,12 @@ function asText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function asDisplayText(value: unknown): string | null {
+  const text = asText(value);
+  if (text) return text;
+  return typeof value === "number" && Number.isFinite(value) ? String(value) : typeof value === "boolean" ? String(value) : null;
+}
+
 function asTextList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map(asText).filter((item): item is string => Boolean(item)).slice(0, 25);
@@ -179,8 +185,8 @@ function toProductDraftUpdate(action: string | null, preview: UnknownRecord | nu
     if (!change) return [];
     const label = asText(change.label) ?? asText(change.field) ?? asText(change.name);
     if (!label) return [];
-    const before = asText(change.before) ?? asText(change.previous) ?? asText(change.oldValue);
-    const after = asText(change.after) ?? asText(change.next) ?? asText(change.newValue);
+    const before = asDisplayText(change.before) ?? asDisplayText(change.previous) ?? asDisplayText(change.oldValue);
+    const after = asDisplayText(change.after) ?? asDisplayText(change.next) ?? asDisplayText(change.newValue);
     return before || after ? [{ label, before, after }] : [];
   }) : [];
   const editorPath = asText(value.editorPath) ?? asText(value.reviewUrl) ?? asText(value.sourceLink) ?? asText(preview.editorPath);
