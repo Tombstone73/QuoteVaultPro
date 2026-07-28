@@ -2580,6 +2580,8 @@ function artworkLinkFromInboundFile(file: ClientInboundOrderFile, source: Inboun
     sizeBytes: file.sizeBytes ?? null,
     role: attachmentRoleForClassification(classification.classification ?? inboundAttachmentRoleToClassification(file.role)),
     assignmentSide: "unassigned",
+    productionQuantity: null,
+    productionGroupId: null,
     source,
     confidence: source === "staff_selected" ? 100 : null,
     reason: source === "staff_selected" ? "Staff selected artwork attachment for this line item." : null,
@@ -5780,9 +5782,8 @@ function CleanLineItemCard({
     : hasSelectedProduct ? "Review product options" : "Select product first";
   const productOptionsComplete = Boolean(lineItem.optionSelectionsJson && Object.keys(ensurePbv2Selections(lineItem.optionSelectionsJson).selected ?? {}).length > 0);
   const workflowComplete = Boolean(requiredComplete && activeArtworkLinks.length > 0 && doubleSidedArtworkComplete && productOptionsComplete);
-  const artworkCountMismatch = lineItem.artworkQuantityMode === "one_each_per_file"
-    && activeArtworkLinks.length > 0
-    && lineItem.quantity !== activeArtworkLinks.length;
+  const allocatedArtworkTotal = activeArtworkLinks.reduce((total, link) => total + (link.productionQuantity ?? 0), 0);
+  const artworkAllocationIssue = activeArtworkLinks.length > 1 && lineItem.quantity != null && allocatedArtworkTotal !== lineItem.quantity;
   const effectivePricing = resolveInboundLineEffectivePricing(lineItem.pricingReviewJson, lineItem.quantity);
   const pricingSummary = effectivePricing.effectiveTotalCents > 0
     ? `${formatCents(effectivePricing.effectiveTotalCents)} · ${effectivePricing.hasPriceOverride
@@ -5844,10 +5845,18 @@ function CleanLineItemCard({
     const nextCount = nextArtworkLinks.filter(isActiveClassifiedArtworkLink).length;
     onChange({
       artworkLinks: nextArtworkLinks,
+      // This legacy quick action remains explicit: staff intentionally chose
+      // one finished piece per file, so it may update the line quantity.
       quantity: lineItem.artworkQuantityMode === "one_each_per_file" ? nextCount : lineItem.quantity,
       quantitySource: lineItem.artworkQuantityMode === "one_each_per_file" ? "staff_selected" : lineItem.quantitySource,
     });
     setSelectedArtworkKeys(new Set());
+  };
+  const updateArtworkAllocation = (link: InboundOrderArtworkLink, productionQuantity: number | null) => {
+    const key = artworkLinkKey(link);
+    onChange({ artworkLinks: lineItem.artworkLinks.map((candidate) => artworkLinkKey(candidate) === key
+      ? { ...candidate, productionQuantity, source: "staff_selected" as const, confidence: 100, reason: "Staff set the production quantity allocation." }
+      : candidate) });
   };
   const assignArtworkSide = (link: InboundOrderArtworkLink, assignmentSide: "front" | "back" | "both") => {
     const key = artworkLinkKey(link);
@@ -5879,11 +5888,8 @@ function CleanLineItemCard({
       ...lineItem.artworkLinks.filter((candidate) => artworkLinkKey(candidate) !== key),
       { ...link, source: "staff_removed" as const, confidence: 100, reason: "Staff removed artwork attachment from this line item." },
     ];
-    const nextCount = nextArtworkLinks.filter(isActiveClassifiedArtworkLink).length;
     onChange({
       artworkLinks: nextArtworkLinks,
-      quantity: lineItem.artworkQuantityMode === "one_each_per_file" ? nextCount || null : lineItem.quantity,
-      quantitySource: lineItem.artworkQuantityMode === "one_each_per_file" ? "staff_selected" : lineItem.quantitySource,
     });
   };
   const selectedArtworkKey = activeArtworkLinks[0] ? artworkLinkKey(activeArtworkLinks[0]) : "";
@@ -6201,10 +6207,40 @@ function CleanLineItemCard({
                 {useSameArtworkBothSides && frontArtwork && <p className="mt-2 text-[11px] text-violet-100">Back resolves from the same file as Front.</p>}
               </div>
             )}
-            <div className="mt-2 grid gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-              <OrderEntryField label="Artwork quantity">
+            {activeArtworkLinks.length > 0 && (
+              <div className="mt-2 rounded border border-slate-700 bg-slate-900 p-2" data-testid="inbound-artwork-allocation">
+                <div className="flex items-center justify-between gap-2 text-xs font-semibold text-slate-200">
+                  <span>Production allocation</span>
+                  <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => {
+                    const links = lineItem.artworkLinks.map((candidate) => isActiveClassifiedArtworkLink(candidate)
+                      ? { ...candidate, productionQuantity: 1, source: "staff_selected" as const, confidence: 100, reason: "Staff applied 1 each production allocation." }
+                      : candidate);
+                    onChange({ artworkLinks: links });
+                  }}>1 each</Button>
+                </div>
+                <p className="mt-1 text-[11px] text-slate-400">Assign finished pieces per production artwork. This does not change the billable line quantity.</p>
+                <div className="mt-2 space-y-1">
+                  {activeArtworkLinks.map((link) => (
+                    <label key={artworkLinkKey(link)} className="flex items-center justify-between gap-2 text-xs text-slate-200">
+                      <span className="min-w-0 truncate">{link.filename || link.fileId}</span>
+                      <input
+                        className="h-7 w-16 rounded border border-slate-600 bg-slate-950 px-1 text-right text-xs"
+                        aria-label={`Production quantity for ${link.filename || link.fileId}`}
+                        type="number" min="1" step="1" value={link.productionQuantity ?? ""}
+                        onChange={(event) => updateArtworkAllocation(link, event.target.value ? Number(event.target.value) : null)}
+                      />
+                    </label>
+                  ))}
+                </div>
+                {lineItem.quantity != null && <p className={cn("mt-2 text-[11px]", artworkAllocationIssue ? "text-amber-200" : "text-emerald-200")}>
+                  Allocated {allocatedArtworkTotal} of {lineItem.quantity}{artworkAllocationIssue ? ". Resolve before Prepress." : "."}
+                </p>}
+              </div>
+            )}
+            <div className="mt-2">
+              <OrderEntryField label="Quick allocation">
                 <select
-                  className="h-9 w-full rounded-md border border-input bg-background px-2 text-sm text-foreground"
+                  className="h-8 w-full rounded-md border border-input bg-background px-2 text-xs text-foreground"
                   value={lineItem.artworkQuantityMode}
                   onChange={(event) => {
                     const artworkQuantityMode = event.target.value as "one_each_per_file" | "same_quantity_each";
@@ -6216,17 +6252,11 @@ function CleanLineItemCard({
                   }}
                   aria-label={`Artwork quantity mode for line item ${index + 1}`}
                 >
-                  <option value="one_each_per_file">1 each per file</option>
-                  <option value="same_quantity_each">Same quantity for each file</option>
+                  <option value="same_quantity_each">Keep line quantity; assign quantities manually</option>
+                  <option value="one_each_per_file">1 each per file and set line quantity</option>
                 </select>
               </OrderEntryField>
-              <span className="pb-2 text-[11px] text-slate-500">{activeArtworkLinks.length} linked file{activeArtworkLinks.length === 1 ? "" : "s"}</span>
             </div>
-            {artworkCountMismatch && (
-              <div className="mt-2 rounded border border-amber-400/40 bg-amber-400/10 px-2 py-1.5 text-xs text-amber-100">
-                1 each per file is selected, but quantity {lineItem.quantity ?? 0} does not match {activeArtworkLinks.length} artwork files. Review quantity or switch the artwork quantity mode.
-              </div>
-            )}
             {availableArtworkOptions.length > 1 && (
               <details className="mt-2 rounded border border-slate-700 bg-slate-900 p-2" data-testid="clean-multi-artwork-assignment">
                 <summary className="cursor-pointer text-xs font-semibold text-slate-200">Assign multiple artwork files ({availableArtworkOptions.length} available)</summary>

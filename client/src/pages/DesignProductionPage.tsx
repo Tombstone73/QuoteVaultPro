@@ -1216,6 +1216,7 @@ export default function DesignProductionPage() {
                   lineItemId={selectedItem.lineItemId}
                   lineItemKey={selectedItem.lineItemId}
                   productName={selectedItem.productName}
+                  lineQuantity={selectedItem.quantity}
                   defaultExpanded={true}
                 />
               </CardContent>

@@ -340,7 +340,7 @@ export type MatchInboundCustomerReviewInput = {
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
-  customerId: string;
+  customerId?: string | null;
   contactId?: string | null;
   staffNote?: string | null;
 };
@@ -3604,22 +3604,23 @@ export class InboundOrderService {
       throw new InboundOrderTransitionError("Converted inbound records cannot have customer/contact matches changed.");
     }
 
-    const customer = await this.repository.getCustomer(args.organizationId, args.customerId);
-    if (!customer) {
-      throw new InboundOrderTransitionError("Customer not found for this organization", 404);
+    if (!args.customerId && !args.contactId) {
+      throw new InboundOrderTransitionError("Select a customer, a contact, or both.", 400);
     }
+    const customer = args.customerId
+      ? await this.repository.getCustomer(args.organizationId, args.customerId)
+      : null;
+    if (args.customerId && !customer) throw new InboundOrderTransitionError("Customer not found for this organization", 404);
 
     let contactName: string | null = null;
     let contactEmail: string | null = null;
     if (args.contactId) {
-      const contact = await this.repository.getContactForCustomer(
-        args.organizationId,
-        args.customerId,
-        args.contactId,
-      );
+      const contact = args.customerId
+        ? await this.repository.getContactForCustomer(args.organizationId, args.customerId, args.contactId)
+        : await this.repository.getContact(args.organizationId, args.contactId);
 
       if (!contact) {
-        throw new InboundOrderTransitionError("Contact does not belong to the selected customer", 400);
+        throw new InboundOrderTransitionError(args.customerId ? "Contact does not belong to the selected customer" : "Contact was not found for this organization", args.customerId ? 400 : 404);
       }
 
       contactName = `${contact.firstName} ${contact.lastName}`.trim();
@@ -3630,10 +3631,10 @@ export class InboundOrderService {
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
       actorUserId: args.actorUserId,
-      customerId: args.customerId,
+      customerId: args.customerId ?? null,
       contactId: args.contactId ?? null,
       staffNote: args.staffNote?.trim() || null,
-      customerName: customer.companyName,
+      customerName: customer?.companyName ?? contactName ?? "Contact-only order",
       contactName,
       contactEmail,
     });
@@ -3880,6 +3881,16 @@ export class InboundOrderService {
           throw new InboundOrderTransitionError("Draft order creation did not return a valid tenant-scoped order.", 500);
         }
 
+        const staffInternalNote = payload.reviewedOrderJson.internalNotes?.trim() ?? "";
+        if (staffInternalNote) {
+          await orderRepository.addOrderInternalNote({
+            organizationId: args.organizationId,
+            orderId: order.id,
+            userId: args.actorUserId,
+            noteText: staffInternalNote,
+          });
+        }
+
         await this.materializeInboundArtworkForOrder({
           organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
@@ -3914,25 +3925,18 @@ export class InboundOrderService {
           orderId: order.id,
           userId: args.actorUserId,
           userName: null,
-          actionType: "inbound_order_converted",
+          actionType: "order_created_from_inbound",
           fromStatus: null,
           toStatus: "new",
-          note: "Inbound order converted to draft order.",
+          note: "Order created from inbound draft.",
           metadata: {
             inboundRecordId: args.inboundRecordId,
-            inboundReference: detail.record.externalReference ?? null,
+            inboundDraftId: args.inboundRecordId,
+            sourceType: detail.record.sourceType,
             sourceSubject: stringFromUnknown(getPathValue(detail.record.rawPayloadJson, "subject")),
             sourceReference: detail.record.externalReference ?? null,
-            convertedAt: new Date().toISOString(),
-            parseConfidence: latestParseAttempt?.confidence ?? null,
-            poNumber: payload.reviewedOrderJson.poNumber ?? null,
-            artworkStatus: payload.reviewedArtworkJson.status,
-            artworkBypassed: hasArtworkBypassForOrder(payload),
-            releasesProduction: false,
-            createsProofs: false,
-            createsInvoices: false,
-            createsFulfillment: false,
-            createsPayments: false,
+            resultingOrderId: order.id,
+            resultingOrderNumber: order.orderNumber,
           },
         } as any);
 
@@ -4529,6 +4533,8 @@ export class InboundOrderService {
       sizeBytes: file.sizeBytes ?? null,
       role,
       assignmentSide: "unassigned",
+      productionQuantity: null,
+      productionGroupId: null,
       source,
       confidence,
       reason,
@@ -5388,17 +5394,20 @@ export class InboundOrderService {
     }
 
     const selectedCustomerId = normalizedPayload.reviewedCustomerJson.selectedCustomerId;
-    if (!selectedCustomerId) {
-      errors.push("Select an existing customer before creating a draft order.");
-    } else {
+    const selectedContactId = normalizedPayload.reviewedCustomerJson.selectedContactId;
+    if (!selectedCustomerId && !selectedContactId) {
+      errors.push("Select an existing customer, a contact, or both before creating a draft order.");
+    } else if (selectedCustomerId) {
       const customer = await this.repository.getCustomer(record.organizationId, selectedCustomerId);
       if (!customer) errors.push("Selected customer was not found for this organization.");
     }
 
-    const selectedContactId = normalizedPayload.reviewedCustomerJson.selectedContactId;
     if (selectedCustomerId && selectedContactId) {
       const contact = await this.repository.getContactForCustomer(record.organizationId, selectedCustomerId, selectedContactId);
       if (!contact) errors.push("Selected contact does not belong to the selected customer.");
+    } else if (selectedContactId) {
+      const contact = await this.repository.getContact(record.organizationId, selectedContactId);
+      if (!contact) errors.push("Selected contact was not found for this organization.");
     }
 
     if (normalizedPayload.reviewedLineItemsJson.length === 0) {
@@ -5524,6 +5533,8 @@ export class InboundOrderService {
           role: "artwork",
           side,
           isPrimary: side !== "na",
+          productionQuantity: artworkLink.productionQuantity,
+          productionGroupId: artworkLink.productionGroupId ?? null,
         })));
 
         const updated = await args.conversionRepository.updateFile({
@@ -5555,42 +5566,6 @@ export class InboundOrderService {
     const artwork = payload.reviewedArtworkJson;
     const artworkBypassed = hasArtworkBypassForOrder(payload);
     const reference = order.poNumber || detail.record.externalReference || detail.record.id.slice(0, 8);
-    const unsupportedRequestNotes = payload.unsupportedRequestsJson
-      .map((finding) => {
-        const requestedText = stringFromUnknown((finding as any).requestedText) ?? "Unsupported request";
-        const category = stringFromUnknown((finding as any).category);
-        const reason = stringFromUnknown((finding as any).reason);
-        return `Unsupported request${category ? ` (${category})` : ""}: ${requestedText}${reason ? ` - ${reason}` : ""}`;
-      });
-    const pricingReviewNotes = payload.reviewedLineItemsJson.flatMap((lineItem, index) => {
-      const review = lineItem.pricingReviewJson;
-      if (!review || (review.status !== "mismatch" && review.status !== "resolved")) return [];
-      return [
-        [
-          `Pricing review line ${index + 1}: ${review.message ?? "PO price review captured."}`,
-          `PO ${formatCents(review.poPriceCents)} vs system ${formatCents(review.systemPriceCents)}.`,
-          review.differenceCents != null ? `Difference ${formatCents(Math.abs(review.differenceCents))}.` : null,
-          review.resolution ? `Resolution: ${review.resolution}.` : null,
-          review.resolutionNote ? `Note: ${review.resolutionNote}` : null,
-        ].filter(Boolean).join(" "),
-      ];
-    });
-    const reviewedNotes = [
-      "Created from inbound reviewed draft.",
-      `Inbound record: ${detail.record.id}`,
-      `Source: ${detail.record.sourceLabel ?? detail.record.sourceType}`,
-      detail.record.externalReference ? `Reference: ${detail.record.externalReference}` : null,
-      order.internalNotes ? `Internal notes: ${order.internalNotes}` : null,
-      order.customerNotes ? `Customer notes: ${order.customerNotes}` : null,
-      payload.reviewNotes ? `Review notes: ${payload.reviewNotes}` : null,
-      artworkBypassed ? "Artwork: intentionally bypassed during inbound order conversion; still required before prepress or proofing." : null,
-      !artworkBypassed && artwork.status === "to_follow" ? "Artwork: to follow." : null,
-      artwork.status === "missing" ? "Artwork: missing at conversion." : null,
-      artwork.notes ? `Artwork notes: ${artwork.notes}` : null,
-      ...unsupportedRequestNotes,
-      ...pricingReviewNotes,
-    ].filter(Boolean).join("\n");
-
     const lineItems: CreateOrderLineItemInput[] = [];
     for (let index = 0; index < payload.reviewedLineItemsJson.length; index += 1) {
       const lineItem = payload.reviewedLineItemsJson[index];
@@ -5699,7 +5674,7 @@ export class InboundOrderService {
     const normalizedDueDate = normalizeInboundReviewedDueDate(order.dueDate, detail.record.receivedAt);
 
     return {
-      customerId: customer.selectedCustomerId!,
+      customerId: customer.selectedCustomerId ?? null,
       contactId: customer.selectedContactId ?? null,
       label: `Inbound ${reference}`,
       poNumber: order.poNumber ?? detail.record.externalReference ?? null,
@@ -5707,7 +5682,10 @@ export class InboundOrderService {
       priority: order.priority,
       dueDate: normalizedDueDate,
       requestedDueDate: normalizedDueDate,
-      notesInternal: reviewedNotes,
+      // Provenance belongs to the inbound relationship and immutable order
+      // history. Staff-authored notes are added as structured note rows after
+      // creation, never embedded in this legacy free-text field.
+      notesInternal: null,
       createdByUserId: args.actorUserId,
       lineItems,
       taxRate: 0,
@@ -6114,6 +6092,13 @@ export class InboundOrderService {
         artworkFileIds: reviewedPayload?.reviewedLineItemsJson[index]?.artworkLinks
           .filter(isActiveClassifiedArtworkLink)
           .map((link) => link.fileId) ?? [],
+        artworkAllocations: reviewedPayload?.reviewedLineItemsJson[index]?.artworkLinks
+          .filter(isActiveClassifiedArtworkLink)
+          .map((link) => ({
+            fileId: link.fileId,
+            productionQuantity: link.productionQuantity,
+            productionGroupId: link.productionGroupId,
+          })) ?? [],
         snapshotJson: draft,
       });
     }
@@ -6140,8 +6125,8 @@ export class InboundOrderService {
     const desiredOutputType = reviewedPayload?.reviewedOrderJson.intent ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "desiredOutputType"));
     const orderNotes = reviewedPayload?.reviewedOrderJson.internalNotes ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "orderNotes"));
     const externalReference = record.externalReference ?? record.sourceRecordId ?? record.id.slice(0, 8);
-    if (!reviewedSelectedCustomerId && !record.matchedCustomerId) {
-      blockingReasons.push("Assign an existing or newly created customer before creating a quote draft.");
+    if (!reviewedSelectedCustomerId && !record.matchedCustomerId && !reviewedSelectedContactId && !record.matchedContactId) {
+      blockingReasons.push("Assign an existing customer, a contact, or both before creating a quote draft.");
     }
     if (lineItemsToConvert.length === 0) {
       blockingReasons.push("At least one valid line item is required before creating a quote draft.");

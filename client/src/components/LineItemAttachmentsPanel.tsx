@@ -75,6 +75,10 @@ type LineItemAttachment = {
   pageCount?: number | null;
   pages?: AttachmentPage[];
   side?: 'front' | 'back' | 'both' | 'na' | null;
+  role?: 'artwork' | 'reference' | 'output' | 'other' | null;
+  productionQuantity?: number | null;
+  productionGroupId?: string | null;
+  productionRole?: 'artwork' | 'reference' | null;
 };
 
 interface LineItemAttachmentsPanelProps {
@@ -107,6 +111,7 @@ interface LineItemAttachmentsPanelProps {
   /** Persisted line-item intent; controlled by the order line editor. */
   useSameArtworkBothSides?: boolean;
   onUseSameArtworkBothSidesChange?: (checked: boolean) => void;
+  lineQuantity?: number | null;
 }
 
 export function LineItemAttachmentsPanel({
@@ -126,6 +131,7 @@ export function LineItemAttachmentsPanel({
   doubleSided = false,
   useSameArtworkBothSides: controlledUseSameArtworkBothSides,
   onUseSameArtworkBothSidesChange,
+  lineQuantity,
 }: LineItemAttachmentsPanelProps) {
   const { toast } = useToast();
   const queryClient = useQueryClient();
@@ -251,6 +257,11 @@ export function LineItemAttachmentsPanel({
   });
 
   const fileCount = attachments.length + pendingOrderAttachments.length;
+  const productionRows = attachments.filter((file) => (file.role ?? file.productionRole) !== 'reference');
+  const allocationTotal = productionRows.reduce((total, file) => total + (file.productionQuantity ?? 0), 0);
+  const allocationSummary = lineQuantity && productionRows.length > 0
+    ? `Allocated ${allocationTotal} of ${lineQuantity}${allocationTotal === lineQuantity ? '' : '. Review before production.'}`
+    : null;
   // Asset-only uploads are assignable too. The backend materializes their
   // order_attachment link when the first explicit side is saved.
   const artworkAttachments = attachments;
@@ -275,6 +286,24 @@ export function LineItemAttachmentsPanel({
     } catch (error: any) {
       toast({ title: 'Artwork assignment failed', description: error?.message || 'Please try again.', variant: 'destructive' });
       return false;
+    }
+  };
+
+  const updateArtworkAllocation = async (file: LineItemAttachment, patch: { role: 'artwork' | 'reference'; productionQuantity: number | null; productionGroupId?: string | null }) => {
+    if (!lineItemId || !filesApiPath || (parentType === "order" && !orderId) || (parentType === "quote" && !quoteId)) return;
+    try {
+      const endpoint = parentType === "order"
+        ? `/api/orders/${orderId}/line-items/${lineItemId}/files/${file.id}/artwork-allocation`
+        : `/api/quotes/${quoteId}/line-items/${lineItemId}/attachments/${file.id}/artwork-allocation`;
+      const response = await fetch(endpoint, {
+        method: 'PATCH', credentials: 'include', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(patch),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error || 'Failed to update allocation');
+      await queryClient.invalidateQueries({ queryKey: [filesApiPath] });
+      toast({ title: 'Artwork allocation updated', description: json?.allocation?.issue || 'Production instruction saved.' });
+    } catch (error: any) {
+      toast({ title: 'Artwork allocation failed', description: error?.message || 'Please try again.', variant: 'destructive' });
     }
   };
 
@@ -869,6 +898,11 @@ export function LineItemAttachmentsPanel({
       {/* Expanded content - file list */}
       {isExpanded && fileCount > 0 && (
         <div className="px-3 pb-3 space-y-2 border-t">
+          {(parentType === "order" || parentType === "quote") && allocationSummary && (
+            <p className={cn("mt-2 text-xs", allocationTotal === lineQuantity ? "text-emerald-700" : "text-amber-700")} data-testid="artwork-allocation-summary">
+              {allocationSummary}
+            </p>
+          )}
           {parentType === 'order' && doubleSided && orderId && artworkAttachments.length > 0 && (
             <div className="mt-2 rounded-md border border-violet-400/30 bg-violet-400/5 p-2.5 space-y-2" data-testid="order-double-sided-artwork-assignment">
               <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
@@ -1093,6 +1127,36 @@ export function LineItemAttachmentsPanel({
                           );
                         })()}
                       </div>
+                      {(parentType === "order" || parentType === "quote") && (
+                        <div className="flex shrink-0 items-center gap-1.5" onClick={(event) => event.stopPropagation()}>
+                          <select
+                            className="h-7 rounded border bg-background px-1 text-[10px]"
+                            aria-label={`Artwork role for ${fileName}`}
+                            value={(file.role ?? file.productionRole) === 'reference' ? 'reference' : 'artwork'}
+                            onChange={(event) => void updateArtworkAllocation(file, {
+                              role: event.target.value as 'artwork' | 'reference',
+                              productionQuantity: event.target.value === 'reference' ? null : file.productionQuantity ?? null,
+                              productionGroupId: event.target.value === 'reference' ? null : file.productionGroupId ?? null,
+                            })}
+                          >
+                            <option value="artwork">Production</option>
+                            <option value="reference">Reference</option>
+                          </select>
+                          {(file.role ?? file.productionRole) !== 'reference' && (
+                            <input
+                              className="h-7 w-16 rounded border bg-background px-1 text-[10px]"
+                              type="number" min="1" step="1" inputMode="numeric"
+                              aria-label={`Production quantity for ${fileName}`}
+                              defaultValue={file.productionQuantity ?? ''}
+                              placeholder="Qty"
+                              onBlur={(event) => {
+                                const value = event.currentTarget.value.trim();
+                                void updateArtworkAllocation(file, { role: 'artwork', productionQuantity: value ? Number(value) : null, productionGroupId: file.productionGroupId ?? null });
+                              }}
+                            />
+                          )}
+                        </div>
+                      )}
                       <div className="flex gap-0.5 shrink-0">
                         <Button
                           variant="ghost"

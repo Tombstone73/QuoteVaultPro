@@ -7,7 +7,9 @@ export async function generatePackingSlipHTML(orderId: string): Promise<string> 
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId));
   if (!order) throw new Error('Order not found');
 
-  const [customer] = await db.select().from(customers).where(eq(customers.id, order.customerId));
+  const [customer] = order.customerId
+    ? await db.select().from(customers).where(eq(customers.id, order.customerId))
+    : [];
   const lineItems = await db.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
   const orderDisplayNumber = order.displayNumber || order.orderNumber;
 
@@ -116,8 +118,11 @@ export async function sendShipmentEmail(
   const [order] = await db.select().from(orders).where(eq(orders.id, orderId));
   if (!order) throw new Error('Order not found');
 
-  const [customer] = await db.select().from(customers).where(eq(customers.id, order.customerId));
-  if (!customer?.email) throw new Error('Customer has no email address');
+  const [customer] = order.customerId
+    ? await db.select().from(customers).where(eq(customers.id, order.customerId))
+    : [];
+  const recipientEmail = customer?.email ?? order.billToEmail;
+  if (!recipientEmail) throw new Error('Order has no customer or contact email address');
 
   const [shipment] = await db.select().from(shipments).where(eq(shipments.id, shipmentId));
   if (!shipment) throw new Error('Shipment not found');
@@ -197,7 +202,7 @@ export async function sendShipmentEmail(
   `.trim();
 
   await emailService.sendEmail(organizationId, {
-    to: customer.email,
+    to: recipientEmail,
     subject: `Your Order ${orderDisplayNumber} Has Shipped!`,
     html,
   });

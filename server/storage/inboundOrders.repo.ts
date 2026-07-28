@@ -164,6 +164,7 @@ export type InboundQuoteDraftLineInput = {
   quantity: number;
   notes?: string | null;
   artworkFileIds?: string[];
+  artworkAllocations?: Array<{ fileId: string; productionQuantity: number | null; productionGroupId: string | null }>;
   snapshotJson: Record<string, unknown>;
   pricing: {
     lineTotalCents: number;
@@ -293,7 +294,7 @@ export type MatchInboundCustomerInput = {
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
-  customerId: string;
+  customerId?: string | null;
   contactId?: string | null;
   staffNote?: string | null;
 };
@@ -1780,6 +1781,13 @@ export class InboundOrdersRepository {
     return contact ?? null;
   }
 
+  async getContact(organizationId: string, contactId: string): Promise<CustomerContact | null> {
+    const [contact] = await this.dbInstance.select().from(customerContacts)
+      .where(and(eq(customerContacts.organizationId, organizationId), eq(customerContacts.id, contactId)))
+      .limit(1);
+    return contact ?? null;
+  }
+
   async getProduct(organizationId: string, productId: string): Promise<Product | null> {
     const [product] = await this.dbInstance
       .select()
@@ -2857,6 +2865,7 @@ export class InboundOrdersRepository {
       // quote-to-order attachment transfer can preserve it for production.
       for (let index = 0; index < input.lineItems.length; index += 1) {
         const artworkFileIds = Array.from(new Set(input.lineItems[index].artworkFileIds ?? []));
+        const allocationByFileId = new Map((input.lineItems[index].artworkAllocations ?? []).map((allocation) => [allocation.fileId, allocation]));
         const quoteLineItem = createdLineItems[index];
         if (artworkFileIds.length === 0) continue;
         if (!quoteLineItem) {
@@ -2901,6 +2910,8 @@ export class InboundOrdersRepository {
               description: `Artwork attached during inbound review conversion (${input.inboundRecordId}).`,
               originalFilename: file.sourceFilename ?? null,
               sizeBytes: file.sizeBytes ?? null,
+              productionQuantity: allocationByFileId.get(fileId)?.productionQuantity ?? null,
+              productionGroupId: allocationByFileId.get(fileId)?.productionGroupId ?? null,
             })
             .returning({ id: quoteAttachments.id });
           if (!createdAttachment) throw new Error(`Failed to create quote artwork attachment for ${file.sourceFilename ?? fileId}.`);

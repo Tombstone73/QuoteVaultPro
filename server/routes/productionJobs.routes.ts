@@ -73,9 +73,9 @@ import { resolveProductionCompletionLineItemState } from "../services/production
 import {
   completedProductionSearchText,
   describeCompletedArtworkSummary,
-  resolveCompletedArtworkAllocations,
   resolveCompletedArtworkQuantityMode,
 } from "@shared/productionCompleted";
+import { buildArtworkAllocationStatus, defaultSingleArtworkAllocation } from "@shared/artworkAllocation";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -2071,6 +2071,8 @@ export function registerProductionJobsRoutes(
               thumbStatus: orderAttachments.thumbStatus,
               thumbError: orderAttachments.thumbError,
               side: orderAttachments.side,
+              productionQuantity: orderAttachments.productionQuantity,
+              productionGroupId: orderAttachments.productionGroupId,
               isPrimary: orderAttachments.isPrimary,
               createdAt: orderAttachments.createdAt,
             })
@@ -2131,6 +2133,8 @@ export function registerProductionJobsRoutes(
           side: attachment.side ?? "na",
           isPrimary: !!attachment.isPrimary,
           sourceKind: "line_item_artwork" as const,
+          productionQuantity: attachment.productionQuantity,
+          productionGroupId: attachment.productionGroupId,
         };
       }));
       const assetUrls = await Promise.all(artworkAssetRows.map(async (linked) => {
@@ -2151,6 +2155,8 @@ export function registerProductionJobsRoutes(
           side: "na",
           isPrimary: linked.linkRole === "primary",
           sourceKind: "line_item_asset" as const,
+          productionQuantity: null,
+          productionGroupId: null,
         };
       }));
       const artworkByLineItem = new Map<string, Array<(typeof attachmentUrls)[number] | (typeof assetUrls)[number]>>();
@@ -2173,14 +2179,24 @@ export function registerProductionJobsRoutes(
           const quantity = Number(row.lineItemQuantity);
           const totalQuantity = Number.isFinite(quantity) ? quantity : null;
           const quantityMode = resolveCompletedArtworkQuantityMode(row.lineItemSpecsJson);
-          const allocation = resolveCompletedArtworkAllocations({ totalQuantity, artworkCount: artwork.length, quantityMode });
+          const defaultQuantity = defaultSingleArtworkAllocation(totalQuantity, artwork.length);
+          const allocation = buildArtworkAllocationStatus({
+            lineQuantity: totalQuantity,
+            members: artwork.map((file) => ({
+              id: file.id,
+              role: "artwork",
+              side: file.side,
+              productionQuantity: file.productionQuantity ?? defaultQuantity,
+              productionGroupId: file.productionGroupId ?? null,
+            })),
+          });
           const restoreUntilMs = row.restoreUntil ? new Date(row.restoreUntil as any).getTime() : Number.NaN;
           const undoAllowed = !!row.completedAt && Number.isFinite(restoreUntilMs) && restoreUntilMs > nowMs;
           const dimensions = row.lineItemWidth && row.lineItemHeight ? `${row.lineItemWidth} × ${row.lineItemHeight}` : null;
           const itemName = String(row.itemDescription || productNameById.get(row.lineItemProductId ?? "") || row.productType || `Job ${String(row.id).slice(-6)}`).trim();
-          const completedArtwork = artwork.map((file, index) => ({
+          const completedArtwork = artwork.map((file) => ({
             ...file,
-            allocatedQuantity: allocation.allocations[index]?.allocatedQuantity ?? null,
+            allocatedQuantity: file.productionQuantity ?? defaultQuantity,
           }));
           return {
             id: row.id,
@@ -2197,7 +2213,7 @@ export function registerProductionJobsRoutes(
             artworkCount: completedArtwork.length,
             artworkQuantityMode: quantityMode,
             artworkSummary: describeCompletedArtworkSummary({ totalQuantity, artworkCount: completedArtwork.length, quantityMode, sides: completedArtwork.map((file) => file.side) }),
-            allocationIssue: allocation.allocationIssue,
+            allocationIssue: artwork.length > 1 ? allocation.issue : null,
             artwork: completedArtwork,
             stationKey: row.stationKey,
             stationLabel: stationLabel(row.stationKey),

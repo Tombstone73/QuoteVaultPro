@@ -1532,6 +1532,7 @@ export function LineItemsSection({
                                   orderId={null}
                                   lineItemId={item.id}
                                   productName={item.productName}
+                                  lineQuantity={item.quantity}
                                   defaultExpanded={true}
                                   ensureQuoteId={createTarget === "order" ? undefined : (!readOnly ? ensureQuoteId : undefined)}
                                   ensureLineItemId={createTarget === "order" ? undefined : (!readOnly && ensureLineItemId ? () => {

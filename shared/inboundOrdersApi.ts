@@ -438,6 +438,10 @@ export const inboundOrderArtworkLinkSchema = z.object({
   // Explicit production intent. `both` means the same source file is used for
   // front and back; it is not inferred from attachment order.
   assignmentSide: inboundOrderArtworkAssignmentSideSchema.default("unassigned"),
+  // Explicit production instruction. Null means the file is attached but not
+  // allocated yet; a reference-only link must always remain null.
+  productionQuantity: z.number().int().positive().nullable().default(null),
+  productionGroupId: z.string().trim().min(1).max(128).nullable().default(null),
   source: inboundOrderArtworkLinkSourceSchema.default("ai_suggested"),
   confidence: z.number().min(0).max(100).nullable().default(null),
   reason: z.string().trim().max(1000).nullable().default(null),

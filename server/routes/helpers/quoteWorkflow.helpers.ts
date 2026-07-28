@@ -292,6 +292,9 @@ export const cloneQuoteToDraft = async (args: {
           extension: att.extension,
           sizeBytes: att.sizeBytes,
           checksum: att.checksum,
+          productionQuantity: att.productionQuantity ?? null,
+          productionGroupId: att.productionGroupId ?? null,
+          productionRole: att.productionRole ?? "artwork",
 
           thumbnailRelativePath: att.thumbnailRelativePath,
           thumbnailGeneratedAt: att.thumbnailGeneratedAt,

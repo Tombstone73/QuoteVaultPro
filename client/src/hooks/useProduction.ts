@@ -459,7 +459,12 @@ export function useScheduleOrderLineItemsForProduction(orderId: string) {
     onSuccess: (data) => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["orders", "detail", orderId] });
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
       qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/proofing/queue"] });
+      for (const lineItemId of data?.data?.affectedLineItemIds ?? []) {
+        qc.invalidateQueries({ queryKey: ["/api/proofing/line-item", lineItemId] });
+      }
       qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
       const diagnosticEntries = data?.data?.lineItemDiagnostics
         ? Object.entries(data.data.lineItemDiagnostics)
@@ -495,7 +500,7 @@ export function useScheduleOrderLineItemsForProduction(orderId: string) {
         ? `${data.message}${firstDiagnostic.idempotencyNote ? ` • ${firstDiagnostic.idempotencyNote}` : ""}`
         : data.message;
       toast({
-        title: "Production scheduling complete",
+        title: "Production workflow started",
         description: details,
       });
     },

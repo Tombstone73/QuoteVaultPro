@@ -355,6 +355,15 @@ export function registerTimelineRoutes(
                   message = 'Order created from customer approval';
                   break;
 
+                case 'order_created_from_inbound':
+                case 'inbound_order_converted': {
+                  const sourceReference = meta.sourceReference ?? meta.inboundReference;
+                  message = sourceReference
+                    ? `Order created from inbound draft (${sourceReference})`
+                    : 'Order created from inbound draft';
+                  break;
+                }
+
                 case 'note_added':
                   message = 'Note added';
                   break;

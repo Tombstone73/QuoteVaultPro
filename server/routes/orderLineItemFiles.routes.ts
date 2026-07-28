@@ -31,7 +31,6 @@ import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
   normalizeObjectKeyForDb,
-  resolveDerivativeFileAccess,
 } from "../lib/supabaseObjectHelpers";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
@@ -41,6 +40,7 @@ import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
 import { getFileUploadNamingPolicy } from "../prepressFileService";
 import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
+import { buildOrderLineItemArtworkAssetsResponse } from "../services/orderLineItemArtworkAssets";
 import {
   assignOrderLineItemArtworkSide,
   isOrderArtworkSide,
@@ -50,6 +50,7 @@ import {
   applyArtworkSideAssignmentToSpecs,
   removeArtworkFileReferencesFromSpecs,
 } from "@shared/artworkSideAssignment";
+import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -146,50 +147,11 @@ export function registerOrderLineItemFileRoutes(
         }), { logOnce })
       ));
 
-      // Canonical line-item files are a separate source from legacy order
-      // attachments. Return only authenticated derivative capabilities so
-      // proofing can render a generated image without exposing a storage path.
-      const canonicalFiles = await db
-        .select({
-          id: lineItemFiles.id,
-          fileRecordId: lineItemFiles.fileRecordId,
-          fileName: lineItemFiles.originalFilename,
-          mimeType: lineItemFiles.mimeType,
-          sizeBytes: lineItemFiles.sizeBytes,
-          createdAt: lineItemFiles.createdAt,
-        })
-        .from(lineItemFiles)
-        .where(and(
-          eq(lineItemFiles.organizationId, organizationId),
-          eq(lineItemFiles.orderId, orderId),
-          eq(lineItemFiles.lineItemId, lineItemId),
-          eq(lineItemFiles.status, "active"),
-        ));
-      const enrichedCanonicalFiles = await Promise.all(canonicalFiles.map(async (file) => {
-        const [thumbnail, preview] = file.fileRecordId
-          ? await Promise.all([
-              resolveDerivativeFileAccess({ id: file.id, fileRecordId: file.fileRecordId }, "thumbnail", { logOnce }),
-              resolveDerivativeFileAccess({ id: file.id, fileRecordId: file.fileRecordId }, "preview", { logOnce }),
-            ])
-          : [{ url: null }, { url: null }];
-        return {
-          id: file.id,
-          fileRecordId: file.fileRecordId,
-          fileName: file.fileName,
-          originalFilename: file.fileName,
-          mimeType: file.mimeType,
-          sizeBytes: file.sizeBytes,
-          fileSize: file.sizeBytes,
-          createdAt: file.createdAt,
-          originalUrl: null,
-          downloadUrl: null,
-          thumbUrl: thumbnail.url ?? null,
-          thumbnailUrl: thumbnail.url ?? null,
-          previewUrl: preview.url ?? null,
-        };
-      }));
-
-      // PHASE 2: Include linked assets with enriched URLs
+      // Artwork Assets rows represent user-manageable attachment or asset-link
+      // relationships. line_item_files is a prepress/proof mirror of a linked
+      // file, not a separate artwork relationship; including it here produced
+      // a second row with an ID that the delete route cannot unlink.
+      // Derivatives remain attached to their attachment or asset capabilities.
       const { assetRepository } = await import('../services/assets/AssetRepository');
       const { enrichAssetsWithRoles } = await import('../services/assets/enrichAssetWithUrls');
       const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order_line_item', lineItemId);
@@ -200,8 +162,8 @@ export function registerOrderLineItemFileRoutes(
         })
       );
 
-      console.log(`[OrderLineItemFiles:GET] Found ${files.length} files + ${linkedAssets.length} assets for line item ${lineItemId}`);
-      res.json({ success: true, data: [...enrichedFiles, ...enrichedCanonicalFiles], assets: enrichedAssets });
+      console.log(`[OrderLineItemFiles:GET] Found ${files.length} artwork attachments + ${linkedAssets.length} artwork assets for line item ${lineItemId}`);
+      res.json({ success: true, ...buildOrderLineItemArtworkAssetsResponse(enrichedFiles, enrichedAssets) });
     } catch (error) {
       console.error("[OrderLineItemFiles:GET] Error:", error);
       res.status(500).json({ error: "Failed to fetch line item files" });
@@ -824,6 +786,73 @@ export function registerOrderLineItemFileRoutes(
         });
       }
       return res.status(500).json({ error: "Failed to assign artwork side", code: "ARTWORK_SIDE_UPDATE_FAILED" });
+    }
+  });
+
+  // Allocation belongs to this line-item attachment relationship.  It is
+  // intentionally separate from filenames and from the order's billable qty.
+  app.patch("/api/orders/:orderId/line-items/:lineItemId/files/:fileId/artwork-allocation", isAuthenticated, tenantContext, async (req: any, res) => {
+    const { orderId, lineItemId, fileId } = req.params;
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+    const role = req.body?.role === "reference" ? "reference" : req.body?.role === "artwork" ? "artwork" : null;
+    const rawQuantity = req.body?.productionQuantity;
+    const productionQuantity = rawQuantity == null || rawQuantity === "" ? null : Number(rawQuantity);
+    const productionGroupId = typeof req.body?.productionGroupId === "string" && req.body.productionGroupId.trim()
+      ? req.body.productionGroupId.trim()
+      : null;
+    if (!role || (role === "artwork" && productionQuantity !== null && (!Number.isInteger(productionQuantity) || productionQuantity <= 0))) {
+      return res.status(400).json({ error: "Production artwork quantity must be a positive whole number, or blank while the draft is incomplete.", code: "INVALID_ARTWORK_ALLOCATION" });
+    }
+    if (role === "reference" && (productionQuantity !== null || productionGroupId !== null)) {
+      return res.status(400).json({ error: "Reference-only files cannot have a production allocation.", code: "REFERENCE_HAS_ALLOCATION" });
+    }
+
+    try {
+      const result = await db.transaction(async (tx) => {
+        const [lineItem] = await tx.select({ id: orderLineItems.id, quantity: orderLineItems.quantity })
+          .from(orderLineItems)
+          .innerJoin(orders, eq(orders.id, orderLineItems.orderId))
+          .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId), eq(orders.organizationId, organizationId)))
+          .limit(1);
+        if (!lineItem) throw Object.assign(new Error("Line item not found"), { statusCode: 404 });
+
+        let [attachment] = await tx.select().from(orderAttachments).where(and(
+          eq(orderAttachments.id, fileId), eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId),
+        )).limit(1);
+        if (!attachment) {
+          const [asset] = await tx.select({ fileRecordId: assets.fileRecordId, fileName: assets.fileName, fileKey: assets.fileKey, mimeType: assets.mimeType, sizeBytes: assets.sizeBytes })
+            .from(assets).innerJoin(assetLinks, and(eq(assetLinks.assetId, assets.id), eq(assetLinks.organizationId, organizationId), eq(assetLinks.parentType, "order_line_item"), eq(assetLinks.parentId, lineItemId)))
+            .where(and(eq(assets.id, fileId), eq(assets.organizationId, organizationId))).limit(1);
+          if (!asset) throw Object.assign(new Error("Artwork file is not attached to this line item"), { statusCode: 404 });
+          [attachment] = await tx.insert(orderAttachments).values({
+            orderId, orderLineItemId: lineItemId, fileRecordId: asset.fileRecordId ?? null,
+            uploadedByUserId: getUserId(req.user) ?? null, uploadedByName: null,
+            fileName: asset.fileName, fileUrl: asset.fileKey ?? null, fileSize: asset.sizeBytes ?? null, sizeBytes: asset.sizeBytes ?? null,
+            mimeType: asset.mimeType ?? null, role: "artwork", side: "na", isPrimary: false,
+          }).returning();
+        }
+        const [updated] = await tx.update(orderAttachments).set({
+          role,
+          productionQuantity: role === "artwork" ? productionQuantity : null,
+          productionGroupId: role === "artwork" ? productionGroupId : null,
+          updatedAt: new Date(),
+        }).where(eq(orderAttachments.id, attachment.id)).returning();
+        const members = await tx.select({ id: orderAttachments.id, role: orderAttachments.role, side: orderAttachments.side, productionQuantity: orderAttachments.productionQuantity, productionGroupId: orderAttachments.productionGroupId })
+          .from(orderAttachments).where(and(eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId)));
+        return { updated, status: buildArtworkAllocationStatus({ lineQuantity: lineItem.quantity, members }) };
+      });
+      await storage.createOrderAuditLog({
+        orderId, orderLineItemId: lineItemId, userId: getUserId(req.user), userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+        actionType: "artwork_allocation_updated", fromStatus: null, toStatus: null,
+        note: role === "reference" ? "Artwork marked reference-only" : `Production allocation set to ${productionQuantity ?? "unallocated"}`,
+        metadata: { attachmentId: result.updated.id, productionQuantity: result.updated.productionQuantity, productionGroupId: result.updated.productionGroupId, role },
+      });
+      return res.json({ success: true, data: result.updated, allocation: result.status });
+    } catch (error: any) {
+      if (error?.statusCode === 404) return res.status(404).json({ error: error.message });
+      console.error("[OrderLineItemFiles:ARTWORK_ALLOCATION] Failed", { orderId, lineItemId, fileId, message: error?.message });
+      return res.status(500).json({ error: "Failed to update artwork allocation", code: "ARTWORK_ALLOCATION_UPDATE_FAILED" });
     }
   });
 

@@ -3,7 +3,6 @@ import {
   canCompleteAndReleasePrepress,
   completeAndReleasePrepress,
   markPrepressItemsPrintReady,
-  PrepressCompleteAndReleaseError,
 } from "./prepressActions";
 
 function jsonResponse(ok: boolean, data: Record<string, unknown>) {
@@ -14,10 +13,9 @@ function jsonResponse(ok: boolean, data: Record<string, unknown>) {
 }
 
 describe("Prepress complete and release action", () => {
-  test("completes prepress and then releases through the existing endpoints", async () => {
-    const fetchFn = jest.fn(async (url: string) => url.includes("/complete")
-      ? jsonResponse(true, { success: true, data: { status: "complete" } })
-      : jsonResponse(true, { success: true, data: { workflowState: "ready_for_production" } })) as unknown as typeof fetch;
+  test("completes prepress through the authoritative finalization endpoint", async () => {
+    const fetchFn = jest.fn(async () =>
+      jsonResponse(true, { success: true, data: { status: "complete", workflowState: "ready_for_production" } })) as unknown as typeof fetch;
 
     const result = await completeAndReleasePrepress({
       lineItemId: "line-1",
@@ -26,23 +24,8 @@ describe("Prepress complete and release action", () => {
     }, fetchFn);
 
     expect(fetchFn).toHaveBeenNthCalledWith(1, "/api/prepress/session/session-1/complete", expect.objectContaining({ method: "POST" }));
-    expect(fetchFn).toHaveBeenNthCalledWith(2, "/api/prepress/line-item/line-1/send-to-print", expect.objectContaining({ method: "POST" }));
+    expect(fetchFn).toHaveBeenCalledTimes(1);
     expect(result.skippedCompletion).toBe(false);
-  });
-
-  test("leaves the workflow completed and reports a partial failure when release fails", async () => {
-    const fetchFn = jest.fn(async (url: string) => url.includes("/complete")
-      ? jsonResponse(true, { success: true })
-      : jsonResponse(false, { error: "Material reservation failed" })) as unknown as typeof fetch;
-
-    await expect(completeAndReleasePrepress({
-      lineItemId: "line-1",
-      sessionId: "session-1",
-      hasCompletedSession: false,
-    }, fetchFn)).rejects.toMatchObject({
-      prepressCompleted: true,
-      message: expect.stringContaining("Material reservation failed"),
-    } satisfies Partial<PrepressCompleteAndReleaseError>);
   });
 
   test("does not complete prepress twice when the session is already complete", async () => {
@@ -54,8 +37,7 @@ describe("Prepress complete and release action", () => {
       hasCompletedSession: true,
     }, fetchFn);
 
-    expect(fetchFn).toHaveBeenCalledTimes(1);
-    expect(fetchFn).toHaveBeenCalledWith("/api/prepress/line-item/line-1/send-to-print", expect.any(Object));
+    expect(fetchFn).not.toHaveBeenCalled();
     expect(result.skippedCompletion).toBe(true);
   });
 
@@ -66,7 +48,7 @@ describe("Prepress complete and release action", () => {
     expect(canCompleteAndReleasePrepress({ canCompleteNow: false, canReleaseNow: false, releaseAllowedAfterCompletion: true })).toBe(false);
   });
 
-  test("promotes and completes multiple selected line items through canonical session endpoints", async () => {
+  test("completes selected line items without pre-completion promotion", async () => {
     const fetchFn = jest.fn(async (url: string) => {
       if (url === "/api/prepress/session/start") {
         return jsonResponse(true, { success: true, data: { id: "session-created" } });
@@ -83,8 +65,7 @@ describe("Prepress complete and release action", () => {
     expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/start", expect.objectContaining({ method: "POST" }));
     expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/session-created/complete", expect.objectContaining({ method: "POST" }));
     expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/session-2/complete", expect.objectContaining({ method: "POST" }));
-    expect(fetchFn).toHaveBeenCalledWith("/api/prepress/line-item/line-1/use-artwork-as-print-file", expect.objectContaining({ method: "POST" }));
-    expect(fetchFn).toHaveBeenCalledWith("/api/prepress/line-item/line-2/use-artwork-as-print-file", expect.objectContaining({ method: "POST" }));
+    expect(fetchFn).not.toHaveBeenCalledWith(expect.stringContaining("use-artwork-as-print-file"), expect.anything());
     const completionCalls = (fetchFn as unknown as jest.Mock).mock.calls.filter(([url]) => String(url).endsWith("/complete"));
     expect(completionCalls).toHaveLength(2);
     for (const [, request] of completionCalls) {
@@ -110,7 +91,7 @@ describe("Prepress complete and release action", () => {
       expect.objectContaining({ lineItemId: "line-proof", status: "failed", message: "Awaiting proof approval" }),
       expect.objectContaining({ lineItemId: "line-safe", status: "completed" }),
     ]));
-    expect(fetchFn).toHaveBeenCalledTimes(2);
+    expect(fetchFn).toHaveBeenCalledTimes(1);
   });
 
   test("can complete and release selected print-ready lines", async () => {
@@ -121,6 +102,7 @@ describe("Prepress complete and release action", () => {
     ], { fetchFn, releaseToProduction: true });
 
     expect(result.status).toBe("released");
-    expect(fetchFn).toHaveBeenNthCalledWith(3, "/api/prepress/line-item/line-1/send-to-print", expect.any(Object));
+    expect(fetchFn).toHaveBeenCalledTimes(1);
+    expect(fetchFn).toHaveBeenCalledWith("/api/prepress/session/session-1/complete", expect.any(Object));
   });
 });

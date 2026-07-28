@@ -2512,6 +2512,10 @@ export async function processPushOrders(jobId: string, organizationId: string): 
 
     for (const order of localOrders) {
       try {
+        if (!order.customerId) {
+          // Contact-only orders must never be attributed to an unrelated QB customer.
+          throw new Error('ORDER_CUSTOMER_REQUIRED_FOR_QUICKBOOKS: Assign a customer before QuickBooks export');
+        }
         const [customer] = await db
           .select()
           .from(customers)

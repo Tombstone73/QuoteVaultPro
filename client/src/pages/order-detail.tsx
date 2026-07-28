@@ -91,6 +91,7 @@ import { hasEnteredShipToAddress, resolveCustomerShipTo } from "@/lib/customerSh
 import { useOrderPaymentResolution } from "@/hooks/usePaymentOrchestrator";
 import type { PaymentInvoiceCandidate } from "@shared/paymentOrchestration";
 import { getOrderBillingActionState } from "@/lib/paymentResolutionUi";
+import { isClearlyGeneratedInboundProvenance } from "@/lib/inboundInternalNotes";
 import { OrderRecipientFallbackDialog } from "@/features/orders/components/OrderRecipientFallbackDialog";
 import {
   resolveAttachOrderPdfDefault,
@@ -529,6 +530,7 @@ export default function OrderDetail() {
   });
 
   const [orderInternalNoteDraft, setOrderInternalNoteDraft] = useState("");
+  const [isAddingOrderInternalNote, setIsAddingOrderInternalNote] = useState(false);
 
   const orderInternalNotesQuery = useQuery<OrderInternalNoteRow[]>({
     queryKey: ["orders", "internalNotes", orderId],
@@ -574,6 +576,7 @@ export default function OrderDetail() {
     },
     onSuccess: async () => {
       setOrderInternalNoteDraft("");
+      setIsAddingOrderInternalNote(false);
       await queryClient.invalidateQueries({ queryKey: ["orders", "internalNotes", orderId] });
       toast({ title: "Order internal note added" });
     },
@@ -1065,11 +1068,11 @@ export default function OrderDetail() {
 
   // Customer change mutation
   const changeCustomerMutation = useMutation({
-    mutationFn: async (customerId: string) => {
+    mutationFn: async (customerId: string | null) => {
       const response = await fetch(`/api/orders/${orderId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId }), // Backend will auto-set contact to primary
+        body: JSON.stringify({ customerId }),
         credentials: "include",
       });
       if (!response.ok) throw new Error("Failed to update customer");
@@ -2232,8 +2235,16 @@ export default function OrderDetail() {
                             </PopoverTrigger>
                             <PopoverContent className="w-[400px] p-0" align="start">
                               <Command shouldFilter={true}>
-                                <CommandInput placeholder="Search customers..." autoFocus />
+                                  <CommandInput placeholder="Search customers..." autoFocus />
                                 <CommandList>
+                                  {order?.contactId && order?.customerId && (
+                                    <CommandItem
+                                      value="contact-only"
+                                      onSelect={() => changeCustomerMutation.mutate(null)}
+                                    >
+                                      Keep the selected contact; remove customer
+                                    </CommandItem>
+                                  )}
                                   <CommandEmpty>No customers found.</CommandEmpty>
                                   {customers.map((customer: any) => {
                                     const searchValue = [customer.companyName, customer.email]
@@ -2776,14 +2787,71 @@ export default function OrderDetail() {
                   </div>
                 </div>
 
-                {order.notesInternal && (
-                  <div>
-                    <label className="text-sm font-medium text-muted-foreground">Legacy Order Internal Notes (text blob)</label>
-                    <div className="mt-1 text-sm p-3 bg-muted rounded-md whitespace-pre-wrap">
-                      {order.notesInternal}
+                <div className="rounded-md border border-border/60 bg-muted/20 px-3 py-2.5" data-testid="order-internal-notes">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium">Internal Notes</div>
+                      <div className="text-xs text-muted-foreground">Staff only</div>
                     </div>
+                    {canEditOrder && !isAddingOrderInternalNote ? (
+                      <Button type="button" size="sm" variant="ghost" onClick={() => setIsAddingOrderInternalNote(true)}>
+                        Add note
+                      </Button>
+                    ) : null}
                   </div>
-                )}
+
+                  {orderInternalNotesQuery.isLoading ? (
+                    <div className="mt-2 text-sm text-muted-foreground">Loading notes…</div>
+                  ) : orderInternalNotesQuery.data && orderInternalNotesQuery.data.length > 0 ? (
+                    <div className="mt-2 space-y-2">
+                      {orderInternalNotesQuery.data.map((note) => (
+                        <div key={note.id} className="rounded bg-background/70 px-2.5 py-2 text-sm whitespace-pre-wrap">
+                          {note.noteText}
+                          <div className="mt-1 text-xs text-muted-foreground">
+                            {note.createdByUserName || "Staff"} · {format(new Date(note.createdAt), "PPp")}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  ) : !order.notesInternal || isClearlyGeneratedInboundProvenance(order.notesInternal) ? (
+                    <div className="mt-2 text-sm text-muted-foreground">No internal notes.</div>
+                  ) : null}
+
+                  {order.notesInternal && !isClearlyGeneratedInboundProvenance(order.notesInternal) ? (
+                    <details className="mt-2 rounded border border-border/50 bg-background/40 px-2.5 py-2">
+                      <summary className="cursor-pointer text-sm font-medium">Existing internal note</summary>
+                      <div className="mt-2 whitespace-pre-wrap text-sm text-muted-foreground">{order.notesInternal}</div>
+                    </details>
+                  ) : null}
+
+                  {canEditOrder && isAddingOrderInternalNote ? (
+                    <div className="mt-3 space-y-2">
+                      <Textarea
+                        value={orderInternalNoteDraft}
+                        onChange={(event) => setOrderInternalNoteDraft(event.target.value)}
+                        placeholder="Add an internal note for staff…"
+                        rows={2}
+                        disabled={addOrderInternalNoteMutation.isPending}
+                      />
+                      <div className="flex justify-end gap-2">
+                        <Button type="button" size="sm" variant="ghost" onClick={() => {
+                          setOrderInternalNoteDraft("");
+                          setIsAddingOrderInternalNote(false);
+                        }}>
+                          Cancel
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          onClick={() => addOrderInternalNoteMutation.mutate(orderInternalNoteDraft)}
+                          disabled={!orderInternalNoteDraft.trim() || addOrderInternalNoteMutation.isPending}
+                        >
+                          {addOrderInternalNoteMutation.isPending ? "Saving…" : "Save note"}
+                        </Button>
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
                   </div>
                 </div>
               </CardContent>

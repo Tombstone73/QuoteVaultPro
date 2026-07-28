@@ -161,9 +161,12 @@ const inboundProductSearchQuerySchema = z.object({
 });
 
 const customerMatchSchema = z.object({
-  customerId: z.string().trim().min(1),
+  customerId: z.string().trim().min(1).optional().nullable(),
   contactId: z.string().trim().min(1).optional().nullable(),
   staffNote: z.string().trim().max(2000).optional().nullable(),
+}).refine((value) => Boolean(value.customerId || value.contactId), {
+  message: "Select a customer, a contact, or both.",
+  path: ["customerId"],
 });
 
 const inboundCustomerCreateSchema = z.object({

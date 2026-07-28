@@ -355,7 +355,7 @@ describe("production schedule routing diagnostics", () => {
     expect(result.data.failed[0].lineItemId).toBe(failLineItemId);
   });
 
-  test("skips scheduling while a proof-required line item is awaiting approval", async () => {
+  test("routes a proof-required line item into the proofing first stage", async () => {
     const routeLineItemToProductionFn = jest.fn(async () => ({
       jobId: `job_${lineItemA}`,
       outcome: "created" as const,
@@ -408,22 +408,32 @@ describe("production schedule routing diagnostics", () => {
           }),
         }),
       },
+      transitionLineItemWorkflowStateFn: async () => ({
+        lineItemId: lineItemA,
+        fromState: "awaiting_proof_approval" as const,
+        toState: "awaiting_proof_approval" as const,
+        lifecycleStatus: "new",
+        activeOwnerJobId: `job_${lineItemA}`,
+        activeOwnerStationKey: "prepress",
+        activeOwnerStepKey: "prepress",
+        ownershipAction: "created" as const,
+      }),
     });
 
     expect(result.success).toBe(true);
-    expect(result.data.createdJobCount).toBe(0);
+    expect(result.data.createdJobCount).toBe(1);
     expect(result.data.existingJobCount).toBe(0);
-    expect(result.data.affectedLineItemIds).toEqual([]);
+    expect(result.data.affectedLineItemIds).toEqual([lineItemA]);
     expect(result.data.failed).toEqual([]);
     expect(result.data.lineItemDiagnostics[lineItemA]).toMatchObject({
-      stationKey: "proofing",
-      stepKey: "awaiting_proof_approval",
-      routingReason: "proof_approval_required_before_scheduling",
+      stationKey: "prepress",
+      stepKey: "prepress",
+      routingReason: "proof_required_first_stage",
     });
     expect(routeLineItemToProductionFn).not.toHaveBeenCalled();
   });
 
-  test("skips scheduling proof-required items that resolve past design without an approved proof", async () => {
+  test("does not route an unapproved proof-required item directly to production", async () => {
     const routeLineItemToProductionFn = jest.fn(async () => ({
       jobId: `job_${lineItemA}`,
       outcome: "created" as const,
@@ -476,20 +486,28 @@ describe("production schedule routing diagnostics", () => {
           }),
         }),
       },
+      transitionLineItemWorkflowStateFn: async () => ({
+        lineItemId: lineItemA,
+        fromState: "new" as const,
+        toState: "awaiting_proof_approval" as const,
+        lifecycleStatus: "new",
+        activeOwnerJobId: `job_${lineItemA}`,
+        activeOwnerStationKey: "prepress",
+        activeOwnerStepKey: "prepress",
+        ownershipAction: "created" as const,
+      }),
     });
 
     expect(result.success).toBe(true);
-    expect(result.message).toContain("Approved proof required before scheduling 1 item");
-    expect(result.data.createdJobCount).toBe(0);
+    expect(result.data.createdJobCount).toBe(1);
     expect(result.data.existingJobCount).toBe(0);
-    expect(result.data.affectedLineItemIds).toEqual([]);
+    expect(result.data.affectedLineItemIds).toEqual([lineItemA]);
     expect(result.data.failed).toEqual([]);
     expect(result.data.lineItemDiagnostics[lineItemA]).toMatchObject({
-      stationKey: "proofing",
-      stepKey: "approved_proof_required",
-      routingReason: "proof_approval_required_before_scheduling",
+      stationKey: "prepress",
+      stepKey: "prepress",
+      routingReason: "proof_required_first_stage",
     });
-    expect(result.data.lineItemDiagnostics[lineItemA].idempotencyNote).toContain("approved proof");
     expect(routeLineItemToProductionFn).not.toHaveBeenCalled();
   });
 });

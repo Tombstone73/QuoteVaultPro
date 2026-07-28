@@ -1240,6 +1240,7 @@ export default function EditQuote() {
                   <LineItemAttachmentsPanel
                     quoteId={quote.id}
                     lineItemId={editingLineItem.id}
+                    lineQuantity={editingLineItem.quantity}
                     defaultExpanded
                   />
                 ) : (

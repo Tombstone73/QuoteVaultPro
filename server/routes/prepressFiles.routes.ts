@@ -16,7 +16,7 @@
 import busboy from "busboy";
 import type { Express } from "express";
 import { and, eq } from "drizzle-orm";
-import { lineItemFiles, orderLineItems, orders } from "@shared/schema";
+import { lineItemFiles, localFileCopyJobs, orderAuditLog, orderLineItems, orders, productionJobs } from "@shared/schema";
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
 import { getStorageAuthMode } from "../objectStorage";
@@ -58,6 +58,60 @@ export function registerPrepressFileRoutes(
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
   const downloadLineItemFile = middleware.downloadLineItemFile ?? prepressFileService.downloadLineItemFile;
   const downloadProductionFileForJob = middleware.downloadProductionFileForJob ?? prepressFileService.downloadProductionFileForJob;
+
+  // Retires only the active final-production relationship. It deliberately
+  // leaves file records, object storage, customer artwork, proofs, completed
+  // bridge history, and production history untouched.
+  app.post("/api/prepress/files/:fileId/remove", isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req, res)) return;
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+    const actorRole = String(req.orgRole || req.user?.role || "").toLowerCase();
+    const isAdmin = actorRole === "owner" || actorRole === "admin" || req.user?.isAdmin === true;
+    const canRemoveBeforeCompletion = isAdmin || actorRole === "manager";
+    const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 1000) : "";
+    try {
+      const result = await db.transaction(async (tx) => {
+        const [file] = await tx.select({
+          id: lineItemFiles.id, organizationId: lineItemFiles.organizationId, orderId: lineItemFiles.orderId, lineItemId: lineItemFiles.lineItemId,
+          originalFilename: lineItemFiles.originalFilename, status: lineItemFiles.status, role: lineItemFiles.role,
+        }).from(lineItemFiles).where(and(eq(lineItemFiles.id, req.params.fileId), eq(lineItemFiles.organizationId, organizationId))).limit(1);
+        if (!file || file.role !== "final") throw Object.assign(new Error("Production file not found"), { statusCode: 404, code: "PRODUCTION_FILE_NOT_FOUND" });
+        if (file.status === "retired") return { alreadyRemoved: true, file, completed: false, pendingCancelled: 0, replacementRequired: false };
+        if (file.status !== "active") throw Object.assign(new Error("Production file is no longer active"), { statusCode: 409, code: "PRODUCTION_FILE_ALREADY_REMOVED" });
+
+        const [lineItem] = await tx.select({ workflowState: orderLineItems.workflowState }).from(orderLineItems).where(eq(orderLineItems.id, file.lineItemId)).limit(1);
+        const jobs = await tx.select({ status: productionJobs.status }).from(productionJobs).where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, file.lineItemId)));
+        const completed = lineItem?.workflowState === "completed" || jobs.some((job) => String(job.status).toLowerCase() === "done");
+        if (completed && !isAdmin) throw Object.assign(new Error("Administrator permission is required to remove a completed production file"), { statusCode: 403, code: "COMPLETED_FILE_DELETE_PERMISSION_REQUIRED" });
+        if (!completed && !canRemoveBeforeCompletion) throw Object.assign(new Error("You do not have permission to remove production files"), { statusCode: 403, code: "PRODUCTION_FILE_DELETE_FORBIDDEN" });
+        if (completed && !reason) throw Object.assign(new Error("A reason is required when removing a completed production file"), { statusCode: 400, code: "DELETION_REASON_REQUIRED" });
+
+        const bridgeJobs = await tx.select({ id: localFileCopyJobs.id, status: localFileCopyJobs.status }).from(localFileCopyJobs).where(and(eq(localFileCopyJobs.organizationId, organizationId), eq(localFileCopyJobs.sourceFileId, file.id)));
+        if (bridgeJobs.some((job) => job.status === "claimed")) throw Object.assign(new Error("A Local Bridge copy is in progress for this production file"), { statusCode: 409, code: "LOCAL_BRIDGE_COPY_IN_PROGRESS" });
+        const activeJob = jobs.some((job) => ["in_progress", "printing", "finishing"].includes(String(job.status).toLowerCase()));
+        if (activeJob) throw Object.assign(new Error("This production file is in active use by production"), { statusCode: 409, code: "PRODUCTION_FILE_IN_ACTIVE_USE" });
+        const pendingIds = bridgeJobs.filter((job) => job.status === "pending").map((job) => job.id);
+        if (pendingIds.length) await tx.update(localFileCopyJobs).set({ status: "canceled", lastError: "Canceled because the final production file was retired.", updatedAt: new Date() }).where(and(eq(localFileCopyJobs.organizationId, organizationId), eq(localFileCopyJobs.sourceFileId, file.id), eq(localFileCopyJobs.status, "pending")));
+        await tx.update(lineItemFiles).set({ status: "retired" }).where(and(eq(lineItemFiles.id, file.id), eq(lineItemFiles.organizationId, organizationId), eq(lineItemFiles.status, "active")));
+        const remaining = await tx.select({ id: lineItemFiles.id }).from(lineItemFiles).where(and(eq(lineItemFiles.organizationId, organizationId), eq(lineItemFiles.lineItemId, file.lineItemId), eq(lineItemFiles.role, "final"), eq(lineItemFiles.status, "active")));
+        await tx.insert(orderAuditLog).values({
+          orderId: file.orderId, orderLineItemId: file.lineItemId, userId: getUserId(req.user) ?? null, userName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+          actionType: "production_file_retired", fromStatus: "active", toStatus: "retired",
+          note: `Removed ${file.originalFilename} from Final Production Files${reason ? `: ${reason}` : ""}.`,
+          metadata: { productionFileId: file.id, filename: file.originalFilename, reason: reason || null, completed, pendingBridgeJobsCanceled: pendingIds.length, replacementRequired: remaining.length === 0, storageCleanup: "not_attempted_shared_object_preserved" },
+        } as any);
+        return { alreadyRemoved: false, file, completed, pendingCancelled: pendingIds.length, replacementRequired: remaining.length === 0 };
+      });
+      return res.json({ success: true, data: { productionFileId: result.file.id, alreadyRemoved: result.alreadyRemoved, completed: result.completed, replacementRequired: result.replacementRequired, pendingBridgeJobsCanceled: result.pendingCancelled } });
+    } catch (error: any) {
+      const status = error?.statusCode ?? 500;
+      const code = error?.code ?? "PRODUCTION_FILE_REMOVE_FAILED";
+      if (status < 500) return res.status(status).json({ error: error.message, code });
+      console.error("[Prepress] Final production file removal failed", { fileId: req.params.fileId, code, message: error?.message });
+      return res.status(500).json({ error: "Failed to remove production file", code });
+    }
+  });
 
   app.get("/api/prepress/file-naming-policy", isAuthenticated, tenantContext, async (req: any, res) => {
     try {

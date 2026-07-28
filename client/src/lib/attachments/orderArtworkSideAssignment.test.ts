@@ -1,6 +1,7 @@
 import { describe, expect, it, jest } from "@jest/globals";
 import { assignOrderLineItemArtworkSide } from "./orderArtworkSideAssignment";
 import { normalizeOrderFileRows } from "./orderFileRows";
+import { mergeQuoteLineItemRows } from "./quoteLineItemRows";
 
 describe("assignOrderLineItemArtworkSide", () => {
   it("sends one line-item-scoped artwork-side mutation with the stable side value", async () => {
@@ -68,5 +69,49 @@ describe("assignOrderLineItemArtworkSide", () => {
       side: "both",
       thumbnailUrl: "/asset-thumb.png",
     }));
+  });
+
+  it("does not use matching filenames or sizes as artwork identity", () => {
+    const normalized = normalizeOrderFileRows(
+      [{
+        id: "attachment-1",
+        fileName: "same-name.pdf",
+        fileSize: 1024,
+        createdAt: "2026-07-16T12:00:00.000Z",
+      }],
+      [{
+        id: "asset-1",
+        fileName: "same-name.pdf",
+        fileSize: 1024,
+        createdAt: "2026-07-16T11:00:00.000Z",
+      }],
+    );
+
+    expect(normalized).toHaveLength(2);
+    expect(normalized.map((row) => row.id)).toEqual(["attachment-1", "asset-1"]);
+  });
+
+  it("removes only exact repeated relationship rows from a refetch", () => {
+    const normalized = normalizeOrderFileRows(
+      [
+        { id: "attachment-1", fileRecordId: "record-1", fileName: "art.pdf" },
+        { id: "attachment-1", fileRecordId: "record-1", fileName: "art.pdf" },
+      ],
+      [],
+    );
+
+    expect(normalized).toHaveLength(1);
+    expect(normalized[0]).toMatchObject({ id: "attachment-1", source: "attachment" });
+  });
+
+  it("does not merge a quote asset into an attachment without canonical file identity", () => {
+    const rows = mergeQuoteLineItemRows(
+      [{ id: "quote-attachment-1", fileName: "same-name.pdf", fileSize: 1024 }],
+      [{ id: "quote-asset-1", fileName: "same-name.pdf", fileSize: 1024, thumbUrl: "/wrong-match.png" }],
+    );
+
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ id: "quote-attachment-1" });
+    expect(rows[0]).not.toHaveProperty("thumbUrl");
   });
 });

@@ -489,6 +489,11 @@ export async function createInvoiceFromOrderInTransaction(
     // Fetch order & its line items
     const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
     if (!order) throw new Error('Order not found');
+    // Invoices remain account receivable documents. Do not synthesize a
+    // customer for contact-only orders; staff must deliberately assign one.
+    if (!order.customerId) {
+      throw new Error('ORDER_CUSTOMER_REQUIRED_FOR_INVOICE: Assign a customer before creating an invoice for a contact-only order.');
+    }
     const lineItems = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
 
     const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "invoice", tx);

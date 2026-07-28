@@ -1988,6 +1988,11 @@ export const quoteAttachments = pgTable("quote_attachments", {
   extension: varchar("extension", { length: 20 }), // File extension without dot
   sizeBytes: integer("size_bytes"), // File size in bytes
   checksum: varchar("checksum", { length: 64 }), // SHA256 or MD5 hash
+  // Canonical production instruction for this quote-line/file relationship.
+  // A shared group represents one finished variant, including its Front/Back.
+  productionQuantity: integer("production_quantity"),
+  productionGroupId: varchar("production_group_id", { length: 128 }),
+  productionRole: varchar("production_role", { length: 16 }).default("artwork"),
   // Thumbnail support (legacy fields kept for backward compatibility)
   thumbnailRelativePath: text("thumbnail_relative_path"),
   thumbnailGeneratedAt: timestamp("thumbnail_generated_at"),
@@ -2022,6 +2027,7 @@ export const quoteAttachments = pgTable("quote_attachments", {
   index("quote_attachments_quote_line_item_id_idx").on(table.quoteLineItemId),
   index("quote_attachments_organization_id_idx").on(table.organizationId),
   index("quote_attachments_file_record_id_idx").on(table.fileRecordId),
+  index("quote_attachments_production_group_idx").on(table.quoteLineItemId, table.productionGroupId),
   index("quote_attachments_thumb_status_idx").on(table.thumbStatus),
   index("quote_attachments_page_count_status_idx").on(table.pageCountStatus),
   index("quote_attachments_portal_visible_idx").on(table.organizationId, table.quoteId, table.customerVisible),
@@ -3599,7 +3605,9 @@ export const orders = pgTable("orders", {
   label: text("label"), // Free-text label for categorization/notes
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }),
   sourceQuoteNumber: integer("source_quote_number"), // Snapshot of quote number at time of conversion (immutable)
-  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
+  // An order may be addressed to an independent contact.  Application code
+  // enforces that at least one of customerId/contactId is present.
+  customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'restrict' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
   status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, on_hold, ready_for_shipment, completed, canceled [DEPRECATED: use state instead]
   // TitanOS State Architecture (canonical workflow states)
@@ -4680,8 +4688,58 @@ export const insertProductionStationStepSchema = createInsertSchema(productionSt
   triggers: productionStationStepTriggersSchema.optional().default([]),
 });
 
+/** One physical, same-order production operation. Jobs remain the line-item aggregate. */
+export const productionRuns = pgTable("production_runs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  runNumber: integer("run_number").notNull(),
+  status: varchar("status", { length: 32 }).notNull().default("draft").$type<"draft" | "ready_for_production" | "in_production" | "completed" | "canceled">(),
+  stationKey: varchar("station_key", { length: 40 }).notNull(),
+  materialId: varchar("material_id").references(() => materials.id, { onDelete: "set null" }),
+  materialSnapshot: jsonb("material_snapshot").$type<Record<string, unknown>>(),
+  sheetWidth: decimal("sheet_width", { precision: 10, scale: 2 }),
+  sheetHeight: decimal("sheet_height", { precision: 10, scale: 2 }),
+  plannedSheetCount: integer("planned_sheet_count"),
+  nominalPiecesPerSheet: integer("nominal_pieces_per_sheet"),
+  notes: text("notes"),
+  compatibilityOverrideReason: text("compatibility_override_reason"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  releasedAt: timestamp("released_at", { withTimezone: true }),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  canceledAt: timestamp("canceled_at", { withTimezone: true }),
+  canceledByUserId: varchar("canceled_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  cancelReason: text("cancel_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("production_runs_org_number_uidx").on(table.organizationId, table.runNumber),
+  index("production_runs_org_order_status_idx").on(table.organizationId, table.orderId, table.status),
+]);
+
+/** Reserved and completed customer quantity for a job within a physical run. */
+export const productionRunMembers = pgTable("production_run_members", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  productionRunId: varchar("production_run_id").notNull().references(() => productionRuns.id, { onDelete: "cascade" }),
+  productionJobId: varchar("production_job_id").notNull().references(() => productionJobs.id, { onDelete: "restrict" }),
+  orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: "restrict" }),
+  allocatedQuantity: integer("allocated_quantity").notNull(),
+  completedQuantity: integer("completed_quantity").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("production_run_members_run_job_uidx").on(table.productionRunId, table.productionJobId),
+  index("production_run_members_org_job_idx").on(table.organizationId, table.productionJobId),
+  index("production_run_members_line_item_idx").on(table.orderLineItemId),
+]);
+
 export type ProductionJob = typeof productionJobs.$inferSelect;
 export type InsertProductionJob = typeof productionJobs.$inferInsert;
+export type ProductionRun = typeof productionRuns.$inferSelect;
+export type InsertProductionRun = typeof productionRuns.$inferInsert;
+export type ProductionRunMember = typeof productionRunMembers.$inferSelect;
 export type ProductionEvent = typeof productionEvents.$inferSelect;
 export type InsertProductionEvent = typeof productionEvents.$inferInsert;
 export type ProductionAlert = typeof productionAlerts.$inferSelect;
@@ -5611,6 +5669,10 @@ export const orderAttachments = pgTable("order_attachments", {
   extension: varchar("extension", { length: 20 }), // File extension without dot
   sizeBytes: integer("size_bytes"), // File size in bytes
   checksum: varchar("checksum", { length: 64 }), // SHA256 or MD5 hash
+  // Canonical production instruction for this order-line/file relationship.
+  // Front/Back entries with the same group share a single finished quantity.
+  productionQuantity: integer("production_quantity"),
+  productionGroupId: varchar("production_group_id", { length: 128 }),
   // Thumbnail support (legacy fields kept for backward compatibility)
   thumbnailRelativePath: text("thumbnail_relative_path"),
   thumbnailGeneratedAt: timestamp("thumbnail_generated_at"),
@@ -5657,6 +5719,7 @@ export const orderAttachments = pgTable("order_attachments", {
   index("order_attachments_order_line_item_id_idx").on(table.orderLineItemId),
   index("order_attachments_quote_id_idx").on(table.quoteId),
   index("order_attachments_file_record_id_idx").on(table.fileRecordId),
+  index("order_attachments_production_group_idx").on(table.orderLineItemId, table.productionGroupId),
   index("order_attachments_role_idx").on(table.role),
   index("order_attachments_thumb_status_idx").on(table.thumbStatus),
   index("order_attachments_portal_visible_idx").on(table.orderId, table.customerVisible),
@@ -7950,7 +8013,7 @@ export const prepressSessionStatusEnum = pgEnum('prepress_session_status', ['act
 export const lineItemFileRoleEnum = pgEnum('line_item_file_role', ['original', 'final', 'reference']);
 
 // Line item file status enum
-export const lineItemFileStatusEnum = pgEnum('line_item_file_status', ['active', 'superseded']);
+export const lineItemFileStatusEnum = pgEnum('line_item_file_status', ['active', 'superseded', 'retired']);
 
 /**
  * Prepress Sessions - Manual prepress workflow tracking
@@ -8001,8 +8064,13 @@ export const lineItemFiles = pgTable("line_item_files", {
   
   // File metadata
   role: lineItemFileRoleEnum("role").notNull(), // original | final | reference
-  status: lineItemFileStatusEnum("status").notNull().default('active'), // active | superseded
+  status: lineItemFileStatusEnum("status").notNull().default('active'), // active | superseded | retired
   tag: text("tag"), // Front/Back/Panel/etc
+  // Allocation copied from the authoritative production-artwork relationship
+  // when final art is promoted. This preserves the instruction if output
+  // bytes differ from the original upload.
+  productionQuantity: integer("production_quantity"),
+  productionGroupId: varchar("production_group_id", { length: 128 }),
   
   // Storage information
   storageBucket: varchar("storage_bucket", { length: 255 }),

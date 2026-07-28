@@ -117,6 +117,17 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
 
   // Get contacts from selected customer
   const contacts = selectedCustomer?.contacts || [];
+  const { data: independentContacts = [] } = useQuery<any[]>({
+    queryKey: ["/api/contacts", "order-contact-only"],
+    queryFn: async () => {
+      const response = await fetch("/api/contacts?limit=100", { credentials: "include" });
+      if (!response.ok) throw new Error("Failed to load contacts");
+      const payload = await response.json();
+      return Array.isArray(payload) ? payload : (payload.data ?? payload.items ?? []);
+    },
+    enabled: open && !selectedCustomerId,
+  });
+  const selectableContacts = selectedCustomerId ? contacts : independentContacts;
 
   // Fetch products
   const { data: products } = useQuery<any[]>({
@@ -416,12 +427,12 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
     if (!idempotencyKey) return;
     setCreateOrderSubmitting(true);
 
-    if (!selectedCustomerId) {
+    if (!selectedCustomerId && !selectedContactId) {
       markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
       setCreateOrderSubmitting(false);
       toast({
         title: "Validation Error",
-        description: "Please select a customer",
+        description: "Please select a customer, a contact, or both",
         variant: "destructive",
       });
       return;
@@ -443,7 +454,7 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
     const total = subtotal + tax - discount;
 
     const orderData = {
-      customerId: selectedCustomerId,
+      customerId: selectedCustomerId || null,
       contactId: selectedContactId || null,
       status,
       priority,
@@ -514,19 +525,19 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
                         setSelectedContactId(contactId || "");
                       }}
                       autoFocus={true}
-                      label="Customer *"
+                      label="Customer (optional)"
                       placeholder="Search customers by name, email, or contact..."
                     />
                   </div>
 
                   <div>
                     <Label htmlFor="contactId">Contact</Label>
-                    <Select value={selectedContactId} onValueChange={setSelectedContactId} disabled={!selectedCustomerId}>
+                    <Select value={selectedContactId} onValueChange={setSelectedContactId}>
                       <SelectTrigger>
                         <SelectValue placeholder="Select contact (optional)" />
                       </SelectTrigger>
                       <SelectContent>
-                        {contacts?.map((contact) => (
+                        {selectableContacts.map((contact) => (
                           <SelectItem key={contact.id} value={contact.id}>
                             {contact.firstName} {contact.lastName}
                             {contact.email && ` - ${contact.email}`}

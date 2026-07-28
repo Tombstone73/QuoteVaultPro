@@ -303,7 +303,8 @@ export default function Orders() {
         }) ||
         order.label?.toLowerCase().includes(searchLower) ||
         order.poNumber?.toLowerCase().includes(searchLower) ||
-        order.customer?.companyName?.toLowerCase().includes(searchLower)
+        order.customer?.companyName?.toLowerCase().includes(searchLower) ||
+        `${order.contact?.firstName ?? ""} ${order.contact?.lastName ?? ""} ${order.contact?.email ?? ""}`.toLowerCase().includes(searchLower)
       );
     }
     
@@ -796,7 +797,7 @@ export default function Orders() {
         return row.poNumber || <span className="text-muted-foreground italic">—</span>;
 
       case "customer":
-        return row.customer?.companyName || <span className="text-muted-foreground italic">No customer</span>;
+        return row.customer?.companyName || [row.contact?.firstName, row.contact?.lastName].filter(Boolean).join(" ") || row.contact?.email || <span className="text-muted-foreground italic">No customer or contact</span>;
 
       case "status": {
         return <OrdersListStatusCell row={row} />;

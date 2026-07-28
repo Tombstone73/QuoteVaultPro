@@ -281,6 +281,29 @@ export async function registerAttachmentRoutes(
 ) {
   const { isAuthenticated, isAdmin, tenantContext: tenantContextMiddleware } = middleware;
 
+  app.patch("/api/quotes/:quoteId/line-items/:lineItemId/attachments/:attachmentId/artwork-allocation", isAuthenticated, tenantContextMiddleware, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    const quantity = req.body?.productionQuantity == null || req.body?.productionQuantity === "" ? null : Number(req.body.productionQuantity);
+    const role = req.body?.role === "reference" ? "reference" : req.body?.role === "artwork" ? "artwork" : null;
+    const groupId = typeof req.body?.productionGroupId === "string" && req.body.productionGroupId.trim() ? req.body.productionGroupId.trim() : null;
+    if (!organizationId || !role || (role === "artwork" && quantity !== null && (!Number.isInteger(quantity) || quantity <= 0)) || (role === "reference" && (quantity !== null || groupId !== null))) {
+      return res.status(400).json({ error: "Invalid artwork allocation" });
+    }
+    const [updated] = await db.update(quoteAttachments).set({
+      productionQuantity: role === "artwork" ? quantity : null,
+      productionGroupId: role === "artwork" ? groupId : null,
+      productionRole: role,
+      updatedAt: new Date(),
+    }).where(and(
+      eq(quoteAttachments.id, req.params.attachmentId),
+      eq(quoteAttachments.quoteId, req.params.quoteId),
+      eq(quoteAttachments.quoteLineItemId, req.params.lineItemId),
+      eq(quoteAttachments.organizationId, organizationId),
+    )).returning();
+    if (!updated) return res.status(404).json({ error: "Quote artwork attachment not found" });
+    return res.json({ success: true, data: updated });
+  });
+
   const tryResolveProviderHandle = async (args: {
     organizationId: string;
     providerConfigId: string | null;
