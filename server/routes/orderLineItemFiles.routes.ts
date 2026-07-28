@@ -31,7 +31,6 @@ import {
   createRequestLogOnce,
   enrichAttachmentWithUrls,
   normalizeObjectKeyForDb,
-  resolveDerivativeFileAccess,
 } from "../lib/supabaseObjectHelpers";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
@@ -41,6 +40,7 @@ import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
 import { getFileUploadNamingPolicy } from "../prepressFileService";
 import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
+import { buildOrderLineItemArtworkAssetsResponse } from "../services/orderLineItemArtworkAssets";
 import {
   assignOrderLineItemArtworkSide,
   isOrderArtworkSide,
@@ -146,50 +146,11 @@ export function registerOrderLineItemFileRoutes(
         }), { logOnce })
       ));
 
-      // Canonical line-item files are a separate source from legacy order
-      // attachments. Return only authenticated derivative capabilities so
-      // proofing can render a generated image without exposing a storage path.
-      const canonicalFiles = await db
-        .select({
-          id: lineItemFiles.id,
-          fileRecordId: lineItemFiles.fileRecordId,
-          fileName: lineItemFiles.originalFilename,
-          mimeType: lineItemFiles.mimeType,
-          sizeBytes: lineItemFiles.sizeBytes,
-          createdAt: lineItemFiles.createdAt,
-        })
-        .from(lineItemFiles)
-        .where(and(
-          eq(lineItemFiles.organizationId, organizationId),
-          eq(lineItemFiles.orderId, orderId),
-          eq(lineItemFiles.lineItemId, lineItemId),
-          eq(lineItemFiles.status, "active"),
-        ));
-      const enrichedCanonicalFiles = await Promise.all(canonicalFiles.map(async (file) => {
-        const [thumbnail, preview] = file.fileRecordId
-          ? await Promise.all([
-              resolveDerivativeFileAccess({ id: file.id, fileRecordId: file.fileRecordId }, "thumbnail", { logOnce }),
-              resolveDerivativeFileAccess({ id: file.id, fileRecordId: file.fileRecordId }, "preview", { logOnce }),
-            ])
-          : [{ url: null }, { url: null }];
-        return {
-          id: file.id,
-          fileRecordId: file.fileRecordId,
-          fileName: file.fileName,
-          originalFilename: file.fileName,
-          mimeType: file.mimeType,
-          sizeBytes: file.sizeBytes,
-          fileSize: file.sizeBytes,
-          createdAt: file.createdAt,
-          originalUrl: null,
-          downloadUrl: null,
-          thumbUrl: thumbnail.url ?? null,
-          thumbnailUrl: thumbnail.url ?? null,
-          previewUrl: preview.url ?? null,
-        };
-      }));
-
-      // PHASE 2: Include linked assets with enriched URLs
+      // Artwork Assets rows represent user-manageable attachment or asset-link
+      // relationships. line_item_files is a prepress/proof mirror of a linked
+      // file, not a separate artwork relationship; including it here produced
+      // a second row with an ID that the delete route cannot unlink.
+      // Derivatives remain attached to their attachment or asset capabilities.
       const { assetRepository } = await import('../services/assets/AssetRepository');
       const { enrichAssetsWithRoles } = await import('../services/assets/enrichAssetWithUrls');
       const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order_line_item', lineItemId);
@@ -200,8 +161,8 @@ export function registerOrderLineItemFileRoutes(
         })
       );
 
-      console.log(`[OrderLineItemFiles:GET] Found ${files.length} files + ${linkedAssets.length} assets for line item ${lineItemId}`);
-      res.json({ success: true, data: [...enrichedFiles, ...enrichedCanonicalFiles], assets: enrichedAssets });
+      console.log(`[OrderLineItemFiles:GET] Found ${files.length} artwork attachments + ${linkedAssets.length} artwork assets for line item ${lineItemId}`);
+      res.json({ success: true, ...buildOrderLineItemArtworkAssetsResponse(enrichedFiles, enrichedAssets) });
     } catch (error) {
       console.error("[OrderLineItemFiles:GET] Error:", error);
       res.status(500).json({ error: "Failed to fetch line item files" });

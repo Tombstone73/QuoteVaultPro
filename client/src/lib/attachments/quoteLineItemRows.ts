@@ -16,11 +16,7 @@ type QuoteLineItemRow = {
 
 function makeMatchKey(item: QuoteLineItemRow) {
   const fileRecordId = (item?.fileRecordId ?? "").toString().trim();
-  if (fileRecordId) return `fr:${fileRecordId}`;
-
-  const fileName = (item?.originalFilename ?? item?.fileName ?? "").toString().trim().toLowerCase();
-  const size = Number(item?.fileSize ?? item?.sizeBytes ?? 0);
-  return `legacy:${fileName}:${Number.isFinite(size) ? size : 0}`;
+  return fileRecordId ? `fr:${fileRecordId}` : null;
 }
 
 export function mergeQuoteLineItemRows<TAttachment extends QuoteLineItemRow, TAsset extends QuoteLineItemRow>(
@@ -37,11 +33,13 @@ export function mergeQuoteLineItemRows<TAttachment extends QuoteLineItemRow, TAs
 
   const assetByKey = new Map<string, TAsset>();
   for (const asset of assets) {
-    assetByKey.set(makeMatchKey(asset), asset);
+    const key = makeMatchKey(asset);
+    if (key) assetByKey.set(key, asset);
   }
 
   return attachments.map((attachment) => {
-    const matchedAsset = assetByKey.get(makeMatchKey(attachment));
+    const key = makeMatchKey(attachment);
+    const matchedAsset = key ? assetByKey.get(key) : undefined;
     if (!matchedAsset) {
       return attachment;
     }

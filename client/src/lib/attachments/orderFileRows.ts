@@ -20,11 +20,7 @@ type OrderFileRow = {
 
 function makeMatchKey(item: OrderFileRow) {
   const fileRecordId = String(item?.fileRecordId ?? "").trim();
-  if (fileRecordId) return `fr:${fileRecordId}`;
-
-  const fileName = String(item?.originalFilename ?? item?.fileName ?? "").trim().toLowerCase();
-  const size = Number(item?.fileSize ?? item?.sizeBytes ?? 0);
-  return `legacy:${fileName}:${Number.isFinite(size) ? size : 0}`;
+  return fileRecordId ? `fr:${fileRecordId}` : null;
 }
 
 function toTimestamp(value?: string | null) {
@@ -33,12 +29,22 @@ function toTimestamp(value?: string | null) {
   return Number.isFinite(ts) ? ts : 0;
 }
 
+function uniqueRelationshipRows<T extends OrderFileRow>(rows: T[]) {
+  const seenIds = new Set<string>();
+  return rows.filter((row) => {
+    const id = String(row?.id ?? "").trim();
+    if (!id || seenIds.has(id)) return false;
+    seenIds.add(id);
+    return true;
+  });
+}
+
 export function normalizeOrderFileRows<TAttachment extends OrderFileRow, TAsset extends OrderFileRow>(
   attachments: TAttachment[],
   assets: TAsset[],
 ): Array<(TAttachment & { __source: "attachment"; source: "attachment" }) | (TAsset & { __source: "asset"; source: "asset" })> {
-  const attachmentList = Array.isArray(attachments) ? attachments : [];
-  const assetList = Array.isArray(assets) ? assets : [];
+  const attachmentList = uniqueRelationshipRows(Array.isArray(attachments) ? attachments : []);
+  const assetList = uniqueRelationshipRows(Array.isArray(assets) ? assets : []);
 
   if (attachmentList.length === 0 && assetList.length === 0) {
     return [];
@@ -47,6 +53,7 @@ export function normalizeOrderFileRows<TAttachment extends OrderFileRow, TAsset 
   const assetIndexesByKey = new Map<string, number[]>();
   for (let index = 0; index < assetList.length; index += 1) {
     const key = makeMatchKey(assetList[index]);
+    if (!key) continue;
     const existing = assetIndexesByKey.get(key) ?? [];
     existing.push(index);
     assetIndexesByKey.set(key, existing);
@@ -55,7 +62,9 @@ export function normalizeOrderFileRows<TAttachment extends OrderFileRow, TAsset 
   const usedAssetIndexes = new Set<number>();
 
   const takeMatchedAsset = (attachment: TAttachment) => {
-    const indexes = assetIndexesByKey.get(makeMatchKey(attachment)) ?? [];
+    const key = makeMatchKey(attachment);
+    if (!key) return null;
+    const indexes = assetIndexesByKey.get(key) ?? [];
     while (indexes.length > 0) {
       const index = indexes.shift();
       if (typeof index === "number" && !usedAssetIndexes.has(index)) {
@@ -107,5 +116,8 @@ export function normalizeOrderFileRows<TAttachment extends OrderFileRow, TAsset 
       source: "asset" as const,
     }));
 
-  return [...mergedAttachments, ...unmatchedAssets].sort((a, b) => toTimestamp(b.createdAt) - toTimestamp(a.createdAt));
+  return [...mergedAttachments, ...unmatchedAssets].sort((a, b) => {
+    const timestampDifference = toTimestamp(b.createdAt) - toTimestamp(a.createdAt);
+    return timestampDifference || String(a.id).localeCompare(String(b.id));
+  });
 }
