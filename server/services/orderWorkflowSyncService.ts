@@ -9,6 +9,9 @@ type DbLike = {
 };
 
 const OPERATIONAL_LINE_ITEM_STATES: LineItemWorkflowState[] = [
+  "needs_design",
+  "in_design",
+  "awaiting_proof_approval",
   "ready_for_prepress",
   "in_prepress",
   "ready_for_production",

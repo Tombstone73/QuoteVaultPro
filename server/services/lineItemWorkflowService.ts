@@ -43,7 +43,7 @@ export const OWNERLESS_WORKFLOW_STATES: LineItemWorkflowState[] = [
 ];
 
 const VALID_TRANSITIONS: Record<LineItemWorkflowState, LineItemWorkflowState[]> = {
-  new: ["needs_design", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
+  new: ["needs_design", "awaiting_proof_approval", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
   needs_design: ["in_design", "on_hold", "canceled"],
   in_design: ["needs_design", "awaiting_proof_approval", "ready_for_prepress", "on_hold", "canceled"],
   awaiting_proof_approval: ["needs_design", "ready_for_prepress", "ready_for_production", "on_hold", "canceled"],
@@ -738,8 +738,8 @@ export function getInitialWorkflowState(args: {
   requiresProofApproval?: boolean;
 }): LineItemWorkflowState {
   if (args.requiresDesign) return "needs_design";
-  if (args.requiresPrepress) return "ready_for_prepress";
   if (args.requiresProofApproval) return "awaiting_proof_approval";
+  if (args.requiresPrepress) return "ready_for_prepress";
   return "ready_for_production";
 }
 
@@ -768,10 +768,10 @@ export async function completeLineItemDesign(tx: any, args: {
     throw Object.assign(new Error("Line item is not currently in design"), { statusCode: 409 });
   }
 
-  const targetState: LineItemWorkflowState = lineItem.requiresPrepress
-    ? "ready_for_prepress"
-    : lineItem.requiresProofApproval
-      ? "awaiting_proof_approval"
+  const targetState: LineItemWorkflowState = lineItem.requiresProofApproval
+    ? "awaiting_proof_approval"
+    : lineItem.requiresPrepress
+      ? "ready_for_prepress"
       : "ready_for_production";
 
   await tx

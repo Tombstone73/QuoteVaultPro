@@ -6,6 +6,7 @@ import { resolveInitialProductionRoute } from "./productionRoutingResolver";
 import { isCanceledOrder } from "@shared/operationalState";
 import { syncParentOrderForOperationalChildren } from "./orderWorkflowSyncService";
 import { resolveLineItemProofReleaseGate } from "./proofGateService";
+import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 
 type SchedulingCandidateLineItem = {
   lineItemId: string;
@@ -88,11 +89,12 @@ function logProofSchedulingBlock(args: {
 /**
  * scheduleOrderLineItemsForProduction
  * 
- * Atomically creates ProductionJobs for line items that require production.
+ * Starts the first operational workflow stage for each line item that requires production.
  * - If lineItemIds is omitted, targets ALL production-required line items in the order.
  * - If lineItemIds is provided, targets ONLY those items (still filtered by requiresProductionJob).
  * - Idempotent: does not duplicate jobs if they already exist.
- * - Transactional: either all jobs are created/verified, or nothing changes.
+ * - Transactional per line item: a failed item is rolled back and returned with
+ *   actionable diagnostics without obscuring the successfully-started items.
  * 
  * Returns:
  * - createdJobCount: number of new jobs created
@@ -118,6 +120,8 @@ export async function scheduleOrderLineItemsForProduction(args: {
   };
   resolveInitialProductionRouteFn?: typeof resolveInitialProductionRoute;
   routeLineItemToProductionFn?: typeof routeLineItemToProduction;
+  transitionLineItemWorkflowStateFn?: typeof transitionLineItemWorkflowState;
+  syncParentOrderForOperationalChildrenFn?: typeof syncParentOrderForOperationalChildren;
 }): Promise<{
   success: boolean;
   data: {
@@ -149,12 +153,22 @@ export async function scheduleOrderLineItemsForProduction(args: {
     transactionRunner,
     resolveInitialProductionRouteFn,
     routeLineItemToProductionFn,
+    transitionLineItemWorkflowStateFn,
+    syncParentOrderForOperationalChildrenFn,
   } = args;
 
   const requestTraceId = String(traceId || `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`);
   const txRunner = transactionRunner ?? db;
   const resolveRoute = resolveInitialProductionRouteFn ?? resolveInitialProductionRoute;
   const routeToProduction = routeLineItemToProductionFn ?? routeLineItemToProduction;
+  const transitionWorkflow = transitionLineItemWorkflowStateFn ?? transitionLineItemWorkflowState;
+  // Test callers that supply an in-memory transaction do not model order-level
+  // reads. Production callers always use the canonical order workflow sync.
+  const syncOperationalOrder = syncParentOrderForOperationalChildrenFn ?? (
+    transactionRunner
+      ? async (_tx: any, _syncArgs: Parameters<typeof syncParentOrderForOperationalChildren>[1]) => null
+      : syncParentOrderForOperationalChildren
+  );
 
   const defaultLoadLineItemsForScheduling = async ({
     organizationId,
@@ -271,6 +285,7 @@ export async function scheduleOrderLineItemsForProduction(args: {
   let createdCount = 0;
   let existingCount = 0;
   let blockedByProofCount = 0;
+  let routedToProofingCount = 0;
   const affectedIds: string[] = [];
   const scheduled: ScheduledItem[] = [];
   const failed: FailedItem[] = [];
@@ -309,25 +324,62 @@ export async function scheduleOrderLineItemsForProduction(args: {
             : "ready_for_production";
 
       const proofRequiredWithoutApproval = item.lineItemRequiresProofApprovalSnapshot === true && !item.approvedProofVersionId;
-      if (proofRequiredWithoutApproval) {
-        blockedByProofCount++;
-        lineItemDiagnostics[item.lineItemId] = {
-          stationKey: "proofing",
-          stepKey: currentWorkflowState === "awaiting_proof_approval" ? "awaiting_proof_approval" : "approved_proof_required",
-          routingReason: "proof_approval_required_before_scheduling",
-          idempotencyNote: "Blocked scheduling until an approved proof is recorded",
-        };
-        logProofSchedulingBlock({
-          traceId: requestTraceId,
-          orderId,
-          lineItemId: item.lineItemId,
-          currentWorkflowState,
-          targetWorkflowState,
-          requiresProofApproval: true,
-          approvedProofVersionId: item.approvedProofVersionId,
-          routingReason: route.reason,
-          reason: currentWorkflowState === "awaiting_proof_approval" ? "awaiting_proof_approval" : "missing_approved_proof",
+      // Design remains the first gate. Otherwise a required proof is itself the
+      // first production stage, rather than a reason to reject production intake.
+      if (proofRequiredWithoutApproval && targetWorkflowState !== "needs_design") {
+        const scheduledItem = await txRunner.transaction(async (tx) => {
+          step = "route_line_item_to_proofing";
+          const transition = await transitionWorkflow(tx, {
+            organizationId,
+            lineItemId: item.lineItemId,
+            toState: "awaiting_proof_approval",
+            actorUserId: args.actorUserId ?? null,
+            metadata: {
+              source: "production_intake",
+              traceId: requestTraceId,
+              routingReason: "proof_required_first_stage",
+            },
+          });
+
+          if (!transition.activeOwnerJobId || !transition.activeOwnerStationKey || !transition.activeOwnerStepKey) {
+            throw new Error("Proofing intake did not establish an operational owner");
+          }
+
+          await syncOperationalOrder(tx, {
+            organizationId,
+            orderId,
+            lineItemId: item.lineItemId,
+            actorUserId: args.actorUserId ?? null,
+            source: "production_schedule:awaiting_proof_approval",
+          });
+
+          return {
+            lineItemId: item.lineItemId,
+            productionJobId: transition.activeOwnerJobId,
+            stationKey: transition.activeOwnerStationKey,
+            stepKey: transition.activeOwnerStepKey,
+            routingReason: "proof_required_first_stage",
+            reused: transition.ownershipAction !== "created",
+            idempotencyReason: transition.ownershipAction === "none" ? "Existing proofing owner reused" : undefined,
+          };
         });
+
+        if (scheduledItem.reused) {
+          existingCount++;
+        } else {
+          createdCount++;
+        }
+
+        affectedIds.push(item.lineItemId);
+        scheduled.push(scheduledItem);
+        routedToProofingCount++;
+        lineItemDiagnostics[item.lineItemId] = {
+          stationKey: scheduledItem.stationKey,
+          stepKey: scheduledItem.stepKey,
+          routingReason: scheduledItem.routingReason,
+          routingSource: "proofing",
+          idempotencyNote: scheduledItem.idempotencyReason,
+        };
         continue;
       }
 
@@ -390,15 +442,13 @@ export async function scheduleOrderLineItemsForProduction(args: {
           })
           .where(eq(orderLineItems.id, item.lineItemId));
 
-        if (item.lineItemRole === "child") {
-          await syncParentOrderForOperationalChildren(tx, {
-            organizationId,
-            orderId,
-            lineItemId: item.lineItemId,
-            actorUserId: args.actorUserId,
-            source: `production_schedule:${targetWorkflowState}`,
-          });
-        }
+        await syncOperationalOrder(tx, {
+          organizationId,
+          orderId,
+          lineItemId: item.lineItemId,
+          actorUserId: args.actorUserId ?? null,
+          source: `production_schedule:${targetWorkflowState}`,
+        });
 
         if (routingResult.outcome === "existing" && routingResult.reason) {
           console.warn(
@@ -476,6 +526,12 @@ export async function scheduleOrderLineItemsForProduction(args: {
   }
   if (failed.length > 0) {
     message += `. Failed ${failed.length} item(s)`;
+  }
+  if (routedToProofingCount > 0) {
+    const proofingSummary = `${routedToProofingCount} item(s) routed to Proofing first`;
+    message = createdCount + existingCount === routedToProofingCount
+      ? `Production workflow started: ${proofingSummary}`
+      : `${message}. ${proofingSummary}`;
   }
 
   if (process.env.NODE_ENV === 'development') {
