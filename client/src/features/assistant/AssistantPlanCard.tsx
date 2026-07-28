@@ -84,6 +84,16 @@ function asDisplayText(value: unknown): string | null {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : typeof value === "boolean" ? String(value) : null;
 }
 
+function productDraftUpdateDisplayValue(label: string, value: unknown): string | null {
+  if (typeof value === "number" && Number.isFinite(value)) {
+    const normalizedLabel = label.toLowerCase();
+    if (normalizedLabel.includes("square foot")) return `${moneyFromCents(value)} per square foot`;
+    if (normalizedLabel.includes("per piece")) return `${moneyFromCents(value)} per piece`;
+    if (normalizedLabel.includes("minimum charge")) return moneyFromCents(value);
+  }
+  return asDisplayText(value);
+}
+
 function asTextList(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.map(asText).filter((item): item is string => Boolean(item)).slice(0, 25);
@@ -185,8 +195,8 @@ function toProductDraftUpdate(action: string | null, preview: UnknownRecord | nu
     if (!change) return [];
     const label = asText(change.label) ?? asText(change.field) ?? asText(change.name);
     if (!label) return [];
-    const before = asDisplayText(change.before) ?? asDisplayText(change.previous) ?? asDisplayText(change.oldValue);
-    const after = asDisplayText(change.after) ?? asDisplayText(change.next) ?? asDisplayText(change.newValue);
+    const before = productDraftUpdateDisplayValue(label, change.before) ?? productDraftUpdateDisplayValue(label, change.previous) ?? productDraftUpdateDisplayValue(label, change.oldValue);
+    const after = productDraftUpdateDisplayValue(label, change.after) ?? productDraftUpdateDisplayValue(label, change.next) ?? productDraftUpdateDisplayValue(label, change.newValue);
     return before || after ? [{ label, before, after }] : [];
   }) : [];
   const editorPath = asText(value.editorPath) ?? asText(value.reviewUrl) ?? asText(value.sourceLink) ?? asText(preview.editorPath);

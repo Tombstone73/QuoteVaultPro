@@ -994,6 +994,7 @@ export const assistantExecutionPreviewSchema = z.object({
   productInactiveDraftUpdate: z.object({
     productId: assistantSafeIdentifierSchema,
     productName: z.string().trim().min(1).max(255),
+    draftStatus: z.literal("Inactive PBV2 DRAFT"),
     sessionId: assistantSafeIdentifierSchema,
     editorLink: z.string().trim().startsWith("/"),
     changes: z.array(z.object({ field: z.string().trim().min(1).max(160), before: z.union([z.string(), z.number(), z.boolean(), z.null()]), after: z.union([z.string(), z.number(), z.boolean(), z.null()]) }).strict()).min(1).max(30),

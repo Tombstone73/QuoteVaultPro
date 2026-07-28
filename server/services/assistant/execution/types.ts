@@ -87,6 +87,7 @@ export interface ExecutionPlanPreview {
   productInactiveDraftUpdate?: {
     productId: string;
     productName: string;
+    draftStatus: "Inactive PBV2 DRAFT";
     sessionId: string;
     editorLink: string;
     changes: readonly { field: string; before: string | number | boolean | null; after: string | number | boolean | null }[];
