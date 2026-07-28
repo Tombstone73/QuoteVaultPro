@@ -11,6 +11,7 @@ function list(value: unknown): string[] {
   return Array.isArray(value) ? value.map(text).filter((item): item is string => Boolean(item)).slice(0, 30) : [];
 }
 function safePath(value: unknown) { const path = text(value); return path?.startsWith("/") ? path : null; }
+function cents(value: unknown) { return typeof value === "number" && Number.isInteger(value) && value >= 0 ? `$${(value / 100).toFixed(2)}` : null; }
 
 const PRODUCT_CARD_KINDS = new Set([
   "product_intake_summary", "product_missing_information", "product_comparison", "product_material_selection",
@@ -57,6 +58,7 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
   if (!source || !kind || !PRODUCT_CARD_KINDS.has(kind)) return null;
   const details = record(source.details) ?? record(source.product) ?? source;
   const rawFields = record(details.fields);
+  const proposedFields = record(details.proposedFields);
   const namedFields = [
     ["Product", details.productName ?? details.name], ["Category", details.category], ["Sell unit", details.sellUnit],
     ["Dimensions", details.dimensions], ["Pricing", details.pricingMethod ?? details.pricingBasis], ["Routing", details.routing],
@@ -69,11 +71,24 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
     const rendered = text(value);
     return rendered ? [{ label: String(label), value: rendered }] : [];
   }) : [];
+  const proposedDraftFields = proposedFields ? [
+    ["Pricing model", proposedFields.pricingModel],
+    ["Square-foot price", cents(proposedFields.perSqftCents)],
+    ["Per-piece price", cents(proposedFields.perPieceCents)],
+    ["Minimum charge", cents(proposedFields.minimumChargeCents)],
+    ["Material", proposedFields.material],
+    ["Route", proposedFields.productionRoute],
+    ["Sheet / roll constraints", proposedFields.sheetOrRollConstraints],
+    ["Allow rotation", proposedFields.allowRotation === true ? "Allowed" : proposedFields.allowRotation === false ? "Not allowed" : null],
+  ].flatMap(([label, value]) => {
+    const rendered = text(value);
+    return rendered ? [{ label: String(label), value: rendered }] : [];
+  }) : [];
   return {
     kind,
     title: text(source.title) ?? "Product Management",
     summary: text(source.summary),
-    fields: [...namedFields, ...objectFields].slice(0, 16),
+    fields: [...namedFields, ...objectFields, ...proposedDraftFields].slice(0, 16),
     items: list(details.items ?? details.questions ?? details.errors ?? details.warnings ?? details.options ?? details.reusedRecords),
     assumptions: list(details.assumptions ?? details.inheritedAssumptions),
     changes: toChanges(details.changes ?? details.beforeAfter ?? details.patchChanges ?? details.fieldChanges),

@@ -17,6 +17,15 @@ const previewCard = {
     routing: "Roll production",
     material: "13 oz banner",
     draftStatus: "Inactive draft",
+    proposedFields: {
+      pricingModel: "square_foot",
+      perSqftCents: 450,
+      perPieceCents: null,
+      minimumChargeCents: 2500,
+      productionRoute: "Flatbed",
+      sheetOrRollConstraints: "48×96 sheets",
+      allowRotation: true,
+    },
     assumptions: ["Inherited Roll routing from an existing banner product."],
     items: ["Single-sided and double-sided options", "Grommets and hems"],
     editorPath: "/admin/products/draft-1",
@@ -37,6 +46,11 @@ describe("AssistantProductManagementCards", () => {
     expect(container.innerHTML).not.toContain("<script>alert");
     expect(container.textContent).toContain("Assumptions and inherited defaults");
     expect(container.textContent).toContain("Single-sided and double-sided options");
+    expect(container.textContent).toContain("Square-foot price: $4.50");
+    expect(container.textContent).toContain("Minimum charge: $25.00");
+    expect(container.textContent).toContain("Route: Flatbed");
+    expect(container.textContent).toContain("Sheet / roll constraints: 48×96 sheets");
+    expect(container.textContent).toContain("Allow rotation: Allowed");
     expect(container.querySelector<HTMLAnchorElement>("a[href='/admin/products/draft-1']")?.textContent).toContain("existing editor");
     expect(container.textContent).not.toMatch(/Activate|Publish|GO/);
   });
