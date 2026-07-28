@@ -84,6 +84,16 @@ export interface ExecutionPlanPreview {
     children: readonly { rowNumber: number; productName: string; intakeSessionId: string }[];
     unchanged: readonly string[];
   };
+  productPricingChangeSet?: {
+    changeSetId: string;
+    selector: Record<string, unknown>;
+    operation: Record<string, unknown>;
+    targetCount: number;
+    eligibleCount: number;
+    excluded: Array<{ productId: string; productName: string; reason: string }>;
+    rows: Array<{ productId: string; productName: string; active: boolean; before: Record<string, unknown>; after: Record<string, unknown>; state: string }>;
+    unchanged: string[];
+  };
   productInactiveDraftUpdate?: {
     productId: string;
     productName: string;

@@ -1030,6 +1030,13 @@
       "when": 1787788800000,
       "tag": "0151_orders_contact_only_identity",
       "breakpoints": true
+    },
+    {
+      "idx": 152,
+      "version": "7",
+      "when": 1787875200000,
+      "tag": "0152_ai_product_pricing_change_sets",
+      "breakpoints": true
     }
   ]
 }
