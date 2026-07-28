@@ -1016,6 +1016,13 @@
       "when": 1787616000000,
       "tag": "0149_artwork_production_quantity_allocation",
       "breakpoints": true
+    },
+    {
+      "idx": 150,
+      "version": "7",
+      "when": 1787702400000,
+      "tag": "0150_retired_final_production_files",
+      "breakpoints": true
     }
   ]
 }

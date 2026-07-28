@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
-import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle, Loader2 } from "lucide-react";
+import { Search, RefreshCw, History, FileText, Download, ZoomIn, Upload, Image as ImageIcon, Info, Paperclip, CheckCircle, AlertCircle, Loader2, Trash2 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
@@ -336,6 +336,8 @@ export default function PrepressProductionPageV2() {
   const fileInputRef = useRef<HTMLInputElement>(null);
   const hasSelectedTagManuallyRef = useRef(false);
   const userId = user?.id ?? null;
+  const normalizedUserRole = String((user as any)?.orgRole || user?.role || "").toLowerCase();
+  const canRemoveProductionFiles = ["owner", "admin", "manager"].includes(normalizedUserRole) || (user as any)?.isAdmin === true;
   
   // UI State
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
@@ -358,6 +360,8 @@ export default function PrepressProductionPageV2() {
   const [productionAlertStations, setProductionAlertStations] = useState<ProductionAlertStation[]>(["all"]);
   const [productionAlertMessage, setProductionAlertMessage] = useState("");
   const [uploadRole, setUploadRole] = useState<"original" | "final">("final");
+  const [filePendingRemoval, setFilePendingRemoval] = useState<VisibleFileRecord | null>(null);
+  const [removalReason, setRemovalReason] = useState("");
   const [selectedTag, setSelectedTag] = useState("none");
   const [uploadingFiles, setUploadingFiles] = useState<UploadProgress[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
@@ -600,6 +604,22 @@ export default function PrepressProductionPageV2() {
     onError: (error: Error) => {
       toast({ title: "Download failed", description: error.message, variant: "destructive" });
     },
+  });
+  const removeFinalFileMutation = useMutation({
+    mutationFn: async ({ fileId, reason }: { fileId: string; reason: string }) => {
+      const res = await fetch(`/api/prepress/files/${fileId}/remove`, { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reason }) });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(body?.error || "Unable to remove production file");
+      return body.data as { replacementRequired?: boolean; alreadyRemoved?: boolean };
+    },
+    onSuccess: async (result) => {
+      if (selectedLineItemId) await refreshLineItemQueries(selectedLineItemId);
+      await queryClient.invalidateQueries({ queryKey: PREPRESS_QUEUE_QUERY_KEY });
+      setFilePendingRemoval(null);
+      setRemovalReason("");
+      toast({ title: result.alreadyRemoved ? "Production file already removed" : "Production file removed", description: result.replacementRequired ? "Replacement production file required before this line can be production-ready." : "The original artwork and history were preserved." });
+    },
+    onError: (error: Error) => toast({ title: "Production file not removed", description: error.message, variant: "destructive" }),
   });
 
   const startSessionMutation = useMutation({
@@ -2207,6 +2227,17 @@ export default function PrepressProductionPageV2() {
                           >
                             <Download className="w-5 h-5" />
                           </button>
+                          {canRemoveProductionFiles && (
+                            <button
+                              onClick={(event) => { event.stopPropagation(); setFilePendingRemoval(file); setRemovalReason(""); }}
+                              disabled={removeFinalFileMutation.isPending}
+                              aria-label={`Remove production file ${file.displayName}`}
+                              title="Remove from Final Production Files"
+                              className="text-rose-300 hover:text-rose-100 p-1 disabled:cursor-not-allowed disabled:opacity-50"
+                            >
+                              <Trash2 className="w-5 h-5" />
+                            </button>
+                          )}
                         </td>
                       </tr>
                     ))
@@ -2418,7 +2449,26 @@ export default function PrepressProductionPageV2() {
                   <p className="text-sm text-slate-400">No materials computed</p>
                   <p className="text-xs text-slate-500">Add inventory materials to PBV2 choices or set size/options</p>
                 </div>
-              )}
+      )}
+
+      <Dialog open={!!filePendingRemoval} onOpenChange={(open) => { if (!open && !removeFinalFileMutation.isPending) setFilePendingRemoval(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remove production file?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-muted-foreground">
+            {filePendingRemoval?.displayName || "This file"} will no longer be available in Final Production Files. Original customer artwork, storage objects, and audit history will remain.
+          </p>
+          <p className="text-sm text-muted-foreground">Copies already downloaded or transferred by Local Bridge cannot be removed from shop computers.</p>
+          <Textarea value={removalReason} onChange={(event) => setRemovalReason(event.target.value)} placeholder="Reason (required after production completion)" disabled={removeFinalFileMutation.isPending} />
+          <div className="flex justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => setFilePendingRemoval(null)} disabled={removeFinalFileMutation.isPending}>Cancel</Button>
+            <Button type="button" variant="destructive" disabled={!filePendingRemoval || removeFinalFileMutation.isPending} onClick={() => filePendingRemoval && removeFinalFileMutation.mutate({ fileId: filePendingRemoval.id, reason: removalReason })}>
+              {removeFinalFileMutation.isPending ? "Removing…" : "Remove production file"}
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
 
               {plannedMaterials.length > 0 ? (
                 <details className="mt-3">

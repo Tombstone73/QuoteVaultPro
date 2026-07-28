@@ -7961,7 +7961,7 @@ export const prepressSessionStatusEnum = pgEnum('prepress_session_status', ['act
 export const lineItemFileRoleEnum = pgEnum('line_item_file_role', ['original', 'final', 'reference']);
 
 // Line item file status enum
-export const lineItemFileStatusEnum = pgEnum('line_item_file_status', ['active', 'superseded']);
+export const lineItemFileStatusEnum = pgEnum('line_item_file_status', ['active', 'superseded', 'retired']);
 
 /**
  * Prepress Sessions - Manual prepress workflow tracking
@@ -8012,7 +8012,7 @@ export const lineItemFiles = pgTable("line_item_files", {
   
   // File metadata
   role: lineItemFileRoleEnum("role").notNull(), // original | final | reference
-  status: lineItemFileStatusEnum("status").notNull().default('active'), // active | superseded
+  status: lineItemFileStatusEnum("status").notNull().default('active'), // active | superseded | retired
   tag: text("tag"), // Front/Back/Panel/etc
   // Allocation copied from the authoritative production-artwork relationship
   // when final art is promoted. This preserves the instruction if output
