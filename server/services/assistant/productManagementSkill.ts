@@ -69,7 +69,7 @@ async function loadReferences(organizationId: string) {
 }
 
 function isProductIntent(message: string): boolean {
-  return /\b(create|build|add|clone|configure|continue)\b[\s\S]{0,80}\b(product|banner|sign|print|draft)\b/i.test(message);
+  return /\b(create|build|add|clone|configure|continue|update|change|set)\b[\s\S]{0,80}\b(product|banner|sign|print|draft)\b/i.test(message) || draftLookupFromMessage(message) !== null;
 }
 
 function isBatchProductIntent(message: string): boolean {
@@ -154,6 +154,8 @@ function draftLookupFromMessage(message: string): { productId?: string; productN
   if (categoryNamed) return { category: categoryNamed[1].trim(), productName: categoryNamed[2].trim() };
   const quoted = message.match(/\b(?:product|draft)\s*[“"]([^”"]{1,255})[”"]/i);
   if (quoted) return { productName: quoted[1].trim() };
+  const namedChange = message.match(/\b(?:change|update|edit|configure)\s+(?:the\s+)?(.{1,255}?)\s+(?:to|with|set)\b/i);
+  if (namedChange) return { productName: namedChange[1].trim() };
   const namedDraft = message.match(/\b(?:change|update|edit|configure)\s+(?:the\s+)?(.{1,255}?)\s+(?:product\s+)?draft\b/i);
   if (namedDraft) return { productName: namedDraft[1].trim() };
   return null;
