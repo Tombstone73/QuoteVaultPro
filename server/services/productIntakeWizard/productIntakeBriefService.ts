@@ -159,6 +159,7 @@ type TextDescriptionSignals = {
 function extractTextDescriptionSignals(description: string): TextDescriptionSignals {
   const normalized = normalizeText(description);
   const lines = description.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const explicitProductName = description.match(/\b(?:product\s+draft|product)\s+named\s+["“]?(.+?)["”]?(?=(?:[.!?]\s*(?:sell|use|allow|route|with|add)\b)|$)/i)?.[1]?.trim() ?? null;
   const materialReferences: string[] = [];
   const customSize = /custom\s+(?:width\s+and\s+height|size)|width\s+and\s+height/i.test(description);
   const quantityBasedPricing = /quantity[\s-]*(?:based|tier|break|pricing)|qty[\s-]*(?:based|tier|break|pricing)/i.test(description);
@@ -243,7 +244,8 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const coroplastName = isCoroplastYardSign ? titleCaseProductName(`${coroplastMm ? `${coroplastMm}mm ` : ""}Coroplast Yard Signs`) : null;
   const acrylicName = isAcrylicSign ? titleCaseProductName(`${acrylicMm ? `${acrylicMm}mm ` : ""}Acrylic Signs`) : null;
   const pvcName = isPvcSign ? titleCaseProductName(`${pvcMm ? `${pvcMm}mm ` : ""}PVC Signs`) : null;
-  const productName = styreneName
+  const productName = explicitProductName
+    ?? styreneName
     ?? (isBanner ? (bannerOz ? `${bannerOz}oz Banner` : "Banner") : null)
     ?? coroplastName
     ?? (isContourCutSticker ? "Contour-Cut Stickers" : isSticker ? "Stickers" : null)
@@ -809,7 +811,14 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
           evidence: [evidence("$.description.sizes", "Quantity", textSignals.sizes.join(", ") || "Custom size", "Product appears to be ordered per piece; confirm if needed.")],
         }
       : analyzerBehaviors.quantityBehavior,
-    pricingAnalysis: /formula|rounded\s+sqft|round(?:ed)?\s+square\s+foot|ceil|adjusted\s+dimensions|add\s+0\.25|0\.25"?\s+to\s+width|0\.25"?\s+to\s+height/i.test(text) &&
+    pricingAnalysis: /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet|sf)\b/i.test(text)
+      ? {
+          behavior: "square_foot",
+          confidence: 94,
+          notes: "Explicit base rate per square foot",
+          evidence: [evidence("$.description.pricing", "Square-foot base rate", text.match(/\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet|sf)\b/i)?.[0] ?? null, "An explicit square-foot rate was stated in the text description.")],
+        }
+      : /formula|rounded\s+sqft|round(?:ed)?\s+square\s+foot|ceil|adjusted\s+dimensions|add\s+0\.25|0\.25"?\s+to\s+width|0\.25"?\s+to\s+height/i.test(text) &&
       /sticker|decal|label|vinyl/i.test(text)
       ? {
           behavior: "formula",

@@ -104,6 +104,21 @@ describe("Product Intake Wizard schemas", () => {
 });
 
 describe("Product Intake Brief service", () => {
+  test("preserves an explicitly named draft and recognizes an explicit square-foot base rate", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "Create an inactive product draft named AI VALIDATION 19I 3mm PVC. Sell it by square foot at $4.50 per square foot with a $25 minimum. Use 48×96 sheets, allow rotation, and route it to flatbed." },
+      analyzer: null,
+      templates,
+      materials: [{ id: "mat_pvc", sku: "PVC3", name: "PVC - 3mm (Foamed PVC Sheets)" }],
+      provider: null,
+    });
+
+    expect(brief.productIdentity.likelyProductName.value).toBe("AI VALIDATION 19I 3mm PVC");
+    expect(brief.pricingAnalysis).toMatchObject({ behavior: "square_foot", confidence: 94 });
+    expect(generateProductIntakeQuestions(brief).map((question) => question.questionKey)).not.toContain("choose-pricing-model");
+  });
+
   test("matches existing option templates with threshold recommendations", () => {
     const matches = matchOptionTemplates({
       optionLabel: "Grommets",
