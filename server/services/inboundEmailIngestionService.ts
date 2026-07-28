@@ -2725,6 +2725,11 @@ export class InboundEmailIngestionService {
     adapter: InboundEmailProviderAdapter,
   ): Promise<InboundEmailProcessMessageResult> {
     message = await this.messageWithRecoveredProviderAttachments(mailbox, message, adapter);
+    // Gmail message search may return an internal message from a mixed thread.
+    // Hydrate first so a later external reply is evaluated on its own identity.
+    if (message.threadId && adapter.getThreadMessages) {
+      return this.processThreadMessage(organizationId, actorUserId, mailbox, source, message, adapter);
+    }
     const internalSender = isInternalOutboundInboundEmailMessage(mailbox, message);
     if (internalSender.internal) {
       return {
@@ -2732,9 +2737,6 @@ export class InboundEmailIngestionService {
         processingOutcome: "internal_sender_skipped",
         reason: internalSender.reason ?? "Sender belongs to an organization/internal domain.",
       };
-    }
-    if (message.threadId && adapter.getThreadMessages) {
-      return this.processThreadMessage(organizationId, actorUserId, mailbox, source, message, adapter);
     }
     const idempotencyKey = `${message.provider}:${message.messageId}`;
     const [existing] = await this.dbInstance
@@ -2998,16 +3000,22 @@ export class InboundEmailIngestionService {
     const threadId = seedMessage.threadId;
     if (!threadId) return this.processMessage(organizationId, actorUserId, mailbox, source, seedMessage, { ...adapter, getThreadMessages: undefined });
 
-    const idempotencyKey = `${seedMessage.provider}:thread:${threadId}`;
     const threadMessages = await this.resolveMessagesForInitialThread(mailbox, seedMessage, adapter);
     const sortedMessages = threadMessages.slice().sort((a, b) => (
       (a.receivedAt?.getTime() ?? 0) - (b.receivedAt?.getTime() ?? 0)
     ));
-    const latestMessage = sortedMessages.reduce<InboundEmailProviderMessage | null>((latest, message) => {
+    const externalMessages = sortedMessages.filter((message) => !isInternalOutboundInboundEmailMessage(mailbox, message).internal);
+    if (!externalMessages.length) {
+      return { status: "ignored", processingOutcome: "internal_sender_skipped", reason: "Thread contains no eligible external inbound message." };
+    }
+    const latestMessage = externalMessages.reduce<InboundEmailProviderMessage | null>((latest, message) => {
       if (!latest) return message;
       return (message.receivedAt?.getTime() ?? 0) > (latest.receivedAt?.getTime() ?? 0) ? message : latest;
     }, null) ?? seedMessage;
-    const firstMessage = sortedMessages[0] ?? seedMessage;
+    const firstMessage = externalMessages[0] ?? latestMessage;
+    // The Gmail message, not its thread, is the source identity. A later
+    // customer reply in the same conversation remains eligible on the next pull.
+    const idempotencyKey = `${latestMessage.provider}:${latestMessage.messageId}`;
 
     const [existing] = await this.dbInstance
       .select({ id: inboundOrderRecords.id })
@@ -3034,7 +3042,7 @@ export class InboundEmailIngestionService {
           actorUserId,
           record: existingRecord,
           action: "thread_message_appended",
-          messages: sortedMessages,
+          messages: externalMessages,
           threadId,
         }) ?? existingRecord;
         await this.ingestThreadAttachments({
@@ -3042,7 +3050,7 @@ export class InboundEmailIngestionService {
           actorUserId,
           mailbox,
           record: refreshedRecord,
-          messages: sortedMessages,
+          messages: externalMessages,
           adapter,
           skippedReason: "thread_message_attachment_backfill",
         });
@@ -3055,7 +3063,7 @@ export class InboundEmailIngestionService {
       };
     }
 
-    for (const candidate of sortedMessages) {
+    for (const candidate of externalMessages) {
       const matchedIgnoreRule = await this.findMatchedIgnoreRule(organizationId, candidate);
       if (!matchedIgnoreRule) continue;
       await this.inboundRepository.recordEmailIgnoreRuleMatch(matchedIgnoreRule.id);
@@ -3075,27 +3083,8 @@ export class InboundEmailIngestionService {
       };
     }
 
-    const combinedBodyText = sortedMessages
-      .map((message) => message.bodyText)
-      .filter((value): value is string => Boolean(value?.trim()))
-      .join("\n\n--- Thread message ---\n\n");
-    const combinedBodyHtml = sortedMessages
-      .map((message) => message.bodyHtml)
-      .filter((value): value is string => Boolean(value?.trim()))
-      .join("\n<hr />\n");
-    const combinedAttachments = sortedMessages.flatMap((message) => (
-      message.attachments.map((attachment) => ({
-        ...attachment,
-        providerMessageId: attachment.providerMessageId ?? message.messageId,
-      }))
-    ));
-    const senderTrustDecision = await this.resolveClassificationTrust(organizationId, sortedMessages);
-    const classification = classifyInboundEmailForReview({
-      ...latestMessage,
-      bodyText: combinedBodyText || latestMessage.bodyText,
-      bodyHtml: combinedBodyHtml || latestMessage.bodyHtml,
-      attachments: combinedAttachments,
-    }, {
+    const senderTrustDecision = await this.resolveClassificationTrust(organizationId, [latestMessage]);
+    const classification = classifyInboundEmailForReview(latestMessage, {
       senderTrusted: senderTrustDecision.trusted,
       trustSource: senderTrustDecision.trustSource,
       trustReason: senderTrustDecision.reason,
@@ -3168,7 +3157,7 @@ export class InboundEmailIngestionService {
       record: provisionalRecord,
       actorUserId,
       action: "initial_thread_ingestion",
-      messages: sortedMessages,
+      messages: externalMessages,
       threadId,
       classification,
     });
@@ -3227,7 +3216,7 @@ export class InboundEmailIngestionService {
           threadId,
           threadMessageCount: sortedMessages.length,
           latestMessageId: latestMessage.messageId,
-          attachmentCandidatesAcrossThread: combinedAttachments.length,
+          attachmentCandidatesAcrossThread: externalMessages.reduce((count, message) => count + message.attachments.length, 0),
           intent: classification.intent,
           intentReason: classification.reason,
           intentReasons: classification.reasons,
@@ -3262,7 +3251,7 @@ export class InboundEmailIngestionService {
           actorUserId,
           record: conflictedRecord,
           action: "thread_message_appended",
-          messages: sortedMessages,
+          messages: externalMessages,
           threadId,
         }) ?? conflictedRecord;
         await this.ingestThreadAttachments({
@@ -3270,7 +3259,7 @@ export class InboundEmailIngestionService {
           actorUserId,
           mailbox,
           record: refreshedRecord,
-          messages: sortedMessages,
+          messages: externalMessages,
           adapter,
           skippedReason: "thread_message_attachment_backfill",
         });
@@ -3288,15 +3277,15 @@ export class InboundEmailIngestionService {
       actorUserId,
       mailbox,
       record: createdRecord,
-      messages: sortedMessages,
+      messages: externalMessages,
       adapter,
       skippedReason: null,
     });
     return {
       status: "created",
       recordId: createdRecord.id,
-      processingOutcome: sortedMessages.some((message) => message.subject?.trim()) ? "created_record" : "no_subject_ingested",
-      reason: sortedMessages.some((message) => message.subject?.trim())
+      processingOutcome: latestMessage.subject?.trim() ? "created_record" : "no_subject_ingested",
+      reason: latestMessage.subject?.trim()
         ? `Created TEMP_INBOUND Gmail thread candidate from ${classification.intent} classification.`
         : "Created TEMP_INBOUND Gmail thread candidate with safe no-subject fallback.",
       classificationOutcome: classification.intent,
