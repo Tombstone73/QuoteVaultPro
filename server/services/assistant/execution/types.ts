@@ -94,6 +94,15 @@ export interface ExecutionPlanPreview {
     rows: Array<{ productId: string; productName: string; active: boolean; before: Record<string, unknown>; after: Record<string, unknown>; state: string }>;
     unchanged: string[];
   };
+  productPricingRollback?: {
+    changeSetId: string;
+    requestSummary: string;
+    targetCount: number;
+    eligibleCount: number;
+    alreadyRolledBackCount: number;
+    conflictCount: number;
+    rows: Array<{ productId: string; productName: string; active: boolean; before: Record<string, unknown>; current: Record<string, unknown>; proposedRestore: Record<string, unknown>; state: string; reason?: string }>;
+  };
   productInactiveDraftUpdate?: {
     productId: string;
     productName: string;

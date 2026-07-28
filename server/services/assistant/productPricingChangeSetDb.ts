@@ -29,7 +29,7 @@ function routeFromTree(tree: any): string | null { return typeof tree?.meta?.pro
 
 type DbRow = typeof aiProductPricingChangeSetRows.$inferSelect;
 function toRow(row: DbRow): ProductPricingChangeSetRow {
-  return { productId: row.productId, productName: row.productName, activeSnapshot: row.activeSnapshot, activeTreeVersionId: row.activeTreeVersionId, beforeValues: row.beforeValues, proposedValues: row.proposedValues, sourceFingerprint: row.sourceFingerprint, executionState: row.executionState as ProductPricingChangeSetRow["executionState"], ...(row.exclusionReason ? { exclusionReason: row.exclusionReason } : {}) };
+  return { productId: row.productId, productName: row.productName, activeSnapshot: row.activeSnapshot, activeTreeVersionId: row.activeTreeVersionId, beforeValues: row.beforeValues, proposedValues: row.proposedValues, sourceFingerprint: row.sourceFingerprint, executionState: row.executionState as ProductPricingChangeSetRow["executionState"], executedValues: row.executedValues, failureReason: row.failureReason, rollbackState: row.rollbackState as ProductPricingChangeSetRow["rollbackState"], rollbackConflictReason: row.rollbackConflictReason, ...(row.exclusionReason ? { exclusionReason: row.exclusionReason } : {}) };
 }
 
 export class DbProductPricingChangeSetStore implements ProductPricingChangeSetStore {
@@ -46,7 +46,7 @@ export class DbProductPricingChangeSetStore implements ProductPricingChangeSetSt
     const [changeSet] = await db.select().from(aiProductPricingChangeSets).where(and(eq(aiProductPricingChangeSets.orgId, organizationId), eq(aiProductPricingChangeSets.id, changeSetId))).limit(1);
     if (!changeSet) return null;
     const rows = await db.select().from(aiProductPricingChangeSetRows).where(and(eq(aiProductPricingChangeSetRows.orgId, organizationId), eq(aiProductPricingChangeSetRows.changeSetId, changeSetId))).orderBy(aiProductPricingChangeSetRows.sourceOrder);
-    return { id: changeSet.id, organizationId, requestSummary: changeSet.requestSummary, selector: changeSet.selector, operation: changeSet.operation as any, fingerprint: changeSet.fingerprint, rows: rows.map(toRow) };
+    return { id: changeSet.id, organizationId, requestSummary: changeSet.requestSummary, selector: changeSet.selector, operation: changeSet.operation as any, fingerprint: changeSet.fingerprint, rows: rows.map(toRow), executionStatus: changeSet.executionStatus, rollbackStatus: changeSet.rollbackStatus, createdAt: changeSet.createdAt, executedAt: changeSet.executedAt };
   }
   async markConfirmed(input: { organizationId: string; changeSetId: string; planId: string; idempotencyKey: string; correlationId: string }): Promise<void> {
     await db.update(aiProductPricingChangeSets).set({ planId: input.planId, idempotencyKey: input.idempotencyKey, correlationId: input.correlationId, proposalStatus: "confirmed", confirmationStatus: "consumed", executionStatus: "running", confirmedAt: new Date(), updatedAt: new Date() }).where(and(eq(aiProductPricingChangeSets.orgId, input.organizationId), eq(aiProductPricingChangeSets.id, input.changeSetId), eq(aiProductPricingChangeSets.confirmationStatus, "pending")));
@@ -61,6 +61,10 @@ export class DbProductPricingChangeSetStore implements ProductPricingChangeSetSt
     await db.update(aiProductPricingChangeSetRows).set({ rollbackState: input.state, rollbackAttemptCount: sql`${aiProductPricingChangeSetRows.rollbackAttemptCount} + 1`, ...(input.reason ? { rollbackConflictReason: input.reason.slice(0, 1000) } : {}), updatedAt: new Date() }).where(and(eq(aiProductPricingChangeSetRows.orgId, input.organizationId), eq(aiProductPricingChangeSetRows.changeSetId, input.changeSetId), eq(aiProductPricingChangeSetRows.productId, input.productId)));
   }
   async list(organizationId: string, limit = 25) { return db.select().from(aiProductPricingChangeSets).where(eq(aiProductPricingChangeSets.orgId, organizationId)).orderBy(desc(aiProductPricingChangeSets.createdAt)).limit(Math.max(1, Math.min(limit, 25))); }
+  async markRollbackComplete(input: { organizationId: string; changeSetId: string; actorUserId: string; planId?: string; restored: number; conflicted: number; failed: number }): Promise<void> {
+    const status = input.failed || input.conflicted ? "partially_rolled_back" : "rolled_back";
+    await db.update(aiProductPricingChangeSets).set({ rollbackStatus: status, ...(input.planId ? { rollbackPlanId: input.planId } : {}), rollbackedAt: new Date(), rollbackActorUserId: input.actorUserId, updatedAt: new Date() }).where(and(eq(aiProductPricingChangeSets.orgId, input.organizationId), eq(aiProductPricingChangeSets.id, input.changeSetId)));
+  }
 }
 
 export class DbProductPricingCanonicalService implements ProductPricingCanonicalService {
@@ -81,9 +85,10 @@ export class DbProductPricingCanonicalService implements ProductPricingCanonical
     const candidates = await db.select().from(products).where(and(...clauses)).limit(productPricingChangeSetMaxTargets + 1);
     if (candidates.length > productPricingChangeSetMaxTargets) throw new Error(`The selector matched more than ${productPricingChangeSetMaxTargets} products.`);
     const named = Array.isArray(input.selector.productNames) ? new Set(input.selector.productNames.filter((name): name is string => typeof name === "string")) : null;
+    const excludedNames = new Set(Array.isArray(input.selector.excludeProductNames) ? input.selector.excludeProductNames.filter((name): name is string => typeof name === "string") : []);
     const route = typeof input.selector.route === "string" ? input.selector.route.trim().toLocaleLowerCase() : null;
     const targets = await Promise.all(candidates.map((product) => this.toTarget(product)));
-    return targets.filter((target) => (!named || named.has(target.productName)) && (!route || target.route?.trim().toLocaleLowerCase() === route));
+    return targets.filter((target) => (!named || named.has(target.productName)) && !excludedNames.has(target.productName) && (!route || target.route?.trim().toLocaleLowerCase() === route));
   }
   async loadProduct(input: { organizationId: string; productId: string }): Promise<ProductPricingTarget | null> {
     const [product] = await db.select().from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);

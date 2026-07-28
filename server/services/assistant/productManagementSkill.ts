@@ -24,15 +24,17 @@ import { productDraftBulkUpdateResumeEligibility } from "./productInactiveDraftB
 import { productInactiveDraftBulkUpdateHistoryService } from "./productInactiveDraftBulkUpdateHistoryService";
 import { productInactiveDraftBatchHistoryService } from "./productInactiveDraftBatchHistoryService";
 import { productDraftBatchResumeEligibility, summarizeProductDraftBatch } from "./productInactiveDraftBatchPresentation";
-import { productPricingChangeSetCommandName } from "./execution/productPricingChangeSetCommand";
+import { productPricingChangeSetCommandName, productPricingRollbackCommandName } from "./execution/productPricingChangeSetCommand";
 import { productPricingChangeSetService } from "./execution/productPricingChangeSetAdapter";
+import { pricingChangeRequestFromMessage } from "./productPricingChangeSetParsing";
+import { productPricingChangeSetStore } from "./productPricingChangeSetDb";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
   version: "v1",
   purpose: "Conversationally create or continue validated inactive product drafts using the existing Product Intake workflow.",
   allowedReadDomains: ["products", "product_categories", "pbv2_definitions", "pricing_methods", "materials", "production_routing", "option_definitions", "formula_library_metadata"],
-  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1"],
+  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1"],
   requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch", "assistant.products.adjust_pricing"],
   requiredContext: ["organization", "authenticated_internal_actor", "conversation"],
   confirmationPolicy: "dedicated_plan_confirmation",
@@ -313,19 +315,37 @@ export class ProductManagementSkillService {
       const batches = await productInactiveDraftBatchHistoryService.list(input.organizationId, { ...(input.conversationId && /\b(?:last|this|current)\b/i.test(input.message) ? { conversationId: input.conversationId } : {}), limit: 25 });
       return { handled: true, response: batches.length ? `Found ${batches.length} product-entry batch record(s). No products were changed.` : "No product-entry batches were found.", cards: [{ kind: "product_batch_preview", title: "Product-entry batch history", summary: "Read-only batch history.", sourceLinks: [], details: { batches: batches.map((batch) => ({ batchId: batch.id, label: batch.label, status: batch.executionStatus, submittedCount: batch.submittedCount, includedCount: batch.includedCount, createdAt: batch.createdAt })) } }] };
     }
-    const activePricingMatch = input.message.match(/\b(?:increase|raise|decrease|reduce)\b[\s\S]{0,80}?\b(\d+(?:\.\d+)?)\s*%/i);
-    const wantsPricing = /\b(price|pricing|square[ -]?foot|sq\s*ft|minimum charge|per[- ]piece)\b/i.test(input.message);
-    if (activePricingMatch && wantsPricing && !/\b(?:show me|what would change)\b/i.test(input.message)) {
-      const percent = Number(activePricingMatch[1]) * (/\b(?:decrease|reduce)\b/i.test(input.message) ? -1 : 1);
-      const field = /\bminimum charge\b/i.test(input.message) ? "minimumChargeCents" : /\b(?:per[- ]piece|piece pricing)\b/i.test(input.message) ? "perPieceCents" : "perSqftCents";
-      const selector = { active: !/\binactive\b/i.test(input.message), ...( /\bflatbed\b/i.test(input.message) ? { route: "Flatbed" } : {}), ...( /\broll\b/i.test(input.message) ? { route: "Roll" } : {}) };
+    const pricingChangeId = input.message.match(/\b(?:pricing\s+)?(?:change\s*set\s*)?(?:id\s*)?([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\b/i)?.[1];
+    const wantsRollback = /\b(?:undo|roll\s*back|rollback|restore)\b/i.test(input.message) && /\b(?:pricing|price|change)\b/i.test(input.message);
+    if (wantsRollback) {
+      const latest = !pricingChangeId ? await productPricingChangeSetStore.list(input.organizationId, 25) : [];
+      const requestedRoute = /\bflatbed\b/i.test(input.message) ? "flatbed" : /\broll\b/i.test(input.message) ? "roll" : null;
+      const latestMatch = latest.find((item) => !requestedRoute || String((item.selector as Record<string, unknown>).route ?? "").trim().toLocaleLowerCase() === requestedRoute);
+      const changeSet = pricingChangeId ? await productPricingChangeSetStore.get(input.organizationId, pricingChangeId) : (latestMatch ? await productPricingChangeSetStore.get(input.organizationId, latestMatch.id) : null);
+      if (!changeSet || changeSet.executionStatus === "proposed") return { handled: true, response: "No executed tenant-scoped product pricing change set was found to roll back. No product was changed.", cards: [] };
+      const eligible = changeSet.rows.filter((row) => row.executionState === "succeeded" && row.rollbackState !== "rolled_back");
+      if (!eligible.length) return { handled: true, response: `Pricing change set ${changeSet.id} has no remaining eligible rollback rows. No product was changed.`, cards: [] };
+      return { handled: true, response: `I prepared a rollback for pricing change set ${changeSet.id}. It will restore only rows whose current scalar values still match the original executed values.`, cards: [
+        { kind: "product_batch_preview", title: "Pricing rollback preview", summary: "Read-only rollback detail. Later edits are conflicts and will not be overwritten.", sourceLinks: eligible.map((row) => ({ label: `Open ${row.productName}`, href: `/products/${row.productId}` })), details: { changeSetId: changeSet.id, requestSummary: changeSet.requestSummary, targetCount: changeSet.rows.length, eligibleCount: eligible.length, alreadyRolledBackCount: changeSet.rows.filter((row) => row.rollbackState === "rolled_back").length, conflictCount: changeSet.rows.filter((row) => row.rollbackState === "conflicted").length, rows: eligible.map((row) => ({ productId: row.productId, productName: row.productName, before: row.beforeValues, executed: row.executedValues ?? row.proposedValues, restore: row.beforeValues, rollbackState: row.rollbackState ?? "not_requested", reason: row.rollbackConflictReason ?? null })) } },
+        { kind: "action_proposal", title: "Roll back product pricing", summary: "Review exact restoration values and use GO once. This never changes lifecycle, publication, visibility, or historical transactions.", sourceLinks: [], plan: { action: productPricingRollbackCommandName, changeSetId: changeSet.id, fingerprint: changeSet.fingerprint } },
+      ] };
+    }
+    if (/\b(?:show|list|last|recent|history)\b[\s\S]{0,50}\b(?:pricing|price)\s+(?:change|changes|history|set)/i.test(input.message)) {
+      const history = await productPricingChangeSetStore.list(input.organizationId, 25);
+      return { handled: true, response: history.length ? `Found ${history.length} tenant-scoped product pricing change set record(s). No product was changed.` : "No product pricing change sets were found.", cards: [{ kind: "product_batch_preview", title: "Product pricing change history", summary: "Read-only tenant-scoped history.", sourceLinks: [], details: { changeSets: history.map((item) => ({ changeSetId: item.id, requestSummary: item.requestSummary, status: item.executionStatus, rollbackStatus: item.rollbackStatus, targetCount: item.targetCount, succeededCount: item.succeededCount, conflictedCount: item.conflictedCount, createdAt: item.createdAt, executedAt: item.executedAt })) } }] };
+    }
+    const pricingRequest = pricingChangeRequestFromMessage(input.message);
+    if (pricingRequest && !/\b(?:show me|what would change)\b/i.test(input.message)) {
       try {
-        const proposal = await productPricingChangeSetService.createProposal({ organizationId: input.organizationId, requestSummary: input.message.slice(0, 1000), selector, operation: { kind: "percent", field, percent } });
+        const proposal = await productPricingChangeSetService.createProposal({ organizationId: input.organizationId, requestSummary: input.message.slice(0, 1000), selector: pricingRequest.selector, operation: pricingRequest.operation, overrides: pricingRequest.overrides });
         return { handled: true, response: `I prepared a persisted pricing change set for ${proposal.rows.filter((row) => row.executionState === "pending").length} exact product target(s). Review the active/inactive scope, exclusions, and before-and-after values; GO applies only these stored values.`, cards: [
-          { kind: "product_batch_preview", title: "Product pricing change set", summary: "Read-only pre-confirmation summary. Product lifecycle and visibility are excluded.", sourceLinks: proposal.rows.map((row) => ({ label: `Open ${row.productName}`, href: `/products/${row.productId}` })), details: { changeSetId: proposal.id, selector, operation: proposal.operation, rows: proposal.rows } },
+          { kind: "product_batch_preview", title: "Product pricing change set", summary: "Read-only pre-confirmation summary. Product lifecycle and visibility are excluded.", sourceLinks: proposal.rows.map((row) => ({ label: `Open ${row.productName}`, href: `/products/${row.productId}` })), details: { changeSetId: proposal.id, selector: pricingRequest.selector, operation: proposal.operation, overrides: pricingRequest.overrides, rows: proposal.rows } },
           { kind: "action_proposal", title: "Adjust product pricing", summary: "Review the exact server-persisted pricing change set and use GO once. Active status, publication, visibility, routing, options, and historical snapshots remain unchanged.", sourceLinks: [], plan: { action: productPricingChangeSetCommandName, changeSetId: proposal.id, fingerprint: proposal.fingerprint } },
         ] };
       } catch (error) { return { handled: true, response: error instanceof Error ? error.message : "The pricing change-set proposal could not be prepared.", cards: [] }; }
+    }
+    if (/\b(?:increase|raise|decrease|reduce|subtract|add|set|clear)\b/i.test(input.message) && /\b(?:price|pricing|rate|charge|square|sq\.?\s*ft|piece)\b/i.test(input.message)) {
+      return { handled: true, response: "I could not safely determine one scalar pricing component and one amount. Specify square-foot rate, per-piece rate, or minimum charge and use either a percent, dollar amount, or exact value. No pricing proposal was created.", cards: [{ kind: "product_validation_errors", title: "Pricing request needs clarification", summary: "No product was changed.", sourceLinks: [], details: { errors: ["Ambiguous pricing component or amount."] } }] };
     }
     if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation and publication are not available through the assistant. Controlled pricing changes require a supported pricing request and persisted confirmation.", cards: [{ kind: "product_validation_errors", title: "Unsupported product lifecycle action", summary: "Lifecycle and visibility changes remain disabled.", sourceLinks: [], details: { errors: ["Activation, deactivation, publication, archival, and visibility changes are disabled."] } }] };
     const bulkProductIds = exactBulkProductIds(input.message);

@@ -18,6 +18,22 @@ describe("product pricing change sets", () => {
     expect(current.active).toBe(true);
   });
 
+  it("persists one shared operation with an exact per-product override and does not duplicate rows", async () => {
+    const first = target("flatbed-a", 450); const second = target("flatbed-b", 450); let saved: ProductPricingChangeSet | null = null;
+    const canonical: ProductPricingCanonicalService = { loadExactTargets: async () => [first, second], loadProduct: async () => null, applyConfirmedPricing: async () => { throw new Error("not used"); } };
+    const store: ProductPricingChangeSetStore = { create: async (input) => (saved = { id: "set-override", ...input }), get: async () => saved, markConfirmed: async () => {}, markRow: async () => {}, complete: async () => {}, markRollback: async () => {} };
+    const proposal = await new ProductPricingChangeSetService(canonical, store).createProposal({ organizationId: "org", requestSummary: "5% except flatbed-b 8%", selector: { active: true, route: "Flatbed" }, operation: { kind: "percent", field: "perSqftCents", percent: 5 }, overrides: [{ productName: "flatbed-b", operation: { kind: "percent", field: "perSqftCents", percent: 8 } }] });
+    expect(proposal.rows).toHaveLength(2);
+    expect(proposal.rows.map((row) => row.proposedValues.perSqftCents)).toEqual([473, 486]);
+  });
+
+  it("replays an executed change set without applying it again", async () => {
+    const current = target("active-flatbed", 473); const saved: ProductPricingChangeSet = { id: "set-replay", organizationId: "org", requestSummary: "x", selector: {}, operation: { kind: "percent", field: "perSqftCents", percent: 5 }, fingerprint: "f", rows: [{ productId: current.productId, productName: current.productName, activeSnapshot: true, activeTreeVersionId: "tree-1", beforeValues: { perSqftCents: 450 }, proposedValues: { perSqftCents: 473 }, sourceFingerprint: "old", executionState: "succeeded" }] };
+    const canonical: ProductPricingCanonicalService = { loadExactTargets: async () => [], loadProduct: async () => current, applyConfirmedPricing: async () => { throw new Error("must not apply"); } };
+    const store: ProductPricingChangeSetStore = { create: async () => saved, get: async () => saved, markConfirmed: async () => {}, markRow: async () => {}, complete: async () => {}, markRollback: async () => {} };
+    await expect(new ProductPricingChangeSetService(canonical, store).execute({ organizationId: "org", actorUserId: "actor", changeSetId: "set-replay", fingerprint: "f", planId: "plan", idempotencyKey: "key", correlationId: "corr" })).resolves.toEqual({ succeeded: 1, failed: 0, conflicted: 0, excluded: 0 });
+  });
+
   it("does not roll back a later manual edit", async () => {
     const current = target("active-flatbed", 473); const saved: ProductPricingChangeSet = { id: "set-1", organizationId: "org", requestSummary: "x", selector: {}, operation: { kind: "percent", field: "perSqftCents", percent: 5 }, fingerprint: "f", rows: [{ productId: current.productId, productName: current.productName, activeSnapshot: true, activeTreeVersionId: "tree-1", beforeValues: { perSqftCents: 450 }, proposedValues: { perSqftCents: 473 }, sourceFingerprint: "old", executionState: "succeeded" }] };
     const canonical: ProductPricingCanonicalService = { loadExactTargets: async () => [], loadProduct: async () => ({ ...current, pricing: { ...current.pricing, perSqftCents: 500 } }), applyConfirmedPricing: async () => { throw new Error("must not apply"); } };
