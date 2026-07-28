@@ -24,14 +24,16 @@ import { productDraftBulkUpdateResumeEligibility } from "./productInactiveDraftB
 import { productInactiveDraftBulkUpdateHistoryService } from "./productInactiveDraftBulkUpdateHistoryService";
 import { productInactiveDraftBatchHistoryService } from "./productInactiveDraftBatchHistoryService";
 import { productDraftBatchResumeEligibility, summarizeProductDraftBatch } from "./productInactiveDraftBatchPresentation";
+import { productPricingChangeSetCommandName } from "./execution/productPricingChangeSetCommand";
+import { productPricingChangeSetService } from "./execution/productPricingChangeSetAdapter";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
   version: "v1",
   purpose: "Conversationally create or continue validated inactive product drafts using the existing Product Intake workflow.",
   allowedReadDomains: ["products", "product_categories", "pbv2_definitions", "pricing_methods", "materials", "production_routing", "option_definitions", "formula_library_metadata"],
-  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1"],
-  requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch"],
+  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1"],
+  requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch", "assistant.products.adjust_pricing"],
   requiredContext: ["organization", "authenticated_internal_actor", "conversation"],
   confirmationPolicy: "dedicated_plan_confirmation",
   maximumProductScope: 25,
@@ -311,7 +313,21 @@ export class ProductManagementSkillService {
       const batches = await productInactiveDraftBatchHistoryService.list(input.organizationId, { ...(input.conversationId && /\b(?:last|this|current)\b/i.test(input.message) ? { conversationId: input.conversationId } : {}), limit: 25 });
       return { handled: true, response: batches.length ? `Found ${batches.length} product-entry batch record(s). No products were changed.` : "No product-entry batches were found.", cards: [{ kind: "product_batch_preview", title: "Product-entry batch history", summary: "Read-only batch history.", sourceLinks: [], details: { batches: batches.map((batch) => ({ batchId: batch.id, label: batch.label, status: batch.executionStatus, submittedCount: batch.submittedCount, includedCount: batch.includedCount, createdAt: batch.createdAt })) } }] };
     }
-    if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation, publication, and active-product editing are not available through the assistant. I can prepare a new inactive draft instead.", cards: [{ kind: "product_validation_errors", title: "Unsupported product action", summary: "Only a new inactive product draft can be proposed.", sourceLinks: [], details: { errors: ["Activation, publication, and active-product editing are disabled."] } }] };
+    const activePricingMatch = input.message.match(/\b(?:increase|raise|decrease|reduce)\b[\s\S]{0,80}?\b(\d+(?:\.\d+)?)\s*%/i);
+    const wantsPricing = /\b(price|pricing|square[ -]?foot|sq\s*ft|minimum charge|per[- ]piece)\b/i.test(input.message);
+    if (activePricingMatch && wantsPricing && !/\b(?:show me|what would change)\b/i.test(input.message)) {
+      const percent = Number(activePricingMatch[1]) * (/\b(?:decrease|reduce)\b/i.test(input.message) ? -1 : 1);
+      const field = /\bminimum charge\b/i.test(input.message) ? "minimumChargeCents" : /\b(?:per[- ]piece|piece pricing)\b/i.test(input.message) ? "perPieceCents" : "perSqftCents";
+      const selector = { active: !/\binactive\b/i.test(input.message), ...( /\bflatbed\b/i.test(input.message) ? { route: "Flatbed" } : {}), ...( /\broll\b/i.test(input.message) ? { route: "Roll" } : {}) };
+      try {
+        const proposal = await productPricingChangeSetService.createProposal({ organizationId: input.organizationId, requestSummary: input.message.slice(0, 1000), selector, operation: { kind: "percent", field, percent } });
+        return { handled: true, response: `I prepared a persisted pricing change set for ${proposal.rows.filter((row) => row.executionState === "pending").length} exact product target(s). Review the active/inactive scope, exclusions, and before-and-after values; GO applies only these stored values.`, cards: [
+          { kind: "product_batch_preview", title: "Product pricing change set", summary: "Read-only pre-confirmation summary. Product lifecycle and visibility are excluded.", sourceLinks: proposal.rows.map((row) => ({ label: `Open ${row.productName}`, href: `/products/${row.productId}` })), details: { changeSetId: proposal.id, selector, operation: proposal.operation, rows: proposal.rows } },
+          { kind: "action_proposal", title: "Adjust product pricing", summary: "Review the exact server-persisted pricing change set and use GO once. Active status, publication, visibility, routing, options, and historical snapshots remain unchanged.", sourceLinks: [], plan: { action: productPricingChangeSetCommandName, changeSetId: proposal.id, fingerprint: proposal.fingerprint } },
+        ] };
+      } catch (error) { return { handled: true, response: error instanceof Error ? error.message : "The pricing change-set proposal could not be prepared.", cards: [] }; }
+    }
+    if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation and publication are not available through the assistant. Controlled pricing changes require a supported pricing request and persisted confirmation.", cards: [{ kind: "product_validation_errors", title: "Unsupported product lifecycle action", summary: "Lifecycle and visibility changes remain disabled.", sourceLinks: [], details: { errors: ["Activation, deactivation, publication, archival, and visibility changes are disabled."] } }] };
     const bulkProductIds = exactBulkProductIds(input.message);
     const bulkPricingPatch = pricingPatchFromMessage(input.message);
     const bulkConfigurationPatch = bulkPricingPatch ? null : configurationPatchFromMessage(input.message);
