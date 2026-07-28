@@ -4688,8 +4688,58 @@ export const insertProductionStationStepSchema = createInsertSchema(productionSt
   triggers: productionStationStepTriggersSchema.optional().default([]),
 });
 
+/** One physical, same-order production operation. Jobs remain the line-item aggregate. */
+export const productionRuns = pgTable("production_runs", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  runNumber: integer("run_number").notNull(),
+  status: varchar("status", { length: 32 }).notNull().default("draft").$type<"draft" | "ready_for_production" | "in_production" | "completed" | "canceled">(),
+  stationKey: varchar("station_key", { length: 40 }).notNull(),
+  materialId: varchar("material_id").references(() => materials.id, { onDelete: "set null" }),
+  materialSnapshot: jsonb("material_snapshot").$type<Record<string, unknown>>(),
+  sheetWidth: decimal("sheet_width", { precision: 10, scale: 2 }),
+  sheetHeight: decimal("sheet_height", { precision: 10, scale: 2 }),
+  plannedSheetCount: integer("planned_sheet_count"),
+  nominalPiecesPerSheet: integer("nominal_pieces_per_sheet"),
+  notes: text("notes"),
+  compatibilityOverrideReason: text("compatibility_override_reason"),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  releasedAt: timestamp("released_at", { withTimezone: true }),
+  startedAt: timestamp("started_at", { withTimezone: true }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  canceledAt: timestamp("canceled_at", { withTimezone: true }),
+  canceledByUserId: varchar("canceled_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  cancelReason: text("cancel_reason"),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("production_runs_org_number_uidx").on(table.organizationId, table.runNumber),
+  index("production_runs_org_order_status_idx").on(table.organizationId, table.orderId, table.status),
+]);
+
+/** Reserved and completed customer quantity for a job within a physical run. */
+export const productionRunMembers = pgTable("production_run_members", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  productionRunId: varchar("production_run_id").notNull().references(() => productionRuns.id, { onDelete: "cascade" }),
+  productionJobId: varchar("production_job_id").notNull().references(() => productionJobs.id, { onDelete: "restrict" }),
+  orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: "restrict" }),
+  allocatedQuantity: integer("allocated_quantity").notNull(),
+  completedQuantity: integer("completed_quantity").notNull().default(0),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  uniqueIndex("production_run_members_run_job_uidx").on(table.productionRunId, table.productionJobId),
+  index("production_run_members_org_job_idx").on(table.organizationId, table.productionJobId),
+  index("production_run_members_line_item_idx").on(table.orderLineItemId),
+]);
+
 export type ProductionJob = typeof productionJobs.$inferSelect;
 export type InsertProductionJob = typeof productionJobs.$inferInsert;
+export type ProductionRun = typeof productionRuns.$inferSelect;
+export type InsertProductionRun = typeof productionRuns.$inferInsert;
+export type ProductionRunMember = typeof productionRunMembers.$inferSelect;
 export type ProductionEvent = typeof productionEvents.$inferSelect;
 export type InsertProductionEvent = typeof productionEvents.$inferInsert;
 export type ProductionAlert = typeof productionAlerts.$inferSelect;

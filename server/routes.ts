@@ -37,6 +37,7 @@ import { registerLocalBridgeRoutes } from "./routes/localBridge.routes";
 import { registerPortalProofRoutes } from "./routes/portalProof.routes";
 import { registerProductionConfigRoutes } from "./routes/productionConfig.routes";
 import { registerProductionJobsRoutes } from "./routes/productionJobs.routes";
+import { registerProductionRunRoutes } from "./routes/productionRuns.routes";
 import { registerProductionAlertRoutes } from "./routes/productionAlerts.routes";
 import { registerDesignRoutes } from "./routes/design.routes";
 import { registerPrepressQueueRoutes } from "./routes/prepress.routes";
@@ -441,6 +442,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerPrinterProfileRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner });
   // Production jobs routes extracted to ./routes/productionJobs.routes.ts (do NOT re-add here)
   registerProductionJobsRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner, assertInternalUser });
+  registerProductionRunRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
   registerProductionAlertRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
   // Design queue routes extracted to ./routes/design.routes.ts (do NOT re-add here)
   registerDesignRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner, assertInternalUser });
