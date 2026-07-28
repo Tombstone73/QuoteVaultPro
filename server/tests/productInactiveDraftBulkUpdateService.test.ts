@@ -1,0 +1,9 @@
+import { describe, expect, test } from "@jest/globals";
+import { fingerprintInactiveDraftBulkUpdate, inactiveProductDraftBulkUpdateMaxTargets, preflightBulkUpdateTargets, resolveBulkUpdatePatch } from "../services/assistant/productInactiveDraftBulkUpdateService";
+const patch = { basePricing: { minimumChargeCents: 3000 } };
+const snapshot = { productId: "p1", sessionId: "s1", productName: "PVC", category: "Rigid", active: false, pbv2Status: "DRAFT", fingerprint: "a".repeat(64) };
+describe("inactive draft bulk-update preflight", () => {
+ test("bounds and deduplicates exact target IDs without truncation", () => { expect(() => preflightBulkUpdateTargets({ requestedProductIds: Array.from({ length: inactiveProductDraftBulkUpdateMaxTargets + 1 }, (_, i) => String(i)), snapshots: [], patch })).toThrow("at most"); expect(preflightBulkUpdateTargets({ requestedProductIds: ["p1", "p1"], snapshots: [snapshot], patch }).map((x) => x.status)).toEqual(["eligible", "excluded"]); });
+ test("blocks active and non-draft targets while retaining them in the proposal", () => { expect(preflightBulkUpdateTargets({ requestedProductIds: ["p1"], snapshots: [{ ...snapshot, active: true }], patch })[0]).toMatchObject({ status: "ineligible", reason: expect.stringContaining("inactive") }); });
+ test("retains explicit override provenance and fingerprints exact membership", () => { const target = preflightBulkUpdateTargets({ requestedProductIds: ["p1"], snapshots: [snapshot], patch, overrides: { p1: { basePricing: { minimumChargeCents: 4500 } } } }); expect(target[0].provenance).toBe("product_override"); expect(fingerprintInactiveDraftBulkUpdate(target, patch)).not.toBe(fingerprintInactiveDraftBulkUpdate(target, { basePricing: { minimumChargeCents: 3100 } })); expect(resolveBulkUpdatePatch(patch, { basePricing: { minimumChargeCents: 4500 } })).toEqual({ basePricing: { minimumChargeCents: 4500 } }); });
+});
