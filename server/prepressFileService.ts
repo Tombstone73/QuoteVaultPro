@@ -639,6 +639,8 @@ type PromotableArtworkFile = {
   originalFilename: string;
   mimeType: string;
   sizeBytes: number;
+  productionQuantity?: number | null;
+  productionGroupId?: string | null;
 };
 
 export function buildPromotedFinalFileLink(params: {
@@ -659,6 +661,8 @@ export function buildPromotedFinalFileLink(params: {
     role: "final" as const,
     status: "active" as const,
     tag: params.tag ?? null,
+    productionQuantity: params.source.productionQuantity ?? null,
+    productionGroupId: params.source.productionGroupId ?? null,
     storageBucket: params.source.storageBucket ?? null,
     storagePath: params.source.storagePath,
     storageKey: params.source.storageKey ?? params.source.storagePath,
@@ -1169,6 +1173,8 @@ export async function getLineItemFiles(
       role: orderAttachments.role,
       description: orderAttachments.description,
       side: orderAttachments.side,
+      productionQuantity: orderAttachments.productionQuantity,
+      productionGroupId: orderAttachments.productionGroupId,
       fileRecordId: orderAttachments.fileRecordId,
       fileUrl: orderAttachments.fileUrl,
       thumbKey: orderAttachments.thumbKey,
@@ -1402,6 +1408,8 @@ export async function ensureFinalArtworkForLineItem(params: {
       fileSize: orderAttachments.fileSize,
       role: orderAttachments.role,
       side: orderAttachments.side,
+      productionQuantity: orderAttachments.productionQuantity,
+      productionGroupId: orderAttachments.productionGroupId,
       isPrimary: orderAttachments.isPrimary,
       createdAt: orderAttachments.createdAt,
     })
@@ -1440,7 +1448,11 @@ export async function ensureFinalArtworkForLineItem(params: {
       aliasIds: matches.map((attachment) => attachment.id),
       side,
       source: "line_item_original",
-      original,
+      original: {
+        ...original,
+        productionQuantity: matches[0]?.productionQuantity ?? null,
+        productionGroupId: matches[0]?.productionGroupId ?? null,
+      },
     });
   }
 
@@ -1497,6 +1509,8 @@ export async function ensureFinalArtworkForLineItem(params: {
         originalFilename: attachment.originalFilename || attachment.fileName || `artwork-${attachment.id}`,
         mimeType: attachment.mimeType || resolvedOriginal.mimeType || "application/octet-stream",
         sizeBytes: Math.max(0, Number(attachment.sizeBytes ?? attachment.fileSize ?? 0)),
+        productionQuantity: attachment.productionQuantity ?? null,
+        productionGroupId: attachment.productionGroupId ?? null,
       };
     } else {
       continue;

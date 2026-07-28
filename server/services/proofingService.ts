@@ -60,6 +60,7 @@ import {
   type ProductionSides,
 } from "@shared/productionHydration";
 import { resolveProofArtworkLayout } from "@shared/proofArtwork";
+import { buildArtworkAllocationStatus, defaultSingleArtworkAllocation } from "@shared/artworkAllocation";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
 type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "cancelled" | "superseded";
@@ -110,6 +111,8 @@ type ArtworkProofSource = {
   canonicalPreviewError?: string | null;
   canonicalPreviewUpdatedAt?: Date | null;
   side?: "front" | "back" | "both" | "na";
+  productionQuantity?: number | null;
+  productionGroupId?: string | null;
 };
 
 export type EligibleProofArtworkSource = {
@@ -128,6 +131,8 @@ export type EligibleProofArtworkSource = {
   computedDisplayFilename?: string | null;
   role: string | null;
   side: "front" | "back" | "both" | "na";
+  productionQuantity?: number | null;
+  productionGroupId?: string | null;
   previewStatus: "ready" | "missing_preview" | "generation_failed";
   previewState: ArtworkPreviewState;
   previewLastStateChangeAt: string | null;
@@ -1722,6 +1727,8 @@ function buildEligibleArtworkSource(source: ArtworkProofSource, args: {
     computedDisplayFilename: displayFile.computedDisplayFilename,
     role: args.role,
     side: source.side === "front" || source.side === "back" || source.side === "both" ? source.side : "na",
+    productionQuantity: source.productionQuantity ?? null,
+    productionGroupId: source.productionGroupId ?? null,
     previewStatus: preview.status === "ready" ? "ready" : preview.status === "generation_failed" ? "generation_failed" : "missing_preview",
     previewState: lifecycle.state,
     previewLastStateChangeAt: lifecycle.lastStateChangeAt?.toISOString() ?? null,
@@ -1749,6 +1756,8 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       orderLineItemId: orderAttachments.orderLineItemId,
       role: orderAttachments.role,
       side: orderAttachments.side,
+      productionQuantity: orderAttachments.productionQuantity,
+      productionGroupId: orderAttachments.productionGroupId,
       fileRecordId: orderAttachments.fileRecordId,
       fileName: orderAttachments.fileName,
       fileUrl: orderAttachments.fileUrl,
@@ -1866,6 +1875,8 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
       side: attachmentSource.side === "front" || attachmentSource.side === "back" || attachmentSource.side === "both"
         ? attachmentSource.side
         : "na",
+      productionQuantity: attachmentSource.productionQuantity ?? null,
+      productionGroupId: attachmentSource.productionGroupId ?? null,
     };
     if (!seen.has(`attachment:${source.sourceId}`) && !hasSeenCanonicalOriginal(source)) {
       resolved.push(buildEligibleArtworkSource(source, {
@@ -2072,30 +2083,23 @@ export async function getProofArtworkPreparation(tx: any, args: {
     loadProofSnapshotLineItem(tx, args),
     listEligibleProofArtworkSources(tx, args),
   ]);
-  const inbound = lineItem.specsJson && typeof lineItem.specsJson === "object"
-    ? (lineItem.specsJson as Record<string, any>).inbound
-    : null;
-  const allocationMode = inbound?.artworkQuantityMode === "one_each_per_file"
-    ? "one_each_per_file"
-    : inbound?.artworkQuantityMode === "same_quantity_each"
-      ? "same_quantity_each"
-      : "unspecified";
   const totalQuantity = Number.isFinite(lineItem.quantity) ? lineItem.quantity : null;
   const artworkCount = sources.length;
-  const allocationIssue = allocationMode === "one_each_per_file" && totalQuantity !== artworkCount
-    ? `Allocation expects 1 each across ${artworkCount} artwork files, but the ordered quantity is ${totalQuantity ?? "not specified"}.`
-    : null;
-  const allocatedQuantity = allocationMode === "one_each_per_file" && !allocationIssue
-    ? 1
-    : allocationMode === "same_quantity_each"
-      ? totalQuantity
-      : null;
+  const defaultQuantity = defaultSingleArtworkAllocation(totalQuantity, artworkCount);
+  const allocationMembers = sources.map((source) => ({
+    id: source.sourceId,
+    role: source.role,
+    side: source.side,
+    productionQuantity: source.productionQuantity ?? defaultQuantity,
+    productionGroupId: source.productionGroupId ?? null,
+  }));
+  const allocation = buildArtworkAllocationStatus({ lineQuantity: totalQuantity, members: allocationMembers });
   return {
     totalQuantity,
     artworkCount,
-    allocationMode,
-    allocationIssue,
-    sources: sources.map((source) => ({ ...source, allocatedQuantity })),
+    allocationMode: "unspecified",
+    allocationIssue: artworkCount > 1 ? allocation.issue : null,
+    sources: sources.map((source) => ({ ...source, allocatedQuantity: source.productionQuantity ?? defaultQuantity })),
   };
 }
 

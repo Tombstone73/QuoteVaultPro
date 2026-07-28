@@ -1397,6 +1397,8 @@ export class OrdersRepository {
                         checksum: a.checksum ?? null,
                         thumbnailRelativePath: a.thumbnailRelativePath ?? null,
                         thumbnailGeneratedAt: a.thumbnailGeneratedAt ?? null,
+                        productionQuantity: a.productionQuantity ?? null,
+                        productionGroupId: a.productionGroupId ?? null,
                         // role/side/isPrimary use defaults on order_attachments
                     }));
 
@@ -2106,7 +2108,9 @@ export class OrdersRepository {
                             thumbKey: qa.thumbKey ?? null,
                             previewKey: qa.previewKey ?? null,
                             thumbError: qa.thumbError ?? null,
-                            role: "artwork",
+                            productionQuantity: qa.productionQuantity ?? null,
+                            productionGroupId: qa.productionGroupId ?? null,
+                            role: qa.productionRole === "reference" ? "reference" : "artwork",
                             side,
                             isPrimary: side !== "na",
                         });

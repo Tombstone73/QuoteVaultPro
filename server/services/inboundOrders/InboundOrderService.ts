@@ -4532,6 +4532,8 @@ export class InboundOrderService {
       sizeBytes: file.sizeBytes ?? null,
       role,
       assignmentSide: "unassigned",
+      productionQuantity: null,
+      productionGroupId: null,
       source,
       confidence,
       reason,
@@ -5527,6 +5529,8 @@ export class InboundOrderService {
           role: "artwork",
           side,
           isPrimary: side !== "na",
+          productionQuantity: artworkLink.productionQuantity,
+          productionGroupId: artworkLink.productionGroupId ?? null,
         })));
 
         const updated = await args.conversionRepository.updateFile({
@@ -6084,6 +6088,13 @@ export class InboundOrderService {
         artworkFileIds: reviewedPayload?.reviewedLineItemsJson[index]?.artworkLinks
           .filter(isActiveClassifiedArtworkLink)
           .map((link) => link.fileId) ?? [],
+        artworkAllocations: reviewedPayload?.reviewedLineItemsJson[index]?.artworkLinks
+          .filter(isActiveClassifiedArtworkLink)
+          .map((link) => ({
+            fileId: link.fileId,
+            productionQuantity: link.productionQuantity,
+            productionGroupId: link.productionGroupId,
+          })) ?? [],
         snapshotJson: draft,
       });
     }

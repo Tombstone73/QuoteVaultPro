@@ -1988,6 +1988,11 @@ export const quoteAttachments = pgTable("quote_attachments", {
   extension: varchar("extension", { length: 20 }), // File extension without dot
   sizeBytes: integer("size_bytes"), // File size in bytes
   checksum: varchar("checksum", { length: 64 }), // SHA256 or MD5 hash
+  // Canonical production instruction for this quote-line/file relationship.
+  // A shared group represents one finished variant, including its Front/Back.
+  productionQuantity: integer("production_quantity"),
+  productionGroupId: varchar("production_group_id", { length: 128 }),
+  productionRole: varchar("production_role", { length: 16 }).default("artwork"),
   // Thumbnail support (legacy fields kept for backward compatibility)
   thumbnailRelativePath: text("thumbnail_relative_path"),
   thumbnailGeneratedAt: timestamp("thumbnail_generated_at"),
@@ -2022,6 +2027,7 @@ export const quoteAttachments = pgTable("quote_attachments", {
   index("quote_attachments_quote_line_item_id_idx").on(table.quoteLineItemId),
   index("quote_attachments_organization_id_idx").on(table.organizationId),
   index("quote_attachments_file_record_id_idx").on(table.fileRecordId),
+  index("quote_attachments_production_group_idx").on(table.quoteLineItemId, table.productionGroupId),
   index("quote_attachments_thumb_status_idx").on(table.thumbStatus),
   index("quote_attachments_page_count_status_idx").on(table.pageCountStatus),
   index("quote_attachments_portal_visible_idx").on(table.organizationId, table.quoteId, table.customerVisible),
@@ -5611,6 +5617,10 @@ export const orderAttachments = pgTable("order_attachments", {
   extension: varchar("extension", { length: 20 }), // File extension without dot
   sizeBytes: integer("size_bytes"), // File size in bytes
   checksum: varchar("checksum", { length: 64 }), // SHA256 or MD5 hash
+  // Canonical production instruction for this order-line/file relationship.
+  // Front/Back entries with the same group share a single finished quantity.
+  productionQuantity: integer("production_quantity"),
+  productionGroupId: varchar("production_group_id", { length: 128 }),
   // Thumbnail support (legacy fields kept for backward compatibility)
   thumbnailRelativePath: text("thumbnail_relative_path"),
   thumbnailGeneratedAt: timestamp("thumbnail_generated_at"),
@@ -5657,6 +5667,7 @@ export const orderAttachments = pgTable("order_attachments", {
   index("order_attachments_order_line_item_id_idx").on(table.orderLineItemId),
   index("order_attachments_quote_id_idx").on(table.quoteId),
   index("order_attachments_file_record_id_idx").on(table.fileRecordId),
+  index("order_attachments_production_group_idx").on(table.orderLineItemId, table.productionGroupId),
   index("order_attachments_role_idx").on(table.role),
   index("order_attachments_thumb_status_idx").on(table.thumbStatus),
   index("order_attachments_portal_visible_idx").on(table.orderId, table.customerVisible),
@@ -8003,6 +8014,11 @@ export const lineItemFiles = pgTable("line_item_files", {
   role: lineItemFileRoleEnum("role").notNull(), // original | final | reference
   status: lineItemFileStatusEnum("status").notNull().default('active'), // active | superseded
   tag: text("tag"), // Front/Back/Panel/etc
+  // Allocation copied from the authoritative production-artwork relationship
+  // when final art is promoted. This preserves the instruction if output
+  // bytes differ from the original upload.
+  productionQuantity: integer("production_quantity"),
+  productionGroupId: varchar("production_group_id", { length: 128 }),
   
   // Storage information
   storageBucket: varchar("storage_bucket", { length: 255 }),

@@ -89,6 +89,7 @@ import {
   resolveSheetConfiguration,
 } from "@shared/productionHydration";
 import { GENERATED_PROOF_DESCRIPTION_MARKER } from "@shared/prepressFileClassification";
+import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 
 // ---------------------------------------------------------------------------
 // Local utility (mirrors top-level helper in routes.ts)
@@ -2647,6 +2648,28 @@ export function registerPrepressQueueRoutes(
             new Error(artworkReadiness.warning || "Complete the Front/Back artwork assignment before completing prepress."),
             { statusCode: 409, code: "ARTWORK_SIDE_ASSIGNMENT_INCOMPLETE" },
           );
+        }
+
+        // Drafts may be incomplete, but a multi-artwork line cannot become
+        // production-ready until its explicit output quantities match the
+        // billable line quantity. Reference attachments do not participate.
+        completeFailureStage = "validate_artwork_allocation";
+        const [allocationLine] = await tx.select({ quantity: orderLineItems.quantity })
+          .from(orderLineItems).where(eq(orderLineItems.id, session.lineItemId)).limit(1);
+        const allocationMembers = await tx.select({
+          id: orderAttachments.id,
+          role: orderAttachments.role,
+          side: orderAttachments.side,
+          productionQuantity: orderAttachments.productionQuantity,
+          productionGroupId: orderAttachments.productionGroupId,
+        }).from(orderAttachments).where(and(eq(orderAttachments.orderId, session.orderId), eq(orderAttachments.orderLineItemId, session.lineItemId)));
+        const productionMemberCount = allocationMembers.filter((member) => member.role === "artwork" || member.role === "output").length;
+        const allocation = buildArtworkAllocationStatus({ lineQuantity: allocationLine?.quantity ?? null, members: allocationMembers });
+        if (productionMemberCount > 1 && !allocation.valid) {
+          throw Object.assign(new Error(allocation.issue || "Resolve production artwork allocation before completing prepress."), {
+            statusCode: 409,
+            code: "ARTWORK_ALLOCATION_INCOMPLETE",
+          });
         }
 
         completeFailureStage = "ensure_final_artwork";

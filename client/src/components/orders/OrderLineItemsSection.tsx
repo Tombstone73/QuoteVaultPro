@@ -3838,6 +3838,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
                                         orderId={orderId}
                                         lineItemId={item.id}
                                         productName={productName}
+                                        lineQuantity={item.quantity}
                                         defaultExpanded={true}
                                         doubleSided={printSides === "Double-sided"}
                                         useSameArtworkBothSides={useSameArtworkBothSides}

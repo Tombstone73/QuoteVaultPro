@@ -1009,6 +1009,13 @@
       "when": 1787529600000,
       "tag": "0148_ai_product_draft_bulk_updates",
       "breakpoints": true
+    },
+    {
+      "idx": 149,
+      "version": "7",
+      "when": 1787616000000,
+      "tag": "0149_artwork_production_quantity_allocation",
+      "breakpoints": true
     }
   ]
 }
