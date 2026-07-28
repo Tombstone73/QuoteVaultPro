@@ -9,6 +9,7 @@ import {
 } from "./productInactiveDraftUpdateCommand";
 import { inactiveProductDraftUpdateService, type InactiveProductDraftPatch, type InactiveProductDraftUpdateService } from "../inactiveProductDraftUpdateService";
 import { productInactiveDraftUpdatePresentation } from "./productInactiveDraftUpdatePresentation";
+import { blockingReadinessFindings } from "./productInactiveDraftUpdateReadiness";
 
 export interface ProductInactiveDraftUpdatePlanningService extends ProductInactiveDraftUpdateCanonicalService {
   buildProposal(input: { organizationId: string; sessionId: string; patch: InactiveProductDraftPatch }): ReturnType<InactiveProductDraftUpdateService["buildProposal"]>;
@@ -81,6 +82,7 @@ export function createProductInactiveDraftUpdateExecutionCommand(service: Produc
       const validation = await service.revalidateProposal({ organizationId: scope.organizationId, sessionId: input.productIntakeSessionId, patch: input.patch, expectedFingerprint: input.proposalFingerprint });
       if (!validation.valid) throw new ExecutionPlanError(validation.code, validation.summary);
       const { before, fingerprint } = validation.proposal;
+      const validationErrors = blockingReadinessFindings(before.readiness);
       const preview: ExecutionPlanPreview = {
         title: `Update inactive draft: ${before.productName}`,
         summary: "Apply the displayed validated patch to one inactive Product Intake draft. Activation and publication remain disabled.",
@@ -89,10 +91,10 @@ export function createProductInactiveDraftUpdateExecutionCommand(service: Produc
         productInactiveDraftUpdate: productInactiveDraftUpdatePresentation({
           productId: before.productId, productName: before.productName, sessionId: before.sessionId, editorLink: before.editorLink,
           changes: changes(input, before), readinessBefore: before.readiness.status, expectedReadinessAfter: "unknown",
-          warnings: before.readiness.warnings, validationErrors: before.readiness.findings, unchanged,
+          warnings: before.readiness.warnings, validationErrors, unchanged,
         }),
       };
-      if (before.readiness.findings.length) preview.missingInformation = before.readiness.findings;
+      if (validationErrors.length) preview.missingInformation = validationErrors;
       return { arguments: { ...input, proposalFingerprint: fingerprint }, preview };
     },
     async revalidate({ plan, scope }) {

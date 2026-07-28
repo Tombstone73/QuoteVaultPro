@@ -1,4 +1,5 @@
 import { productInactiveDraftUpdatePresentation } from "../services/assistant/execution/productInactiveDraftUpdatePresentation";
+import { blockingReadinessFindings } from "../services/assistant/execution/productInactiveDraftUpdateReadiness";
 
 describe("inactive product draft update execution preview", () => {
   it("keeps the persisted before-and-after pricing proposal and inactive PBV2 DRAFT status", () => {
@@ -21,5 +22,10 @@ describe("inactive product draft update execution preview", () => {
         { field: "Minimum charge", before: 2500, after: 3000 },
       ],
     });
+  });
+
+  it("does not turn non-blocking readiness warnings into confirmation blockers", () => {
+    expect(blockingReadinessFindings({ status: "warnings", findings: ["Shipping weight is missing."] })).toEqual([]);
+    expect(blockingReadinessFindings({ status: "blocked", findings: ["A required field is missing."] })).toEqual(["A required field is missing."]);
   });
 });
