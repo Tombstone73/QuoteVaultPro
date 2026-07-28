@@ -37,6 +37,7 @@ export type AssistantPlanCardModel = {
     unchangedAreas: string[];
   } | null;
   productPricingChangeSet: { targetCount: number; eligibleCount: number; rows: Array<{ productName: string; active: boolean; before: UnknownRecord; after: UnknownRecord }>; excluded: Array<{ productName: string; reason: string }> } | null;
+  productPricingRollback: { changeSetId: string; requestSummary: string; targetCount: number; eligibleCount: number; rows: Array<{ productName: string; before: UnknownRecord; current: UnknownRecord; restore: UnknownRecord; reason: string | null }> } | null;
   productDraftCreate: {
     productName: string | null;
     category: string | null;
@@ -264,6 +265,34 @@ export type AssistantProductDraftProposal = {
   action: "products.create_inactive_draft" | "products.update_inactive_draft";
 };
 
+export type AssistantProductPricingProposal = {
+  turnId: string;
+  title: string;
+  summary: string | null;
+  rollback: boolean;
+};
+
+export function toAssistantProductPricingProposal(card: unknown): AssistantProductPricingProposal | null {
+  const record = asRecord(card);
+  if (!record || asText(record.kind) !== "action_proposal") return null;
+  const proposal = asRecord(record.proposal) ?? asRecord(record.plan) ?? record;
+  const action = asText(proposal.action);
+  if (action !== "products.adjust_pricing" && action !== "products.rollback_pricing_change_set") return null;
+  const turnId = asText(proposal.turnId) ?? asText(record.turnId);
+  return turnId && asText(proposal.changeSetId) && asText(proposal.fingerprint)
+    ? { turnId, title: asText(record.title) ?? (action === "products.rollback_pricing_change_set" ? "Roll back product pricing" : "Adjust product pricing"), summary: asText(record.summary), rollback: action === "products.rollback_pricing_change_set" }
+    : null;
+}
+
+function toProductPricingRollback(action: string | null, preview: UnknownRecord | null): AssistantPlanCardModel["productPricingRollback"] {
+  if (action !== "products.rollback_pricing_change_set" || !preview) return null;
+  const value = asRecord(preview.productPricingRollback); if (!value) return null;
+  const changeSetId = asText(value.changeSetId); const requestSummary = asText(value.requestSummary);
+  const rows = Array.isArray(value.rows) ? value.rows.slice(0, 100).flatMap((item) => { const row = asRecord(item); const productName = asText(row?.productName); const before = asRecord(row?.before); const current = asRecord(row?.current); const restore = asRecord(row?.proposedRestore); return productName && before && current && restore ? [{ productName, before, current, restore, reason: asText(row?.reason) }] : []; }) : [];
+  if (!changeSetId || !requestSummary || !rows.length) return null;
+  return { changeSetId, requestSummary, targetCount: asPositiveInteger(value.targetCount) ?? rows.length, eligibleCount: asPositiveInteger(value.eligibleCount) ?? rows.length, rows };
+}
+
 export type AssistantQuoteDraftProposal = {
   turnId: string;
   title: string;
@@ -350,6 +379,7 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
     productDraftCreate: toProductDraftCreate(action, previewRecord),
     productDraftUpdate: toProductDraftUpdate(action, previewRecord),
     productPricingChangeSet: toProductPricingChangeSet(action, previewRecord),
+    productPricingRollback: toProductPricingRollback(action, previewRecord),
     affectedEntities: toAffectedEntities(plan.affectedEntities ?? plan.affectedRecords ?? previewRecord?.affectedEntities ?? cardRecord.affectedEntities),
     sideEffects: toSideEffects(plan.sideEffects ?? previewRecord?.sideEffects ?? cardRecord.sideEffects),
     missingInformation: missing,
@@ -500,6 +530,20 @@ export function AssistantProductDraftProposalCard({ proposal, onCreatePlan, crea
   </section>;
 }
 
+function ProductPricingRollbackPreview({ rollback }: { rollback: NonNullable<AssistantPlanCardModel["productPricingRollback"]> }) {
+  const price = (values: UnknownRecord) => Object.entries(values).map(([key, value]) => `${key}: ${typeof value === "number" ? moneyFromCents(value) : String(value)}`).join(", ");
+  return <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3"><p className="font-semibold">Pricing rollback</p><p className="mt-1 text-muted-foreground">Restores only still-matching scalar fields from {rollback.changeSetId}. Later edits are conflicts and will not be overwritten.</p><p className="mt-2"><span className="font-medium">Original request: </span>{rollback.requestSummary}</p><p className="mt-1"><span className="font-medium">Eligible: </span>{rollback.eligibleCount} of {rollback.targetCount}</p><details className="mt-2"><summary className="cursor-pointer font-medium">Exact restoration values ({rollback.rows.length})</summary><ul className="mt-1 list-disc pl-4">{rollback.rows.map((row) => <li key={row.productName}>{row.productName}: {price(row.current)} → {price(row.restore)}{row.reason ? ` (${row.reason})` : ""}</li>)}</ul></details></div>;
+}
+
+export function AssistantProductPricingProposalCard({ proposal, onCreatePlan, creating }: { proposal: AssistantProductPricingProposal; onCreatePlan: (turnId: string) => Promise<unknown> | void; creating?: boolean }) {
+  return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Product pricing proposal: ${proposal.title}`}>
+    <p className="font-semibold">{proposal.title}</p>
+    {proposal.summary ? <p className="mt-1 text-muted-foreground">{proposal.summary}</p> : null}
+    <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">{proposal.rollback ? "This prepares an exact rollback plan. Later price edits are conflicts and will not be overwritten." : "This prepares an exact, persisted scalar-pricing plan."} It cannot change product lifecycle, publication, visibility, routing, options, or historical transactions. Sending “GO” in chat does not confirm it.</p>
+    <div className="mt-2"><Button type="button" size="sm" disabled={creating} onClick={() => void onCreatePlan(proposal.turnId)}>{creating ? "Preparing plan…" : proposal.rollback ? "Review rollback plan" : "Review pricing plan"}</Button></div>
+  </section>;
+}
+
 export function AssistantQuoteDraftProposalCard({ proposal, onCreatePlan, creating }: { proposal: AssistantQuoteDraftProposal; onCreatePlan: (turnId: string) => Promise<unknown> | void; creating?: boolean }) {
   const updating = proposal.action === "quotes.update_draft";
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Quote draft proposal: ${proposal.title}`}>
@@ -532,9 +576,10 @@ export function AssistantPlanCard({
   const isProductDraft = plan.action === "products.create_inactive_draft" || plan.action === "products.update_inactive_draft";
   const isProductDraftUpdate = plan.action === "products.update_inactive_draft";
   const isProductPricingChangeSet = plan.action === "products.adjust_pricing";
+  const isProductPricingRollback = plan.action === "products.rollback_pricing_change_set";
   const isQuoteDraft = plan.action === "quotes.create_draft" || plan.action === "quotes.update_draft";
   const isQuoteDraftUpdate = plan.action === "quotes.update_draft";
-  const hasConfirmableDraft = Boolean(plan.quoteInternalNote?.noteText || (isQuoteDraft && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary) || (isProductDraft && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && (!isProductDraftUpdate || Boolean(plan.productDraftUpdate && plan.productDraftUpdate.changes.length > 0 && plan.productDraftUpdate.validationErrors.length === 0))) || (isProductPricingChangeSet && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && Boolean(plan.productPricingChangeSet?.rows.length)));
+  const hasConfirmableDraft = Boolean(plan.quoteInternalNote?.noteText || (isQuoteDraft && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary) || (isProductDraft && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && (!isProductDraftUpdate || Boolean(plan.productDraftUpdate && plan.productDraftUpdate.changes.length > 0 && plan.productDraftUpdate.validationErrors.length === 0))) || (isProductPricingChangeSet && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && Boolean(plan.productPricingChangeSet?.rows.length)) || (isProductPricingRollback && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && Boolean(plan.productPricingRollback?.rows.length)));
   const canConfirm = Boolean(
     onConfirm
     && hasConfirmableDraft
@@ -553,7 +598,7 @@ export function AssistantPlanCard({
       void onConfirm({ planId: plan.id, expectedPlanVersion: plan.planVersion, confirmationToken: plan.confirmationToken, context });
     }
   };
-  const actionLabel = plan.quoteInternalNote ? "Add internal quote note" : isQuoteDraftUpdate ? "Update draft quote" : isQuoteDraft ? "Create draft quote" : isProductDraftUpdate ? "Update inactive product draft" : isProductDraft ? "Create inactive product draft" : "Proposed action";
+  const actionLabel = plan.quoteInternalNote ? "Add internal quote note" : isProductPricingRollback ? "Roll back product pricing" : isProductPricingChangeSet ? "Adjust product pricing" : isQuoteDraftUpdate ? "Update draft quote" : isQuoteDraft ? "Create draft quote" : isProductDraftUpdate ? "Update inactive product draft" : isProductDraft ? "Create inactive product draft" : "Proposed action";
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Execution plan: ${plan.title}`}>
     <div className="flex items-start justify-between gap-3">
       <div><p className="font-semibold">{plan.title}</p>{plan.action ? <p className="mt-0.5 text-muted-foreground">Action: {actionLabel}</p> : null}</div>
@@ -565,6 +610,7 @@ export function AssistantPlanCard({
     {plan.productDraftCreate ? <ProductDraftCreatePreview draft={plan.productDraftCreate} /> : null}
     {plan.productDraftUpdate ? <ProductDraftUpdatePreview update={plan.productDraftUpdate} /> : null}
     {plan.productPricingChangeSet ? <ProductPricingChangeSetPreview changeSet={plan.productPricingChangeSet} /> : null}
+    {plan.productPricingRollback ? <ProductPricingRollbackPreview rollback={plan.productPricingRollback} /> : null}
     {plan.quoteInternalNote && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Internal note added to {plan.quoteInternalNote.quotePath && plan.quoteInternalNote.quoteNumber ? <a className="text-primary underline-offset-2 hover:underline" href={plan.quoteInternalNote.quotePath}>Quote {plan.quoteInternalNote.quoteNumber}</a> : (plan.quoteInternalNote.quoteNumber ? `Quote ${plan.quoteInternalNote.quoteNumber}` : "the quote")}.</p> : null}
     {isProductDraft && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Inactive product draft {isProductDraftUpdate ? "updated" : "created"}. {plan.productDraftResult?.href ? <a className="text-primary underline-offset-2 hover:underline" href={plan.productDraftResult.href}>Open {plan.productDraftResult.name} in the existing editor</a> : "Activation and publication remain unavailable in the assistant."}</p> : null}
     {staleForContext || plan.staleReason ? <p className="mt-2 flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-foreground"><CircleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{plan.staleReason || "This preview is stale for the page you are viewing. The server must revalidate it before any future action."}</p> : null}
@@ -574,9 +620,9 @@ export function AssistantPlanCard({
     {plan.undo ? <p className="mt-2 text-muted-foreground">Undo: {plan.undo.available ? (plan.undo.label || "May be available after execution") : "Not available for this plan"}{plan.undo.expiresAt ? ` (until ${new Date(plan.undo.expiresAt).toLocaleString()})` : ""}</p> : null}
     {plan.steps.length ? <div className="mt-2"><p className="flex items-center gap-1 font-medium"><ListChecks className="h-3.5 w-3.5" aria-hidden="true" />Execution status</p><ul className="mt-1 space-y-1">{plan.steps.map((step) => <li key={step.id}><span className="font-medium">{step.label}</span>: {step.status}{step.detail ? ` — ${step.detail}` : ""}</li>)}</ul></div> : null}
     {plan.partialFailureSummary ? <p className="mt-2 flex items-center gap-1 rounded border border-destructive/30 bg-destructive/5 p-2"><XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{plan.status === "partially_failed" ? "Partial failure" : "Execution issue"}: {plan.partialFailureSummary}</p> : null}
-    {plan.quoteInternalNote ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan adds one internal-only quote note. It does not make any customer-facing or operational change.</p> : isQuoteDraft ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan {isQuoteDraftUpdate ? "updates" : "creates"} exactly one internal draft quote. It cannot send, accept, convert, schedule production, reserve inventory, invoice, collect payment, fulfill, or email.</p> : isProductDraft ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan {isProductDraftUpdate ? "updates" : "creates"} one inactive product draft only. It cannot activate, publish, or modify an active product.</p> : <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Preview only. Production business write commands are not enabled, and this workspace does not provide a GO or execute control.</p>}
+    {plan.quoteInternalNote ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan adds one internal-only quote note. It does not make any customer-facing or operational change.</p> : isProductPricingRollback ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">The rollback restores only exact scalar fields that have not been changed since the original execution. It cannot alter lifecycle, publication, visibility, or historical transactions.</p> : isProductPricingChangeSet ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Effective immediately for future pricing calculations only. The exact persisted rows can be rolled back later if their values remain unchanged.</p> : isQuoteDraft ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan {isQuoteDraftUpdate ? "updates" : "creates"} exactly one internal draft quote. It cannot send, accept, convert, schedule production, reserve inventory, invoice, collect payment, fulfill, or email.</p> : isProductDraft ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan {isProductDraftUpdate ? "updates" : "creates"} one inactive product draft only. It cannot activate, publish, or modify an active product.</p> : <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Preview only. Production business write commands are not enabled, and this workspace does not provide a GO or execute control.</p>}
     {isProductDraftUpdate && plan.productDraftUpdate?.validationErrors.length ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2" role="status">Resolve validation errors before this draft update can be confirmed.</p> : null}
-    {canConfirm ? <div className="mt-2"><Button type="button" size="sm" disabled={confirming} onClick={confirm} aria-label={isProductPricingChangeSet ? "GO: adjust product pricing" : isQuoteDraftUpdate ? "GO: update draft quote" : isQuoteDraft ? "GO: create draft quote" : isProductDraftUpdate ? "GO: update inactive product draft" : isProductDraft ? "GO: create inactive product draft" : "GO: add internal quote note"}>{confirming ? "Confirming…" : isProductPricingChangeSet ? "GO — adjust product pricing" : isQuoteDraftUpdate ? "GO — update draft quote" : isQuoteDraft ? "GO — create draft quote" : isProductDraftUpdate ? "GO — update inactive draft" : isProductDraft ? "GO — create inactive draft" : "GO — add internal note"}</Button></div> : null}
+    {canConfirm ? <div className="mt-2"><Button type="button" size="sm" disabled={confirming} onClick={confirm} aria-label={isProductPricingRollback ? "GO: roll back product pricing" : isProductPricingChangeSet ? "GO: adjust product pricing" : isQuoteDraftUpdate ? "GO: update draft quote" : isQuoteDraft ? "GO: create draft quote" : isProductDraftUpdate ? "GO: update inactive product draft" : isProductDraft ? "GO: create inactive product draft" : "GO: add internal quote note"}>{confirming ? "Confirming…" : isProductPricingRollback ? "GO — roll back product pricing" : isProductPricingChangeSet ? "GO — adjust product pricing" : isQuoteDraftUpdate ? "GO — update draft quote" : isQuoteDraft ? "GO — create draft quote" : isProductDraftUpdate ? "GO — update inactive draft" : isProductDraft ? "GO — create inactive draft" : "GO — add internal note"}</Button></div> : null}
     {plan.quoteInternalNote && plan.confirmationAvailable && !plan.confirmationToken && plan.status === "awaiting_confirmation" ? <p className="mt-2 text-muted-foreground" role="status">Confirmation is not ready. Reload this plan before continuing.</p> : null}
     {canCancel ? <div className="mt-2"><Button type="button" size="sm" variant="outline" disabled={cancelling} onClick={cancel}>{cancelling ? "Cancelling plan…" : "Cancel plan"}</Button></div> : null}
   </section>;

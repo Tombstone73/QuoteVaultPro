@@ -27,11 +27,19 @@ export type ProductPricingChangeSetRow = {
   beforeValues: ProductPricingValues; proposedValues: ProductPricingValues; sourceFingerprint: string;
   executionState: "pending" | "excluded" | "succeeded" | "failed" | "stale";
   exclusionReason?: string;
+  executedValues?: ProductPricingValues | null;
+  failureReason?: string | null;
+  rollbackState?: "not_requested" | "rolled_back" | "conflicted" | "failed";
+  rollbackConflictReason?: string | null;
 };
 
 export type ProductPricingChangeSet = {
   id: string; organizationId: string; requestSummary: string; selector: Record<string, unknown>; operation: ProductPricingOperation;
   fingerprint: string; rows: ProductPricingChangeSetRow[];
+  executionStatus?: string;
+  rollbackStatus?: string;
+  createdAt?: Date;
+  executedAt?: Date | null;
 };
 
 export interface ProductPricingChangeSetStore {
@@ -41,6 +49,7 @@ export interface ProductPricingChangeSetStore {
   markRow(input: { organizationId: string; changeSetId: string; productId: string; state: ProductPricingChangeSetRow["executionState"]; executedValues?: ProductPricingValues; failureReason?: string }): Promise<void>;
   complete(input: { organizationId: string; changeSetId: string; succeeded: number; failed: number; conflicted: number; summary?: string }): Promise<void>;
   markRollback(input: { organizationId: string; changeSetId: string; productId: string; state: "rolled_back" | "conflicted" | "failed"; reason?: string }): Promise<void>;
+  markRollbackComplete?(input: { organizationId: string; changeSetId: string; actorUserId: string; planId?: string; restored: number; conflicted: number; failed: number }): Promise<void>;
 }
 
 /**
@@ -86,7 +95,7 @@ export function fingerprintProductPricingTarget(target: Pick<ProductPricingTarge
 export class ProductPricingChangeSetService {
   constructor(private readonly canonical: ProductPricingCanonicalService, private readonly store: ProductPricingChangeSetStore) {}
 
-  async createProposal(input: { organizationId: string; requestSummary: string; selector: Record<string, unknown>; operation: ProductPricingOperation }) {
+  async createProposal(input: { organizationId: string; requestSummary: string; selector: Record<string, unknown>; operation: ProductPricingOperation; overrides?: Array<{ productId?: string; productName?: string; operation: ProductPricingOperation }> }) {
     const targets = await this.canonical.loadExactTargets({ organizationId: input.organizationId, selector: input.selector });
     if (!targets.length) throw new Error("No tenant-scoped products matched the selector.");
     if (targets.length > productPricingChangeSetMaxTargets) throw new Error(`A product pricing change set may target at most ${productPricingChangeSetMaxTargets} products.`);
@@ -97,19 +106,30 @@ export class ProductPricingChangeSetService {
       if (target.archived) return { productId: target.productId, productName: target.productName, activeSnapshot: target.active, activeTreeVersionId: target.activeTreeVersionId, beforeValues: target.pricing, proposedValues: {}, sourceFingerprint, executionState: "excluded", exclusionReason: "Archived products are not eligible." };
       if (target.unsupportedPricing) return { productId: target.productId, productName: target.productName, activeSnapshot: target.active, activeTreeVersionId: target.activeTreeVersionId, beforeValues: target.pricing, proposedValues: {}, sourceFingerprint, executionState: "excluded", exclusionReason: target.unsupportedPricing };
       try {
-        return { productId: target.productId, productName: target.productName, activeSnapshot: target.active, activeTreeVersionId: target.activeTreeVersionId, beforeValues: target.pricing, proposedValues: applyPricingOperation(target.pricing, input.operation), sourceFingerprint, executionState: "pending" };
+        const matches = (input.overrides ?? []).filter((override) => override.productId === target.productId || (override.productName && override.productName === target.productName));
+        if (matches.length > 1) throw new Error("More than one pricing override matched this product.");
+        const operation = matches[0]?.operation ?? input.operation;
+        return { productId: target.productId, productName: target.productName, activeSnapshot: target.active, activeTreeVersionId: target.activeTreeVersionId, beforeValues: target.pricing, proposedValues: applyPricingOperation(target.pricing, operation), sourceFingerprint, executionState: "pending" };
       } catch (error) {
         return { productId: target.productId, productName: target.productName, activeSnapshot: target.active, activeTreeVersionId: target.activeTreeVersionId, beforeValues: target.pricing, proposedValues: {}, sourceFingerprint, executionState: "excluded", exclusionReason: error instanceof Error ? error.message : "The target pricing is unsupported." };
       }
     });
     if (!rows.some((row) => row.executionState === "pending")) throw new Error("No selected product has a supported pricing component for this operation.");
-    const fingerprint = hash({ selector: input.selector, operation: input.operation, rows: rows.map((row) => ({ productId: row.productId, sourceFingerprint: row.sourceFingerprint, proposedValues: row.proposedValues, executionState: row.executionState })) });
+    const fingerprint = hash({ selector: input.selector, operation: input.operation, overrides: input.overrides ?? [], rows: rows.map((row) => ({ productId: row.productId, sourceFingerprint: row.sourceFingerprint, proposedValues: row.proposedValues, executionState: row.executionState })) });
     return this.store.create({ organizationId: input.organizationId, requestSummary: input.requestSummary, selector: input.selector, operation: input.operation, fingerprint, rows });
   }
 
   async execute(input: { organizationId: string; actorUserId: string; changeSetId: string; fingerprint: string; planId: string; idempotencyKey: string; correlationId: string }) {
     const changeSet = await this.store.get(input.organizationId, input.changeSetId);
     if (!changeSet || changeSet.fingerprint !== input.fingerprint) throw new Error("The persisted pricing change set was not found or has changed.");
+    if (changeSet.rows.every((row) => row.executionState !== "pending")) {
+      return {
+        succeeded: changeSet.rows.filter((row) => row.executionState === "succeeded").length,
+        failed: changeSet.rows.filter((row) => row.executionState === "failed").length,
+        conflicted: changeSet.rows.filter((row) => row.executionState === "stale").length,
+        excluded: changeSet.rows.filter((row) => row.executionState === "excluded").length,
+      };
+    }
     await this.store.markConfirmed(input);
     let succeeded = 0; let failed = 0; let conflicted = 0;
     for (const row of changeSet.rows.filter((candidate) => candidate.executionState === "pending")) {
@@ -133,11 +153,11 @@ export class ProductPricingChangeSetService {
     return { succeeded, failed, conflicted, excluded: changeSet.rows.filter((row) => row.executionState === "excluded").length };
   }
 
-  async rollback(input: { organizationId: string; actorUserId: string; changeSetId: string; correlationId: string }) {
+  async rollback(input: { organizationId: string; actorUserId: string; changeSetId: string; correlationId: string; planId?: string }) {
     const changeSet = await this.store.get(input.organizationId, input.changeSetId);
     if (!changeSet) throw new Error("The tenant-scoped pricing change set was not found.");
     let restored = 0; let conflicted = 0; let failed = 0;
-    for (const row of changeSet.rows.filter((candidate) => candidate.executionState === "succeeded")) {
+    for (const row of changeSet.rows.filter((candidate) => candidate.executionState === "succeeded" && candidate.rollbackState !== "rolled_back")) {
       const current = await this.canonical.loadProduct({ organizationId: input.organizationId, productId: row.productId });
       // The canonical live update creates a replacement ACTIVE tree version.
       // Rollback therefore compares only the fields this change set owns plus
@@ -156,6 +176,7 @@ export class ProductPricingChangeSetService {
         await this.store.markRollback({ organizationId: input.organizationId, changeSetId: changeSet.id, productId: row.productId, state: "failed", reason: error instanceof Error ? error.message : "Rollback failed safely." });
       }
     }
+    await this.store.markRollbackComplete?.({ organizationId: input.organizationId, changeSetId: changeSet.id, actorUserId: input.actorUserId, planId: input.planId, restored, conflicted, failed });
     return { restored, conflicted, failed };
   }
 }

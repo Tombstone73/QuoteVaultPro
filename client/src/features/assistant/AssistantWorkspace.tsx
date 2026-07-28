@@ -9,7 +9,7 @@ import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
 import type { AssistantStructuredCard } from "@shared/assistantContracts";
 import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
-import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantQuoteDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantQuoteDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
+import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantProductPricingProposalCard, AssistantQuoteDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantProductPricingProposal, toAssistantQuoteDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
 import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
@@ -377,6 +377,16 @@ export function ResultCards({
   return <div className="mt-3 space-y-3">{visibleCards.map((card, index) => {
     const productCard = toAssistantProductManagementCard(card);
     if (productCard) return <AssistantProductManagementCardView key={`product-${productCard.kind}-${index}`} card={productCard} />;
+    const pricingProposal = toAssistantProductPricingProposal(card);
+    if (pricingProposal) {
+      const created = executionPlans[pricingProposal.turnId];
+      if (created) {
+        const planCard = { kind: "action_plan", title: pricingProposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
+        const plan = toAssistantPlanCardModel(planCard);
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
+      }
+      return <AssistantProductPricingProposalCard key={`proposal-${pricingProposal.turnId}-${index}`} proposal={pricingProposal} onCreatePlan={onCreatePlan} />;
+    }
     const productProposal = toAssistantProductDraftProposal(card);
     if (productProposal) {
       const created = executionPlans[productProposal.turnId];
