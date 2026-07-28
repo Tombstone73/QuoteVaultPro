@@ -14,6 +14,7 @@ import {
 import { createDbProductIntakeSessionStore, type ProductIntakeSessionStore } from "../productIntakeWizard/productIntakeSessionService";
 import { assistantProductIntakeAdapter } from "./productIntakeAdapter";
 import { inactiveProductDraftUpdateService, InactiveProductDraftUpdateError, type InactiveProductDraftPatch } from "./inactiveProductDraftUpdateService";
+import { pricingPatchFromMessage } from "./productManagementPricingParsing";
 import { productIntakeDraftReadinessService } from "../productIntakeWizard/productIntakeDraftReadinessService";
 import { applyProductDraftBatchCollisions, fingerprintProductInactiveDraftBatch, parseProductInactiveDraftBatch } from "./productInactiveDraftBatchService";
 import { productInactiveDraftBatchCommandName } from "./execution/productInactiveDraftBatchCommand";
@@ -82,22 +83,6 @@ function isUnsupportedProductMutation(message: string): boolean {
 
 function exactBulkProductIds(message: string): string[] {
   return Array.from(new Set(Array.from(message.matchAll(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi), (match) => match[0])));
-}
-
-function cents(value: string): number | null {
-  const number = Number(value.replace(/[$,]/g, ""));
-  return Number.isFinite(number) && number >= 0 && number <= 100_000 ? Math.round(number * 100) : null;
-}
-
-function pricingPatchFromMessage(message: string): InactiveProductDraftPatch | null {
-  const basePricing: NonNullable<InactiveProductDraftPatch["basePricing"]> = {};
-  const minimum = message.match(/(?:minimum\s+charge|min(?:imum)?\s+price)\s*(?:to|at|of|=)?\s*\$?([0-9]+(?:\.[0-9]{1,2})?)/i);
-  const perSqft = message.match(/(?:per\s*(?:square\s*foot|sq\s*ft)|square\s*foot\s*(?:rate|price))\s*(?:to|at|of|=)?\s*\$?([0-9]+(?:\.[0-9]{1,2})?)/i);
-  const perPiece = message.match(/(?:per\s*piece|piece\s*(?:rate|price))\s*(?:to|at|of|=)?\s*\$?([0-9]+(?:\.[0-9]{1,2})?)/i);
-  if (minimum) { const value = cents(minimum[1]); if (value !== null) basePricing.minimumChargeCents = value; }
-  if (perSqft) { const value = cents(perSqft[1]); if (value !== null) basePricing.perSqftCents = value; }
-  if (perPiece) { const value = cents(perPiece[1]); if (value !== null) basePricing.perPieceCents = value; }
-  return Object.keys(basePricing).length ? { basePricing } : null;
 }
 
 function configurationPatchFromMessage(message: string): InactiveProductDraftPatch | null {
