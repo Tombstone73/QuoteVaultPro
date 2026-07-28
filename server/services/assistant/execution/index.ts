@@ -5,6 +5,8 @@ export * from "./productInactiveDraftCommand";
 export * from "./productInactiveDraftExecutionCommand";
 export * from "./productInactiveDraftUpdateCommand";
 export * from "./productInactiveDraftUpdateExecutionCommand";
+export * from "./productInactiveDraftBulkUpdateCommand";
+export * from "./productInactiveDraftBulkUpdateExecutionCommand";
 export * from "./quoteInternalNoteCommand";
 export * from "./quoteInternalNoteExecutionCommand";
 export * from "./quoteDraftCreateCommand";

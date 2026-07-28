@@ -17,6 +17,10 @@ import { inactiveProductDraftUpdateService, InactiveProductDraftUpdateError, typ
 import { productIntakeDraftReadinessService } from "../productIntakeWizard/productIntakeDraftReadinessService";
 import { applyProductDraftBatchCollisions, fingerprintProductInactiveDraftBatch, parseProductInactiveDraftBatch } from "./productInactiveDraftBatchService";
 import { productInactiveDraftBatchCommandName } from "./execution/productInactiveDraftBatchCommand";
+import { productInactiveDraftBulkUpdateCommandName } from "./execution/productInactiveDraftBulkUpdateCommand";
+import { productInactiveDraftBulkUpdateProposalService } from "./productInactiveDraftBulkUpdateProposalService";
+import { productDraftBulkUpdateResumeEligibility } from "./productInactiveDraftBulkUpdateRecovery";
+import { productInactiveDraftBulkUpdateHistoryService } from "./productInactiveDraftBulkUpdateHistoryService";
 import { productInactiveDraftBatchHistoryService } from "./productInactiveDraftBatchHistoryService";
 import { productDraftBatchResumeEligibility, summarizeProductDraftBatch } from "./productInactiveDraftBatchPresentation";
 
@@ -25,8 +29,8 @@ export const productManagementSkill = Object.freeze({
   version: "v1",
   purpose: "Conversationally create or continue validated inactive product drafts using the existing Product Intake workflow.",
   allowedReadDomains: ["products", "product_categories", "pbv2_definitions", "pricing_methods", "materials", "production_routing", "option_definitions", "formula_library_metadata"],
-  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1"],
-  requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft"],
+  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1"],
+  requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch"],
   requiredContext: ["organization", "authenticated_internal_actor", "conversation"],
   confirmationPolicy: "dedicated_plan_confirmation",
   maximumProductScope: 25,
@@ -74,6 +78,10 @@ function isBatchProductIntent(message: string): boolean {
 
 function isUnsupportedProductMutation(message: string): boolean {
   return /\b(activate|publish)\b/i.test(message) || /\b(edit|update|change)\b[\s\S]{0,80}\bactive\s+product\b/i.test(message);
+}
+
+function exactBulkProductIds(message: string): string[] {
+  return Array.from(new Set(Array.from(message.matchAll(/\b[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}\b/gi), (match) => match[0])));
 }
 
 function cents(value: string): number | null {
@@ -317,6 +325,38 @@ export class ProductManagementSkillService {
       return { handled: true, response: batches.length ? `Found ${batches.length} product-entry batch record(s). No products were changed.` : "No product-entry batches were found.", cards: [{ kind: "product_batch_preview", title: "Product-entry batch history", summary: "Read-only batch history.", sourceLinks: [], details: { batches: batches.map((batch) => ({ batchId: batch.id, label: batch.label, status: batch.executionStatus, submittedCount: batch.submittedCount, includedCount: batch.includedCount, createdAt: batch.createdAt })) } }] };
     }
     if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation, publication, and active-product editing are not available through the assistant. I can prepare a new inactive draft instead.", cards: [{ kind: "product_validation_errors", title: "Unsupported product action", summary: "Only a new inactive product draft can be proposed.", sourceLinks: [], details: { errors: ["Activation, publication, and active-product editing are disabled."] } }] };
+    const bulkProductIds = exactBulkProductIds(input.message);
+    const bulkPricingPatch = pricingPatchFromMessage(input.message);
+    const bulkConfigurationPatch = bulkPricingPatch ? null : configurationPatchFromMessage(input.message);
+    const bulkRelationshipPatch = bulkPricingPatch || bulkConfigurationPatch ? null : relationshipPatchFromMessage(input.message);
+    const bulkPatch = bulkPricingPatch ?? bulkConfigurationPatch ?? bulkRelationshipPatch;
+    if (bulkProductIds.length >= 2 && bulkPatch && /\b(?:update|change|set|apply)\b/i.test(input.message)) {
+      try {
+        const proposal = await productInactiveDraftBulkUpdateProposalService.create({ organizationId: input.organizationId, actorUserId: input.userId, ...(input.conversationId ? { conversationId: input.conversationId } : {}), productIds: bulkProductIds, sharedPatch: bulkPatch, selectionDescription: `Exact product IDs supplied in the current conversation (${bulkProductIds.length}).` });
+        const detail = await productInactiveDraftBulkUpdateHistoryService.getDetail(input.organizationId, proposal.id);
+        const rows = detail?.rows ?? [];
+        return { handled: true, response: `I prepared a persisted bulk update for ${proposal.eligibleCount} eligible inactive PBV2 DRAFT product(s). Review the exact target list and use GO once; activation and publication are excluded.`, cards: [
+          { kind: "product_batch_preview", title: "Bulk inactive-draft update", summary: "This server-persisted proposal uses exact product IDs and exact resolved patches only.", sourceLinks: rows.map((row) => ({ label: `Open ${row.productName}`, href: `/products/${row.productId}` })), details: { bulkUpdateId: proposal.id, targetCount: proposal.targetCount, eligibleCount: proposal.eligibleCount, noChangeCount: proposal.noChangeCount, blockedCount: proposal.blockedCount, sharedPatch: proposal.sharedPatch, rows: rows.map((row) => ({ productId: row.productId, productName: row.productName, state: row.executionState, patch: row.patch, warnings: row.warnings })) } },
+          { kind: "action_proposal", title: "Update inactive product drafts", summary: "GO applies only this persisted proposal once. Products remain inactive PBV2 DRAFT; no activation or publication occurs.", sourceLinks: [], plan: { action: productInactiveDraftBulkUpdateCommandName, bulkUpdateId: proposal.id, bulkFingerprint: proposal.fingerprint } },
+        ] };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "The bulk update proposal could not be prepared.";
+        return { handled: true, response: message, cards: [{ kind: "product_draft_update_unsupported", title: "Bulk update was not prepared", summary: "No product was changed. Use exact inactive-draft product IDs and one supported patch domain.", sourceLinks: [], details: { productIds: bulkProductIds } }] };
+      }
+    }
+    const bulkUpdateId = input.message.match(/\bbulk(?:\s+update)?\s+(?:id\s*)?([a-f0-9-]{16,})\b/i)?.[1];
+    if (bulkUpdateId && /\b(?:show|inspect|detail|status|resume|retry)\b/i.test(input.message)) {
+      const detail = await productInactiveDraftBulkUpdateHistoryService.getDetail(input.organizationId, bulkUpdateId);
+      if (!detail) return { handled: true, response: "No tenant-scoped bulk update matched that ID.", cards: [] };
+      const eligibility = productDraftBulkUpdateResumeEligibility(detail.rows as any);
+      const cards: ProductManagementCard[] = [{ kind: "product_batch_preview", title: "Bulk inactive-draft update detail", summary: "Read-only persisted proposal and child execution state.", sourceLinks: detail.rows.map((row) => ({ label: `Open ${row.productName}`, href: `/products/${row.productId}` })), details: { bulkUpdateId: detail.proposal.id, status: detail.proposal.executionStatus, sharedPatch: detail.proposal.sharedPatch, rows: detail.rows.map((row) => ({ productId: row.productId, productName: row.productName, state: row.executionState, attempts: row.attemptCount, patch: row.patch, error: row.lastErrorMessage, readinessBefore: row.readinessBefore, readinessAfter: row.readinessAfter })), resume: eligibility } }];
+      if (eligibility.available) cards.push({ kind: "action_proposal", title: "Resume bulk inactive-draft update", summary: "Uses only persisted target IDs and patches; already-completed, terminal, and stale rows are skipped.", sourceLinks: [], plan: { action: productInactiveDraftBulkUpdateCommandName, bulkUpdateId: detail.proposal.id, bulkFingerprint: detail.proposal.fingerprint } });
+      return { handled: true, response: eligibility.available ? `Bulk update has ${eligibility.pendingCount + eligibility.retryableCount} resumable row(s).` : "Bulk update detail loaded. No rows are eligible for resume.", cards };
+    }
+    if (/\b(?:show|list|history|recent)\b[\s\S]{0,40}\bbulk\s+(?:draft\s+)?updates?\b/i.test(input.message)) {
+      const updates = await productInactiveDraftBulkUpdateHistoryService.list(input.organizationId, { ...(input.conversationId ? { conversationId: input.conversationId } : {}), limit: 25 });
+      return { handled: true, response: updates.length ? `Found ${updates.length} bulk inactive-draft update record(s). No products were changed.` : "No bulk inactive-draft updates were found.", cards: [{ kind: "product_batch_preview", title: "Bulk inactive-draft update history", summary: "Read-only tenant-scoped history.", sourceLinks: [], details: { updates: updates.map((proposal) => ({ bulkUpdateId: proposal.id, status: proposal.executionStatus, targetCount: proposal.targetCount, eligibleCount: proposal.eligibleCount, noChangeCount: proposal.noChangeCount, blockedCount: proposal.blockedCount, createdAt: proposal.createdAt })) } }] };
+    }
     const listRequest = draftReadinessListRequest(input.message);
     if (listRequest && !input.activeSessionId) {
       const result = await productIntakeDraftReadinessService.listDrafts({ organizationId: input.organizationId, ...listRequest });

@@ -44,6 +44,7 @@ export const assistantCapabilityCommandPermissions = {
   "payments.add_payment_note": "assistant.payments.add_payment_note",
   "products.create_inactive_draft": "assistant.products.create_inactive_draft",
   "products.update_inactive_draft": "assistant.products.update_inactive_draft",
+  "products.update_inactive_draft_batch": "assistant.products.update_inactive_draft_batch",
 } as const;
 
 export const assistantCapabilityCommandDescriptions = {
@@ -75,6 +76,7 @@ export const assistantCapabilityCommandDescriptions = {
   "payments.add_payment_note": "add one internal payment note after your confirmation",
   "products.create_inactive_draft": "help create an inactive product draft after your confirmation",
   "products.update_inactive_draft": "update an inactive product draft after your confirmation",
+  "products.update_inactive_draft_batch": "update a bounded set of inactive product drafts after your confirmation",
 } as const;
 
 export type AssistantCapabilityProductionCommand = keyof typeof assistantCapabilityCommandPermissions;

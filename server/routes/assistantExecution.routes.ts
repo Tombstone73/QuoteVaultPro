@@ -24,6 +24,9 @@ import { createProductInactiveDraftBatchCommandDefinition, productInactiveDraftB
 import { createProductInactiveDraftBatchCanonicalService, createProductInactiveDraftBatchExecutionCommand } from "../services/assistant/execution/productInactiveDraftBatchExecutionCommand";
 import { createProductInactiveDraftUpdateCommandDefinition, productInactiveDraftUpdateCommandName } from "../services/assistant/execution/productInactiveDraftUpdateCommand";
 import { createProductInactiveDraftUpdateCanonicalService, createProductInactiveDraftUpdateExecutionCommand } from "../services/assistant/execution/productInactiveDraftUpdateExecutionCommand";
+import { createProductInactiveDraftBulkUpdateCommandDefinition, productInactiveDraftBulkUpdateCommandName } from "../services/assistant/execution/productInactiveDraftBulkUpdateCommand";
+import { createProductInactiveDraftBulkUpdateCanonicalService, createProductInactiveDraftBulkUpdateExecutionCommand } from "../services/assistant/execution/productInactiveDraftBulkUpdateExecutionCommand";
+import { productInactiveDraftBulkUpdateHistoryService } from "../services/assistant/productInactiveDraftBulkUpdateHistoryService";
 import { createQuoteDraftCreateCommandDefinition, quoteDraftCreateCommandName } from "../services/assistant/execution/quoteDraftCreateCommand";
 import { createQuoteDraftCreateExecutionCommand } from "../services/assistant/execution/quoteDraftCreateExecutionCommand";
 import { createQuoteDraftUpdateCommandDefinition, quoteDraftUpdateCommandName } from "../services/assistant/execution/quoteDraftUpdateCommand";
@@ -55,7 +58,7 @@ function scope(req: Request): ExecutionActorScope {
   const internal = ["owner", "admin", "manager", "member", "employee"].includes(role);
   return {
     organizationId: getRequestOrganizationId(req), userId: id,
-    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", "assistant.orders.create", "assistant.orders.update_editable", "assistant.quotes.convert_to_order", "assistant.customers.create", "assistant.customers.update_profile", "assistant.customers.update_commercial_terms", "assistant.contacts.create", "assistant.contacts.update", "assistant.production.intake_line_items", "assistant.production.send_to_prepress", "assistant.production.update_job_status", "assistant.production.add_job_note", "assistant.fulfillment.create_shipment", "assistant.fulfillment.update_shipment_details", "assistant.fulfillment.mark_shipped", "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.add_note", "assistant.billing.create_invoice", "assistant.billing.update_invoice_draft", "assistant.billing.send_invoice", "assistant.billing.add_invoice_note", "assistant.payments.record_manual_payment", "assistant.payments.add_payment_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft"] : [])] : [],
+    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", "assistant.orders.create", "assistant.orders.update_editable", "assistant.quotes.convert_to_order", "assistant.customers.create", "assistant.customers.update_profile", "assistant.customers.update_commercial_terms", "assistant.contacts.create", "assistant.contacts.update", "assistant.production.intake_line_items", "assistant.production.send_to_prepress", "assistant.production.update_job_status", "assistant.production.add_job_note", "assistant.fulfillment.create_shipment", "assistant.fulfillment.update_shipment_details", "assistant.fulfillment.mark_shipped", "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.add_note", "assistant.billing.create_invoice", "assistant.billing.update_invoice_draft", "assistant.billing.send_invoice", "assistant.billing.add_invoice_note", "assistant.payments.record_manual_payment", "assistant.payments.add_payment_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch"] : [])] : [],
     environment: process.env.NODE_ENV || "development",
   };
 }
@@ -115,11 +118,13 @@ function createProductionExecutionService(): ExecutionPlanningService {
   const productService = createProductInactiveDraftCanonicalService();
   const productBatchService = createProductInactiveDraftBatchCanonicalService(productService);
   const productUpdateService = createProductInactiveDraftUpdateCanonicalService();
+  const productBulkUpdateService = createProductInactiveDraftBulkUpdateCanonicalService(productUpdateService, productInactiveDraftBulkUpdateHistoryService);
   const metadataRegistry = createProductionAssistantCommandRegistry(
     createQuoteInternalNoteCommandDefinition(quoteInternalNotesService),
     createProductInactiveDraftCommandDefinition(productService),
     createProductInactiveDraftBatchCommandDefinition(productBatchService),
     createProductInactiveDraftUpdateCommandDefinition(productUpdateService),
+    createProductInactiveDraftBulkUpdateCommandDefinition(productBulkUpdateService),
     createQuoteDraftCreateCommandDefinition(quoteDraftIntakeService),
     createQuoteDraftUpdateCommandDefinition(quoteDraftIntakeService),
     createDeferredOrderCommandDefinition(orderIntakeService),
@@ -136,6 +141,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
     [productInactiveDraftCommandName, createProductInactiveDraftExecutionCommand(productService)],
     [productInactiveDraftBatchCommandName, createProductInactiveDraftBatchExecutionCommand(productBatchService)],
     [productInactiveDraftUpdateCommandName, createProductInactiveDraftUpdateExecutionCommand(productUpdateService)],
+    [productInactiveDraftBulkUpdateCommandName, createProductInactiveDraftBulkUpdateExecutionCommand(productBulkUpdateService)],
     [quoteDraftCreateCommandName, createQuoteDraftCreateExecutionCommand(quoteDraftIntakeService)],
     [quoteDraftUpdateCommandName, createQuoteDraftUpdateExecutionCommand(quoteDraftIntakeService)],
     [assistantOrderCreateCommandName, createDeferredOrderExecutionCommand(assistantOrderCreateCommandName, orderIntakeService)],
@@ -189,6 +195,9 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
         : null;
       const productUpdateProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === productInactiveDraftUpdateCommandName)?.plan
+        : null;
+      const productBulkUpdateProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === productInactiveDraftBulkUpdateCommandName)?.plan
         : null;
       const quoteDraftCreateProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === quoteDraftCreateCommandName)?.plan
@@ -260,6 +269,11 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       }
       if (productUpdateProposal && typeof productUpdateProposal.productIntakeSessionId === "string" && typeof productUpdateProposal.proposalFingerprint === "string" && productUpdateProposal.patch && typeof productUpdateProposal.patch === "object") {
         const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: productInactiveDraftUpdateCommandName, arguments: { productIntakeSessionId: productUpdateProposal.productIntakeSessionId, proposalFingerprint: productUpdateProposal.proposalFingerprint, patch: productUpdateProposal.patch }, context: input.context });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
+      if (productBulkUpdateProposal && typeof productBulkUpdateProposal.bulkUpdateId === "string" && typeof productBulkUpdateProposal.bulkFingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: productInactiveDraftBulkUpdateCommandName, arguments: { bulkUpdateId: productBulkUpdateProposal.bulkUpdateId, bulkFingerprint: productBulkUpdateProposal.bulkFingerprint }, context: input.context });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
         return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }

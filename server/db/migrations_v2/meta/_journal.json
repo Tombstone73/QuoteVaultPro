@@ -1002,6 +1002,13 @@
       "when": 1787443200000,
       "tag": "0147_ai_product_draft_batch_intake",
       "breakpoints": true
+    },
+    {
+      "idx": 148,
+      "version": "7",
+      "when": 1787529600000,
+      "tag": "0148_ai_product_draft_bulk_updates",
+      "breakpoints": true
     }
   ]
 }

@@ -15,7 +15,7 @@ export const assistantCommandIdempotencyPolicyValues = [
   "server_generated_with_request_hash",
 ] as const;
 export const assistantCommandTransactionPolicyValues = ["required", "best_effort"] as const;
-export const assistantCommandPartialFailurePolicyValues = ["forbid", "record_and_stop"] as const;
+export const assistantCommandPartialFailurePolicyValues = ["forbid", "record_and_stop", "record_and_continue"] as const;
 
 export type AssistantCommandRisk = (typeof assistantCommandRiskValues)[number];
 export type AssistantCommandMode = (typeof assistantCommandModeValues)[number];
@@ -35,6 +35,7 @@ export const assistantProductionCommandAllowlist = [
   "products.create_inactive_draft",
   "products.create_inactive_draft_batch",
   "products.update_inactive_draft",
+  "products.update_inactive_draft_batch",
   "quotes.create_draft",
   "quotes.update_draft",
   "orders.create",
