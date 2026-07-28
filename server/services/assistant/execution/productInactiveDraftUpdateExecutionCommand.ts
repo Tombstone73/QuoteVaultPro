@@ -8,6 +8,7 @@ import {
   type ProductInactiveDraftUpdateCommandInput,
 } from "./productInactiveDraftUpdateCommand";
 import { inactiveProductDraftUpdateService, type InactiveProductDraftPatch, type InactiveProductDraftUpdateService } from "../inactiveProductDraftUpdateService";
+import { productInactiveDraftUpdatePresentation } from "./productInactiveDraftUpdatePresentation";
 
 export interface ProductInactiveDraftUpdatePlanningService extends ProductInactiveDraftUpdateCanonicalService {
   buildProposal(input: { organizationId: string; sessionId: string; patch: InactiveProductDraftPatch }): ReturnType<InactiveProductDraftUpdateService["buildProposal"]>;
@@ -85,11 +86,11 @@ export function createProductInactiveDraftUpdateExecutionCommand(service: Produc
         summary: "Apply the displayed validated patch to one inactive Product Intake draft. Activation and publication remain disabled.",
         sideEffects: [input.patch.relationships ? "Updates PBV2 DRAFT routing, template relationships, and staff-only review metadata." : "Updates the validated PBV2 DRAFT metadata."],
         affectedRecords: [{ entityType: "product", entityId: before.productId, fingerprint }],
-        productInactiveDraftUpdate: {
+        productInactiveDraftUpdate: productInactiveDraftUpdatePresentation({
           productId: before.productId, productName: before.productName, sessionId: before.sessionId, editorLink: before.editorLink,
           changes: changes(input, before), readinessBefore: before.readiness.status, expectedReadinessAfter: "unknown",
           warnings: before.readiness.warnings, validationErrors: before.readiness.findings, unchanged,
-        },
+        }),
       };
       if (before.readiness.findings.length) preview.missingInformation = before.readiness.findings;
       return { arguments: { ...input, proposalFingerprint: fingerprint }, preview };

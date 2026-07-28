@@ -192,8 +192,8 @@ describe("AssistantPlanCard", () => {
         id: "plan-product-update-1", action: "products.update_inactive_draft", status: "awaiting_confirmation", planVersion: 2,
         riskLevel: "high", confirmationAvailable: true, confirmationToken: "server-token", expiresAt: "2030-01-01T00:10:00.000Z",
         preview: { summary: "One inactive Banner draft will be updated.", productDraftUpdate: {
-          productName: "Banner", draftStatus: "Inactive draft", editorPath: "/admin/products/banner-draft",
-          changes: [{ field: "Minimum charge", before: "$10", after: "$15" }, { field: "Base rate", before: "$0.85/sq ft", after: "$0.95/sq ft" }],
+          productName: "Banner", draftStatus: "Inactive PBV2 DRAFT", editorPath: "/admin/products/banner-draft",
+          changes: [{ field: "Minimum charge", before: 2500, after: 3000 }, { field: "Base rate per square foot", before: 450, after: 475 }],
           warnings: ["Existing square-foot pricing remains in use."], unchangedAreas: ["Activation", "Inventory", "Production jobs"],
         } }, missingInformation: [], cancellationAvailable: true, steps: [],
       },
@@ -201,8 +201,12 @@ describe("AssistantPlanCard", () => {
     const confirmed = jest.fn();
     act(() => root.render(<AssistantPlanCard card={updatePlan} context={buildSafeAssistantContext("/products/banner-draft", "Product")} onConfirm={(input) => { void confirmed(input); }} />));
     expect(container.textContent).toContain("Minimum charge");
-    expect(container.textContent).toContain("$10");
-    expect(container.textContent).toContain("$15");
+    expect(container.textContent).toContain("$25.00");
+    expect(container.textContent).toContain("$30.00");
+    expect(container.textContent).toContain("$4.50 per square foot");
+    expect(container.textContent).toContain("$4.75 per square foot");
+    expect(container.textContent).toContain("Inactive PBV2 DRAFT");
+    expect(container.textContent).not.toContain("2500");
     expect(container.textContent).toContain("Existing square-foot pricing remains in use.");
     expect(container.textContent).toContain("Explicitly unchanged");
     const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: update inactive product draft']");
