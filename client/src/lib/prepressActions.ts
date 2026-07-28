@@ -63,14 +63,6 @@ export async function requestReleasePrepressLineItem(lineItemId: string, fetchFn
   return parsePrepressResponse(response, "Failed to release to production");
 }
 
-export async function requestPromotePrepressArtwork(lineItemId: string, fetchFn: typeof fetch = fetch) {
-  const response = await fetchFn(`/api/prepress/line-item/${lineItemId}/use-artwork-as-print-file`, {
-    method: "POST",
-    credentials: "include",
-  });
-  return parsePrepressResponse(response, "Failed to use artwork as the print file");
-}
-
 export function canCompleteAndReleasePrepress(input: {
   canCompleteNow: boolean;
   canReleaseNow: boolean;
@@ -98,22 +90,13 @@ export async function completeAndReleasePrepress(
     }
   }
 
-  try {
-    const releaseResponse = await requestReleasePrepressLineItem(input.lineItemId, fetchFn);
-    return { completionResponse, releaseResponse, skippedCompletion: input.hasCompletedSession };
-  } catch (error: any) {
-    throw new PrepressCompleteAndReleaseError(
-      `Prepress is complete, but release to production failed: ${error?.message || "Unknown error"}`,
-      prepressCompleted,
-    );
-  }
+  return { completionResponse, skippedCompletion: input.hasCompletedSession };
 }
 
 /**
- * Print-ready fast path. Completion remains authoritative on the backend: it
- * promotes the existing original artwork to a final-file relation and enforces
- * artwork/proof/session rules. Items are processed independently so one blocked
- * line does not conceal successful lines.
+ * Completion is authoritative on the backend: it validates the selected artwork,
+ * finalizes it, enqueues the local copy, and routes the line. Items are processed
+ * independently so one blocked line does not conceal successful lines.
  */
 export async function markPrepressItemsPrintReady(
   items: PrepressPrintReadyItem[],
@@ -131,8 +114,6 @@ export async function markPrepressItemsPrintReady(
     try {
       let sessionId = item.sessionId ?? null;
       let completionResponse: any = null;
-      const promotionResponse = await requestPromotePrepressArtwork(item.lineItemId, fetchFn);
-
       if (!item.hasCompletedSession) {
         if (!sessionId) {
           if (String(item.workflowState).toLowerCase() !== "ready_for_prepress") {
@@ -145,22 +126,12 @@ export async function markPrepressItemsPrintReady(
         completionResponse = await requestCompletePrepressSession(sessionId, fetchFn);
       }
 
-      if (options.releaseToProduction) {
-        await requestReleasePrepressLineItem(item.lineItemId, fetchFn);
-        results.push({
-          lineItemId: item.lineItemId,
-          status: "released",
-          message: "Existing artwork promoted, prepress completed, and line released.",
-          finalFileId: promotionResponse?.data?.finalFileId ?? completionResponse?.data?.finalFileId ?? null,
-        });
-      } else {
-        results.push({
-          lineItemId: item.lineItemId,
-          status: "completed",
-          message: "Existing artwork promoted and prepress completed.",
-          finalFileId: promotionResponse?.data?.finalFileId ?? completionResponse?.data?.finalFileId ?? null,
-        });
-      }
+      results.push({
+        lineItemId: item.lineItemId,
+        status: options.releaseToProduction ? "released" : "completed",
+        message: "Prepress completed, production artwork finalized, and line routed.",
+        finalFileId: completionResponse?.data?.finalFileId ?? null,
+      });
     } catch (error) {
       results.push({
         lineItemId: item.lineItemId,

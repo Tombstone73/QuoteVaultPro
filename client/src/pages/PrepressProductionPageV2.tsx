@@ -660,7 +660,12 @@ export default function PrepressProductionPageV2() {
         queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
         queryClient.refetchQueries({ queryKey: ["/api/production/jobs"], type: "active" }),
       ]);
-      toast({ title: "Prepress complete", description: "Prepress is complete. Use Send to Production for handoff." });
+      toast({
+        title: "Prepress complete",
+        description: response?.data?.stationKey
+          ? `Production file finalized and routed to ${response.data.stationKey}.`
+          : "Production artwork finalized and routed to the next production station.",
+      });
     },
     onError: (error: Error) => {
       toast({ title: "Error", description: error.message, variant: "destructive" });
@@ -1605,7 +1610,7 @@ export default function PrepressProductionPageV2() {
                 className="h-auto min-h-9 whitespace-normal border-[#1773cf]/60 px-2 py-1.5 text-[11px] leading-tight text-[#8ec5ff]"
               >
                 {bulkPrintReadyMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                Use artwork as print file
+                Complete Prepress
               </Button>
               <Button
                 type="button"
@@ -1906,11 +1911,11 @@ export default function PrepressProductionPageV2() {
 
           </section>
 
-          {/* Section 2: Original Customer Files */}
+          {/* Customer artwork remains selectable and downloadable until completion. */}
           <section>
             <div className="flex justify-between items-center mb-4">
               <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 flex items-center gap-2">
-                <Paperclip className="w-4 h-4" /> Original Customer Files
+                <Paperclip className="w-4 h-4" /> Customer Artwork
               </h3>
               <div className="flex items-center gap-3">
                 {selectedLineItemId && (
@@ -1921,7 +1926,7 @@ export default function PrepressProductionPageV2() {
                     }}
                     className="text-xs font-bold text-[#1773cf] hover:underline flex items-center gap-1"
                   >
-                    <Upload className="w-4 h-4" /> Upload Originals
+                    <Upload className="w-4 h-4" /> Upload Replacement Art
                   </button>
                 )}
                 {selectedLineItemId && visibleOriginalFiles.length > 0 && (
@@ -1952,7 +1957,7 @@ export default function PrepressProductionPageV2() {
                   {visibleOriginalFiles.length === 0 && visibleBridgedOriginalFiles.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
-                        {selectedLineItemId ? "No original files uploaded" : "Select a line item to view files"}
+                        {selectedLineItemId ? "No customer artwork uploaded" : "Select a line item to view files"}
                       </td>
                     </tr>
                   ) : (
@@ -2131,7 +2136,7 @@ export default function PrepressProductionPageV2() {
           {/* Section 4: Final Production Files */}
           <section>
             <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
-              <CheckCircle className="w-4 h-4" /> Final Production Files
+              <CheckCircle className="w-4 h-4" /> {selectedItem?.hasCompletedSession ? "Final Production Files" : "Production Art Candidate"}
             </h3>
 
             {/* Existing Final Files */}
@@ -2148,7 +2153,9 @@ export default function PrepressProductionPageV2() {
                   {visibleFinalFiles.length === 0 ? (
                     <tr>
                       <td colSpan={3} className="px-4 py-8 text-center text-slate-500">
-                        {selectedLineItemId ? "No final files uploaded yet" : "Select a line item to upload files"}
+                        {selectedLineItemId
+                          ? (selectedItem?.hasCompletedSession ? "No final production files available" : "No production-art candidate uploaded yet")
+                          : "Select a line item to upload files"}
                       </td>
                     </tr>
                   ) : (
@@ -2200,7 +2207,7 @@ export default function PrepressProductionPageV2() {
               <div className="w-12 h-12 bg-[#1a232e] border border-[#2d3748] rounded-full flex items-center justify-center mb-4 group-hover:scale-110 transition-transform">
                 <Upload className="w-6 h-6 text-[#1773cf]" />
               </div>
-              <p className="text-sm font-semibold mb-1">Drag and drop final production files here</p>
+              <p className="text-sm font-semibold mb-1">Upload replacement production art</p>
               <p className="text-xs text-slate-500 mb-4">PDF, TIF, JPG, or EPS up to 2GB</p>
               
               <div className="mb-4">
@@ -2630,7 +2637,7 @@ export default function PrepressProductionPageV2() {
               {completeAndReleaseMutation.isPending ? (
                 <><Loader2 className="w-4 h-4 mr-2 shrink-0 animate-spin" /> Completing &amp; releasing...</>
               ) : (
-                "Complete & Release to Production"
+                "Complete Prepress"
               )}
             </Button>
 

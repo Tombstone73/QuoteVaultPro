@@ -369,16 +369,68 @@ export async function uploadLineItemFile(params: {
       organizationId,
       actorUserId: createdByUserId,
     }).completion;
-    try {
-      const [order] = await db.select({ customerId: orders.customerId, orderNumber: orders.orderNumber }).from(orders).where(eq(orders.id, orderId)).limit(1);
-      if (order?.customerId) {
-        const [destination] = await db.select({ id: localFileDestinations.id }).from(localFileDestinations).where(and(eq(localFileDestinations.organizationId, organizationId), eq(localFileDestinations.customerId, order.customerId), eq(localFileDestinations.enabled, true))).limit(1);
-        if (destination) await db.insert(localFileCopyJobs).values({ organizationId, destinationId: destination.id, sourceFileId: stored.linkedRecord.id, orderId, orderLineItemId: lineItemId, customerId: order.customerId, outputFilename: `${order.orderNumber || orderId}_${originalFilename}` });
-      }
-    } catch (error) { console.error("[LocalBridge] Failed to enqueue final-file copy job", { organizationId, lineItemId, error: error instanceof Error ? error.message : String(error) }); }
   }
 
   return stored.linkedRecord;
+}
+
+/**
+ * Queue a copy only after a final production-file relationship is authoritative.
+ * A prepress upload can be a candidate; it must not be copied merely because it
+ * was uploaded. The final relation ID makes retries idempotent.
+ */
+export async function enqueueFinalProductionFileCopy(params: {
+  organizationId: string;
+  file: LineItemFile;
+}): Promise<{ enqueued: boolean; copyJobId: string | null }> {
+  const [order] = await db
+    .select({ customerId: orders.customerId, orderNumber: orders.orderNumber })
+    .from(orders)
+    .where(and(eq(orders.id, params.file.orderId), eq(orders.organizationId, params.organizationId)))
+    .limit(1);
+  if (!order?.customerId) return { enqueued: false, copyJobId: null };
+
+  const [destination] = await db
+    .select({ id: localFileDestinations.id })
+    .from(localFileDestinations)
+    .where(and(
+      eq(localFileDestinations.organizationId, params.organizationId),
+      eq(localFileDestinations.customerId, order.customerId),
+      eq(localFileDestinations.enabled, true),
+    ))
+    .limit(1);
+  if (!destination) return { enqueued: false, copyJobId: null };
+
+  const [existing] = await db
+    .select({ id: localFileCopyJobs.id })
+    .from(localFileCopyJobs)
+    .where(and(
+      eq(localFileCopyJobs.organizationId, params.organizationId),
+      eq(localFileCopyJobs.destinationId, destination.id),
+      eq(localFileCopyJobs.sourceFileId, params.file.id),
+    ))
+    .limit(1);
+  if (existing) return { enqueued: false, copyJobId: existing.id };
+
+  const namingPolicy = await getFileUploadNamingPolicy(params.organizationId);
+  const outputFilename = buildComputedDisplayFilename({
+    role: params.file.role,
+    originalFilename: params.file.originalFilename,
+    tag: params.file.tag,
+    fullJobNumber: order.orderNumber || "",
+    numericJobNumber: numericJobNumberFromFull(order.orderNumber || ""),
+    namingPolicy,
+  });
+  const [copyJob] = await db.insert(localFileCopyJobs).values({
+    organizationId: params.organizationId,
+    destinationId: destination.id,
+    sourceFileId: params.file.id,
+    orderId: params.file.orderId,
+    orderLineItemId: params.file.lineItemId,
+    customerId: order.customerId,
+    outputFilename,
+  }).returning({ id: localFileCopyJobs.id });
+  return { enqueued: true, copyJobId: copyJob.id };
 }
 
 /** Canonicalize a legacy line-item file when necessary and generate its preview derivatives. */
@@ -1106,7 +1158,10 @@ export async function ensureFinalArtworkForLineItem(params: {
 }): Promise<EnsuredFinalArtworkResult | null> {
   const { organizationId, orderId, lineItemId, prepressSessionId, createdByUserId, forcePromoteArtwork = false } = params;
   const namingPolicy = await getFileUploadNamingPolicy(organizationId);
-  const defaultFinalTag = namingPolicy.prepressFileLabelMode === "required" ? "final_print" : null;
+  // Finalized production artwork always carries the established print ending.
+  // This keeps the production/download name informative even when the general
+  // prepress upload label preference is optional.
+  const defaultFinalTag = "final_print";
 
   const existingFinals = await db
     .select()
@@ -1122,9 +1177,18 @@ export async function ensureFinalArtworkForLineItem(params: {
     .orderBy(desc(lineItemFiles.createdAt));
 
   if (existingFinals[0] && !forcePromoteArtwork) {
+    const finalizedExistingFiles = await Promise.all(existingFinals.map(async (file) => {
+      if (file.tag) return file;
+      const [updated] = await db
+        .update(lineItemFiles)
+        .set({ tag: defaultFinalTag })
+        .where(and(eq(lineItemFiles.id, file.id), eq(lineItemFiles.organizationId, organizationId)))
+        .returning();
+      return updated;
+    }));
     return {
-      file: existingFinals[0],
-      files: existingFinals,
+      file: finalizedExistingFiles[0],
+      files: finalizedExistingFiles,
       source: "existing_final",
       created: false,
     };

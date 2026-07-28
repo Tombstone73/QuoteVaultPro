@@ -2586,6 +2586,27 @@ export function registerPrepressQueueRoutes(
           action: "complete prepress",
         });
 
+        // Completion remains idempotent after the prepress owner hands the line
+        // downstream. Repeating it can retry the soft-failing bridge enqueue.
+        if (session.status === "complete") {
+          const finalArtworkFiles = await tx
+            .select()
+            .from(lineItemFiles)
+            .where(and(
+              eq(lineItemFiles.organizationId, orgId),
+              eq(lineItemFiles.lineItemId, session.lineItemId),
+              eq(lineItemFiles.role, "final"),
+              eq(lineItemFiles.status, "active"),
+            ));
+          return {
+            ...session,
+            lineItemId: session.lineItemId,
+            status: "complete",
+            finalArtworkFiles,
+            alreadyCompleted: true,
+          };
+        }
+
         completeFailureStage = "resolve_active_owner";
         const activeOwner = await findActiveJobForLineItem(tx, {
           organizationId: orgId,
@@ -2602,11 +2623,6 @@ export function registerPrepressQueueRoutes(
             activeOwnerStepKey: activeOwner?.stepKey ?? null,
           });
           throw Object.assign(new Error("Line item is not actively owned by prepress"), { statusCode: 409 });
-        }
-
-        if (session.status === "complete") {
-          // Already complete — idempotent success, no error
-          return { id: session.id, lineItemId: session.lineItemId, status: "complete" };
         }
 
         completeFailureStage = "validate_proof_gate";
@@ -2661,6 +2677,21 @@ export function registerPrepressQueueRoutes(
           })
           .where(eq(prepressSessions.id, sessionId));
 
+        completeFailureStage = "route_downstream_production";
+        const workflowTransition = await transitionLineItemWorkflowState(tx, {
+          organizationId: orgId,
+          lineItemId: session.lineItemId,
+          toState: "ready_for_production",
+          actorUserId: userId,
+          metadata: {
+            source: "prepress_complete",
+            finalFileIds: finalArtwork.files.map((file) => file.id),
+          },
+        });
+        if (!workflowTransition.activeOwnerJobId) {
+          throw new Error("Prepress completion did not establish downstream production ownership");
+        }
+
         completeFailureStage = "write_audit_log";
         // Audit log
         await tx.insert(auditLogs).values({
@@ -2673,7 +2704,12 @@ export function registerPrepressQueueRoutes(
           entityName: `Session for line item ${session.lineItemId}`,
           description: "Completed prepress session",
           oldValues: { status: "active" },
-          newValues: { status: "complete" },
+          newValues: {
+            status: "complete",
+            workflowState: workflowTransition.toState,
+            productionJobId: workflowTransition.activeOwnerJobId,
+            stationKey: workflowTransition.activeOwnerStationKey,
+          },
           ipAddress: req.ip || null,
           userAgent: req.headers["user-agent"] || null,
         } as any);
@@ -2684,15 +2720,18 @@ export function registerPrepressQueueRoutes(
           actorUserId: userId,
           actionType: "prepress_completed",
           previousStatus: "in_prepress",
-          newStatus: "in_prepress",
+          newStatus: workflowTransition.toState,
           previousStation: activeOwner?.stationKey ?? "prepress",
-          newStation: activeOwner?.stationKey ?? "prepress",
+          newStation: workflowTransition.activeOwnerStationKey ?? "production",
           sessionId,
           metadata: {
             finalArtworkSource: finalArtwork.source,
             finalFileId: finalArtwork.file.id,
             finalFileIds: finalArtwork.files.map((file) => file.id),
             createdFinalFile: finalArtwork.created,
+            productionJobId: workflowTransition.activeOwnerJobId,
+            stationKey: workflowTransition.activeOwnerStationKey,
+            stepKey: workflowTransition.activeOwnerStepKey,
           },
         });
 
@@ -2723,10 +2762,32 @@ export function registerPrepressQueueRoutes(
           finalFileId: finalArtwork.file.id,
           finalFileIds: finalArtwork.files.map((file) => file.id),
           createdFinalFile: finalArtwork.created,
+          finalArtworkFiles: finalArtwork.files,
+          productionJobId: workflowTransition.activeOwnerJobId,
+          stationKey: workflowTransition.activeOwnerStationKey,
+          stepKey: workflowTransition.activeOwnerStepKey,
         };
       });
 
-      res.json({ success: true, data: result });
+      const bridgeResults = await Promise.all(result.finalArtworkFiles.map(async (file) => {
+        try {
+          return await prepressFileService.enqueueFinalProductionFileCopy({ organizationId: orgId, file });
+        } catch (error) {
+          console.error("[LocalBridge] Failed to enqueue finalized production file", {
+            organizationId: orgId,
+            lineItemId: result.lineItemId,
+            fileId: file.id,
+            error: error instanceof Error ? error.message : String(error),
+          });
+          return { enqueued: false, copyJobId: null, failed: true };
+        }
+      }));
+
+      res.json({ success: true, data: {
+        ...result,
+        finalArtworkFiles: undefined,
+        bridgeCopyJobIds: bridgeResults.map((entry) => entry.copyJobId).filter(Boolean),
+      } });
     } catch (error: any) {
       const status = error?.statusCode || 500;
       console.error("[Prepress] Error completing session:", {
@@ -2740,8 +2801,8 @@ export function registerPrepressQueueRoutes(
   });
 
   // POST /api/prepress/line-item/:lineItemId/use-artwork-as-print-file
-  // Explicit print-ready promotion. The service resolves source artwork by
-  // stable line-item assignment IDs and fails closed for ambiguous multi-art.
+  // Compatibility acknowledgement for the old action. Side assignment records
+  // the production-art candidate; only Complete Prepress may finalize it.
   app.post("/api/prepress/line-item/:lineItemId/use-artwork-as-print-file", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;
@@ -2759,35 +2820,12 @@ export function registerPrepressQueueRoutes(
         .limit(1);
       if (!lineItem) return res.status(404).json({ error: "Line item not found" });
 
-      const [latestSession] = await db
-        .select({ id: prepressSessions.id })
-        .from(prepressSessions)
-        .where(and(
-          eq(prepressSessions.organizationId, organizationId),
-          eq(prepressSessions.lineItemId, lineItemId),
-        ))
-        .orderBy(desc(prepressSessions.updatedAt), desc(prepressSessions.startedAt))
-        .limit(1);
-
-      const promoted = await prepressFileService.ensureFinalArtworkForLineItem({
-        organizationId,
-        orderId: lineItem.orderId,
-        lineItemId,
-        prepressSessionId: latestSession?.id ?? null,
-        createdByUserId: userId,
-        forcePromoteArtwork: true,
-      });
-      if (!promoted) {
-        return res.status(400).json({ error: "No usable assigned artwork is available for this line item." });
-      }
       return res.json({
         success: true,
         data: {
           lineItemId,
-          finalFileId: promoted.file.id,
-          finalFileIds: promoted.files.map((file) => file.id),
-          source: promoted.source,
-          created: promoted.created,
+          finalized: false,
+          message: "Production artwork is finalized when Complete Prepress succeeds.",
         },
       });
     } catch (error: any) {
