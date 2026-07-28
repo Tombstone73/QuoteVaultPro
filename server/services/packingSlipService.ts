@@ -244,7 +244,7 @@ export async function generatePackingSlipHtmlForOrder(organizationId: string, or
         phone: customerContacts.phone,
       })
       .from(customerContacts)
-      .where(and(eq(customerContacts.customerId, order.customerId), eq(customerContacts.id, order.contactId)))
+      .where(eq(customerContacts.id, order.contactId))
       .limit(1))[0]
     : null;
 

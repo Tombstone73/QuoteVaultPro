@@ -3605,7 +3605,9 @@ export const orders = pgTable("orders", {
   label: text("label"), // Free-text label for categorization/notes
   quoteId: varchar("quote_id").references(() => quotes.id, { onDelete: 'set null' }),
   sourceQuoteNumber: integer("source_quote_number"), // Snapshot of quote number at time of conversion (immutable)
-  customerId: varchar("customer_id").notNull().references(() => customers.id, { onDelete: 'restrict' }),
+  // An order may be addressed to an independent contact.  Application code
+  // enforces that at least one of customerId/contactId is present.
+  customerId: varchar("customer_id").references(() => customers.id, { onDelete: 'restrict' }),
   contactId: varchar("contact_id").references(() => customerContacts.id, { onDelete: 'set null' }),
   status: varchar("status", { length: 50 }).notNull().default("new"), // new, in_production, on_hold, ready_for_shipment, completed, canceled [DEPRECATED: use state instead]
   // TitanOS State Architecture (canonical workflow states)

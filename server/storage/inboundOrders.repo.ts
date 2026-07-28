@@ -294,7 +294,7 @@ export type MatchInboundCustomerInput = {
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
-  customerId: string;
+  customerId?: string | null;
   contactId?: string | null;
   staffNote?: string | null;
 };
@@ -1778,6 +1778,13 @@ export class InboundOrdersRepository {
       )
       .limit(1);
 
+    return contact ?? null;
+  }
+
+  async getContact(organizationId: string, contactId: string): Promise<CustomerContact | null> {
+    const [contact] = await this.dbInstance.select().from(customerContacts)
+      .where(and(eq(customerContacts.organizationId, organizationId), eq(customerContacts.id, contactId)))
+      .limit(1);
     return contact ?? null;
   }
 

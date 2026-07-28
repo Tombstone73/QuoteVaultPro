@@ -419,6 +419,11 @@ function makeOrderRepository(overrides: Record<string, any> = {}) {
     getOrderById: jest.fn(async (_organizationId: string, orderId: string) => (
       orderId === createdOrder.id ? createdOrder : undefined
     )),
+    getContact: jest.fn(async (_organizationId: string, contactId: string) => (
+      contactId === "contact_independent"
+        ? { id: "contact_independent", customerId: null, firstName: "Casey", lastName: "Contact", email: "casey@example.com", phone: null, mobile: null }
+        : null
+    )),
     addOrderInternalNote: jest.fn(async (note: any) => ({ id: "order_note_1", ...note })),
     createOrderAuditLog: jest.fn(async (log: any) => ({ id: "audit_1", createdAt: new Date("2026-06-09T12:30:00.000Z"), ...log })),
     createdOrder,
@@ -2377,6 +2382,7 @@ describe("InboundOrderService editable review draft", () => {
   async function prepareReadyDraft(service: InboundOrderService, overrides: {
     lineItem?: Record<string, unknown>;
     order?: Record<string, unknown>;
+    customer?: Record<string, unknown>;
     unsupportedRequests?: any[];
   } = {}) {
     const initialized = await service.getReviewDraft({
@@ -2390,7 +2396,7 @@ describe("InboundOrderService editable review draft", () => {
       actorUserId: "user_1",
       draft: {
         status: "draft",
-        reviewedCustomerJson: initialized.reviewedCustomerJson,
+        reviewedCustomerJson: { ...initialized.reviewedCustomerJson, ...(overrides.customer ?? {}) },
         reviewedOrderJson: { ...initialized.reviewedOrderJson, ...(overrides.order ?? {}) },
         reviewedLineItemsJson: initialized.reviewedLineItemsJson.map((lineItem, index) => (
           index === 0 ? { ...lineItem, ...(overrides.lineItem ?? {}) } : lineItem
@@ -2793,7 +2799,7 @@ describe("InboundOrderService editable review draft", () => {
       actorUserId: "user_1",
     })).rejects.toMatchObject({
       errors: expect.arrayContaining([
-        "Select an existing customer before creating a draft order.",
+        "Select an existing customer, a contact, or both before creating a draft order.",
         "PVC Signs: select an existing product before order conversion.",
         "PVC Signs: quantity is required.",
       ]),
@@ -3079,6 +3085,28 @@ describe("InboundOrderService editable review draft", () => {
     expect(repo.updateFile).toHaveBeenCalledWith(expect.objectContaining({
       fileId: "file_artwork_1",
       patch: { createdOrderAttachmentId: "order_attachment_file_record_artwork_1" },
+    }));
+  });
+
+  test("converts a ready review addressed to an independent contact without inventing a customer", async () => {
+    const { repo } = makeRepository();
+    const orderRepo = makeOrderRepository();
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+    await prepareReadyDraft(service, {
+      customer: {
+        selectedCustomerId: null,
+        selectedContactId: "contact_independent",
+        unresolvedCustomer: false,
+        sourceName: "Casey Contact",
+        sourceEmail: "casey@example.com",
+      },
+    });
+
+    await service.convertInboundReviewDraftToOrder({ organizationId: "org_1", inboundRecordId: "inbound_1", actorUserId: "user_1" });
+
+    expect(orderRepo.createOrder).toHaveBeenCalledWith("org_1", expect.objectContaining({
+      customerId: null,
+      contactId: "contact_independent",
     }));
   });
 

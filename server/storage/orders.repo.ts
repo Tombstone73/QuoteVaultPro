@@ -12,6 +12,7 @@ import {
     orderAuditLog,
     customers,
     customerContacts,
+    customerContactLinks,
     users,
     products,
     productTypes,
@@ -45,7 +46,7 @@ import {
     type CustomerContact,
     type InsertJobStatusLog,
 } from "@shared/schema";
-import { eq, and, or, ilike, gte, lte, asc, desc, sql, isNull, inArray } from "drizzle-orm";
+import { eq, and, or, ilike, gte, lte, asc, desc, sql, isNull, inArray, ne } from "drizzle-orm";
 import { deriveLineItemProofSummary, deriveOrderProofSummary, type LineItemProofSummary, type OrderProofSummary } from "@shared/orderProofStatus";
 import { deriveOrderInvoiceState, type OrderInvoiceStateSummary } from "@shared/orderInvoiceState";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
@@ -70,6 +71,14 @@ import {
 } from "../services/productionIntakePolicy";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
+
+/** Stable errors for all direct, quote, inbound, and assistant order writes. */
+export class OrderIdentityError extends Error {
+    readonly statusCode = 400;
+    constructor(readonly code: "ORDER_IDENTITY_REQUIRED" | "ORDER_CUSTOMER_NOT_FOUND" | "ORDER_CONTACT_NOT_FOUND" | "ORDER_CONTACT_CUSTOMER_CONFLICT", message: string) {
+        super(message);
+    }
+}
 
 type OrderProductionSummary = {
     requiredCount: number;
@@ -784,7 +793,8 @@ export class OrdersRepository {
                 ilike(orders.orderNumber, pattern),
                 ilike(orders.poNumber, pattern),
                 ilike(orders.label, pattern),
-                ilike(orders.notesInternal, pattern)
+                ilike(orders.notesInternal, pattern),
+                sql`exists (select 1 from ${customerContacts} where ${customerContacts.id} = ${orders.contactId} and (${customerContacts.firstName} ilike ${pattern} or ${customerContacts.lastName} ilike ${pattern} or ${customerContacts.email} ilike ${pattern}))`
             ));
         }
         if (opts.status) conditions.push(eq(orders.status, opts.status));
@@ -806,7 +816,9 @@ export class OrdersRepository {
                         : sql`COALESCE(${orders.numberCore}, CASE WHEN ${orders.orderNumber} ~ '^[0-9]+$' THEN ${orders.orderNumber}::integer ELSE NULL END) DESC NULLS LAST`;
                     break;
                 case 'customer':
-                    orderByClause = dir === 'asc' ? sql`${customers.companyName} ASC` : sql`${customers.companyName} DESC`;
+                    orderByClause = dir === 'asc'
+                        ? sql`coalesce(${customers.companyName}, nullif(trim(concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName})), '')) ASC NULLS LAST`
+                        : sql`coalesce(${customers.companyName}, nullif(trim(concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName})), '')) DESC NULLS LAST`;
                     break;
                 case 'total':
                     orderByClause = dir === 'asc' ? sql`${orders.total}::numeric ASC` : sql`${orders.total}::numeric DESC`;
@@ -1170,7 +1182,9 @@ export class OrdersRepository {
                 hasSentProofVersion: false,
             }),
         }));
-        const [customer] = await this.dbInstance.select().from(customers).where(eq(customers.id, order.customerId)).catch(() => []);
+        const [customer] = order.customerId
+            ? await this.dbInstance.select().from(customers).where(eq(customers.id, order.customerId)).catch(() => [])
+            : [];
         
         // Contact resolution with fallback logic
         let contact: CustomerContact | null = null;
@@ -1216,7 +1230,7 @@ export class OrdersRepository {
     }
 
     async createOrder(organizationId: string, data: {
-        customerId: string;
+        customerId?: string | null;
         contactId?: string | null;
         quoteId?: string | null;
         sourceQuoteNumber?: number | null;
@@ -1264,7 +1278,7 @@ export class OrdersRepository {
         /** Opt-in policy for workflows that must defer all production intake. */
         productionIntakePolicy?: ProductionIntakePolicy;
     }): Promise<OrderWithRelations> {
-        if (!data.customerId) throw new Error('customerId required');
+        await this.validateOrderIdentity(organizationId, data.customerId ?? null, data.contactId ?? null);
         if (!data.lineItems || data.lineItems.length === 0) throw new Error('At least one line item required');
         const subtotal = data.lineItems.reduce((sum, li: any) => {
             const fallbackTotal = Number(li.totalPrice ?? li.linePrice ?? 0);
@@ -1630,7 +1644,9 @@ export class OrdersRepository {
             }
         }));
 
-        const [customer] = await this.dbInstance.select().from(customers).where(eq(customers.id, data.customerId));
+        const [customer] = data.customerId
+            ? await this.dbInstance.select().from(customers).where(and(eq(customers.id, data.customerId), eq(customers.organizationId, organizationId)))
+            : [];
         let contact: CustomerContact | null = null;
         if (data.contactId) {
             const contactRows = await this.dbInstance.select().from(customerContacts).where(eq(customerContacts.id, data.contactId));
@@ -1681,6 +1697,16 @@ export class OrdersRepository {
     }
 
     async updateOrder(organizationId: string, id: string, orderData: Partial<InsertOrder>): Promise<Order> {
+        if (orderData.customerId !== undefined || orderData.contactId !== undefined) {
+            const [existing] = await this.dbInstance.select({ customerId: orders.customerId, contactId: orders.contactId })
+                .from(orders).where(and(eq(orders.id, id), eq(orders.organizationId, organizationId))).limit(1);
+            if (!existing) throw new Error('Order not found');
+            await this.validateOrderIdentity(
+                organizationId,
+                orderData.customerId !== undefined ? orderData.customerId ?? null : existing.customerId,
+                orderData.contactId !== undefined ? orderData.contactId ?? null : existing.contactId,
+            );
+        }
         const updateData: any = { ...orderData, updatedAt: new Date() };
         const [updated] = await this.dbInstance
             .update(orders)
@@ -1689,6 +1715,33 @@ export class OrdersRepository {
             .returning();
         if (!updated) throw new Error('Order not found');
         return updated;
+    }
+
+    private async validateOrderIdentity(organizationId: string, customerId: string | null, contactId: string | null): Promise<void> {
+        if (!customerId && !contactId) {
+            throw new OrderIdentityError("ORDER_IDENTITY_REQUIRED", "An order must have a customer, a contact, or both.");
+        }
+        let contact: CustomerContact | null = null;
+        if (customerId) {
+            const [customer] = await this.dbInstance.select({ id: customers.id }).from(customers)
+                .where(and(eq(customers.id, customerId), eq(customers.organizationId, organizationId))).limit(1);
+            if (!customer) throw new OrderIdentityError("ORDER_CUSTOMER_NOT_FOUND", "Customer was not found for this organization.");
+        }
+        if (contactId) {
+            const [found] = await this.dbInstance.select().from(customerContacts)
+                .where(and(eq(customerContacts.id, contactId), eq(customerContacts.organizationId, organizationId))).limit(1);
+            if (!found) throw new OrderIdentityError("ORDER_CONTACT_NOT_FOUND", "Contact was not found for this organization.");
+            contact = found;
+        }
+        if (customerId && contact && contact.customerId && contact.customerId !== customerId) {
+            const [link] = await this.dbInstance.select({ id: customerContactLinks.id }).from(customerContactLinks).where(and(
+                eq(customerContactLinks.organizationId, organizationId),
+                eq(customerContactLinks.customerId, customerId),
+                eq(customerContactLinks.contactId, contact.id),
+                ne(customerContactLinks.status, "removed"),
+            )).limit(1);
+            if (!link) throw new OrderIdentityError("ORDER_CONTACT_CUSTOMER_CONFLICT", "Contact is not linked to the selected customer.");
+        }
     }
 
     async deleteOrder(organizationId: string, id: string): Promise<void> {

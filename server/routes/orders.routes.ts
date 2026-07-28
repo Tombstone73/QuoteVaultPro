@@ -759,49 +759,41 @@ function toChildItemProposalsFromSnapshot(snapshot: any): (Omit<Pbv2ChildItemPro
  */
 async function snapshotCustomerData(
     organizationId: string,
-    customerId: string,
+    customerId: string | null | undefined,
     contactId?: string | null,
     shippingMethod?: string | null,
     shippingMode?: string | null
 ): Promise<Record<string, any>> {
-    const [customer] = await db
-        .select()
-        .from(customers)
-        .where(and(
-            eq(customers.id, customerId),
-            eq(customers.organizationId, organizationId)
-        ))
-        .limit(1);
-
-    if (!customer) {
-        throw new Error(`Customer not found: ${customerId}`);
-    }
+    const [customer] = customerId ? await db.select().from(customers).where(and(
+        eq(customers.id, customerId), eq(customers.organizationId, organizationId)
+    )).limit(1) : [];
 
     let contact = null;
     if (contactId) {
         const [foundContact] = await db
             .select()
             .from(customerContacts as any)
-            .where(eq((customerContacts as any).id, contactId))
+            .where(and(eq((customerContacts as any).id, contactId), eq((customerContacts as any).organizationId, organizationId)))
             .limit(1);
         contact = foundContact;
     }
 
+    if (!customer && !contact) throw new Error("Order identity requires a customer or contact.");
     const billToName = contact
         ? `${contact.firstName} ${contact.lastName}`.trim()
-        : customer.companyName;
+        : customer!.companyName;
 
     const billToSnapshot = {
         billToName,
-        billToCompany: customer.companyName,
-        billToAddress1: customer.billingStreet1 || customer.billingAddress || null,
-        billToAddress2: customer.billingStreet2 || null,
-        billToCity: customer.billingCity || null,
-        billToState: customer.billingState || null,
-        billToPostalCode: customer.billingPostalCode || null,
-        billToCountry: customer.billingCountry || 'US',
-        billToPhone: customer.phone || null,
-        billToEmail: customer.email || null,
+        billToCompany: customer?.companyName ?? null,
+        billToAddress1: customer ? (customer.billingStreet1 || customer.billingAddress || null) : (contact?.street1 || null),
+        billToAddress2: customer ? (customer.billingStreet2 || null) : (contact?.street2 || null),
+        billToCity: customer ? (customer.billingCity || null) : (contact?.city || null),
+        billToState: customer ? (customer.billingState || null) : (contact?.state || null),
+        billToPostalCode: customer ? (customer.billingPostalCode || null) : (contact?.postalCode || null),
+        billToCountry: customer ? (customer.billingCountry || 'US') : (contact?.country || 'US'),
+        billToPhone: customer?.phone || contact?.phone || contact?.mobile || null,
+        billToEmail: customer?.email || contact?.email || null,
     };
 
     const finalShippingMethod = shippingMethod || 'ship';
@@ -812,42 +804,42 @@ async function snapshotCustomerData(
     if (finalShippingMethod === 'pickup') {
         shipToSnapshot = {
             shipToName: billToName,
-            shipToCompany: customer.companyName,
-            shipToAddress1: customer.billingStreet1 || customer.billingAddress || null,
-            shipToAddress2: customer.billingStreet2 || null,
-            shipToCity: customer.billingCity || null,
-            shipToState: customer.billingState || null,
-            shipToPostalCode: customer.billingPostalCode || null,
-            shipToCountry: customer.billingCountry || 'US',
-            shipToPhone: customer.phone || null,
-            shipToEmail: customer.email || null,
+            shipToCompany: customer?.companyName ?? null,
+            shipToAddress1: billToSnapshot.billToAddress1,
+            shipToAddress2: billToSnapshot.billToAddress2,
+            shipToCity: billToSnapshot.billToCity,
+            shipToState: billToSnapshot.billToState,
+            shipToPostalCode: billToSnapshot.billToPostalCode,
+            shipToCountry: billToSnapshot.billToCountry,
+            shipToPhone: billToSnapshot.billToPhone,
+            shipToEmail: billToSnapshot.billToEmail,
         };
     } else {
-        const hasShippingAddress = !!customer.shippingStreet1 || !!customer.shippingAddress;
+        const hasShippingAddress = !!customer && (!!customer.shippingStreet1 || !!customer.shippingAddress);
 
         shipToSnapshot = {
             shipToName: billToName,
-            shipToCompany: customer.companyName,
+            shipToCompany: customer?.companyName ?? null,
             shipToAddress1: hasShippingAddress
-                ? (customer.shippingStreet1 || customer.shippingAddress || null)
-                : (customer.billingStreet1 || customer.billingAddress || null),
+                ? (customer!.shippingStreet1 || customer!.shippingAddress || null)
+                : billToSnapshot.billToAddress1,
             shipToAddress2: hasShippingAddress
-                ? (customer.shippingStreet2 || null)
-                : (customer.billingStreet2 || null),
+                ? (customer!.shippingStreet2 || null)
+                : billToSnapshot.billToAddress2,
             shipToCity: hasShippingAddress
-                ? (customer.shippingCity || null)
-                : (customer.billingCity || null),
+                ? (customer!.shippingCity || null)
+                : billToSnapshot.billToCity,
             shipToState: hasShippingAddress
-                ? (customer.shippingState || null)
-                : (customer.billingState || null),
+                ? (customer!.shippingState || null)
+                : billToSnapshot.billToState,
             shipToPostalCode: hasShippingAddress
-                ? (customer.shippingPostalCode || null)
-                : (customer.billingPostalCode || null),
+                ? (customer!.shippingPostalCode || null)
+                : billToSnapshot.billToPostalCode,
             shipToCountry: hasShippingAddress
-                ? (customer.shippingCountry || 'US')
-                : (customer.billingCountry || 'US'),
-            shipToPhone: customer.phone || null,
-            shipToEmail: customer.email || null,
+                ? (customer!.shippingCountry || 'US')
+                : billToSnapshot.billToCountry,
+            shipToPhone: billToSnapshot.billToPhone,
+            shipToEmail: billToSnapshot.billToEmail,
         };
     }
 
@@ -1787,13 +1779,13 @@ export async function registerOrderRoutes(
                     customerEmail: customers.email,
                 })
                 .from(orders)
-                .innerJoin(customers, eq(orders.customerId, customers.id))
+                .leftJoin(customers, eq(orders.customerId, customers.id))
                 .where(and(eq(orders.id, req.params.orderId), eq(orders.organizationId, organizationId)))
                 .limit(1);
 
             if (!orderRow) return res.status(404).json({ success: false, message: "Order not found" });
 
-            const contacts = await db
+            const contacts = orderRow.customerId ? await db
                 .select({
                     id: customerContacts.id,
                     firstName: customerContacts.firstName,
@@ -1804,7 +1796,7 @@ export async function registerOrderRoutes(
                 })
                 .from(customerContacts)
                 .where(eq(customerContacts.customerId, orderRow.customerId))
-                .orderBy(desc(customerContacts.isPrimary), asc(customerContacts.lastName), asc(customerContacts.firstName));
+                .orderBy(desc(customerContacts.isPrimary), asc(customerContacts.lastName), asc(customerContacts.firstName)) : [];
 
             const normalizedContacts = contacts
                 .filter((contact) => String(contact.email || "").trim())
@@ -2117,7 +2109,7 @@ export async function registerOrderRoutes(
 
             // Load customer for tax calculation (if applicable)
             let customer = null;
-            if (orderFields.customerId) {
+            if (orderFields.customerId || orderFields.contactId) {
                 [customer] = await db
                     .select()
                     .from(customers)
@@ -2468,7 +2460,7 @@ export async function registerOrderRoutes(
                 }
 
                 // Auto-set contactId to primary contact when customer changes
-                if (req.body.customerId !== existingOrder.customerId) {
+                if (req.body.customerId !== existingOrder.customerId && req.body.contactId === undefined) {
                     // Find primary contact for new customer, or fallback to newest
                     const contacts = await db
                         .select()
@@ -2514,19 +2506,20 @@ export async function registerOrderRoutes(
             const oldOrder = await storage.getOrderById(organizationId, req.params.id);
 
             // Determine if we need to refresh snapshots
-            const customerChanged = req.body.customerId && req.body.customerId !== oldOrder?.customerId;
+            const customerChanged = req.body.customerId !== undefined && req.body.customerId !== oldOrder?.customerId;
+            const contactChanged = req.body.contactId !== undefined && req.body.contactId !== oldOrder?.contactId;
             const shippingMethodChanged = req.body.shippingMethod && req.body.shippingMethod !== oldOrder?.shippingMethod;
             const shippingModeChanged = req.body.shippingMode && req.body.shippingMode !== oldOrder?.shippingMode;
-            const shouldRefreshSnapshot = customerChanged || shippingMethodChanged || shippingModeChanged;
+            const shouldRefreshSnapshot = customerChanged || contactChanged || shippingMethodChanged || shippingModeChanged;
 
             let snapshotData: Record<string, any> = {};
             if (shouldRefreshSnapshot && oldOrder) {
-                const finalCustomerId = req.body.customerId || oldOrder.customerId;
+                const finalCustomerId = req.body.customerId !== undefined ? req.body.customerId : oldOrder.customerId;
                 const finalContactId = req.body.contactId !== undefined ? req.body.contactId : oldOrder.contactId;
                 const finalShippingMethod = req.body.shippingMethod || oldOrder.shippingMethod;
                 const finalShippingMode = req.body.shippingMode || oldOrder.shippingMode;
 
-                if (finalCustomerId) {
+                if (finalCustomerId || finalContactId) {
                     try {
                         snapshotData = await snapshotCustomerData(
                             organizationId,
@@ -2674,6 +2667,9 @@ export async function registerOrderRoutes(
         } catch (error) {
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: fromZodError(error).message });
+            }
+            if ((error as any)?.code?.startsWith("ORDER_")) {
+                return res.status((error as any).statusCode ?? 400).json({ message: (error as Error).message, code: (error as any).code });
             }
             console.error("Error updating order:", error);
             res.status(500).json({ message: "Failed to update order" });

@@ -340,7 +340,7 @@ export type MatchInboundCustomerReviewInput = {
   organizationId: string;
   inboundRecordId: string;
   actorUserId: string;
-  customerId: string;
+  customerId?: string | null;
   contactId?: string | null;
   staffNote?: string | null;
 };
@@ -3604,22 +3604,23 @@ export class InboundOrderService {
       throw new InboundOrderTransitionError("Converted inbound records cannot have customer/contact matches changed.");
     }
 
-    const customer = await this.repository.getCustomer(args.organizationId, args.customerId);
-    if (!customer) {
-      throw new InboundOrderTransitionError("Customer not found for this organization", 404);
+    if (!args.customerId && !args.contactId) {
+      throw new InboundOrderTransitionError("Select a customer, a contact, or both.", 400);
     }
+    const customer = args.customerId
+      ? await this.repository.getCustomer(args.organizationId, args.customerId)
+      : null;
+    if (args.customerId && !customer) throw new InboundOrderTransitionError("Customer not found for this organization", 404);
 
     let contactName: string | null = null;
     let contactEmail: string | null = null;
     if (args.contactId) {
-      const contact = await this.repository.getContactForCustomer(
-        args.organizationId,
-        args.customerId,
-        args.contactId,
-      );
+      const contact = args.customerId
+        ? await this.repository.getContactForCustomer(args.organizationId, args.customerId, args.contactId)
+        : await this.repository.getContact(args.organizationId, args.contactId);
 
       if (!contact) {
-        throw new InboundOrderTransitionError("Contact does not belong to the selected customer", 400);
+        throw new InboundOrderTransitionError(args.customerId ? "Contact does not belong to the selected customer" : "Contact was not found for this organization", args.customerId ? 400 : 404);
       }
 
       contactName = `${contact.firstName} ${contact.lastName}`.trim();
@@ -3630,10 +3631,10 @@ export class InboundOrderService {
       organizationId: args.organizationId,
       inboundRecordId: args.inboundRecordId,
       actorUserId: args.actorUserId,
-      customerId: args.customerId,
+      customerId: args.customerId ?? null,
       contactId: args.contactId ?? null,
       staffNote: args.staffNote?.trim() || null,
-      customerName: customer.companyName,
+      customerName: customer?.companyName ?? contactName ?? "Contact-only order",
       contactName,
       contactEmail,
     });
@@ -5393,17 +5394,20 @@ export class InboundOrderService {
     }
 
     const selectedCustomerId = normalizedPayload.reviewedCustomerJson.selectedCustomerId;
-    if (!selectedCustomerId) {
-      errors.push("Select an existing customer before creating a draft order.");
-    } else {
+    const selectedContactId = normalizedPayload.reviewedCustomerJson.selectedContactId;
+    if (!selectedCustomerId && !selectedContactId) {
+      errors.push("Select an existing customer, a contact, or both before creating a draft order.");
+    } else if (selectedCustomerId) {
       const customer = await this.repository.getCustomer(record.organizationId, selectedCustomerId);
       if (!customer) errors.push("Selected customer was not found for this organization.");
     }
 
-    const selectedContactId = normalizedPayload.reviewedCustomerJson.selectedContactId;
     if (selectedCustomerId && selectedContactId) {
       const contact = await this.repository.getContactForCustomer(record.organizationId, selectedCustomerId, selectedContactId);
       if (!contact) errors.push("Selected contact does not belong to the selected customer.");
+    } else if (selectedContactId) {
+      const contact = await this.repository.getContact(record.organizationId, selectedContactId);
+      if (!contact) errors.push("Selected contact was not found for this organization.");
     }
 
     if (normalizedPayload.reviewedLineItemsJson.length === 0) {
@@ -5670,7 +5674,7 @@ export class InboundOrderService {
     const normalizedDueDate = normalizeInboundReviewedDueDate(order.dueDate, detail.record.receivedAt);
 
     return {
-      customerId: customer.selectedCustomerId!,
+      customerId: customer.selectedCustomerId ?? null,
       contactId: customer.selectedContactId ?? null,
       label: `Inbound ${reference}`,
       poNumber: order.poNumber ?? detail.record.externalReference ?? null,
@@ -6121,8 +6125,8 @@ export class InboundOrderService {
     const desiredOutputType = reviewedPayload?.reviewedOrderJson.intent ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "desiredOutputType"));
     const orderNotes = reviewedPayload?.reviewedOrderJson.internalNotes ?? stringFromUnknown(getPathValue(latestReviewSnapshot?.payloadJson, "orderNotes"));
     const externalReference = record.externalReference ?? record.sourceRecordId ?? record.id.slice(0, 8);
-    if (!reviewedSelectedCustomerId && !record.matchedCustomerId) {
-      blockingReasons.push("Assign an existing or newly created customer before creating a quote draft.");
+    if (!reviewedSelectedCustomerId && !record.matchedCustomerId && !reviewedSelectedContactId && !record.matchedContactId) {
+      blockingReasons.push("Assign an existing customer, a contact, or both before creating a quote draft.");
     }
     if (lineItemsToConvert.length === 0) {
       blockingReasons.push("At least one valid line item is required before creating a quote draft.");
