@@ -191,7 +191,7 @@ describe("AssistantPlanCard", () => {
       plan: {
         id: "plan-product-update-1", action: "products.update_inactive_draft", status: "awaiting_confirmation", planVersion: 2,
         riskLevel: "high", confirmationAvailable: true, confirmationToken: "server-token", expiresAt: "2030-01-01T00:10:00.000Z",
-        preview: { summary: "One inactive Banner draft will be updated.", productDraftUpdate: {
+        preview: { summary: "One inactive Banner draft will be updated.", productInactiveDraftUpdate: {
           productName: "Banner", draftStatus: "Inactive PBV2 DRAFT", editorPath: "/admin/products/banner-draft",
           changes: [{ field: "Minimum charge", before: 2500, after: 3000 }, { field: "Base rate per square foot", before: 450, after: 475 }],
           warnings: ["Existing square-foot pricing remains in use."], unchangedAreas: ["Activation", "Inventory", "Production jobs"],
@@ -214,7 +214,7 @@ describe("AssistantPlanCard", () => {
     act(() => go?.click());
     expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan-product-update-1", expectedPlanVersion: 2 }));
 
-    const invalid = { ...updatePlan, plan: { ...updatePlan.plan, preview: { ...updatePlan.plan.preview, productDraftUpdate: { ...updatePlan.plan.preview.productDraftUpdate, validationErrors: ["Default choice must reference an existing option."] } } } };
+    const invalid = { ...updatePlan, plan: { ...updatePlan.plan, preview: { ...updatePlan.plan.preview, productInactiveDraftUpdate: { ...updatePlan.plan.preview.productInactiveDraftUpdate, validationErrors: ["Default choice must reference an existing option."] } } } };
     act(() => root.render(<AssistantPlanCard card={invalid} context={buildSafeAssistantContext("/products/banner-draft", "Product")} onConfirm={(input) => { void confirmed(input); }} />));
     expect(container.textContent).toContain("Default choice must reference an existing option.");
     expect(container.textContent).toContain("Resolve validation errors before this draft update can be confirmed.");

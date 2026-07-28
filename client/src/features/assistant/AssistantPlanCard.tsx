@@ -188,7 +188,7 @@ function toQuoteInternalNote(action: string | null, preview: UnknownRecord | nul
 
 function toProductDraftUpdate(action: string | null, preview: UnknownRecord | null): AssistantPlanCardModel["productDraftUpdate"] {
   if (action !== "products.update_inactive_draft" || !preview) return null;
-  const value = asRecord(preview.productDraftUpdate) ?? asRecord(preview.productDraft) ?? preview;
+  const value = asRecord(preview.productInactiveDraftUpdate) ?? asRecord(preview.productDraftUpdate) ?? asRecord(preview.productDraft) ?? preview;
   const changeValues = value.changes ?? value.beforeAfter ?? value.patchChanges ?? value.fieldChanges;
   const changes = Array.isArray(changeValues) ? changeValues.slice(0, 30).flatMap((item) => {
     const change = asRecord(item);
