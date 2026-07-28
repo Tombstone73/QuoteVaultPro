@@ -3,6 +3,7 @@ import {
     orders,
     orderLineItems,
     orderLineItemComponents,
+    orderInternalNotes,
     lineItemProofApprovals,
     lineItemProofManualApprovalOverrides,
     lineItemProofVersions,
@@ -1651,6 +1652,30 @@ export class OrdersRepository {
             contact,
             createdByUser,
         } as OrderWithRelations;
+    }
+
+    /**
+     * Adds a staff-authored order note as a structured row. Inbound conversion
+     * uses this instead of overloading the historical orders.notesInternal blob
+     * with source/provenance text.
+     */
+    async addOrderInternalNote(params: {
+        organizationId: string;
+        orderId: string;
+        userId: string | null;
+        noteText: string;
+    }) {
+        const [note] = await this.dbInstance
+            .insert(orderInternalNotes)
+            .values({
+                organizationId: params.organizationId,
+                orderId: params.orderId,
+                createdByUserId: params.userId,
+                noteText: params.noteText.trim(),
+                audienceTags: null,
+            })
+            .returning();
+        return note;
     }
 
     async updateOrder(organizationId: string, id: string, orderData: Partial<InsertOrder>): Promise<Order> {

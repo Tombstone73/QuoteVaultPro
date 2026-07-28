@@ -3880,6 +3880,16 @@ export class InboundOrderService {
           throw new InboundOrderTransitionError("Draft order creation did not return a valid tenant-scoped order.", 500);
         }
 
+        const staffInternalNote = payload.reviewedOrderJson.internalNotes?.trim() ?? "";
+        if (staffInternalNote) {
+          await orderRepository.addOrderInternalNote({
+            organizationId: args.organizationId,
+            orderId: order.id,
+            userId: args.actorUserId,
+            noteText: staffInternalNote,
+          });
+        }
+
         await this.materializeInboundArtworkForOrder({
           organizationId: args.organizationId,
           inboundRecordId: args.inboundRecordId,
@@ -3914,25 +3924,18 @@ export class InboundOrderService {
           orderId: order.id,
           userId: args.actorUserId,
           userName: null,
-          actionType: "inbound_order_converted",
+          actionType: "order_created_from_inbound",
           fromStatus: null,
           toStatus: "new",
-          note: "Inbound order converted to draft order.",
+          note: "Order created from inbound draft.",
           metadata: {
             inboundRecordId: args.inboundRecordId,
-            inboundReference: detail.record.externalReference ?? null,
+            inboundDraftId: args.inboundRecordId,
+            sourceType: detail.record.sourceType,
             sourceSubject: stringFromUnknown(getPathValue(detail.record.rawPayloadJson, "subject")),
             sourceReference: detail.record.externalReference ?? null,
-            convertedAt: new Date().toISOString(),
-            parseConfidence: latestParseAttempt?.confidence ?? null,
-            poNumber: payload.reviewedOrderJson.poNumber ?? null,
-            artworkStatus: payload.reviewedArtworkJson.status,
-            artworkBypassed: hasArtworkBypassForOrder(payload),
-            releasesProduction: false,
-            createsProofs: false,
-            createsInvoices: false,
-            createsFulfillment: false,
-            createsPayments: false,
+            resultingOrderId: order.id,
+            resultingOrderNumber: order.orderNumber,
           },
         } as any);
 
@@ -5555,42 +5558,6 @@ export class InboundOrderService {
     const artwork = payload.reviewedArtworkJson;
     const artworkBypassed = hasArtworkBypassForOrder(payload);
     const reference = order.poNumber || detail.record.externalReference || detail.record.id.slice(0, 8);
-    const unsupportedRequestNotes = payload.unsupportedRequestsJson
-      .map((finding) => {
-        const requestedText = stringFromUnknown((finding as any).requestedText) ?? "Unsupported request";
-        const category = stringFromUnknown((finding as any).category);
-        const reason = stringFromUnknown((finding as any).reason);
-        return `Unsupported request${category ? ` (${category})` : ""}: ${requestedText}${reason ? ` - ${reason}` : ""}`;
-      });
-    const pricingReviewNotes = payload.reviewedLineItemsJson.flatMap((lineItem, index) => {
-      const review = lineItem.pricingReviewJson;
-      if (!review || (review.status !== "mismatch" && review.status !== "resolved")) return [];
-      return [
-        [
-          `Pricing review line ${index + 1}: ${review.message ?? "PO price review captured."}`,
-          `PO ${formatCents(review.poPriceCents)} vs system ${formatCents(review.systemPriceCents)}.`,
-          review.differenceCents != null ? `Difference ${formatCents(Math.abs(review.differenceCents))}.` : null,
-          review.resolution ? `Resolution: ${review.resolution}.` : null,
-          review.resolutionNote ? `Note: ${review.resolutionNote}` : null,
-        ].filter(Boolean).join(" "),
-      ];
-    });
-    const reviewedNotes = [
-      "Created from inbound reviewed draft.",
-      `Inbound record: ${detail.record.id}`,
-      `Source: ${detail.record.sourceLabel ?? detail.record.sourceType}`,
-      detail.record.externalReference ? `Reference: ${detail.record.externalReference}` : null,
-      order.internalNotes ? `Internal notes: ${order.internalNotes}` : null,
-      order.customerNotes ? `Customer notes: ${order.customerNotes}` : null,
-      payload.reviewNotes ? `Review notes: ${payload.reviewNotes}` : null,
-      artworkBypassed ? "Artwork: intentionally bypassed during inbound order conversion; still required before prepress or proofing." : null,
-      !artworkBypassed && artwork.status === "to_follow" ? "Artwork: to follow." : null,
-      artwork.status === "missing" ? "Artwork: missing at conversion." : null,
-      artwork.notes ? `Artwork notes: ${artwork.notes}` : null,
-      ...unsupportedRequestNotes,
-      ...pricingReviewNotes,
-    ].filter(Boolean).join("\n");
-
     const lineItems: CreateOrderLineItemInput[] = [];
     for (let index = 0; index < payload.reviewedLineItemsJson.length; index += 1) {
       const lineItem = payload.reviewedLineItemsJson[index];
@@ -5707,7 +5674,10 @@ export class InboundOrderService {
       priority: order.priority,
       dueDate: normalizedDueDate,
       requestedDueDate: normalizedDueDate,
-      notesInternal: reviewedNotes,
+      // Provenance belongs to the inbound relationship and immutable order
+      // history. Staff-authored notes are added as structured note rows after
+      // creation, never embedded in this legacy free-text field.
+      notesInternal: null,
       createdByUserId: args.actorUserId,
       lineItems,
       taxRate: 0,

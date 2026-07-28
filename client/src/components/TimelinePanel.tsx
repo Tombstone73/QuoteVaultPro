@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { format } from "date-fns";
+import { Link } from "react-router-dom";
 import { Skeleton } from "@/components/ui/skeleton";
 import { orderTimelineQueryKey } from "@/hooks/useOrders";
 import type { StructuredTimelineEvent } from "@shared/timelineEvents";
@@ -158,6 +159,15 @@ function formatEntityLabel(raw: string | null | undefined): string {
   return s.replace(/_/g, " ");
 }
 
+function inboundRecordIdForEvent(evt: TimelineEventDto): string | null {
+  if (evt.eventType !== "order_created_from_inbound" && evt.eventType !== "inbound_order_converted") {
+    return null;
+  }
+  const metadata = isRecord(evt.metadata) ? evt.metadata.metadata : null;
+  const recordId = isRecord(metadata) ? metadata.inboundRecordId : null;
+  return typeof recordId === "string" && recordId.trim() ? recordId : null;
+}
+
 export function TimelinePanel({
   quoteId,
   orderId,
@@ -219,6 +229,7 @@ export function TimelinePanel({
               const structured = getStructuredEvent(evt);
               const message = structured ? formatStructuredMessage(structured) : evt.message;
               const entityLabel = formatEntityLabel(structured?.entityType ?? evt.entityType);
+              const inboundRecordId = inboundRecordIdForEvent(evt);
 
               const isLineItemJump = structured?.entityType === "line_item" && Boolean(structured?.entityId);
 
@@ -260,6 +271,14 @@ export function TimelinePanel({
                   <div className="text-xs text-muted-foreground truncate whitespace-nowrap">
                     {actor} • {entityLabel} • {whenText}
                   </div>
+                  {inboundRecordId ? (
+                    <Link
+                      to={`/inbound-orders?recordId=${encodeURIComponent(inboundRecordId)}`}
+                      className="mt-1 inline-flex text-xs font-medium text-primary hover:underline"
+                    >
+                      Open inbound source
+                    </Link>
+                  ) : null}
                 </div>
               );
             })}

@@ -419,6 +419,7 @@ function makeOrderRepository(overrides: Record<string, any> = {}) {
     getOrderById: jest.fn(async (_organizationId: string, orderId: string) => (
       orderId === createdOrder.id ? createdOrder : undefined
     )),
+    addOrderInternalNote: jest.fn(async (note: any) => ({ id: "order_note_1", ...note })),
     createOrderAuditLog: jest.fn(async (log: any) => ({ id: "audit_1", createdAt: new Date("2026-06-09T12:30:00.000Z"), ...log })),
     createdOrder,
   };
@@ -2918,7 +2919,7 @@ describe("InboundOrderService editable review draft", () => {
     });
 
     expect(orderRepo.createOrder).toHaveBeenCalledWith("org_1", expect.objectContaining({
-      notesInternal: expect.stringContaining("Artwork: intentionally bypassed during inbound order conversion"),
+      notesInternal: null,
       lineItems: [expect.objectContaining({
         requiresPrepress: true,
         specsJson: expect.objectContaining({
@@ -2929,9 +2930,7 @@ describe("InboundOrderService editable review draft", () => {
         }),
       })],
     }));
-    expect(orderRepo.createOrderAuditLog).toHaveBeenCalledWith(expect.objectContaining({
-      metadata: expect.objectContaining({ artworkStatus: "to_follow", artworkBypassed: true }),
-    }));
+    expect(orderRepo.addOrderInternalNote).not.toHaveBeenCalled();
   });
 
   test("creates a draft order from a ready inbound review and marks inbound converted", async () => {
@@ -3009,7 +3008,7 @@ describe("InboundOrderService editable review draft", () => {
       customerId: "customer_1",
       contactId: "contact_1",
       status: "new",
-      notesInternal: expect.stringContaining("Unsupported request (grommets): grommets in the corners"),
+      notesInternal: null,
       lineItems: [expect.objectContaining({
         productId: "product_pvc",
         quantity: 3,
@@ -3052,13 +3051,14 @@ describe("InboundOrderService editable review draft", () => {
     }));
     expect(orderRepo.createOrderAuditLog).toHaveBeenCalledWith(expect.objectContaining({
       orderId: "order_1",
-      actionType: "inbound_order_converted",
-      note: "Inbound order converted to draft order.",
+      actionType: "order_created_from_inbound",
+      note: "Order created from inbound draft.",
       metadata: expect.objectContaining({
         inboundRecordId: "inbound_1",
-        inboundReference: "PO-123",
-        parseConfidence: 92,
-        poNumber: "151661",
+        inboundDraftId: "inbound_1",
+        sourceType: "manual",
+        sourceReference: "PO-123",
+        resultingOrderId: "order_1",
       }),
     }));
     expect(repo.markInboundOrderConvertedToOrder).toHaveBeenCalledWith(expect.objectContaining({
@@ -3079,6 +3079,34 @@ describe("InboundOrderService editable review draft", () => {
     expect(repo.updateFile).toHaveBeenCalledWith(expect.objectContaining({
       fileId: "file_artwork_1",
       patch: { createdOrderAttachmentId: "order_attachment_file_record_artwork_1" },
+    }));
+  });
+
+  test("keeps a reviewer-entered internal note separate from inbound provenance", async () => {
+    const { repo } = makeRepository();
+    const orderRepo = makeOrderRepository();
+    const service = new InboundOrderService(repo as any, orderRepo as any, mockPriceLineItem);
+    await prepareReadyDraft(service, {
+      lineItem: { optionSelectionsJson: completePbv2Selections(), pbv2TreeVersionId: "tree_pvc" },
+      order: { internalNotes: "Call before production." },
+    });
+
+    await service.convertInboundReviewDraftToOrder({
+      organizationId: "org_1",
+      inboundRecordId: "inbound_1",
+      actorUserId: "user_1",
+    });
+
+    expect(orderRepo.createOrder).toHaveBeenCalledWith("org_1", expect.objectContaining({ notesInternal: null }));
+    expect(orderRepo.addOrderInternalNote).toHaveBeenCalledWith({
+      organizationId: "org_1",
+      orderId: "order_1",
+      userId: "user_1",
+      noteText: "Call before production.",
+    });
+    expect(orderRepo.createOrderAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      actionType: "order_created_from_inbound",
+      metadata: expect.not.objectContaining({ rawBody: expect.anything(), parserDiagnostics: expect.anything() }),
     }));
   });
 
