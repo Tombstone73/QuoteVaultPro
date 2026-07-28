@@ -49,6 +49,7 @@ import {
 } from "@/lib/prepressListPreferences";
 import type { FileUploadNamingPolicy } from "@shared/fileUploadNaming";
 import { resolveProductionArtworkSideReadiness } from "@shared/productionHydration";
+import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
 
 type LineItemFile = {
   id: string;
@@ -594,6 +595,13 @@ export default function PrepressProductionPageV2() {
   });
 
   // Mutations
+  const downloadFinalFileMutation = useMutation({
+    mutationFn: ({ url, filename }: { url: string; filename: string }) => downloadAuthenticatedFile(url, filename),
+    onError: (error: Error) => {
+      toast({ title: "Download failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   const startSessionMutation = useMutation({
     mutationFn: async (lineItemId: string) => {
       const res = await fetch("/api/prepress/session/start", {
@@ -2188,9 +2196,14 @@ export default function PrepressProductionPageV2() {
                           <button 
                             onClick={(event) => {
                               event.stopPropagation();
-                              window.open(file.downloadUrl, "_blank");
+                              downloadFinalFileMutation.mutate({
+                                url: file.downloadUrl,
+                                filename: file.displayName || file.originalFilename || "production-file",
+                              });
                             }}
-                            className="text-slate-400 hover:text-white p-1"
+                            disabled={downloadFinalFileMutation.isPending}
+                            aria-label={`Download ${file.displayName}`}
+                            className="text-slate-400 hover:text-white p-1 disabled:cursor-not-allowed disabled:opacity-50"
                           >
                             <Download className="w-5 h-5" />
                           </button>

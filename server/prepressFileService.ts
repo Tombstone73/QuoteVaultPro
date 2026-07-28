@@ -13,6 +13,8 @@ import { lineItemFiles, orders, orderLineItems, orderAttachments, organizations,
 import { eq, and, desc } from "drizzle-orm";
 import { getStorageClient } from "./objectStorage";
 import type { Response } from "express";
+import { Readable } from "stream";
+import { pipeline } from "stream/promises";
 import archiver from "archiver";
 import type { LineItemFile } from "../shared/schema";
 import { isSupabaseConfigured, SupabaseStorageService } from "./supabaseStorage";
@@ -51,6 +53,129 @@ const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_
 function buildPrepressDownloadEtag(fileId: string, sizeBytes: number | null | undefined, createdAt: Date | string | null | undefined) {
   const createdAtValue = createdAt ? new Date(createdAt).getTime() : 0;
   return `W/\"prepress-${fileId}-${sizeBytes ?? 0}-${createdAtValue}\"`;
+}
+
+type DownloadFailureStatus = 404 | 409 | 410 | 422 | 502 | 503;
+
+function createDownloadRequestId() {
+  return `prepress-download-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function sendDownloadFailure(
+  res: Response,
+  status: DownloadFailureStatus,
+  code: string,
+  message: string,
+  requestId: string,
+): void {
+  if (res.headersSent) {
+    // A status body cannot safely be added after file bytes have begun. Keep the
+    // response valid for the client that already received it and record a
+    // correlation id for server-side diagnosis.
+    console.error("[PrepressFileDownload] Stream failed after response started", { requestId, code });
+    res.destroy();
+    return;
+  }
+
+  res.removeHeader("Content-Disposition");
+  res.removeHeader("Content-Length");
+  res.removeHeader("ETag");
+  res.removeHeader("Last-Modified");
+  res.status(status).json({ error: message, code, requestId });
+}
+
+function logDownloadFailure(
+  requestId: string,
+  fileId: string,
+  organizationId: string,
+  stage: string,
+  error: unknown,
+): void {
+  console.error("[PrepressFileDownload] Failed", {
+    requestId,
+    fileId,
+    organizationId,
+    stage,
+    error: error instanceof Error ? error.message : String(error),
+  });
+}
+
+function buildContentDisposition(dispositionType: "attachment" | "inline", filename: string): string {
+  const normalized = filename
+    .replace(/[\u0000-\u001f\u007f]/g, "")
+    .replace(/[\\/]/g, "_")
+    .trim() || "download";
+  const asciiFallback = normalized
+    .replace(/[^\x20-\x7e]/g, "_")
+    .replace(/["\\]/g, "_") || "download";
+  const encoded = encodeURIComponent(normalized).replace(/[!'()*]/g, (character) =>
+    `%${character.charCodeAt(0).toString(16).toUpperCase()}`,
+  );
+
+  return `${dispositionType}; filename="${asciiFallback}"; filename*=UTF-8''${encoded}`;
+}
+
+function resolveDownloadContentType(mimeType: string | null | undefined, filename: string): string {
+  if (mimeType && /^[a-z0-9!#$&^_.+-]+\/[a-z0-9!#$&^_.+-]+(?:;\s*charset=[a-z0-9._-]+)?$/i.test(mimeType)) {
+    return mimeType;
+  }
+
+  const extension = filename.split(".").pop()?.toLowerCase();
+  const fallbackByExtension: Record<string, string> = {
+    pdf: "application/pdf",
+    ai: "application/pdf",
+    eps: "application/postscript",
+    svg: "image/svg+xml",
+    png: "image/png",
+    jpg: "image/jpeg",
+    jpeg: "image/jpeg",
+    tif: "image/tiff",
+    tiff: "image/tiff",
+  };
+  return (extension && fallbackByExtension[extension]) || "application/octet-stream";
+}
+
+function setDownloadHeaders(
+  res: Response,
+  params: { contentType: string; dispositionType: "attachment" | "inline"; filename: string; etag: string; lastModified: string | null },
+): void {
+  res.set({
+    "Content-Type": params.contentType,
+    "Content-Disposition": buildContentDisposition(params.dispositionType, params.filename),
+    "Cache-Control": "private, max-age=0, must-revalidate",
+    ETag: params.etag,
+    "X-Served-As": "original",
+  });
+  if (params.lastModified) {
+    res.set("Last-Modified", params.lastModified);
+  }
+}
+
+async function streamDownload(
+  source: NodeJS.ReadableStream,
+  res: Response,
+  context: { requestId: string; fileId: string; organizationId: string; stage: string },
+  onReadyToRespond: () => void,
+): Promise<void> {
+  try {
+    // Read the first chunk before committing response headers. A missing object,
+    // expired private URL, or immediate provider-stream error is therefore a
+    // normal JSON failure rather than a browser-level invalid response.
+    const iterator = (source as AsyncIterable<unknown>)[Symbol.asyncIterator]();
+    const firstChunk = await iterator.next();
+    const preparedSource = Readable.from((async function* () {
+      if (!firstChunk.done) yield firstChunk.value;
+      for await (const chunk of { [Symbol.asyncIterator]: () => iterator }) {
+        yield chunk;
+      }
+    })());
+
+    onReadyToRespond();
+    await pipeline(preparedSource, res);
+  } catch (error) {
+    logDownloadFailure(context.requestId, context.fileId, context.organizationId, context.stage, error);
+    sendDownloadFailure(res, 503, "FILE_STREAM_UNAVAILABLE", "The file is temporarily unavailable. Please try again.", context.requestId);
+  }
 }
 
 /**
@@ -741,105 +866,144 @@ export async function downloadLineItemFile(
   res: Response,
   options?: { inline?: boolean }
 ): Promise<void> {
-  // Get file record
-  const [file] = await db
-    .select({
-      file: lineItemFiles,
-      order: orders,
-      lineItem: orderLineItems,
-    })
-    .from(lineItemFiles)
-    .innerJoin(orders, eq(lineItemFiles.orderId, orders.id))
-    .innerJoin(orderLineItems, eq(lineItemFiles.lineItemId, orderLineItems.id))
-    .where(and(eq(lineItemFiles.id, fileId), eq(lineItemFiles.organizationId, organizationId)))
-    .limit(1);
-
-  if (!file) {
-    res.status(404).json({ error: "File not found" });
-    return;
-  }
-
-  const jobNumber = file.order.orderNumber || "NOJOB";
-  const namingPolicy = await getFileUploadNamingPolicy(organizationId);
-  const computedDisplayFilename = buildComputedDisplayFilename({
-    role: file.file.role,
-    originalFilename: file.file.originalFilename,
-    tag: file.file.tag,
-    fullJobNumber: jobNumber,
-    numericJobNumber: numericJobNumberFromFull(jobNumber),
-    namingPolicy,
-  });
-  const downloadFilename = computedDisplayFilename;
-  const dispositionType = options?.inline ? "inline" : "attachment";
-  const etag = buildPrepressDownloadEtag(file.file.id, file.file.sizeBytes, file.file.createdAt);
-  const ifNoneMatchHeader = Array.isArray(res.req?.headers["if-none-match"])
-    ? res.req?.headers["if-none-match"][0]
-    : res.req?.headers["if-none-match"];
-  const ifNoneMatch = typeof ifNoneMatchHeader === "string" ? ifNoneMatchHeader : null;
-  const lastModified = file.file.createdAt ? new Date(file.file.createdAt).toUTCString() : null;
-
-  if (ifNoneMatch && ifNoneMatch === etag) {
-    res.status(304).end();
-    return;
-  }
-
-  res.set({
-    "Content-Type": file.file.mimeType,
-    "Content-Disposition": `${dispositionType}; filename="${downloadFilename}"`,
-    "Cache-Control": "private, max-age=0, must-revalidate",
-    ETag: etag,
-    "X-Served-As": "original",
-  });
-
-  if (lastModified) {
-    res.set("Last-Modified", lastModified);
-  }
-
-  // Prepress bucket path
-  if (file.file.storageBucket) {
-    const bucket = getStorageClient().bucket(file.file.storageBucket || BUCKET_NAME);
-    const gcsFile = bucket.file(file.file.storagePath);
-    const [exists] = await gcsFile.exists();
-    if (!exists) {
-      res.status(404).json({ error: "File not found in storage" });
-      return;
-    }
-    gcsFile.createReadStream().pipe(res);
-    return;
-  }
-
-  const storageKey = (file.file.storageKey || file.file.storagePath || "").trim();
-  if (!storageKey) {
-    res.status(404).json({ error: "File storage key missing" });
-    return;
-  }
-
-  if (isSupabaseConfigured()) {
-    try {
-      const supabase = new SupabaseStorageService();
-      const signedUrl = await supabase.getSignedDownloadUrl(storageKey, 3600);
-      const upstream = await fetch(signedUrl);
-      if (upstream.ok && upstream.body) {
-        const { Readable } = await import("stream");
-        Readable.fromWeb(upstream.body as any).pipe(res);
-        return;
-      }
-    } catch {
-      // Fall through to local path.
-    }
-  }
+  const requestId = createDownloadRequestId();
 
   try {
-    const { getAbsolutePath } = await import("./utils/fileStorage");
-    const fs = await import("fs");
-    const fsPromises = await import("fs/promises");
-    const abs = getAbsolutePath(storageKey);
-    await fsPromises.access(abs, fs.constants.R_OK);
-    fs.createReadStream(abs).pipe(res);
-    return;
-  } catch {
-    res.status(404).json({ error: "File not found in storage" });
-    return;
+    const [file] = await db
+      .select({
+        file: lineItemFiles,
+        order: orders,
+        lineItem: orderLineItems,
+      })
+      .from(lineItemFiles)
+      .innerJoin(orders, eq(lineItemFiles.orderId, orders.id))
+      .innerJoin(orderLineItems, eq(lineItemFiles.lineItemId, orderLineItems.id))
+      .where(and(eq(lineItemFiles.id, fileId), eq(lineItemFiles.organizationId, organizationId)))
+      .limit(1);
+
+    if (!file) {
+      sendDownloadFailure(res, 404, "FILE_NOT_FOUND", "File not found", requestId);
+      return;
+    }
+
+    const jobNumber = file.order.orderNumber || "NOJOB";
+    const namingPolicy = await getFileUploadNamingPolicy(organizationId);
+    const downloadFilename = buildComputedDisplayFilename({
+      role: file.file.role,
+      originalFilename: file.file.originalFilename,
+      tag: file.file.tag,
+      fullJobNumber: jobNumber,
+      numericJobNumber: numericJobNumberFromFull(jobNumber),
+      namingPolicy,
+    });
+    const dispositionType = options?.inline ? "inline" : "attachment";
+    const etag = buildPrepressDownloadEtag(file.file.id, file.file.sizeBytes, file.file.createdAt);
+    const ifNoneMatchHeader = Array.isArray(res.req?.headers["if-none-match"])
+      ? res.req?.headers["if-none-match"][0]
+      : res.req?.headers["if-none-match"];
+    const ifNoneMatch = typeof ifNoneMatchHeader === "string" ? ifNoneMatchHeader : null;
+    const lastModified = file.file.createdAt ? new Date(file.file.createdAt).toUTCString() : null;
+
+    if (ifNoneMatch && ifNoneMatch === etag) {
+      res.status(304).end();
+      return;
+    }
+
+    const headers = {
+      contentType: resolveDownloadContentType(file.file.mimeType, downloadFilename),
+      dispositionType: dispositionType as "attachment" | "inline",
+      filename: downloadFilename,
+      etag,
+      lastModified,
+    };
+
+    // Legacy GCS records keep an explicit bucket; newer records resolve through
+    // the configured private Supabase storage service.
+    if (file.file.storageBucket) {
+      try {
+        const bucket = getStorageClient().bucket(file.file.storageBucket || BUCKET_NAME);
+        const gcsFile = bucket.file(file.file.storagePath);
+        const [exists] = await gcsFile.exists();
+        if (!exists) {
+          sendDownloadFailure(res, 404, "FILE_MISSING_FROM_STORAGE", "File not found in storage", requestId);
+          return;
+        }
+        await streamDownload(
+          gcsFile.createReadStream(),
+          res,
+          { requestId, fileId, organizationId, stage: "gcs-stream" },
+          () => setDownloadHeaders(res, headers),
+        );
+        return;
+      } catch (error) {
+        logDownloadFailure(requestId, fileId, organizationId, "gcs-lookup", error);
+        sendDownloadFailure(res, 503, "FILE_STORAGE_UNAVAILABLE", "The file is temporarily unavailable. Please try again.", requestId);
+        return;
+      }
+    }
+
+    const storageKey = (file.file.storageKey || file.file.storagePath || "").trim();
+    if (!storageKey) {
+      sendDownloadFailure(res, 404, "FILE_STORAGE_KEY_MISSING", "File storage key missing", requestId);
+      return;
+    }
+
+    if (isSupabaseConfigured()) {
+      try {
+        const supabase = new SupabaseStorageService();
+        const signedUrl = await supabase.getSignedDownloadUrl(storageKey, 60);
+        const upstream = await fetch(signedUrl);
+        if (!upstream.ok || !upstream.body) {
+          const status = upstream.status === 404 || upstream.status === 410 ? 404 : 503;
+          sendDownloadFailure(
+            res,
+            status,
+            status === 404 ? "FILE_MISSING_FROM_STORAGE" : "FILE_STORAGE_UNAVAILABLE",
+            status === 404 ? "File not found in storage" : "The file is temporarily unavailable. Please try again.",
+            requestId,
+          );
+          return;
+        }
+        await streamDownload(
+          Readable.fromWeb(upstream.body as any),
+          res,
+          { requestId, fileId, organizationId, stage: "supabase-stream" },
+          () => setDownloadHeaders(res, headers),
+        );
+        return;
+      } catch (error) {
+        logDownloadFailure(requestId, fileId, organizationId, "supabase-lookup", error);
+        sendDownloadFailure(res, 503, "FILE_STORAGE_UNAVAILABLE", "The file is temporarily unavailable. Please try again.", requestId);
+        return;
+      }
+    }
+
+    try {
+      const { getAbsolutePath } = await import("./utils/fileStorage");
+      const fs = await import("fs");
+      const fsPromises = await import("fs/promises");
+      const abs = getAbsolutePath(storageKey);
+      await fsPromises.access(abs, fs.constants.R_OK);
+      await streamDownload(
+        fs.createReadStream(abs),
+        res,
+        { requestId, fileId, organizationId, stage: "local-stream" },
+        () => setDownloadHeaders(res, headers),
+      );
+    } catch (error: any) {
+      const status = error?.code === "ENOENT" ? 404 : 503;
+      logDownloadFailure(requestId, fileId, organizationId, "local-lookup", error);
+      sendDownloadFailure(
+        res,
+        status,
+        status === 404 ? "FILE_MISSING_FROM_STORAGE" : "FILE_STORAGE_UNAVAILABLE",
+        status === 404 ? "File not found in storage" : "The file is temporarily unavailable. Please try again.",
+        requestId,
+      );
+    }
+  } catch (error) {
+    logDownloadFailure(requestId, fileId, organizationId, "file-lookup", error);
+    sendDownloadFailure(res, 503, "FILE_DOWNLOAD_UNAVAILABLE", "The file is temporarily unavailable. Please try again.", requestId);
   }
 }
 
