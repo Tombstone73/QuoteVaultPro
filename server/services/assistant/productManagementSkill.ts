@@ -18,6 +18,7 @@ import { productIntakeDraftReadinessService } from "../productIntakeWizard/produ
 import { applyProductDraftBatchCollisions, fingerprintProductInactiveDraftBatch, parseProductInactiveDraftBatch } from "./productInactiveDraftBatchService";
 import { productInactiveDraftBatchCommandName } from "./execution/productInactiveDraftBatchCommand";
 import { productInactiveDraftBatchHistoryService } from "./productInactiveDraftBatchHistoryService";
+import { productDraftBatchResumeEligibility, summarizeProductDraftBatch } from "./productInactiveDraftBatchPresentation";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
@@ -300,16 +301,16 @@ export class ProductManagementSkillService {
       if (!batch) return { handled: true, response: "No persisted product batch exists in this conversation to resume.", cards: [] };
       const detail = await productInactiveDraftBatchHistoryService.getDetail(input.organizationId, batch.id);
       const children = (detail?.rows ?? []).map((row) => row.resolvedPayload).filter((row): row is { rowNumber: number; productName: string; intakeSessionId: string; proposalFingerprint: string } => typeof row.rowNumber === "number" && typeof row.productName === "string" && typeof row.intakeSessionId === "string" && typeof row.proposalFingerprint === "string");
-      const eligible = detail?.rows.filter((row) => row.executionState === "pending" || row.executionState === "failed_retryable") ?? [];
-      if (!eligible.length) return { handled: true, response: `Batch ${batch.id} has no pending or retryable rows. Created and terminal rows will not be retried.`, cards: [] };
-      return { handled: true, response: `I found ${eligible.length} eligible row(s) in ${batch.label}. Created rows will be skipped; terminal failures require a new proposal. Review and use GO to resume.`, cards: [{ kind: "action_proposal", title: `Resume ${batch.label}`, summary: "Uses only the persisted batch payload; replacement row data is not accepted.", sourceLinks: [], plan: { action: productInactiveDraftBatchCommandName, batchId: batch.id, sharedDefaults: batch.sharedDefaults, batchFingerprint: batch.fingerprint, children } }] };
+      const eligibility = productDraftBatchResumeEligibility((detail?.rows ?? []) as any);
+      if (!eligibility.available) return { handled: true, response: `Batch ${batch.id} has no pending or retryable rows. Created and terminal rows will not be retried.`, cards: [] };
+      return { handled: true, response: `I found ${eligibility.pendingCount + eligibility.retryableCount} eligible row(s) in ${batch.label}. Created rows will be skipped; ${eligibility.terminalCount} terminal row(s) require a new proposal. Review and use GO to resume.`, cards: [{ kind: "action_proposal", title: `Resume ${batch.label}`, summary: "Uses only the persisted batch payload; replacement row data is not accepted.", sourceLinks: [], plan: { action: productInactiveDraftBatchCommandName, batchId: batch.id, sharedDefaults: batch.sharedDefaults, batchFingerprint: batch.fingerprint, children } }] };
     }
     const batchId = input.message.match(/\bbatch\s+(?:id\s*)?([a-f0-9-]{16,})\b/i)?.[1];
     if (batchId && /\b(?:show|inspect|detail|failed|readiness|products?)\b/i.test(input.message)) {
       const detail = await productInactiveDraftBatchHistoryService.getDetail(input.organizationId, batchId);
       if (!detail) return { handled: true, response: "That product batch was not found in this organization.", cards: [] };
-      const counts = detail.rows.reduce<Record<string, number>>((total, row) => ({ ...total, [row.executionState]: (total[row.executionState] ?? 0) + 1 }), {});
-      return { handled: true, response: `Batch ${detail.batch.id} is ${detail.batch.executionStatus}. No products were changed.`, cards: [{ kind: "product_batch_preview", title: detail.batch.label, summary: "Read-only product-entry batch detail.", sourceLinks: [], details: { batch: { id: detail.batch.id, status: detail.batch.executionStatus, sharedDefaults: detail.batch.sharedDefaults, counts }, rows: detail.rows.map((row) => ({ id: row.id, rowNumber: row.sourceRowNumber, productName: row.productName, state: row.executionState, attempts: row.attemptCount, productId: row.productId, readiness: row.readinessResult, errorCode: row.lastErrorCode, errorMessage: row.lastErrorMessage, retryable: row.retryable, provenance: row.provenance })) } }] };
+      const summary = summarizeProductDraftBatch(detail.rows as any);
+      return { handled: true, response: `Batch ${detail.batch.id} is ${detail.batch.executionStatus}. No products were changed.`, cards: [{ kind: "product_batch_preview", title: detail.batch.label, summary: "Read-only product-entry batch detail.", sourceLinks: [], details: { batch: { id: detail.batch.id, status: detail.batch.executionStatus, sharedDefaults: detail.batch.sharedDefaults, summary }, rows: detail.rows.map((row) => ({ id: row.id, rowNumber: row.sourceRowNumber, productName: row.productName, state: row.executionState, attempts: row.attemptCount, productId: row.productId, readiness: row.readinessResult, errorCode: row.lastErrorCode, errorMessage: row.lastErrorMessage, retryable: row.retryable, provenance: row.provenance })) } }] };
     }
     if (/\b(?:show|list|last|recent)\b[\s\S]{0,40}\bproduct(?:-entry)?\s+batches?\b|\bshow me the last product batch\b/i.test(input.message)) {
       const batches = await productInactiveDraftBatchHistoryService.list(input.organizationId, { ...(input.conversationId && /\b(?:last|this|current)\b/i.test(input.message) ? { conversationId: input.conversationId } : {}), limit: 25 });
