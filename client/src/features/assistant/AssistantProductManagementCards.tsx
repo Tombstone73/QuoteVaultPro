@@ -12,6 +12,14 @@ function list(value: unknown): string[] {
 }
 function safePath(value: unknown) { const path = text(value); return path?.startsWith("/") ? path : null; }
 function cents(value: unknown) { return typeof value === "number" && Number.isInteger(value) && value >= 0 ? `$${(value / 100).toFixed(2)}` : null; }
+function pricingModel(value: unknown) {
+  const model = text(value);
+  return model === "square_foot" ? "Per square foot" : model === "per_piece" ? "Per piece" : model;
+}
+function draftStatus(value: unknown) {
+  const status = text(value);
+  return status === "inactive_draft" ? "Inactive PBV2 DRAFT" : status === "ready_for_draft" ? "Ready for draft" : status;
+}
 
 const PRODUCT_CARD_KINDS = new Set([
   "product_intake_summary", "product_missing_information", "product_comparison", "product_material_selection",
@@ -62,7 +70,7 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
   const namedFields = [
     ["Product", details.productName ?? details.name], ["Category", details.category], ["Sell unit", details.sellUnit],
     ["Dimensions", details.dimensions], ["Pricing", details.pricingMethod ?? details.pricingBasis], ["Routing", details.routing],
-    ["Material", details.material], ["Draft status", details.draftStatus ?? details.status],
+    ["Material", details.material], ["Intake status", draftStatus(details.draftStatus ?? details.status)],
   ].flatMap(([label, value]) => {
     const rendered = text(value);
     return rendered ? [{ label: String(label), value: rendered }] : [];
@@ -72,7 +80,7 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
     return rendered ? [{ label: String(label), value: rendered }] : [];
   }) : [];
   const proposedDraftFields = proposedFields ? [
-    ["Pricing model", proposedFields.pricingModel],
+    ["Pricing model", pricingModel(proposedFields.pricingModel)],
     ["Square-foot price", cents(proposedFields.perSqftCents)],
     ["Per-piece price", cents(proposedFields.perPieceCents)],
     ["Minimum charge", cents(proposedFields.minimumChargeCents)],
@@ -80,6 +88,7 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
     ["Route", proposedFields.productionRoute],
     ["Sheet / roll constraints", proposedFields.sheetOrRollConstraints],
     ["Allow rotation", proposedFields.allowRotation === true ? "Allowed" : proposedFields.allowRotation === false ? "Not allowed" : null],
+    ["Status to create", draftStatus(proposedFields.status)],
   ].flatMap(([label, value]) => {
     const rendered = text(value);
     return rendered ? [{ label: String(label), value: rendered }] : [];
@@ -96,7 +105,7 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
     warnings: list(details.warnings ?? details.validationWarnings),
     unsupportedReasons: list(details.unsupportedReasons ?? details.unsupportedChanges),
     editorPath: safePath(details.editorPath ?? details.reviewUrl ?? details.sourceLink ?? details.productEditorPath),
-    draftStatus: text(details.draftStatus ?? details.status),
+    draftStatus: draftStatus(details.draftStatus ?? details.status),
   };
 }
 

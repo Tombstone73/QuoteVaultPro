@@ -25,6 +25,7 @@ const previewCard = {
       productionRoute: "Flatbed",
       sheetOrRollConstraints: "48×96 sheets",
       allowRotation: true,
+      status: "inactive_draft",
     },
     assumptions: ["Inherited Roll routing from an existing banner product."],
     items: ["Single-sided and double-sided options", "Grommets and hems"],
@@ -47,10 +48,12 @@ describe("AssistantProductManagementCards", () => {
     expect(container.textContent).toContain("Assumptions and inherited defaults");
     expect(container.textContent).toContain("Single-sided and double-sided options");
     expect(container.textContent).toContain("Square-foot price: $4.50");
+    expect(container.textContent).toContain("Pricing model: Per square foot");
     expect(container.textContent).toContain("Minimum charge: $25.00");
     expect(container.textContent).toContain("Route: Flatbed");
     expect(container.textContent).toContain("Sheet / roll constraints: 48×96 sheets");
     expect(container.textContent).toContain("Allow rotation: Allowed");
+    expect(container.textContent).toContain("Status to create: Inactive PBV2 DRAFT");
     expect(container.querySelector<HTMLAnchorElement>("a[href='/admin/products/draft-1']")?.textContent).toContain("existing editor");
     expect(container.textContent).not.toMatch(/Activate|Publish|GO/);
   });
