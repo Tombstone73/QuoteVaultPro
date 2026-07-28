@@ -1,0 +1,17 @@
+import { buildCanonicalComplexProductTree, parseTwoDimensionalPricingMatrix, specificationFingerprint, validateComplexProductSpecification, type ComplexProductSpecification } from "../services/assistant/complexProductSpecification";
+import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrix } from "../../shared/productOptionPricingMatrix";
+
+const source = `| Thickness | Single-sided | Double-sided |
+| --- | --- | --- |
+| 3mm | $4.50 | $5.75 |
+| 6mm | $6.25 | $7.75 |
+| 12mm | $9.75 | $11.50 |
+| 18mm | $12.50 | $14.75 |`;
+function spec(): ComplexProductSpecification { const pricing = parseTwoDimensionalPricingMatrix(source, "thickness", "printed_sides"); return { kind: "configurable_product", name: "AI VALIDATION 19K PVC", category: "Rigid Substrates", description: "Disposable", taxable: true, requiresDimensions: true, materialForm: "sheet", sheet: { widthIn: 48, heightIn: 96, allowRotation: true }, route: "Flatbed", minimumChargeCents: 2500, optionGroups: [{ proposalKey: "thickness", name: "Thickness", required: true, selectionMode: "single", values: ["3mm", "6mm", "12mm", "18mm"].map((value) => ({ value, label: value })) }, { proposalKey: "printed_sides", name: "Printed Sides", required: true, selectionMode: "single", values: ["Single-sided", "Double-sided"].map((value) => ({ value, label: value })) }], pricing, review: { assumptions: [], warnings: [], blockers: [], unsupportedRelationships: ["Contour Cutting and White Ink require reviewed canonical templates."] } }; }
+
+describe("complex product specification", () => {
+  it("parses the PVC markdown matrix into integer cents in displayed order", () => { const matrix = parseTwoDimensionalPricingMatrix(source, "thickness", "printed_sides"); expect(matrix.rowValues).toEqual(["3mm", "6mm", "12mm", "18mm"]); expect(matrix.columnValues).toEqual(["Single-sided", "Double-sided"]); expect(Object.values(matrix.cells)).toContain(450); expect(Object.values(matrix.cells)).toContain(1475); });
+  it("rejects incomplete and malformed matrix values", () => { expect(() => parseTwoDimensionalPricingMatrix("Thickness,Single-sided,Double-sided\n3mm,4.50", "thickness", "sides")).toThrow("Every matrix row"); expect(() => parseTwoDimensionalPricingMatrix("Thickness,Single-sided\n3mm,-1", "thickness", "sides")).toThrow("Invalid non-negative"); });
+  it("builds one canonical PBV2 DRAFT tree that the matrix resolver understands", () => { const value = spec(); expect(validateComplexProductSpecification(value)).toEqual([]); const tree = buildCanonicalComplexProductTree(value); expect(tree.status).toBe("DRAFT"); const matrix = extractProductOptionPricingMatrix(tree)!; expect(resolveProductOptionPricingMatrix({ pricingMatrix: matrix, selections: { thickness: "3mm", printed_sides: "Double-sided" } }).variables.base_price).toBe(5.75); expect(resolveProductOptionPricingMatrix({ pricingMatrix: matrix, selections: { thickness: "18mm", printed_sides: "Double-sided" } }).variables.base_price).toBe(14.75); });
+  it("fails completeness validation and fingerprints exact specifications", () => { const value = spec(); delete value.pricing.cells["3mm\u0000Single-sided"]; expect(validateComplexProductSpecification(value)).toContain("Missing or invalid matrix cell: 3mm × Single-sided."); const complete = spec(); expect(specificationFingerprint(complete)).not.toBe(specificationFingerprint({ ...complete, minimumChargeCents: 2600 })); });
+});
