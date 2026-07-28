@@ -1068,11 +1068,11 @@ export default function OrderDetail() {
 
   // Customer change mutation
   const changeCustomerMutation = useMutation({
-    mutationFn: async (customerId: string) => {
+    mutationFn: async (customerId: string | null) => {
       const response = await fetch(`/api/orders/${orderId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ customerId }), // Backend will auto-set contact to primary
+        body: JSON.stringify({ customerId }),
         credentials: "include",
       });
       if (!response.ok) throw new Error("Failed to update customer");
@@ -2235,8 +2235,16 @@ export default function OrderDetail() {
                             </PopoverTrigger>
                             <PopoverContent className="w-[400px] p-0" align="start">
                               <Command shouldFilter={true}>
-                                <CommandInput placeholder="Search customers..." autoFocus />
+                                  <CommandInput placeholder="Search customers..." autoFocus />
                                 <CommandList>
+                                  {order?.contactId && order?.customerId && (
+                                    <CommandItem
+                                      value="contact-only"
+                                      onSelect={() => changeCustomerMutation.mutate(null)}
+                                    >
+                                      Keep the selected contact; remove customer
+                                    </CommandItem>
+                                  )}
                                   <CommandEmpty>No customers found.</CommandEmpty>
                                   {customers.map((customer: any) => {
                                     const searchValue = [customer.companyName, customer.email]
