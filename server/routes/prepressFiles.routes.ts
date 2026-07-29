@@ -266,6 +266,87 @@ export function registerPrepressFileRoutes(
     }
   });
 
+  app.post("/api/prepress/line-item/:lineItemId/promote-customer-artwork", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const userId = getUserId(req.user);
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+
+      const sourceKind = String(req.body?.sourceKind ?? "");
+      const sourceId = String(req.body?.sourceId ?? "");
+      const tag = String(req.body?.tag ?? "").trim();
+      const artworkSide = String(req.body?.artworkSide ?? "na");
+      if (!sourceId || (sourceKind !== "line_item_original" && sourceKind !== "order_attachment")) {
+        return res.status(400).json({ success: false, code: "CUSTOMER_ARTWORK_SOURCE_REQUIRED", error: "Select customer artwork to copy." });
+      }
+      if (!tag || tag === "none") {
+        return res.status(400).json({ success: false, code: "PRODUCTION_TAG_REQUIRED", error: "Production tag is required." });
+      }
+      if (!["front", "back", "both", "na"].includes(artworkSide)) {
+        return res.status(400).json({ success: false, code: "ARTWORK_SIDE_INVALID", error: "Artwork side is invalid." });
+      }
+
+      const [lineItemRow] = await db
+        .select({
+          orderId: orderLineItems.orderId,
+          orderNumber: orders.orderNumber,
+        })
+        .from(orderLineItems)
+        .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
+        .where(and(
+          eq(orderLineItems.id, req.params.lineItemId),
+          eq(orders.organizationId, organizationId),
+        ))
+        .limit(1);
+      if (!lineItemRow) {
+        return res.status(404).json({ success: false, code: "LINE_ITEM_NOT_FOUND", error: "Line item not found." });
+      }
+
+      const promoted = await prepressFileService.promoteCustomerArtworkToProductionArtwork({
+        organizationId,
+        orderId: lineItemRow.orderId,
+        lineItemId: req.params.lineItemId,
+        prepressSessionId: null,
+        createdByUserId: userId,
+        tag,
+        artworkSide: artworkSide as "front" | "back" | "both" | "na",
+        source: sourceKind === "line_item_original"
+          ? { kind: "line_item_original", fileId: sourceId }
+          : { kind: "order_attachment", attachmentId: sourceId },
+      });
+      const namingPolicy = await prepressFileService.getFileUploadNamingPolicy(organizationId);
+      const computedDisplayFilename = prepressFileService.buildComputedDisplayFilename({
+        role: promoted.file.role,
+        originalFilename: promoted.file.originalFilename,
+        tag: promoted.file.tag,
+        fullJobNumber: lineItemRow.orderNumber || "",
+        namingPolicy,
+      });
+      res.json({
+        success: true,
+        code: promoted.created ? "PRODUCTION_ARTWORK_CREATED" : "PRODUCTION_ARTWORK_ALREADY_EXISTS",
+        data: {
+          file: {
+            ...promoted.file,
+            computedDisplayFilename,
+            downloadUrl: `/api/prepress/files/${promoted.file.id}/download`,
+            originalUrl: `/api/prepress/files/${promoted.file.id}/download`,
+          },
+          created: promoted.created,
+        },
+      });
+    } catch (error: any) {
+      const statusCode = Number(error?.statusCode || error?.status || 500);
+      res.status(statusCode >= 400 && statusCode < 600 ? statusCode : 500).json({
+        success: false,
+        code: error?.code || "PRODUCTION_ARTWORK_PROMOTION_FAILED",
+        error: error?.message || "Unable to create production artwork copy.",
+      });
+    }
+  });
+
   // GET /api/prepress/files/:fileId/download - Download file with job number prefix
   app.get("/api/prepress/files/:fileId/download", isAuthenticated, tenantContext, async (req: any, res) => {
     try {

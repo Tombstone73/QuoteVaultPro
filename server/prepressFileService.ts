@@ -9,7 +9,7 @@
  */
 
 import { db } from "./db";
-import { lineItemFiles, orders, orderLineItems, orderAttachments, organizations, productionJobs, localFileDestinations, localFileCopyJobs } from "../shared/schema";
+import { auditLogs, lineItemFiles, orders, orderLineItems, orderAttachments, organizations, productionJobs, localFileDestinations, localFileCopyJobs } from "../shared/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { getStorageClient } from "./objectStorage";
 import type { Response } from "express";
@@ -395,6 +395,7 @@ export function buildComputedDisplayFilename(params: {
     numericJobNumber,
     fileUploadJobPrefixMode: namingPolicy.fileUploadJobPrefixMode,
     prepressLabel,
+    labelPlacement: role === "final" ? "after_job_prefix" : "suffix",
   });
 }
 
@@ -636,6 +637,10 @@ type PreviewRepairEntry = {
 
 type PromotableArtworkFile = {
   fileRecordId?: string | null;
+  sourceFileId?: string | null;
+  sourceOrderAttachmentId?: string | null;
+  sourceType?: "line_item_original" | "order_attachment" | null;
+  sourceArtworkSide?: "front" | "back" | "both" | "na" | null;
   storageBucket?: string | null;
   storagePath: string;
   storageKey?: string | null;
@@ -664,6 +669,10 @@ export function buildPromotedFinalFileLink(params: {
     role: "final" as const,
     status: "active" as const,
     tag: params.tag ?? null,
+    productionArtworkSourceType: params.source.sourceType ? "customer_artwork_promotion" : null,
+    sourceFileId: params.source.sourceFileId ?? null,
+    sourceOrderAttachmentId: params.source.sourceOrderAttachmentId ?? null,
+    sourceArtworkSide: params.source.sourceArtworkSide ?? null,
     productionQuantity: params.source.productionQuantity ?? null,
     productionGroupId: params.source.productionGroupId ?? null,
     storageBucket: params.source.storageBucket ?? null,
@@ -675,6 +684,204 @@ export function buildPromotedFinalFileLink(params: {
     supersedesFileId: null,
     createdByUserId: params.createdByUserId,
   };
+}
+
+export type PromoteCustomerArtworkSource =
+  | { kind: "line_item_original"; fileId: string }
+  | { kind: "order_attachment"; attachmentId: string };
+
+export async function promoteCustomerArtworkToProductionArtwork(params: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  prepressSessionId?: string | null;
+  createdByUserId: string;
+  tag: string;
+  artworkSide: "front" | "back" | "both" | "na";
+  source: PromoteCustomerArtworkSource;
+}): Promise<{ file: LineItemFile; created: boolean }> {
+  const tag = params.tag.trim();
+  if (!tag || tag === "none") {
+    throw Object.assign(new Error("Production tag is required."), { statusCode: 400, code: "PRODUCTION_TAG_REQUIRED" });
+  }
+
+  let source: PromotableArtworkFile;
+  if (params.source.kind === "line_item_original") {
+    const [original] = await db
+      .select()
+      .from(lineItemFiles)
+      .where(and(
+        eq(lineItemFiles.id, params.source.fileId),
+        eq(lineItemFiles.organizationId, params.organizationId),
+        eq(lineItemFiles.orderId, params.orderId),
+        eq(lineItemFiles.lineItemId, params.lineItemId),
+        eq(lineItemFiles.role, "original"),
+        eq(lineItemFiles.status, "active"),
+      ))
+      .limit(1);
+    if (!original) {
+      throw Object.assign(new Error("Customer artwork source file not found."), { statusCode: 404, code: "CUSTOMER_ARTWORK_NOT_FOUND" });
+    }
+    source = {
+      fileRecordId: original.fileRecordId,
+      sourceFileId: original.id,
+      sourceOrderAttachmentId: null,
+      sourceType: "line_item_original",
+      sourceArtworkSide: params.artworkSide,
+      storageBucket: original.storageBucket,
+      storagePath: original.storagePath,
+      storageKey: original.storageKey,
+      originalFilename: original.originalFilename,
+      mimeType: original.mimeType,
+      sizeBytes: original.sizeBytes,
+      productionQuantity: original.productionQuantity,
+      productionGroupId: original.productionGroupId,
+    };
+  } else {
+    const [attachment] = await db
+      .select({
+        id: orderAttachments.id,
+        orderId: orderAttachments.orderId,
+        orderLineItemId: orderAttachments.orderLineItemId,
+        fileRecordId: orderAttachments.fileRecordId,
+        fileName: orderAttachments.fileName,
+        originalFilename: orderAttachments.originalFilename,
+        mimeType: orderAttachments.mimeType,
+        fileUrl: orderAttachments.fileUrl,
+        relativePath: orderAttachments.relativePath,
+        sizeBytes: orderAttachments.sizeBytes,
+        fileSize: orderAttachments.fileSize,
+        role: orderAttachments.role,
+        side: orderAttachments.side,
+        productionQuantity: orderAttachments.productionQuantity,
+        productionGroupId: orderAttachments.productionGroupId,
+      })
+      .from(orderAttachments)
+      .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+      .where(and(
+        eq(orderAttachments.id, params.source.attachmentId),
+        eq(orderAttachments.orderId, params.orderId),
+        eq(orderAttachments.orderLineItemId, params.lineItemId),
+        eq(orderAttachments.role, "artwork"),
+        eq(orders.organizationId, params.organizationId),
+      ))
+      .limit(1);
+    if (!attachment) {
+      throw Object.assign(new Error("Customer artwork attachment not found."), { statusCode: 404, code: "CUSTOMER_ARTWORK_NOT_FOUND" });
+    }
+    const resolvedOriginal = await resolveOriginalFileAccess({
+      id: attachment.id,
+      fileRecordId: attachment.fileRecordId,
+      fileName: attachment.fileName,
+      originalFilename: attachment.originalFilename,
+      mimeType: attachment.mimeType,
+      fileUrl: attachment.fileUrl,
+      fileKey: attachment.relativePath,
+    });
+    const resolvedStoragePath = resolvedOriginal.objectPath || attachment.relativePath || attachment.fileUrl || null;
+    if (resolvedOriginal.availabilityStatus !== "available" || !resolvedStoragePath) {
+      throw Object.assign(new Error("Customer artwork source is not available for promotion."), { statusCode: 409, code: "CUSTOMER_ARTWORK_UNAVAILABLE" });
+    }
+    source = {
+      fileRecordId: attachment.fileRecordId,
+      sourceFileId: null,
+      sourceOrderAttachmentId: attachment.id,
+      sourceType: "order_attachment",
+      sourceArtworkSide: params.artworkSide,
+      storageBucket: null,
+      storagePath: resolvedStoragePath,
+      storageKey: resolvedStoragePath,
+      originalFilename: attachment.originalFilename || attachment.fileName || `artwork-${attachment.id}`,
+      mimeType: attachment.mimeType || resolvedOriginal.mimeType || "application/octet-stream",
+      sizeBytes: Math.max(0, Number(attachment.sizeBytes ?? attachment.fileSize ?? 0)),
+      productionQuantity: attachment.productionQuantity ?? null,
+      productionGroupId: attachment.productionGroupId ?? null,
+    };
+  }
+
+  const sourceConditions = params.source.kind === "line_item_original"
+    ? [eq(lineItemFiles.sourceFileId, params.source.fileId)]
+    : [eq(lineItemFiles.sourceOrderAttachmentId, params.source.attachmentId)];
+  const [existing] = await db
+    .select()
+    .from(lineItemFiles)
+    .where(and(
+      eq(lineItemFiles.organizationId, params.organizationId),
+      eq(lineItemFiles.orderId, params.orderId),
+      eq(lineItemFiles.lineItemId, params.lineItemId),
+      eq(lineItemFiles.role, "final"),
+      eq(lineItemFiles.status, "active"),
+      eq(lineItemFiles.tag, tag),
+      eq(lineItemFiles.sourceArtworkSide, params.artworkSide),
+      eq(lineItemFiles.productionArtworkSourceType, "customer_artwork_promotion"),
+      ...sourceConditions,
+    ))
+    .limit(1);
+  if (existing) return { file: existing, created: false };
+
+  const stored = await storageApplicationService.finalizeUpload({
+    organizationId: params.organizationId,
+    createdByUserId: params.createdByUserId,
+    resource: {
+      organizationId: params.organizationId,
+      resourceType: "order",
+      resourceId: params.orderId,
+      lineItemId: params.lineItemId,
+    },
+    source: {
+      kind: "existing-key",
+      fileUrl: source.storageKey ?? source.storagePath,
+      originalFilename: source.originalFilename,
+      mimeType: source.mimeType,
+      fileSize: source.sizeBytes,
+    },
+    persistLink: async (tx, result) => {
+      const storagePath = result.legacyRelativePath ?? result.legacyFileUrl;
+      const [inserted] = await tx.insert(lineItemFiles).values(buildPromotedFinalFileLink({
+        organizationId: params.organizationId,
+        orderId: params.orderId,
+        lineItemId: params.lineItemId,
+        prepressSessionId: params.prepressSessionId ?? null,
+        createdByUserId: params.createdByUserId,
+        tag,
+        source: {
+          ...source,
+          fileRecordId: result.fileRecord.id,
+          storageBucket: result.storedObject.bucket,
+          storagePath,
+          storageKey: result.storedObject.objectKey ?? result.storedObject.localPathRef ?? storagePath,
+          mimeType: result.storedObject.mimeType,
+          sizeBytes: result.storedObject.sizeBytes,
+        },
+      })).returning();
+      await tx.insert(auditLogs).values({
+        organizationId: params.organizationId,
+        userId: params.createdByUserId,
+        actionType: "promoted_customer_artwork_to_production_artwork",
+        entityType: "order_line_item",
+        entityId: params.lineItemId,
+        description: "Promoted customer artwork to production artwork.",
+        newValues: {
+          originalCustomerFileId: source.sourceFileId,
+          originalCustomerAttachmentId: source.sourceOrderAttachmentId,
+          productionFileId: inserted.id,
+          lineItemId: params.lineItemId,
+          tag,
+          artworkSide: params.artworkSide,
+          sourceType: source.sourceType,
+        },
+      });
+      return inserted;
+    },
+  });
+
+  await queueLineItemFilePreviewRepair({
+    fileId: stored.linkedRecord.id,
+    organizationId: params.organizationId,
+    actorUserId: params.createdByUserId,
+  }).completion;
+  await enqueueFinalProductionFileCopy({ organizationId: params.organizationId, file: stored.linkedRecord }).catch(() => ({ enqueued: false, copyJobId: null }));
+  return { file: stored.linkedRecord, created: true };
 }
 
 const previewRepairsInFlight = new Map<string, PreviewRepairEntry>();
@@ -1477,23 +1684,42 @@ export async function ensureFinalArtworkForLineItem(params: {
   const selectedFileRecordIds = new Set(selectedCandidates
     .map((candidate) => candidate.fileRecordId)
     .filter((id): id is string => typeof id === "string" && id.length > 0));
+  const selectedSourceFileIds = new Set(selectedCandidates
+    .filter((candidate) => candidate.source === "line_item_original")
+    .map((candidate) => candidate.id));
+  const selectedSourceAttachmentIds = new Set(selectedCandidates
+    .filter((candidate) => candidate.source === "order_attachment")
+    .map((candidate) => candidate.id));
   const matchingExistingFinals = existingFinals.filter((file) =>
-    file.fileRecordId && selectedFileRecordIds.has(file.fileRecordId),
+    (file.sourceFileId && selectedSourceFileIds.has(file.sourceFileId))
+    || (file.sourceOrderAttachmentId && selectedSourceAttachmentIds.has(file.sourceOrderAttachmentId))
+    || (file.fileRecordId && selectedFileRecordIds.has(file.fileRecordId)),
   );
-  const matchedRecordIds = new Set(matchingExistingFinals
-    .map((file) => file.fileRecordId)
-    .filter((id): id is string => typeof id === "string" && id.length > 0));
+  const matchedSourceFileIds = new Set(matchingExistingFinals.map((file) => file.sourceFileId).filter((id): id is string => !!id));
+  const matchedSourceAttachmentIds = new Set(matchingExistingFinals.map((file) => file.sourceOrderAttachmentId).filter((id): id is string => !!id));
+  const matchedRecordIds = new Set(matchingExistingFinals.map((file) => file.fileRecordId).filter((id): id is string => !!id));
   const candidatesToCreate = selectedCandidates.filter((candidate) =>
-    !candidate.fileRecordId || !matchedRecordIds.has(candidate.fileRecordId),
+    candidate.source === "line_item_original"
+      ? !matchedSourceFileIds.has(candidate.id) && (!candidate.fileRecordId || !matchedRecordIds.has(candidate.fileRecordId))
+      : !matchedSourceAttachmentIds.has(candidate.id) && (!candidate.fileRecordId || !matchedRecordIds.has(candidate.fileRecordId)),
   );
 
-  const preparedSources: Array<{ candidate: InternalCandidate; source: PromotableArtworkFile }> = [];
+  const preparedSources: Array<{ candidate: InternalCandidate; source: PromotableArtworkFile; promotionSource: PromoteCustomerArtworkSource }> = [];
   for (const candidate of candidatesToCreate) {
     let source: PromotableArtworkFile;
+    let promotionSource: PromoteCustomerArtworkSource;
     if (candidate.source === "line_item_original" && candidate.original) {
-      source = candidate.original;
+      promotionSource = { kind: "line_item_original", fileId: candidate.original.id };
+      source = {
+        ...candidate.original,
+        sourceFileId: candidate.original.id,
+        sourceOrderAttachmentId: null,
+        sourceType: "line_item_original",
+        sourceArtworkSide: candidate.side === "front" || candidate.side === "back" || candidate.side === "both" ? candidate.side : "na",
+      };
     } else if (candidate.attachment) {
       const attachment = candidate.attachment;
+      promotionSource = { kind: "order_attachment", attachmentId: attachment.id };
       const resolvedOriginal = await resolveOriginalFileAccess({
         id: attachment.id,
         fileRecordId: attachment.fileRecordId,
@@ -1507,6 +1733,10 @@ export async function ensureFinalArtworkForLineItem(params: {
       if (resolvedOriginal.availabilityStatus !== "available" || !resolvedStoragePath) return null;
       source = {
         fileRecordId: attachment.fileRecordId || null,
+        sourceFileId: null,
+        sourceOrderAttachmentId: attachment.id,
+        sourceType: "order_attachment",
+        sourceArtworkSide: candidate.side === "front" || candidate.side === "back" || candidate.side === "both" ? candidate.side : "na",
         storageBucket: null,
         storagePath: resolvedStoragePath,
         storageKey: resolvedStoragePath,
@@ -1520,21 +1750,22 @@ export async function ensureFinalArtworkForLineItem(params: {
       continue;
     }
 
-    preparedSources.push({ candidate, source });
+    preparedSources.push({ candidate, source, promotionSource });
   }
 
   const createdFiles: LineItemFile[] = [];
-  for (const { candidate, source } of preparedSources) {
-    const [created] = await db.insert(lineItemFiles).values(buildPromotedFinalFileLink({
+  for (const { candidate, promotionSource } of preparedSources) {
+    const promoted = await promoteCustomerArtworkToProductionArtwork({
       organizationId,
       orderId,
       lineItemId,
       prepressSessionId: prepressSessionId || candidate.original?.prepressSessionId || null,
-      tag: defaultFinalTag,
       createdByUserId,
-      source,
-    })).returning();
-    createdFiles.push(created);
+      tag: defaultFinalTag,
+      artworkSide: candidate.side === "front" || candidate.side === "back" || candidate.side === "both" ? candidate.side : "na",
+      source: promotionSource,
+    });
+    createdFiles.push(promoted.file);
   }
 
   if (forcePromoteArtwork) {

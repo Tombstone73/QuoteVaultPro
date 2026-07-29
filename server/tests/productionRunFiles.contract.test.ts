@@ -40,7 +40,7 @@ describe("production run shared file lifecycle contract", () => {
     expect(service).toContain("Shared production run file replaced");
     expect(service).toContain("Shared production run file retired");
     expect(service).toContain("PRODUCTION_RUN_FILE_REQUIRED");
-    expect(service).toContain("before releasing this run");
+    expect(service).toContain("Shared nested production file required before release.");
     expect(service).toContain("Upload or replace the shared nested final production file before completing this run.");
     expect(service).toContain("countActiveProductionRunFiles");
     expect(localBridgeRoutes).toContain("Local Bridge copy completed for shared run file");
