@@ -25,6 +25,15 @@ describe("configurable-product conversation integration helpers", () => {
     expect(specificationFingerprint(complete)).not.toBe(before);
   });
 
+  it("keeps an unquoted requested product name and permits a later explicit correction", () => {
+    const initial = createInitialComplexProductSpecification("Create a configurable product draft named AI VALIDATION 19K PVC in category Rigid Substrates with Thickness options.");
+    expect(initial.name).toBe("AI VALIDATION 19K PVC");
+    const corrected = applyComplexProductConversationEdit(initial, "Set name to AI VALIDATION 19K PVC Revised.");
+    expect(corrected.name).toBe("AI VALIDATION 19K PVC Revised");
+    expect(corrected.category).toBe("Rigid Substrates");
+    expect(specificationFingerprint(corrected)).not.toBe(specificationFingerprint(initial));
+  });
+
   it("applies only explicit corrections and changes the bound proposal fingerprint", () => {
     const initial = applyComplexProductConversationEdit(createInitialComplexProductSpecification(`Create PVC product.\n${matrix}`), `Create PVC product.\n${matrix}`);
     const corrected = applyComplexProductConversationEdit(initial, "Set category to Rigid Substrates, minimum charge to $25, and allow rotation.");

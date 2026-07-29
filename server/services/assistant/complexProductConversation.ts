@@ -21,6 +21,13 @@ function categoryFromMessage(message: string): string | null {
   return match?.[1]?.trim() || null;
 }
 
+function productNameFromMessage(message: string): string | null {
+  const quoted = message.match(/\b(?:named?|name)\s*(?:to|is|:|=)?\s*["“]([^"”]{1,120})["”]/i)?.[1]?.trim();
+  if (quoted) return quoted;
+  const unquoted = message.match(/\b(?:named?|name)\s*(?:to|is|:|=)?\s*([^,.;]{1,120}?)(?=\s+(?:in\s+category|with|and|using|that|which)\b|\s*[,.;]|\s*$)/i)?.[1]?.trim();
+  return unquoted || null;
+}
+
 /** Creates a structurally valid, intentionally blocked starting point so one
  * conversation can collect the matrix incrementally without inventing prices. */
 export function createInitialComplexProductSpecification(message: string): ComplexProductSpecification {
@@ -30,7 +37,8 @@ export function createInitialComplexProductSpecification(message: string): Compl
     ? ["single_sided", "double_sided"] : ["single_sided", "double_sided"];
   const cells: Record<string, number> = {};
   for (const row of rows) for (const column of columns) cells[complexProductMatrixCellKey(row, column)] = 0;
-  const name = message.match(/\b(?:named?|name)\s*[:=]?\s*["“]([^"”]{1,120})["”]/i)?.[1]?.trim()
+  const name = productNameFromMessage(message)
+    ?? message.match(/\b(?:named?|name)\s*[:=]?\s*["“]([^"”]{1,120})["”]/i)?.[1]?.trim()
     ?? ( /\bPVC\b/i.test(message) ? "PVC Configurable Product" : "Configurable Product Draft" );
   const specification: ComplexProductSpecification = {
     kind: "configurable_product", name, category: categoryFromMessage(message) ?? (/\bPVC|coroplast\b/i.test(message) ? "Rigid Signs" : "Print Products"),
@@ -48,6 +56,7 @@ export function createInitialComplexProductSpecification(message: string): Compl
 
 export function applyComplexProductConversationEdit(current: ComplexProductSpecification, message: string): ComplexProductSpecification {
   const next = structuredClone(current); const source = message.trim();
+  const name = productNameFromMessage(source); if (name) next.name = name;
   const category = categoryFromMessage(source); if (category) next.category = category;
   const minimum = source.match(/\bminimum(?:\s+charge)?\s*(?:to|of)?\s*\$?(\d+(?:\.\d{1,2})?)/i); if (minimum) next.minimumChargeCents = Math.round(Number(minimum[1]) * 100);
   const sheet = source.match(/\b(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\b/i); if (sheet) { next.sheet.widthIn = Number(sheet[1]); next.sheet.heightIn = Number(sheet[2]); }
