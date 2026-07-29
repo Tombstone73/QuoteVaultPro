@@ -511,7 +511,7 @@ export class AssistantService {
         conversationId,
         message: request.message,
       });
-      if (traceConfigurableDispatch) console.info("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "quote_draft", handled: quoteDraft.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
+      if (traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "quote_draft", handled: quoteDraft.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
       if (quoteDraft.handled) {
         response = quoteDraft.response;
         cards = quoteDraft.cards as AssistantResultCard[];
@@ -524,7 +524,7 @@ export class AssistantService {
         conversationId,
         message: request.message,
       });
-      if (traceConfigurableDispatch) console.info("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "order_intake", handled: orderIntake.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
+      if (traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "order_intake", handled: orderIntake.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
       if (orderIntake.handled) {
         response = orderIntake.response;
         cards = orderIntake.cards as AssistantResultCard[];
@@ -537,7 +537,7 @@ export class AssistantService {
         conversationId,
         message: request.message,
       });
-      if (traceConfigurableDispatch) console.info("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "crm_intake", handled: crmIntake.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
+      if (traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "crm_intake", handled: crmIntake.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
       if (crmIntake.handled) {
         response = crmIntake.response;
         cards = crmIntake.cards as AssistantResultCard[];
@@ -557,7 +557,7 @@ export class AssistantService {
         correlationId,
         traceConfigurableDispatch,
       });
-      if (traceConfigurableDispatch) console.info("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "product_management", handled: productManagement.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
+      if (traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "product_management", handled: productManagement.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
       if (productManagement.handled) {
         response = productManagement.response;
         cards = productManagement.cards as AssistantResultCard[];
@@ -565,7 +565,7 @@ export class AssistantService {
         model = "product-management-skill-v1";
       } else {
       const productionIntake = await productionOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (traceConfigurableDispatch) console.info("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "production_intake", handled: productionIntake.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId, winner: productionIntake.handled ? "production_intake" : null });
+      if (traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "production_intake", handled: productionIntake.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId, winner: productionIntake.handled ? "production_intake" : null });
       if (productionIntake.handled) {
         response = productionIntake.response;
         cards = productionIntake.cards as AssistantResultCard[];

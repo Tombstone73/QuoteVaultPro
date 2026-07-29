@@ -308,7 +308,7 @@ export class ProductManagementSkillService {
     if (input.conversationId) {
       try {
         existingConfigurableProposal = await resolveConfigurableProductContinuation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId, priorProposalId: input.activeConfigurableProposalId });
-        if (input.traceConfigurableDispatch) console.info("[Assistant configurable dispatch]", { correlationId: input.correlationId, stage: "proposal_resolution", conversationId: input.conversationId, proposalId: existingConfigurableProposal?.id ?? null, configurableRoute, outcome: existingConfigurableProposal ? "resolved" : "none" });
+        if (input.traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId: input.correlationId, stage: "proposal_resolution", conversationId: input.conversationId, proposalId: existingConfigurableProposal?.id ?? null, configurableRoute, outcome: existingConfigurableProposal ? "resolved" : "none" });
       } catch (error) {
         const message = error instanceof Error ? error.message : "The configurable-product proposal could not be resolved safely.";
         return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Configurable product needs correction", summary: "No proposal was updated and no executable action was created.", sourceLinks: [], details: { errors: [message] } }] };
@@ -335,7 +335,7 @@ export class ProductManagementSkillService {
         const cards: ProductManagementCard[] = [{ kind: "product_batch_preview", title: "Configurable product draft", summary: confirmation.goEligible ? "The persisted configurable-product proposal is ready for a dedicated confirmation plan." : "The persisted configurable-product proposal needs the listed blockers resolved before it can be confirmed.", sourceLinks: [], details: { configurableProduct: confirmation } }];
         if (confirmation.goEligible) cards.push({ kind: "action_proposal", title: "Create configurable inactive product draft", summary: "GO creates exactly this persisted inactive product with a PBV2 DRAFT tree. It cannot activate or publish the product.", sourceLinks: [], plan: { action: configurableProductDraftCommandName, proposalId: confirmation.proposalId, fingerprint: confirmation.fingerprint, configurableProduct: confirmation } });
         const result = { handled: true, response: confirmation.goEligible ? "I updated the configurable-product proposal and prepared its bound confirmation action." : `I updated the configurable-product proposal. Resolve ${confirmation.blockers.length} blocker(s) before confirmation can be created.`, cards };
-        if (input.traceConfigurableDispatch) console.info("[Assistant configurable dispatch]", { correlationId: input.correlationId, stage: "product_management_result", proposalId, configurableRoute, handled: result.handled, cardKinds: cards.map((card) => card.kind) });
+        if (input.traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId: input.correlationId, stage: "product_management_result", proposalId, configurableRoute, handled: result.handled, cardKinds: cards.map((card) => card.kind) });
         return result;
       } catch (error) {
         const message = error instanceof Error ? error.message : "The configurable-product proposal could not be updated.";
