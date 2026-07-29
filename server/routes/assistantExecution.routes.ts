@@ -31,6 +31,8 @@ import { createProductPricingChangeSetCommandDefinition, createProductPricingRol
 import { createProductPricingChangeSetExecutionCommand, createProductPricingRollbackExecutionCommand } from "../services/assistant/execution/productPricingChangeSetExecutionCommand";
 import { productPricingChangeSetCommandService } from "../services/assistant/execution/productPricingChangeSetAdapter";
 import { productPricingChangeSetStore } from "../services/assistant/productPricingChangeSetDb";
+import { configurableProductDraftCommandName, configurableProductDraftInputSchema, createConfigurableProductDraftCommandDefinition } from "../services/assistant/execution/configurableProductDraftCommand";
+import { getComplexProductProposal } from "../services/assistant/complexProductDraftPersistence";
 import { createQuoteDraftCreateCommandDefinition, quoteDraftCreateCommandName } from "../services/assistant/execution/quoteDraftCreateCommand";
 import { createQuoteDraftCreateExecutionCommand } from "../services/assistant/execution/quoteDraftCreateExecutionCommand";
 import { createQuoteDraftUpdateCommandDefinition, quoteDraftUpdateCommandName } from "../services/assistant/execution/quoteDraftUpdateCommand";
@@ -133,6 +135,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
     createProductInactiveDraftBulkUpdateCommandDefinition(productBulkUpdateService),
     createProductPricingChangeSetCommandDefinition(productPricingChangeSetCommandService),
     createProductPricingRollbackCommandDefinition(productPricingChangeSetCommandService),
+    createConfigurableProductDraftCommandDefinition(),
     createQuoteDraftCreateCommandDefinition(quoteDraftIntakeService),
     createQuoteDraftUpdateCommandDefinition(quoteDraftIntakeService),
     createDeferredOrderCommandDefinition(orderIntakeService),

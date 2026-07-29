@@ -4,6 +4,10 @@ import { db } from "../../db";
 import { buildCanonicalComplexProductTree, specificationFingerprint, validateComplexProductSpecification, type ComplexProductSpecification } from "./complexProductSpecification";
 
 export class ComplexProductDraftError extends Error {}
+export async function getComplexProductProposal(organizationId: string, proposalId: string) {
+  const [proposal] = await db.select().from(aiConfigurableProductProposals).where(and(eq(aiConfigurableProductProposals.orgId, organizationId), eq(aiConfigurableProductProposals.id, proposalId))).limit(1);
+  return proposal ?? null;
+}
 export async function persistComplexProductProposal(input: { organizationId: string; conversationId?: string; actorUserId?: string | null; specification: ComplexProductSpecification }) {
   const blockers = validateComplexProductSpecification(input.specification); if (blockers.length) throw new ComplexProductDraftError(blockers.join(" "));
   const fingerprint = specificationFingerprint(input.specification);
