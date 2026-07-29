@@ -498,6 +498,10 @@ export class AssistantService {
       // service revalidation.
       const conversation = await this.repo.getConversation({ ...scope, conversationId });
       if (!conversation) throw this.notFound();
+      // The repository-owned ID is the canonical continuation identity.  Do
+      // not make a persisted configurable proposal depend on a route/client
+      // alias once the conversation has been tenant- and actor-scoped.
+      const canonicalConversationId = conversation.id;
       const quoteDraft = await quoteDraftIntakeService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
@@ -540,7 +544,7 @@ export class AssistantService {
       const productManagement = await productManagementSkillService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
-        conversationId,
+        conversationId: canonicalConversationId,
         message: request.message,
         activeSessionId: activeProductIntakeSession(conversation.messages),
         activeConfigurableProposalId: activeConfigurableProductProposalId(conversation.messages),
