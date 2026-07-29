@@ -16,6 +16,11 @@ function valueList(message: string): string[] {
   return Array.from(new Set(values)).slice(0, 12);
 }
 
+function categoryFromMessage(message: string): string | null {
+  const match = message.match(/\b(?:in\s+)?category\s*(?:to|is|:|=)?\s*["â€œ]?([^"â€,.;]{1,100}?)(?=\s+(?:with|and|using|that|which)\b|["â€]?\s*[,.;]|["â€]?\s*$)/i);
+  return match?.[1]?.trim() || null;
+}
+
 /** Creates a structurally valid, intentionally blocked starting point so one
  * conversation can collect the matrix incrementally without inventing prices. */
 export function createInitialComplexProductSpecification(message: string): ComplexProductSpecification {
@@ -28,7 +33,7 @@ export function createInitialComplexProductSpecification(message: string): Compl
   const name = message.match(/\b(?:named?|name)\s*[:=]?\s*["“]([^"”]{1,120})["”]/i)?.[1]?.trim()
     ?? ( /\bPVC\b/i.test(message) ? "PVC Configurable Product" : "Configurable Product Draft" );
   const specification: ComplexProductSpecification = {
-    kind: "configurable_product", name, category: /\bPVC|coroplast\b/i.test(message) ? "Rigid Signs" : "Print Products",
+    kind: "configurable_product", name, category: categoryFromMessage(message) ?? (/\bPVC|coroplast\b/i.test(message) ? "Rigid Signs" : "Print Products"),
     description: "Configurable product draft assembled from this conversation.", taxable: true, requiresDimensions: true,
     materialForm: "sheet", sheet: { widthIn: 48, heightIn: 96, allowRotation: false }, route: "Flatbed", minimumChargeCents: 0,
     optionGroups: [
@@ -43,6 +48,7 @@ export function createInitialComplexProductSpecification(message: string): Compl
 
 export function applyComplexProductConversationEdit(current: ComplexProductSpecification, message: string): ComplexProductSpecification {
   const next = structuredClone(current); const source = message.trim();
+  const category = categoryFromMessage(source); if (category) next.category = category;
   const minimum = source.match(/\bminimum(?:\s+charge)?\s*(?:to|of)?\s*\$?(\d+(?:\.\d{1,2})?)/i); if (minimum) next.minimumChargeCents = Math.round(Number(minimum[1]) * 100);
   const sheet = source.match(/\b(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\b/i); if (sheet) { next.sheet.widthIn = Number(sheet[1]); next.sheet.heightIn = Number(sheet[2]); }
   if (/\brotation\s+(?:allowed|enabled)\b|\ballow\s+rotation\b/i.test(source)) next.sheet.allowRotation = true;

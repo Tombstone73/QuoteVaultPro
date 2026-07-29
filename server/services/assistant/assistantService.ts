@@ -522,19 +522,9 @@ export class AssistantService {
         provider = "local_crm_intake";
         model = "conversational-crm-intake-v1";
       } else {
-      const productionIntake = await productionOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (productionIntake.handled) {
-        response = productionIntake.response;
-        cards = productionIntake.cards as AssistantResultCard[];
-        provider = "local_production_intake";
-        model = "conversational-production-intake-v1";
-      } else {
-      const fulfillmentIntake = await fulfillmentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (fulfillmentIntake.handled) { response = fulfillmentIntake.response; cards = fulfillmentIntake.cards as AssistantResultCard[]; provider = "local_fulfillment_intake"; model = "conversational-fulfillment-intake-v1"; } else {
-      const billingIntake = await billingInvoiceOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (billingIntake.handled) { response = billingIntake.response; cards = billingIntake.cards as AssistantResultCard[]; provider = "local_billing_intake"; model = "conversational-billing-intake-v1"; } else {
-      const paymentIntake = await paymentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (paymentIntake.handled) { response = paymentIntake.response; cards = paymentIntake.cards as AssistantResultCard[]; provider = "local_payment_intake"; model = "conversational-payment-intake-v1"; } else {
+      // A configurable-product proposal is conversation-bound. It must see
+      // its incremental corrections before broad operational responders can
+      // reinterpret route, sheet, or minimum-charge wording as a lookup.
       const productManagement = await productManagementSkillService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
@@ -548,6 +538,19 @@ export class AssistantService {
         provider = "local_product_intake";
         model = "product-management-skill-v1";
       } else {
+      const productionIntake = await productionOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
+      if (productionIntake.handled) {
+        response = productionIntake.response;
+        cards = productionIntake.cards as AssistantResultCard[];
+        provider = "local_production_intake";
+        model = "conversational-production-intake-v1";
+      } else {
+      const fulfillmentIntake = await fulfillmentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
+      if (fulfillmentIntake.handled) { response = fulfillmentIntake.response; cards = fulfillmentIntake.cards as AssistantResultCard[]; provider = "local_fulfillment_intake"; model = "conversational-fulfillment-intake-v1"; } else {
+      const billingIntake = await billingInvoiceOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
+      if (billingIntake.handled) { response = billingIntake.response; cards = billingIntake.cards as AssistantResultCard[]; provider = "local_billing_intake"; model = "conversational-billing-intake-v1"; } else {
+      const paymentIntake = await paymentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
+      if (paymentIntake.handled) { response = paymentIntake.response; cards = paymentIntake.cards as AssistantResultCard[]; provider = "local_payment_intake"; model = "conversational-payment-intake-v1"; } else {
       const quoteNoteIntent = resolveQuoteInternalNoteIntent(request.message, request.context);
       if (quoteNoteIntent.kind === "resolved") {
         response = "I can prepare an internal-only quote note preview. Review it and use the dedicated GO control to continue.";
