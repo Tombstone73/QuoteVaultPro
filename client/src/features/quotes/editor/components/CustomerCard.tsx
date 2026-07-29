@@ -8,6 +8,8 @@ import { Separator } from "@/components/ui/separator";
 import { formatPhoneForDisplay, phoneToTelHref } from "@/lib/utils";
 import { Calendar, X } from "lucide-react";
 import { CustomerSelect, type CustomerWithContacts, type CustomerSelectRef } from "@/components/CustomerSelect";
+import { ContactSelect } from "@/components/ContactSelect";
+import { getContactDisplayName, type ContactPickerContact } from "@/lib/contactPicker";
 
 export type CustomerCardRef = {
     commitPendingFlags: () => void;
@@ -17,6 +19,7 @@ type CustomerCardProps = {
     selectedCustomerId: string | null;
     selectedCustomer: CustomerWithContacts | undefined;
     selectedContactId: string | null;
+    selectedContact?: ContactPickerContact | null;
     contacts: any[];
     jobLabel: string;
     requestedDueDate: string; // YYYY-MM-DD
@@ -33,7 +36,8 @@ type CustomerCardProps = {
     deliveryMethod: 'pickup' | 'ship' | 'deliver';
     readOnly?: boolean;
     onCustomerChange: (customerId: string | null, customer?: CustomerWithContacts | undefined, contactId?: string | null | undefined) => void;
-    onContactChange: (contactId: string | null) => void;
+    onContactChange: (contactId: string | null, contact?: ContactPickerContact | null) => void;
+    onContactResolved?: (contact: ContactPickerContact | null) => void;
     onJobLabelChange: (label: string) => void;
     onRequestedDueDateChange: (date: string) => void;
     onPoNumberChange?: (poNumber: string) => void;
@@ -47,6 +51,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     selectedCustomerId,
     selectedCustomer,
     selectedContactId,
+    selectedContact: selectedContactFromPicker = null,
     contacts,
     jobLabel,
     requestedDueDate,
@@ -63,6 +68,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     readOnly = false,
     onCustomerChange,
     onContactChange,
+    onContactResolved,
     onJobLabelChange,
     onRequestedDueDateChange,
     onPoNumberChange,
@@ -77,7 +83,8 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
     const [showCustomerAddress, setShowCustomerAddress] = useState(false);
 
     const selectedContact = selectedContactId
-        ? contacts?.find((x: any) => x.id === selectedContactId)
+        ? (selectedContactFromPicker?.id === selectedContactId ? selectedContactFromPicker : null)
+            ?? contacts?.find((x: any) => x.id === selectedContactId)
         : null;
 
     const contactLabel = (() => {
@@ -86,6 +93,8 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
         const name = `${c.firstName || ""} ${c.lastName || ""}`.trim();
         return name || c.email || "—";
     })();
+
+    const displayContactLabel = selectedContact ? getContactDisplayName(selectedContact) || contactLabel : contactLabel;
 
     const customerDisplayLabel = (() => {
         if (!selectedCustomer) return "—";
@@ -262,7 +271,7 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
 
                         <div className="space-y-2">
                             {readOnly ? (
-                                contactLabel && contactLabel !== "—" ? (
+                                displayContactLabel && displayContactLabel !== "—" ? (
                                     <>
                                         <div className="flex items-start justify-between gap-2">
                                             <HoverCard openDelay={150} closeDelay={50}>
@@ -270,9 +279,9 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                                     <span
                                                         tabIndex={0}
                                                         className="text-sm font-semibold text-foreground flex-1 min-w-0 truncate"
-                                                        title={contactLabel}
+                                                        title={displayContactLabel}
                                                     >
-                                                        {contactLabel}
+                                                        {displayContactLabel}
                                                     </span>
                                                 </HoverCardTrigger>
                                                 <HoverCardContent className="w-[340px] max-w-[90vw] p-3" align="start" side="bottom">
@@ -333,19 +342,15 @@ export const CustomerCard = forwardRef<CustomerSelectRef, CustomerCardProps>(({
                                     </div>
                                 )
                             ) : (
-                                <Select value={selectedContactId || ""} onValueChange={onContactChange} disabled={readOnly}>
-                                    <SelectTrigger className="h-9 text-sm">
-                                        <SelectValue placeholder="Select contact" />
-                                    </SelectTrigger>
-                                    <SelectContent>
-                                        {contacts.map((contact: any) => (
-                                            <SelectItem key={contact.id} value={contact.id}>
-                                                {contact.firstName} {contact.lastName}
-                                                {contact.isPrimary && " ★"}
-                                            </SelectItem>
-                                        ))}
-                                    </SelectContent>
-                                </Select>
+                                <ContactSelect
+                                    value={selectedContactId}
+                                    customerId={selectedCustomerId}
+                                    onChange={onContactChange}
+                                    onResolvedContact={onContactResolved}
+                                    label=""
+                                    placeholder="Search contacts..."
+                                    disabled={readOnly}
+                                />
                             )}
                         </div>
                     </div>

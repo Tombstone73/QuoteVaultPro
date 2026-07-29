@@ -32,10 +32,16 @@ export function pricingChangeRequestFromMessage(message: string): PricingChangeR
     ...( /\broll\b/i.test(normalized) ? { route: "Roll" } : {}),
     ...( /\b(?:sold|priced)\s+by\s+(?:square\s*foot|sq\.?\s*ft\.?|sqft)\b/i.test(normalized) ? { measurementMode: "dimensions_required" } : {}),
   };
-  const exactIds = [...normalized.matchAll(/\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b/ig)].map((match) => match[0]);
-  if (exactIds.length) selector.productIds = [...new Set(exactIds)];
-  const names = [...normalized.matchAll(/["']([^"']+)["']/g)].map((match) => match[1].trim()).filter(Boolean);
-  if (names.length) selector.productNames = [...new Set(names)];
+  const exactIds = Array.from(
+    normalized.matchAll(/\b[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}\b/ig),
+    (match) => match[0],
+  );
+  if (exactIds.length) selector.productIds = Array.from(new Set(exactIds));
+  const names = Array.from(
+    normalized.matchAll(/["']([^"']+)["']/g),
+    (match) => match[1].trim(),
+  ).filter(Boolean);
+  if (names.length) selector.productNames = Array.from(new Set(names));
   const excluded = normalized.match(/\bexcept\s+["']([^"']+)["']/i)?.[1]?.trim();
   if (excluded) selector.excludeProductNames = [excluded];
 
@@ -59,8 +65,8 @@ export function pricingChangeRequestFromMessage(message: string): PricingChangeR
   }
   if (!operation) return null;
 
-  const overrides = [...normalized.matchAll(/\bexcept\s+["']([^"']+)["']\s+(?:should\s+)?(?:increase|raise)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%/ig)]
+  const overrides = Array.from(normalized.matchAll(/\bexcept\s+["']([^"']+)["']\s+(?:should\s+)?(?:increase|raise)\s+(?:by\s+)?(\d+(?:\.\d+)?)\s*%/ig))
     .map((match) => ({ productName: match[1].trim(), operation: { kind: "percent", field, percent: Number(match[2]) } as ProductPricingOperation }))
-    .filter((override) => override.productName && Number.isFinite(override.operation.percent));
+    .filter((override) => override.productName && override.operation.kind === "percent" && Number.isFinite(override.operation.percent));
   return { selector, operation, overrides };
 }

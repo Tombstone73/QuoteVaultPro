@@ -148,4 +148,30 @@ describe("buildDirectOrderPayloadFromEditorState", () => {
     expect(payload.lineItems).toHaveLength(1);
     expect(payload.lineItems[0].pendingOrderAttachmentUploadIds).toEqual([]);
   });
+
+  test("submits contact-only identity with customerId null", () => {
+    const payload = buildDirectOrderPayloadFromEditorState({
+      selectedCustomer: undefined,
+      selectedCustomerId: null,
+      selectedContactId: "standalone-contact",
+      quote: { customerId: "stale-customer" },
+      lineItems: [],
+      subtotal: 0,
+      effectiveTaxRate: 0,
+      taxAmount: 0,
+      effectiveDiscount: 0,
+      jobLabel: "Walk-in buyer",
+      orderPoNumber: "",
+      requestedDueDate: "",
+      orderPromisedDate: "",
+      orderPriority: "normal",
+      orderInternalNotes: "",
+      deliveryMethod: "pickup",
+      shippingCents: null,
+      quoteNotes: "",
+    });
+
+    expect(payload.customerId).toBeNull();
+    expect(payload.contactId).toBe("standalone-contact");
+  });
 });

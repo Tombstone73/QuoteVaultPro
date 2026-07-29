@@ -40,6 +40,7 @@ import {
   quotes,
   organizations,
   customerContacts,
+  customerContactLinks,
   quoteLineItems,
   products,
   pbv2TreeVersions,
@@ -54,7 +55,7 @@ import {
   resolveLineItemProofApprovalRequirement,
   resolveProofApprovalLockEnabledFromOrgPreferences,
 } from "@shared/proofApprovalLock";
-import { eq, desc, and, inArray, sql } from "drizzle-orm";
+import { eq, desc, and, inArray, ne, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { inboundOrdersRepository } from "../storage/inboundOrders.repo";
 import { getRequestOrganizationId } from "../tenantContext";
@@ -440,6 +441,68 @@ async function snapshotCustomerData(
   };
 }
 
+class QuoteIdentityError extends Error {
+  constructor(
+    readonly code: "QUOTE_IDENTITY_REQUIRED" | "CUSTOMER_NOT_FOUND" | "CONTACT_NOT_FOUND" | "CONTACT_CUSTOMER_CONFLICT",
+    message: string,
+    readonly statusCode: number,
+  ) {
+    super(message);
+  }
+}
+
+async function validateQuoteIdentity(
+  organizationId: string,
+  customerId: string | null | undefined,
+  contactId: string | null | undefined,
+): Promise<void> {
+  const normalizedCustomerId = customerId || null;
+  const normalizedContactId = contactId || null;
+  if (!normalizedCustomerId && !normalizedContactId) {
+    throw new QuoteIdentityError("QUOTE_IDENTITY_REQUIRED", "A quote must have a customer, a contact, or both.", 400);
+  }
+
+  if (normalizedCustomerId) {
+    const [customer] = await db
+      .select({ id: customers.id })
+      .from(customers)
+      .where(and(eq(customers.id, normalizedCustomerId), eq(customers.organizationId, organizationId)))
+      .limit(1);
+    if (!customer) {
+      throw new QuoteIdentityError("CUSTOMER_NOT_FOUND", "Customer was not found for this organization.", 404);
+    }
+  }
+
+  let contact: typeof customerContacts.$inferSelect | null = null;
+  if (normalizedContactId) {
+    const [foundContact] = await db
+      .select()
+      .from(customerContacts)
+      .where(and(eq(customerContacts.id, normalizedContactId), eq(customerContacts.organizationId, organizationId)))
+      .limit(1);
+    if (!foundContact) {
+      throw new QuoteIdentityError("CONTACT_NOT_FOUND", "Contact was not found for this organization.", 404);
+    }
+    contact = foundContact;
+  }
+
+  if (!normalizedCustomerId || !contact) return;
+
+  const linkRows = await db
+    .select({ customerId: customerContactLinks.customerId })
+    .from(customerContactLinks)
+    .where(and(
+      eq(customerContactLinks.organizationId, organizationId),
+      eq(customerContactLinks.contactId, contact.id),
+      ne(customerContactLinks.status, "removed"),
+    ));
+  const associatedCustomerIds = new Set<string>(linkRows.map((row) => row.customerId));
+  if (contact.customerId) associatedCustomerIds.add(contact.customerId);
+  if (associatedCustomerIds.size > 0 && !associatedCustomerIds.has(normalizedCustomerId)) {
+    throw new QuoteIdentityError("CONTACT_CUSTOMER_CONFLICT", "Contact is not linked to the selected customer.", 409);
+  }
+}
+
 export function registerQuoteRoutes(
   app: Express,
   middleware: {
@@ -684,37 +747,27 @@ export function registerQuoteRoutes(
 
       const {
         hasLineItems,
-        hasCustomerId,
+        hasCustomerId: _hasCustomerId,
         status: _statusFromClient,
         ...quotePayload
       } = req.body as any;
 
+      const { customerId, contactId, customerName, source, lineItems } = quotePayload;
       const finalStatus: "draft" = "draft";
 
-      if (!hasCustomerId) {
-        console.error("[QUOTE CREATE] missing customerId", { body: req.body });
-        return res.status(400).json({ message: "Customer is required to save a quote" });
-      }
-
-      if (!hasLineItems) {
-        console.error("[QUOTE CREATE] missing line items", { body: req.body });
-        return res.status(400).json({ message: "At least one line item is required" });
-      }
-
-      const { customerId, contactId, customerName, source, lineItems } = quotePayload;
-
-      // Basic validation: require customerId (or quick quote fallback) and at least one line item
-      if (source !== "customer_quick_quote" && !customerId) {
-        return res.status(400).json({
-          success: false,
-          message: "Customer is required to create a quote.",
-        });
-      }
-
-      if (!Array.isArray(lineItems) || lineItems.length === 0) {
+      if (!Array.isArray(lineItems) || lineItems.length === 0 || !hasLineItems) {
         return res.status(400).json({
           success: false,
           message: "At least one line item is required to create a quote.",
+          code: "QUOTE_LINE_ITEMS_REQUIRED",
+        });
+      }
+
+      if (source !== "customer_quick_quote" && !customerId && !contactId) {
+        return res.status(400).json({
+          success: false,
+          message: "Customer or contact is required to create a quote.",
+          code: "QUOTE_IDENTITY_REQUIRED",
         });
       }
 
@@ -733,6 +786,8 @@ export function registerQuoteRoutes(
           });
         }
       }
+
+      await validateQuoteIdentity(organizationId, finalCustomerId ?? null, contactId ?? null);
 
       // Load organization for tax settings
       const [org] = await db
@@ -972,6 +1027,13 @@ export function registerQuoteRoutes(
           field: error.field,
         });
       }
+      if (error instanceof QuoteIdentityError) {
+        return res.status(error.statusCode).json({
+          success: false,
+          message: error.message,
+          code: error.code,
+        });
+      }
       const err = error as any;
       console.error("[QUOTE CREATE] failed to create quote", {
         error: {
@@ -1038,8 +1100,8 @@ export function registerQuoteRoutes(
           contactEmail: customerContacts.email,
         })
         .from(quotes)
-        .leftJoin(customers, eq(quotes.customerId, customers.id))
-        .leftJoin(customerContacts, eq(quotes.contactId, customerContacts.id))
+        .leftJoin(customers, and(eq(quotes.customerId, customers.id), eq(customers.organizationId, organizationId)))
+        .leftJoin(customerContacts, and(eq(quotes.contactId, customerContacts.id), eq(customerContacts.organizationId, organizationId)))
         .where(
           and(
             eq(quotes.organizationId, organizationId),
@@ -1473,11 +1535,13 @@ export function registerQuoteRoutes(
         status === undefined
       );
 
-      // Customer validation: only enforce for full quote saves, not partial metadata updates
-      if (!isPartialUpdate) {
-        if (customerId === null || customerId === undefined && !existing.customerId) {
-          return res.status(400).json({ message: "Customer is required to save a quote." });
-        }
+      const identityTouched = customerId !== undefined || contactId !== undefined;
+      if (!isPartialUpdate || identityTouched) {
+        await validateQuoteIdentity(
+          organizationId,
+          customerId !== undefined ? customerId ?? null : existing.customerId ?? null,
+          contactId !== undefined ? contactId ?? null : existing.contactId ?? null,
+        );
       }
 
       // Check existing line items to ensure the quote has at least one
@@ -1660,6 +1724,13 @@ export function registerQuoteRoutes(
 
       res.json(updatedQuote);
     } catch (error) {
+      if (error instanceof QuoteIdentityError) {
+        return res.status(error.statusCode).json({
+          success: false,
+          message: error.message,
+          code: error.code,
+        });
+      }
       console.error("Error updating quote:", error);
       res.status(500).json({ message: "Failed to update quote" });
     }

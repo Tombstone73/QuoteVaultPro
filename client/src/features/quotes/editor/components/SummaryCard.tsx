@@ -32,6 +32,7 @@ type SummaryCardProps = {
     deliveryMethod: string;
     selectedCustomer: CustomerWithContacts | undefined;
     selectedContactId?: string | null;
+    selectedContact?: { id?: string | null; email?: string | null } | null;
     pricingStale?: boolean;
     canSaveQuote: boolean;
     isSaving: boolean;
@@ -83,6 +84,7 @@ export function SummaryCard({
     deliveryMethod,
     selectedCustomer,
     selectedContactId,
+    selectedContact,
     pricingStale = false,
     canSaveQuote,
     isSaving,
@@ -160,6 +162,7 @@ export function SummaryCard({
         lineItems,
         selectedCustomer,
         selectedContactId,
+        selectedContact,
         workflowState,
         requireApproval,
         emailConfigured,

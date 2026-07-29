@@ -9,6 +9,7 @@ import {
     inboundOrderRecords,
     users,
     customers,
+    customerContacts,
     organizations,
     products,
     productVariants,
@@ -246,7 +247,21 @@ export class QuotesRepository {
         if (filters?.searchCustomer) {
             const term = `%${filters.searchCustomer}%`;
             // Use a single SQL condition here to avoid `or()` returning `SQL | undefined` in drizzle's types.
-            conditions.push(sql`(${quotes.customerName} like ${term} OR ${customers.companyName} like ${term})`);
+            conditions.push(sql`(
+                ${quotes.customerName} like ${term}
+                OR ${customers.companyName} like ${term}
+                OR exists (
+                    select 1 from ${customerContacts}
+                    where ${customerContacts.id} = ${quotes.contactId}
+                      and ${customerContacts.organizationId} = ${organizationId}
+                      and (
+                        ${customerContacts.firstName} ilike ${term}
+                        OR ${customerContacts.lastName} ilike ${term}
+                        OR ${customerContacts.email} ilike ${term}
+                        OR concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName}) ilike ${term}
+                      )
+                )
+            )`);
         }
 
         if (filters?.startDate) {
@@ -476,6 +491,8 @@ export class QuotesRepository {
             .select({
                 quote: quotes,
                 customerCompanyName: customers.companyName,
+                contact: customerContacts,
+                contactDisplayName: sql<string | null>`nullif(trim(concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName})), '')`,
                 user: users,
                 lineItemsCount: sql<number>`(
                     select count(*)::int from ${quoteLineItems}
@@ -493,6 +510,10 @@ export class QuotesRepository {
             .leftJoin(
                 customers,
                 and(eq(customers.id, quotes.customerId), eq(customers.organizationId, organizationId))
+            )
+            .leftJoin(
+                customerContacts,
+                and(eq(customerContacts.id, quotes.contactId), eq(customerContacts.organizationId, organizationId))
             )
             .leftJoin(users, eq(users.id, quotes.userId))
             .where(whereClause)
@@ -529,7 +550,7 @@ export class QuotesRepository {
             listNotesMap.set(note.quoteId, note.listLabel);
         }
 
-        const items = rows.map(({ quote, customerCompanyName, user, lineItemsCount, hasOrder }) => {
+        const items = rows.map(({ quote, customerCompanyName, contact, contactDisplayName, user, lineItemsCount, hasOrder }) => {
             const workflowState = getEffectiveWorkflowState(
                 quote.status as any,
                 quote.validUntil ?? null,
@@ -538,7 +559,8 @@ export class QuotesRepository {
 
             return {
                 ...quote,
-                customerName: customerCompanyName ?? quote.customerName,
+                customerName: customerCompanyName ?? quote.customerName ?? contactDisplayName ?? contact?.email ?? null,
+                contact,
                 user,
                 lineItems: [],
                 lineItemsCount,
@@ -889,6 +911,8 @@ export class QuotesRepository {
         id: string,
         userId?: string
     ): Promise<(QuoteWithRelations & {
+        customer?: typeof customers.$inferSelect;
+        contact?: typeof customerContacts.$inferSelect;
         inboundReview?: {
             inboundRecordId: string;
             status: string;
@@ -938,6 +962,24 @@ export class QuotesRepository {
         );
 
         const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quoteRow.userId));
+        const [customer] = quoteRow.customerId
+            ? await this.dbInstance
+                .select()
+                .from(customers)
+                .where(and(eq(customers.id, quoteRow.customerId), eq(customers.organizationId, organizationId)))
+                .limit(1)
+            : [];
+        const [contact] = quoteRow.contactId
+            ? await this.dbInstance
+                .select()
+                .from(customerContacts)
+                .where(and(eq(customerContacts.id, quoteRow.contactId), eq(customerContacts.organizationId, organizationId)))
+                .limit(1)
+            : [];
+        const contactDisplayName = [
+            contact?.firstName,
+            contact?.lastName,
+        ].map((part) => part?.trim()).filter(Boolean).join(" ");
         // A userId is supplied for customer-owned reads. Inbound source
         // metadata is internal-only and must never cross that boundary.
         const inboundLinks = userId
@@ -959,6 +1001,9 @@ export class QuotesRepository {
 
         return {
             ...quoteRow,
+            customer,
+            contact,
+            customerName: (customer?.companyName ?? quoteRow.customerName ?? contactDisplayName) || contact?.email || null,
             user,
             lineItems: lineItemsWithRelations,
             inboundReview: inboundLinks.get(quoteRow.id) ?? null,
@@ -1456,7 +1501,21 @@ export class QuotesRepository {
         if (filters?.searchCustomer) {
             const term = `%${filters.searchCustomer}%`;
             // Use a single SQL condition here to avoid `or()` returning `SQL | undefined` in drizzle's types.
-            conditions.push(sql`(${quotes.customerName} like ${term} OR ${customers.companyName} like ${term})`);
+            conditions.push(sql`(
+                ${quotes.customerName} like ${term}
+                OR ${customers.companyName} like ${term}
+                OR exists (
+                    select 1 from ${customerContacts}
+                    where ${customerContacts.id} = ${quotes.contactId}
+                      and ${customerContacts.organizationId} = ${organizationId}
+                      and (
+                        ${customerContacts.firstName} ilike ${term}
+                        OR ${customerContacts.lastName} ilike ${term}
+                        OR ${customerContacts.email} ilike ${term}
+                        OR concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName}) ilike ${term}
+                      )
+                )
+            )`);
         }
 
         if (filters?.startDate) {
@@ -1487,18 +1546,24 @@ export class QuotesRepository {
                 .select({
                     quote: quotes,
                     customerCompanyName: customers.companyName,
+                    contact: customerContacts,
+                    contactDisplayName: sql<string | null>`nullif(trim(concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName})), '')`,
                 })
                 .from(quotes)
                 .leftJoin(
                     customers,
                     and(eq(customers.id, quotes.customerId), eq(customers.organizationId, organizationId))
                 )
+                .leftJoin(
+                    customerContacts,
+                    and(eq(customerContacts.id, quotes.contactId), eq(customerContacts.organizationId, organizationId))
+                )
                 .where(and(...conditions))
                 .orderBy(desc(quotes.createdAt));
 
             // Fetch user and line items for each quote
             const quotesWithRelations = await Promise.all(
-                userQuotes.map(async ({ quote, customerCompanyName }) => {
+                userQuotes.map(async ({ quote, customerCompanyName, contact, contactDisplayName }) => {
                     const [user] = await this.dbInstance.select().from(users).where(eq(users.id, quote.userId));
 
                     // Fetch line items (no status column on line items)
@@ -1535,7 +1600,8 @@ export class QuotesRepository {
 
                     return {
                         ...quote,
-                        customerName: customerCompanyName ?? quote.customerName,
+                        customerName: (customerCompanyName ?? quote.customerName ?? contactDisplayName) || contact?.email || null,
+                        contact,
                         user,
                         lineItems: lineItemsWithRelations,
                     };

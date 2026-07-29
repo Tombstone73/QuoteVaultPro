@@ -21,6 +21,7 @@ export type QuotePreviewEligibilityInput = QuoteActionBaseInput;
 export type QuoteSendEligibilityInput = QuoteActionBaseInput & {
   selectedCustomer?: CustomerLike | null;
   selectedContactId?: string | null;
+  selectedContact?: CustomerContactLike | null;
   workflowState?: string | null;
   requireApproval?: boolean;
   emailConfigured?: boolean;
@@ -78,7 +79,10 @@ export function getQuotePreviewEligibility(input: QuotePreviewEligibilityInput):
 }
 
 function selectedContactHasEmail(input: QuoteSendEligibilityInput): boolean {
-  const selectedContact = input.selectedCustomer?.contacts?.find((contact) => contact.id === input.selectedContactId);
+  const selectedContact =
+    input.selectedContact?.id === input.selectedContactId
+      ? input.selectedContact
+      : input.selectedCustomer?.contacts?.find((contact) => contact.id === input.selectedContactId);
   return hasText(selectedContact?.email);
 }
 
@@ -86,8 +90,8 @@ export function getQuoteSendEligibility(input: QuoteSendEligibilityInput): Quote
   const previewEligibility = getQuotePreviewEligibility(input);
   if (!previewEligibility.enabled) return { ...previewEligibility, actionState: "blocked" };
 
-  if (!input.selectedCustomer?.id) {
-    return { enabled: false, reason: "Select a customer before sending the quote.", actionState: "blocked" };
+  if (!input.selectedCustomer?.id && !input.selectedContactId) {
+    return { enabled: false, reason: "Select a customer or contact before sending the quote.", actionState: "blocked" };
   }
   if (!input.selectedContactId || !selectedContactHasEmail(input)) {
     return { enabled: true, reason: "Add a recipient email before sending.", actionState: "needs_recipient" };
