@@ -2,9 +2,8 @@ import { jest } from "@jest/globals";
 
 const persistence = {
   getComplexProductConfirmation: jest.fn(),
-  getComplexProductProposal: jest.fn(),
-  getComplexProductProposalForConversation: jest.fn(),
   persistComplexProductProposal: jest.fn(),
+  resolveConfigurableProductContinuation: jest.fn(),
   updateComplexProductProposal: jest.fn(),
 };
 
@@ -24,7 +23,7 @@ describe("ProductManagementSkillService configurable-product integration", () =>
   beforeEach(() => jest.resetAllMocks());
 
   it("handles configurable messages before legacy routes and binds the exact persisted proposal and fingerprint", async () => {
-    persistence.getComplexProductProposalForConversation.mockResolvedValue(null);
+    persistence.resolveConfigurableProductContinuation.mockResolvedValue(null);
     persistence.persistComplexProductProposal.mockResolvedValue({ id: "11111111-1111-4111-8111-111111111111", fingerprint: "a".repeat(64), specification: spec });
     persistence.getComplexProductConfirmation.mockResolvedValue(readyConfirmation("a".repeat(64)));
     const service = new ProductManagementSkillService({ sessions: {} as any, references: jest.fn() });
@@ -37,7 +36,7 @@ describe("ProductManagementSkillService configurable-product integration", () =>
   });
 
   it("updates the one conversation proposal and emits no executable action while structurally blocked", async () => {
-    persistence.getComplexProductProposalForConversation.mockResolvedValue({ id: "11111111-1111-4111-8111-111111111111", specification: spec });
+    persistence.resolveConfigurableProductContinuation.mockResolvedValue({ id: "11111111-1111-4111-8111-111111111111", specification: spec });
     persistence.updateComplexProductProposal.mockResolvedValue({ proposal: { id: "11111111-1111-4111-8111-111111111111" }, blockers: [] });
     persistence.getComplexProductConfirmation.mockResolvedValue({ ...readyConfirmation("b".repeat(64)), goEligible: false, blockers: ["Provide the matrix."] });
     const service = new ProductManagementSkillService({ sessions: {} as any, references: jest.fn() });
@@ -49,9 +48,8 @@ describe("ProductManagementSkillService configurable-product integration", () =>
     expect(response.cards.some((card) => card.kind === "action_proposal")).toBe(false);
   });
 
-  it("continues a settings-only correction from the server-created confirmation card when the conversation index misses", async () => {
-    persistence.getComplexProductProposalForConversation.mockResolvedValue(null);
-    persistence.getComplexProductProposal.mockResolvedValue({ id: "11111111-1111-4111-8111-111111111111", specification: spec });
+  it("continues a settings-only correction through the canonical conversation resolver", async () => {
+    persistence.resolveConfigurableProductContinuation.mockResolvedValue({ id: "11111111-1111-4111-8111-111111111111", specification: spec });
     persistence.updateComplexProductProposal.mockResolvedValue({ proposal: { id: "11111111-1111-4111-8111-111111111111" }, blockers: [] });
     persistence.getComplexProductConfirmation.mockResolvedValue({ ...readyConfirmation("c".repeat(64)), goEligible: false, blockers: ["Provide the matrix."] });
     const service = new ProductManagementSkillService({ sessions: {} as any, references: jest.fn() });
@@ -59,7 +57,7 @@ describe("ProductManagementSkillService configurable-product integration", () =>
     const response = await service.respond({ organizationId: "org_1", userId: "user_1", conversationId: "conversation_1", activeConfigurableProposalId: "11111111-1111-4111-8111-111111111111", message: "Use 48×96 sheets, Flatbed routing, allow rotation, and set a $25 minimum." });
 
     expect(response.handled).toBe(true);
-    expect(persistence.getComplexProductProposal).toHaveBeenCalledWith("org_1", "11111111-1111-4111-8111-111111111111");
+    expect(persistence.resolveConfigurableProductContinuation).toHaveBeenCalledWith({ organizationId: "org_1", actorUserId: "user_1", conversationId: "conversation_1", priorProposalId: "11111111-1111-4111-8111-111111111111" });
     expect(persistence.updateComplexProductProposal).toHaveBeenCalledWith(expect.objectContaining({ proposalId: "11111111-1111-4111-8111-111111111111", organizationId: "org_1" }));
   });
 });

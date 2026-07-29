@@ -3,8 +3,10 @@ import { aiConfigurableProductProposals, pbv2TreeVersions, products } from "@sha
 import { db } from "../../db";
 import { buildCanonicalComplexProductTree, specificationFingerprint, validateComplexProductSpecification, type ComplexProductSpecification } from "./complexProductSpecification";
 import { configurableProductConfirmationDto, configurableProductResultDto } from "./complexProductPresentation";
+import { ComplexProductContinuationPolicyError, selectConfigurableProductContinuation } from "./complexProductContinuationPolicy";
 
 export class ComplexProductDraftError extends Error {}
+export class ComplexProductContinuationError extends ComplexProductDraftError {}
 export async function getComplexProductProposal(organizationId: string, proposalId: string) {
   const [proposal] = await db.select().from(aiConfigurableProductProposals).where(and(eq(aiConfigurableProductProposals.orgId, organizationId), eq(aiConfigurableProductProposals.id, proposalId))).limit(1);
   return proposal ?? null;
@@ -12,6 +14,29 @@ export async function getComplexProductProposal(organizationId: string, proposal
 export async function getComplexProductProposalForConversation(organizationId: string, conversationId: string) {
   const [proposal] = await db.select().from(aiConfigurableProductProposals).where(and(eq(aiConfigurableProductProposals.orgId, organizationId), eq(aiConfigurableProductProposals.conversationId, conversationId))).limit(1);
   return proposal ?? null;
+}
+/** Resolve the one editable proposal bound to the canonical assistant conversation.
+ * A prior card ID is only a tenant-scoped consistency check, never the primary key. */
+export async function resolveConfigurableProductContinuation(input: { organizationId: string; actorUserId: string; conversationId: string; priorProposalId?: string | null }) {
+  const proposals = await db.select().from(aiConfigurableProductProposals).where(and(
+    eq(aiConfigurableProductProposals.orgId, input.organizationId),
+    eq(aiConfigurableProductProposals.conversationId, input.conversationId),
+  ));
+  const priorProposal = !proposals.length && input.priorProposalId
+    ? await getComplexProductProposal(input.organizationId, input.priorProposalId)
+    : null;
+  try {
+    return selectConfigurableProductContinuation({
+      conversationId: input.conversationId,
+      actorUserId: input.actorUserId,
+      priorProposalId: input.priorProposalId,
+      conversationProposals: proposals,
+      priorProposal,
+    });
+  } catch (error) {
+    if (error instanceof ComplexProductContinuationPolicyError) throw new ComplexProductContinuationError(error.message);
+    throw error;
+  }
 }
 export async function getComplexProductConfirmation(organizationId: string, proposalId: string) {
   const proposal = await getComplexProductProposal(organizationId, proposalId); if (!proposal) return null;
