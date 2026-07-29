@@ -1,8 +1,11 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, customers, lineItemFiles, orderLineItems, orders, productionEvents, productionJobs, productionRunMembers, productionRuns } from "@shared/schema";
+import { auditLogs, customers, lineItemFiles, orderLineItems, orders, prepressSessions, productionEvents, productionJobs, productionRunMembers, productionRuns } from "@shared/schema";
+import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
+import { findActiveJobForLineItem, isPrepressOwnershipJob } from "./productionOwnership";
 
 type MemberInput = { productionJobId: string; allocatedQuantity?: number };
+type PrepressMemberInput = { lineItemId: string; allocatedQuantity?: number };
 type RunStatus = "draft" | "ready_for_production" | "in_production" | "completed" | "canceled";
 
 export class ProductionRunError extends Error {
@@ -65,50 +68,141 @@ export async function createProductionRun(input: {
   sheetWidth?: number | null; sheetHeight?: number | null; notes?: string | null;
   compatibilityOverrideReason?: string | null;
 }) {
+  return db.transaction(async (tx) => createProductionRunInTransaction(tx, input));
+}
+
+async function createProductionRunInTransaction(tx: any, input: {
+  organizationId: string; actorUserId: string; orderId: string; stationKey: string;
+  members: MemberInput[]; plannedSheetCount?: number | null; nominalPiecesPerSheet?: number | null;
+  sheetWidth?: number | null; sheetHeight?: number | null; notes?: string | null;
+  compatibilityOverrideReason?: string | null;
+}) {
   if (!input.members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "Select at least one eligible production job.");
   const uniqueIds = Array.from(new Set(input.members.map((member) => member.productionJobId).filter(Boolean)));
   if (uniqueIds.length !== input.members.length) throw new ProductionRunError("PRODUCTION_RUN_DUPLICATE_MEMBER", "A production job may only appear once in a run.");
+
+  await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`production-run:${input.organizationId}:${input.orderId}`}))`);
+  const jobs = await tx.select({ job: productionJobs, line: orderLineItems }).from(productionJobs)
+    .innerJoin(orderLineItems, eq(orderLineItems.id, productionJobs.lineItemId))
+    .where(and(eq(productionJobs.organizationId, input.organizationId), eq(productionJobs.orderId, input.orderId), inArray(productionJobs.id, uniqueIds)));
+  if (jobs.length !== uniqueIds.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "One or more selected production jobs are unavailable for this order.", 404);
+  if (jobs.some(({ job, line }: any) => !job.lineItemId || terminalJobStatuses.has(String(job.status || "").toLowerCase()) || line.productionBypassed || line.lineItemRole === "parent")) {
+    throw new ProductionRunError("PRODUCTION_RUN_MEMBER_INELIGIBLE", "Selected jobs must be active physical production line items.");
+  }
+  const stationKeys = new Set(jobs.map(({ job }: any) => String(job.stationKey || "").trim()).filter(Boolean));
+  if (stationKeys.size > 0 && !stationKeys.has(input.stationKey)) {
+    throw new ProductionRunError("PRODUCTION_RUN_INCOMPATIBLE", "Production run station must match the selected jobs.");
+  }
+  const hasStationConflict = stationKeys.size > 1;
+  const materialKeys = new Set(jobs.map(({ line }: any) => String(line.materialId || "").trim()).filter(Boolean));
+  const hasMaterialConflict = materialKeys.size > 1;
+  if ((hasStationConflict || hasMaterialConflict) && !input.compatibilityOverrideReason?.trim()) {
+    throw new ProductionRunError("PRODUCTION_RUN_INCOMPATIBLE", "Selected jobs use different production routing or material. Supply an authorized compatibility override reason.");
+  }
+  const allocations = [] as Array<{ productionJobId: string; orderLineItemId: string; allocatedQuantity: number }>;
+  for (const { job, line } of jobs) {
+    const [totals] = await tx.select({
+      reserved: sql<number>`coalesce(sum(case when ${productionRuns.status} in ('draft','ready_for_production','in_production') then ${productionRunMembers.allocatedQuantity} else 0 end), 0)`,
+      completed: sql<number>`coalesce(sum(case when ${productionRuns.status} = 'completed' then ${productionRunMembers.completedQuantity} else 0 end), 0)`,
+    }).from(productionRunMembers).innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+      .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionJobId, job.id)));
+    const remaining = Math.max(0, Number(line.quantity) - Number(totals?.reserved ?? 0) - Number(totals?.completed ?? 0));
+    const requested = input.members.find((member) => member.productionJobId === job.id)?.allocatedQuantity ?? remaining;
+    if (!Number.isInteger(requested) || requested <= 0 || requested > remaining) throw new ProductionRunError("PRODUCTION_RUN_ALLOCATION_INVALID", `Allocation for ${line.description} must be between 1 and ${remaining}.`);
+    allocations.push({ productionJobId: job.id, orderLineItemId: line.id, allocatedQuantity: requested });
+  }
+  const [numberRow] = await tx.select({ next: sql<number>`coalesce(max(${productionRuns.runNumber}), 0) + 1` }).from(productionRuns).where(eq(productionRuns.organizationId, input.organizationId));
+  const [run] = await tx.insert(productionRuns).values({ organizationId: input.organizationId, orderId: input.orderId, runNumber: Number(numberRow?.next ?? 1), stationKey: input.stationKey, plannedSheetCount: input.plannedSheetCount ?? null, nominalPiecesPerSheet: input.nominalPiecesPerSheet ?? null, sheetWidth: input.sheetWidth?.toString() ?? null, sheetHeight: input.sheetHeight?.toString() ?? null, notes: input.notes ?? null, compatibilityOverrideReason: input.compatibilityOverrideReason ?? null, createdByUserId: input.actorUserId }).returning();
+  const members = await tx.insert(productionRunMembers).values(allocations.map((member) => ({ ...member, organizationId: input.organizationId, productionRunId: run.id }))).returning();
+  await tx.insert(auditLogs).values({
+    organizationId: input.organizationId,
+    userId: input.actorUserId,
+    actionType: "CREATE",
+    entityType: "production_run",
+    entityId: run.id,
+    entityName: `PR-${String(run.runNumber).padStart(4, "0")}`,
+    description: "Combined production run created",
+    newValues: { orderId: input.orderId, stationKey: input.stationKey, members: allocations },
+  } as any);
+  return { run, members };
+}
+
+export async function createPrepressProductionRun(input: {
+  organizationId: string; actorUserId: string; orderId: string; stationKey: string;
+  members: PrepressMemberInput[]; plannedSheetCount?: number | null; nominalPiecesPerSheet?: number | null;
+  sheetWidth?: number | null; sheetHeight?: number | null; notes?: string | null;
+  compatibilityOverrideReason?: string | null;
+}) {
+  if (!input.members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "Select at least one eligible prepress item.");
+  const uniqueLineItemIds = Array.from(new Set(input.members.map((member) => member.lineItemId).filter(Boolean)));
+  if (uniqueLineItemIds.length !== input.members.length) throw new ProductionRunError("PRODUCTION_RUN_DUPLICATE_MEMBER", "A line item may only appear once in a run.");
+
   return db.transaction(async (tx) => {
     await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`production-run:${input.organizationId}:${input.orderId}`}))`);
-    const jobs = await tx.select({ job: productionJobs, line: orderLineItems }).from(productionJobs)
-      .innerJoin(orderLineItems, eq(orderLineItems.id, productionJobs.lineItemId))
-      .where(and(eq(productionJobs.organizationId, input.organizationId), eq(productionJobs.orderId, input.orderId), inArray(productionJobs.id, uniqueIds)));
-    if (jobs.length !== uniqueIds.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "One or more selected production jobs are unavailable for this order.", 404);
-    if (jobs.some(({ job, line }) => !job.lineItemId || terminalJobStatuses.has(String(job.status || "").toLowerCase()) || line.productionBypassed || line.lineItemRole === "parent")) {
-      throw new ProductionRunError("PRODUCTION_RUN_MEMBER_INELIGIBLE", "Selected jobs must be active physical production line items.");
+
+    const selectedRows = await tx
+      .select({ line: orderLineItems })
+      .from(orderLineItems)
+      .innerJoin(orders, and(eq(orderLineItems.orderId, orders.id), eq(orders.organizationId, input.organizationId)))
+      .where(and(eq(orderLineItems.orderId, input.orderId), inArray(orderLineItems.id, uniqueLineItemIds)));
+
+    if (selectedRows.length !== uniqueLineItemIds.length) {
+      throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "One or more selected prepress items are unavailable for this order.", 404);
     }
-    const hasStationConflict = new Set(jobs.map(({ job }) => String(job.stationKey || "").trim())).size > 1;
-    const materialKeys = new Set(jobs.map(({ line }) => String(line.materialId || "").trim()).filter(Boolean));
-    const hasMaterialConflict = materialKeys.size > 1;
-    if ((hasStationConflict || hasMaterialConflict) && !input.compatibilityOverrideReason?.trim()) {
-      throw new ProductionRunError("PRODUCTION_RUN_INCOMPATIBLE", "Selected jobs use different production routing or material. Supply an authorized compatibility override reason.");
+
+    const terminalLineStatuses = new Set(["done", "complete", "completed", "void", "canceled", "cancelled"]);
+    if (selectedRows.some(({ line }) => terminalLineStatuses.has(String(line.status || "").toLowerCase()) || terminalLineStatuses.has(String(line.workflowState || "").toLowerCase()) || line.productionBypassed || line.lineItemRole === "parent")) {
+      throw new ProductionRunError("PRODUCTION_RUN_MEMBER_INELIGIBLE", "Selected items must be active physical production line items.");
     }
-    const allocations = [] as Array<{ productionJobId: string; orderLineItemId: string; allocatedQuantity: number }>;
-    for (const { job, line } of jobs) {
-      const [totals] = await tx.select({
-        reserved: sql<number>`coalesce(sum(case when ${productionRuns.status} in ('draft','ready_for_production','in_production') then ${productionRunMembers.allocatedQuantity} else 0 end), 0)`,
-        completed: sql<number>`coalesce(sum(case when ${productionRuns.status} = 'completed' then ${productionRunMembers.completedQuantity} else 0 end), 0)`,
-      }).from(productionRunMembers).innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
-        .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionJobId, job.id)));
-      const remaining = Math.max(0, Number(line.quantity) - Number(totals?.reserved ?? 0) - Number(totals?.completed ?? 0));
-      const requested = input.members.find((member) => member.productionJobId === job.id)?.allocatedQuantity ?? remaining;
-      if (!Number.isInteger(requested) || requested <= 0 || requested > remaining) throw new ProductionRunError("PRODUCTION_RUN_ALLOCATION_INVALID", `Allocation for ${line.description} must be between 1 and ${remaining}.`);
-      allocations.push({ productionJobId: job.id, orderLineItemId: line.id, allocatedQuantity: requested });
+
+    const finalRows = await tx
+      .select({ lineItemId: lineItemFiles.lineItemId })
+      .from(lineItemFiles)
+      .where(and(
+        eq(lineItemFiles.organizationId, input.organizationId),
+        inArray(lineItemFiles.lineItemId, uniqueLineItemIds),
+        eq(lineItemFiles.role, "final"),
+        eq(lineItemFiles.status, "active"),
+      ));
+    const finalLineItemIds = new Set(finalRows.map((row) => row.lineItemId));
+    const missingFinal = selectedRows.find(({ line }) => !finalLineItemIds.has(line.id));
+    if (missingFinal) {
+      throw new ProductionRunError("PRODUCTION_RUN_FINAL_FILE_REQUIRED", `Complete prepress final artwork before creating a run for ${missingFinal.line.description || "the selected line item"}.`, 409);
     }
-    const [numberRow] = await tx.select({ next: sql<number>`coalesce(max(${productionRuns.runNumber}), 0) + 1` }).from(productionRuns).where(eq(productionRuns.organizationId, input.organizationId));
-    const [run] = await tx.insert(productionRuns).values({ organizationId: input.organizationId, orderId: input.orderId, runNumber: Number(numberRow?.next ?? 1), stationKey: input.stationKey, plannedSheetCount: input.plannedSheetCount ?? null, nominalPiecesPerSheet: input.nominalPiecesPerSheet ?? null, sheetWidth: input.sheetWidth?.toString() ?? null, sheetHeight: input.sheetHeight?.toString() ?? null, notes: input.notes ?? null, compatibilityOverrideReason: input.compatibilityOverrideReason ?? null, createdByUserId: input.actorUserId }).returning();
-    const members = await tx.insert(productionRunMembers).values(allocations.map((member) => ({ ...member, organizationId: input.organizationId, productionRunId: run.id }))).returning();
-    await tx.insert(auditLogs).values({
-      organizationId: input.organizationId,
-      userId: input.actorUserId,
-      actionType: "CREATE",
-      entityType: "production_run",
-      entityId: run.id,
-      entityName: `PR-${String(run.runNumber).padStart(4, "0")}`,
-      description: "Combined production run created",
-      newValues: { orderId: input.orderId, stationKey: input.stationKey, members: allocations },
-    } as any);
-    return { run, members };
+
+    const downstreamMembers: MemberInput[] = [];
+    for (const { line } of selectedRows) {
+      const activeJob = await findActiveJobForLineItem(tx, { organizationId: input.organizationId, lineItemId: line.id });
+      if (!activeJob || !isPrepressOwnershipJob(activeJob) || terminalJobStatuses.has(String(activeJob.status || "").toLowerCase())) {
+        throw new ProductionRunError("PRODUCTION_RUN_MEMBER_INELIGIBLE", "Selected items must be actively owned by Prepress before creating a combined run.");
+      }
+
+      const transition = await transitionLineItemWorkflowState(tx, {
+        organizationId: input.organizationId,
+        lineItemId: line.id,
+        toState: "ready_for_production",
+        actorUserId: input.actorUserId,
+        metadata: { source: "prepress_combined_production_run", requestedRunStationKey: input.stationKey },
+      });
+
+      if (!transition.activeOwnerJobId) {
+        throw new ProductionRunError("PRODUCTION_RUN_MEMBER_INELIGIBLE", "Prepress handoff did not create downstream production ownership.");
+      }
+
+      await tx
+        .update(prepressSessions)
+        .set({ status: "complete", completedAt: new Date(), completedByUserId: input.actorUserId })
+        .where(and(
+          eq(prepressSessions.organizationId, input.organizationId),
+          eq(prepressSessions.lineItemId, line.id),
+          eq(prepressSessions.status, "active"),
+        ));
+
+      const requested = input.members.find((member) => member.lineItemId === line.id)?.allocatedQuantity;
+      downstreamMembers.push({ productionJobId: transition.activeOwnerJobId, allocatedQuantity: requested });
+    }
+
+    return createProductionRunInTransaction(tx, { ...input, members: downstreamMembers });
   });
 }
 
