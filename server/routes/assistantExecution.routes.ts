@@ -31,8 +31,8 @@ import { createProductPricingChangeSetCommandDefinition, createProductPricingRol
 import { createProductPricingChangeSetExecutionCommand, createProductPricingRollbackExecutionCommand } from "../services/assistant/execution/productPricingChangeSetExecutionCommand";
 import { productPricingChangeSetCommandService } from "../services/assistant/execution/productPricingChangeSetAdapter";
 import { productPricingChangeSetStore } from "../services/assistant/productPricingChangeSetDb";
-import { configurableProductDraftCommandName, configurableProductDraftInputSchema, createConfigurableProductDraftCommandDefinition } from "../services/assistant/execution/configurableProductDraftCommand";
-import { getComplexProductProposal } from "../services/assistant/complexProductDraftPersistence";
+import { configurableProductDraftCommandName, createConfigurableProductDraftCommandDefinition } from "../services/assistant/execution/configurableProductDraftCommand";
+import { createConfigurableProductDraftExecutionCommand } from "../services/assistant/execution/configurableProductDraftExecutionCommand";
 import { createQuoteDraftCreateCommandDefinition, quoteDraftCreateCommandName } from "../services/assistant/execution/quoteDraftCreateCommand";
 import { createQuoteDraftCreateExecutionCommand } from "../services/assistant/execution/quoteDraftCreateExecutionCommand";
 import { createQuoteDraftUpdateCommandDefinition, quoteDraftUpdateCommandName } from "../services/assistant/execution/quoteDraftUpdateCommand";
@@ -155,6 +155,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
     [productInactiveDraftBulkUpdateCommandName, createProductInactiveDraftBulkUpdateExecutionCommand(productBulkUpdateService)],
     [productPricingChangeSetCommandName, createProductPricingChangeSetExecutionCommand(productPricingChangeSetCommandService, productPricingChangeSetStore)],
     [productPricingRollbackCommandName, createProductPricingRollbackExecutionCommand(productPricingChangeSetCommandService, productPricingChangeSetStore)],
+    [configurableProductDraftCommandName, createConfigurableProductDraftExecutionCommand()],
     [quoteDraftCreateCommandName, createQuoteDraftCreateExecutionCommand(quoteDraftIntakeService)],
     [quoteDraftUpdateCommandName, createQuoteDraftUpdateExecutionCommand(quoteDraftIntakeService)],
     [assistantOrderCreateCommandName, createDeferredOrderExecutionCommand(assistantOrderCreateCommandName, orderIntakeService)],
@@ -217,6 +218,9 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
         : null;
       const productPricingRollbackProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === productPricingRollbackCommandName)?.plan
+        : null;
+      const configurableProductProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === configurableProductDraftCommandName)?.plan
         : null;
       const quoteDraftCreateProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === quoteDraftCreateCommandName)?.plan
@@ -303,6 +307,10 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       }
       if (productPricingRollbackProposal && typeof productPricingRollbackProposal.changeSetId === "string" && typeof productPricingRollbackProposal.fingerprint === "string") {
         const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: productPricingRollbackCommandName, arguments: { changeSetId: productPricingRollbackProposal.changeSetId, fingerprint: productPricingRollbackProposal.fingerprint }, context: input.context });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
+      if (configurableProductProposal && typeof configurableProductProposal.proposalId === "string" && typeof configurableProductProposal.fingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: configurableProductDraftCommandName, arguments: { proposalId: configurableProductProposal.proposalId, fingerprint: configurableProductProposal.fingerprint }, context: input.context });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }
       if (productProposal && typeof productProposal.intakeSessionId === "string" && typeof productProposal.proposalFingerprint === "string") {

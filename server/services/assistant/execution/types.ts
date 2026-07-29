@@ -103,6 +103,7 @@ export interface ExecutionPlanPreview {
     conflictCount: number;
     rows: Array<{ productId: string; productName: string; active: boolean; before: Record<string, unknown>; current: Record<string, unknown>; proposedRestore: Record<string, unknown>; state: string; reason?: string }>;
   };
+  configurableProduct?: Record<string, unknown>;
   productInactiveDraftUpdate?: {
     productId: string;
     productName: string;
@@ -202,7 +203,7 @@ export interface ExecutionCommandResult {
   summary: string;
   steps: readonly ExecutionStepResult[];
   /** Bounded post-execution presentation data. This never feeds another command. */
-  details?: { productDraft?: { id: string; name: string; sourceLink: string } };
+  details?: { productDraft?: { id: string; name: string; sourceLink: string }; configurableProduct?: Record<string, unknown> };
 }
 
 export interface ExecutionCommandDefinition {
