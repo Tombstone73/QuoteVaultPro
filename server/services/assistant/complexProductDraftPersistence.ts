@@ -2,11 +2,17 @@ import { and, eq } from "drizzle-orm";
 import { aiConfigurableProductProposals, pbv2TreeVersions, products } from "@shared/schema";
 import { db } from "../../db";
 import { buildCanonicalComplexProductTree, specificationFingerprint, validateComplexProductSpecification, type ComplexProductSpecification } from "./complexProductSpecification";
+import { configurableProductConfirmationDto, configurableProductResultDto } from "./complexProductPresentation";
 
 export class ComplexProductDraftError extends Error {}
 export async function getComplexProductProposal(organizationId: string, proposalId: string) {
   const [proposal] = await db.select().from(aiConfigurableProductProposals).where(and(eq(aiConfigurableProductProposals.orgId, organizationId), eq(aiConfigurableProductProposals.id, proposalId))).limit(1);
   return proposal ?? null;
+}
+export async function getComplexProductConfirmation(organizationId: string, proposalId: string) {
+  const proposal = await getComplexProductProposal(organizationId, proposalId); if (!proposal) return null;
+  const specification = proposal.specification as ComplexProductSpecification; const blockers = validateComplexProductSpecification(specification);
+  return configurableProductConfirmationDto({ proposalId: proposal.id, fingerprint: proposal.fingerprint, specification, blockers });
 }
 export async function persistComplexProductProposal(input: { organizationId: string; conversationId?: string; actorUserId?: string | null; specification: ComplexProductSpecification }) {
   const blockers = validateComplexProductSpecification(input.specification); if (blockers.length) throw new ComplexProductDraftError(blockers.join(" "));
