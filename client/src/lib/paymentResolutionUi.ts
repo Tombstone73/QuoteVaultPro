@@ -1,6 +1,6 @@
-import type { PaymentResolutionStatus } from "@shared/paymentOrchestration";
+import type { PaymentProviderSummary, PaymentResolutionStatus } from "@shared/paymentOrchestration";
 
-export type InvoiceAutoPaymentAction = "wait" | "stripe" | "eps" | "manual" | "blocked";
+export type InvoiceAutoPaymentAction = "wait" | "stripe" | "eps" | "blocked";
 
 export function getOrderBillingActionState(input: {
   billingReady: boolean;
@@ -32,7 +32,7 @@ export function getOrderBillingActionState(input: {
       canInvoiceAndTakePayment: false,
       takePaymentLabel: "View Invoice",
       takePaymentHelp: "Invoice already paid",
-      invoiceAndTakePaymentLabel: "Invoice already paid",
+      invoiceAndTakePaymentLabel: "Take Payment",
     };
   }
 
@@ -40,24 +40,59 @@ export function getOrderBillingActionState(input: {
     return {
       canCreateInvoice: false,
       canTakePayment: !busy && !input.orderCanceled,
-      canInvoiceAndTakePayment: !busy && !input.orderCanceled,
+      canInvoiceAndTakePayment: false,
       takePaymentLabel: "Take Payment",
       takePaymentHelp: null,
-      invoiceAndTakePaymentLabel: "Invoice & Take Payment",
+      invoiceAndTakePaymentLabel: "Take Payment",
     };
   }
 
   const blockedHelp = noInvoice
-    ? "Create an invoice first"
+    ? (canCreateInvoice ? null : "Create an invoice first")
     : input.blockedReason || "No payable invoice is available.";
   return {
     canCreateInvoice,
-    canTakePayment: false,
-    canInvoiceAndTakePayment: canCreateInvoice,
+    canTakePayment: canCreateInvoice,
+    canInvoiceAndTakePayment: false,
     takePaymentLabel: "Take Payment",
     takePaymentHelp: blockedHelp,
-    invoiceAndTakePaymentLabel: "Invoice & Take Payment",
+    invoiceAndTakePaymentLabel: "Take Payment",
   };
+}
+
+export function getHostedCardUnavailableReason(input: {
+  provider?: PaymentProviderSummary | null;
+  paymentSettingsMissing?: readonly string[] | null;
+  paymentSettingsProvider?: string | null;
+  epsEnabled?: boolean | null;
+  epsReady?: boolean | null;
+  stripeConnected?: boolean | null;
+  stripeChargesEnabled?: boolean | null;
+}): string {
+  const configuredProvider = String(input.provider?.configuredProvider ?? input.paymentSettingsProvider ?? "none").trim().toLowerCase();
+  const missing = input.paymentSettingsMissing?.filter(Boolean) ?? [];
+
+  if (configuredProvider === "eps") {
+    if (input.epsEnabled === false) return "EPS is selected but not enabled in Settings.";
+    if (input.epsReady === false || input.provider?.epsReady === false) {
+      return missing.length
+        ? `EPS setup is incomplete: ${missing.join(", ")}.`
+        : "EPS setup is incomplete. Save the required EPS settings before taking card payments.";
+    }
+    return "EPS is selected but hosted card payments are not currently available.";
+  }
+
+  if (configuredProvider === "stripe") {
+    if (input.stripeConnected === false) return "Stripe is selected but not connected.";
+    if (input.stripeChargesEnabled === false) return "Stripe is connected but charges are not enabled.";
+    return "Stripe card payments are not currently available.";
+  }
+
+  if (input.provider?.hostedResolution.reason === "multiple_available_no_default") {
+    return "Choose a default card processor in Settings before taking card payments.";
+  }
+
+  return "Configure a card processor in Settings.";
 }
 
 export function resolveInvoiceAutoPaymentAction(input: {
@@ -88,6 +123,5 @@ export function resolveInvoiceAutoPaymentAction(input: {
   }
   if (input.canPayInvoice) return { action: "stripe" };
   if (input.epsHostedEnabled) return { action: "eps" };
-  if (input.canRecordPayment) return { action: "manual" };
-  return { action: "blocked", message: "No configured payment method is currently available for this invoice." };
+  return { action: "blocked", message: "No configured card processor is currently available for this invoice." };
 }

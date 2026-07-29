@@ -1901,7 +1901,8 @@ export default function OrderDetail() {
   };
 
   const navigateToInvoicePayment = (invoiceId: string, takePayment = true) => {
-    navigate(`/invoices/${invoiceId}${takePayment ? '?takePayment=1' : ''}`);
+    const suffix = takePayment ? "?takePayment=1" : "";
+    navigate(`/invoices/${invoiceId}${suffix}`);
   };
 
   const handleCreateInvoiceAndTakePayment = async () => {
@@ -1943,7 +1944,7 @@ export default function OrderDetail() {
     }
 
     if (resolution.resolutionStatus === 'NO_INVOICE') {
-      toast({ title: 'Create an invoice first', description: 'Take Payment requires an existing invoice target.', variant: 'destructive' });
+      await handleCreateInvoiceAndTakePayment();
       return;
     }
 
@@ -3606,18 +3607,6 @@ export default function OrderDetail() {
                     </Button>
                   )}
 
-                  {isAdminOrOwner && (
-                    <Button
-                      variant="secondary"
-                      onClick={() => void handleInvoiceAndTakePayment()}
-                      disabled={!billingActions.canInvoiceAndTakePayment}
-                      title={billingActions.canInvoiceAndTakePayment ? undefined : billingActions.takePaymentHelp ?? undefined}
-                    >
-                      <DollarSign className="mr-2 h-4 w-4" />
-                      {isPreparingInvoicePayment ? 'Preparing...' : billingActions.invoiceAndTakePaymentLabel}
-                    </Button>
-                  )}
-
                   {isAdminOrOwner && !billingOverrideActive && billingStatus !== 'billed' && (
                     <Button variant="secondary" onClick={() => setBillingOverrideDialogOpen(true)}>
                       Set Ready Override
@@ -3769,7 +3758,7 @@ export default function OrderDetail() {
                     <DialogHeader>
                       <DialogTitle>Select invoice to pay</DialogTitle>
                       <DialogDescription>
-                        This order has multiple payable invoices. Choose the invoice to open before launching payment.
+                        This order has multiple payable invoices. Choose the invoice to open before taking payment.
                       </DialogDescription>
                     </DialogHeader>
                     <Table>

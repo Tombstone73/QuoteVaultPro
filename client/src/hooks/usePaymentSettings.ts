@@ -113,6 +113,7 @@ export function useRecordEpsHostedResult() {
       approvedAmountCents: number;
       responseCode?: string | null;
       responseMessage?: string | null;
+      internalNote?: string | null;
       result: "approved" | "failed" | "canceled";
       amountOverride?: boolean;
     }) => {
