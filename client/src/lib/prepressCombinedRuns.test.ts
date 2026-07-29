@@ -80,7 +80,7 @@ describe("prepress combined run selection", () => {
     ], {}, "").reason).toBe("Cannot release to production until proof approved");
   });
 
-  test("requires finalized prepress artwork before run creation", () => {
+  test("requires assigned production artwork before run creation", () => {
     const result = validatePrepressCombinedRunSelection(
       [
         baseItem({ finalFileCount: 0 }),
@@ -91,6 +91,6 @@ describe("prepress combined run selection", () => {
     );
 
     expect(result.canCreate).toBe(false);
-    expect(result.reason).toBe("Complete prepress final artwork before creating a combined run.");
+    expect(result.reason).toBe("Assign production artwork before adding this job to a combined run.");
   });
 });

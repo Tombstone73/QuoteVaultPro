@@ -33,7 +33,7 @@ export function getPrepressCombinedRunItemIssue(item: PrepressCombinedRunItem): 
   if (!item.selectedProductionDestination) return "Selected items need a production destination.";
   if ((Number(item.quantity) || 0) <= 0) return "Selected items must have remaining quantity.";
   const finalFileCount = Number(item.finalFileCount ?? item.fileCounts?.finals ?? 0);
-  if (finalFileCount <= 0) return "Complete prepress final artwork before creating a combined run.";
+  if (finalFileCount <= 0) return "Assign production artwork before adding this job to a combined run.";
   if (terminalValues.has(String(item.status || "").toLowerCase()) || terminalValues.has(String(item.workflowState || "").toLowerCase())) {
     return "Canceled or terminal items cannot be combined.";
   }

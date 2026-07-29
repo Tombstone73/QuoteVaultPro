@@ -839,6 +839,40 @@ export default function PrepressProductionPageV2() {
     },
   });
 
+  const assignCustomerArtworkMutation = useMutation({
+    mutationFn: async ({ lineItemId, file, tag }: { lineItemId: string; file: VisibleFileRecord; tag: string }) => {
+      const sourceKind = file.category === "bridged_original" ? "order_attachment" : "line_item_original";
+      const res = await fetch(`/api/prepress/line-item/${lineItemId}/assign-customer-artwork`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceKind,
+          sourceId: file.artworkAssignmentFileId || file.id,
+          tag,
+          artworkSide: file.sideLabel || "na",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body?.success === false) throw new Error(body?.error || body?.message || "Unable to assign production artwork.");
+      return body;
+    },
+    onSuccess: async (body, variables) => {
+      await Promise.all([
+        refreshLineItemQueries(variables.lineItemId),
+        refreshPrepressQueue(),
+        refreshPrepressNavigationCount(),
+      ]);
+      toast({
+        title: body?.data?.created === false ? "Production artwork already assigned" : "Production artwork assigned",
+        description: body?.data?.file?.computedDisplayFilename || "The customer artwork now has a production role. The stored file was not copied.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Production artwork assignment failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   // PROMPT B: Send to Print Queue mutation
   const sendToPrintMutation = useMutation({
     mutationFn: (lineItemId: string) => requestReleasePrepressLineItem(lineItemId),
@@ -2404,25 +2438,41 @@ export default function PrepressProductionPageV2() {
                             ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <button 
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                window.open(file.downloadUrl, "_blank");
-                              }}
-                              className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all"
-                            >
-                              Download
-                            </button>
-                            <button
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setPromotionSourceFile(file);
-                                setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
-                              }}
-                              className="ml-2 bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
-                            >
-                              Create Production Artwork Copy
-                            </button>
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  window.open(file.downloadUrl, "_blank");
+                                }}
+                                className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all"
+                              >
+                                Download
+                              </button>
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  assignCustomerArtworkMutation.mutate({
+                                    lineItemId: selectedItem!.lineItemId,
+                                    file,
+                                    tag: selectedTag !== "none" ? selectedTag : "final_print",
+                                  });
+                                }}
+                                disabled={!selectedItem || assignCustomerArtworkMutation.isPending}
+                                className="bg-emerald-600/20 border border-emerald-400/50 px-3 py-1 rounded text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-50 transition-all"
+                              >
+                                Use as Production Artwork
+                              </button>
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setPromotionSourceFile(file);
+                                  setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
+                                }}
+                                className="bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
+                              >
+                                Create Modified Copy
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -2470,25 +2520,41 @@ export default function PrepressProductionPageV2() {
                                 ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
                               </td>
                               <td className="px-4 py-3 text-right">
-                                <button
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    window.open(file.downloadUrl, "_blank");
-                                  }}
-                                  className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-amber-900/30 hover:border-amber-600 transition-all"
-                                >
-                                  Download
-                                </button>
-                                <button
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setPromotionSourceFile(file);
-                                    setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
-                                  }}
-                                  className="ml-2 bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
-                                >
-                                  Create Production Artwork Copy
-                                </button>
+                                <div className="flex flex-wrap justify-end gap-2">
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      window.open(file.downloadUrl, "_blank");
+                                    }}
+                                    className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-amber-900/30 hover:border-amber-600 transition-all"
+                                  >
+                                    Download
+                                  </button>
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      assignCustomerArtworkMutation.mutate({
+                                        lineItemId: selectedItem!.lineItemId,
+                                        file,
+                                        tag: selectedTag !== "none" ? selectedTag : "final_print",
+                                      });
+                                    }}
+                                    disabled={!selectedItem || assignCustomerArtworkMutation.isPending}
+                                    className="bg-emerald-600/20 border border-emerald-400/50 px-3 py-1 rounded text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-50 transition-all"
+                                  >
+                                    Use as Production Artwork
+                                  </button>
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setPromotionSourceFile(file);
+                                      setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
+                                    }}
+                                    className="bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
+                                  >
+                                    Create Modified Copy
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           ))}

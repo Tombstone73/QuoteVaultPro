@@ -331,7 +331,7 @@ export async function createPrepressProductionRun(input: {
     const finalLineItemIds = new Set(finalRows.map((row) => row.lineItemId));
     const missingFinal = selectedRows.find(({ line }) => !finalLineItemIds.has(line.id));
     if (missingFinal) {
-      throw new ProductionRunError("PRODUCTION_RUN_FINAL_FILE_REQUIRED", `Complete prepress final artwork before creating a run for ${missingFinal.line.description || "the selected line item"}.`, 409);
+      throw new ProductionRunError("PRODUCTION_RUN_FINAL_FILE_REQUIRED", `Assign production artwork before creating a run for ${missingFinal.line.description || "the selected line item"}.`, 409);
     }
 
     const downstreamMembers: MemberInput[] = [];
