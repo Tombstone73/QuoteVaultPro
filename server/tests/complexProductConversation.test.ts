@@ -43,4 +43,12 @@ describe("configurable-product conversation integration helpers", () => {
     expect(corrected.route).toBe(initial.route);
     expect(specificationFingerprint(corrected)).not.toBe(specificationFingerprint(initial));
   });
+
+  it("accepts amount-first minimum-charge corrections used in a settings-only continuation", () => {
+    const initial = createInitialComplexProductSpecification("Create a PVC product with thickness options.");
+    const corrected = applyComplexProductConversationEdit(initial, "Use 48×96 sheets, Flatbed routing, allow rotation, and set a $25 minimum.");
+    expect(corrected.minimumChargeCents).toBe(2500);
+    expect(corrected.sheet).toMatchObject({ widthIn: 48, heightIn: 96, allowRotation: true });
+    expect(corrected.route).toBe("Flatbed");
+  });
 });

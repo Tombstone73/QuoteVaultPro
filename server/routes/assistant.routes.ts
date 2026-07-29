@@ -302,7 +302,12 @@ export function registerAssistantRoutes(
     try {
       const data = assistantTurnRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
       const scope = resolveScope(req);
-      const result = await service.createTurn(scope, req.params.conversationId, buildActor(req, scope.userId), data);
+      const result = await service.createTurn(
+        scope,
+        req.params.conversationId,
+        buildActor(req, scope.userId),
+        data,
+      );
       res.setHeader("x-assistant-correlation-id", result.correlationId);
       return res.status(201).json({
         success: true,

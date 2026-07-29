@@ -513,7 +513,6 @@ function ConversationContent() {
   const confirmPlan = useConfirmAssistantQuoteInternalNote();
   const createExecutionPlan = useCreateAssistantExecutionPlan();
   const [optimisticUserMessage, setOptimisticUserMessage] = React.useState<AssistantMessage | null>(null);
-
   React.useEffect(() => {
     if (!activeConversationId && conversations.data?.[0]) setActiveConversationId(conversations.data[0].id);
   }, [activeConversationId, conversations.data]);

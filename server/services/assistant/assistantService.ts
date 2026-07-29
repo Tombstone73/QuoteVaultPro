@@ -481,6 +481,7 @@ export class AssistantService {
           status: "responded",
           structuredCards: systemGuide.cards,
         });
+        return result;
       }
     }
     if (!capability.toolsEnabled) {
@@ -491,6 +492,7 @@ export class AssistantService {
         errorCode: "provider_unavailable",
         structuredCards: [{ kind: "provider_unavailable", title: "Business questions unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }],
       });
+      return result;
     }
 
     let response = "I could not complete that business lookup.";
@@ -521,6 +523,7 @@ export class AssistantService {
       // not make a persisted configurable proposal depend on a route/client
       // alias once the conversation has been tenant- and actor-scoped.
       const canonicalConversationId = conversation.id;
+      const activeConfigurableProposalId = activeConfigurableProductProposalId(conversation.messages);
       const quoteDraft = await quoteDraftIntakeService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
@@ -566,7 +569,7 @@ export class AssistantService {
         conversationId: canonicalConversationId,
         message: request.message,
         activeSessionId: activeProductIntakeSession(conversation.messages),
-        activeConfigurableProposalId: activeConfigurableProductProposalId(conversation.messages),
+        activeConfigurableProposalId,
       });
       if (productManagement.handled) {
         response = productManagement.response;
