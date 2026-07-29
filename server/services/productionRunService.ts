@@ -128,8 +128,8 @@ export async function listProductionRuns(input: {
       customerName: customers.companyName,
     })
     .from(productionRuns)
-    .innerJoin(orders, eq(productionRuns.orderId, orders.id))
-    .leftJoin(customers, eq(orders.customerId, customers.id))
+    .innerJoin(orders, and(eq(productionRuns.orderId, orders.id), eq(orders.organizationId, input.organizationId)))
+    .leftJoin(customers, and(eq(orders.customerId, customers.id), eq(customers.organizationId, input.organizationId)))
     .where(and(
       eq(productionRuns.organizationId, input.organizationId),
       input.orderId ? eq(productionRuns.orderId, input.orderId) : undefined,
@@ -162,7 +162,7 @@ export async function listProductionRuns(input: {
         quantity: sql<number>`coalesce(sum(${productionRunMembers.completedQuantity}), 0)::int`,
       })
       .from(productionRunMembers)
-      .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+      .innerJoin(productionRuns, and(eq(productionRuns.id, productionRunMembers.productionRunId), eq(productionRuns.organizationId, input.organizationId)))
       .where(and(
         eq(productionRunMembers.organizationId, input.organizationId),
         inArray(productionRunMembers.productionJobId, memberJobIds),
@@ -263,15 +263,15 @@ export async function transitionProductionRun(input: { organizationId: string; r
     const next: Partial<typeof productionRuns.$inferInsert> = input.action === "release" ? { status: "ready_for_production", releasedAt: now } : input.action === "start" ? { status: "in_production", startedAt: now } : input.action === "cancel" ? { status: "canceled", canceledAt: now, canceledByUserId: input.actorUserId, cancelReason: input.reason?.trim() || null } : { status: "completed", completedAt: now };
     if (input.action === "complete") {
       if (run.status !== "ready_for_production" && run.status !== "in_production") throw new ProductionRunError("PRODUCTION_RUN_NOT_RELEASABLE", "Release the production run before completing it.", 409);
-      const members = await tx.select().from(productionRunMembers).where(eq(productionRunMembers.productionRunId, run.id));
+      const members = await tx.select().from(productionRunMembers).where(and(eq(productionRunMembers.productionRunId, run.id), eq(productionRunMembers.organizationId, input.organizationId)));
       if (!members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "A production run must have members.");
-      await tx.update(productionRuns).set({ ...next, updatedAt: now }).where(eq(productionRuns.id, run.id));
+      await tx.update(productionRuns).set({ ...next, updatedAt: now }).where(and(eq(productionRuns.id, run.id), eq(productionRuns.organizationId, input.organizationId)));
       for (const member of members) {
-        await tx.update(productionRunMembers).set({ completedQuantity: member.allocatedQuantity, updatedAt: now }).where(eq(productionRunMembers.id, member.id));
+        await tx.update(productionRunMembers).set({ completedQuantity: member.allocatedQuantity, updatedAt: now }).where(and(eq(productionRunMembers.id, member.id), eq(productionRunMembers.organizationId, input.organizationId)));
         const [line] = await tx.select({ quantity: orderLineItems.quantity }).from(orderLineItems).where(eq(orderLineItems.id, member.orderLineItemId));
-        const [completed] = await tx.select({ quantity: sql<number>`coalesce(sum(${productionRunMembers.completedQuantity}), 0)` }).from(productionRunMembers).innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId)).where(and(eq(productionRunMembers.productionJobId, member.productionJobId), eq(productionRuns.status, "completed")));
-        if (Number(completed?.quantity ?? 0) >= Number(line?.quantity ?? 0)) await tx.update(productionJobs).set({ status: "done", completedAt: now, completedByUserId: input.actorUserId, updatedAt: now }).where(eq(productionJobs.id, member.productionJobId));
-        else await tx.update(productionJobs).set({ status: "in_progress", updatedAt: now }).where(eq(productionJobs.id, member.productionJobId));
+        const [completed] = await tx.select({ quantity: sql<number>`coalesce(sum(${productionRunMembers.completedQuantity}), 0)` }).from(productionRunMembers).innerJoin(productionRuns, and(eq(productionRuns.id, productionRunMembers.productionRunId), eq(productionRuns.organizationId, input.organizationId))).where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionJobId, member.productionJobId), eq(productionRuns.status, "completed")));
+        if (Number(completed?.quantity ?? 0) >= Number(line?.quantity ?? 0)) await tx.update(productionJobs).set({ status: "done", completedAt: now, completedByUserId: input.actorUserId, updatedAt: now }).where(and(eq(productionJobs.id, member.productionJobId), eq(productionJobs.organizationId, input.organizationId)));
+        else await tx.update(productionJobs).set({ status: "in_progress", updatedAt: now }).where(and(eq(productionJobs.id, member.productionJobId), eq(productionJobs.organizationId, input.organizationId)));
         await tx.insert(productionEvents).values({
           organizationId: input.organizationId,
           productionJobId: member.productionJobId,
@@ -287,7 +287,7 @@ export async function transitionProductionRun(input: { organizationId: string; r
           },
         });
       }
-      const [updatedAfterCompletion] = await tx.select().from(productionRuns).where(eq(productionRuns.id, run.id)).limit(1);
+      const [updatedAfterCompletion] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, run.id), eq(productionRuns.organizationId, input.organizationId))).limit(1);
       await tx.insert(auditLogs).values({
         organizationId: input.organizationId,
         userId: input.actorUserId,
@@ -301,7 +301,7 @@ export async function transitionProductionRun(input: { organizationId: string; r
       } as any);
       return updatedAfterCompletion;
     }
-    const [updated] = await tx.update(productionRuns).set({ ...next, updatedAt: now }).where(eq(productionRuns.id, run.id)).returning();
+    const [updated] = await tx.update(productionRuns).set({ ...next, updatedAt: now }).where(and(eq(productionRuns.id, run.id), eq(productionRuns.organizationId, input.organizationId))).returning();
     await tx.insert(auditLogs).values({
       organizationId: input.organizationId,
       userId: input.actorUserId,
