@@ -189,6 +189,16 @@ async function getRepresentativeRunMember(input: { organizationId: string; runId
   return member;
 }
 
+async function countActiveProductionRunFiles(tx: any, input: { organizationId: string; runId: string }): Promise<number> {
+  const [activeFiles] = await tx.select({ count: sql<number>`count(*)::int` }).from(lineItemFiles).where(and(
+    eq(lineItemFiles.organizationId, input.organizationId),
+    eq(lineItemFiles.productionRunId, input.runId),
+    eq(lineItemFiles.role, "final"),
+    eq(lineItemFiles.status, "active"),
+  ));
+  return Number(activeFiles?.count ?? 0);
+}
+
 async function insertRunAudit(input: {
   organizationId: string;
   actorUserId: string | null;
@@ -781,15 +791,17 @@ export async function transitionProductionRun(input: { organizationId: string; r
     if (run.status === "completed" || run.status === "canceled") throw new ProductionRunError("PRODUCTION_RUN_TERMINAL", "Completed or canceled production runs cannot be changed.", 409);
     const now = new Date();
     const next: Partial<typeof productionRuns.$inferInsert> = input.action === "release" ? { status: "ready_for_production", releasedAt: now } : input.action === "start" ? { status: "in_production", startedAt: now } : input.action === "cancel" ? { status: "canceled", canceledAt: now, canceledByUserId: input.actorUserId, cancelReason: input.reason?.trim() || null } : { status: "completed", completedAt: now };
+    if (input.action === "release") {
+      if (run.status !== "draft") throw new ProductionRunError("PRODUCTION_RUN_NOT_RELEASABLE", "Only draft production runs can be released.", 409);
+      const activeFileCount = await countActiveProductionRunFiles(tx, { organizationId: input.organizationId, runId: run.id });
+      if (activeFileCount <= 0) {
+        throw new ProductionRunError("PRODUCTION_RUN_FILE_REQUIRED", "Upload or replace the shared nested final production file before releasing this run.", 409);
+      }
+    }
     if (input.action === "complete") {
       if (run.status !== "ready_for_production" && run.status !== "in_production") throw new ProductionRunError("PRODUCTION_RUN_NOT_RELEASABLE", "Release the production run before completing it.", 409);
-      const [activeFiles] = await tx.select({ count: sql<number>`count(*)::int` }).from(lineItemFiles).where(and(
-        eq(lineItemFiles.organizationId, input.organizationId),
-        eq(lineItemFiles.productionRunId, run.id),
-        eq(lineItemFiles.role, "final"),
-        eq(lineItemFiles.status, "active"),
-      ));
-      if (Number(activeFiles?.count ?? 0) <= 0) {
+      const activeFileCount = await countActiveProductionRunFiles(tx, { organizationId: input.organizationId, runId: run.id });
+      if (activeFileCount <= 0) {
         throw new ProductionRunError("PRODUCTION_RUN_FILE_REQUIRED", "Upload or replace the shared nested final production file before completing this run.", 409);
       }
       const members = await tx.select().from(productionRunMembers).where(and(eq(productionRunMembers.productionRunId, run.id), eq(productionRunMembers.organizationId, input.organizationId)));
