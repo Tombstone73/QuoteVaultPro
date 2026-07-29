@@ -24,7 +24,6 @@ import { DrizzleAssistantRepository } from "../storage/assistant.repo";
 import { AnalyticalCustomerResolutionService } from "../services/assistant/analyticalCustomerResolution";
 import { AssistantAnalyticsReportingRepository } from "../storage/assistantAnalyticsReporting.repo";
 import { assistantReportEntityResolutionsRepository } from "../storage/assistantReportEntityResolutions.repo";
-import { getRuntimeEnvironmentSummary } from "../lib/runtimeEnvironment";
 
 function getUserId(user: unknown): string | null {
   const candidate = user as { id?: unknown; claims?: { sub?: unknown } } | null;
@@ -138,13 +137,6 @@ function sendError(res: Response, error: unknown) {
   return res.status(500).json({
     error: { code: "turn_failed", message: "Assistant request failed.", retryable: true },
   });
-}
-
-function exposeDevAssistantDispatchPath(req: Request): boolean {
-  return getRuntimeEnvironmentSummary({
-    requestHost: req.get("host") ?? null,
-    requestOrigin: req.get("origin") ?? null,
-  }).apiRuntime === "deployed-dev";
 }
 
 /** Identity is derived exclusively from the authenticated request.  Ignore
@@ -310,21 +302,13 @@ export function registerAssistantRoutes(
     try {
       const data = assistantTurnRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
       const scope = resolveScope(req);
-      const diagnosticPathEnabled = exposeDevAssistantDispatchPath(req);
       const result = await service.createTurn(
         scope,
         req.params.conversationId,
         buildActor(req, scope.userId),
         data,
-        diagnosticPathEnabled ? { diagnosticPath: true } : undefined,
       );
-      const diagnosticPath = diagnosticPathEnabled
-        ? { routeEntered: true, ...((result as { diagnosticPath?: Record<string, unknown> }).diagnosticPath ?? {}) }
-        : undefined;
       res.setHeader("x-assistant-correlation-id", result.correlationId);
-      if (diagnosticPath) {
-        res.setHeader("x-assistant-dispatch-path", JSON.stringify(diagnosticPath));
-      }
       return res.status(201).json({
         success: true,
         data: {
@@ -338,7 +322,6 @@ export function registerAssistantRoutes(
             turnId: result.turnId,
             provider: null,
             model: null,
-            ...(diagnosticPath ? { diagnosticPath } : {}),
           },
         },
       });

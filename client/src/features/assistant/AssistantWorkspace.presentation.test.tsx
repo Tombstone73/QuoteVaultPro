@@ -15,7 +15,7 @@ const context = {
   selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-21T12:00:00.000Z", unsavedChanges: false,
 } as const;
 
-function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; dispatchDiagnostic?: any; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void } = {}) {
+function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void } = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -56,13 +56,12 @@ describe("Assistant workspace presentation", () => {
     expect(normal.container.textContent).not.toContain("corr_123");
     act(() => normal.root.unmount());
 
-    const authorized = render(cards, { diagnosticsEnabled: true, correlationId: "corr_123", dispatchDiagnostic: { routeEntered: true, assistantServiceEntered: true, dispatcherEntered: true, productManagementInvoked: true, productManagementHandled: false, finalSkill: "planner", finalTool: "production.get_queue_summary" }, presentation: "diagnostic", responseState: { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true } });
+    const authorized = render(cards, { diagnosticsEnabled: true, correlationId: "corr_123", presentation: "diagnostic", responseState: { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true } });
     expect(authorized.container.textContent).toContain("Show diagnostics");
     const button = authorized.container.querySelector("button") as HTMLButtonElement;
     act(() => button.click());
     expect(authorized.container.textContent).toContain("navigation.get_current_context");
     expect(authorized.container.textContent).toContain("corr_123");
-    expect(authorized.container.textContent).toContain("final=planner/production.get_queue_summary");
     act(() => authorized.root.unmount());
   });
 

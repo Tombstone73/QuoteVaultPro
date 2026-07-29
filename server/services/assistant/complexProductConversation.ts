@@ -58,7 +58,9 @@ export function applyComplexProductConversationEdit(current: ComplexProductSpeci
   const next = structuredClone(current); const source = message.trim();
   const name = productNameFromMessage(source); if (name) next.name = name;
   const category = categoryFromMessage(source); if (category) next.category = category;
-  const minimum = source.match(/\bminimum(?:\s+charge)?\s*(?:to|of)?\s*\$?(\d+(?:\.\d{1,2})?)/i); if (minimum) next.minimumChargeCents = Math.round(Number(minimum[1]) * 100);
+  const minimum = source.match(/\bminimum(?:\s+charge)?\s*(?:to|of)?\s*\$?(\d+(?:\.\d{1,2})?)|\$?(\d+(?:\.\d{1,2})?)\s+minimum(?:\s+charge)?\b/i);
+  const minimumAmount = minimum?.[1] ?? minimum?.[2];
+  if (minimumAmount) next.minimumChargeCents = Math.round(Number(minimumAmount) * 100);
   const sheet = source.match(/\b(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\b/i); if (sheet) { next.sheet.widthIn = Number(sheet[1]); next.sheet.heightIn = Number(sheet[2]); }
   if (/\brotation\s+(?:allowed|enabled)\b|\ballow\s+rotation\b/i.test(source)) next.sheet.allowRotation = true;
   if (/\brotation\s+(?:disabled|not allowed)\b|\bdo not allow rotation\b/i.test(source)) next.sheet.allowRotation = false;

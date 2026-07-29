@@ -338,16 +338,6 @@ function ProductionReportingDetails({ details, sources }: { details: unknown; so
   </div>;
 }
 
-type DevAssistantDispatchDiagnostic = {
-  routeEntered?: boolean;
-  assistantServiceEntered?: boolean;
-  dispatcherEntered?: boolean;
-  productManagementInvoked?: boolean;
-  productManagementHandled?: boolean | null;
-  finalSkill?: string | null;
-  finalTool?: string | null;
-};
-
 export function ResultCards({
   cards,
   context,
@@ -359,7 +349,6 @@ export function ResultCards({
   confirmingPlanId,
   diagnosticsEnabled = false,
   correlationId = null,
-  dispatchDiagnostic = null,
   presentation: serverPresentation,
   responseState,
   onRetry,
@@ -375,7 +364,6 @@ export function ResultCards({
   confirmingPlanId?: string;
   diagnosticsEnabled?: boolean;
   correlationId?: string | null;
-  dispatchDiagnostic?: DevAssistantDispatchDiagnostic | null;
   presentation?: AssistantResponsePresentation;
   responseState?: AssistantResponseState;
   onRetry?: () => void;
@@ -460,7 +448,7 @@ export function ResultCards({
     </section>;
   })}
   {responseState?.retryable && onRetry ? <Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button> : null}
-  {diagnosticsEnabled && responseState?.diagnosticsAvailable && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => setDiagnosticsOpen((open) => !open)} aria-expanded={diagnosticsOpen}>{diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"}</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground"><p>Correlation ID: {correlationId ?? "Unavailable"}</p>{dispatchDiagnostic ? <p>Dispatch: route={String(Boolean(dispatchDiagnostic.routeEntered))}; service={String(Boolean(dispatchDiagnostic.assistantServiceEntered))}; dispatcher={String(Boolean(dispatchDiagnostic.dispatcherEntered))}; product-management={String(Boolean(dispatchDiagnostic.productManagementInvoked))}/{dispatchDiagnostic.productManagementHandled === null || dispatchDiagnostic.productManagementHandled === undefined ? "n/a" : String(dispatchDiagnostic.productManagementHandled)}; final={dispatchDiagnostic.finalSkill ?? "unknown"}{dispatchDiagnostic.finalTool ? `/${dispatchDiagnostic.finalTool}` : ""}</p> : null}{diagnosticCards.map((card, index) => { const details = diagnosticDetails(card); return <div key={`${diagnosticLabel(card)}-${index}`} className="mt-1"><p>Tool: {diagnosticLabel(card)}{diagnosticStatus(card) ? ` (${formatAssistantDisplayValue(diagnosticStatus(card))})` : ""}</p>{details.category ? <p>Category: {formatAssistantDisplayValue(details.category)}</p> : null}{details.code ? <p>Code: {formatAssistantDisplayValue(details.code)}</p> : null}{details.step ? <p>Step: {formatAssistantDisplayValue(details.step)}</p> : null}</div>; })}</div> : null}</div> : null}
+  {diagnosticsEnabled && responseState?.diagnosticsAvailable && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => setDiagnosticsOpen((open) => !open)} aria-expanded={diagnosticsOpen}>{diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"}</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground"><p>Correlation ID: {correlationId ?? "Unavailable"}</p>{diagnosticCards.map((card, index) => { const details = diagnosticDetails(card); return <div key={`${diagnosticLabel(card)}-${index}`} className="mt-1"><p>Tool: {diagnosticLabel(card)}{diagnosticStatus(card) ? ` (${formatAssistantDisplayValue(diagnosticStatus(card))})` : ""}</p>{details.category ? <p>Category: {formatAssistantDisplayValue(details.category)}</p> : null}{details.code ? <p>Code: {formatAssistantDisplayValue(details.code)}</p> : null}{details.step ? <p>Step: {formatAssistantDisplayValue(details.step)}</p> : null}</div>; })}</div> : null}</div> : null}
   </div>;
 }
 
@@ -525,21 +513,6 @@ function ConversationContent() {
   const confirmPlan = useConfirmAssistantQuoteInternalNote();
   const createExecutionPlan = useCreateAssistantExecutionPlan();
   const [optimisticUserMessage, setOptimisticUserMessage] = React.useState<AssistantMessage | null>(null);
-  const [dispatchDiagnostics, setDispatchDiagnostics] = React.useState<Record<string, DevAssistantDispatchDiagnostic>>({});
-
-  const rememberDispatchDiagnostic = (result: unknown) => {
-    const data = result && typeof result === "object" && "data" in result ? (result as { data?: unknown }).data : result;
-    const usage = data && typeof data === "object" && "usage" in data ? (data as { usage?: unknown }).usage : null;
-    const correlationId = data && typeof data === "object" && typeof (data as { correlationId?: unknown }).correlationId === "string"
-      ? (data as { correlationId: string }).correlationId
-      : null;
-    const diagnosticPath = usage && typeof usage === "object" && "diagnosticPath" in usage
-      ? (usage as { diagnosticPath?: unknown }).diagnosticPath
-      : null;
-    if (!correlationId || !diagnosticPath || typeof diagnosticPath !== "object" || Array.isArray(diagnosticPath)) return;
-    setDispatchDiagnostics((current) => ({ ...current, [correlationId]: diagnosticPath as DevAssistantDispatchDiagnostic }));
-  };
-
   React.useEffect(() => {
     if (!activeConversationId && conversations.data?.[0]) setActiveConversationId(conversations.data[0].id);
   }, [activeConversationId, conversations.data]);
@@ -562,8 +535,7 @@ function ConversationContent() {
       setActiveConversationId(conversationId);
     }
     try {
-      const result = await sendTurn.mutateAsync({ conversationId, message, context });
-      rememberDispatchDiagnostic(result);
+      await sendTurn.mutateAsync({ conversationId, message, context });
       setDraft("");
     } catch {
       setOptimisticUserMessage(null);
@@ -584,8 +556,7 @@ function ConversationContent() {
       setActiveConversationId(conversationId);
     }
     try {
-      const result = await sendTurn.mutateAsync({ conversationId, message, context });
-      rememberDispatchDiagnostic(result);
+      await sendTurn.mutateAsync({ conversationId, message, context });
       setDraft("");
     } catch {
       setOptimisticUserMessage(null);
@@ -607,8 +578,7 @@ function ConversationContent() {
 
   const retry = async (message: string) => {
     if (!activeConversationId || sendTurn.isPending) return;
-    const result = await sendTurn.mutateAsync({ conversationId: activeConversationId, message, context });
-    rememberDispatchDiagnostic(result);
+    await sendTurn.mutateAsync({ conversationId: activeConversationId, message, context });
   };
   const persistedMessages = detail.data?.messages ?? [];
   const optimisticMessagePersisted = Boolean(optimisticUserMessage && persistedMessages.some((message) => message.role === "user" && message.content === optimisticUserMessage.content));
@@ -681,7 +651,7 @@ function ConversationContent() {
           ) : messages.map((message, index) => {
             const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
             if (message.role === "user") return <article key={message.id} ref={message.id === latestMessage?.id ? conversationScroll.latestUserRef : undefined} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
-            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} dispatchDiagnostic={message.correlationId ? dispatchDiagnostics[message.correlationId] : null} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Your message wasn’t sent. Try again.</p> : null}
         </div>

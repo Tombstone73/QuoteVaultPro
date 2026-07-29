@@ -252,20 +252,6 @@ function activeProductIntakeSession(messages: AssistantMessageRecord[]): string 
   return null;
 }
 
-/**
- * DEV-only, request-scoped routing trace. It is returned only by the
- * authenticated DEV turn route and is deliberately never persisted with the
- * conversation, cards, or assistant audit history.
- */
-export type AssistantDispatchDiagnosticPath = {
-  assistantServiceEntered: true;
-  dispatcherEntered: boolean;
-  productManagementInvoked: boolean;
-  productManagementHandled: boolean | null;
-  finalSkill: string | null;
-  finalTool: string | null;
-};
-
 function activeConfigurableProductProposalId(messages: AssistantMessageRecord[]): string | null {
   for (const message of [...messages].reverse()) {
     if (message.role !== "assistant") continue;
@@ -452,21 +438,10 @@ export class AssistantService {
     conversationId: string,
     actor: AssistantActor,
     data: AssistantTurnRequest,
-    options?: { diagnosticPath?: boolean },
   ) {
     // Routes validate this too; retain a service boundary so future callers
     // cannot persist arbitrary context, form data, or identity fields.
     const request = assistantTurnRequestSchema.parse(data);
-    const diagnosticPath: AssistantDispatchDiagnosticPath | null = options?.diagnosticPath
-      ? {
-        assistantServiceEntered: true,
-        dispatcherEntered: false,
-        productManagementInvoked: false,
-        productManagementHandled: null,
-        finalSkill: null,
-        finalTool: null,
-      }
-      : null;
     const capability = await this.getCapabilities(scope, actor);
     if (!capability.conversationsEnabled) {
       throw new AssistantServiceError(
@@ -506,7 +481,7 @@ export class AssistantService {
           status: "responded",
           structuredCards: systemGuide.cards,
         });
-        return this.withDiagnosticPath(result, diagnosticPath, "system_guide");
+        return result;
       }
     }
     if (!capability.toolsEnabled) {
@@ -517,7 +492,7 @@ export class AssistantService {
         errorCode: "provider_unavailable",
         structuredCards: [{ kind: "provider_unavailable", title: "Business questions unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }],
       });
-      return this.withDiagnosticPath(result, diagnosticPath, "assistant_unavailable");
+      return result;
     }
 
     let response = "I could not complete that business lookup.";
@@ -544,21 +519,17 @@ export class AssistantService {
       // service revalidation.
       const conversation = preloadedConversation ?? await this.repo.getConversation({ ...scope, conversationId });
       if (!conversation) throw this.notFound();
-      if (diagnosticPath) diagnosticPath.dispatcherEntered = true;
       // The repository-owned ID is the canonical continuation identity.  Do
       // not make a persisted configurable proposal depend on a route/client
       // alias once the conversation has been tenant- and actor-scoped.
       const canonicalConversationId = conversation.id;
       const activeConfigurableProposalId = activeConfigurableProductProposalId(conversation.messages);
-      const traceConfigurableDispatch = Boolean(activeConfigurableProposalId)
-        || /\b(?:sheet(?:\s+size)?|rotation|flatbed|minimum(?:\s+charge)?|pricing\s+matrix)\b/i.test(request.message);
       const quoteDraft = await quoteDraftIntakeService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
         conversationId,
         message: request.message,
       });
-      if (traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "quote_draft", handled: quoteDraft.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
       if (quoteDraft.handled) {
         response = quoteDraft.response;
         cards = quoteDraft.cards as AssistantResultCard[];
@@ -571,7 +542,6 @@ export class AssistantService {
         conversationId,
         message: request.message,
       });
-      if (traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "order_intake", handled: orderIntake.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
       if (orderIntake.handled) {
         response = orderIntake.response;
         cards = orderIntake.cards as AssistantResultCard[];
@@ -584,7 +554,6 @@ export class AssistantService {
         conversationId,
         message: request.message,
       });
-      if (traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "crm_intake", handled: crmIntake.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
       if (crmIntake.handled) {
         response = crmIntake.response;
         cards = crmIntake.cards as AssistantResultCard[];
@@ -601,29 +570,19 @@ export class AssistantService {
         message: request.message,
         activeSessionId: activeProductIntakeSession(conversation.messages),
         activeConfigurableProposalId,
-        correlationId,
-        traceConfigurableDispatch,
       });
-      if (diagnosticPath) {
-        diagnosticPath.productManagementInvoked = true;
-        diagnosticPath.productManagementHandled = productManagement.handled;
-      }
-      if (traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "product_management", handled: productManagement.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId });
       if (productManagement.handled) {
         response = productManagement.response;
         cards = productManagement.cards as AssistantResultCard[];
         provider = "local_product_intake";
         model = "product-management-skill-v1";
-        if (diagnosticPath) diagnosticPath.finalSkill = "product_management";
       } else {
       const productionIntake = await productionOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (traceConfigurableDispatch) console.log("[Assistant configurable dispatch]", { correlationId, stage: "candidate", candidate: "production_intake", handled: productionIntake.handled, conversationId: canonicalConversationId, activeProposalId: activeConfigurableProposalId, winner: productionIntake.handled ? "production_intake" : null });
       if (productionIntake.handled) {
         response = productionIntake.response;
         cards = productionIntake.cards as AssistantResultCard[];
         provider = "local_production_intake";
         model = "conversational-production-intake-v1";
-        if (diagnosticPath) diagnosticPath.finalSkill = "production_operations";
       } else {
       const fulfillmentIntake = await fulfillmentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
       if (fulfillmentIntake.handled) { response = fulfillmentIntake.response; cards = fulfillmentIntake.cards as AssistantResultCard[]; provider = "local_fulfillment_intake"; model = "conversational-fulfillment-intake-v1"; } else {
@@ -718,7 +677,6 @@ export class AssistantService {
         );
         response = rendered.response;
         cards = rendered.cards;
-        if (diagnosticPath) diagnosticPath.finalTool = audits.at(-1)?.toolName ?? null;
       }
       }
       }
@@ -735,7 +693,6 @@ export class AssistantService {
       errorCode = error instanceof AssistantPlanningError ? error.code : "provider_unavailable";
       response = error instanceof AssistantPlanningError ? error.message : "The assistant is temporarily unavailable. Please retry.";
       cards = [{ kind: "provider_unavailable", title: "Business questions unavailable", summary: response, sourceLinks: [], toolStatus: "failed" }];
-      if (diagnosticPath) diagnosticPath.finalSkill = "error";
     }
     const result = await this.persistFoundationTurn({
       ...scope,
@@ -769,17 +726,7 @@ export class AssistantService {
     });
     if (!result) throw this.notFound();
 
-    return this.withDiagnosticPath(result, diagnosticPath, provider ?? model ?? "unresolved");
-  }
-
-  private withDiagnosticPath<T extends object>(
-    result: T,
-    diagnosticPath: AssistantDispatchDiagnosticPath | null,
-    fallbackSkill: string,
-  ): T | (T & { diagnosticPath: AssistantDispatchDiagnosticPath }) {
-    if (!diagnosticPath) return result;
-    diagnosticPath.finalSkill ??= fallbackSkill;
-    return { ...result, diagnosticPath: { ...diagnosticPath } };
+    return result;
   }
 
   private async readPausedResolutionTurn(

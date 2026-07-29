@@ -220,50 +220,6 @@ describe("assistant routes", () => {
     );
   });
 
-  test("exposes only the safe dispatch path metadata for the authenticated DEV turn route", async () => {
-    const service = buildService();
-    service.createTurn.mockResolvedValue({
-      turnId: "turn_1",
-      correlationId: "correlation_1",
-      conversation,
-      userMessage: { id: "message_1", conversationId: conversation.id, turnId: "turn_1", role: "user", content: "Hello", createdAt: new Date(NOW) },
-      assistantMessage: { id: "message_2", conversationId: conversation.id, turnId: "turn_1", role: "assistant", content: "Connected", createdAt: new Date(NOW) },
-      diagnosticPath: {
-        assistantServiceEntered: true,
-        dispatcherEntered: true,
-        productManagementInvoked: true,
-        productManagementHandled: true,
-        finalSkill: "product_management",
-        finalTool: null,
-      },
-    });
-    const { app } = buildApp(service);
-
-    const response = await request(app)
-      .post("/api/assistant/conversations/conversation_1/turns")
-      .set("Host", "dev.printershero.com")
-      .send(turnBody())
-      .expect(201);
-
-    expect(response.headers["x-assistant-dispatch-path"]).toContain('"routeEntered":true');
-    expect(response.body.data.usage.diagnosticPath).toEqual({
-      routeEntered: true,
-      assistantServiceEntered: true,
-      dispatcherEntered: true,
-      productManagementInvoked: true,
-      productManagementHandled: true,
-      finalSkill: "product_management",
-      finalTool: null,
-    });
-    expect(service.createTurn).toHaveBeenLastCalledWith(
-      { organizationId: "org_1", userId: "user_1" },
-      "conversation_1",
-      expect.objectContaining({ userId: "user_1" }),
-      expect.anything(),
-      { diagnosticPath: true },
-    );
-  });
-
   test("disabled assistant rejects turns without calling any provider or domain dependency", async () => {
     const service = buildService();
     service.createTurn.mockRejectedValue(new AssistantServiceError("ASSISTANT_DISABLED", "Disabled", 503));
