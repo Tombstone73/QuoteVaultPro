@@ -47,6 +47,26 @@ function repository(): ExecutionPlanRepository & { plans: Map<string, any>; conf
       if (!current || current.version !== expectedVersion) return null;
       plans.set(plan.id, plan); return plan;
     }),
+    findAwaitingPlan: jest.fn(async ({ scope: requestedScope, conversationId, commandName, arguments: expectedArguments, now: requestedNow }) => {
+      for (const plan of plans.values()) {
+        if (plan.organizationId === requestedScope.organizationId && plan.userId === requestedScope.userId
+          && plan.conversationId === conversationId && plan.commandName === commandName
+          && plan.status === "awaiting_confirmation" && plan.expiresAt > requestedNow
+          && JSON.stringify(plan.sanitizedArguments) === JSON.stringify(expectedArguments)) return plan;
+      }
+      return null;
+    }),
+    supersedeAwaitingPlans: jest.fn(async ({ scope: requestedScope, conversationId, commandName, proposalId, fingerprint, now: requestedNow }) => {
+      let count = 0;
+      for (const [id, plan] of plans) {
+        if (plan.organizationId !== requestedScope.organizationId || plan.userId !== requestedScope.userId
+          || plan.conversationId !== conversationId || plan.commandName !== commandName || plan.status !== "awaiting_confirmation"
+          || plan.sanitizedArguments?.proposalId !== proposalId || plan.sanitizedArguments?.fingerprint === fingerprint) continue;
+        plans.set(id, { ...plan, status: "invalidated", version: plan.version + 1, updatedAt: requestedNow });
+        count += 1;
+      }
+      return count;
+    }),
     createConfirmation: jest.fn(async (confirmation) => { confirmations.push(confirmation); }),
     consumeConfirmation: jest.fn(async (input) => {
       const confirmation = confirmations.find((candidate) => candidate.planId === input.planId && candidate.organizationId === input.organizationId && candidate.userId === input.userId && candidate.tokenHash === input.tokenHash);
@@ -138,6 +158,42 @@ describe("Stage 3 execution planning service", () => {
     clock = new Date(now.getTime() + 10);
     await expect(service.issueConfirmation(scope, expiredPlan.id, expiredPlan.version)).rejects.toMatchObject({ code: "PLAN_EXPIRED" });
     expect(repo.plans.get(expiredPlan.id).status).toBe("expired");
+  });
+
+  test("reuses an unchanged fingerprint-bound awaiting plan and supersedes old GO tokens after an edit", async () => {
+    const repo = repository();
+    const registered = command({ buildPreview: jest.fn(async ({ arguments: arguments_ }) => ({
+      arguments: arguments_,
+      preview: { title: "Create configurable draft", summary: "Draft", sideEffects: ["Create inactive PBV2 DRAFT"], affectedRecords: [] },
+    })) });
+    const service = new ExecutionPlanningService(repo, registry([registered]), { now: () => now, allowTestOnlyExecution: true });
+    const create = (fingerprint: string) => service.createPlan(scope, {
+      conversationId: "conversation_1", commandName: "test.change_order",
+      arguments: { proposalId: "proposal_1", fingerprint }, context,
+      reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: "proposal_1", fingerprint },
+    });
+
+    const first = await create("a".repeat(64));
+    const firstConfirmation = await service.issueConfirmation(scope, first.id, first.version);
+    const same = await create("a".repeat(64));
+    expect(same.id).toBe(first.id);
+    expect(repo.create).toHaveBeenCalledTimes(1);
+
+    const changed = await create("b".repeat(64));
+    expect(changed.id).not.toBe(first.id);
+    expect(repo.plans.get(first.id).status).toBe("invalidated");
+    await expect(service.confirmAndExecute(scope, {
+      planId: first.id, expectedVersion: repo.plans.get(first.id).version,
+      token: firstConfirmation.token, context,
+    })).rejects.toMatchObject({ code: "PLAN_NOT_CONFIRMABLE" });
+    expect(repo.supersedeAwaitingPlans).toHaveBeenCalledTimes(3);
+  });
+
+  test("scopes plans to the actor and tenant", async () => {
+    const repo = repository();
+    const service = new ExecutionPlanningService(repo, registry([command()]), { now: () => now, allowTestOnlyExecution: true });
+    const plan = await planReady(service);
+    await expect(service.getPlan({ ...scope, organizationId: "org_other" }, plan.id)).rejects.toMatchObject({ code: "PLAN_NOT_FOUND" });
   });
 
   test("rejects impossible state transitions", async () => {

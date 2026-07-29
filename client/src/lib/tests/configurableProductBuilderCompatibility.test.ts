@@ -1,0 +1,10 @@
+import { buildCanonicalComplexProductTree, parseTwoDimensionalPricingMatrix } from "../../../../server/services/assistant/complexProductSpecification";
+import { normalizeTreeJson, pbv2TreeToEditorModel } from "../pbv2/pbv2ViewModel";
+import { extractProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
+
+test("Product Builder loader hydrates the configurable PVC draft", () => {
+  const pricing = parseTwoDimensionalPricingMatrix(`| Thickness | Single-sided | Double-sided |\n| --- | --- | --- |\n| 3mm | $4.50 | $5.75 |\n| 6mm | $6.25 | $7.75 |\n| 12mm | $9.75 | $11.50 |\n| 18mm | $12.50 | $14.75 |`, "thickness", "printed_sides");
+  const tree = buildCanonicalComplexProductTree({ kind: "configurable_product", name: "PVC", category: "Rigid Signs", description: "", taxable: true, requiresDimensions: true, materialForm: "sheet", sheet: { widthIn: 48, heightIn: 96, allowRotation: true }, route: "Flatbed", minimumChargeCents: 2500, optionGroups: [{ proposalKey: "thickness", name: "Thickness", required: true, selectionMode: "single", values: ["3mm", "6mm", "12mm", "18mm"].map((value) => ({ value, label: value })) }, { proposalKey: "printed_sides", name: "Printed sides", required: true, selectionMode: "single", values: ["Single-sided", "Double-sided"].map((value) => ({ value, label: value })) }], pricing, review: { assumptions: [], warnings: [], blockers: [], unsupportedRelationships: [] } });
+  const model = pbv2TreeToEditorModel(normalizeTreeJson(tree)); const matrix = extractProductOptionPricingMatrix(tree)!;
+  expect(model.groups).toHaveLength(2); expect(Object.values(model.options).every((option) => option.isRequired && option.type === "dropdown")).toBe(true); expect(matrix.rows).toHaveLength(8); expect((tree as any).meta.productIntake.sheet).toMatchObject({ widthIn: 48, heightIn: 96, allowRotation: true }); expect((tree as any).meta.productIntake.draftRouting.stationName).toBe("Flatbed"); expect((tree as any).meta.pricingV2.base.minimumChargeCents).toBe(2500); expect((tree as any).status).toBe("DRAFT");
+});

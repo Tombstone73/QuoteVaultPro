@@ -103,6 +103,7 @@ export interface ExecutionPlanPreview {
     conflictCount: number;
     rows: Array<{ productId: string; productName: string; active: boolean; before: Record<string, unknown>; current: Record<string, unknown>; proposedRestore: Record<string, unknown>; state: string; reason?: string }>;
   };
+  configurableProduct?: Record<string, unknown>;
   productInactiveDraftUpdate?: {
     productId: string;
     productName: string;
@@ -202,7 +203,7 @@ export interface ExecutionCommandResult {
   summary: string;
   steps: readonly ExecutionStepResult[];
   /** Bounded post-execution presentation data. This never feeds another command. */
-  details?: { productDraft?: { id: string; name: string; sourceLink: string } };
+  details?: { productDraft?: { id: string; name: string; sourceLink: string }; configurableProduct?: Record<string, unknown> };
 }
 
 export interface ExecutionCommandDefinition {
@@ -235,6 +236,23 @@ export interface ExecutionPlanRepository {
   get(scope: Pick<ExecutionActorScope, "organizationId" | "userId">, planId: string): Promise<ExecutionPlanRecord | null>;
   /** Implement as a compare-and-swap update on plan version in durable storage. */
   update(plan: ExecutionPlanRecord, expectedVersion: number): Promise<ExecutionPlanRecord | null>;
+  /** Optional durable lookup used by fingerprint-bound proposal commands to avoid duplicate GO plans. */
+  findAwaitingPlan?(input: {
+    scope: Pick<ExecutionActorScope, "organizationId" | "userId">;
+    conversationId: string;
+    commandName: string;
+    arguments: Record<string, unknown>;
+    now: Date;
+  }): Promise<ExecutionPlanRecord | null>;
+  /** Invalidates older awaiting plans for one proposal when its fingerprint changes. */
+  supersedeAwaitingPlans?(input: {
+    scope: Pick<ExecutionActorScope, "organizationId" | "userId">;
+    conversationId: string;
+    commandName: string;
+    proposalId: string;
+    fingerprint: string;
+    now: Date;
+  }): Promise<number>;
   createConfirmation(confirmation: ExecutionConfirmationRecord): Promise<void>;
   /** Atomically check user/org/plan/token/expiry and mark the token used. */
   consumeConfirmation(input: {

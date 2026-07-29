@@ -1,0 +1,35 @@
+import { applyComplexProductConversationEdit, createInitialComplexProductSpecification, routeComplexProductMessage } from "../services/assistant/complexProductConversation";
+import { specificationFingerprint } from "../services/assistant/complexProductSpecification";
+
+const matrix = `| Thickness | Single-sided | Double-sided |
+| --- | --- | --- |
+| 3mm | $4.50 | $5.75 |
+| 6mm | $6.25 | $7.75 |`;
+
+describe("configurable-product conversation integration helpers", () => {
+  it("routes configurable messages ahead of scalar pricing wording and keeps unrelated routes distinct", () => {
+    expect(routeComplexProductMessage(`Create a PVC product with thickness options and set this pricing matrix:\n${matrix}`)).toBe("configurable");
+    expect(routeComplexProductMessage("increase product pricing by 5 percent")).toBe("pricing");
+    expect(routeComplexProductMessage("create separate PVC products with thickness options")).toBe("standalone");
+  });
+
+  it("creates one blocked proposal shape, preserves omitted fields, and clears the pricing blocker when a complete matrix arrives", () => {
+    const first = createInitialComplexProductSpecification("Create a PVC product with 3mm and 6mm thickness options.");
+    expect(first.review.blockers).toHaveLength(1);
+    const before = specificationFingerprint(first);
+    const complete = applyComplexProductConversationEdit(first, `Use this matrix:\n${matrix}`);
+    expect(complete.sheet).toEqual(first.sheet);
+    expect(complete.review.blockers).toEqual([]);
+    expect(complete.pricing.cells["3mm\u0000Double-sided"]).toBe(575);
+    expect(specificationFingerprint(complete)).not.toBe(before);
+  });
+
+  it("applies only explicit corrections and changes the bound proposal fingerprint", () => {
+    const initial = applyComplexProductConversationEdit(createInitialComplexProductSpecification(`Create PVC product.\n${matrix}`), `Create PVC product.\n${matrix}`);
+    const corrected = applyComplexProductConversationEdit(initial, "Set minimum charge to $25 and allow rotation.");
+    expect(corrected.minimumChargeCents).toBe(2500);
+    expect(corrected.sheet.allowRotation).toBe(true);
+    expect(corrected.route).toBe(initial.route);
+    expect(specificationFingerprint(corrected)).not.toBe(specificationFingerprint(initial));
+  });
+});
