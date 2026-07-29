@@ -35,6 +35,8 @@ describe("Prepress print-ready promotion contract", () => {
     expect(schema).toContain("sourceFileId");
     expect(schema).toContain("sourceOrderAttachmentId");
     expect(migration).toContain("line_item_files_active_promoted_source_uidx");
+    expect(migration).toContain("COALESCE(source_artwork_side, 'na'::file_side)");
+    expect(migration).not.toContain("source_artwork_side::text");
     expect(migration).toContain("COALESCE(source_file_id, '')");
     expect(migration).toContain("COALESCE(source_order_attachment_id, '')");
   });

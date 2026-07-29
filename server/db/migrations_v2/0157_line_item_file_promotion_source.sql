@@ -19,7 +19,7 @@ CREATE UNIQUE INDEX IF NOT EXISTS line_item_files_active_promoted_source_uidx
     role,
     status,
     COALESCE(tag, ''),
-    COALESCE(source_artwork_side::text, 'na'),
+    COALESCE(source_artwork_side, 'na'::file_side),
     COALESCE(source_file_id, ''),
     COALESCE(source_order_attachment_id, '')
   )
