@@ -372,6 +372,7 @@ export type EditorOption = {
   name: string;
   description: string;
   type: 'radio' | 'checkbox' | 'dropdown' | 'numeric' | 'dimension' | 'text' | 'textarea';
+  enabled: boolean;
   sortOrder: number;
   isDefault: boolean;
   isRequired: boolean;
@@ -569,6 +570,7 @@ export function pbv2TreeToEditorModel(treeJson: unknown): EditorModel {
       name: node.label || selectionKey,
       description: node.description || '',
       type: optionType,
+      enabled: String(node.status || 'ENABLED').toUpperCase() !== 'DISABLED',
       sortOrder: index,
       isDefault: node.input?.defaultValue !== undefined,
       isRequired: node.input?.required || false,
@@ -912,6 +914,7 @@ export function createUpdateOptionPatch(
     type?: string;
     required?: boolean;
     isRequired?: boolean; // UI field
+    enabled?: boolean; // UI field
     defaultValue?: any;
     isDefault?: boolean; // UI field
     choices?: Array<{
@@ -937,6 +940,10 @@ export function createUpdateOptionPatch(
     if (updates.name !== undefined) updated.label = updates.name;
     if (updates.label !== undefined) updated.label = updates.label;
     if (updates.description !== undefined) updated.description = updates.description;
+
+    if (updates.enabled !== undefined) {
+      updated.status = updates.enabled ? 'ENABLED' : 'DISABLED';
+    }
     
     if (updates.type !== undefined && updated.input) {
       const typeMap: Record<string, "boolean" | "select" | "multiselect" | "number" | "text" | "textarea" | "file" | "dimension"> = {

@@ -269,4 +269,47 @@ describe("ProductOptionsPanelV2", () => {
     expect(container.textContent).not.toContain("Choose the stock thickness.");
     expect(container.querySelectorAll("select")).toHaveLength(2);
   });
+
+  test("omits disabled product options from mounted line-item controls and prunes stale selections", () => {
+    const tree: OptionTreeV2 = {
+      schemaVersion: 2,
+      rootNodeIds: ["thickness_node", "grommet_node"],
+      nodes: {
+        thickness_node: {
+          id: "thickness_node",
+          kind: "question",
+          label: "Thickness",
+          input: { type: "select", selectionKey: "thickness", defaultValue: "half" },
+          choices: [{ value: "half", label: "1/2\"" }],
+        },
+        grommet_node: {
+          id: "grommet_node",
+          kind: "question",
+          status: "DISABLED",
+          label: "Grommet Placement",
+          input: { type: "select", selectionKey: "grommets", defaultValue: "corners" },
+          choices: [{ value: "corners", label: "Corners" }],
+        },
+      },
+    };
+    const onSelectionsChange = jest.fn();
+
+    act(() => {
+      root.render(
+        <ProductOptionsPanelV2
+          tree={tree}
+          selections={{ schemaVersion: 2, selected: { grommets: { value: "corners" } } }}
+          onSelectionsChange={onSelectionsChange}
+        />,
+      );
+    });
+
+    expect(container.textContent).toContain("Thickness");
+    expect(container.textContent).not.toContain("Grommet Placement");
+    expect(container.querySelectorAll("select")).toHaveLength(1);
+    expect(onSelectionsChange).toHaveBeenCalledWith(expect.objectContaining({
+      selected: expect.not.objectContaining({ grommets: expect.anything() }),
+      resolved: expect.objectContaining({ visibleNodeIds: ["thickness_node"] }),
+    }));
+  });
 });

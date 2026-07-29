@@ -200,4 +200,18 @@ describe("PBV2 banner weight option pricing params", () => {
     // totalSqft=50 triggers DS tier minQty=6 => 140 cents/sqft
     expect(out13ds.addOnCents).toBe(50 * 140);
   });
+
+  test("disabled product option nodes do not contribute pricing even with stale selections", () => {
+    const tree = makeBannerWeightTree() as any;
+    const weight = tree.nodes.find((node: any) => node.id === "weight");
+    weight.status = "DISABLED";
+
+    const out = pbv2ToPricingAddons(
+      tree as any,
+      { explicitSelections: { weight: "13OZ", sides: "SS" } },
+      { sqft: 10, quantity: 5 } as any
+    );
+
+    expect(out.addOnCents).toBe(0);
+  });
 });

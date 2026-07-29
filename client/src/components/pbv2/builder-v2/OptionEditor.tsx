@@ -1,5 +1,5 @@
 import React from 'react';
-import { Plus, Settings, GripVertical, Trash2, ChevronDown, ChevronRight, GitBranch, ChevronUp, AlertCircle } from 'lucide-react';
+import { Plus, Settings, GripVertical, Trash2, ChevronDown, ChevronRight, GitBranch, Power } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
@@ -322,14 +322,17 @@ export function OptionEditor({
               const hasFlags = option.hasProductionFlags;
               const hasConditions = option.hasConditionals;
               const hasWeight = option.hasWeight;
+              const isEnabled = option.enabled !== false;
 
               return (
                 <div
                   key={option.id}
                   className={`bg-[#1e293b] border rounded-lg overflow-hidden transition-all duration-150 ${
-                    isExpanded
-                      ? 'border-blue-500/50 shadow-sm'
-                      : 'border-slate-700 hover:border-slate-600'
+                    !isEnabled
+                      ? 'border-slate-600 bg-slate-900/70'
+                      : isExpanded
+                        ? 'border-blue-500/50 shadow-sm'
+                        : 'border-slate-700 hover:border-slate-600'
                   }`}
                 >
                   <div className="flex items-center p-3.5 hover:bg-slate-800/20 transition-colors">
@@ -352,9 +355,14 @@ export function OptionEditor({
 
                       <div className="flex-1 min-w-0">
                         <div className="flex items-center gap-2 mb-1">
-                          <span className="font-medium text-slate-100 text-sm">
+                          <span className={`font-medium text-sm ${isEnabled ? 'text-slate-100' : 'text-slate-300'}`}>
                             {option.name}
                           </span>
+                          {!isEnabled && (
+                            <Badge variant="outline" className="text-[10px] bg-slate-800 text-slate-200 border-slate-500 px-1.5 py-0 h-5">
+                              Disabled
+                            </Badge>
+                          )}
                           {hasConditions && !isExpanded && (
                             <GitBranch className="h-3.5 w-3.5 text-amber-400/60" />
                           )}
@@ -401,6 +409,23 @@ export function OptionEditor({
                         </div>
                       </div>
                     </button>
+
+                    <div
+                      className="ml-2 flex items-center gap-2 rounded-md border border-slate-700 bg-slate-900/60 px-2 py-1"
+                      title="Disabled options stay saved here but are hidden from new line items."
+                      onClick={(event) => event.stopPropagation()}
+                    >
+                      <Power className={`h-3.5 w-3.5 ${isEnabled ? 'text-emerald-400' : 'text-slate-400'}`} />
+                      <Label htmlFor={`option-enabled-${option.id}`} className="sr-only">
+                        {isEnabled ? 'Disable option' : 'Enable option'}
+                      </Label>
+                      <Switch
+                        id={`option-enabled-${option.id}`}
+                        checked={isEnabled}
+                        onCheckedChange={(checked) => onUpdateOption(option.id, { enabled: checked })}
+                        aria-label={isEnabled ? `Disable ${option.name}` : `Enable ${option.name}`}
+                      />
+                    </div>
 
                     <Button
                       type="button"

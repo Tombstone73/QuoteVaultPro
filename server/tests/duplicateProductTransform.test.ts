@@ -151,6 +151,62 @@ describe("buildDuplicatedProductInsert", () => {
     expect(dup.priceBreaks).toEqual({ enabled: false, type: "quantity", tiers: [] });
   });
 
+  test("preserves product option enabled states while keeping duplicate JSON independent", () => {
+    const original = {
+      id: "pbv2_disabled_option",
+      organizationId: "org_1",
+      name: "PBV2 Banner",
+      description: "Desc",
+      productTypeId: null,
+      pricingFormula: null,
+      variantLabel: "Variant",
+      category: null,
+      storeUrl: null,
+      showStoreLink: true,
+      thumbnailUrls: [],
+      priceBreaks: { enabled: false, type: "quantity", tiers: [] },
+      pricingMode: "area",
+      isService: false,
+      primaryMaterialId: null,
+      optionsJson: null,
+      optionTreeJson: {
+        schemaVersion: 2,
+        rootNodeIds: ["material"],
+        nodes: {
+          material: { id: "material", kind: "question", type: "INPUT", status: "ENABLED", input: { type: "select", selectionKey: "material" } },
+          grommets: { id: "grommets", kind: "question", type: "INPUT", status: "DISABLED", input: { type: "boolean", selectionKey: "grommets" } },
+        },
+        edges: [],
+      },
+      pbv2ActiveTreeVersionId: null,
+      artworkPolicy: "not_required" as any,
+      pricingProfileKey: "default",
+      pricingProfileConfig: null,
+      pricingEngine: "pricingProfile" as any,
+      pricingFormulaId: null,
+      useNestingCalculator: false,
+      sheetWidth: null,
+      sheetHeight: null,
+      materialType: "sheet" as any,
+      minPricePerItem: null,
+      nestingVolumePricing: { enabled: false, tiers: [] },
+      requiresProductionJob: true,
+      requiresProofApproval: false,
+      isTaxable: true,
+      createdAt: new Date() as any,
+      updatedAt: new Date() as any,
+      isActive: true,
+    } satisfies Product;
+
+    const dup = buildDuplicatedProductInsert(original);
+
+    expect((dup.optionTreeJson as any).nodes.grommets.status).toBe("DISABLED");
+    (dup.optionTreeJson as any).nodes.grommets.status = "ENABLED";
+
+    expect((original.optionTreeJson as any).nodes.grommets.status).toBe("DISABLED");
+    expect((dup.optionTreeJson as any).nodes.grommets.status).toBe("ENABLED");
+  });
+
   test("preserves canonical allowRotation when duplicating a product", () => {
     const original = {
       id: "rotation_product",

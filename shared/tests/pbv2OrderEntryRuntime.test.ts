@@ -116,6 +116,30 @@ describe("PBV2 order-entry runtime", () => {
     expect(defaults?.selected.note?.value).toBe("rush");
   });
 
+  test("disabled product options are omitted from new line item controls and defaults", () => {
+    const tree = makeTree();
+    tree.nodes.extras.status = "DISABLED";
+
+    expect(getRenderablePbv2QuestionNodeIds(tree)).toEqual(["finish", "note"]);
+    expect(hasRenderablePbv2Tree(tree)).toBe(true);
+
+    const defaults = buildPbv2DefaultSelections(tree);
+    expect(defaults?.selected.finish?.value).toBe("matte");
+    expect(defaults?.selected.note?.value).toBe("rush");
+    expect(defaults?.selected.extras).toBeUndefined();
+  });
+
+  test("re-enabled product options return to new line item controls and defaults", () => {
+    const tree = makeTree();
+    tree.nodes.extras.status = "DISABLED";
+    expect(getRenderablePbv2QuestionNodeIds(tree)).not.toContain("extras");
+
+    tree.nodes.extras.status = "ENABLED";
+
+    expect(getRenderablePbv2QuestionNodeIds(tree)).toEqual(["finish", "extras", "note"]);
+    expect(buildPbv2DefaultSelections(tree)?.selected.extras?.value).toEqual(["grommets"]);
+  });
+
   test("saved selections and user-changed selections are not overwritten by defaults", () => {
     const key = "li_1|prod_1|tree_v1";
     const savedSelections = { schemaVersion: 2 as const, selected: { finish: { value: "gloss" } } };
@@ -258,6 +282,26 @@ describe("PBV2 order-entry runtime", () => {
     expect(draft.optionSelectionsJson?.selected.extras?.value).toEqual(["grommets"]);
     expect(draft.specsJson.initialDraft.renderedOptionLabels).toEqual(["Finish", "Extras", "Note"]);
     expect(draft.debug.defaultSelectionsFound).toBe(true);
+  });
+
+  test("new order line item drafts omit disabled product options", () => {
+    const tree = makeTree();
+    tree.nodes.extras.status = "DISABLED";
+
+    const draft = buildInitialOrderLineItemDraftFromProduct(
+      {
+        id: "prod_1",
+        name: "Banner",
+        pbv2ActiveTreeVersionId: "tree_v1",
+        optionTreeJson: tree,
+      },
+      tree,
+      "order_1",
+    );
+
+    expect(draft.optionSelectionsJson?.selected.finish?.value).toBe("matte");
+    expect(draft.optionSelectionsJson?.selected.extras).toBeUndefined();
+    expect(draft.specsJson.initialDraft.renderedOptionLabels).toEqual(["Finish", "Note"]);
   });
 
   test("buildInitialOrderLineItemDraftFromProduct seeds fixed PBV2 dimensions without custom size entry", () => {
