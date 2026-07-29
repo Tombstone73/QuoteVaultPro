@@ -270,7 +270,6 @@ describe("EPS payment provider routes Phase 1", () => {
       .post("/api/payments/eps/record-hosted-result")
       .send({
         paymentId: "payment_1",
-        epsTransactionId: "txn_missing_evidence",
         approvedAmountCents: 125,
         result: "approved",
       });
@@ -341,6 +340,33 @@ describe("EPS payment provider routes Phase 1", () => {
         amountOverride: true,
       }),
     );
+  });
+
+  test("record-hosted-result lets staff cancel or fail a hosted attempt without approval transaction evidence", async () => {
+    recordHostedResult.mockResolvedValueOnce({
+      payment: { id: "payment_1", provider: "eps", status: "canceled", epsMode: "hosted_cnp", amountCents: 0 },
+      invoice: { id: "invoice_1", status: "billed" },
+      response: { approved: false, pending: false, status: "canceled" },
+    });
+
+    const response = await request(buildApp())
+      .post("/api/payments/eps/record-hosted-result")
+      .send({
+        paymentId: "payment_1",
+        approvedAmountCents: 0,
+        result: "canceled",
+        internalNote: "Customer closed hosted window before approving.",
+      });
+
+    expect(response.status).toBe(200);
+    const servicePayload = recordHostedResult.mock.calls[0][0];
+    expect(servicePayload).toMatchObject({
+      paymentId: "payment_1",
+      approvedAmountCents: 0,
+      result: "canceled",
+      internalNote: "Customer closed hosted window before approving.",
+    });
+    expect(servicePayload.epsTransactionId).toBeUndefined();
   });
 
   test("record-hosted-result strips sensitive payment instrument fields before service call", async () => {

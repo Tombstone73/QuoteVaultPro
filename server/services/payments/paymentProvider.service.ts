@@ -39,12 +39,13 @@ type HostedResultPaymentStatus = "captured" | "failed" | "canceled";
 export type RecordHostedResultInput = {
   organizationId: string;
   paymentId: string;
-  epsTransactionId: string;
+  epsTransactionId?: string | null;
   authCode?: string | null;
   tokenLast4?: string | null;
   approvedAmountCents: number;
   responseCode?: string | null;
   responseMessage?: string | null;
+  internalNote?: string | null;
   result: EpsHostedResult;
   amountOverride?: boolean;
   actor?: Actor;
@@ -637,7 +638,7 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
   if (!paymentId) {
     throw new PaymentProviderError("paymentId is required.", "PAYMENT_ID_REQUIRED", 400);
   }
-  if (!epsTransactionId) {
+  if (result === "approved" && !epsTransactionId) {
     throw new PaymentProviderError("EPS transaction id is required.", "EPS_TRANSACTION_ID_REQUIRED", 400);
   }
   if (result === "approved" && !authCode) {
@@ -665,17 +666,19 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
       throw new PaymentProviderError("Only pending EPS hosted payments can be confirmed manually.", "EPS_HOSTED_PAYMENT_NOT_PENDING", 409);
     }
 
-    const [duplicateTransaction] = await tx
-      .select({ id: payments.id })
-      .from(payments)
-      .where(
-        and(
-          eq(payments.organizationId, input.organizationId),
-          eq(payments.provider, "eps"),
-          eq(payments.providerTransactionId, epsTransactionId),
-        ),
-      )
-      .limit(1);
+    const [duplicateTransaction] = epsTransactionId
+      ? await tx
+          .select({ id: payments.id })
+          .from(payments)
+          .where(
+            and(
+              eq(payments.organizationId, input.organizationId),
+              eq(payments.provider, "eps"),
+              eq(payments.providerTransactionId, epsTransactionId),
+            ),
+          )
+          .limit(1)
+      : [];
 
     if (duplicateTransaction) {
       throw new PaymentProviderError("This EPS transaction id has already been recorded.", "EPS_TRANSACTION_DUPLICATE", 409);
@@ -702,7 +705,7 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
         status: nextStatus,
         amount: formatCentsAsEpsAmount(nextAmountCents),
         amountCents: nextAmountCents,
-        providerTransactionId: epsTransactionId,
+        providerTransactionId: epsTransactionId || null,
         epsAuthCode: authCode || null,
         epsTokenLast4: tokenLast4 || null,
         epsResponseCode: asString(input.responseCode) || null,
@@ -718,17 +721,18 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
               recordedByUserId: input.actor?.userId || null,
               amountOverride,
               responseCode: asString(input.responseCode) || null,
+              internalNote: asString(input.internalNote) || null,
             },
           },
         } as any,
         notes:
           result === "approved"
-            ? "EPS hosted payment manually confirmed from EPS portal"
-            : `EPS hosted payment manually marked ${result} from EPS portal`,
+            ? `EPS hosted payment manually confirmed from EPS portal${asString(input.internalNote) ? `\n${asString(input.internalNote)}` : ""}`
+            : `EPS hosted payment manually marked ${result} from EPS portal${asString(input.internalNote) ? `\n${asString(input.internalNote)}` : ""}`,
         note:
           result === "approved"
-            ? "EPS hosted payment manually confirmed from EPS portal"
-            : `EPS hosted payment manually marked ${result} from EPS portal`,
+            ? `EPS hosted payment manually confirmed from EPS portal${asString(input.internalNote) ? `\n${asString(input.internalNote)}` : ""}`
+            : `EPS hosted payment manually marked ${result} from EPS portal${asString(input.internalNote) ? `\n${asString(input.internalNote)}` : ""}`,
         appliedAt: result === "approved" ? now : (pendingPayment as any).appliedAt,
         paidAt: result === "approved" ? now : null,
         succeededAt: result === "approved" ? now : null,
@@ -797,7 +801,7 @@ export async function recordHostedResult(input: RecordHostedResultInput): Promis
     TransactionResult: result === "approved",
     ResponseMsg: asString(input.responseMessage) || result,
     ResponseCode: asString(input.responseCode) || null,
-    TransactionID: epsTransactionId,
+    TransactionID: epsTransactionId || null,
     ApprovedAmount: formatCentsAsEpsAmount(approvedAmountCents),
     AuthCode: authCode || null,
     AccountNum: tokenLast4 || null,
