@@ -231,7 +231,7 @@ describe("AssistantPlanCard", () => {
           kind: "configurable_product_confirmation", version: "v1", proposalId: "11111111-1111-4111-8111-111111111111", fingerprint: "a".repeat(64),
           product: { name: "PVC Panel", category: "Rigid Signs", inactive: true, pbv2Status: "DRAFT", unpublished: true, nonLiveQuotable: true, sheetWidthIn: 48, sheetHeightIn: 96, allowRotation: true, route: "Flatbed", minimumChargeCents: 2500 },
           optionGroups: [{ key: "thickness", name: "Thickness", required: true, selectionMode: "single", values: [{ value: "3mm", label: "3mm" }, { value: "6mm", label: "6mm" }] }, { key: "sides", name: "Sides", required: true, selectionMode: "single", values: [{ value: "single", label: "Single" }, { value: "double", label: "Double" }] }],
-          matrix: { rowValues: ["3mm", "6mm"], columnValues: ["single", "double"], cells: { "3mm\u0000single": 450, "3mm\u0000double": 550, "6mm\u0000single": 650, "6mm\u0000double": 750 } },
+          matrix: { rowValues: ["3mm", "6mm"], columnValues: ["single", "double"], cells: { "3mm:single": 450, "3mm:double": 550, "6mm:single": 650, "6mm:double": 750 } },
           warnings: [], blockers: [], readiness: { ready: true }, goEligible: true,
         } }, missingInformation: [], cancellationAvailable: true, steps: [],
       },

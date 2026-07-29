@@ -20,7 +20,7 @@ describe("configurable-product conversation integration helpers", () => {
     const complete = applyComplexProductConversationEdit(first, `Use this matrix:\n${matrix}`);
     expect(complete.sheet).toEqual(first.sheet);
     expect(complete.review.blockers).toEqual([]);
-    expect(complete.pricing.cells["3mm\u0000Double-sided"]).toBe(575);
+    expect(complete.pricing.cells["3mm:Double-sided"]).toBe(575);
     expect(specificationFingerprint(complete)).not.toBe(before);
   });
 
