@@ -34,6 +34,7 @@ import {
 import { deterministicOrderLookupTarget, deterministicSearchTarget, resolveDeterministicReadPlan } from "./deterministicReadRouting";
 import { AnalyticalCustomerResolutionService, type PersistedAnalyticalResolution } from "./analyticalCustomerResolution";
 import { resolveSystemGuideAnswer } from "./systemGuide";
+import { resolveConfigurableProductContinuation } from "./complexProductDraftPersistence";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
@@ -452,17 +453,35 @@ export class AssistantService {
 
     const correlationId = crypto.randomUUID();
     // System Guide answers are local, read-only, and sourced from the
-    // versioned manifest/approved corpus. They intentionally remain useful
-    // when a configured provider is unavailable; no business tool or mutation
-    // is involved in this path.
+    // versioned manifest/approved corpus. A guide phrase such as "Flatbed"
+    // must not intercept a valid, server-persisted configurable-product
+    // continuation before Product Management can handle it.
     const systemGuide = resolveSystemGuideAnswer(request.message, request.context);
+    let preloadedConversation: Awaited<ReturnType<typeof this.repo.getConversation>> | null = null;
     if (systemGuide) {
-      return this.persistResponse({
-        scope, conversationId, actor, request, correlationId,
-        response: systemGuide.response,
-        status: "responded",
-        structuredCards: systemGuide.cards,
-      });
+      preloadedConversation = await this.repo.getConversation({ ...scope, conversationId });
+      if (!preloadedConversation) throw this.notFound();
+      let deferSystemGuide = false;
+      try {
+        deferSystemGuide = Boolean(await resolveConfigurableProductContinuation({
+          organizationId: scope.organizationId,
+          actorUserId: actor.userId,
+          conversationId: preloadedConversation.id,
+          priorProposalId: activeConfigurableProductProposalId(preloadedConversation.messages),
+        }));
+      } catch {
+        // Ambiguous, stale, or cross-actor continuation state must fail closed
+        // through Product Management rather than falling through to a guide.
+        deferSystemGuide = true;
+      }
+      if (!deferSystemGuide) {
+        return this.persistResponse({
+          scope, conversationId, actor, request, correlationId,
+          response: systemGuide.response,
+          status: "responded",
+          structuredCards: systemGuide.cards,
+        });
+      }
     }
     if (!capability.toolsEnabled) {
       return this.persistResponse({
@@ -496,7 +515,7 @@ export class AssistantService {
       // server-registered quote-note action; execution still requires a
       // server-created plan, confirmation token, reauthorization, and domain
       // service revalidation.
-      const conversation = await this.repo.getConversation({ ...scope, conversationId });
+      const conversation = preloadedConversation ?? await this.repo.getConversation({ ...scope, conversationId });
       if (!conversation) throw this.notFound();
       // The repository-owned ID is the canonical continuation identity.  Do
       // not make a persisted configurable proposal depend on a route/client
