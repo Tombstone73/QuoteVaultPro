@@ -32,7 +32,7 @@ describe("ProductManagementSkillService configurable-product integration", () =>
 
     expect(response.handled).toBe(true);
     expect(persistence.persistComplexProductProposal).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org_1", conversationId: "conversation_1", actorUserId: "user_1" }));
-    expect(response.cards.find((card) => card.kind === "action_proposal")?.plan).toEqual({ action: "products.create_configurable_draft", proposalId: "11111111-1111-4111-8111-111111111111", fingerprint: "a".repeat(64) });
+    expect(response.cards.find((card) => card.kind === "action_proposal")?.plan).toMatchObject({ action: "products.create_configurable_draft", proposalId: "11111111-1111-4111-8111-111111111111", fingerprint: "a".repeat(64), configurableProduct: { proposalId: "11111111-1111-4111-8111-111111111111", fingerprint: "a".repeat(64) } });
   });
 
   it("updates the one conversation proposal and emits no executable action while structurally blocked", async () => {

@@ -80,6 +80,62 @@ export class DrizzleAssistantExecutionRepository implements ExecutionPlanReposit
     return row ? toPlan(row) : null;
   }
 
+  async findAwaitingPlan(input: {
+    scope: { organizationId: string; userId: string };
+    conversationId: string;
+    commandName: string;
+    arguments: Record<string, unknown>;
+    now: Date;
+  }): Promise<ExecutionPlanRecord | null> {
+    const rows = await db.select().from(aiExecutionPlans).where(and(
+      eq(aiExecutionPlans.orgId, input.scope.organizationId),
+      eq(aiExecutionPlans.userId, input.scope.userId),
+      eq(aiExecutionPlans.conversationId, input.conversationId),
+      eq(aiExecutionPlans.action, input.commandName),
+      eq(aiExecutionPlans.status, "awaiting_confirmation"),
+    ));
+    const expected = JSON.stringify(input.arguments);
+    const row = rows.find((candidate) => candidate.expiresAt > input.now && JSON.stringify(candidate.sanitizedArguments) === expected);
+    return row ? toPlan(row) : null;
+  }
+
+  async supersedeAwaitingPlans(input: {
+    scope: { organizationId: string; userId: string };
+    conversationId: string;
+    commandName: string;
+    proposalId: string;
+    fingerprint: string;
+    now: Date;
+  }): Promise<number> {
+    const rows = await db.select().from(aiExecutionPlans).where(and(
+      eq(aiExecutionPlans.orgId, input.scope.organizationId),
+      eq(aiExecutionPlans.userId, input.scope.userId),
+      eq(aiExecutionPlans.conversationId, input.conversationId),
+      eq(aiExecutionPlans.action, input.commandName),
+      eq(aiExecutionPlans.status, "awaiting_confirmation"),
+    ));
+    let superseded = 0;
+    for (const row of rows) {
+      const argumentsRecord = row.sanitizedArguments as Record<string, unknown>;
+      if (argumentsRecord.proposalId !== input.proposalId || argumentsRecord.fingerprint === input.fingerprint) continue;
+      const updated = await db.update(aiExecutionPlans).set({
+        status: "invalidated",
+        planVersion: row.planVersion + 1,
+        failureSummary: "Superseded by a material configurable-product proposal edit.",
+        invalidatedAt: input.now,
+        updatedAt: input.now,
+      }).where(and(
+        eq(aiExecutionPlans.id, row.id),
+        eq(aiExecutionPlans.orgId, input.scope.organizationId),
+        eq(aiExecutionPlans.userId, input.scope.userId),
+        eq(aiExecutionPlans.status, "awaiting_confirmation"),
+        eq(aiExecutionPlans.planVersion, row.planVersion),
+      )).returning({ id: aiExecutionPlans.id });
+      if (updated.length) superseded += 1;
+    }
+    return superseded;
+  }
+
   async createConfirmation(confirmation: ExecutionConfirmationRecord): Promise<void> {
     await db.insert(aiConfirmations).values({
       id: confirmation.id, planId: confirmation.planId, orgId: confirmation.organizationId, userId: confirmation.userId,
