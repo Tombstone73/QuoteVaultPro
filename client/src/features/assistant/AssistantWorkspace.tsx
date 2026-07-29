@@ -11,6 +11,7 @@ import type { AssistantStructuredCard } from "@shared/assistantContracts";
 import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantProductPricingProposalCard, AssistantQuoteDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantProductPricingProposal, toAssistantQuoteDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
+import { ConfigurableProductConfirmationCardView, toConfigurableProductConfirmation, toConfigurableProductProposal } from "./AssistantConfigurableProductCards";
 import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
 import { AssistantConversationSidebar } from "./AssistantConversationManagement";
@@ -375,6 +376,18 @@ export function ResultCards({
   if (!visibleCards.length) return null;
   const diagnosticCards = visibleCards.filter((card) => ["tool_warning", "provider_unavailable", "permission_denied", "not_found", "partial_result"].includes(card.kind));
   return <div className="mt-3 space-y-3">{visibleCards.map((card, index) => {
+    const configurableProposal = toConfigurableProductProposal(card);
+    if (configurableProposal) {
+      const created = executionPlans[configurableProposal.turnId];
+      if (created) {
+        const planCard = { kind: "action_plan", title: configurableProposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
+        const plan = toAssistantPlanCardModel(planCard);
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
+      }
+      return <ConfigurableProductConfirmationCardView key={`configurable-${configurableProposal.turnId}-${index}`} confirmation={configurableProposal.confirmation} onCreatePlan={() => void onCreatePlan(configurableProposal.turnId)} />;
+    }
+    const configurableBlocked = toConfigurableProductConfirmation((card as any)?.details?.configurableProduct);
+    if (configurableBlocked && !configurableBlocked.ready) return <ConfigurableProductConfirmationCardView key={`configurable-blocked-${index}`} confirmation={configurableBlocked} />;
     const productCard = toAssistantProductManagementCard(card);
     if (productCard) return <AssistantProductManagementCardView key={`product-${productCard.kind}-${index}`} card={productCard} />;
     const pricingProposal = toAssistantProductPricingProposal(card);

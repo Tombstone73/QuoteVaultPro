@@ -1051,6 +1051,13 @@
       "when": 1788048000000,
       "tag": "0154_production_run_file_links",
       "breakpoints": true
+    },
+    {
+      "idx": 155,
+      "version": "7",
+      "when": 1788048000001,
+      "tag": "0155_ai_configurable_product_proposals",
+      "breakpoints": true
     }
   ]
 }

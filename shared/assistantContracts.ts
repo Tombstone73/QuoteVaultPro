@@ -1004,6 +1004,8 @@ export const assistantExecutionPreviewSchema = z.object({
     validationErrors: z.array(z.string().trim().min(1).max(1_000)).max(50),
     unchanged: z.array(z.string().trim().min(1).max(120)).min(1).max(10),
   }).strict().optional(),
+  /** Versioned, fail-closed UI payload for configurable inactive PBV2 drafts. */
+  configurableProduct: z.unknown().optional(),
 }).strict();
 export const assistantMissingInformationSchema = z.object({
   field: z.string().trim().min(1).max(120),

@@ -18,6 +18,10 @@ export interface CreateExecutionPlanRequest {
   arguments: Record<string, unknown>;
   context: AssistantContextEnvelope;
   correlationId?: string;
+  /** Reuse the same durable awaiting-confirmation plan for identical preview arguments. */
+  reuseAwaitingPlan?: boolean;
+  /** Supersede earlier awaiting plans for a proposal when its material fingerprint changes. */
+  supersedeAwaitingProposal?: { proposalId: string; fingerprint: string };
 }
 
 export interface ConfirmationIssueResult { token: string; expiresAt: Date; plan: ExecutionPlanRecord; }
@@ -46,6 +50,26 @@ export class ExecutionPlanningService {
       throw new ExecutionPlanError("AFFECTED_RECORD_LIMIT", "This action affects too many records.");
     }
     const now = this.now();
+    if (request.supersedeAwaitingProposal) {
+      await this.repository.supersedeAwaitingPlans?.({
+        scope,
+        conversationId: request.conversationId,
+        commandName: command.name,
+        proposalId: request.supersedeAwaitingProposal.proposalId,
+        fingerprint: request.supersedeAwaitingProposal.fingerprint,
+        now,
+      });
+    }
+    if (request.reuseAwaitingPlan) {
+      const existing = await this.repository.findAwaitingPlan?.({
+        scope,
+        conversationId: request.conversationId,
+        commandName: command.name,
+        arguments: prepared.arguments,
+        now,
+      });
+      if (existing && !isExpired(existing, now)) return existing;
+    }
     const base: ExecutionPlanRecord = {
       id: randomUUID(), organizationId: scope.organizationId, userId: scope.userId,
       conversationId: request.conversationId, ...(request.turnId ? { turnId: request.turnId } : {}),
@@ -65,8 +89,9 @@ export class ExecutionPlanningService {
     const plan = await this.requirePlan(scope, planId);
     this.assertCurrentVersion(plan, expectedVersion);
     const current = await this.expireIfNeeded(plan);
-    assertTransition(current.status, "awaiting_confirmation");
-    const awaiting = await this.transition(current, "awaiting_confirmation");
+    const awaiting = current.status === "awaiting_confirmation"
+      ? current
+      : await this.transition(current, "awaiting_confirmation");
     const token = randomBytes(32).toString("base64url");
     const confirmation: ExecutionConfirmationRecord = {
       id: randomUUID(), planId: awaiting.id, organizationId: scope.organizationId, userId: scope.userId,
