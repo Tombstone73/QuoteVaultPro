@@ -14,7 +14,12 @@ import { Badge } from "@/components/ui/badge";
 import { useToast } from "@/hooks/use-toast";
 import { Trash2, Plus, Calculator, Loader2 } from "lucide-react";
 import { apiRequest } from "@/lib/queryClient";
-import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
+import { CustomerSelect } from "@/components/CustomerSelect";
+import { ContactSelect } from "@/components/ContactSelect";
+import {
+  getContactCustomerConflict,
+  type ContactPickerContact,
+} from "@/lib/contactPicker";
 import {
   beginCreateOrderSubmit,
   createInitialOrderSubmitGuardState,
@@ -74,7 +79,7 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
   // Customer selection
   const [selectedCustomerId, setSelectedCustomerId] = useState<string>("");
   const [selectedContactId, setSelectedContactId] = useState<string>("");
-  const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithContacts | undefined>(undefined);
+  const [selectedContact, setSelectedContact] = useState<ContactPickerContact | null>(null);
 
   // Order details
   const [status, setStatus] = useState("new");
@@ -115,19 +120,7 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
   }>>({});
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Get contacts from selected customer
-  const contacts = selectedCustomer?.contacts || [];
-  const { data: independentContacts = [] } = useQuery<any[]>({
-    queryKey: ["/api/contacts", "order-contact-only"],
-    queryFn: async () => {
-      const response = await fetch("/api/contacts?limit=100", { credentials: "include" });
-      if (!response.ok) throw new Error("Failed to load contacts");
-      const payload = await response.json();
-      return Array.isArray(payload) ? payload : (payload.data ?? payload.items ?? []);
-    },
-    enabled: open && !selectedCustomerId,
-  });
-  const selectableContacts = selectedCustomerId ? contacts : independentContacts;
+  const contactCustomerConflict = getContactCustomerConflict(selectedContact, selectedCustomerId || null);
 
   // Fetch products
   const { data: products } = useQuery<any[]>({
@@ -398,7 +391,9 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
       });
       if (!response.ok) {
         const error = await response.json();
-        throw new Error(error.message || "Failed to create order");
+        const requestError = new Error(error.message || "Failed to create order");
+        (requestError as any).code = error.code;
+        throw requestError;
       }
       return response.json();
     },
@@ -413,9 +408,10 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
       }
     },
     onError: (error: Error) => {
+      const code = (error as any)?.code;
       toast({
-        title: "Error",
-        description: error.message,
+        title: code === "ORDER_CONTACT_CUSTOMER_CONFLICT" ? "Contact/customer conflict" : "Error",
+        description: code ? `${code}: ${error.message}` : error.message,
         variant: "destructive",
       });
     },
@@ -433,6 +429,17 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
       toast({
         title: "Validation Error",
         description: "Please select a customer, a contact, or both",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    if (contactCustomerConflict) {
+      markCreateOrderSubmitFailed(createOrderSubmitGuardRef.current);
+      setCreateOrderSubmitting(false);
+      toast({
+        title: "Contact/customer conflict",
+        description: `${contactCustomerConflict}: Choose a different customer or contact before creating the order.`,
         variant: "destructive",
       });
       return;
@@ -521,31 +528,53 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
                       value={selectedCustomerId}
                       onChange={(customerId, customer, contactId) => {
                         setSelectedCustomerId(customerId || "");
-                        setSelectedCustomer(customer);
-                        setSelectedContactId(contactId || "");
+                        if (!selectedContactId && contactId) {
+                          const customerContact = customer?.contacts?.find((contact) => contact.id === contactId);
+                          setSelectedContactId(contactId);
+                          setSelectedContact(customerContact ? {
+                            ...customerContact,
+                            customerId: customerId || customerContact.customerId,
+                            companyName: customer?.companyName ?? null,
+                            customer: customer ? { id: customer.id, companyName: customer.companyName, status: customer.status } : null,
+                          } : null);
+                        }
                       }}
                       autoFocus={true}
                       label="Customer (optional)"
                       placeholder="Search customers by name, email, or contact..."
                     />
+                    {selectedCustomerId && (
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        className="mt-2 h-7 px-2 text-xs"
+                        onClick={() => {
+                          setSelectedCustomerId("");
+                        }}
+                      >
+                        Clear customer
+                      </Button>
+                    )}
                   </div>
 
                   <div>
-                    <Label htmlFor="contactId">Contact</Label>
-                    <Select value={selectedContactId} onValueChange={setSelectedContactId}>
-                      <SelectTrigger>
-                        <SelectValue placeholder="Select contact (optional)" />
-                      </SelectTrigger>
-                      <SelectContent>
-                        {selectableContacts.map((contact) => (
-                          <SelectItem key={contact.id} value={contact.id}>
-                            {contact.firstName} {contact.lastName}
-                            {contact.email && ` - ${contact.email}`}
-                            {contact.isPrimary && " (Primary)"}
-                          </SelectItem>
-                        ))}
-                      </SelectContent>
-                    </Select>
+                    <ContactSelect
+                      value={selectedContactId || null}
+                      customerId={selectedCustomerId || null}
+                      onChange={(contactId, contact) => {
+                        setSelectedContactId(contactId || "");
+                        setSelectedContact(contact ?? null);
+                      }}
+                      onResolvedContact={setSelectedContact}
+                      label="Contact (optional)"
+                      placeholder="Search contacts..."
+                    />
+                    {contactCustomerConflict && (
+                      <p className="mt-2 text-xs text-destructive">
+                        {contactCustomerConflict}: choose a different customer or contact before creating the order.
+                      </p>
+                    )}
                   </div>
                 </div>
               </CardContent>
