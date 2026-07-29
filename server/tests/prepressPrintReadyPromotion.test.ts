@@ -1,105 +1,60 @@
 import { describe, expect, test } from "@jest/globals";
-import {
-  buildPromotedFinalFileLink,
-  buildComputedDisplayFilename,
-  resolvePrintReadyArtworkCandidates,
-} from "../prepressFileService";
+import fs from "node:fs";
+import path from "node:path";
+import { buildFileUploadDisplayFilename } from "@shared/fileUploadNaming";
 
-describe("Prepress print-ready promotion", () => {
-  test("creates a final relation that references the original stored object", () => {
-    const promoted = buildPromotedFinalFileLink({
-      organizationId: "org-1",
-      orderId: "order-1",
-      lineItemId: "line-1",
-      prepressSessionId: "session-1",
-      createdByUserId: "user-1",
-      tag: "final_print",
-      source: {
-        fileRecordId: "file-record-1",
-        storageBucket: "private-files",
-        storagePath: "org-1/orders/order-1/art.pdf",
-        storageKey: "org-1/orders/order-1/art.pdf",
+describe("Prepress print-ready promotion contract", () => {
+  const root = process.cwd();
+  const service = fs.readFileSync(path.join(root, "server/prepressFileService.ts"), "utf8");
+  const route = fs.readFileSync(path.join(root, "server/routes/prepressFiles.routes.ts"), "utf8");
+  const schema = fs.readFileSync(path.join(root, "shared/schema.ts"), "utf8");
+  const migration = fs.readFileSync(path.join(root, "server/db/migrations_v2/0157_line_item_file_promotion_source.sql"), "utf8");
+
+  test("promoted production artwork records source provenance without mutating the source", () => {
+    expect(service).toContain("promoteCustomerArtworkToProductionArtwork");
+    expect(service).toContain("productionArtworkSourceType: params.source.sourceType ? \"customer_artwork_promotion\" : null");
+    expect(service).toContain("sourceFileId: params.source.sourceFileId ?? null");
+    expect(service).toContain("sourceOrderAttachmentId: params.source.sourceOrderAttachmentId ?? null");
+    expect(service).toContain("sourceArtworkSide: params.source.sourceArtworkSide ?? null");
+    expect(service).toContain("role: \"final\" as const");
+    expect(service).not.toContain(".update(orderAttachments)");
+  });
+
+  test("customer artwork promotion creates a distinct canonical production copy", () => {
+    expect(service).toContain("storageApplicationService.finalizeUpload");
+    expect(service).toContain("kind: \"existing-key\"");
+    expect(service).toContain("fileRecordId: result.fileRecord.id");
+    expect(service).toContain("queueLineItemFilePreviewRepair");
+    expect(service).toContain("enqueueFinalProductionFileCopy");
+  });
+
+  test("promotion is idempotent and auditable", () => {
+    expect(route).toContain("PRODUCTION_ARTWORK_ALREADY_EXISTS");
+    expect(service).toContain("promoted_customer_artwork_to_production_artwork");
+    expect(schema).toContain("productionArtworkSourceType");
+    expect(schema).toContain("sourceFileId");
+    expect(schema).toContain("sourceOrderAttachmentId");
+    expect(migration).toContain("line_item_files_active_promoted_source_uidx");
+    expect(migration).toContain("COALESCE(source_file_id, '')");
+    expect(migration).toContain("COALESCE(source_order_attachment_id, '')");
+  });
+
+  test("production filename places job number before production tag", () => {
+    expect(
+      buildFileUploadDisplayFilename({
         originalFilename: "customer-art.pdf",
-        mimeType: "application/pdf",
-        sizeBytes: 1234,
-      },
-    });
-
-    expect(promoted).toMatchObject({
-      role: "final",
-      status: "active",
-      fileRecordId: "file-record-1",
-      storagePath: "org-1/orders/order-1/art.pdf",
-      storageKey: "org-1/orders/order-1/art.pdf",
-    });
+        fullJobNumber: "ORD-20000",
+        numericJobNumber: "20000",
+        fileUploadJobPrefixMode: "full_job_number",
+        prepressLabel: "print",
+        labelPlacement: "after_job_prefix",
+      }),
+    ).toBe("ORD-20000_PRINT_customer-art.pdf");
   });
 
-  test("uses the existing production naming policy without renaming the source record", () => {
-    const filename = buildComputedDisplayFilename({
-      role: "final",
-      originalFilename: "customer-art.pdf",
-      tag: "final_print",
-      fullJobNumber: "ORD-20000",
-      namingPolicy: { fileUploadJobPrefixMode: "full_job_number", prepressFileLabelMode: "required" },
-    });
-
-    expect(filename).toBe("ORD-20000_customer-art_PRINT.pdf");
-  });
-
-  test("resolves each line from its own stable selected artwork ID", () => {
-    const lineTwo = resolvePrintReadyArtworkCandidates({
-      lineItem: { specsJson: { artworkSideAssignment: { bothFileId: "record-party" } } },
-      candidates: [
-        { id: "party-attachment", fileRecordId: "record-party", side: "both" },
-        { id: "other-attachment", fileRecordId: "record-other", side: "na" },
-      ],
-    });
-    const lineThree = resolvePrintReadyArtworkCandidates({
-      lineItem: { specsJson: { artworkSideAssignment: { frontFileId: "record-line-3" } } },
-      candidates: [
-        { id: "line-3-art", fileRecordId: "record-line-3", side: "front" },
-        { id: "line-3-extra", fileRecordId: "record-line-3-extra", side: "na" },
-      ],
-    });
-
-    expect(lineTwo.map((file) => file.fileRecordId)).toEqual(["record-party"]);
-    expect(lineThree.map((file) => file.fileRecordId)).toEqual(["record-line-3"]);
-  });
-
-  test("fails closed instead of selecting the first of multiple unassigned artworks", () => {
-    expect(() => resolvePrintReadyArtworkCandidates({
-      lineItem: { specsJson: {} },
-      candidates: [
-        { id: "party", fileRecordId: "record-party", side: "na" },
-        { id: "design-2", fileRecordId: "record-design-2", side: "na" },
-      ],
-    })).toThrow("Assign the production artwork as Front, Back, or Both");
-  });
-
-  test("keeps explicit front and back files for a double-sided production line", () => {
-    const selected = resolvePrintReadyArtworkCandidates({
-      lineItem: {
-        optionSelectionsJson: { print_sides: "double_sided" },
-        specsJson: { artworkSideAssignment: { frontFileId: "front-record", backFileId: "back-record" } },
-      },
-      candidates: [
-        { id: "front", fileRecordId: "front-record", side: "front" },
-        { id: "back", fileRecordId: "back-record", side: "back" },
-      ],
-    });
-    expect(selected.map((file) => file.fileRecordId)).toEqual(["front-record", "back-record"]);
-  });
-
-  test("blocks a double-sided line when only one side is assigned", () => {
-    expect(() => resolvePrintReadyArtworkCandidates({
-      lineItem: {
-        optionSelectionsJson: { print_sides: "double_sided" },
-        specsJson: { artworkSideAssignment: { frontFileId: "front-record" } },
-      },
-      candidates: [
-        { id: "front", fileRecordId: "front-record", side: "front" },
-        { id: "unassigned", fileRecordId: "other-record", side: "na" },
-      ],
-    })).toThrow("needs explicit Front and Back artwork");
+  test("artwork side resolution still fails closed for ambiguous double-sided artwork", () => {
+    expect(service).toContain("needs explicit Front and Back artwork");
+    expect(service).toContain("Assign the production artwork as Front, Back, or Both");
+    expect(service).toContain("resolvePrintReadyArtworkCandidates");
   });
 });

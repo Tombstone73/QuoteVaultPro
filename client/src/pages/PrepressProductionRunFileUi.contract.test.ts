@@ -27,4 +27,21 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("combinedRunIncludeHistory");
     expect(source).toContain("Needs Prepress attention");
   });
+
+  test("mounted Prepress queue exposes operator-facing Nest Selected workflow", () => {
+    expect(source).toContain("Nest Selected");
+    expect(source).toContain("Clear selection");
+    expect(source).toContain("Ready to nest");
+    expect(source).toContain("getPrepressCombinedRunItemIssue");
+    expect(source).toContain("Already nested in an active production run.");
+    expect(source).toContain("Create Nested Run");
+  });
+
+  test("mounted Prepress page exposes controlled production artwork copy flow", () => {
+    expect(source).toContain("Create Production Artwork Copy");
+    expect(source).toContain("promote-customer-artwork");
+    expect(source).toContain("Generated production filename");
+    expect(source).toContain("labelPlacement: \"after_job_prefix\"");
+    expect(source).toContain("setPromotionSourceFile(null)");
+  });
 });

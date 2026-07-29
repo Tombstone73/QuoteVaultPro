@@ -795,7 +795,7 @@ export async function transitionProductionRun(input: { organizationId: string; r
       if (run.status !== "draft") throw new ProductionRunError("PRODUCTION_RUN_NOT_RELEASABLE", "Only draft production runs can be released.", 409);
       const activeFileCount = await countActiveProductionRunFiles(tx, { organizationId: input.organizationId, runId: run.id });
       if (activeFileCount <= 0) {
-        throw new ProductionRunError("PRODUCTION_RUN_FILE_REQUIRED", "Upload or replace the shared nested final production file before releasing this run.", 409);
+        throw new ProductionRunError("PRODUCTION_RUN_FILE_REQUIRED", "Shared nested production file required before release.", 409);
       }
     }
     if (input.action === "complete") {

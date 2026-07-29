@@ -1058,6 +1058,13 @@
       "when": 1788048000002,
       "tag": "0156_individual_customer_billing_promotion",
       "breakpoints": true
+    },
+    {
+      "idx": 157,
+      "version": "7",
+      "when": 1788048000003,
+      "tag": "0157_line_item_file_promotion_source",
+      "breakpoints": true
     }
   ]
 }

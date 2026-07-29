@@ -22,7 +22,7 @@ export function ProductionRunPanel({ run }: { run: ProductionRunListItem }) {
   const activeFileCount = run.fileCount ?? run.files?.filter((file) => file.status === "active").length ?? 0;
   const replacementRequired = run.replacementRequired ?? activeFileCount === 0;
   const releaseBlockedReason = action === "release" && replacementRequired
-    ? "Upload the shared nested final production file before releasing this run."
+    ? "Shared nested production file required before release."
     : null;
 
   return (

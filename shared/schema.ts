@@ -8081,6 +8081,10 @@ export const lineItemFiles = pgTable("line_item_files", {
   // bytes differ from the original upload.
   productionQuantity: integer("production_quantity"),
   productionGroupId: varchar("production_group_id", { length: 128 }),
+  productionArtworkSourceType: varchar("production_artwork_source_type", { length: 64 }),
+  sourceFileId: varchar("source_file_id").references((): any => lineItemFiles.id, { onDelete: 'set null' }),
+  sourceOrderAttachmentId: varchar("source_order_attachment_id").references(() => orderAttachments.id, { onDelete: 'set null' }),
+  sourceArtworkSide: fileSideEnum("source_artwork_side"),
   
   // Storage information
   storageBucket: varchar("storage_bucket", { length: 255 }),
@@ -8105,6 +8109,11 @@ export const lineItemFiles = pgTable("line_item_files", {
   index("line_item_files_session_idx").on(table.prepressSessionId),
   index("line_item_files_role_status_idx").on(table.role, table.status),
   index("line_item_files_supersedes_idx").on(table.supersedesFileId),
+  index("line_item_files_source_file_idx").on(table.sourceFileId),
+  index("line_item_files_source_attachment_idx").on(table.sourceOrderAttachmentId),
+  uniqueIndex("line_item_files_active_promoted_source_uidx")
+    .on(table.organizationId, table.lineItemId, table.role, table.status, table.tag, table.sourceArtworkSide, table.sourceFileId, table.sourceOrderAttachmentId)
+    .where(sql`production_artwork_source_type = 'customer_artwork_promotion' AND role = 'final' AND status = 'active'`),
 ]);
 
 export const lineItemProofVersionStatusEnum = pgEnum('line_item_proof_version_status', [

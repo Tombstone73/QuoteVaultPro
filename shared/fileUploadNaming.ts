@@ -93,6 +93,7 @@ export function buildFileUploadDisplayFilename(params: {
   numericJobNumber: string;
   fileUploadJobPrefixMode: FileUploadJobPrefixMode;
   prepressLabel: PrepressFileLabel;
+  labelPlacement?: "suffix" | "after_job_prefix";
 }): string {
   const originalFilename = (params.originalFilename || "file").trim() || "file";
   const fullJobNumber = (params.fullJobNumber || "").trim();
@@ -102,8 +103,21 @@ export function buildFileUploadDisplayFilename(params: {
 
   const { base, ext } = splitExtension(originalFilename);
   const labelSuffix = prepressLabel === "none" ? null : labelSuffixByValue[prepressLabel];
+  const labelPlacement = params.labelPlacement ?? "suffix";
+  const prefix = prefixMode === "numeric_only" ? numericJobNumber : fullJobNumber;
+
+  if (labelSuffix && labelPlacement === "after_job_prefix" && prefixMode !== "none" && prefix) {
+    const existingPrefixPattern = new RegExp(`^${escapeRegExp(prefix)}(?:[_\\-\\s]+)?(.+)$`, "i");
+    const existingPrefixMatch = originalFilename.match(existingPrefixPattern);
+    const descriptiveFilename = existingPrefixMatch?.[1]?.trim() || originalFilename;
+    const tagPrefixPattern = new RegExp(`^${escapeRegExp(labelSuffix)}(?:[_\\-\\s]|$)`, "i");
+    return tagPrefixPattern.test(descriptiveFilename)
+      ? `${prefix}_${descriptiveFilename}`
+      : `${prefix}_${labelSuffix}_${descriptiveFilename}`;
+  }
+
   const labeledFilename =
-    labelSuffix && prepressLabel !== "none" && !baseEndsWithLabel(base, prepressLabel)
+    labelSuffix && labelPlacement === "suffix" && prepressLabel !== "none" && !baseEndsWithLabel(base, prepressLabel)
       ? `${base}_${labelSuffix}${ext}`
       : originalFilename;
 
@@ -111,6 +125,6 @@ export function buildFileUploadDisplayFilename(params: {
     return labeledFilename;
   }
 
-  const prefix = prefixMode === "numeric_only" ? numericJobNumber : fullJobNumber;
-  return prefix ? `${prefix}_${labeledFilename}` : labeledFilename;
+  if (!prefix) return labeledFilename;
+  return `${prefix}_${labeledFilename}`;
 }
