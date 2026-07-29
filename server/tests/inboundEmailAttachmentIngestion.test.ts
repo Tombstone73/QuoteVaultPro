@@ -2,6 +2,7 @@ import { describe, expect, jest, test } from "@jest/globals";
 
 import {
   InboundEmailIngestionService,
+  inboundEmailThreadContainerLookupKeys,
   type InboundEmailProviderAdapter,
   type InboundEmailProviderMessage,
 } from "../services/inboundEmailIngestionService";
@@ -275,12 +276,31 @@ function threadExistingDbHarness(existingRecord: InboundOrderRecord) {
       where: jest.fn(() => ({
         limit: jest.fn(async () => {
           selectCount += 1;
-          return selectCount === 1 ? [{ id: existingRecord.id }] : [existingRecord];
+          return selectCount === 1 ? [{ id: existingRecord.id, idempotencyKey: existingRecord.idempotencyKey }] : [existingRecord];
         }),
       })),
     })),
   }));
   return { select };
+}
+
+function threadMessageLookupDbHarness(existingRecord: InboundOrderRecord) {
+  let selectCount = 0;
+  const limitArgs: unknown[] = [];
+  const select = jest.fn(() => ({
+    from: jest.fn(() => ({
+      where: jest.fn(() => ({
+        limit: jest.fn(async (limitArg?: unknown) => {
+          limitArgs.push(limitArg);
+          selectCount += 1;
+          return selectCount === 1
+            ? [{ id: existingRecord.id, idempotencyKey: existingRecord.idempotencyKey }]
+            : [existingRecord];
+        }),
+      })),
+    })),
+  }));
+  return { select, limitArgs };
 }
 
 function mailboxDbHarness() {
@@ -664,6 +684,110 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(dbHarness.insertedRecords).toHaveLength(0);
     expect(ingestSpy).not.toHaveBeenCalled();
     expect(adapter.downloadAttachment).not.toHaveBeenCalled();
+  });
+
+  test("pullLatestEmails imports an external customer reply from a Gmail thread started by Titan", async () => {
+    const { repo, storage, createdFiles } = serviceHarness();
+    const dbHarness = pullLatestFreshRecordDbHarness({
+      ...record,
+      id: "thread_record_1",
+      sourceRecordId: "customer_reply_1",
+      sourceMessageId: "customer_reply_1",
+      externalReference: "Re: Quote 123",
+      idempotencyKey: "gmail:customer_reply_1",
+    });
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => [message({
+        messageId: "titan_quote_1",
+        threadId: "thread_sent_1",
+        senderName: "Titan Graphics",
+        senderEmail: "dale@titan-graphics.com",
+        subject: "Quote 123",
+        bodyText: "Here is your quote.",
+        attachments: [{
+          filename: "quote.pdf",
+          mimeType: "application/pdf",
+          size: 8,
+          attachmentId: "att_titan_quote",
+          contentDisposition: "attachment",
+        }],
+      })]),
+      getThreadMessages: jest.fn(async () => [
+        message({
+          messageId: "titan_quote_1",
+          threadId: "thread_sent_1",
+          senderName: "Titan Graphics",
+          senderEmail: "dale@titan-graphics.com",
+          subject: "Quote 123",
+          receivedAt: new Date("2026-06-17T12:00:00.000Z"),
+          bodyText: "Here is your quote.",
+          attachments: [{
+            filename: "quote.pdf",
+            mimeType: "application/pdf",
+            size: 8,
+            attachmentId: "att_titan_quote",
+            contentDisposition: "attachment",
+          }],
+        }),
+        message({
+          messageId: "customer_reply_1",
+          threadId: "thread_sent_1",
+          senderName: "Buyer",
+          senderEmail: "buyer@example.com",
+          subject: "Re: Quote 123",
+          receivedAt: new Date("2026-06-18T12:00:00.000Z"),
+          bodyText: "Please proceed. Purchase order attached.",
+          attachments: [{
+            filename: "customer-po.pdf",
+            mimeType: "application/pdf",
+            size: 8,
+            attachmentId: "att_customer_po",
+            contentDisposition: "attachment",
+          }],
+        }),
+      ]),
+      downloadAttachment: jest.fn(async (_mailbox: any, _message: any, attachment: any) => ({
+        buffer: Buffer.from("%PDF"),
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.size,
+      })),
+    };
+    const service = new InboundEmailIngestionService(
+      dbHarness as any,
+      { gmail: adapter },
+      repo as any,
+      storage as any,
+    );
+
+    const result = await service.pullLatestEmails({
+      organizationId: "org_1",
+      actorUserId: "user_1",
+      limit: 1,
+    });
+
+    expect(result.summary).toEqual({ created: 1, skippedDuplicates: 0, ignored: 0, failed: 0 });
+    expect(adapter.getThreadMessages).toHaveBeenCalledWith(mailbox, "thread_sent_1");
+    expect(dbHarness.insertedRecords[0]).toEqual(expect.objectContaining({
+      sourceRecordId: "customer_reply_1",
+      sourceMessageId: "customer_reply_1",
+      idempotencyKey: "gmail:customer_reply_1",
+      rawPayloadJson: expect.objectContaining({
+        threadId: "thread_sent_1",
+        thread: expect.objectContaining({
+          id: "thread_sent_1",
+          latestMessageId: "customer_reply_1",
+          latestSenderEmail: "buyer@example.com",
+        }),
+      }),
+    }));
+    expect(adapter.downloadAttachment).toHaveBeenCalledWith(
+      mailbox,
+      expect.objectContaining({ messageId: "customer_reply_1", senderEmail: "buyer@example.com" }),
+      expect.objectContaining({ attachmentId: "att_customer_po" }),
+    );
+    expect(createdFiles.map((file) => [file.providerMessageId, file.providerAttachmentId])).toEqual([
+      ["customer_reply_1", "att_customer_po"],
+    ]);
   });
 
   test("pullLatestEmails creates a TEMP_INBOUND record for no-subject Gmail messages", async () => {
@@ -1730,7 +1854,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       id: "thread_record_1",
       sourceRecordId: "gmail_msg_2",
       sourceMessageId: "gmail_msg_2",
-      idempotencyKey: "gmail:thread:thread_1",
+      idempotencyKey: "gmail:gmail_msg_2",
       rawPayloadJson: {
         thread: {
           id: "thread_1",
@@ -1787,7 +1911,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     expect(outcome).toMatchObject({ status: "created", recordId: "thread_record_1", processingOutcome: "created_record" });
     expect(adapter.getThreadMessages).toHaveBeenCalledWith(mailbox, "thread_1");
     expect(dbHarness.insertedRecords[0]).toEqual(expect.objectContaining({
-      idempotencyKey: "gmail:thread:thread_1",
+      idempotencyKey: "gmail:gmail_msg_2",
       sourceRecordId: "gmail_msg_2",
       sourceMessageId: "gmail_msg_2",
       externalReference: "Re: Quote request - PO",
@@ -1815,7 +1939,7 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
     const existingThreadRecord = {
       ...record,
       id: "thread_record_1",
-      idempotencyKey: "gmail:thread:thread_1",
+      idempotencyKey: "gmail:gmail_msg_1",
       rawPayloadJson: {
         messageId: "gmail_msg_1",
         threadId: "thread_1",
@@ -1908,6 +2032,153 @@ describe("InboundEmailIngestionService attachment ingestion", () => {
       providerMessageId: "gmail_msg_2",
       providerAttachmentId: "att_art",
     }));
+  });
+
+  test("later external reply in a Titan-started Gmail thread matches the earlier external message container", async () => {
+    const { repo, storage, createdFiles } = serviceHarness();
+    repo.listFiles.mockResolvedValue([]);
+    const existingThreadRecord = {
+      ...record,
+      id: "thread_record_1",
+      sourceRecordId: "customer_reply_1",
+      sourceMessageId: "customer_reply_1",
+      idempotencyKey: "gmail:customer_reply_1",
+      rawPayloadJson: {
+        messageId: "customer_reply_1",
+        threadId: "thread_sent_1",
+        sender: { email: "buyer@example.com" },
+        thread: { id: "thread_sent_1", messageCount: 1 },
+      },
+      normalizedPayloadJson: {
+        source: { messageId: "customer_reply_1", threadId: "thread_sent_1" },
+      },
+    };
+    repo.updateRecordWithEvent.mockResolvedValueOnce({
+      record: {
+        ...existingThreadRecord,
+        rawPayloadJson: {
+          ...existingThreadRecord.rawPayloadJson,
+          thread: {
+            id: "thread_sent_1",
+            messageCount: 2,
+            latestMessageId: "customer_reply_2",
+            latestActivityAt: "2026-06-20T12:00:00.000Z",
+          },
+        },
+      },
+      event: { id: "event_thread_refresh" },
+    });
+    const dbHarness = threadMessageLookupDbHarness(existingThreadRecord);
+    const service = new InboundEmailIngestionService(dbHarness as any, {}, repo as any, storage as any);
+    const adapter: InboundEmailProviderAdapter = {
+      listRecentMessages: jest.fn(async () => []),
+      getThreadMessages: jest.fn(async () => [
+        message({
+          messageId: "titan_quote_1",
+          threadId: "thread_sent_1",
+          senderName: "Titan Graphics",
+          senderEmail: "dale@titan-graphics.com",
+          subject: "Quote 123",
+          receivedAt: new Date("2026-06-17T12:00:00.000Z"),
+          bodyText: "Here is your quote.",
+        }),
+        message({
+          messageId: "customer_reply_1",
+          threadId: "thread_sent_1",
+          senderName: "Buyer",
+          senderEmail: "buyer@example.com",
+          subject: "Re: Quote 123",
+          receivedAt: new Date("2026-06-18T12:00:00.000Z"),
+          bodyText: "Please proceed.",
+        }),
+        message({
+          messageId: "titan_reply_2",
+          threadId: "thread_sent_1",
+          senderName: "Titan Graphics",
+          senderEmail: "orders@example.com",
+          subject: "Re: Quote 123",
+          receivedAt: new Date("2026-06-19T12:00:00.000Z"),
+          bodyText: "Thanks, we will watch for artwork.",
+          attachments: [{
+            filename: "internal-note.pdf",
+            mimeType: "application/pdf",
+            size: 8,
+            attachmentId: "att_internal_reply",
+            contentDisposition: "attachment",
+          }],
+        }),
+        message({
+          messageId: "customer_reply_2",
+          threadId: "thread_sent_1",
+          senderName: "Buyer",
+          senderEmail: "buyer@example.com",
+          subject: "Re: Quote 123 - artwork",
+          receivedAt: new Date("2026-06-20T12:00:00.000Z"),
+          bodyText: "Artwork attached.",
+          attachments: [{
+            filename: "artwork.pdf",
+            mimeType: "application/pdf",
+            size: 8,
+            attachmentId: "att_customer_artwork",
+            contentDisposition: "attachment",
+          }],
+        }),
+      ]),
+      downloadAttachment: jest.fn(async (_mailbox: any, _message: any, attachment: any) => ({
+        buffer: Buffer.from("%PDF"),
+        mimeType: attachment.mimeType,
+        sizeBytes: attachment.size,
+      })),
+    };
+
+    const outcome = await (service as any).processMessage(
+      "org_1",
+      "user_1",
+      mailbox,
+      { id: "source_1" },
+      message({
+        messageId: "customer_reply_2",
+        threadId: "thread_sent_1",
+        senderName: "Buyer",
+        senderEmail: "buyer@example.com",
+        subject: "Re: Quote 123 - artwork",
+      }),
+      adapter,
+    );
+
+    expect(outcome).toMatchObject({ status: "skippedDuplicates", processingOutcome: "updated_thread_container" });
+    expect(dbHarness.limitArgs[0]).toBe(3);
+    expect(repo.updateRecordWithEvent).toHaveBeenCalledWith(expect.objectContaining({
+      inboundRecordId: "thread_record_1",
+      patch: expect.objectContaining({
+        rawPayloadJson: expect.objectContaining({
+          thread: expect.objectContaining({
+            messageCount: 2,
+            latestMessageId: "customer_reply_2",
+            latestSenderEmail: "buyer@example.com",
+          }),
+        }),
+      }),
+    }));
+    expect(createdFiles.map((file) => [file.providerMessageId, file.providerAttachmentId])).toEqual([
+      ["customer_reply_2", "att_customer_artwork"],
+    ]);
+    expect(adapter.downloadAttachment).not.toHaveBeenCalledWith(
+      mailbox,
+      expect.objectContaining({ messageId: "titan_reply_2" }),
+      expect.anything(),
+    );
+  });
+
+  test("thread container lookup uses external provider message identities and legacy thread fallback", () => {
+    expect(inboundEmailThreadContainerLookupKeys([
+      message({ messageId: "customer_reply_1", threadId: "thread_sent_1" }),
+      message({ messageId: "customer_reply_2", threadId: "thread_sent_1" }),
+    ], "thread_sent_1")).toEqual([
+      "gmail:customer_reply_1",
+      "gmail:customer_reply_2",
+      "gmail:thread:thread_sent_1",
+    ]);
   });
 
   test("backfills attachments when insert conflict returns no created record", async () => {

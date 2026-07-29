@@ -1,4 +1,4 @@
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { google } from "googleapis";
 
 import { db } from "../db";
@@ -1021,6 +1021,23 @@ function processingDiagnosticForMessage(
     classificationReason: result.classificationReason ?? null,
     crmInfluence: result.crmInfluence ?? null,
   };
+}
+
+export function inboundEmailMessageIdempotencyKey(
+  message: Pick<InboundEmailProviderMessage, "provider" | "messageId">,
+): string {
+  return `${message.provider}:${message.messageId}`;
+}
+
+export function inboundEmailThreadContainerLookupKeys(
+  messages: Array<Pick<InboundEmailProviderMessage, "provider" | "messageId">>,
+  threadId: string | null,
+): string[] {
+  const keys = messages.map((message) => inboundEmailMessageIdempotencyKey(message));
+  if (threadId && messages[0]?.provider) {
+    keys.push(`${messages[0].provider}:thread:${threadId}`);
+  }
+  return Array.from(new Set(keys));
 }
 
 function attachmentMetadataProviderMessageId(file: InboundOrderFile, fallback: string): string {
@@ -2738,7 +2755,7 @@ export class InboundEmailIngestionService {
         reason: internalSender.reason ?? "Sender belongs to an organization/internal domain.",
       };
     }
-    const idempotencyKey = `${message.provider}:${message.messageId}`;
+    const idempotencyKey = inboundEmailMessageIdempotencyKey(message);
     const [existing] = await this.dbInstance
       .select({ id: inboundOrderRecords.id })
       .from(inboundOrderRecords)
@@ -3015,17 +3032,26 @@ export class InboundEmailIngestionService {
     const firstMessage = externalMessages[0] ?? latestMessage;
     // The Gmail message, not its thread, is the source identity. A later
     // customer reply in the same conversation remains eligible on the next pull.
-    const idempotencyKey = `${latestMessage.provider}:${latestMessage.messageId}`;
+    const idempotencyKey = inboundEmailMessageIdempotencyKey(latestMessage);
+    const existingLookupKeys = inboundEmailThreadContainerLookupKeys(externalMessages, threadId);
 
-    const [existing] = await this.dbInstance
-      .select({ id: inboundOrderRecords.id })
+    const existingRows = await this.dbInstance
+      .select({ id: inboundOrderRecords.id, idempotencyKey: inboundOrderRecords.idempotencyKey })
       .from(inboundOrderRecords)
       .where(and(
         eq(inboundOrderRecords.organizationId, organizationId),
         eq(inboundOrderRecords.sourceId, source.id),
-        eq(inboundOrderRecords.idempotencyKey, idempotencyKey),
+        inArray(inboundOrderRecords.idempotencyKey, existingLookupKeys),
       ))
-      .limit(1);
+      .limit(existingLookupKeys.length);
+    const existingByKey = new Map(existingRows.map((row) => [row.idempotencyKey, row]));
+    const preferredExistingLookupKeys = [
+      ...externalMessages.slice().reverse().map((message) => inboundEmailMessageIdempotencyKey(message)),
+      ...existingLookupKeys.filter((key) => !externalMessages.some((message) => inboundEmailMessageIdempotencyKey(message) === key)),
+    ];
+    const existing = preferredExistingLookupKeys
+      .map((key) => existingByKey.get(key))
+      .find(Boolean);
 
     if (existing) {
       const [existingRecord] = await this.dbInstance
