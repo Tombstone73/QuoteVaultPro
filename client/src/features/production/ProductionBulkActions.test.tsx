@@ -4,10 +4,12 @@ import { describe, expect, jest, test, beforeAll, beforeEach } from "@jest/globa
 
 const startMutateAsync = jest.fn(async () => ({}));
 const statusMutateAsync = jest.fn(async () => ({}));
+const createRunMutateAsync = jest.fn(async () => ({}));
 
 jest.mock("@/hooks/useProduction", () => ({
   useBulkStartProductionJobs: () => ({ mutateAsync: startMutateAsync, isPending: false }),
   useBulkUpdateProductionJobStatus: () => ({ mutateAsync: statusMutateAsync, isPending: false }),
+  useCreateProductionRun: () => ({ mutateAsync: createRunMutateAsync, isPending: false }),
 }));
 
 jest.mock("@/components/ui/button", () => ({
@@ -39,6 +41,7 @@ beforeAll(async () => {
 beforeEach(() => {
   startMutateAsync.mockClear();
   statusMutateAsync.mockClear();
+  createRunMutateAsync.mockClear();
 });
 
 const jobs = [
