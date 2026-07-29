@@ -3,6 +3,7 @@ import {
   AssistantCommandRegistry,
   AssistantCommandRegistryError,
   assertAssistantCommandIdempotencyKey,
+  assistantProductionCommandAllowlist,
   assistantProductionCommandRegistry,
   createProductionAssistantCommandRegistry,
   createAssistantCommandIdempotencyKey,
@@ -43,6 +44,12 @@ import {
   quoteDraftUpdateCommandResultSchema,
   quoteDraftUpdateCommandVersion,
 } from "../services/assistant/execution/quoteDraftUpdateCommand";
+import {
+  createProductPricingChangeSetCommandDefinition,
+  createProductPricingRollbackCommandDefinition,
+  productPricingChangeSetCommandName,
+  productPricingRollbackCommandName,
+} from "../services/assistant/execution/productPricingChangeSetCommand";
 
 const inputSchema = z.object({ recordId: z.string().uuid() }).strict();
 const resultSchema = z.object({ changed: z.literal(true) }).strict();
@@ -97,6 +104,56 @@ describe("assistant command registry", () => {
       ...testCommand(),
       name: "orders.update_status" as "test.assistant.synthetic_command",
     }])).toThrow(AssistantCommandRegistryError);
+  });
+
+  it("rejects an unreviewed production command with its safe identifier", () => {
+    expect(() => createProductionAssistantCommandRegistry({
+      ...testCommand(),
+      name: "products.unreviewed_command",
+      testOnly: false,
+      devEnabled: true,
+      mainEnabled: true,
+    })).toThrow("Only the static production command allowlist may be registered: products.unreviewed_command@v1.");
+  });
+
+  it("keeps development-only commands out of the production registry", () => {
+    const command = createQuoteInternalNoteCommandDefinition({
+      addInternalNote: async () => quoteInternalNoteCommandResultSchema.parse({
+        quote: { id: "quote_1", displayNumber: "Q-1042", sourceLink: "/quotes/quote_1" },
+        note: { id: "note_1", content: "Internal note", createdAt: "2026-07-21T00:00:00.000Z", classification: "internal_only" },
+      }),
+    });
+    expect(() => createProductionAssistantCommandRegistry({ ...command, mainEnabled: false })).toThrow("Production commands must be non-test-only and explicitly enabled for DEV and MAIN.");
+  });
+
+  it("rejects duplicate reviewed production registrations predictably", () => {
+    const command = createQuoteInternalNoteCommandDefinition({
+      addInternalNote: async () => quoteInternalNoteCommandResultSchema.parse({
+        quote: { id: "quote_1", displayNumber: "Q-1042", sourceLink: "/quotes/quote_1" },
+        note: { id: "note_1", content: "Internal note", createdAt: "2026-07-21T00:00:00.000Z", classification: "internal_only" },
+      }),
+    });
+    expect(() => createProductionAssistantCommandRegistry(command, command)).toThrow("Duplicate assistant command: quotes.add_internal_note.");
+  });
+
+  it("explicitly approves both reviewed pricing change-set commands", () => {
+    const service = {
+      execute: async () => ({ succeeded: 0, failed: 0, conflicted: 0, excluded: 0 }),
+      rollback: async () => ({ restored: 0, conflicted: 0, failed: 0 }),
+    };
+    const registry = createProductionAssistantCommandRegistry(
+      createProductPricingChangeSetCommandDefinition(service),
+      createProductPricingRollbackCommandDefinition(service),
+    );
+
+    expect(assistantProductionCommandAllowlist).toEqual(expect.arrayContaining([
+      productPricingChangeSetCommandName,
+      productPricingRollbackCommandName,
+    ]));
+    expect(registry.list().map((command) => command.name)).toEqual([
+      productPricingChangeSetCommandName,
+      productPricingRollbackCommandName,
+    ]);
   });
 
   it("uses server-shaped idempotency keys and binds hashes to the complete request", () => {
