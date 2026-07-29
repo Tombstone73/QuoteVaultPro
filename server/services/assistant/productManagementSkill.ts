@@ -30,7 +30,7 @@ import { pricingChangeRequestFromMessage } from "./productPricingChangeSetParsin
 import { productPricingChangeSetStore } from "./productPricingChangeSetDb";
 import { configurableProductDraftCommandName } from "./execution/configurableProductDraftCommand";
 import { applyComplexProductConversationEdit, createInitialComplexProductSpecification, routeComplexProductMessage } from "./complexProductConversation";
-import { getComplexProductConfirmation, getComplexProductProposal, getComplexProductProposalForConversation, persistComplexProductProposal, updateComplexProductProposal } from "./complexProductDraftPersistence";
+import { getComplexProductConfirmation, persistComplexProductProposal, resolveConfigurableProductContinuation, updateComplexProductProposal } from "./complexProductDraftPersistence";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
@@ -302,19 +302,19 @@ export class ProductManagementSkillService {
     // state is the one tenant-scoped proposal bound to this conversation.
     const configurableRoute = routeComplexProductMessage(input.message) === "configurable";
     const configurableEdit = /\b(?:minimum(?:\s+charge)?|sheet(?:\s+size)?|rotation|flatbed|pricing\s+matrix)\b|\|/i.test(input.message);
-    const existingConfigurableProposal = input.conversationId && configurableEdit
-      ? await getComplexProductProposalForConversation(input.organizationId, input.conversationId)
-      : null;
-    // The confirmation card is persisted in this same conversation and carries
-    // its server-generated proposal ID. It is a safe continuation fallback if
-    // an older proposal row cannot be resolved through the conversation index.
-    const cardBoundConfigurableProposal = !existingConfigurableProposal && configurableEdit && input.activeConfigurableProposalId
-      ? await getComplexProductProposal(input.organizationId, input.activeConfigurableProposalId)
-      : null;
-    if (configurableRoute || existingConfigurableProposal || cardBoundConfigurableProposal) {
+    let existingConfigurableProposal: Awaited<ReturnType<typeof resolveConfigurableProductContinuation>> = null;
+    if (input.conversationId && (configurableRoute || configurableEdit)) {
+      try {
+        existingConfigurableProposal = await resolveConfigurableProductContinuation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId, priorProposalId: input.activeConfigurableProposalId });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "The configurable-product proposal could not be resolved safely.";
+        return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Configurable product needs correction", summary: "No proposal was updated and no executable action was created.", sourceLinks: [], details: { errors: [message] } }] };
+      }
+    }
+    if (configurableRoute || existingConfigurableProposal) {
       if (!input.conversationId) return { handled: true, response: "A configurable product needs an active conversation before I can preserve its proposal and confirmation state. No product was changed.", cards: [{ kind: "product_validation_errors", title: "Conversation required", summary: "No configurable-product proposal was created without a conversation binding.", sourceLinks: [], details: { errors: ["Conversation binding is required."] } }] };
       try {
-        const existing = existingConfigurableProposal ?? cardBoundConfigurableProposal ?? await getComplexProductProposalForConversation(input.organizationId, input.conversationId);
+        const existing = existingConfigurableProposal;
         const specification = existing
           ? applyComplexProductConversationEdit(existing.specification as any, input.message)
           : createInitialComplexProductSpecification(input.message);
