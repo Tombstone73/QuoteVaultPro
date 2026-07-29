@@ -20,6 +20,11 @@ describe("System Guide routing", () => {
     expect(resolveSystemGuideAnswer("Move this order to fulfillment", context)).toBeNull();
   });
 
+  it("recognizes Flatbed wording as System Guide help only until a persisted product continuation defers it", () => {
+    expect(resolveSystemGuideAnswer("Use 48×96 sheets, Flatbed routing, allow rotation, and set a $25 minimum.", context)?.title)
+      .toBe("Production routing");
+  });
+
   it("uses the live order summary path for billing diagnosis", () => {
     expect(resolveSystemGuideAnswer("Why can't this order be invoiced?", context)).toBeNull();
     expect(resolveDeterministicReadPlan("Why can't this order be invoiced?", context)?.selectedSkill).toBe("deterministic_current_order_blocking");
