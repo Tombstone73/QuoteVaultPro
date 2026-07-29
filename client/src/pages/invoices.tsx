@@ -2,17 +2,13 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Textarea } from "@/components/ui/textarea";
 import { ArrowDown, ArrowUp, ArrowUpDown, Plus, FileText, DollarSign, Mail } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
-import { useBatchSendInvoices, useInvoices, useRecordManualInvoicePayment, type InvoiceEmailStatus, type InvoiceListItem } from "@/hooks/useInvoices";
+import { useBatchSendInvoices, useInvoices, type InvoiceEmailStatus } from "@/hooks/useInvoices";
 import { useToast } from "@/hooks/use-toast";
 import { format } from "date-fns";
 import { ROUTES } from "@/config/routes";
+import { canTakePaymentFromInvoiceList, getInvoiceListTakePaymentPath } from "@/lib/invoiceListPayment";
 import { getNextInvoiceSortState, type InvoiceSortDir, type InvoiceSortKey } from "@/lib/invoiceListSort";
 import {
   Page,
@@ -63,12 +59,6 @@ export default function InvoicesListPage() {
   const [sortKey, setSortKey] = useState<InvoiceSortKey>("issueDate");
   const [sortDir, setSortDir] = useState<InvoiceSortDir>("desc");
   const [selectedInvoiceIds, setSelectedInvoiceIds] = useState<Set<string>>(() => new Set());
-  const [paymentInvoice, setPaymentInvoice] = useState<InvoiceListItem | null>(null);
-  const [paymentAmount, setPaymentAmount] = useState("");
-  const [paymentMethod, setPaymentMethod] = useState("");
-  const [paymentReference, setPaymentReference] = useState("");
-  const [paymentNotes, setPaymentNotes] = useState("");
-  const [paymentDate, setPaymentDate] = useState(() => format(new Date(), "yyyy-MM-dd"));
 
   const { data: invoices, isLoading } = useInvoices({
     status: statusFilter !== "all" ? statusFilter : undefined,
@@ -79,7 +69,6 @@ export default function InvoicesListPage() {
 
   const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
   const batchSendInvoices = useBatchSendInvoices();
-  const recordManualPayment = useRecordManualInvoicePayment();
 
   const formatCurrency = (amount: string | number) => {
     return new Intl.NumberFormat("en-US", {
@@ -135,14 +124,6 @@ export default function InvoicesListPage() {
     return text || EMPTY_VALUE;
   };
 
-  const parseMoneyToCents = (value: string): number => {
-    const n = Number(String(value || "").replace(/[^0-9.\-]/g, ""));
-    if (!Number.isFinite(n)) return 0;
-    return Math.max(0, Math.round(n * 100));
-  };
-
-  const invoiceBalanceCents = (invoice: InvoiceListItem) => Math.max(0, Math.round(Number(invoice.displayRemaining ?? invoice.balanceDue ?? Number(invoice.total) - Number(invoice.amountPaid)) * 100));
-
   const toggleSelected = (invoiceId: string, checked: boolean) => {
     setSelectedInvoiceIds((current) => {
       const next = new Set(current);
@@ -178,43 +159,6 @@ export default function InvoicesListPage() {
       setSelectedInvoiceIds(new Set());
     } catch (error: any) {
       toast({ title: "Batch send failed", description: error.message, variant: "destructive" });
-    }
-  };
-
-  const openPaymentDialog = (invoice: InvoiceListItem) => {
-    setPaymentInvoice(invoice);
-    setPaymentAmount((invoiceBalanceCents(invoice) / 100).toFixed(2));
-    setPaymentMethod("");
-    setPaymentReference("");
-    setPaymentNotes("");
-    setPaymentDate(format(new Date(), "yyyy-MM-dd"));
-  };
-
-  const submitPayment = async () => {
-    if (!paymentInvoice) return;
-    const amountCents = parseMoneyToCents(paymentAmount);
-    if (amountCents <= 0) {
-      toast({ title: "Payment amount required", description: "Amount must be greater than 0.", variant: "destructive" });
-      return;
-    }
-    if (!paymentMethod) {
-      toast({ title: "Payment method required", description: "Select how the customer paid.", variant: "destructive" });
-      return;
-    }
-
-    try {
-      await recordManualPayment.mutateAsync({
-        invoiceId: paymentInvoice.id,
-        amountCents,
-        method: paymentMethod,
-        appliedAt: paymentDate ? new Date(paymentDate).toISOString() : undefined,
-        reference: paymentReference || undefined,
-        notes: paymentNotes || undefined,
-      });
-      toast({ title: "Payment recorded" });
-      setPaymentInvoice(null);
-    } catch (error: any) {
-      toast({ title: "Failed to record payment", description: error.message, variant: "destructive" });
     }
   };
 
@@ -433,9 +377,9 @@ export default function InvoicesListPage() {
                   </TitanTableCell>
                   <TitanTableCell className="sticky right-0 bg-background" onClick={(e) => e.stopPropagation()}>
                     <div className="flex items-center gap-2">
-                      {invoiceBalanceCents(invoice) > 0 && String(invoice.status || "").toLowerCase() !== "void" ? (
-                        <Button variant="outline" size="sm" onClick={() => openPaymentDialog(invoice)}>
-                          Payment
+                      {canTakePaymentFromInvoiceList(invoice) ? (
+                        <Button variant="outline" size="sm" onClick={() => navigate(getInvoiceListTakePaymentPath(invoice.id))}>
+                          Take Payment
                         </Button>
                       ) : null}
                       <Button variant="outline" size="sm" asChild>
@@ -449,60 +393,6 @@ export default function InvoicesListPage() {
           </TitanTable>
         </TitanTableContainer>
       </ContentLayout>
-
-      <Dialog open={!!paymentInvoice} onOpenChange={(open) => !open && setPaymentInvoice(null)}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>Record Payment</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="text-sm text-muted-foreground">
-              {paymentInvoice ? `Invoice ${paymentInvoice.invoiceNumber} · Balance ${formatCurrency(invoiceBalanceCents(paymentInvoice) / 100)}` : ""}
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label htmlFor="payment-amount">Amount</Label>
-                <Input id="payment-amount" value={paymentAmount} onChange={(event) => setPaymentAmount(event.target.value)} inputMode="decimal" />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="payment-date">Payment Date</Label>
-                <Input id="payment-date" type="date" value={paymentDate} onChange={(event) => setPaymentDate(event.target.value)} />
-              </div>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2">
-              <div className="space-y-2">
-                <Label>Method</Label>
-                <Select value={paymentMethod} onValueChange={setPaymentMethod}>
-                  <SelectTrigger>
-                    <SelectValue placeholder="Select method" />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value="cash">Cash</SelectItem>
-                    <SelectItem value="check">Check</SelectItem>
-                    <SelectItem value="credit_card">Credit Card</SelectItem>
-                    <SelectItem value="ach">ACH</SelectItem>
-                    <SelectItem value="other">Other</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="payment-reference">Reference</Label>
-                <Input id="payment-reference" value={paymentReference} onChange={(event) => setPaymentReference(event.target.value)} placeholder="Check #, auth code, etc." />
-              </div>
-            </div>
-            <div className="space-y-2">
-              <Label htmlFor="payment-notes">Notes</Label>
-              <Textarea id="payment-notes" value={paymentNotes} onChange={(event) => setPaymentNotes(event.target.value)} rows={3} />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button variant="outline" onClick={() => setPaymentInvoice(null)} disabled={recordManualPayment.isPending}>Cancel</Button>
-            <Button onClick={submitPayment} disabled={recordManualPayment.isPending}>
-              {recordManualPayment.isPending ? "Recording..." : "Record Payment"}
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
     </Page>
   );
 }
