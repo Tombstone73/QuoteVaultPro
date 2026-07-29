@@ -84,7 +84,6 @@ export const ProductForm = ({
   onPricingEngineChange,
   pbv2PricingMode,
   onPbv2PricingModeChange,
-  intakeDraftActivationLocked = false,
   onGenerateAiParsingDescription,
   isGeneratingAiParsingDescription = false,
 }: {
@@ -116,7 +115,6 @@ export const ProductForm = ({
   onPricingEngineChange?: (engine: "formulaLibrary" | "pricingProfile" | "pricingFormula") => void;
   pbv2PricingMode?: "basic" | "advanced";
   onPbv2PricingModeChange?: (mode: "basic" | "advanced") => void;
-  intakeDraftActivationLocked?: boolean;
   onGenerateAiParsingDescription?: () => void;
   isGeneratingAiParsingDescription?: boolean;
 }) => {
@@ -638,20 +636,15 @@ export const ProductForm = ({
             <div className="grid grid-cols-2 gap-x-6 gap-y-3">
               <FormField
                 control={form.control}
-                name="isActive"
+                name="requiresProofApproval"
                 render={({ field }) => (
                   <FormItem className="min-h-9">
                     <div className="flex items-center gap-2">
                       <FormControl>
-                        <Switch checked={field.value ?? true} onCheckedChange={field.onChange} disabled={intakeDraftActivationLocked} />
+                        <Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
                       </FormControl>
-                      <FormLabel className="text-sm text-slate-300 !mt-0">Active</FormLabel>
+                      <FormLabel className="text-sm text-slate-300 !mt-0">Requires Proof Approval</FormLabel>
                     </div>
-                    {intakeDraftActivationLocked ? (
-                      <FormDescription className="text-xs text-amber-300">
-                        Product Intake drafts activate from the intake review after PBV2 publish.
-                      </FormDescription>
-                    ) : null}
                     <FormMessage />
                   </FormItem>
                 )}
@@ -700,21 +693,6 @@ export const ProductForm = ({
                         <Switch checked={field.value ?? true} onCheckedChange={field.onChange} />
                       </FormControl>
                       <FormLabel className="text-sm text-slate-300 !mt-0">Taxable Item</FormLabel>
-                    </div>
-                    <FormMessage />
-                  </FormItem>
-                )}
-              />
-              <FormField
-                control={form.control}
-                name="requiresProofApproval"
-                render={({ field }) => (
-                  <FormItem className="min-h-9">
-                    <div className="flex items-center gap-2">
-                      <FormControl>
-                        <Switch checked={field.value ?? false} onCheckedChange={field.onChange} />
-                      </FormControl>
-                      <FormLabel className="text-sm text-slate-300 !mt-0">Requires Proof Approval</FormLabel>
                     </div>
                     <FormMessage />
                   </FormItem>

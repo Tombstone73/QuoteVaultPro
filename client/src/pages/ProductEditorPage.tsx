@@ -44,6 +44,7 @@ import {
   normalizeGeneratedAiParsingDescriptionResponse,
   type ProductAiParsingDescriptionMode,
 } from "@/lib/productAiParsingDescription";
+import { ProductActiveStatusHeaderControl } from "@/components/products/ProductActiveStatusHeaderControl";
 
 interface ProductFormData extends Omit<InsertProduct, 'optionsJson'> {
   pricingProfileKey: string;
@@ -895,7 +896,7 @@ const ProductEditorPage = () => {
 
   const header = (
     <div className="py-3">
-      <div className="flex items-start justify-between gap-4">
+      <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
         <div className="min-w-0">
           <div className="flex items-center gap-1 text-xs text-muted-foreground">
             <button
@@ -909,8 +910,8 @@ const ProductEditorPage = () => {
             <span>{isNewProduct ? "New Product" : "Edit Product"}</span>
           </div>
 
-          <div className="mt-1 flex items-center gap-3 min-w-0">
-            <div className="min-w-[260px] max-w-[520px]">
+          <div className="mt-1 flex flex-wrap items-center gap-3 min-w-0">
+            <div className="min-w-[220px] max-w-[520px] flex-1">
               <FormField
                 control={form.control}
                 name="name"
@@ -933,13 +934,18 @@ const ProductEditorPage = () => {
               {hasUnsavedChanges ? "Draft" : "Saved"}
             </Badge>
 
+            <ProductActiveStatusHeaderControl
+              control={form.control}
+              disabled={Boolean(productIntakeDraftLink && !productIntakeDraftLink.productIsActive)}
+            />
+
             {lastSavedAt ? (
               <span className="text-xs text-muted-foreground">Last saved {lastSavedAt.toLocaleTimeString()}</span>
             ) : null}
           </div>
         </div>
 
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2">
           <Button
             type="button"
             variant="outline"
@@ -1066,7 +1072,6 @@ const ProductEditorPage = () => {
               }}
               pbv2PricingMode={pbv2PricingMode}
               onPbv2PricingModeChange={setPbv2PricingMode}
-              intakeDraftActivationLocked={Boolean(productIntakeDraftLink && !productIntakeDraftLink.productIsActive)}
               onGenerateAiParsingDescription={requestAiParsingDescription}
               isGeneratingAiParsingDescription={aiParsingDescriptionMutation.isPending}
               onAddPricingV2Tier={(kind) => {
