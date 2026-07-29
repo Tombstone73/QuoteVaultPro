@@ -13,6 +13,10 @@ import { resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePri
 import { getBillableBundleRoots } from './services/lineItemBundles';
 import type { BillingInvoiceMilestone, InvoiceCreationSource } from '../shared/billingInvoicePolicy';
 import { isCanceledOrder } from '../shared/operationalState';
+import {
+  resolveBillingCustomerForOrder,
+  writeContactAccountingPromotionAudit,
+} from './services/contactAccountingPromotionService';
 
 // Map payment terms to days offset
 const TERM_OFFSETS: Record<string, number> = {
@@ -489,11 +493,11 @@ export async function createInvoiceFromOrderInTransaction(
     // Fetch order & its line items
     const [order] = await tx.select().from(orders).where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)));
     if (!order) throw new Error('Order not found');
-    // Invoices remain account receivable documents. Do not synthesize a
-    // customer for contact-only orders; staff must deliberately assign one.
-    if (!order.customerId) {
-      throw new Error('ORDER_CUSTOMER_REQUIRED_FOR_INVOICE: Assign a customer before creating an invoice for a contact-only order.');
-    }
+    const billingCustomer = await resolveBillingCustomerForOrder(tx, {
+      organizationId,
+      order,
+      actorUserId: userId,
+    });
     const lineItems = await tx.select().from(orderLineItems).where(eq(orderLineItems.orderId, orderId));
 
     const { displayNumber, numberCore } = await allocateDocumentNumber(organizationId, "invoice", tx);
@@ -525,7 +529,7 @@ export async function createInvoiceFromOrderInTransaction(
       numberCore,
       orderId: order.id,
       sourceOrderNumber: sourceOrderNumber as any, // Immutable snapshot — survives order deletion
-      customerId: order.customerId,
+      customerId: billingCustomer.customerId,
       status: 'draft',
       terms: opts.terms as any,
       customTerms: undefined,
@@ -553,6 +557,17 @@ export async function createInvoiceFromOrderInTransaction(
     } as any; // cast due to extended schema types differences
 
     const [invoice] = await tx.insert(invoices).values(invoiceInsert as any).returning();
+
+    await writeContactAccountingPromotionAudit(tx, {
+      organizationId,
+      actorUserId: userId,
+      orderId: order.id,
+      invoiceId: invoice.id,
+      customerId: billingCustomer.customerId,
+      contactId: billingCustomer.contactId,
+      resolution: billingCustomer.resolution,
+      createdCustomerId: billingCustomer.createdCustomerId,
+    });
 
     // Snapshot line items
     if (pricedLineItems.length) {
@@ -588,7 +603,18 @@ export async function createInvoiceFromOrderInTransaction(
       }
     }
 
-    return invoice;
+    return {
+      ...invoice,
+      accountingPromotion: billingCustomer.resolution === "existing_order_customer"
+        ? null
+        : {
+            resolution: billingCustomer.resolution,
+            customerId: billingCustomer.customerId,
+            contactId: billingCustomer.contactId,
+            createdCustomerId: billingCustomer.createdCustomerId,
+            message: billingCustomer.message,
+          },
+    };
 }
 
 async function createInvoiceFromOrderImpl(

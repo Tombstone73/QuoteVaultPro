@@ -2538,6 +2538,11 @@ export const customers = pgTable("customers", {
 
   companyName: varchar("company_name", { length: 255 }).notNull(),
   customerType: varchar("customer_type", { length: 50 }).default("business"),
+  displayName: varchar("display_name", { length: 255 }),
+  individualFirstName: varchar("individual_first_name", { length: 100 }),
+  individualLastName: varchar("individual_last_name", { length: 100 }),
+  sourceContactId: varchar("source_contact_id"),
+  accountCreationSource: varchar("account_creation_source", { length: 50 }),
 
   email: varchar("email", { length: 255 }),
   phone: varchar("phone", { length: 50 }),
@@ -2615,6 +2620,10 @@ export const customers = pgTable("customers", {
   index("customers_organization_id_idx").on(table.organizationId),
   index("customers_user_id_idx").on(table.userId),
   index("customers_email_idx").on(table.email),
+  index("customers_source_contact_idx").on(table.organizationId, table.sourceContactId),
+  uniqueIndex("customers_individual_source_contact_uidx")
+    .on(table.organizationId, table.sourceContactId)
+    .where(sql`customer_type = 'individual' AND source_contact_id IS NOT NULL`),
 ]);
 
 export const insertCustomerSchema = createInsertSchema(customers).omit({

@@ -1,7 +1,7 @@
 import OAuthClient from 'intuit-oauth';
 import crypto from 'crypto';
 import { db } from './db';
-import { oauthConnections, accountingSyncJobs, customers, customerContacts, customerContactLinks, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
+import { oauthConnections, accountingSyncJobs, auditLogs, customers, customerContacts, customerContactLinks, invoices, orders, payments, invoiceLineItems, type OAuthConnection } from '../shared/schema';
 import { getBillableBundleRoots } from './services/lineItemBundles';
 import { eq, and, asc, desc, or, isNull, isNotNull, sql } from 'drizzle-orm';
 import type { Customer } from '../shared/schema';
@@ -10,6 +10,11 @@ import { buildDocumentNumberParts } from './services/documentNumberingService';
 import { isSuspiciousContactName, deriveQBContactName } from './lib/qbContactHelpers';
 import { fetchAllQBEntities } from './lib/qbPaginationHelper';
 import { buildQuickBooksInvoiceLinePayloads } from './lib/downstreamEffectivePricing';
+import { mapLocalCustomerToQB } from './lib/quickbooksCustomerMapping';
+import {
+  resolveBillingCustomerForOrder,
+  writeContactAccountingPromotionAudit,
+} from './services/contactAccountingPromotionService';
 import {
   classifyQuickBooksCredentialError,
   encryptQuickBooksTokenIfConfigured,
@@ -20,6 +25,8 @@ import {
   type QuickBooksConnectionState,
   type QuickBooksCredentialErrorCategory,
 } from './services/quickbooksCredentialManager';
+
+export { mapLocalCustomerToQB } from './lib/quickbooksCustomerMapping';
 
 // Initialize QuickBooks OAuth client
 const getOAuthClient = (): any => {
@@ -937,41 +944,6 @@ async function upsertQBContact(payload: QBContactPayload): Promise<ContactUpsert
 }
 
 /**
- * Map local Customer to QuickBooks Customer format
- */
-function mapLocalCustomerToQB(customer: Customer): any {
-  const qbCustomer: any = {
-    DisplayName: customer.companyName,
-  };
-
-  if (customer.email) {
-    qbCustomer.PrimaryEmailAddr = { Address: customer.email };
-  }
-
-  if (customer.phone) {
-    qbCustomer.PrimaryPhone = { FreeFormNumber: customer.phone };
-  }
-
-  if (customer.website) {
-    qbCustomer.WebAddr = { URI: customer.website };
-  }
-
-  if (customer.billingAddress) {
-    qbCustomer.BillAddr = parseLocalAddress(customer.billingAddress);
-  }
-
-  if (customer.shippingAddress) {
-    qbCustomer.ShipAddr = parseLocalAddress(customer.shippingAddress);
-  }
-
-  if (customer.notes) {
-    qbCustomer.Notes = customer.notes;
-  }
-
-  return qbCustomer;
-}
-
-/**
  * Format QuickBooks address to local text format
  */
 function formatQBAddress(qbAddr: any): string {
@@ -985,20 +957,6 @@ function formatQBAddress(qbAddr: any): string {
     qbAddr.Country,
   ].filter(Boolean);
   return parts.join(', ');
-}
-
-/**
- * Parse local address text to QuickBooks address format
- */
-function parseLocalAddress(address: string): any {
-  // Simple parsing - split by comma
-  const parts = address.split(',').map(p => p.trim());
-  return {
-    Line1: parts[0] || '',
-    City: parts.length > 2 ? parts[parts.length - 3] : '',
-    CountrySubDivisionCode: parts.length > 1 ? parts[parts.length - 2] : '',
-    PostalCode: parts.length > 0 ? parts[parts.length - 1] : '',
-  };
 }
 
 /**
@@ -1199,18 +1157,51 @@ function escapeQBQueryString(value: string): string {
 async function ensureQBCustomerIdForLocalCustomer(organizationId: string, customer: Customer): Promise<string> {
   if ((customer as any).externalAccountingId) return String((customer as any).externalAccountingId);
 
-  const displayName = String((customer as any).companyName || '').trim();
-  if (!displayName) throw new Error('Customer has no companyName for QuickBooks sync');
+  const customerType = String((customer as any).customerType || "business").trim().toLowerCase();
+  const isIndividual = customerType === "individual";
+  const displayName = String((customer as any).displayName || (customer as any).companyName || '').trim();
+  if (!displayName) throw new Error('Customer has no display name for QuickBooks sync');
 
-  // First, try to find an existing QB Customer by DisplayName.
-  const query = `SELECT Id, DisplayName FROM Customer WHERE DisplayName = '${escapeQBQueryString(displayName)}' MAXRESULTS 1`;
+  // First, try to find an existing QB Customer by DisplayName. Individuals
+  // require an exact email corroboration when email is available; name-only
+  // attachment is deliberately avoided.
+  const query = `SELECT Id, DisplayName, PrimaryEmailAddr FROM Customer WHERE DisplayName = '${escapeQBQueryString(displayName)}' MAXRESULTS 20`;
   const lookup = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
-  const found = lookup?.QueryResponse?.Customer?.[0];
+  const candidates = Array.isArray(lookup?.QueryResponse?.Customer) ? lookup.QueryResponse.Customer : [];
+  const localEmail = String((customer as any).email || "").trim().toLowerCase();
+  const found = isIndividual
+    ? candidates.filter((candidate: any) => {
+        const candidateName = String(candidate?.DisplayName || "").trim();
+        const candidateEmail = String(candidate?.PrimaryEmailAddr?.Address || "").trim().toLowerCase();
+        return candidateName === displayName && localEmail && candidateEmail === localEmail;
+      })[0]
+    : candidates[0];
+  if (isIndividual && candidates.length > 0 && !found) {
+    const err: any = new Error('QUICKBOOKS_CUSTOMER_REVIEW_REQUIRED: Existing QuickBooks customer candidates require review before linking this individual customer.');
+    err.code = 'QUICKBOOKS_CUSTOMER_REVIEW_REQUIRED';
+    err.statusCode = 409;
+    throw err;
+  }
   if (found?.Id) {
     await db
       .update(customers)
       .set({ externalAccountingId: String(found.Id), syncStatus: 'synced', syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any)
       .where(and(eq(customers.id, (customer as any).id), eq(customers.organizationId, organizationId)));
+    await db.insert(auditLogs).values({
+      organizationId,
+      userId: null,
+      actionType: "quickbooks_customer_matched",
+      entityType: "customer",
+      entityId: (customer as any).id,
+      entityName: displayName,
+      description: "QuickBooks customer matched for local customer.",
+      newValues: {
+        quickBooksCustomerId: String(found.Id),
+        customerType,
+        sourceContactId: (customer as any).sourceContactId ?? null,
+        matchMode: isIndividual ? "display_name_and_email" : "display_name",
+      } as any,
+    } as any).catch(() => undefined);
     return String(found.Id);
   }
 
@@ -1224,12 +1215,33 @@ async function ensureQBCustomerIdForLocalCustomer(organizationId: string, custom
       .update(customers)
       .set({ externalAccountingId: String(qb.Id), syncStatus: 'synced', syncError: null, syncedAt: new Date(), updatedAt: new Date() } as any)
       .where(and(eq(customers.id, (customer as any).id), eq(customers.organizationId, organizationId)));
+    await db.insert(auditLogs).values({
+      organizationId,
+      userId: null,
+      actionType: "quickbooks_customer_created",
+      entityType: "customer",
+      entityId: (customer as any).id,
+      entityName: displayName,
+      description: "QuickBooks customer created for local customer.",
+      newValues: {
+        quickBooksCustomerId: String(qb.Id),
+        customerType,
+        sourceContactId: (customer as any).sourceContactId ?? null,
+      } as any,
+    } as any).catch(() => undefined);
     return String(qb.Id);
   } catch (err: any) {
     // Fallback: if already exists, re-query.
     console.error('[QuickBooks] customer ensure failed', { organizationId, customerId: (customer as any).id, message: String(err?.message || err) });
     const retry = await makeQBRequest('GET', `/query?query=${encodeURIComponent(query)}`, undefined, organizationId);
-    const retryFound = retry?.QueryResponse?.Customer?.[0];
+    const retryCandidates = Array.isArray(retry?.QueryResponse?.Customer) ? retry.QueryResponse.Customer : [];
+    const retryFound = isIndividual
+      ? retryCandidates.filter((candidate: any) => {
+          const candidateName = String(candidate?.DisplayName || "").trim();
+          const candidateEmail = String(candidate?.PrimaryEmailAddr?.Address || "").trim().toLowerCase();
+          return candidateName === displayName && localEmail && candidateEmail === localEmail;
+        })[0]
+      : retryCandidates[0];
     if (retryFound?.Id) {
       await db
         .update(customers)
@@ -2512,23 +2524,40 @@ export async function processPushOrders(jobId: string, organizationId: string): 
 
     for (const order of localOrders) {
       try {
-        if (!order.customerId) {
-          // Contact-only orders must never be attributed to an unrelated QB customer.
-          throw new Error('ORDER_CUSTOMER_REQUIRED_FOR_QUICKBOOKS: Assign a customer before QuickBooks export');
-        }
+        const resolvedOrder = order.customerId
+          ? order
+          : await db.transaction(async (tx) => {
+              const resolution = await resolveBillingCustomerForOrder(tx, {
+                organizationId: orgId,
+                order: order as any,
+                actorUserId: null,
+              });
+              await writeContactAccountingPromotionAudit(tx, {
+                organizationId: orgId,
+                actorUserId: null,
+                orderId: order.id,
+                invoiceId: null,
+                customerId: resolution.customerId,
+                contactId: resolution.contactId,
+                resolution: resolution.resolution,
+                createdCustomerId: resolution.createdCustomerId,
+              });
+              return { ...order, customerId: resolution.customerId };
+            });
+        const resolvedCustomerId = resolvedOrder.customerId;
+        if (!resolvedCustomerId) throw new Error('ORDER_CUSTOMER_REQUIRED_FOR_QUICKBOOKS: Unable to resolve a billing customer before QuickBooks export');
         const [customer] = await db
           .select()
           .from(customers)
-          .where(and(eq(customers.id, order.customerId), eq(customers.organizationId, orgId)))
+          .where(and(eq(customers.id, resolvedCustomerId), eq(customers.organizationId, orgId)))
           .limit(1);
 
-        if (!customer?.externalAccountingId) {
-          throw new Error('Customer not synced to QuickBooks');
-        }
+        if (!customer) throw new Error('Customer not found for QuickBooks export');
+        const qbCustomerId = await ensureQBCustomerIdForLocalCustomer(orgId, customer as any);
 
         // Build QB sales receipt
         const qbReceiptData: any = {
-          CustomerRef: { value: customer.externalAccountingId },
+          CustomerRef: { value: qbCustomerId },
           TxnDate: new Date(order.createdAt).toISOString().split('T')[0],
           Line: [], // Would need line items
         };
