@@ -33,6 +33,7 @@ import {
   type ProductionAlertStation,
   type ProductionAlertType,
   useCreateProductionAlert,
+  useCreatePrepressProductionRun,
   useProductionAlertPresets,
   useProductionAlerts,
 } from "@/hooks/useProduction";
@@ -50,6 +51,7 @@ import {
 import type { FileUploadNamingPolicy } from "@shared/fileUploadNaming";
 import { resolveProductionArtworkSideReadiness } from "@shared/productionHydration";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
+import { validatePrepressCombinedRunSelection } from "@/lib/prepressCombinedRuns";
 
 type LineItemFile = {
   id: string;
@@ -323,6 +325,7 @@ function formatPrepressTagLabel(tag: string | null | undefined, defaultTag: stri
   return tag || defaultTag;
 }
 const PREPRESS_QUEUE_QUERY_KEY = ["/api/prepress/queue"] as const;
+const EMPTY_PREPRESS_QUEUE: PrepressQueueItem[] = [];
 
 function getPrepressLineItemQueryKey(lineItemId: string | null) {
   return ["/api/prepress/line-item", lineItemId] as const;
@@ -342,6 +345,14 @@ export default function PrepressProductionPageV2() {
   // UI State
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [selectedQueueLineItemIds, setSelectedQueueLineItemIds] = useState<Set<string>>(() => new Set());
+  const [combinedRunOpen, setCombinedRunOpen] = useState(false);
+  const [combinedRunAllocations, setCombinedRunAllocations] = useState<Record<string, string>>({});
+  const [combinedRunPlannedSheetCount, setCombinedRunPlannedSheetCount] = useState("");
+  const [combinedRunPiecesPerSheet, setCombinedRunPiecesPerSheet] = useState("");
+  const [combinedRunSheetWidth, setCombinedRunSheetWidth] = useState("");
+  const [combinedRunSheetHeight, setCombinedRunSheetHeight] = useState("");
+  const [combinedRunNotes, setCombinedRunNotes] = useState("");
+  const [combinedRunOverrideReason, setCombinedRunOverrideReason] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [destinationFilter, setDestinationFilter] = useState<PrepressDestinationFilter>(DEFAULT_PREPRESS_LIST_PREFERENCES.destination);
   const [statusFilter, setStatusFilter] = useState<PrepressStatusFilter>(DEFAULT_PREPRESS_LIST_PREFERENCES.status);
@@ -938,11 +949,30 @@ export default function PrepressProductionPageV2() {
   });
 
   // Derived state
-  const queue = queueData?.items || [];
+  const queue = queueData?.items || EMPTY_PREPRESS_QUEUE;
   const totalQueueCount = queueData?.totalCount ?? queue.length;
   const filteredQueueCount = queueData?.filteredCount ?? queue.length;
   const filteredQueue = queue;
-  const selectedQueueItems = filteredQueue.filter((item) => selectedQueueLineItemIds.has(item.lineItemId));
+  const selectedQueueItems = useMemo(
+    () => filteredQueue.filter((item) => selectedQueueLineItemIds.has(item.lineItemId)),
+    [filteredQueue, selectedQueueLineItemIds],
+  );
+  const combinedRunValidation = validatePrepressCombinedRunSelection(
+    selectedQueueItems,
+    combinedRunAllocations,
+    combinedRunOverrideReason,
+  );
+  const combinedRunDialogValidation = validatePrepressCombinedRunSelection(
+    selectedQueueItems,
+    combinedRunAllocations,
+    combinedRunOverrideReason || "__override_pending__",
+  );
+  const combinedRunActionReason = combinedRunValidation.canCreate
+    ? "Selected lines will become one downstream run; original line items stay separate."
+    : combinedRunDialogValidation.canCreate
+      ? "Compatibility override required; open to provide the reason."
+      : combinedRunValidation.reason;
+  const combinedRunExpectedPlacements = (Number(combinedRunPlannedSheetCount) || 0) * (Number(combinedRunPiecesPerSheet) || 0);
   const allQueueItemsSelected = filteredQueue.length > 0 && selectedQueueItems.length === filteredQueue.length;
   const someQueueItemsSelected = selectedQueueItems.length > 0 && !allQueueItemsSelected;
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId) ?? null;
@@ -956,6 +986,7 @@ export default function PrepressProductionPageV2() {
   );
   const productionAlertPresetsQuery = useProductionAlertPresets();
   const createProductionAlert = useCreateProductionAlert();
+  const createCombinedRunMutation = useCreatePrepressProductionRun();
   const selectedOwnerLabel = formatOwnerLabel(selectedItem);
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
@@ -1031,6 +1062,15 @@ export default function PrepressProductionPageV2() {
     () => normalizedVisibleFiles.filter((file) => file.category === "final_production"),
     [normalizedVisibleFiles]
   );
+  useEffect(() => {
+    setCombinedRunAllocations((current) => {
+      const next: Record<string, string> = {};
+      for (const item of selectedQueueItems) {
+        next[item.lineItemId] = current[item.lineItemId] ?? String(Number(item.quantity) || 1);
+      }
+      return next;
+    });
+  }, [selectedQueueItems]);
   const resolveViewerIndex = React.useCallback((preferredFileId?: string | null) => {
     if (normalizedVisibleFiles.length === 0) return -1;
     if (!preferredFileId) return 0;
@@ -1368,6 +1408,42 @@ export default function PrepressProductionPageV2() {
     bulkPrintReadyMutation.mutate({ items: selectedQueueItems, releaseToProduction });
   };
 
+  const resetCombinedRunDraft = () => {
+    setCombinedRunPlannedSheetCount("");
+    setCombinedRunPiecesPerSheet("");
+    setCombinedRunSheetWidth("");
+    setCombinedRunSheetHeight("");
+    setCombinedRunNotes("");
+    setCombinedRunOverrideReason("");
+    setCombinedRunAllocations({});
+  };
+
+  const handleCreateCombinedRun = async () => {
+    if (!combinedRunValidation.canCreate || !combinedRunValidation.orderId || !combinedRunValidation.stationKey) return;
+    try {
+      await createCombinedRunMutation.mutateAsync({
+        orderId: combinedRunValidation.orderId,
+        stationKey: combinedRunValidation.stationKey,
+        members: selectedQueueItems.map((item) => ({
+          lineItemId: item.lineItemId,
+          allocatedQuantity: Number(combinedRunAllocations[item.lineItemId] ?? item.quantity),
+        })),
+        plannedSheetCount: combinedRunPlannedSheetCount ? Number(combinedRunPlannedSheetCount) : null,
+        nominalPiecesPerSheet: combinedRunPiecesPerSheet ? Number(combinedRunPiecesPerSheet) : null,
+        sheetWidth: combinedRunSheetWidth ? Number(combinedRunSheetWidth) : null,
+        sheetHeight: combinedRunSheetHeight ? Number(combinedRunSheetHeight) : null,
+        notes: combinedRunNotes.trim() || null,
+        compatibilityOverrideReason: combinedRunOverrideReason.trim() || null,
+      });
+      setSelectedQueueLineItemIds(new Set());
+      setCombinedRunOpen(false);
+      resetCombinedRunDraft();
+      await Promise.all([refreshPrepressQueue(), refreshPrepressNavigationCount()]);
+    } catch {
+      // The mutation hook owns the retryable, server-provided error message.
+    }
+  };
+
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
     const files = event.target.files;
     if (!files || !selectedLineItemId) return;
@@ -1649,6 +1725,22 @@ export default function PrepressProductionPageV2() {
               >
                 Complete &amp; Release selected
               </Button>
+            </div>
+            <div className="space-y-1">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setCombinedRunOpen(true)}
+                disabled={!combinedRunDialogValidation.canCreate || createCombinedRunMutation.isPending}
+                className="h-auto min-h-9 w-full whitespace-normal border-violet-400/60 px-2 py-1.5 text-[11px] leading-tight text-violet-200 hover:bg-violet-500/10"
+              >
+                {createCombinedRunMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                Create combined run
+              </Button>
+              <p className="text-[10px] leading-snug text-slate-400">
+                {combinedRunActionReason}
+              </p>
             </div>
           </div>
         </div>
@@ -2729,6 +2821,118 @@ export default function PrepressProductionPageV2() {
           </div>
         </div>
       </main>
+
+      <Dialog open={combinedRunOpen} onOpenChange={setCombinedRunOpen}>
+        <DialogContent className="max-w-3xl bg-[#111921] border-[#2d3748] text-slate-100">
+          <DialogHeader>
+            <DialogTitle>Create Combined Production Run</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-lg border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs text-slate-300">
+              <div className="font-semibold text-slate-100">
+                {selectedQueueItems.length} selected line items
+                {combinedRunValidation.orderId ? ` - Order ${selectedQueueItems[0]?.jobNumber || combinedRunValidation.orderId}` : ""}
+              </div>
+              <div className="mt-1">
+                Target station: {combinedRunValidation.stationKey || "Not resolved"}.
+                {combinedRunValidation.hasStationConflict ? " Mixed destinations selected." : " Destinations match."}
+                {combinedRunValidation.hasMaterialConflict ? " Mixed materials selected." : " Materials match."}
+              </div>
+              {!combinedRunValidation.canCreate && combinedRunValidation.reason ? (
+                <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-100">
+                  {combinedRunValidation.reason}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="max-h-64 overflow-auto rounded-lg border border-[#2d3748]">
+              {selectedQueueItems.map((item) => {
+                const maxQuantity = Number(item.quantity) || 0;
+                return (
+                  <div key={item.lineItemId} className="grid grid-cols-[minmax(0,1fr)_120px] gap-3 border-b border-[#2d3748] px-3 py-2 last:border-b-0">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-white">
+                        {item.lineNumber ? `Line ${item.lineNumber}: ` : ""}{item.productName}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        {item.productionDestinationLabel || item.selectedProductionDestination || "No destination"} - {item.materialName || item.media || "No material"} - max {maxQuantity}
+                      </div>
+                    </div>
+                    <label className="space-y-1">
+                      <span className="text-[11px] font-medium text-slate-400">Allocated qty</span>
+                      <Input
+                        aria-label={`Allocated quantity for ${item.productName}`}
+                        value={combinedRunAllocations[item.lineItemId] ?? String(maxQuantity || 1)}
+                        onChange={(event) => setCombinedRunAllocations((current) => ({ ...current, [item.lineItemId]: event.target.value }))}
+                        inputMode="numeric"
+                        className="h-8 bg-[#111921] border-[#2d3748]"
+                      />
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-slate-400">Planned sheets</span>
+                <Input value={combinedRunPlannedSheetCount} onChange={(event) => setCombinedRunPlannedSheetCount(event.target.value)} inputMode="numeric" className="h-9 bg-[#0f172a] border-[#2d3748]" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-slate-400">Pieces per sheet</span>
+                <Input value={combinedRunPiecesPerSheet} onChange={(event) => setCombinedRunPiecesPerSheet(event.target.value)} inputMode="numeric" className="h-9 bg-[#0f172a] border-[#2d3748]" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-slate-400">Sheet width</span>
+                <Input value={combinedRunSheetWidth} onChange={(event) => setCombinedRunSheetWidth(event.target.value)} inputMode="decimal" className="h-9 bg-[#0f172a] border-[#2d3748]" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-slate-400">Sheet height</span>
+                <Input value={combinedRunSheetHeight} onChange={(event) => setCombinedRunSheetHeight(event.target.value)} inputMode="decimal" className="h-9 bg-[#0f172a] border-[#2d3748]" />
+              </label>
+            </div>
+
+            {combinedRunPlannedSheetCount && combinedRunPiecesPerSheet ? (
+              <div className="rounded-lg border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs text-slate-300">
+                Planned nest: {combinedRunExpectedPlacements} placements from {combinedRunPlannedSheetCount} sheets x {combinedRunPiecesPerSheet} pieces per sheet.
+                {" "}Allocated quantity: {combinedRunValidation.totalAllocatedQuantity}.
+              </div>
+            ) : null}
+
+            {(combinedRunValidation.hasStationConflict || combinedRunValidation.hasMaterialConflict) ? (
+              <label className="block space-y-1">
+                <span className="text-xs font-medium text-slate-400">Authorized compatibility override reason</span>
+                <Input
+                  value={combinedRunOverrideReason}
+                  onChange={(event) => setCombinedRunOverrideReason(event.target.value)}
+                  placeholder="Explain why these lines can share one physical run"
+                  className="bg-[#0f172a] border-[#2d3748]"
+                />
+              </label>
+            ) : null}
+
+            <label className="block space-y-1">
+              <span className="text-xs font-medium text-slate-400">Nesting notes</span>
+              <Textarea
+                value={combinedRunNotes}
+                onChange={(event) => setCombinedRunNotes(event.target.value)}
+                placeholder="Sheet layout, orientation, grouping, or operator notes"
+                className="min-h-20 bg-[#0f172a] border-[#2d3748]"
+              />
+            </label>
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setCombinedRunOpen(false)} disabled={createCombinedRunMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={handleCreateCombinedRun} disabled={!combinedRunValidation.canCreate || createCombinedRunMutation.isPending}>
+                {createCombinedRunMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Create combined run
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
 
       <Dialog open={productionAlertOpen} onOpenChange={setProductionAlertOpen}>
         <DialogContent className="max-w-lg bg-[#111921] border-[#2d3748] text-slate-100">

@@ -497,6 +497,43 @@ export function useCreateProductionRun() {
   });
 }
 
+export function useCreatePrepressProductionRun() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: {
+      orderId: string;
+      stationKey: string;
+      members: Array<{ lineItemId: string; allocatedQuantity?: number }>;
+      plannedSheetCount?: number | null;
+      nominalPiecesPerSheet?: number | null;
+      sheetWidth?: number | null;
+      sheetHeight?: number | null;
+      notes?: string | null;
+      compatibilityOverrideReason?: string | null;
+    }) => {
+      const res = await fetch("/api/production/runs/prepress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to create production run");
+      return json.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      toast({ title: "Combined production run created" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Run creation failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
 export function useTransitionProductionRun() {
   const qc = useQueryClient();
   const { toast } = useToast();
