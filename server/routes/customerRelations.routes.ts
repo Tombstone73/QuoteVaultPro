@@ -124,8 +124,11 @@ export function registerCustomerRelationsRoutes(
       const sortBy = req.query.sortBy as string | undefined;
       const sortDir = req.query.sortDir as string | undefined;
       const filter = req.query.filter as string | undefined;
+      const customerId = typeof req.query.customerId === "string" && req.query.customerId.trim()
+        ? req.query.customerId.trim()
+        : undefined;
 
-      const result = await storage.getContactsPaged(organizationId, { search, page, pageSize, sortBy, sortDir, filter });
+      const result = await storage.getContactsPaged(organizationId, { search, page, pageSize, sortBy, sortDir, filter, customerId });
       res.json({
         contacts: result.items,
         total: result.total,

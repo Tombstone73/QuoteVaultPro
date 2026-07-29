@@ -148,6 +148,10 @@ function createTestApp() {
       const search = req.query.search as string | undefined;
       const page = req.query.page ? parseInt(req.query.page as string) : 1;
       const pageSize = Math.min(200, req.query.pageSize ? parseInt(req.query.pageSize as string) : 50);
+      const filter = req.query.filter as string | undefined;
+      const customerId = typeof req.query.customerId === "string" && req.query.customerId.trim()
+        ? req.query.customerId.trim()
+        : undefined;
 
       const result = await getContactsPaged(organizationId, {
         search,
@@ -155,6 +159,8 @@ function createTestApp() {
         pageSize,
         sortBy: req.query.sortBy as string | undefined,
         sortDir: req.query.sortDir as string | undefined,
+        filter,
+        customerId,
       });
       return res.json({
         contacts: result.items,
@@ -266,15 +272,15 @@ beforeAll(async () => {
   // 7 contacts for ORG_A customers (spread across first 7 customers)
   for (let i = 1; i <= 7; i++) {
     await db.execute(sql`
-      insert into customer_contacts (id, customer_id, first_name, last_name, email, is_primary)
-      values (${ctctId(i)}, ${custId(i)}, ${"Contact"}, ${`Alpha${i}`}, ${`contact.alpha${i}@example.com`}, ${true})
+      insert into customer_contacts (id, organization_id, customer_id, first_name, last_name, email, is_primary)
+      values (${ctctId(i)}, ${ORG_A}, ${custId(i)}, ${"Contact"}, ${`Alpha${i}`}, ${`contact.alpha${i}@example.com`}, ${true})
       on conflict (id) do nothing
     `);
   }
   // 1 contact for ORG_B customer (isolation check)
   await db.execute(sql`
-    insert into customer_contacts (id, customer_id, first_name, last_name, email, is_primary)
-    values (${ctctId(200)}, ${custId(101)}, ${"Beta"}, ${"Contact"}, ${`beta@example.com`}, ${true})
+    insert into customer_contacts (id, organization_id, customer_id, first_name, last_name, email, is_primary)
+    values (${ctctId(200)}, ${ORG_B}, ${custId(101)}, ${"Beta"}, ${"Contact"}, ${`beta@example.com`}, ${true})
     on conflict (id) do nothing
   `);
 
@@ -287,15 +293,31 @@ beforeAll(async () => {
 
   for (const contact of sortedContacts) {
     await db.execute(sql`
-      insert into customer_contacts (id, customer_id, first_name, last_name, email, is_primary)
-      values (${contact.id}, ${contact.customerId}, ${contact.firstName}, ${contact.lastName}, ${`${contact.lastName.toLowerCase()}.${suffix}@example.com`}, ${false})
+      insert into customer_contacts (id, organization_id, customer_id, first_name, last_name, email, is_primary)
+      values (${contact.id}, ${ORG_A}, ${contact.customerId}, ${contact.firstName}, ${contact.lastName}, ${`${contact.lastName.toLowerCase()}.${suffix}@example.com`}, ${false})
       on conflict (id) do nothing
     `);
   }
 
   await db.execute(sql`
-    insert into customer_contacts (id, customer_id, first_name, last_name, email, is_primary)
-    values (${ctctId(300)}, ${custId(1)}, ${"Move"}, ${"Company"}, ${`move.company.${suffix}@example.com`}, ${false})
+    insert into customer_contacts (id, organization_id, customer_id, first_name, last_name, email, is_primary)
+    values (${ctctId(300)}, ${ORG_A}, ${custId(1)}, ${"Move"}, ${"Company"}, ${`move.company.${suffix}@example.com`}, ${false})
+    on conflict (id) do nothing
+  `);
+
+  await db.execute(sql`
+    insert into customer_contacts (id, organization_id, customer_id, first_name, last_name, email, phone, is_primary, status)
+    values (${ctctId(400)}, ${ORG_A}, ${null}, ${"StandaloneOrderBuyer"}, ${"Active"}, ${`standalone.${suffix}@example.com`}, ${"555-0199"}, ${false}, ${"active"})
+    on conflict (id) do nothing
+  `);
+  await db.execute(sql`
+    insert into customer_contacts (id, organization_id, customer_id, first_name, last_name, email, is_primary, status)
+    values (${ctctId(401)}, ${ORG_B}, ${null}, ${"WrongTenantStandalone"}, ${"Hidden"}, ${`wrong.tenant.${suffix}@example.com`}, ${false}, ${"active"})
+    on conflict (id) do nothing
+  `);
+  await db.execute(sql`
+    insert into customer_contacts (id, organization_id, customer_id, first_name, last_name, email, is_primary, status)
+    values (${ctctId(402)}, ${ORG_A}, ${null}, ${"ArchivedStandalone"}, ${"Hidden"}, ${`archived.${suffix}@example.com`}, ${false}, ${"archived"})
     on conflict (id) do nothing
   `);
 });
@@ -314,6 +336,9 @@ afterAll(async () => {
     ...Array.from({length: 7}, (_, i) => ctctId(i + 1)),
     ctctId(200),
     ctctId(300),
+    ctctId(400),
+    ctctId(401),
+    ctctId(402),
     sortedCtctId("zulu"),
     sortedCtctId("alpha"),
     sortedCtctId("charlie"),
@@ -605,6 +630,76 @@ describe("GET /api/contacts — paginated envelope with correct total", () => {
 
     const ids: string[] = res.body.contacts.map((c: any) => c.id);
     expect(ids).not.toContain(ctctId(200));
+    expect(ids).not.toContain(ctctId(401));
+  });
+
+  test("search without customerId returns standalone contacts with nullable customer association", async () => {
+    const res = await request(app)
+      .get("/api/contacts?page=1&pageSize=50&search=StandaloneOrderBuyer")
+      .set(authHeaders)
+      .expect(200);
+
+    expect(res.body.contacts).toHaveLength(1);
+    expect(res.body.contacts[0]).toMatchObject({
+      id: ctctId(400),
+      customerId: null,
+      customer: null,
+      companyName: "Unlinked",
+    });
+  });
+
+  test("search includes customer-associated contacts by contact email, phone, and customer name", async () => {
+    const byEmail = await request(app)
+      .get("/api/contacts?page=1&pageSize=50&search=contact.alpha1@example.com")
+      .set(authHeaders)
+      .expect(200);
+    expect(byEmail.body.contacts.map((contact: any) => contact.id)).toContain(ctctId(1));
+
+    const byPhone = await request(app)
+      .get("/api/contacts?page=1&pageSize=50&search=555-0199")
+      .set(authHeaders)
+      .expect(200);
+    expect(byPhone.body.contacts.map((contact: any) => contact.id)).toContain(ctctId(400));
+
+    const byCustomer = await request(app)
+      .get(`/api/contacts?page=1&pageSize=50&search=${encodeURIComponent("Alpha Corp 01")}`)
+      .set(authHeaders)
+      .expect(200);
+    expect(byCustomer.body.contacts.map((contact: any) => contact.id)).toContain(ctctId(1));
+    const associated = byCustomer.body.contacts.find((contact: any) => contact.id === ctctId(1));
+    expect(associated.customer).toMatchObject({ id: custId(1), companyName: "Alpha Corp 01" });
+  });
+
+  test("archived contacts follow the existing active-by-default policy", async () => {
+    const activeSearch = await request(app)
+      .get("/api/contacts?page=1&pageSize=50&search=ArchivedStandalone")
+      .set(authHeaders)
+      .expect(200);
+    expect(activeSearch.body.contacts).toHaveLength(0);
+
+    const archivedSearch = await request(app)
+      .get("/api/contacts?page=1&pageSize=50&filter=archived&search=ArchivedStandalone")
+      .set(authHeaders)
+      .expect(200);
+    expect(archivedSearch.body.contacts.map((contact: any) => contact.id)).toContain(ctctId(402));
+  });
+
+  test("optional customer filter narrows contacts but is not required", async () => {
+    const globalSearch = await request(app)
+      .get("/api/contacts?page=1&pageSize=50&search=Contact")
+      .set(authHeaders)
+      .expect(200);
+    expect(globalSearch.body.contacts.length).toBeGreaterThan(1);
+
+    const filtered = await request(app)
+      .get(`/api/contacts?page=1&pageSize=50&customerId=${custId(1)}`)
+      .set(authHeaders)
+      .expect(200);
+    const ids: string[] = filtered.body.contacts.map((contact: any) => contact.id);
+    expect(ids).toContain(ctctId(1));
+    expect(ids).toContain(ctctId(300));
+    expect(ids).not.toContain(ctctId(2));
+    expect(ids).not.toContain(ctctId(400));
   });
 
   test("pageSize is capped at 200", async () => {

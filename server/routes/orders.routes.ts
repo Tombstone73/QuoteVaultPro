@@ -46,6 +46,7 @@ import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/porta
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
+import { OrderIdentityError } from "../storage/orders.repo";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import Papa from "papaparse";
@@ -2346,6 +2347,14 @@ export async function registerOrderRoutes(
             }
             if ((error as any)?.code === "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD") {
                 return res.status(409).json({ success: false, message: (error as Error).message, code: (error as any).code });
+            }
+            if (error instanceof OrderIdentityError) {
+                const statusCode = error.code === "ORDER_CONTACT_CUSTOMER_CONFLICT"
+                    ? 409
+                    : error.code === "ORDER_CUSTOMER_NOT_FOUND" || error.code === "ORDER_CONTACT_NOT_FOUND"
+                        ? 404
+                        : 400;
+                return res.status(statusCode).json({ success: false, message: error.message, code: error.code });
             }
             if ((error as any)?.statusCode) {
                 return res.status((error as any).statusCode).json({
