@@ -251,6 +251,18 @@ function activeProductIntakeSession(messages: AssistantMessageRecord[]): string 
   return null;
 }
 
+function activeConfigurableProductProposalId(messages: AssistantMessageRecord[]): string | null {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    for (const card of [...(message.structuredCards ?? [])].reverse()) {
+      const candidate = card as { details?: { configurableProduct?: { proposalId?: unknown } }; plan?: { action?: unknown; proposalId?: unknown } };
+      if (candidate.plan?.action === "products.create_configurable_draft" && typeof candidate.plan.proposalId === "string") return candidate.plan.proposalId;
+      if (typeof candidate.details?.configurableProduct?.proposalId === "string") return candidate.details.configurableProduct.proposalId;
+    }
+  }
+  return null;
+}
+
 export class AssistantService {
   constructor(
     private readonly repo: AssistantRepository,
@@ -531,6 +543,7 @@ export class AssistantService {
         conversationId,
         message: request.message,
         activeSessionId: activeProductIntakeSession(conversation.messages),
+        activeConfigurableProposalId: activeConfigurableProductProposalId(conversation.messages),
       });
       if (productManagement.handled) {
         response = productManagement.response;

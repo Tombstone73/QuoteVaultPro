@@ -2,6 +2,7 @@ import { jest } from "@jest/globals";
 
 const persistence = {
   getComplexProductConfirmation: jest.fn(),
+  getComplexProductProposal: jest.fn(),
   getComplexProductProposalForConversation: jest.fn(),
   persistComplexProductProposal: jest.fn(),
   updateComplexProductProposal: jest.fn(),
@@ -46,5 +47,19 @@ describe("ProductManagementSkillService configurable-product integration", () =>
     expect(persistence.persistComplexProductProposal).not.toHaveBeenCalled();
     expect(persistence.updateComplexProductProposal).toHaveBeenCalledWith(expect.objectContaining({ proposalId: "11111111-1111-4111-8111-111111111111", organizationId: "org_1" }));
     expect(response.cards.some((card) => card.kind === "action_proposal")).toBe(false);
+  });
+
+  it("continues a settings-only correction from the server-created confirmation card when the conversation index misses", async () => {
+    persistence.getComplexProductProposalForConversation.mockResolvedValue(null);
+    persistence.getComplexProductProposal.mockResolvedValue({ id: "11111111-1111-4111-8111-111111111111", specification: spec });
+    persistence.updateComplexProductProposal.mockResolvedValue({ proposal: { id: "11111111-1111-4111-8111-111111111111" }, blockers: [] });
+    persistence.getComplexProductConfirmation.mockResolvedValue({ ...readyConfirmation("c".repeat(64)), goEligible: false, blockers: ["Provide the matrix."] });
+    const service = new ProductManagementSkillService({ sessions: {} as any, references: jest.fn() });
+
+    const response = await service.respond({ organizationId: "org_1", userId: "user_1", conversationId: "conversation_1", activeConfigurableProposalId: "11111111-1111-4111-8111-111111111111", message: "Use 48×96 sheets, Flatbed routing, allow rotation, and set a $25 minimum." });
+
+    expect(response.handled).toBe(true);
+    expect(persistence.getComplexProductProposal).toHaveBeenCalledWith("org_1", "11111111-1111-4111-8111-111111111111");
+    expect(persistence.updateComplexProductProposal).toHaveBeenCalledWith(expect.objectContaining({ proposalId: "11111111-1111-4111-8111-111111111111", organizationId: "org_1" }));
   });
 });
