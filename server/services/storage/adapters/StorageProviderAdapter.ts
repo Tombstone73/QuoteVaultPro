@@ -73,6 +73,24 @@ export interface StorageProviderAdapter {
     resource: StorageResourceContext;
   }): Promise<StoredObjectDescriptor>;
 
+  readObject(input: {
+    providerConfig: StorageProviderConfig;
+    objectKey?: string | null;
+    localPathRef?: string | null;
+  }): Promise<Buffer>;
+
+  copyObjectWithinProvider?(input: {
+    providerConfig: StorageProviderConfig;
+    sourceObjectKey?: string | null;
+    sourceLocalPathRef?: string | null;
+    originalFilename: string;
+    mimeType: string;
+    sizeBytes: number;
+    checksum?: string | null;
+    requestedTarget?: string | null;
+    resource: StorageResourceContext;
+  }): Promise<StoredObjectDescriptor>;
+
   getDownloadHandle(input: {
     providerConfig: StorageProviderConfig;
     objectKey?: string | null;

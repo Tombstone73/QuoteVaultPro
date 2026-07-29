@@ -198,6 +198,84 @@ export class TitanManagedStorageAdapter implements StorageProviderAdapter {
     };
   }
 
+  async readObject(input: {
+    providerConfig: StorageProviderConfig;
+    objectKey?: string | null;
+    localPathRef?: string | null;
+  }): Promise<Buffer> {
+    if (input.objectKey) {
+      const supabase = new SupabaseStorageService();
+      return supabase.downloadFile(input.objectKey);
+    }
+    if (!input.localPathRef) {
+      throw new Error("Missing local path reference");
+    }
+    return fs.readFile(resolveLocalStoragePath(input.localPathRef));
+  }
+
+  async copyObjectWithinProvider(input: {
+    providerConfig: StorageProviderConfig;
+    sourceObjectKey?: string | null;
+    sourceLocalPathRef?: string | null;
+    originalFilename: string;
+    mimeType: string;
+    sizeBytes: number;
+    checksum?: string | null;
+    requestedTarget?: string | null;
+    resource: StorageResourceContext;
+  }): Promise<StoredObjectDescriptor> {
+    if (input.sourceObjectKey && isSupabaseConfigured()) {
+      const requestedTarget = normalizeRequestedStorageTarget(input.requestedTarget);
+      const storedFilename = requestedTarget ? requestedTarget.split("/").pop() ?? input.originalFilename : generateStoredFilename(input.originalFilename);
+      const relativePath = requestedTarget ?? buildRelativePath(input.resource, storedFilename);
+      const supabase = new SupabaseStorageService();
+      const copied = await supabase.copyFile(input.sourceObjectKey, relativePath);
+      if (!copied) {
+        throw new Error("Failed to copy Titan-managed Supabase object.");
+      }
+      return {
+        providerType: this.providerType,
+        storageTarget: "supabase",
+        bucket: TITAN_MANAGED_BUCKET,
+        objectKey: normalizeObjectKeyForDb(relativePath),
+        localPathRef: null,
+        checksum: input.checksum ?? null,
+        sizeBytes: Math.max(0, Number(input.sizeBytes || 0)),
+        mimeType: input.mimeType || "application/octet-stream",
+        originalFilename: input.originalFilename,
+        storedFilename,
+        extension: getFileExtension(input.originalFilename),
+        persistenceConfirmed: true,
+      };
+    }
+
+    if (!input.sourceLocalPathRef) {
+      throw new Error("Missing local path reference for Titan-managed copy.");
+    }
+    const requestedTarget = normalizeRequestedStorageTarget(input.requestedTarget);
+    const storedFilename = requestedTarget ? requestedTarget.split("/").pop() ?? input.originalFilename : generateStoredFilename(input.originalFilename);
+    const relativePath = requestedTarget ?? buildRelativePath(input.resource, storedFilename);
+    const sourceAbsolutePath = resolveLocalStoragePath(input.sourceLocalPathRef);
+    const destinationAbsolutePath = resolveLocalStoragePath(relativePath);
+    await fs.mkdir(path.dirname(destinationAbsolutePath), { recursive: true });
+    await fs.copyFile(sourceAbsolutePath, destinationAbsolutePath);
+
+    return {
+      providerType: this.providerType,
+      storageTarget: "local_dev",
+      bucket: null,
+      objectKey: null,
+      localPathRef: relativePath,
+      checksum: input.checksum ?? null,
+      sizeBytes: Math.max(0, Number(input.sizeBytes || 0)),
+      mimeType: input.mimeType || "application/octet-stream",
+      originalFilename: input.originalFilename,
+      storedFilename,
+      extension: getFileExtension(input.originalFilename),
+      persistenceConfirmed: true,
+    };
+  }
+
   async finalizeUpload(input: {
     sourceRelativePath: string;
     originalFilename: string;

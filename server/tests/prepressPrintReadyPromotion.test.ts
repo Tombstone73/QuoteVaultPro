@@ -22,7 +22,8 @@ describe("Prepress print-ready promotion contract", () => {
 
   test("customer artwork promotion creates a distinct canonical production copy", () => {
     expect(service).toContain("storageApplicationService.finalizeUpload");
-    expect(service).toContain("kind: \"existing-key\"");
+    expect(service).toContain("kind: \"existing-file-record\"");
+    expect(service).toContain("SOURCE_STORAGE_PLACEMENT_MISSING");
     expect(service).toContain("fileRecordId: result.fileRecord.id");
     expect(service).toContain("queueLineItemFilePreviewRepair");
     expect(service).toContain("enqueueFinalProductionFileCopy");

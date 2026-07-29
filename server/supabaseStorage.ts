@@ -143,6 +143,24 @@ export class SupabaseStorageService {
     return data.signedUrl;
   }
 
+  async downloadFile(path: string): Promise<Buffer> {
+    const client = getSupabaseClient();
+    const normalizedPath = this.normalizeObjectPath(path);
+
+    const { data, error } = await client.storage
+      .from(this.bucket)
+      .download(normalizedPath);
+
+    if (error) {
+      throw new Error(`Failed to download file: ${error.message}`);
+    }
+    if (!data) {
+      throw new Error("Failed to download file: empty response");
+    }
+
+    return Buffer.from(await data.arrayBuffer());
+  }
+
   /**
    * Upload a file directly from the server
    * @param path File path in the bucket
