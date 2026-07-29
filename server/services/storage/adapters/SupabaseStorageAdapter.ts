@@ -123,6 +123,59 @@ export class SupabaseStorageAdapter implements StorageProviderAdapter {
     };
   }
 
+  async readObject(input: {
+    providerConfig: StorageProviderConfig;
+    objectKey?: string | null;
+    localPathRef?: string | null;
+  }): Promise<Buffer> {
+    const normalized = normalizeSupabaseStorageProviderConfig(input.providerConfig.configJson);
+    if (!input.objectKey) {
+      throw new Error("Missing object key for Supabase read.");
+    }
+    const service = new SupabaseStorageService(normalized.bucketName.trim());
+    return service.downloadFile(input.objectKey);
+  }
+
+  async copyObjectWithinProvider(input: {
+    providerConfig: StorageProviderConfig;
+    sourceObjectKey?: string | null;
+    sourceLocalPathRef?: string | null;
+    originalFilename: string;
+    mimeType: string;
+    sizeBytes: number;
+    checksum?: string | null;
+    requestedTarget?: string | null;
+    resource: StorageResourceContext;
+  }): Promise<StoredObjectDescriptor> {
+    const normalized = normalizeSupabaseStorageProviderConfig(input.providerConfig.configJson);
+    if (!input.sourceObjectKey) {
+      throw new Error("Missing object key for Supabase copy.");
+    }
+    const requestedTarget = normalizeRequestedStorageTarget(input.requestedTarget);
+    const storedFilename = requestedTarget ? requestedTarget.split("/").pop() ?? input.originalFilename : generateStoredFilename(input.originalFilename);
+    const relativePath = requestedTarget ?? buildRelativePath(input.resource, storedFilename, normalized.pathPrefix);
+    const service = new SupabaseStorageService(normalized.bucketName.trim());
+    const copied = await service.copyFile(input.sourceObjectKey, relativePath);
+    if (!copied) {
+      throw new Error("Failed to copy Supabase object.");
+    }
+
+    return {
+      providerType: this.providerType,
+      storageTarget: "supabase",
+      bucket: normalized.bucketName.trim(),
+      objectKey: normalizeObjectKeyForDb(relativePath),
+      localPathRef: null,
+      checksum: input.checksum ?? null,
+      sizeBytes: Math.max(0, Number(input.sizeBytes || 0)),
+      mimeType: input.mimeType || "application/octet-stream",
+      originalFilename: input.originalFilename,
+      storedFilename,
+      extension: getFileExtension(input.originalFilename),
+      persistenceConfirmed: true,
+    };
+  }
+
   async finalizeUpload(input: {
     sourceRelativePath: string;
     originalFilename: string;

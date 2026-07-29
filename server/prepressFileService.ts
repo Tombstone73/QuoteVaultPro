@@ -720,7 +720,7 @@ export async function promoteCustomerArtworkToProductionArtwork(params: {
       ))
       .limit(1);
     if (!original) {
-      throw Object.assign(new Error("Customer artwork source file not found."), { statusCode: 404, code: "CUSTOMER_ARTWORK_NOT_FOUND" });
+      throw Object.assign(new Error("Customer artwork source file not found."), { statusCode: 404, code: "SOURCE_ARTWORK_NOT_FOUND" });
     }
     source = {
       fileRecordId: original.fileRecordId,
@@ -767,7 +767,7 @@ export async function promoteCustomerArtworkToProductionArtwork(params: {
       ))
       .limit(1);
     if (!attachment) {
-      throw Object.assign(new Error("Customer artwork attachment not found."), { statusCode: 404, code: "CUSTOMER_ARTWORK_NOT_FOUND" });
+      throw Object.assign(new Error("Customer artwork attachment not found."), { statusCode: 404, code: "SOURCE_ARTWORK_NOT_FOUND" });
     }
     const resolvedOriginal = await resolveOriginalFileAccess({
       id: attachment.id,
@@ -780,7 +780,7 @@ export async function promoteCustomerArtworkToProductionArtwork(params: {
     });
     const resolvedStoragePath = resolvedOriginal.objectPath || attachment.relativePath || attachment.fileUrl || null;
     if (resolvedOriginal.availabilityStatus !== "available" || !resolvedStoragePath) {
-      throw Object.assign(new Error("Customer artwork source is not available for promotion."), { statusCode: 409, code: "CUSTOMER_ARTWORK_UNAVAILABLE" });
+      throw Object.assign(new Error("Customer artwork source is not available for promotion."), { statusCode: 409, code: "SOURCE_STORAGE_PLACEMENT_MISSING" });
     }
     source = {
       fileRecordId: attachment.fileRecordId,
@@ -819,6 +819,10 @@ export async function promoteCustomerArtworkToProductionArtwork(params: {
     .limit(1);
   if (existing) return { file: existing, created: false };
 
+  if (!source.fileRecordId) {
+    throw Object.assign(new Error("Customer artwork is missing a canonical source file record."), { statusCode: 409, code: "SOURCE_STORAGE_PLACEMENT_MISSING" });
+  }
+
   const stored = await storageApplicationService.finalizeUpload({
     organizationId: params.organizationId,
     createdByUserId: params.createdByUserId,
@@ -829,8 +833,8 @@ export async function promoteCustomerArtworkToProductionArtwork(params: {
       lineItemId: params.lineItemId,
     },
     source: {
-      kind: "existing-key",
-      fileUrl: source.storageKey ?? source.storagePath,
+      kind: "existing-file-record",
+      fileRecordId: source.fileRecordId,
       originalFilename: source.originalFilename,
       mimeType: source.mimeType,
       fileSize: source.sizeBytes,
