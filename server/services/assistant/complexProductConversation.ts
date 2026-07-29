@@ -1,4 +1,4 @@
-import { parseTwoDimensionalPricingMatrix, type ComplexProductSpecification } from "./complexProductSpecification";
+import { complexProductMatrixCellKey, parseTwoDimensionalPricingMatrix, type ComplexProductSpecification } from "./complexProductSpecification";
 
 export type ComplexProductConversationRoute = "configurable" | "standalone" | "pricing" | "clarify" | "ignore";
 export function routeComplexProductMessage(message: string): ComplexProductConversationRoute {
@@ -24,7 +24,7 @@ export function createInitialComplexProductSpecification(message: string): Compl
   const columns = /\b(?:single|double)[- ]?sided\b/i.test(message) || /\bprinted[- ]?sides?\b/i.test(message)
     ? ["single_sided", "double_sided"] : ["single_sided", "double_sided"];
   const cells: Record<string, number> = {};
-  for (const row of rows) for (const column of columns) cells[`${row}\u0000${column}`] = 0;
+  for (const row of rows) for (const column of columns) cells[complexProductMatrixCellKey(row, column)] = 0;
   const name = message.match(/\b(?:named?|name)\s*[:=]?\s*["“]([^"”]{1,120})["”]/i)?.[1]?.trim()
     ?? ( /\bPVC\b/i.test(message) ? "PVC Configurable Product" : "Configurable Product Draft" );
   const specification: ComplexProductSpecification = {
