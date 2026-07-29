@@ -8059,6 +8059,7 @@ export const lineItemFiles = pgTable("line_item_files", {
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  productionRunId: varchar("production_run_id").references((): AnyPgColumn => productionRuns.id, { onDelete: 'set null' }),
   prepressSessionId: varchar("prepress_session_id").references(() => prepressSessions.id, { onDelete: 'set null' }),
   fileRecordId: varchar("file_record_id").references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   
@@ -8090,6 +8091,7 @@ export const lineItemFiles = pgTable("line_item_files", {
   index("line_item_files_org_idx").on(table.organizationId),
   index("line_item_files_order_idx").on(table.orderId),
   index("line_item_files_line_item_idx").on(table.lineItemId),
+  index("line_item_files_production_run_idx").on(table.productionRunId),
   index("line_item_files_file_record_idx").on(table.fileRecordId),
   index("line_item_files_session_idx").on(table.prepressSessionId),
   index("line_item_files_role_status_idx").on(table.role, table.status),

@@ -17,6 +17,8 @@ import {
   productionAlerts,
   productionEvents,
   productionJobs,
+  productionRunMembers,
+  productionRuns,
   productionStationSteps,
   products,
   reprintRequests,
@@ -1046,7 +1048,7 @@ export function registerProductionJobsRoutes(
           })
         : new Map<string, any>();
 
-      const filteredRows = baseRows.filter((row) => {
+      let filteredRows = baseRows.filter((row) => {
         if (!row.lineItemId) {
           return activeBoardQuery ? !["done", "void", "canceled", "cancelled"].includes(String(row.status || "").toLowerCase()) : true;
         }
@@ -1070,6 +1072,23 @@ export function registerProductionJobsRoutes(
 
         return true;
       });
+
+      if (activeBoardQuery && filteredRows.length > 0) {
+        const candidateJobIds = filteredRows.map((row) => row.id);
+        const groupedMemberRows = await db
+          .select({ productionJobId: productionRunMembers.productionJobId })
+          .from(productionRunMembers)
+          .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+          .where(and(
+            eq(productionRunMembers.organizationId, organizationId),
+            inArray(productionRunMembers.productionJobId, candidateJobIds),
+            inArray(productionRuns.status, ["draft", "ready_for_production", "in_production"]),
+          ));
+        const groupedJobIds = new Set(groupedMemberRows.map((row) => row.productionJobId));
+        if (groupedJobIds.size > 0) {
+          filteredRows = filteredRows.filter((row) => !groupedJobIds.has(row.id));
+        }
+      }
 
       // DEV-only logging: show how many items were gated
       if (process.env.NODE_ENV !== "production") {
