@@ -424,6 +424,7 @@ export async function uploadLineItemFile(params: {
   organizationId: string;
   orderId: string;
   lineItemId: string;
+  productionRunId?: string | null;
   prepressSessionId?: string;
   role: "original" | "final" | "reference";
   tag?: string;
@@ -436,6 +437,7 @@ export async function uploadLineItemFile(params: {
     organizationId,
     orderId,
     lineItemId,
+    productionRunId,
     prepressSessionId,
     role,
     tag,
@@ -470,6 +472,7 @@ export async function uploadLineItemFile(params: {
         organizationId,
         orderId,
         lineItemId,
+        productionRunId: productionRunId ?? null,
         prepressSessionId: prepressSessionId || null,
         fileRecordId: result.fileRecord.id,
         role,
@@ -836,6 +839,7 @@ export async function replaceLineItemFile(params: {
     organizationId,
     orderId: existingFile.orderId,
     lineItemId: existingFile.lineItemId,
+    productionRunId: existingFile.productionRunId,
     prepressSessionId: existingFile.prepressSessionId || undefined,
     role: existingFile.role as "original" | "final" | "reference",
     tag: existingFile.tag || undefined,

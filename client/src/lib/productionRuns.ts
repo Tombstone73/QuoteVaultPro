@@ -30,7 +30,7 @@ export function productionRunToBoardItem(run: ProductionRunListItem): any {
     reprintCount: 0,
     artwork: [],
     notes: [],
-    productionFiles: [],
+    productionFiles: run.files ?? [],
     productionAlerts: [],
     order: {
       id: run.orderId,
@@ -66,7 +66,7 @@ export function productionRunToBoardItem(run: ProductionRunListItem): any {
         })),
       },
       artwork: [],
-      productionFiles: [],
+      productionFiles: run.files ?? [],
     },
   };
 }

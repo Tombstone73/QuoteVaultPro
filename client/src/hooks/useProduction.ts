@@ -264,6 +264,36 @@ export type ProductionRunMemberSummary = {
   remainingAfterRun: number;
 };
 
+export type ProductionRunFileSummary = {
+  id: string;
+  productionRunId: string;
+  lineItemId: string;
+  fileRecordId: string | null;
+  fileName: string;
+  originalFilename: string;
+  role: "final";
+  status: "active" | "superseded" | "retired";
+  tag: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  thumbnailUrl: string | null;
+  previewUrl: string | null;
+  previewAvailabilityStatus?: "available" | "pending" | "missing" | "failed" | null;
+  downloadUrl: string;
+  openUrl: string;
+  uploadedByUserId: string | null;
+  uploadedByName: string | null;
+  createdAt: string;
+  localBridge: {
+    status: "none" | "pending" | "claimed" | "succeeded" | "failed" | "canceled";
+    unsafeToRetire: boolean;
+    jobCount: number;
+    lastError: string | null;
+    updatedAt: string | null;
+  };
+  supersedesFileId: string | null;
+};
+
 export type ProductionRunListItem = {
   kind: "production_run";
   id: string;
@@ -285,9 +315,17 @@ export type ProductionRunListItem = {
   memberCount: number;
   totalAllocatedQuantity: number;
   fileCount: number;
+  replacementRequired: boolean;
+  files: ProductionRunFileSummary[];
   members: ProductionRunMemberSummary[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type ProductionRunFilesResponse = {
+  files: ProductionRunFileSummary[];
+  activeCount: number;
+  replacementRequired: boolean;
 };
 
 export type RecentlyCompletedProductionJob = {
@@ -531,6 +569,89 @@ export function useCreatePrepressProductionRun() {
     onError: (e: Error) => {
       toast({ title: "Run creation failed", description: e.message, variant: "destructive" });
     },
+  });
+}
+
+export function useProductionRunFiles(runId: string | undefined, includeHistory = true) {
+  return useQuery<ProductionRunFilesResponse>({
+    queryKey: ["/api/production/runs", runId, "files", { includeHistory }],
+    queryFn: async () => {
+      if (!runId) throw new Error("runId required");
+      const params = new URLSearchParams();
+      if (includeHistory) params.set("includeHistory", "true");
+      const res = await fetch(`/api/production/runs/${runId}/files${params.toString() ? `?${params.toString()}` : ""}`, { credentials: "include" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to load production run files");
+      return json.data;
+    },
+    enabled: !!runId,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+function productionRunFileMutationOptions(qc: ReturnType<typeof useQueryClient>, toast: ReturnType<typeof useToast>["toast"], title: string) {
+  return {
+    onSuccess: (_data: unknown, args: { runId: string }) => {
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs", args.runId, "files"] });
+      toast({ title });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Production run file update failed", description: e.message, variant: "destructive" });
+    },
+  };
+}
+
+export function useUploadProductionRunFile() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; file: File }) => {
+      const form = new FormData();
+      form.append("file", args.file);
+      const res = await fetch(`/api/production/runs/${args.runId}/files/upload`, { method: "POST", credentials: "include", body: form });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to upload production run file");
+      return json.data;
+    },
+    ...productionRunFileMutationOptions(qc, toast, "Shared production file uploaded"),
+  });
+}
+
+export function useReplaceProductionRunFile() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; fileId: string; file: File }) => {
+      const form = new FormData();
+      form.append("file", args.file);
+      const res = await fetch(`/api/production/runs/${args.runId}/files/${args.fileId}/replace`, { method: "POST", credentials: "include", body: form });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to replace production run file");
+      return json.data;
+    },
+    ...productionRunFileMutationOptions(qc, toast, "Shared production file replaced"),
+  });
+}
+
+export function useRetireProductionRunFile() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; fileId: string; reason?: string | null }) => {
+      const res = await fetch(`/api/production/runs/${args.runId}/files/${args.fileId}/retire`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ reason: args.reason ?? null }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to retire production run file");
+      return json.data;
+    },
+    ...productionRunFileMutationOptions(qc, toast, "Shared production file retired"),
   });
 }
 

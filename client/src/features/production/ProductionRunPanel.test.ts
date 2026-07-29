@@ -24,6 +24,31 @@ describe("productionRunToBoardItem", () => {
       memberCount: 2,
       totalAllocatedQuantity: 72,
       fileCount: 1,
+      replacementRequired: false,
+      files: [
+        {
+          id: "file-1",
+          productionRunId: "run-1",
+          lineItemId: "line-1",
+          fileRecordId: "record-1",
+          fileName: "nested-final.pdf",
+          originalFilename: "nested-final.pdf",
+          role: "final",
+          status: "active",
+          tag: "nested_run",
+          mimeType: "application/pdf",
+          sizeBytes: 1200,
+          thumbnailUrl: null,
+          previewUrl: null,
+          downloadUrl: "/api/production/runs/run-1/files/file-1/download",
+          openUrl: "/api/production/runs/run-1/files/file-1/download?inline=1",
+          uploadedByUserId: "user-1",
+          uploadedByName: "Prepress User",
+          createdAt: "2026-07-29T00:00:00.000Z",
+          localBridge: { status: "pending", unsafeToRetire: false, jobCount: 1, lastError: null, updatedAt: "2026-07-29T00:00:00.000Z" },
+          supersedesFileId: null,
+        },
+      ],
       members: [
         {
           id: "member-1",
@@ -62,5 +87,7 @@ describe("productionRunToBoardItem", () => {
     expect(boardItem.order.lineItems.count).toBe(2);
     expect(boardItem.order.lineItems.items).toHaveLength(2);
     expect(boardItem.media).toBe("2 line items");
+    expect(boardItem.productionFiles).toHaveLength(1);
+    expect(boardItem.order.productionFiles[0].fileName).toBe("nested-final.pdf");
   });
 });
