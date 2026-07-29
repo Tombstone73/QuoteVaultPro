@@ -1,7 +1,19 @@
+import busboy from "busboy";
 import type { Express } from "express";
 import { z } from "zod";
 import { getRequestOrganizationId } from "../tenantContext";
-import { createPrepressProductionRun, createProductionRun, listProductionRuns, ProductionRunError, transitionProductionRun } from "../services/productionRunService";
+import {
+  createPrepressProductionRun,
+  createProductionRun,
+  downloadProductionRunFile,
+  listProductionRunFiles,
+  listProductionRuns,
+  ProductionRunError,
+  replaceProductionRunFile,
+  retireProductionRunFile,
+  transitionProductionRun,
+  uploadProductionRunFile,
+} from "../services/productionRunService";
 
 const createSchema = z.object({
   orderId: z.string().min(1), stationKey: z.string().min(1).max(40),
@@ -13,7 +25,57 @@ const createPrepressSchema = createSchema.extend({
   members: z.array(z.object({ lineItemId: z.string().min(1), allocatedQuantity: z.number().int().positive().optional() })).min(1),
 });
 const transitionSchema = z.object({ action: z.enum(["release", "start", "complete", "cancel"]), reason: z.string().max(2000).nullable().optional() });
+const retireFileSchema = z.object({ reason: z.string().max(2000).nullable().optional() });
 const userId = (user: any) => user?.claims?.sub ?? user?.id;
+const actorRole = (req: any) => String(req.orgRole || req.user?.role || "").toLowerCase();
+const actorIsAdmin = (req: any) => {
+  const role = actorRole(req);
+  return role === "owner" || role === "admin" || req.user?.isAdmin === true;
+};
+
+function handleProductionRunError(res: any, error: unknown, fallbackCode: string, fallbackMessage: string) {
+  if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+  if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: "PRODUCTION_RUN_INVALID", message: error.issues[0]?.message ?? "Invalid production run request." });
+  console.error(`[production-runs] ${fallbackCode}`, error);
+  return res.status(500).json({ success: false, code: fallbackCode, message: fallbackMessage });
+}
+
+function parseMultipartFile(req: any): Promise<{ buffer: Buffer; fileName: string; mimeType: string; fields: Record<string, string> }> {
+  return new Promise((resolve, reject) => {
+    const bb = busboy({ headers: req.headers });
+    let fileBuffer: Buffer | null = null;
+    let fileName = "";
+    let mimeType = "";
+    let fileSize = 0;
+    const chunks: Buffer[] = [];
+    const fields: Record<string, string> = {};
+    const maxFileSizeBytes = 250 * 1024 * 1024;
+
+    bb.on("file", (_name, file, info) => {
+      fileName = info.filename;
+      mimeType = info.mimeType;
+      file.on("data", (chunk: Buffer) => {
+        fileSize += chunk.length;
+        if (fileSize > maxFileSizeBytes) {
+          file.resume();
+          return;
+        }
+        chunks.push(chunk);
+      });
+      file.on("end", () => {
+        if (fileSize <= maxFileSizeBytes) fileBuffer = Buffer.concat(chunks);
+      });
+    });
+    bb.on("field", (name, value) => { fields[name] = value; });
+    bb.on("error", reject);
+    bb.on("finish", () => {
+      if (fileSize > maxFileSizeBytes) return reject(Object.assign(new Error("File size exceeds maximum allowed size of 250MB"), { statusCode: 400, code: "PRODUCTION_RUN_FILE_TOO_LARGE" }));
+      if (!fileBuffer) return reject(Object.assign(new Error("No file uploaded"), { statusCode: 400, code: "PRODUCTION_RUN_FILE_REQUIRED" }));
+      resolve({ buffer: fileBuffer, fileName, mimeType, fields });
+    });
+    req.pipe(bb);
+  });
+}
 
 export function registerProductionRunRoutes(app: Express, deps: { isAuthenticated: any; tenantContext: any; assertInternalUser: any }) {
   app.get("/api/production/runs", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
@@ -58,6 +120,65 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
       if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
       if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: "PRODUCTION_RUN_INVALID", message: error.issues[0]?.message ?? "Invalid production run." });
       console.error("[production-runs] prepress create failed", error); return res.status(500).json({ success: false, code: "PRODUCTION_RUN_CREATE_FAILED", message: "Unable to create production run." });
+    }
+  });
+  app.get("/api/production/runs/:runId/files", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const includeHistory = ["1", "true"].includes(String(req.query.includeHistory || "").toLowerCase());
+      return res.json({ success: true, data: await listProductionRunFiles({ organizationId, runId: req.params.runId, includeHistory }) });
+    } catch (error) {
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_FILE_LIST_FAILED", "Unable to list production run files.");
+    }
+  });
+  app.post("/api/production/runs/:runId/files/upload", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const parsed = await parseMultipartFile(req);
+      const result = await uploadProductionRunFile({ organizationId, actorUserId, runId: req.params.runId, buffer: parsed.buffer, originalFilename: parsed.fileName, mimeType: parsed.mimeType || "application/octet-stream" });
+      return res.status(201).json({ success: true, data: result });
+    } catch (error: any) {
+      if (error?.statusCode && error?.code) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_FILE_UPLOAD_FAILED", "Unable to upload production run file.");
+    }
+  });
+  app.post("/api/production/runs/:runId/files/:fileId/replace", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const parsed = await parseMultipartFile(req);
+      return res.json({ success: true, data: await replaceProductionRunFile({ organizationId, actorUserId, actorRole: actorRole(req), isAdmin: actorIsAdmin(req), runId: req.params.runId, fileId: req.params.fileId, buffer: parsed.buffer, originalFilename: parsed.fileName, mimeType: parsed.mimeType || "application/octet-stream" }) });
+    } catch (error: any) {
+      if (error?.statusCode && error?.code) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_FILE_REPLACE_FAILED", "Unable to replace production run file.");
+    }
+  });
+  app.post("/api/production/runs/:runId/files/:fileId/retire", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const body = retireFileSchema.parse(req.body ?? {});
+      return res.json({ success: true, data: await retireProductionRunFile({ organizationId, actorUserId, actorRole: actorRole(req), isAdmin: actorIsAdmin(req), runId: req.params.runId, fileId: req.params.fileId, reason: body.reason ?? null }) });
+    } catch (error) {
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_FILE_RETIRE_FAILED", "Unable to retire production run file.");
+    }
+  });
+  app.get("/api/production/runs/:runId/files/:fileId/download", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user) ?? null;
+      if (!organizationId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const inline = ["1", "true"].includes(String(req.query.inline || "").toLowerCase());
+      await downloadProductionRunFile({ organizationId, actorUserId, runId: req.params.runId, fileId: req.params.fileId, inline, res });
+    } catch (error) {
+      if (res.headersSent) return;
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_FILE_DOWNLOAD_FAILED", "Unable to download production run file.");
     }
   });
   app.post("/api/production/runs/:runId/transition", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
