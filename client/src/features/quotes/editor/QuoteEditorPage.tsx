@@ -481,7 +481,13 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             return;
         }
 
-        const contacts = (state.contacts || []) as QuoteRecipientContactLike[];
+        const selectedPickerContact = state.selectedContact as QuoteRecipientContactLike | null;
+        const contacts = selectedPickerContact?.id
+            ? [
+                selectedPickerContact,
+                ...((state.contacts || []) as QuoteRecipientContactLike[]).filter((contact) => contact.id !== selectedPickerContact.id),
+            ]
+            : (state.contacts || []) as QuoteRecipientContactLike[];
         const selectedEmail = resolveSelectedContactEmail(contacts, state.selectedContactId);
         const selectedContact = contacts.find((contact) => contact.id === state.selectedContactId);
         const recipientName = selectedContact ? getContactDisplayName(selectedContact) : "";
@@ -1246,6 +1252,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             selectedCustomerId={state.selectedCustomerId}
                             selectedCustomer={state.selectedCustomer}
                             selectedContactId={state.selectedContactId}
+                            selectedContact={state.selectedContact}
                             contacts={state.contacts}
                             effectiveTaxRate={state.effectiveTaxRate}
                             pricingTier={state.pricingTier}
@@ -1263,6 +1270,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             tags={state.tags}
                             onCustomerChange={state.handlers.setCustomer}
                             onContactChange={state.handlers.setContactId}
+                            onContactResolved={state.handlers.setResolvedContact}
                             onJobLabelChange={state.handlers.setJobLabel}
                             onRequestedDueDateChange={state.handlers.setRequestedDueDate}
                             onPoNumberChange={state.handlers.setOrderPoNumber}
@@ -1305,6 +1313,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             deliveryMethod={state.deliveryMethod}
                             selectedCustomer={state.selectedCustomer}
                             selectedContactId={state.selectedContactId}
+                            selectedContact={state.selectedContact as QuoteRecipientContactLike | null}
                             pricingStale={state.pricingStale}
                             canSaveQuote={state.canSaveQuote}
                             isSaving={createTarget === "order" ? (createOrderSubmitting || createDirectOrderMutation.isPending) : state.isSaving}
@@ -1474,7 +1483,14 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
 
             <QuoteRecipientFallbackDialog
                 open={recipientFallbackOpen}
-                contacts={(state.contacts || []) as QuoteRecipientContactLike[]}
+                contacts={
+                    state.selectedContact?.id
+                        ? [
+                            state.selectedContact as QuoteRecipientContactLike,
+                            ...((state.contacts || []) as QuoteRecipientContactLike[]).filter((contact) => contact.id !== state.selectedContact?.id),
+                        ]
+                        : (state.contacts || []) as QuoteRecipientContactLike[]
+                }
                 selectedContactId={state.selectedContactId}
                 initialRecipientEmail={recipientFallbackDefaults.email}
                 initialRecipientName={recipientFallbackDefaults.name}

@@ -9,6 +9,7 @@ import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { ROUTES } from "@/config/routes";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
+import { getContactCustomerConflict, type ContactPickerContact } from "@/lib/contactPicker";
 import type { Product, ProductVariant, QuoteWithRelations, ProductOptionItem, Organization } from "@shared/schema";
 import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
@@ -164,6 +165,7 @@ export function useQuoteEditorState() {
 
     const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(null);
     const [selectedContactId, setSelectedContactId] = useState<string | null>(null);
+    const [selectedContact, setSelectedContact] = useState<ContactPickerContact | null>(null);
     const [selectedCustomer, setSelectedCustomer] = useState<CustomerWithContacts | undefined>(undefined);
 
     // ============================================================================
@@ -589,9 +591,14 @@ export function useQuoteEditorState() {
     // COMPUTED VALUES: Save/Convert Flags
     // ============================================================================
 
-    const hasCustomer = !!selectedCustomer;
+    const hasCustomer = !!(selectedCustomer?.id ?? selectedCustomerId);
+    const hasBuyerIdentity = hasCustomer || !!selectedContactId;
     const hasLineItems = lineItems.length > 0;
     const isExistingQuote = !!quoteId;
+    const contactCustomerConflict = getContactCustomerConflict(
+        selectedContact,
+        selectedCustomer?.id ?? selectedCustomerId,
+    );
 
     const saveQuoteMutation = useMutation({
         mutationFn: async (payload: any) => {
@@ -605,10 +612,10 @@ export function useQuoteEditorState() {
     });
 
     const isSaving = saveQuoteMutation.isPending;
-    const canSaveNewQuote = isNewQuote && hasCustomer && hasLineItems;
-    const canSaveExistingQuote = isExistingQuote && hasCustomer && hasLineItems;
+    const canSaveNewQuote = isNewQuote && hasBuyerIdentity && hasLineItems && !contactCustomerConflict;
+    const canSaveExistingQuote = isExistingQuote && hasBuyerIdentity && hasLineItems && !contactCustomerConflict;
     const canSaveQuote = (canSaveNewQuote || canSaveExistingQuote) && !isSaving;
-    const canConvertToOrder = isExistingQuote && hasCustomer && hasLineItems;
+    const canConvertToOrder = isExistingQuote && hasBuyerIdentity && hasLineItems && !contactCustomerConflict;
     const canDuplicateQuote = isExistingQuote && hasLineItems;
 
     // ============================================================================
@@ -655,6 +662,9 @@ export function useQuoteEditorState() {
         }
         if ((quote as any).contactId && !selectedContactId) {
             setSelectedContactId((quote as any).contactId);
+        }
+        if ((quote as any).contact) {
+            setSelectedContact((quote as any).contact as ContactPickerContact);
         }
 
         // If quote includes customer data, populate selectedCustomer
@@ -1720,14 +1730,17 @@ export function useQuoteEditorState() {
             throw new Error("Missing quote id");
         }
 
-        const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? (quote as any)?.customerId ?? null;
+        const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? null;
         const payloadHasCustomerId = !!payloadCustomerId;
         const payloadHasLineItems = lineItems.length > 0;
+        const payloadCustomerName = payloadCustomerId
+            ? selectedCustomer?.companyName ?? (quote as any)?.customerName ?? null
+            : null;
 
         return {
             customerId: payloadCustomerId,
             contactId: selectedContactId ?? null,
-            customerName: selectedCustomer?.companyName ?? (quote as any)?.customerName ?? null,
+            customerName: payloadCustomerName,
             subtotal,
             taxRate: effectiveTaxRate,
             taxAmount,
@@ -1754,7 +1767,8 @@ export function useQuoteEditorState() {
     // ============================================================================
 
     const validateQuote = (q: any): string | null => {
-        if (!q?.customerId) return "Please select a customer.";
+        if (!q?.customerId && !q?.contactId) return "Please select a customer or contact.";
+        if (contactCustomerConflict) return "CONTACT_CUSTOMER_CONFLICT: Contact is not linked to the selected customer.";
         if (!q?.lineItems || q.lineItems.length === 0) return "Please add at least one line item.";
         return null;
     };
@@ -1788,14 +1802,17 @@ export function useQuoteEditorState() {
     // ============================================================================
 
     const handleSaveQuote = async (): Promise<SaveQuoteResult> => {
-        const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? (quote as any)?.customerId ?? null;
+        const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? null;
         const payloadHasCustomerId = !!payloadCustomerId;
         const payloadHasLineItems = lineItems.length > 0;
+        const payloadCustomerName = payloadCustomerId
+            ? selectedCustomer?.companyName ?? (quote as any)?.customerName ?? null
+            : null;
 
         const workingQuote = {
             customerId: payloadCustomerId,
             contactId: selectedContactId ?? null,
-            customerName: selectedCustomer?.companyName ?? (quote as any)?.customerName ?? null,
+            customerName: payloadCustomerName,
             lineItems,
             subtotal,
             taxRate: effectiveTaxRate,
@@ -2396,7 +2413,10 @@ export function useQuoteEditorState() {
             // CASE 2: No quote exists AND line item has no id
             // Create quote WITH this line item atomically to satisfy backend validation
             if (!quoteId && !item.id) {
-                const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? (quote as any)?.customerId ?? null;
+                const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? null;
+                const payloadCustomerName = payloadCustomerId
+                    ? selectedCustomer?.companyName ?? (quote as any)?.customerName ?? null
+                    : null;
 
                 // Build line item payload
                 const lineItemPayload = {
@@ -2430,7 +2450,7 @@ export function useQuoteEditorState() {
                 const quoteWithLineItem = {
                     customerId: payloadCustomerId,
                     contactId: selectedContactId ?? null,
-                    customerName: selectedCustomer?.companyName ?? (quote as any)?.customerName ?? null,
+                    customerName: payloadCustomerName,
                     lineItems: [lineItemPayload], // Include the line item!
                     subtotal,
                     taxRate: effectiveTaxRate,
@@ -2615,6 +2635,7 @@ export function useQuoteEditorState() {
         setSelectedCustomerId(snap.selectedCustomerId);
         setSelectedCustomer(snap.selectedCustomer);
         setSelectedContactId(snap.selectedContactId);
+        setSelectedContact(null);
         setDeliveryMethod(snap.deliveryMethod);
         setShippingCents(snap.shippingCents);
         setUseCustomerAddress(snap.useCustomerAddress);
@@ -2676,6 +2697,7 @@ export function useQuoteEditorState() {
         selectedCustomer,
         selectedCustomerId,
         selectedContactId,
+        selectedContact,
         contacts,
         pricingTier,
         discountPercent,
@@ -2750,10 +2772,9 @@ export function useQuoteEditorState() {
         // Handlers
         handlers: {
             // Customer
-            setCustomer: (customerId: string | null, customer?: CustomerWithContacts | undefined, contactId?: string | null | undefined) => {
+            setCustomer: (customerId: string | null, customer?: CustomerWithContacts | undefined, _contactId?: string | null | undefined) => {
                 setSelectedCustomerId(customerId);
                 setSelectedCustomer(customer);
-                setSelectedContactId(contactId || null);
                 void repriceExistingLineItemsForCustomer(customerId);
                 // Pre-fill shipping address from customer if ship is selected
                 if (customer && deliveryMethod === 'ship') {
@@ -2767,7 +2788,11 @@ export function useQuoteEditorState() {
                     });
                 }
             },
-            setContactId: setSelectedContactId,
+            setContactId: (contactId: string | null, contact?: ContactPickerContact | null) => {
+                setSelectedContactId(contactId);
+                setSelectedContact(contact ?? null);
+            },
+            setResolvedContact: setSelectedContact,
 
             // Fulfillment
             setDeliveryMethod,

@@ -742,6 +742,10 @@ export default function InternalQuotes() {
                   <X className="h-3 w-3" />
                 </Button>
               </div>
+            ) : quote.customerName?.trim() ? (
+              <span className="block truncate" title={quote.customerName}>
+                {quote.customerName}
+              </span>
             ) : (
               <QuoteListNote
                 note={quote.listLabel}
