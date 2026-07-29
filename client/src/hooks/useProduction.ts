@@ -138,6 +138,7 @@ export type ProductionFileSummary = {
 };
 
 export type ProductionJobListItem = {
+  kind?: "production_job" | "production_run";
   id: string;
   lineNumber?: number | null;
   // Effective production due date. A future/tenant line-level due date takes
@@ -246,6 +247,45 @@ export type ProductionJobListItem = {
     productionFiles?: ProductionFileSummary[];
     sides?: number | null; // Legacy: artwork-based count
   };
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductionRunMemberSummary = {
+  id: string;
+  productionJobId: string;
+  orderLineItemId: string;
+  lineNumber: number | null;
+  description: string;
+  orderedQuantity: number;
+  allocatedQuantity: number;
+  completedQuantity: number;
+  previouslyCompletedQuantity: number;
+  remainingAfterRun: number;
+};
+
+export type ProductionRunListItem = {
+  kind: "production_run";
+  id: string;
+  runId: string;
+  runNumber: number;
+  displayNumber: string;
+  orderId: string;
+  orderNumber: string;
+  customerId: string | null;
+  customerName: string;
+  stationKey: string;
+  status: "queued" | "in_progress" | "done";
+  runStatus: "draft" | "ready_for_production" | "in_production" | "completed" | "canceled";
+  plannedSheetCount: number | null;
+  nominalPiecesPerSheet: number | null;
+  sheetWidth: string | null;
+  sheetHeight: string | null;
+  notes: string | null;
+  memberCount: number;
+  totalAllocatedQuantity: number;
+  fileCount: number;
+  members: ProductionRunMemberSummary[];
   createdAt: string;
   updatedAt: string;
 };
@@ -395,6 +435,91 @@ export function useProductionJob(jobId: string | undefined) {
     enabled: !!jobId,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
+  });
+}
+
+export function useProductionRuns(
+  filters?: { status?: string; view?: string; station?: string; orderId?: string },
+  options?: { enabled?: boolean },
+) {
+  return useQuery<ProductionRunListItem[]>({
+    queryKey: ["/api/production/runs", filters],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters?.status) params.set("status", filters.status);
+      if (filters?.station) params.set("station", filters.station);
+      else if (filters?.view) params.set("view", filters.view);
+      if (filters?.orderId) params.set("orderId", filters.orderId);
+      const res = await fetch(`/api/production/runs${params.toString() ? `?${params.toString()}` : ""}`, { credentials: "include" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || "Failed to fetch production runs");
+      return json.data || [];
+    },
+    enabled: options?.enabled !== false,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useCreateProductionRun() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: {
+      orderId: string;
+      stationKey: string;
+      members: Array<{ productionJobId: string; allocatedQuantity?: number }>;
+      plannedSheetCount?: number | null;
+      nominalPiecesPerSheet?: number | null;
+      sheetWidth?: number | null;
+      sheetHeight?: number | null;
+      notes?: string | null;
+      compatibilityOverrideReason?: string | null;
+    }) => {
+      const res = await fetch("/api/production/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to create production run");
+      return json.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      toast({ title: "Production run created" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Run creation failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useTransitionProductionRun() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; action: "release" | "start" | "complete" | "cancel"; reason?: string | null }) => {
+      const res = await fetch(`/api/production/runs/${args.runId}/transition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ action: args.action, reason: args.reason ?? null }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to update production run");
+      return json.data;
+    },
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      toast({ title: args.action === "complete" ? "Production run completed" : "Production run updated" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Run update failed", description: e.message, variant: "destructive" });
+    },
   });
 }
 
