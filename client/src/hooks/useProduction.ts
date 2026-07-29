@@ -255,11 +255,22 @@ export type ProductionRunMemberSummary = {
   id: string;
   productionJobId: string;
   orderLineItemId: string;
+  orderId: string;
+  orderNumber: string;
+  customerId: string | null;
+  customerName: string;
   lineNumber: number | null;
   description: string;
   orderedQuantity: number;
   allocatedQuantity: number;
   completedQuantity: number;
+  successfulQuantity: number;
+  damagedQuantity: number;
+  remainingQuantity: number;
+  outcomeStatus: "pending" | "completed" | "partially_completed" | "failed" | "requires_reprint" | "return_to_prepress" | "cancelled" | "hold_for_review";
+  recoveryDisposition: "none" | "return_to_prepress" | "return_to_production_queue" | "requires_reprint" | "hold_for_review" | "cancel_remaining" | null;
+  operatorNote: string | null;
+  outcomeSegments: Array<Record<string, unknown>>;
   previouslyCompletedQuantity: number;
   remainingAfterRun: number;
 };
@@ -300,13 +311,13 @@ export type ProductionRunListItem = {
   runId: string;
   runNumber: number;
   displayNumber: string;
-  orderId: string;
+  orderId: string | null;
   orderNumber: string;
   customerId: string | null;
   customerName: string;
   stationKey: string;
   status: "queued" | "in_progress" | "done";
-  runStatus: "draft" | "ready_for_production" | "in_production" | "completed" | "canceled";
+  runStatus: "draft" | "ready_for_production" | "in_production" | "partially_completed" | "completed" | "completed_with_exceptions" | "canceled";
   plannedSheetCount: number | null;
   nominalPiecesPerSheet: number | null;
   sheetWidth: string | null;
@@ -504,7 +515,7 @@ export function useCreateProductionRun() {
   const { toast } = useToast();
   return useMutation({
     mutationFn: async (args: {
-      orderId: string;
+      orderId?: string | null;
       stationKey: string;
       members: Array<{ productionJobId: string; allocatedQuantity?: number }>;
       plannedSheetCount?: number | null;
@@ -540,7 +551,7 @@ export function useCreatePrepressProductionRun() {
   const { toast } = useToast();
   return useMutation({
     mutationFn: async (args: {
-      orderId: string;
+      orderId?: string | null;
       stationKey: string;
       members: Array<{ lineItemId: string; allocatedQuantity?: number }>;
       plannedSheetCount?: number | null;
@@ -568,6 +579,45 @@ export function useCreatePrepressProductionRun() {
     },
     onError: (e: Error) => {
       toast({ title: "Run creation failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useRecordProductionRunOutcome() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: {
+      runId: string;
+      idempotencyKey?: string | null;
+      members: Array<{
+        memberId: string;
+        successfulQuantity: number;
+        damagedQuantity?: number;
+        remainingQuantity?: number;
+        outcomeStatus?: ProductionRunMemberSummary["outcomeStatus"];
+        recoveryDisposition?: ProductionRunMemberSummary["recoveryDisposition"];
+        operatorNote?: string | null;
+        segments?: Array<Record<string, unknown>>;
+      }>;
+    }) => {
+      const res = await fetch(`/api/production/runs/${args.runId}/outcomes`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ idempotencyKey: args.idempotencyKey, members: args.members }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to record production run outcome");
+      return json.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      toast({ title: "Run results recorded" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Run results failed", description: e.message, variant: "destructive" });
     },
   });
 }

@@ -36,15 +36,16 @@ describe("prepress combined run selection", () => {
     });
   });
 
-  test("blocks mixed-order selection", () => {
+  test("allows compatible mixed-order selection", () => {
     const result = validatePrepressCombinedRunSelection(
       [baseItem(), baseItem({ lineItemId: "line-2", orderId: "order-2", activeOwnerJobId: "prepress-job-2" })],
       {},
       "",
     );
 
-    expect(result.canCreate).toBe(false);
-    expect(result.reason).toBe("Combined runs must use items from one order.");
+    expect(result.canCreate).toBe(true);
+    expect(result.orderId).toBeNull();
+    expect(result.orderIds).toEqual(["order-1", "order-2"]);
   });
 
   test("requires allocations within remaining quantity", () => {

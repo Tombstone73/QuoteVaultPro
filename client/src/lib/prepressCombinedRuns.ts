@@ -18,6 +18,7 @@ export type PrepressCombinedRunValidation = {
   canCreate: boolean;
   reason: string | null;
   orderId: string | null;
+  orderIds: string[];
   stationKey: "roll" | "flatbed" | null;
   hasStationConflict: boolean;
   hasMaterialConflict: boolean;
@@ -46,10 +47,10 @@ export function validatePrepressCombinedRunSelection(
   compatibilityOverrideReason: string,
 ): PrepressCombinedRunValidation {
   if (items.length === 0) {
-    return { canCreate: false, reason: "Select at least two eligible Prepress items.", orderId: null, stationKey: null, hasStationConflict: false, hasMaterialConflict: false, totalAllocatedQuantity: 0 };
+    return { canCreate: false, reason: "Select at least two eligible Prepress items.", orderId: null, orderIds: [], stationKey: null, hasStationConflict: false, hasMaterialConflict: false, totalAllocatedQuantity: 0 };
   }
   if (items.length === 1) {
-    return { canCreate: false, reason: "Select at least two eligible Prepress items.", orderId: items[0]?.orderId ?? null, stationKey: items[0]?.selectedProductionDestination ?? null, hasStationConflict: false, hasMaterialConflict: false, totalAllocatedQuantity: 0 };
+    return { canCreate: false, reason: "Select at least two eligible Prepress items.", orderId: items[0]?.orderId ?? null, orderIds: items[0]?.orderId ? [items[0].orderId] : [], stationKey: items[0]?.selectedProductionDestination ?? null, hasStationConflict: false, hasMaterialConflict: false, totalAllocatedQuantity: 0 };
   }
 
   const itemIssue = items.map(getPrepressCombinedRunItemIssue).find(Boolean);
@@ -60,10 +61,7 @@ export function validatePrepressCombinedRunSelection(
   const hasMaterialConflict = materialKeys.length > 1;
 
   if (itemIssue) {
-    return { canCreate: false, reason: itemIssue, orderId: orderIds[0] ?? null, stationKey: stationKeys[0] ?? null, hasStationConflict, hasMaterialConflict, totalAllocatedQuantity: 0 };
-  }
-  if (orderIds.length !== 1) {
-    return { canCreate: false, reason: "Combined runs must use items from one order.", orderId: null, stationKey: stationKeys[0] ?? null, hasStationConflict, hasMaterialConflict, totalAllocatedQuantity: 0 };
+    return { canCreate: false, reason: itemIssue, orderId: orderIds.length === 1 ? orderIds[0] : null, orderIds, stationKey: stationKeys[0] ?? null, hasStationConflict, hasMaterialConflict, totalAllocatedQuantity: 0 };
   }
 
   let totalAllocatedQuantity = 0;
@@ -75,7 +73,8 @@ export function validatePrepressCombinedRunSelection(
       return {
         canCreate: false,
         reason: `Allocation for ${item.productName || "a selected item"} must be between 1 and ${max}.`,
-        orderId: orderIds[0] ?? null,
+        orderId: orderIds.length === 1 ? orderIds[0] : null,
+        orderIds,
         stationKey: stationKeys[0] ?? null,
         hasStationConflict,
         hasMaterialConflict,
@@ -89,7 +88,8 @@ export function validatePrepressCombinedRunSelection(
     return {
       canCreate: false,
       reason: "Mixed production destination or material requires an authorized override reason.",
-      orderId: orderIds[0] ?? null,
+      orderId: orderIds.length === 1 ? orderIds[0] : null,
+      orderIds,
       stationKey: stationKeys[0] ?? null,
       hasStationConflict,
       hasMaterialConflict,
@@ -100,7 +100,8 @@ export function validatePrepressCombinedRunSelection(
   return {
     canCreate: true,
     reason: null,
-    orderId: orderIds[0] ?? null,
+    orderId: orderIds.length === 1 ? orderIds[0] : null,
+    orderIds,
     stationKey: stationKeys[0] ?? null,
     hasStationConflict,
     hasMaterialConflict,

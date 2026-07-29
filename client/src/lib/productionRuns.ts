@@ -10,7 +10,7 @@ export function productionRunToBoardItem(run: ProductionRunListItem): any {
     productionJobId: null,
     jobId: run.id,
     lineItemId: "",
-    orderId: run.orderId,
+    orderId: run.orderId ?? "",
     orderNumber: run.orderNumber,
     customerName: run.customerName,
     dueDate: null,
@@ -33,7 +33,7 @@ export function productionRunToBoardItem(run: ProductionRunListItem): any {
     productionFiles: run.files ?? [],
     productionAlerts: [],
     order: {
-      id: run.orderId,
+      id: run.orderId ?? "",
       customerId: run.customerId ?? "",
       orderNumber: run.orderNumber,
       customerName: run.customerName,
@@ -55,7 +55,7 @@ export function productionRunToBoardItem(run: ProductionRunListItem): any {
         },
         items: run.members.map((member) => ({
           id: member.orderLineItemId,
-          description: member.description,
+          description: `${member.orderNumber ? `Order ${member.orderNumber} - ` : ""}${member.description}`,
           quantity: member.allocatedQuantity,
           width: null,
           height: null,

@@ -4697,13 +4697,13 @@ export const insertProductionStationStepSchema = createInsertSchema(productionSt
   triggers: productionStationStepTriggersSchema.optional().default([]),
 });
 
-/** One physical, same-order production operation. Jobs remain the line-item aggregate. */
+/** One physical production operation. Jobs remain the line-item aggregate. */
 export const productionRuns = pgTable("production_runs", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()::text`),
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
-  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  orderId: varchar("order_id").references(() => orders.id, { onDelete: "set null" }),
   runNumber: integer("run_number").notNull(),
-  status: varchar("status", { length: 32 }).notNull().default("draft").$type<"draft" | "ready_for_production" | "in_production" | "completed" | "canceled">(),
+  status: varchar("status", { length: 32 }).notNull().default("draft").$type<"draft" | "ready_for_production" | "in_production" | "partially_completed" | "completed" | "completed_with_exceptions" | "canceled">(),
   stationKey: varchar("station_key", { length: 40 }).notNull(),
   materialId: varchar("material_id").references(() => materials.id, { onDelete: "set null" }),
   materialSnapshot: jsonb("material_snapshot").$type<Record<string, unknown>>(),
@@ -4725,6 +4725,7 @@ export const productionRuns = pgTable("production_runs", {
 }, (table) => [
   uniqueIndex("production_runs_org_number_uidx").on(table.organizationId, table.runNumber),
   index("production_runs_org_order_status_idx").on(table.organizationId, table.orderId, table.status),
+  index("production_runs_org_status_idx").on(table.organizationId, table.status),
 ]);
 
 /** Reserved and completed customer quantity for a job within a physical run. */
@@ -4736,12 +4737,22 @@ export const productionRunMembers = pgTable("production_run_members", {
   orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: "restrict" }),
   allocatedQuantity: integer("allocated_quantity").notNull(),
   completedQuantity: integer("completed_quantity").notNull().default(0),
+  successfulQuantity: integer("successful_quantity").notNull().default(0),
+  damagedQuantity: integer("damaged_quantity").notNull().default(0),
+  remainingQuantity: integer("remaining_quantity").notNull().default(0),
+  outcomeStatus: varchar("outcome_status", { length: 40 }).notNull().default("pending").$type<"pending" | "completed" | "partially_completed" | "failed" | "requires_reprint" | "return_to_prepress" | "cancelled" | "hold_for_review">(),
+  recoveryDisposition: varchar("recovery_disposition", { length: 40 }).$type<"none" | "return_to_prepress" | "return_to_production_queue" | "requires_reprint" | "hold_for_review" | "cancel_remaining" | null>(),
+  operatorNote: text("operator_note"),
+  outcomeSegments: jsonb("outcome_segments").$type<Array<Record<string, unknown>>>().notNull().default(sql`'[]'::jsonb`),
+  lastOutcomeIdempotencyKey: varchar("last_outcome_idempotency_key", { length: 160 }),
+  lastOutcomeAt: timestamp("last_outcome_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   uniqueIndex("production_run_members_run_job_uidx").on(table.productionRunId, table.productionJobId),
   index("production_run_members_org_job_idx").on(table.organizationId, table.productionJobId),
   index("production_run_members_line_item_idx").on(table.orderLineItemId),
+  index("production_run_members_org_outcome_idx").on(table.organizationId, table.outcomeStatus),
 ]);
 
 export type ProductionJob = typeof productionJobs.$inferSelect;
