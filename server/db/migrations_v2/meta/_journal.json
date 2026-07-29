@@ -1058,6 +1058,13 @@
       "when": 1788048000001,
       "tag": "0155_ai_configurable_product_proposals",
       "breakpoints": true
+    },
+    {
+      "idx": 156,
+      "version": "7",
+      "when": 1788048000002,
+      "tag": "0156_individual_customer_billing_promotion",
+      "breakpoints": true
     }
   ]
 }
