@@ -1,8 +1,11 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, customers, lineItemFiles, orderLineItems, orders, prepressSessions, productionEvents, productionJobs, productionRunMembers, productionRuns } from "@shared/schema";
+import { auditLogs, customers, lineItemFiles, localFileCopyJobs, orderLineItems, orders, prepressSessions, productionEvents, productionJobs, productionRunMembers, productionRuns, users } from "@shared/schema";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 import { findActiveJobForLineItem, isPrepressOwnershipJob } from "./productionOwnership";
+import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
+import { downloadLineItemFile, enqueueFinalProductionFileCopy, queueLineItemFilePreviewRepair, uploadLineItemFile } from "../prepressFileService";
+import type { Response } from "express";
 
 type MemberInput = { productionJobId: string; allocatedQuantity?: number };
 type PrepressMemberInput = { lineItemId: string; allocatedQuantity?: number };
@@ -36,6 +39,8 @@ export type ProductionRunListItem = {
   memberCount: number;
   totalAllocatedQuantity: number;
   fileCount: number;
+  replacementRequired: boolean;
+  files: ProductionRunFileSummary[];
   members: Array<{
     id: string;
     productionJobId: string;
@@ -52,10 +57,159 @@ export type ProductionRunListItem = {
   updatedAt: Date;
 };
 
+export type ProductionRunFileSummary = {
+  id: string;
+  productionRunId: string;
+  lineItemId: string;
+  fileRecordId: string | null;
+  fileName: string;
+  originalFilename: string;
+  role: "final";
+  status: "active" | "superseded" | "retired";
+  tag: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  thumbnailUrl: string | null;
+  previewUrl: string | null;
+  previewAvailabilityStatus: "available" | "pending" | "missing" | "failed" | null;
+  downloadUrl: string;
+  openUrl: string;
+  uploadedByUserId: string | null;
+  uploadedByName: string | null;
+  createdAt: Date;
+  localBridge: {
+    status: "none" | "pending" | "claimed" | "succeeded" | "failed" | "canceled";
+    unsafeToRetire: boolean;
+    jobCount: number;
+    lastError: string | null;
+    updatedAt: Date | null;
+  };
+  supersedesFileId: string | null;
+};
+
 function toBoardStatus(status: RunStatus): "queued" | "in_progress" | "done" {
   if (status === "completed" || status === "canceled") return "done";
   if (status === "in_production") return "in_progress";
   return "queued";
+}
+
+function actorDisplayName(user: { firstName?: string | null; lastName?: string | null; email?: string | null } | null | undefined) {
+  const name = `${user?.firstName || ""} ${user?.lastName || ""}`.trim();
+  return name || user?.email || null;
+}
+
+function localBridgeStatusForJobs(jobs: Array<{ status: string; lastError: string | null; updatedAt: Date }>): ProductionRunFileSummary["localBridge"] {
+  if (!jobs.length) return { status: "none", unsafeToRetire: false, jobCount: 0, lastError: null, updatedAt: null };
+  const priority = ["claimed", "pending", "failed", "succeeded", "canceled"];
+  const status = priority.find((candidate) => jobs.some((job) => job.status === candidate)) as ProductionRunFileSummary["localBridge"]["status"] | undefined;
+  const newest = jobs.reduce((latest, job) => (!latest || job.updatedAt > latest.updatedAt ? job : latest), jobs[0]);
+  const failure = jobs.find((job) => job.lastError);
+  return {
+    status: status ?? "none",
+    unsafeToRetire: jobs.some((job) => job.status === "claimed"),
+    jobCount: jobs.length,
+    lastError: failure?.lastError ?? null,
+    updatedAt: newest?.updatedAt ?? null,
+  };
+}
+
+async function buildProductionRunFileSummaries(
+  files: Array<typeof lineItemFiles.$inferSelect & { uploaderFirstName?: string | null; uploaderLastName?: string | null; uploaderEmail?: string | null }>,
+): Promise<ProductionRunFileSummary[]> {
+  if (!files.length) return [];
+  const fileIds = files.map((file) => file.id);
+  const bridgeRows = await db
+    .select({
+      sourceFileId: localFileCopyJobs.sourceFileId,
+      status: localFileCopyJobs.status,
+      lastError: localFileCopyJobs.lastError,
+      updatedAt: localFileCopyJobs.updatedAt,
+    })
+    .from(localFileCopyJobs)
+    .where(inArray(localFileCopyJobs.sourceFileId, fileIds));
+  const bridgeByFileId = new Map<string, Array<{ status: string; lastError: string | null; updatedAt: Date }>>();
+  for (const job of bridgeRows) {
+    const key = job.sourceFileId;
+    const list = bridgeByFileId.get(key) ?? [];
+    list.push({ status: String(job.status), lastError: job.lastError ?? null, updatedAt: job.updatedAt });
+    bridgeByFileId.set(key, list);
+  }
+
+  return Promise.all(files.map(async (file) => {
+    const [thumbnail, preview] = file.fileRecordId
+      ? await Promise.all([
+          resolveDerivativeFileAccess({ id: file.id, fileRecordId: file.fileRecordId }, "thumbnail"),
+          resolveDerivativeFileAccess({ id: file.id, fileRecordId: file.fileRecordId }, "preview"),
+        ])
+      : [{ url: null, availabilityStatus: "missing" as const }, { url: null, availabilityStatus: "missing" as const }];
+    return {
+      id: file.id,
+      productionRunId: file.productionRunId!,
+      lineItemId: file.lineItemId,
+      fileRecordId: file.fileRecordId ?? null,
+      fileName: file.originalFilename,
+      originalFilename: file.originalFilename,
+      role: "final",
+      status: file.status as ProductionRunFileSummary["status"],
+      tag: file.tag ?? null,
+      mimeType: file.mimeType ?? null,
+      sizeBytes: file.sizeBytes ?? null,
+      thumbnailUrl: thumbnail.url ?? null,
+      previewUrl: preview.url ?? null,
+      previewAvailabilityStatus: preview.availabilityStatus ?? "missing",
+      downloadUrl: `/api/production/runs/${file.productionRunId}/files/${file.id}/download`,
+      openUrl: `/api/production/runs/${file.productionRunId}/files/${file.id}/download?inline=1`,
+      uploadedByUserId: file.createdByUserId ?? null,
+      uploadedByName: actorDisplayName({ firstName: file.uploaderFirstName, lastName: file.uploaderLastName, email: file.uploaderEmail }),
+      createdAt: file.createdAt,
+      localBridge: localBridgeStatusForJobs(bridgeByFileId.get(file.id) ?? []),
+      supersedesFileId: file.supersedesFileId ?? null,
+    };
+  }));
+}
+
+async function getScopedProductionRun(input: { organizationId: string; runId: string }, tx: any = db) {
+  const [run] = await tx
+    .select()
+    .from(productionRuns)
+    .where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId)))
+    .limit(1);
+  if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
+  return run;
+}
+
+async function getRepresentativeRunMember(input: { organizationId: string; runId: string }, tx: any = db) {
+  const [member] = await tx
+    .select()
+    .from(productionRunMembers)
+    .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionRunId, input.runId)))
+    .orderBy(asc(productionRunMembers.createdAt))
+    .limit(1);
+  if (!member) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "A production run must have members before files can be attached.", 409);
+  return member;
+}
+
+async function insertRunAudit(input: {
+  organizationId: string;
+  actorUserId: string | null;
+  runId: string;
+  runNumber: number;
+  description: string;
+  actionType?: string;
+  oldValues?: unknown;
+  newValues?: unknown;
+}) {
+  await db.insert(auditLogs).values({
+    organizationId: input.organizationId,
+    userId: input.actorUserId,
+    actionType: input.actionType ?? "UPDATE",
+    entityType: "production_run",
+    entityId: input.runId,
+    entityName: `PR-${String(input.runNumber).padStart(4, "0")}`,
+    description: input.description,
+    oldValues: input.oldValues ?? undefined,
+    newValues: input.newValues ?? undefined,
+  } as any);
 }
 
 /**
@@ -266,20 +420,48 @@ export async function listProductionRuns(input: {
     for (const row of completedRows) completedByJob.set(row.productionJobId, Number(row.quantity) || 0);
   }
 
-  const fileCounts = await db
+  const fileRows = await db
     .select({
+      id: lineItemFiles.id,
+      organizationId: lineItemFiles.organizationId,
+      orderId: lineItemFiles.orderId,
+      lineItemId: lineItemFiles.lineItemId,
       productionRunId: lineItemFiles.productionRunId,
-      count: sql<number>`count(*)::int`,
+      prepressSessionId: lineItemFiles.prepressSessionId,
+      fileRecordId: lineItemFiles.fileRecordId,
+      role: lineItemFiles.role,
+      status: lineItemFiles.status,
+      tag: lineItemFiles.tag,
+      productionQuantity: lineItemFiles.productionQuantity,
+      productionGroupId: lineItemFiles.productionGroupId,
+      storageBucket: lineItemFiles.storageBucket,
+      storagePath: lineItemFiles.storagePath,
+      storageKey: lineItemFiles.storageKey,
+      originalFilename: lineItemFiles.originalFilename,
+      mimeType: lineItemFiles.mimeType,
+      sizeBytes: lineItemFiles.sizeBytes,
+      supersedesFileId: lineItemFiles.supersedesFileId,
+      createdByUserId: lineItemFiles.createdByUserId,
+      createdAt: lineItemFiles.createdAt,
+      uploaderFirstName: users.firstName,
+      uploaderLastName: users.lastName,
+      uploaderEmail: users.email,
     })
     .from(lineItemFiles)
+    .leftJoin(users, eq(users.id, lineItemFiles.createdByUserId))
     .where(and(
       eq(lineItemFiles.organizationId, input.organizationId),
       inArray(lineItemFiles.productionRunId, runIds),
-      eq(lineItemFiles.status, "active"),
       eq(lineItemFiles.role, "final"),
     ))
-    .groupBy(lineItemFiles.productionRunId);
-  const fileCountByRunId = new Map(fileCounts.map((row) => [String(row.productionRunId), Number(row.count) || 0]));
+    .orderBy(desc(lineItemFiles.createdAt));
+  const runFileSummaries = await buildProductionRunFileSummaries(fileRows as any);
+  const filesByRunId = new Map<string, ProductionRunFileSummary[]>();
+  for (const file of runFileSummaries) {
+    const list = filesByRunId.get(file.productionRunId) ?? [];
+    list.push(file);
+    filesByRunId.set(file.productionRunId, list);
+  }
 
   const lineNumbersByOrder = new Map<string, Map<string, number>>();
   for (const row of memberRows) {
@@ -318,6 +500,8 @@ export async function listProductionRuns(input: {
     .map(({ run, orderNumber, orderDisplayNumber, orderNumberCore, customerId, customerName }) => {
       const boardStatus = toBoardStatus(run.status as RunStatus);
       const members = membersByRunId.get(run.id) ?? [];
+      const files = filesByRunId.get(run.id) ?? [];
+      const activeFileCount = files.filter((file) => file.status === "active").length;
       return {
         kind: "production_run" as const,
         id: run.id,
@@ -338,13 +522,255 @@ export async function listProductionRuns(input: {
         notes: run.notes ?? null,
         memberCount: members.length,
         totalAllocatedQuantity: members.reduce((sum, member) => sum + member.allocatedQuantity, 0),
-        fileCount: fileCountByRunId.get(run.id) ?? 0,
+        fileCount: activeFileCount,
+        replacementRequired: activeFileCount === 0,
+        files,
         members,
         createdAt: run.createdAt,
         updatedAt: run.updatedAt,
       };
     })
     .filter((run) => !input.status || run.status === input.status);
+}
+
+export async function listProductionRunFiles(input: {
+  organizationId: string;
+  runId: string;
+  includeHistory?: boolean;
+}) {
+  await getScopedProductionRun(input);
+  const rows = await db
+    .select({
+      id: lineItemFiles.id,
+      organizationId: lineItemFiles.organizationId,
+      orderId: lineItemFiles.orderId,
+      lineItemId: lineItemFiles.lineItemId,
+      productionRunId: lineItemFiles.productionRunId,
+      prepressSessionId: lineItemFiles.prepressSessionId,
+      fileRecordId: lineItemFiles.fileRecordId,
+      role: lineItemFiles.role,
+      status: lineItemFiles.status,
+      tag: lineItemFiles.tag,
+      productionQuantity: lineItemFiles.productionQuantity,
+      productionGroupId: lineItemFiles.productionGroupId,
+      storageBucket: lineItemFiles.storageBucket,
+      storagePath: lineItemFiles.storagePath,
+      storageKey: lineItemFiles.storageKey,
+      originalFilename: lineItemFiles.originalFilename,
+      mimeType: lineItemFiles.mimeType,
+      sizeBytes: lineItemFiles.sizeBytes,
+      supersedesFileId: lineItemFiles.supersedesFileId,
+      createdByUserId: lineItemFiles.createdByUserId,
+      createdAt: lineItemFiles.createdAt,
+      uploaderFirstName: users.firstName,
+      uploaderLastName: users.lastName,
+      uploaderEmail: users.email,
+    })
+    .from(lineItemFiles)
+    .leftJoin(users, eq(users.id, lineItemFiles.createdByUserId))
+    .where(and(
+      eq(lineItemFiles.organizationId, input.organizationId),
+      eq(lineItemFiles.productionRunId, input.runId),
+      eq(lineItemFiles.role, "final"),
+      input.includeHistory ? undefined : eq(lineItemFiles.status, "active"),
+    ))
+    .orderBy(desc(lineItemFiles.createdAt));
+  const files = await buildProductionRunFileSummaries(rows as any);
+  const activeCount = files.filter((file) => file.status === "active").length;
+  return { files, activeCount, replacementRequired: activeCount === 0 };
+}
+
+export async function uploadProductionRunFile(input: {
+  organizationId: string;
+  actorUserId: string;
+  runId: string;
+  buffer: Buffer;
+  originalFilename: string;
+  mimeType: string;
+}) {
+  const run = await getScopedProductionRun(input);
+  if (run.status === "completed" || run.status === "canceled") {
+    throw new ProductionRunError("PRODUCTION_RUN_TERMINAL", "Completed or canceled production runs cannot receive new shared files.", 409);
+  }
+  const representative = await getRepresentativeRunMember(input);
+  const uploaded = await uploadLineItemFile({
+    organizationId: input.organizationId,
+    orderId: run.orderId,
+    lineItemId: representative.orderLineItemId,
+    productionRunId: run.id,
+    role: "final",
+    tag: "nested_run",
+    buffer: input.buffer,
+    originalFilename: input.originalFilename,
+    mimeType: input.mimeType,
+    createdByUserId: input.actorUserId,
+  });
+  queueLineItemFilePreviewRepair({ fileId: uploaded.id, organizationId: input.organizationId, actorUserId: input.actorUserId });
+  const bridge = await enqueueFinalProductionFileCopy({ organizationId: input.organizationId, file: uploaded });
+  await insertRunAudit({
+    organizationId: input.organizationId,
+    actorUserId: input.actorUserId,
+    runId: run.id,
+    runNumber: Number(run.runNumber),
+    description: "Shared production run file uploaded",
+    newValues: { fileId: uploaded.id, filename: uploaded.originalFilename, sizeBytes: uploaded.sizeBytes, localBridgeCopyJobId: bridge.copyJobId, localBridgeEnqueued: bridge.enqueued },
+  });
+  if (bridge.copyJobId) {
+    await insertRunAudit({
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      runId: run.id,
+      runNumber: Number(run.runNumber),
+      description: bridge.enqueued ? "Local Bridge copy enqueued for shared run file" : "Local Bridge copy already existed for shared run file",
+      newValues: { fileId: uploaded.id, copyJobId: bridge.copyJobId, enqueued: bridge.enqueued },
+    });
+  }
+  return { file: uploaded, localBridge: bridge };
+}
+
+async function ensureRunFileSafety(input: {
+  organizationId: string;
+  runId: string;
+  fileId: string;
+  actorUserId: string;
+  actorRole: string;
+  isAdmin: boolean;
+  reason?: string | null;
+  action: "replace" | "retire";
+}) {
+  return db.transaction(async (tx) => {
+    const run = await getScopedProductionRun(input, tx);
+    const [file] = await tx.select().from(lineItemFiles).where(and(
+      eq(lineItemFiles.id, input.fileId),
+      eq(lineItemFiles.organizationId, input.organizationId),
+      eq(lineItemFiles.productionRunId, input.runId),
+      eq(lineItemFiles.role, "final"),
+    )).limit(1);
+    if (!file) throw new ProductionRunError("PRODUCTION_RUN_FILE_NOT_FOUND", "Shared production run file was not found.", 404);
+    if (file.status !== "active") throw new ProductionRunError("PRODUCTION_RUN_FILE_NOT_ACTIVE", "Shared production run file is no longer active.", 409);
+    if (run.status === "in_production") throw new ProductionRunError("PRODUCTION_RUN_FILE_IN_ACTIVE_USE", "This shared production file is in active use by production.", 409);
+    if (run.status === "completed" && !input.isAdmin) throw new ProductionRunError("COMPLETED_FILE_DELETE_PERMISSION_REQUIRED", "Administrator permission is required to change files on a completed production run.", 403);
+    if (run.status === "completed" && input.action === "retire" && !input.reason?.trim()) throw new ProductionRunError("DELETION_REASON_REQUIRED", "A reason is required when retiring a completed production run file.", 400);
+    const canRemoveBeforeCompletion = input.isAdmin || input.actorRole === "owner" || input.actorRole === "admin" || input.actorRole === "manager";
+    if (run.status !== "completed" && !canRemoveBeforeCompletion) throw new ProductionRunError("PRODUCTION_FILE_DELETE_FORBIDDEN", "You do not have permission to change production files.", 403);
+    const bridgeJobs = await tx.select({ id: localFileCopyJobs.id, status: localFileCopyJobs.status }).from(localFileCopyJobs).where(and(eq(localFileCopyJobs.organizationId, input.organizationId), eq(localFileCopyJobs.sourceFileId, file.id)));
+    if (bridgeJobs.some((job) => job.status === "claimed")) throw new ProductionRunError("LOCAL_BRIDGE_COPY_IN_PROGRESS", "A Local Bridge copy is in progress for this production file.", 409);
+    const pendingIds = bridgeJobs.filter((job) => job.status === "pending").map((job) => job.id);
+    if (pendingIds.length) {
+      await tx.update(localFileCopyJobs).set({
+        status: "canceled",
+        lastError: input.action === "replace" ? "Canceled because the shared production run file was replaced." : "Canceled because the shared production run file was retired.",
+        updatedAt: new Date(),
+      }).where(and(eq(localFileCopyJobs.organizationId, input.organizationId), eq(localFileCopyJobs.sourceFileId, file.id), eq(localFileCopyJobs.status, "pending")));
+    }
+    return { run, file, pendingIds };
+  });
+}
+
+export async function replaceProductionRunFile(input: {
+  organizationId: string;
+  actorUserId: string;
+  actorRole: string;
+  isAdmin: boolean;
+  runId: string;
+  fileId: string;
+  buffer: Buffer;
+  originalFilename: string;
+  mimeType: string;
+}) {
+  const { run, file, pendingIds } = await ensureRunFileSafety({ ...input, action: "replace" });
+  const replacement = await uploadLineItemFile({
+    organizationId: input.organizationId,
+    orderId: file.orderId,
+    lineItemId: file.lineItemId,
+    productionRunId: run.id,
+    prepressSessionId: file.prepressSessionId ?? undefined,
+    role: "final",
+    tag: file.tag ?? "nested_run",
+    buffer: input.buffer,
+    originalFilename: input.originalFilename,
+    mimeType: input.mimeType,
+    createdByUserId: input.actorUserId,
+  });
+  await db.update(lineItemFiles).set({ status: "superseded" }).where(and(eq(lineItemFiles.id, file.id), eq(lineItemFiles.organizationId, input.organizationId)));
+  await db.update(lineItemFiles).set({ supersedesFileId: file.id }).where(and(eq(lineItemFiles.id, replacement.id), eq(lineItemFiles.organizationId, input.organizationId)));
+  queueLineItemFilePreviewRepair({ fileId: replacement.id, organizationId: input.organizationId, actorUserId: input.actorUserId });
+  const bridge = await enqueueFinalProductionFileCopy({ organizationId: input.organizationId, file: replacement });
+  await insertRunAudit({
+    organizationId: input.organizationId,
+    actorUserId: input.actorUserId,
+    runId: run.id,
+    runNumber: Number(run.runNumber),
+    description: "Shared production run file replaced",
+    oldValues: { fileId: file.id, filename: file.originalFilename, status: "active" },
+    newValues: { fileId: replacement.id, filename: replacement.originalFilename, supersedesFileId: file.id, pendingBridgeJobsCanceled: pendingIds.length, localBridgeCopyJobId: bridge.copyJobId },
+  });
+  return { file: replacement, supersededFileId: file.id, pendingBridgeJobsCanceled: pendingIds.length, localBridge: bridge };
+}
+
+export async function retireProductionRunFile(input: {
+  organizationId: string;
+  actorUserId: string;
+  actorRole: string;
+  isAdmin: boolean;
+  runId: string;
+  fileId: string;
+  reason?: string | null;
+}) {
+  const { run, file, pendingIds } = await ensureRunFileSafety({ ...input, action: "retire" });
+  await db.update(lineItemFiles).set({ status: "retired" }).where(and(eq(lineItemFiles.id, file.id), eq(lineItemFiles.organizationId, input.organizationId), eq(lineItemFiles.status, "active")));
+  const [remaining] = await db.select({ count: sql<number>`count(*)::int` }).from(lineItemFiles).where(and(
+    eq(lineItemFiles.organizationId, input.organizationId),
+    eq(lineItemFiles.productionRunId, run.id),
+    eq(lineItemFiles.role, "final"),
+    eq(lineItemFiles.status, "active"),
+  ));
+  const replacementRequired = Number(remaining?.count ?? 0) === 0;
+  await insertRunAudit({
+    organizationId: input.organizationId,
+    actorUserId: input.actorUserId,
+    runId: run.id,
+    runNumber: Number(run.runNumber),
+    description: replacementRequired ? "Shared production run file retired; replacement required" : "Shared production run file retired",
+    oldValues: { fileId: file.id, filename: file.originalFilename, status: "active" },
+    newValues: { fileId: file.id, status: "retired", reason: input.reason ?? null, pendingBridgeJobsCanceled: pendingIds.length, replacementRequired },
+  });
+  return { fileId: file.id, replacementRequired, pendingBridgeJobsCanceled: pendingIds.length };
+}
+
+export async function downloadProductionRunFile(input: {
+  organizationId: string;
+  actorUserId: string | null;
+  runId: string;
+  fileId: string;
+  inline?: boolean;
+  res: Response;
+}) {
+  const [row] = await db
+    .select({ run: productionRuns, file: lineItemFiles })
+    .from(productionRuns)
+    .innerJoin(lineItemFiles, and(eq(lineItemFiles.productionRunId, productionRuns.id), eq(lineItemFiles.organizationId, productionRuns.organizationId)))
+    .where(and(
+      eq(productionRuns.id, input.runId),
+      eq(productionRuns.organizationId, input.organizationId),
+      eq(lineItemFiles.id, input.fileId),
+      eq(lineItemFiles.role, "final"),
+      eq(lineItemFiles.status, "active"),
+    ))
+    .limit(1);
+  if (!row) {
+    await db.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId,
+      actionType: "READ",
+      entityType: "production_run",
+      entityId: input.runId,
+      description: "Shared production run file download authorization failed",
+      newValues: { fileId: input.fileId, reason: "not_found_or_not_active" },
+    } as any).catch(() => undefined);
+    throw new ProductionRunError("PRODUCTION_RUN_FILE_NOT_FOUND", "Shared production run file was not found.", 404);
+  }
+  await downloadLineItemFile(input.fileId, input.organizationId, input.res, { inline: input.inline });
 }
 
 export async function transitionProductionRun(input: { organizationId: string; runId: string; actorUserId: string; action: "release" | "start" | "complete" | "cancel"; reason?: string | null }) {
@@ -357,6 +783,15 @@ export async function transitionProductionRun(input: { organizationId: string; r
     const next: Partial<typeof productionRuns.$inferInsert> = input.action === "release" ? { status: "ready_for_production", releasedAt: now } : input.action === "start" ? { status: "in_production", startedAt: now } : input.action === "cancel" ? { status: "canceled", canceledAt: now, canceledByUserId: input.actorUserId, cancelReason: input.reason?.trim() || null } : { status: "completed", completedAt: now };
     if (input.action === "complete") {
       if (run.status !== "ready_for_production" && run.status !== "in_production") throw new ProductionRunError("PRODUCTION_RUN_NOT_RELEASABLE", "Release the production run before completing it.", 409);
+      const [activeFiles] = await tx.select({ count: sql<number>`count(*)::int` }).from(lineItemFiles).where(and(
+        eq(lineItemFiles.organizationId, input.organizationId),
+        eq(lineItemFiles.productionRunId, run.id),
+        eq(lineItemFiles.role, "final"),
+        eq(lineItemFiles.status, "active"),
+      ));
+      if (Number(activeFiles?.count ?? 0) <= 0) {
+        throw new ProductionRunError("PRODUCTION_RUN_FILE_REQUIRED", "Upload or replace the shared nested final production file before completing this run.", 409);
+      }
       const members = await tx.select().from(productionRunMembers).where(and(eq(productionRunMembers.productionRunId, run.id), eq(productionRunMembers.organizationId, input.organizationId)));
       if (!members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "A production run must have members.");
       await tx.update(productionRuns).set({ ...next, updatedAt: now }).where(and(eq(productionRuns.id, run.id), eq(productionRuns.organizationId, input.organizationId)));
