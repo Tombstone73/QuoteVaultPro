@@ -301,9 +301,11 @@ export class ProductManagementSkillService {
     // This intentionally precedes pricing and inactive-draft routing.  Its only
     // state is the one tenant-scoped proposal bound to this conversation.
     const configurableRoute = routeComplexProductMessage(input.message) === "configurable";
-    const configurableEdit = /\b(?:minimum(?:\s+charge)?|sheet(?:\s+size)?|rotation|flatbed|pricing\s+matrix)\b|\|/i.test(input.message);
     let existingConfigurableProposal: Awaited<ReturnType<typeof resolveConfigurableProductContinuation>> = null;
-    if (input.conversationId && (configurableRoute || configurableEdit)) {
+    // Conversation state, not a fragile continuation-keyword classifier, owns
+    // an in-progress configurable draft. Resolve it before Production routing
+    // can reinterpret a later correction such as "Flatbed" or "$25".
+    if (input.conversationId) {
       try {
         existingConfigurableProposal = await resolveConfigurableProductContinuation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId, priorProposalId: input.activeConfigurableProposalId });
       } catch (error) {
