@@ -47,7 +47,7 @@ export type BuildDirectOrderPayloadInput = {
 };
 
 export function buildDirectOrderPayloadFromEditorState(input: BuildDirectOrderPayloadInput): DirectOrderPayload {
-    const payloadCustomerId = input.selectedCustomer?.id ?? input.selectedCustomerId ?? (input.quote as any)?.customerId ?? null;
+    const payloadCustomerId = input.selectedCustomer?.id ?? input.selectedCustomerId ?? null;
     const lineItemPayloads = input.lineItems
         .filter((li) => li.status !== "canceled" && !!li.productId)
         .map((li, index) => ({

@@ -219,6 +219,8 @@ export type PrepressQueueItem = {
   selectedProductionDestination?: "roll" | "flatbed" | null;
   destinationOverrideActive?: boolean;
   productionDestinationLabel?: string | null;
+  materialId?: string | null;
+  materialName?: string | null;
   media: string | null;
   dueDate: string | null;
   status: string;

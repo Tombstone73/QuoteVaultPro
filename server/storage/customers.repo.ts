@@ -108,6 +108,7 @@ const contactSortExpressions: Record<ContactSortBy, any> = {
         from customer_contact_links ccl
         join customers c on c.id = ccl.customer_id
         where ccl.contact_id = ${customerContacts.id}
+          and ccl.organization_id = ${customerContacts.organizationId}
           and ccl.status <> 'removed'
     ), ''))`,
     companyName: sql`lower(coalesce((
@@ -115,6 +116,7 @@ const contactSortExpressions: Record<ContactSortBy, any> = {
         from customer_contact_links ccl
         join customers c on c.id = ccl.customer_id
         where ccl.contact_id = ${customerContacts.id}
+          and ccl.organization_id = ${customerContacts.organizationId}
           and ccl.status <> 'removed'
     ), ''))`,
     createdAt: customerContacts.createdAt,
@@ -1303,10 +1305,11 @@ export class CustomersRepository {
     // --------------------------------------------------------
     async getContactsPaged(
         organizationId: string,
-        opts: { search?: string; page?: number; pageSize?: number; sortBy?: string; sortDir?: string; filter?: string },
+        opts: { search?: string; page?: number; pageSize?: number; sortBy?: string; sortDir?: string; filter?: string; customerId?: string | null },
     ): Promise<{
         items: Array<CustomerContact & {
             companyName: string;
+            customer: { id: string; companyName: string; status: string; isPrimary: boolean } | null;
             linkedCustomersCount: number;
             linkedCustomers: Array<{ id: string; companyName: string; status: string; isPrimary: boolean }>;
             ordersCount: number;
@@ -1325,6 +1328,7 @@ export class CustomersRepository {
 
         const searchTerm = opts.search?.trim();
         const baseConditions: any[] = [eq(customerContacts.organizationId, organizationId)];
+        const customerFilter = opts.customerId?.trim();
 
         if (opts.filter === "archived") {
             baseConditions.push(eq(customerContacts.status, "archived"));
@@ -1337,6 +1341,7 @@ export class CustomersRepository {
                 select 1
                 from customer_contact_links ccl
                 where ccl.contact_id = ${customerContacts.id}
+                  and ccl.organization_id = ${organizationId}
                   and ccl.status <> 'removed'
             )`);
         } else if (opts.filter === "linked") {
@@ -1344,6 +1349,7 @@ export class CustomersRepository {
                 select 1
                 from customer_contact_links ccl
                 where ccl.contact_id = ${customerContacts.id}
+                  and ccl.organization_id = ${organizationId}
                   and ccl.status = 'active'
             )`);
         } else if (opts.filter === "former") {
@@ -1351,7 +1357,22 @@ export class CustomersRepository {
                 select 1
                 from customer_contact_links ccl
                 where ccl.contact_id = ${customerContacts.id}
+                  and ccl.organization_id = ${organizationId}
                   and ccl.status = 'former'
+            )`);
+        }
+
+        if (customerFilter) {
+            baseConditions.push(sql`(
+                ${customerContacts.customerId} = ${customerFilter}
+                or exists (
+                    select 1
+                    from customer_contact_links ccl
+                    where ccl.contact_id = ${customerContacts.id}
+                      and ccl.organization_id = ${organizationId}
+                      and ccl.customer_id = ${customerFilter}
+                      and ccl.status = 'active'
+                )
             )`);
         }
 
@@ -1361,6 +1382,7 @@ export class CustomersRepository {
                 or(
                     ilike(customerContacts.firstName, `%${searchTerm}%`),
                     ilike(customerContacts.lastName, `%${searchTerm}%`),
+                    sql`concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName}) ilike ${`%${searchTerm}%`}`,
                     ilike(customerContacts.email, `%${searchTerm}%`),
                     ilike(customerContacts.phone, `%${searchTerm}%`),
                     ilike(customerContacts.mobile, `%${searchTerm}%`),
@@ -1369,7 +1391,16 @@ export class CustomersRepository {
                         from customer_contact_links ccl
                         join customers c on c.id = ccl.customer_id
                         where ccl.contact_id = ${customerContacts.id}
+                          and ccl.organization_id = ${organizationId}
+                          and c.organization_id = ${organizationId}
                           and ccl.status <> 'removed'
+                          and c.company_name ilike ${`%${searchTerm}%`}
+                    )`,
+                    sql`exists (
+                        select 1
+                        from customers c
+                        where c.id = ${customerContacts.customerId}
+                          and c.organization_id = ${organizationId}
                           and c.company_name ilike ${`%${searchTerm}%`}
                     )`,
                 ),
@@ -1398,8 +1429,12 @@ export class CustomersRepository {
             const linkedCustomerRows = await this.dbInstance
                 .select({ link: customerContactLinks, customer: customers })
                 .from(customerContactLinks)
-                .innerJoin(customers, eq(customerContactLinks.customerId, customers.id))
+                .innerJoin(customers, and(
+                    eq(customerContactLinks.customerId, customers.id),
+                    eq(customers.organizationId, organizationId),
+                ))
                 .where(and(
+                    eq(customerContactLinks.organizationId, organizationId),
                     eq(customerContactLinks.contactId, contact.id),
                     sql`${customerContactLinks.status} <> 'removed'`,
                 ))
@@ -1412,7 +1447,18 @@ export class CustomersRepository {
                 isPrimary: link.isPrimary,
             }));
             const activeLinkedCustomers = linkedCustomers.filter((customer) => customer.status === "active");
-            const companyName = activeLinkedCustomers.map((customer) => customer.companyName).join(", ") || "Unlinked";
+            const associatedCustomers = [...activeLinkedCustomers];
+            if (contact.customerId && !associatedCustomers.some((customer) => customer.id === contact.customerId)) {
+                const [legacyCustomer] = await this.dbInstance
+                    .select({ id: customers.id, companyName: customers.companyName, status: customers.status })
+                    .from(customers)
+                    .where(and(eq(customers.id, contact.customerId), eq(customers.organizationId, organizationId)))
+                    .limit(1);
+                if (legacyCustomer && legacyCustomer.status === "active") {
+                    associatedCustomers.push({ ...legacyCustomer, status: "active", isPrimary: false });
+                }
+            }
+            const companyName = associatedCustomers.map((customer) => customer.companyName).join(", ") || "Unlinked";
 
             const [ordersRow] = await this.dbInstance.select({ count: sql<number>`count(*)` }).from(orders).where(eq(orders.contactId, contact.id));
             const ordersCount = Number(ordersRow?.count ?? 0);
@@ -1436,10 +1482,11 @@ export class CustomersRepository {
 
             return {
                 ...contact,
-                customerId: activeLinkedCustomers[0]?.id ?? contact.customerId ?? null,
+                customerId: associatedCustomers[0]?.id ?? contact.customerId ?? null,
                 isPrimary: linkedCustomerRows.some(({ link }) => link.isPrimary && link.status === "active"),
                 companyName,
-                linkedCustomersCount: activeLinkedCustomers.length,
+                customer: associatedCustomers[0] ?? null,
+                linkedCustomersCount: associatedCustomers.length,
                 linkedCustomers,
                 ordersCount,
                 quotesCount,

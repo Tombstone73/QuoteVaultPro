@@ -1,4 +1,4 @@
-import { parseTwoDimensionalPricingMatrix, type ComplexProductSpecification } from "./complexProductSpecification";
+import { complexProductMatrixCellKey, parseTwoDimensionalPricingMatrix, type ComplexProductSpecification } from "./complexProductSpecification";
 
 export type ComplexProductConversationRoute = "configurable" | "standalone" | "pricing" | "clarify" | "ignore";
 export function routeComplexProductMessage(message: string): ComplexProductConversationRoute {
@@ -16,6 +16,18 @@ function valueList(message: string): string[] {
   return Array.from(new Set(values)).slice(0, 12);
 }
 
+function categoryFromMessage(message: string): string | null {
+  const match = message.match(/\b(?:in\s+)?category\s*(?:to|is|:|=)?\s*["â€œ]?([^"â€,.;]{1,100}?)(?=\s+(?:with|and|using|that|which)\b|["â€]?\s*[,.;]|["â€]?\s*$)/i);
+  return match?.[1]?.trim() || null;
+}
+
+function productNameFromMessage(message: string): string | null {
+  const quoted = message.match(/\b(?:named?|name)\s*(?:to|is|:|=)?\s*["“]([^"”]{1,120})["”]/i)?.[1]?.trim();
+  if (quoted) return quoted;
+  const unquoted = message.match(/\b(?:named?|name)\s*(?:to|is|:|=)?\s*([^,.;]{1,120}?)(?=\s+(?:in\s+category|with|and|using|that|which)\b|\s*[,.;]|\s*$)/i)?.[1]?.trim();
+  return unquoted || null;
+}
+
 /** Creates a structurally valid, intentionally blocked starting point so one
  * conversation can collect the matrix incrementally without inventing prices. */
 export function createInitialComplexProductSpecification(message: string): ComplexProductSpecification {
@@ -24,11 +36,12 @@ export function createInitialComplexProductSpecification(message: string): Compl
   const columns = /\b(?:single|double)[- ]?sided\b/i.test(message) || /\bprinted[- ]?sides?\b/i.test(message)
     ? ["single_sided", "double_sided"] : ["single_sided", "double_sided"];
   const cells: Record<string, number> = {};
-  for (const row of rows) for (const column of columns) cells[`${row}\u0000${column}`] = 0;
-  const name = message.match(/\b(?:named?|name)\s*[:=]?\s*["“]([^"”]{1,120})["”]/i)?.[1]?.trim()
+  for (const row of rows) for (const column of columns) cells[complexProductMatrixCellKey(row, column)] = 0;
+  const name = productNameFromMessage(message)
+    ?? message.match(/\b(?:named?|name)\s*[:=]?\s*["“]([^"”]{1,120})["”]/i)?.[1]?.trim()
     ?? ( /\bPVC\b/i.test(message) ? "PVC Configurable Product" : "Configurable Product Draft" );
   const specification: ComplexProductSpecification = {
-    kind: "configurable_product", name, category: /\bPVC|coroplast\b/i.test(message) ? "Rigid Signs" : "Print Products",
+    kind: "configurable_product", name, category: categoryFromMessage(message) ?? (/\bPVC|coroplast\b/i.test(message) ? "Rigid Signs" : "Print Products"),
     description: "Configurable product draft assembled from this conversation.", taxable: true, requiresDimensions: true,
     materialForm: "sheet", sheet: { widthIn: 48, heightIn: 96, allowRotation: false }, route: "Flatbed", minimumChargeCents: 0,
     optionGroups: [
@@ -43,7 +56,11 @@ export function createInitialComplexProductSpecification(message: string): Compl
 
 export function applyComplexProductConversationEdit(current: ComplexProductSpecification, message: string): ComplexProductSpecification {
   const next = structuredClone(current); const source = message.trim();
-  const minimum = source.match(/\bminimum(?:\s+charge)?\s*(?:to|of)?\s*\$?(\d+(?:\.\d{1,2})?)/i); if (minimum) next.minimumChargeCents = Math.round(Number(minimum[1]) * 100);
+  const name = productNameFromMessage(source); if (name) next.name = name;
+  const category = categoryFromMessage(source); if (category) next.category = category;
+  const minimum = source.match(/\bminimum(?:\s+charge)?\s*(?:to|of)?\s*\$?(\d+(?:\.\d{1,2})?)|\$?(\d+(?:\.\d{1,2})?)\s+minimum(?:\s+charge)?\b/i);
+  const minimumAmount = minimum?.[1] ?? minimum?.[2];
+  if (minimumAmount) next.minimumChargeCents = Math.round(Number(minimumAmount) * 100);
   const sheet = source.match(/\b(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\b/i); if (sheet) { next.sheet.widthIn = Number(sheet[1]); next.sheet.heightIn = Number(sheet[2]); }
   if (/\brotation\s+(?:allowed|enabled)\b|\ballow\s+rotation\b/i.test(source)) next.sheet.allowRotation = true;
   if (/\brotation\s+(?:disabled|not allowed)\b|\bdo not allow rotation\b/i.test(source)) next.sheet.allowRotation = false;

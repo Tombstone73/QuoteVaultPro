@@ -36,6 +36,9 @@ export const assistantProductionCommandAllowlist = [
   "products.create_inactive_draft_batch",
   "products.update_inactive_draft",
   "products.update_inactive_draft_batch",
+  "products.adjust_pricing",
+  "products.rollback_pricing_change_set",
+  "products.create_configurable_draft",
   "quotes.create_draft",
   "quotes.update_draft",
   "orders.create",
@@ -197,7 +200,7 @@ export class AssistantCommandRegistry {
   static production(commands: readonly AssistantCommandDefinition[] = []): AssistantCommandRegistry {
     for (const command of commands) {
       if (!assistantProductionCommandAllowlist.includes(command.name as (typeof assistantProductionCommandAllowlist)[number])) {
-        throw new AssistantCommandRegistryError("Only the static production command allowlist may be registered.", "PRODUCTION_COMMAND_FORBIDDEN");
+        throw new AssistantCommandRegistryError(`Only the static production command allowlist may be registered: ${command.name}@${command.version}.`, "PRODUCTION_COMMAND_FORBIDDEN");
       }
       if (command.testOnly || !command.devEnabled || !command.mainEnabled) {
         throw new AssistantCommandRegistryError("Production commands must be non-test-only and explicitly enabled for DEV and MAIN.", "PRODUCTION_COMMAND_FORBIDDEN");

@@ -2,6 +2,10 @@ import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globa
 import express from "express";
 import request from "supertest";
 
+// Route composition imports storage adapters, but registration itself must not
+// connect to a database. A syntactically valid inert URL keeps this test local.
+process.env.DATABASE_URL ??= "postgresql://assistant_registry_test:assistant_registry_test@127.0.0.1:5432/assistant_registry_test";
+
 jest.unstable_mockModule("../tenantContext", () => ({ getRequestOrganizationId: (req: any) => req.organizationId }));
 
 let registerAssistantExecutionRoutes: any;
@@ -56,6 +60,14 @@ describe("assistant execution-plan routes", () => {
     await request(app(fake, { authenticated: false })).get("/api/assistant/plans/plan_1").expect(401);
     await request(app(fake, { tenant: false })).get("/api/assistant/plans/plan_1").expect(403);
     expect(fake.getPlan).not.toHaveBeenCalled();
+  });
+
+  test("constructs the complete reviewed production registry while registering routes", () => {
+    const instance = express();
+    const isAuthenticated = (_req: any, _res: any, next: any) => next();
+    const tenantContext = (_req: any, _res: any, next: any) => next();
+
+    expect(() => registerAssistantExecutionRoutes(instance, { isAuthenticated, tenantContext })).not.toThrow();
   });
 
   test("does not accept browser-supplied executable command names", async () => {

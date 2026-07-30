@@ -1811,7 +1811,11 @@ export async function registerMvpInvoicingRoutes(
       res.json({ success: true, data: invoice });
     } catch (error: any) {
       console.error("Error creating invoice from order:", error);
-      res.status(500).json({ error: error.message || "Failed to create invoice" });
+      const statusCode = Number(error?.statusCode || 500);
+      res.status(Number.isFinite(statusCode) ? statusCode : 500).json({
+        error: error.message || "Failed to create invoice",
+        code: error.code,
+      });
     }
   });
 

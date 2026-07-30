@@ -1,6 +1,7 @@
 import crypto from "crypto";
 import fs from "fs/promises";
 import {
+  CopyObjectCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadBucketCommand,
@@ -168,6 +169,68 @@ export class S3CompatibleStorageAdapter implements StorageProviderAdapter {
       originalFilename: input.originalFilename,
       storedFilename,
       extension,
+      persistenceConfirmed: true,
+    };
+  }
+
+  async readObject(input: {
+    providerConfig: StorageProviderConfig;
+    objectKey?: string | null;
+    localPathRef?: string | null;
+  }): Promise<Buffer> {
+    if (!input.objectKey) {
+      throw new Error("Missing object key for S3-compatible read.");
+    }
+    const { client, normalized } = this.createClient(input.providerConfig);
+    const response = await client.send(new GetObjectCommand({
+      Bucket: normalized.bucketName,
+      Key: input.objectKey,
+    }));
+    const body: any = response.Body;
+    if (!body?.transformToByteArray) {
+      throw new Error("S3-compatible read returned an unsupported body.");
+    }
+    return Buffer.from(await body.transformToByteArray());
+  }
+
+  async copyObjectWithinProvider(input: {
+    providerConfig: StorageProviderConfig;
+    sourceObjectKey?: string | null;
+    sourceLocalPathRef?: string | null;
+    originalFilename: string;
+    mimeType: string;
+    sizeBytes: number;
+    checksum?: string | null;
+    requestedTarget?: string | null;
+    resource: StorageResourceContext;
+  }): Promise<StoredObjectDescriptor> {
+    if (!input.sourceObjectKey) {
+      throw new Error("Missing object key for S3-compatible copy.");
+    }
+    const { client, normalized } = this.createClient(input.providerConfig);
+    const requestedTarget = normalizeRequestedStorageTarget(input.requestedTarget);
+    const storedFilename = requestedTarget ? requestedTarget.split("/").pop() ?? input.originalFilename : generateStoredFilename(input.originalFilename);
+    const objectKey = requestedTarget ?? buildRelativePath(input.resource, storedFilename, normalized.pathPrefix);
+    await client.send(new CopyObjectCommand({
+      Bucket: normalized.bucketName,
+      Key: objectKey,
+      CopySource: `${encodeURIComponent(normalized.bucketName)}/${input.sourceObjectKey.split("/").map(encodeURIComponent).join("/")}`,
+      ContentType: input.mimeType || "application/octet-stream",
+      MetadataDirective: "COPY",
+    }));
+
+    return {
+      providerType: this.providerType,
+      storageTarget: "s3",
+      bucket: normalized.bucketName,
+      objectKey,
+      localPathRef: null,
+      checksum: input.checksum ?? null,
+      sizeBytes: Math.max(0, Number(input.sizeBytes || 0)),
+      mimeType: input.mimeType || "application/octet-stream",
+      originalFilename: input.originalFilename,
+      storedFilename,
+      extension: getFileExtension(input.originalFilename),
       persistenceConfirmed: true,
     };
   }

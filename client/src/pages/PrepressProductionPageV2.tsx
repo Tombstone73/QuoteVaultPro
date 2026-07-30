@@ -33,8 +33,11 @@ import {
   type ProductionAlertStation,
   type ProductionAlertType,
   useCreateProductionAlert,
+  useCreatePrepressProductionRun,
   useProductionAlertPresets,
   useProductionAlerts,
+  useProductionRuns,
+  type ProductionRunListItem,
 } from "@/hooks/useProduction";
 import type { PrepressQueueItem, PrepressQueueWorkflowState } from "@/hooks/useOrders";
 import { usePageVisible } from "@/hooks/usePageVisible";
@@ -47,9 +50,23 @@ import {
   type PrepressListSortBy,
   type PrepressStatusFilter,
 } from "@/lib/prepressListPreferences";
-import type { FileUploadNamingPolicy } from "@shared/fileUploadNaming";
+import {
+  buildFileUploadDisplayFilename,
+  numericJobNumberFromFull,
+  type FileUploadNamingPolicy,
+  type PrepressFileLabel,
+} from "@shared/fileUploadNaming";
 import { resolveProductionArtworkSideReadiness } from "@shared/productionHydration";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
+import { getPrepressCombinedRunItemIssue, validatePrepressCombinedRunSelection } from "@/lib/prepressCombinedRuns";
+import { ProductionRunPanel } from "@/features/production/ProductionRunPanel";
+
+function promotionTagToPrepressLabel(tag: string): PrepressFileLabel {
+  if (tag === "final_print" || tag === "print") return "print";
+  if (tag === "cut_file" || tag === "cut") return "cut_file";
+  if (tag === "proof_only" || tag === "proof") return "proof";
+  return "none";
+}
 
 type LineItemFile = {
   id: string;
@@ -323,9 +340,44 @@ function formatPrepressTagLabel(tag: string | null | undefined, defaultTag: stri
   return tag || defaultTag;
 }
 const PREPRESS_QUEUE_QUERY_KEY = ["/api/prepress/queue"] as const;
+const EMPTY_PREPRESS_QUEUE: PrepressQueueItem[] = [];
+type PrepressCombinedRunStatusFilter = "attention" | "active" | "draft" | "ready_for_production" | "in_production" | "completed" | "canceled" | "all";
 
 function getPrepressLineItemQueryKey(lineItemId: string | null) {
   return ["/api/prepress/line-item", lineItemId] as const;
+}
+
+function productionRunNeedsPrepressAttention(run: ProductionRunListItem): boolean {
+  if (run.runStatus === "completed" || run.runStatus === "canceled") return false;
+  if (run.runStatus === "draft") return true;
+  if (run.replacementRequired || (run.fileCount ?? 0) === 0) return true;
+  const plannedPlacements = (Number(run.plannedSheetCount) || 0) * (Number(run.nominalPiecesPerSheet) || 0);
+  if (plannedPlacements > 0 && plannedPlacements !== run.totalAllocatedQuantity) return true;
+  if (run.files?.some((file) => file.localBridge?.status === "failed" || file.localBridge?.unsafeToRetire)) return true;
+  return false;
+}
+
+function filterPrepressCombinedRuns(
+  runs: ProductionRunListItem[],
+  input: { search: string; status: PrepressCombinedRunStatusFilter; includeHistory: boolean },
+): ProductionRunListItem[] {
+  const search = input.search.trim().toLowerCase();
+  return runs.filter((run) => {
+    if (!input.includeHistory && (run.runStatus === "completed" || run.runStatus === "canceled")) return false;
+    if (input.status === "attention" && !productionRunNeedsPrepressAttention(run)) return false;
+    if (input.status === "active" && (run.runStatus === "completed" || run.runStatus === "canceled")) return false;
+    if (!["attention", "active", "all"].includes(input.status) && run.runStatus !== input.status) return false;
+    if (!search) return true;
+    const haystack = [
+      run.displayNumber,
+      run.orderNumber,
+      run.customerName,
+      run.stationKey,
+      run.runStatus,
+      ...run.members.flatMap((member) => [member.description, member.lineNumber ? `line ${member.lineNumber}` : ""]),
+    ].join(" ").toLowerCase();
+    return haystack.includes(search);
+  });
 }
 
 export default function PrepressProductionPageV2() {
@@ -342,6 +394,20 @@ export default function PrepressProductionPageV2() {
   // UI State
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [selectedQueueLineItemIds, setSelectedQueueLineItemIds] = useState<Set<string>>(() => new Set());
+  const [combinedRunOpen, setCombinedRunOpen] = useState(false);
+  const [combinedRunAllocations, setCombinedRunAllocations] = useState<Record<string, string>>({});
+  const [combinedRunPlannedSheetCount, setCombinedRunPlannedSheetCount] = useState("");
+  const [combinedRunPiecesPerSheet, setCombinedRunPiecesPerSheet] = useState("");
+  const [combinedRunSheetWidth, setCombinedRunSheetWidth] = useState("");
+  const [combinedRunSheetHeight, setCombinedRunSheetHeight] = useState("");
+  const [combinedRunNotes, setCombinedRunNotes] = useState("");
+  const [combinedRunOverrideReason, setCombinedRunOverrideReason] = useState("");
+  const [combinedRunMismatchAcknowledged, setCombinedRunMismatchAcknowledged] = useState(false);
+  const [combinedRunSearchQuery, setCombinedRunSearchQuery] = useState("");
+  const [combinedRunStatusFilter, setCombinedRunStatusFilter] = useState<PrepressCombinedRunStatusFilter>("attention");
+  const [combinedRunIncludeHistory, setCombinedRunIncludeHistory] = useState(false);
+  const [selectedCombinedRunId, setSelectedCombinedRunId] = useState<string | null>(null);
+  const [combinedRunDetailOpen, setCombinedRunDetailOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [destinationFilter, setDestinationFilter] = useState<PrepressDestinationFilter>(DEFAULT_PREPRESS_LIST_PREFERENCES.destination);
   const [statusFilter, setStatusFilter] = useState<PrepressStatusFilter>(DEFAULT_PREPRESS_LIST_PREFERENCES.status);
@@ -363,6 +429,8 @@ export default function PrepressProductionPageV2() {
   const [filePendingRemoval, setFilePendingRemoval] = useState<VisibleFileRecord | null>(null);
   const [removalReason, setRemovalReason] = useState("");
   const [selectedTag, setSelectedTag] = useState("none");
+  const [promotionSourceFile, setPromotionSourceFile] = useState<VisibleFileRecord | null>(null);
+  const [promotionTag, setPromotionTag] = useState("final_print");
   const [uploadingFiles, setUploadingFiles] = useState<UploadProgress[]>([]);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [specSheetOpen, setSpecSheetOpen] = useState(false);
@@ -735,6 +803,42 @@ export default function PrepressProductionPageV2() {
     },
   });
 
+  const promoteCustomerArtworkMutation = useMutation({
+    mutationFn: async ({ lineItemId, file, tag }: { lineItemId: string; file: VisibleFileRecord; tag: string }) => {
+      const sourceKind = file.category === "bridged_original" ? "order_attachment" : "line_item_original";
+      const res = await fetch(`/api/prepress/line-item/${lineItemId}/promote-customer-artwork`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceKind,
+          sourceId: file.artworkAssignmentFileId || file.id,
+          tag,
+          artworkSide: file.sideLabel || "na",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body?.success === false) throw new Error(body?.error || body?.message || "Unable to create production artwork copy.");
+      return body;
+    },
+    onSuccess: async (body, variables) => {
+      await Promise.all([
+        refreshLineItemQueries(variables.lineItemId),
+        refreshPrepressQueue(),
+        refreshPrepressNavigationCount(),
+      ]);
+      setPromotionSourceFile(null);
+      setPromotionTag("final_print");
+      toast({
+        title: body?.data?.created === false ? "Production artwork already exists" : "Production artwork copy created",
+        description: body?.data?.file?.computedDisplayFilename || "The customer original was preserved.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Production artwork copy failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   // PROMPT B: Send to Print Queue mutation
   const sendToPrintMutation = useMutation({
     mutationFn: (lineItemId: string) => requestReleasePrepressLineItem(lineItemId),
@@ -937,14 +1041,58 @@ export default function PrepressProductionPageV2() {
     },
   });
 
+  const createCombinedRunMutation = useCreatePrepressProductionRun();
+  const productionRunsQuery = useProductionRuns(undefined, { enabled: preferencesReady });
+
   // Derived state
-  const queue = queueData?.items || [];
+  const queue = queueData?.items || EMPTY_PREPRESS_QUEUE;
   const totalQueueCount = queueData?.totalCount ?? queue.length;
   const filteredQueueCount = queueData?.filteredCount ?? queue.length;
   const filteredQueue = queue;
-  const selectedQueueItems = filteredQueue.filter((item) => selectedQueueLineItemIds.has(item.lineItemId));
-  const allQueueItemsSelected = filteredQueue.length > 0 && selectedQueueItems.length === filteredQueue.length;
+  const activeNestedRunByLineItemId = useMemo(() => {
+    const map = new Map<string, ProductionRunListItem>();
+    for (const run of productionRunsQuery.data ?? []) {
+      if (run.runStatus === "completed" || run.runStatus === "canceled") continue;
+      for (const member of run.members) {
+        map.set(member.orderLineItemId, run);
+      }
+    }
+    return map;
+  }, [productionRunsQuery.data]);
+  const selectableQueueItems = useMemo(
+    () => filteredQueue.filter((item) => !getPrepressCombinedRunItemIssue(item) && !activeNestedRunByLineItemId.has(item.lineItemId)),
+    [activeNestedRunByLineItemId, filteredQueue],
+  );
+  const selectedQueueItems = useMemo(
+    () => filteredQueue.filter((item) => selectedQueueLineItemIds.has(item.lineItemId)),
+    [filteredQueue, selectedQueueLineItemIds],
+  );
+  const combinedRunValidation = validatePrepressCombinedRunSelection(
+    selectedQueueItems,
+    combinedRunAllocations,
+    combinedRunOverrideReason,
+  );
+  const combinedRunDialogValidation = validatePrepressCombinedRunSelection(
+    selectedQueueItems,
+    combinedRunAllocations,
+    combinedRunOverrideReason || "__override_pending__",
+  );
+  const combinedRunActionReason = combinedRunValidation.canCreate
+    ? "Selected lines will become one downstream run; original line items stay separate."
+    : combinedRunDialogValidation.canCreate
+      ? "Compatibility override required; open to provide the reason."
+      : combinedRunValidation.reason;
+  const combinedRunExpectedPlacements = (Number(combinedRunPlannedSheetCount) || 0) * (Number(combinedRunPiecesPerSheet) || 0);
+  const combinedRunHasPlacementMismatch = combinedRunExpectedPlacements > 0
+    && combinedRunValidation.totalAllocatedQuantity > 0
+    && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity;
+  const canSubmitCombinedRun = combinedRunValidation.canCreate && (!combinedRunHasPlacementMismatch || combinedRunMismatchAcknowledged);
+  const allQueueItemsSelected = selectableQueueItems.length > 0 && selectableQueueItems.every((item) => selectedQueueLineItemIds.has(item.lineItemId));
   const someQueueItemsSelected = selectedQueueItems.length > 0 && !allQueueItemsSelected;
+  const selectedQueueTotalQuantity = selectedQueueItems.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
+  const selectedQueueOrderNumbers = Array.from(new Set(selectedQueueItems.map((item) => item.jobNumber).filter(Boolean)));
+  const selectedQueueDestinationLabels = Array.from(new Set(selectedQueueItems.map((item) => item.productionDestinationLabel || item.selectedProductionDestination || item.suggestedProductionDestination || "No destination")));
+  const selectedQueueValidationLabel = combinedRunValidation.canCreate ? "Ready to nest" : (combinedRunActionReason || "Selection needs review");
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId) ?? null;
   const selectedAlertStation = useMemo<ProductionAlertStation>(() => {
     const station = selectedItem?.selectedProductionDestination || selectedItem?.suggestedProductionDestination;
@@ -956,7 +1104,30 @@ export default function PrepressProductionPageV2() {
   );
   const productionAlertPresetsQuery = useProductionAlertPresets();
   const createProductionAlert = useCreateProductionAlert();
+  const prepressCombinedRuns = useMemo(
+    () => filterPrepressCombinedRuns(productionRunsQuery.data ?? [], {
+      search: combinedRunSearchQuery,
+      status: combinedRunStatusFilter,
+      includeHistory: combinedRunIncludeHistory,
+    }),
+    [combinedRunIncludeHistory, combinedRunSearchQuery, combinedRunStatusFilter, productionRunsQuery.data],
+  );
+  const selectedCombinedRun = useMemo(
+    () => (productionRunsQuery.data ?? []).find((run) => run.id === selectedCombinedRunId) ?? null,
+    [productionRunsQuery.data, selectedCombinedRunId],
+  );
   const selectedOwnerLabel = formatOwnerLabel(selectedItem);
+  const promotionFilenamePreview = useMemo(() => {
+    if (!promotionSourceFile || !selectedItem) return "";
+    return buildFileUploadDisplayFilename({
+      originalFilename: promotionSourceFile.originalFilename || promotionSourceFile.fileName || "artwork",
+      fullJobNumber: selectedItem.jobNumber || "",
+      numericJobNumber: numericJobNumberFromFull(selectedItem.jobNumber || ""),
+      fileUploadJobPrefixMode: fileNamingPolicy?.fileUploadJobPrefixMode ?? "full_job_number",
+      prepressLabel: promotionTagToPrepressLabel(promotionTag),
+      labelPlacement: "after_job_prefix",
+    });
+  }, [fileNamingPolicy?.fileUploadJobPrefixMode, promotionSourceFile, promotionTag, selectedItem]);
   const originalFiles = filesData?.originals || [];
   const finalFiles = filesData?.finals || [];
   const bridgedOriginalFiles = filesData?.bridgedOriginals || [];
@@ -1031,6 +1202,15 @@ export default function PrepressProductionPageV2() {
     () => normalizedVisibleFiles.filter((file) => file.category === "final_production"),
     [normalizedVisibleFiles]
   );
+  useEffect(() => {
+    setCombinedRunAllocations((current) => {
+      const next: Record<string, string> = {};
+      for (const item of selectedQueueItems) {
+        next[item.lineItemId] = current[item.lineItemId] ?? String(Number(item.quantity) || 1);
+      }
+      return next;
+    });
+  }, [selectedQueueItems]);
   const resolveViewerIndex = React.useCallback((preferredFileId?: string | null) => {
     if (normalizedVisibleFiles.length === 0) return -1;
     if (!preferredFileId) return 0;
@@ -1143,6 +1323,10 @@ export default function PrepressProductionPageV2() {
       return next.size === current.size ? current : next;
     });
   }, [queue]);
+
+  React.useEffect(() => {
+    setSelectedQueueLineItemIds(new Set());
+  }, [destinationFilter]);
 
   useEffect(() => {
     if (selectedWorkflowState !== "in_prepress" || !selectedItem?.sessionStartedAt) {
@@ -1351,10 +1535,12 @@ export default function PrepressProductionPageV2() {
   };
 
   const handleToggleSelectAllQueueItems = (checked: boolean) => {
-    setSelectedQueueLineItemIds(checked ? new Set(filteredQueue.map((item) => item.lineItemId)) : new Set());
+    setSelectedQueueLineItemIds(checked ? new Set(selectableQueueItems.map((item) => item.lineItemId)) : new Set());
   };
 
   const handleToggleQueueItem = (lineItemId: string, checked: boolean) => {
+    const item = filteredQueue.find((entry) => entry.lineItemId === lineItemId);
+    if (checked && item && (getPrepressCombinedRunItemIssue(item) || activeNestedRunByLineItemId.has(item.lineItemId))) return;
     setSelectedQueueLineItemIds((current) => {
       const next = new Set(current);
       if (checked) next.add(lineItemId);
@@ -1366,6 +1552,58 @@ export default function PrepressProductionPageV2() {
   const handleBulkPrintReady = (releaseToProduction: boolean) => {
     if (selectedQueueItems.length === 0 || bulkPrintReadyMutation.isPending) return;
     bulkPrintReadyMutation.mutate({ items: selectedQueueItems, releaseToProduction });
+  };
+
+  const resetCombinedRunDraft = () => {
+    setCombinedRunPlannedSheetCount("");
+    setCombinedRunPiecesPerSheet("");
+    setCombinedRunSheetWidth("");
+    setCombinedRunSheetHeight("");
+    setCombinedRunNotes("");
+    setCombinedRunOverrideReason("");
+    setCombinedRunMismatchAcknowledged(false);
+    setCombinedRunAllocations({});
+  };
+
+  const handleCreateCombinedRun = async () => {
+    if (!canSubmitCombinedRun || !combinedRunValidation.orderId || !combinedRunValidation.stationKey) return;
+    try {
+      const result = await createCombinedRunMutation.mutateAsync({
+        orderId: combinedRunValidation.orderId,
+        stationKey: combinedRunValidation.stationKey,
+        members: selectedQueueItems.map((item) => ({
+          lineItemId: item.lineItemId,
+          allocatedQuantity: Number(combinedRunAllocations[item.lineItemId] ?? item.quantity),
+        })),
+        plannedSheetCount: combinedRunPlannedSheetCount ? Number(combinedRunPlannedSheetCount) : null,
+        nominalPiecesPerSheet: combinedRunPiecesPerSheet ? Number(combinedRunPiecesPerSheet) : null,
+        sheetWidth: combinedRunSheetWidth ? Number(combinedRunSheetWidth) : null,
+        sheetHeight: combinedRunSheetHeight ? Number(combinedRunSheetHeight) : null,
+        notes: combinedRunNotes.trim() || null,
+        compatibilityOverrideReason: combinedRunOverrideReason.trim() || null,
+      });
+      setSelectedQueueLineItemIds(new Set());
+      setCombinedRunOpen(false);
+      resetCombinedRunDraft();
+      const createdRunId = (result as any)?.run?.id ?? (result as any)?.id ?? null;
+      const createdRunNumber = (result as any)?.run?.runNumber ?? (result as any)?.runNumber ?? null;
+      if (createdRunId) {
+        setSelectedCombinedRunId(createdRunId);
+        setCombinedRunDetailOpen(true);
+      }
+      toast({
+        title: "Combined production run created",
+        description: createdRunNumber ? `Run PR-${String(createdRunNumber).padStart(4, "0")} is ready for shared file upload.` : "Open the run below to upload the shared nested production file.",
+      });
+      await Promise.all([
+        refreshPrepressQueue(),
+        refreshPrepressNavigationCount(),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/runs"] }),
+      ]);
+      await productionRunsQuery.refetch();
+    } catch {
+      // The mutation hook owns the retryable, server-provided error message.
+    }
   };
 
   const handleFileSelect = (event: React.ChangeEvent<HTMLInputElement>) => {
@@ -1650,11 +1888,152 @@ export default function PrepressProductionPageV2() {
                 Complete &amp; Release selected
               </Button>
             </div>
+            <div className="space-y-1">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setCombinedRunOpen(true)}
+                disabled={!combinedRunDialogValidation.canCreate || createCombinedRunMutation.isPending}
+                className="h-auto min-h-9 w-full whitespace-normal border-violet-400/60 px-2 py-1.5 text-[11px] leading-tight text-violet-200 hover:bg-violet-500/10"
+              >
+                {createCombinedRunMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                Nest Selected
+              </Button>
+              <p className="text-[10px] leading-snug text-slate-400">
+                {combinedRunActionReason}
+              </p>
+            </div>
+
+            <div className="space-y-2 rounded-lg border border-violet-400/30 bg-violet-500/5 p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <p className="text-xs font-semibold text-violet-100">Combined Runs</p>
+                  <p className="text-[10px] leading-snug text-slate-400">Manage shared nested production files without leaving Prepress.</p>
+                </div>
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  onClick={() => productionRunsQuery.refetch()}
+                  disabled={productionRunsQuery.isFetching}
+                  className="h-7 px-2 text-[11px] text-violet-200 hover:bg-violet-500/10"
+                >
+                  <RefreshCw className={cn("mr-1 h-3 w-3", productionRunsQuery.isFetching && "animate-spin")} />
+                  Refresh
+                </Button>
+              </div>
+              <div className="relative">
+                <Search className="absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-slate-500" />
+                <Input
+                  value={combinedRunSearchQuery}
+                  onChange={(event) => setCombinedRunSearchQuery(event.target.value)}
+                  placeholder="Run, order, customer, line, status..."
+                  className="h-8 bg-[#111921] border-[#2d3748] pl-8 text-xs"
+                />
+              </div>
+              <div className="grid grid-cols-[1fr_auto] gap-2">
+                <Select value={combinedRunStatusFilter} onValueChange={(value) => setCombinedRunStatusFilter(value as PrepressCombinedRunStatusFilter)}>
+                  <SelectTrigger className="h-8 bg-[#111921] border-[#2d3748] text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="attention">Needs Prepress attention</SelectItem>
+                    <SelectItem value="active">Active runs</SelectItem>
+                    <SelectItem value="draft">Draft</SelectItem>
+                    <SelectItem value="ready_for_production">Ready for Production</SelectItem>
+                    <SelectItem value="in_production">In Production</SelectItem>
+                    <SelectItem value="completed">Completed</SelectItem>
+                    <SelectItem value="canceled">Canceled</SelectItem>
+                    <SelectItem value="all">All statuses</SelectItem>
+                  </SelectContent>
+                </Select>
+                <label className="flex items-center gap-2 rounded-md border border-[#2d3748] px-2 text-[11px] text-slate-300">
+                  <Checkbox checked={combinedRunIncludeHistory} onCheckedChange={(checked) => setCombinedRunIncludeHistory(checked === true)} aria-label="Include completed and canceled combined runs" />
+                  History
+                </label>
+              </div>
+              {productionRunsQuery.isError ? (
+                <div className="rounded border border-red-500/30 bg-red-500/10 px-2 py-1.5 text-[11px] text-red-100">Unable to load combined runs.</div>
+              ) : productionRunsQuery.isLoading ? (
+                <div className="flex items-center gap-2 text-[11px] text-slate-400"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading combined runs...</div>
+              ) : prepressCombinedRuns.length === 0 ? (
+                <div className="rounded border border-[#2d3748] px-2 py-2 text-[11px] text-slate-400">No combined runs match this view.</div>
+              ) : (
+                <div className="max-h-60 space-y-2 overflow-y-auto pr-1">
+                  {prepressCombinedRuns.slice(0, 12).map((run) => {
+                    const needsAttention = productionRunNeedsPrepressAttention(run);
+                    return (
+                      <div key={run.id} className="rounded-md border border-[#2d3748] bg-[#111921]/80 p-2 text-[11px]">
+                        <div className="flex items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="flex flex-wrap items-center gap-1.5">
+                              <span className="font-semibold text-violet-100">{run.displayNumber}</span>
+                              <span className="rounded border border-[#2d3748] px-1.5 py-0.5 uppercase text-[9px] text-slate-300">{run.runStatus.replace(/_/g, " ")}</span>
+                              {needsAttention ? <span className="rounded border border-amber-400/40 bg-amber-400/10 px-1.5 py-0.5 text-[9px] text-amber-200">Needs file/review</span> : null}
+                            </div>
+                            <div className="mt-1 truncate text-slate-300">Order {run.orderNumber} - {run.customerName}</div>
+                            <div className="truncate text-slate-500">{run.stationKey} - {run.memberCount} lines - {run.fileCount} active files</div>
+                          </div>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className="h-7 shrink-0 px-2 text-[11px]"
+                            onClick={() => {
+                              setSelectedCombinedRunId(run.id);
+                              setCombinedRunDetailOpen(true);
+                            }}
+                          >
+                            Open
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
           </div>
         </div>
 
         {/* Job List */}
         <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-2">
+          {selectedQueueItems.length > 0 ? (
+            <div className="sticky top-0 z-20 rounded-lg border border-violet-400/40 bg-[#111921]/95 p-3 shadow-xl backdrop-blur">
+              <div className="flex flex-wrap items-start justify-between gap-3">
+                <div className="min-w-0 space-y-1 text-xs text-slate-300">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="font-bold text-violet-100">{selectedQueueItems.length} selected</span>
+                    <span>Order: {selectedQueueOrderNumbers.length === 1 ? selectedQueueOrderNumbers[0] : "Mixed orders"}</span>
+                    <span>Total qty: {selectedQueueTotalQuantity}</span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
+                    <span>Destination: {selectedQueueDestinationLabels.length === 1 ? selectedQueueDestinationLabels[0] : "Mixed destinations"}</span>
+                    <span className={cn("rounded border px-2 py-0.5", combinedRunValidation.canCreate ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-200")}>
+                      {selectedQueueValidationLabel}
+                    </span>
+                  </div>
+                </div>
+                <div className="flex shrink-0 flex-wrap gap-2">
+                  <Button type="button" size="sm" variant="outline" onClick={() => setSelectedQueueLineItemIds(new Set())}>
+                    Clear selection
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => setCombinedRunOpen(true)}
+                    disabled={!combinedRunDialogValidation.canCreate || createCombinedRunMutation.isPending}
+                    title={combinedRunActionReason || undefined}
+                    className="bg-violet-600 text-white hover:bg-violet-700"
+                  >
+                    {createCombinedRunMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                    Nest Selected
+                  </Button>
+                </div>
+              </div>
+            </div>
+          ) : null}
           {!queueIsLoading && hasActivePrepressView && (
             <div className="rounded-lg border border-[#1773cf]/40 bg-[#1773cf]/10 px-3 py-2 text-xs text-slate-200">
               <div className="flex items-start justify-between gap-3">
@@ -1700,6 +2079,8 @@ export default function PrepressProductionPageV2() {
               item={item}
               isSelected={selectedLineItemId === item.lineItemId}
               isChecked={selectedQueueLineItemIds.has(item.lineItemId)}
+              selectionIssue={activeNestedRunByLineItemId.has(item.lineItemId) ? "Already nested in an active production run." : getPrepressCombinedRunItemIssue(item)}
+              nestedRunLabel={activeNestedRunByLineItemId.get(item.lineItemId)?.displayNumber ?? null}
               onCheckedChange={(checked) => handleToggleQueueItem(item.lineItemId, checked)}
               onClick={() => setSelectedLineItemId(item.lineItemId)}
               onPreviewClick={() => handleOpenQueuePreview(item)}
@@ -2032,6 +2413,16 @@ export default function PrepressProductionPageV2() {
                             >
                               Download
                             </button>
+                            <button
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                setPromotionSourceFile(file);
+                                setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
+                              }}
+                              className="ml-2 bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
+                            >
+                              Create Production Artwork Copy
+                            </button>
                           </td>
                         </tr>
                       ))}
@@ -2087,6 +2478,16 @@ export default function PrepressProductionPageV2() {
                                   className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-amber-900/30 hover:border-amber-600 transition-all"
                                 >
                                   Download
+                                </button>
+                                <button
+                                  onClick={(event) => {
+                                    event.stopPropagation();
+                                    setPromotionSourceFile(file);
+                                    setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
+                                  }}
+                                  className="ml-2 bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
+                                >
+                                  Create Production Artwork Copy
                                 </button>
                               </td>
                             </tr>
@@ -2730,6 +3131,234 @@ export default function PrepressProductionPageV2() {
         </div>
       </main>
 
+      <Dialog open={combinedRunOpen} onOpenChange={setCombinedRunOpen}>
+        <DialogContent className="max-w-3xl bg-[#111921] border-[#2d3748] text-slate-100">
+          <DialogHeader>
+            <DialogTitle>Nest Selected</DialogTitle>
+          </DialogHeader>
+          <div className="space-y-4">
+            <div className="rounded-lg border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs text-slate-300">
+              <div className="font-semibold text-slate-100">
+                {selectedQueueItems.length} selected line items
+                {combinedRunValidation.orderId ? ` - Order ${selectedQueueItems[0]?.jobNumber || combinedRunValidation.orderId}` : ""}
+              </div>
+              <div className="mt-1">
+                Customer/contact: {selectedQueueItems[0] ? formatOwnerLabel(selectedQueueItems[0]) || selectedQueueItems[0].customerName : "Not resolved"}.
+              </div>
+              <div className="mt-1">
+                Target station: {combinedRunValidation.stationKey || "Not resolved"}.
+                {combinedRunValidation.hasStationConflict ? " Mixed destinations selected." : " Destinations match."}
+                {combinedRunValidation.hasMaterialConflict ? " Mixed materials selected." : " Materials match."}
+              </div>
+              {!combinedRunValidation.canCreate && combinedRunValidation.reason ? (
+                <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-100">
+                  {combinedRunValidation.reason}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="max-h-64 overflow-auto rounded-lg border border-[#2d3748]">
+              {selectedQueueItems.map((item) => {
+                const maxQuantity = Number(item.quantity) || 0;
+                return (
+                  <div key={item.lineItemId} className="grid grid-cols-[minmax(0,1fr)_120px] gap-3 border-b border-[#2d3748] px-3 py-2 last:border-b-0">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-white">
+                        {item.lineNumber ? `Line ${item.lineNumber}: ` : ""}{item.productName}
+                      </div>
+                      <div className="text-xs text-slate-400">
+                        {item.productionDestinationLabel || item.selectedProductionDestination || "No destination"} - {item.materialName || item.media || "No material"} - {item.width && item.height ? `${item.width} x ${item.height}` : "No dimensions"}
+                      </div>
+                      <div className="mt-1 grid gap-1 text-[11px] text-slate-500 sm:grid-cols-4">
+                        <span>Ordered: {item.quantity}</span>
+                        <span>Completed: not reported</span>
+                        <span>Reserved: not reported</span>
+                        <span>Available: {maxQuantity}</span>
+                      </div>
+                    </div>
+                    <label className="space-y-1">
+                      <span className="text-[11px] font-medium text-slate-400">Allocated qty</span>
+                      <Input
+                        aria-label={`Allocated quantity for ${item.productName}`}
+                        value={combinedRunAllocations[item.lineItemId] ?? String(maxQuantity || 1)}
+                        onChange={(event) => setCombinedRunAllocations((current) => ({ ...current, [item.lineItemId]: event.target.value }))}
+                        inputMode="numeric"
+                        className="h-8 bg-[#111921] border-[#2d3748]"
+                      />
+                    </label>
+                  </div>
+                );
+              })}
+            </div>
+
+            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-slate-400">Planned sheets</span>
+                <Input value={combinedRunPlannedSheetCount} onChange={(event) => setCombinedRunPlannedSheetCount(event.target.value)} inputMode="numeric" className="h-9 bg-[#0f172a] border-[#2d3748]" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-slate-400">Pieces per sheet</span>
+                <Input value={combinedRunPiecesPerSheet} onChange={(event) => setCombinedRunPiecesPerSheet(event.target.value)} inputMode="numeric" className="h-9 bg-[#0f172a] border-[#2d3748]" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-slate-400">Sheet width</span>
+                <Input value={combinedRunSheetWidth} onChange={(event) => setCombinedRunSheetWidth(event.target.value)} inputMode="decimal" className="h-9 bg-[#0f172a] border-[#2d3748]" />
+              </label>
+              <label className="space-y-1">
+                <span className="text-xs font-medium text-slate-400">Sheet height</span>
+                <Input value={combinedRunSheetHeight} onChange={(event) => setCombinedRunSheetHeight(event.target.value)} inputMode="decimal" className="h-9 bg-[#0f172a] border-[#2d3748]" />
+              </label>
+            </div>
+
+            {combinedRunPlannedSheetCount && combinedRunPiecesPerSheet ? (
+              <div className={cn(
+                "rounded-lg border px-3 py-2 text-xs",
+                combinedRunExpectedPlacements > 0 && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity
+                  ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
+                  : "border-[#2d3748] bg-[#0f172a] text-slate-300",
+              )}>
+                Planned nest: {combinedRunExpectedPlacements} placements from {combinedRunPlannedSheetCount} sheets x {combinedRunPiecesPerSheet} pieces per sheet.
+                {" "}Allocated quantity: {combinedRunValidation.totalAllocatedQuantity}.
+                {combinedRunExpectedPlacements > 0 && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity
+                  ? " Review this mismatch before creating the nested run."
+                  : null}
+              </div>
+            ) : null}
+
+            {combinedRunHasPlacementMismatch ? (
+              <label className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100">
+                <Checkbox
+                  checked={combinedRunMismatchAcknowledged}
+                  onCheckedChange={(checked) => setCombinedRunMismatchAcknowledged(checked === true)}
+                  aria-label="Acknowledge nested placement mismatch"
+                />
+                <span>I reviewed the placement mismatch and still want to create this nested run.</span>
+              </label>
+            ) : null}
+
+            {(combinedRunValidation.hasStationConflict || combinedRunValidation.hasMaterialConflict) ? (
+              <label className="block space-y-1">
+                <span className="text-xs font-medium text-slate-400">Authorized compatibility override reason</span>
+                <Input
+                  value={combinedRunOverrideReason}
+                  onChange={(event) => setCombinedRunOverrideReason(event.target.value)}
+                  placeholder="Explain why these lines can share one physical run"
+                  className="bg-[#0f172a] border-[#2d3748]"
+                />
+              </label>
+            ) : null}
+
+            <label className="block space-y-1">
+              <span className="text-xs font-medium text-slate-400">Nesting notes</span>
+              <Textarea
+                value={combinedRunNotes}
+                onChange={(event) => setCombinedRunNotes(event.target.value)}
+                placeholder="Sheet layout, orientation, grouping, or operator notes"
+                className="min-h-20 bg-[#0f172a] border-[#2d3748]"
+              />
+            </label>
+
+            <div className="flex flex-wrap justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setCombinedRunOpen(false)} disabled={createCombinedRunMutation.isPending}>
+                Cancel
+              </Button>
+              <Button type="button" onClick={handleCreateCombinedRun} disabled={!canSubmitCombinedRun || createCombinedRunMutation.isPending}>
+                {createCombinedRunMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Create Nested Run
+              </Button>
+            </div>
+          </div>
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={combinedRunDetailOpen} onOpenChange={setCombinedRunDetailOpen}>
+        <DialogContent className="max-h-[90vh] max-w-5xl overflow-y-auto bg-[#111921] border-[#2d3748] text-slate-100">
+          <DialogHeader>
+            <DialogTitle>Combined Production Run</DialogTitle>
+          </DialogHeader>
+          {selectedCombinedRun ? (
+            <div className="space-y-3">
+              {productionRunNeedsPrepressAttention(selectedCombinedRun) ? (
+                <div className="rounded-lg border border-amber-400/40 bg-amber-400/10 px-3 py-2 text-xs text-amber-100">
+                  This run still needs Prepress attention. Upload or replace the shared nested production file and review any planning warnings before release.
+                </div>
+              ) : null}
+              <ProductionRunPanel run={selectedCombinedRun} />
+            </div>
+          ) : productionRunsQuery.isLoading || productionRunsQuery.isFetching ? (
+            <div className="flex items-center gap-2 rounded-lg border border-[#2d3748] px-3 py-6 text-sm text-slate-300">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading combined run...
+            </div>
+          ) : (
+            <div className="rounded-lg border border-red-500/30 bg-red-500/10 px-3 py-3 text-sm text-red-100">
+              This combined run is no longer available in the current Prepress view. Refresh runs or adjust history/status filters.
+            </div>
+          )}
+        </DialogContent>
+      </Dialog>
+
+      <Dialog open={!!promotionSourceFile} onOpenChange={(open) => {
+        if (!open && !promoteCustomerArtworkMutation.isPending) {
+          setPromotionSourceFile(null);
+          setPromotionTag("final_print");
+        }
+      }}>
+        <DialogContent className="max-w-lg bg-[#111921] border-[#2d3748] text-slate-100">
+          <DialogHeader>
+            <DialogTitle>Create Production Artwork Copy</DialogTitle>
+          </DialogHeader>
+          {promotionSourceFile && selectedItem ? (
+            <div className="space-y-4 text-sm">
+              <div className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-3 text-xs text-slate-300">
+                <div><span className="text-slate-500">Original:</span> {promotionSourceFile.displayName}</div>
+                <div><span className="text-slate-500">Job:</span> {selectedItem.jobNumber}</div>
+                <div><span className="text-slate-500">Artwork side:</span> <PrepressArtworkSideBadge side={promotionSourceFile.sideLabel} /></div>
+                <div><span className="text-slate-500">Target line:</span> {selectedItem.lineNumber ? `Line ${selectedItem.lineNumber}` : selectedItem.productName}</div>
+              </div>
+
+              <div>
+                <Label className="mb-2 block text-xs text-slate-400">Production tag</Label>
+                <RadioGroup value={promotionTag} onValueChange={setPromotionTag} className="grid gap-2 sm:grid-cols-3">
+                  <label className="flex items-center gap-2 rounded border border-[#2d3748] px-3 py-2">
+                    <RadioGroupItem value="final_print" id="promote-tag-print" />
+                    <span>Print</span>
+                  </label>
+                  <label className="flex items-center gap-2 rounded border border-[#2d3748] px-3 py-2">
+                    <RadioGroupItem value="cut_file" id="promote-tag-cut" />
+                    <span>Cut File</span>
+                  </label>
+                  <label className="flex items-center gap-2 rounded border border-[#2d3748] px-3 py-2">
+                    <RadioGroupItem value="proof_only" id="promote-tag-proof" />
+                    <span>Proof</span>
+                  </label>
+                </RadioGroup>
+              </div>
+
+              <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-3 text-xs">
+                <div className="font-semibold text-violet-100">Generated production filename</div>
+                <div className="mt-1 break-all font-mono text-violet-50">{promotionFilenamePreview}</div>
+              </div>
+
+              <div className="flex justify-end gap-2">
+                <Button type="button" variant="outline" onClick={() => setPromotionSourceFile(null)} disabled={promoteCustomerArtworkMutation.isPending}>
+                  Cancel
+                </Button>
+                <Button
+                  type="button"
+                  disabled={!promotionTag || promotionTag === "none" || promoteCustomerArtworkMutation.isPending}
+                  onClick={() => promoteCustomerArtworkMutation.mutate({ lineItemId: selectedItem.lineItemId, file: promotionSourceFile, tag: promotionTag })}
+                  className="bg-violet-600 text-white hover:bg-violet-700"
+                >
+                  {promoteCustomerArtworkMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                  Create Production Artwork Copy
+                </Button>
+              </div>
+            </div>
+          ) : null}
+        </DialogContent>
+      </Dialog>
+
       <Dialog open={productionAlertOpen} onOpenChange={setProductionAlertOpen}>
         <DialogContent className="max-w-lg bg-[#111921] border-[#2d3748] text-slate-100">
           <DialogHeader>
@@ -3056,6 +3685,8 @@ function JobCard({
   item,
   isSelected,
   isChecked,
+  selectionIssue,
+  nestedRunLabel,
   onCheckedChange,
   onClick,
   onPreviewClick,
@@ -3063,6 +3694,8 @@ function JobCard({
   item: PrepressQueueItem;
   isSelected: boolean;
   isChecked: boolean;
+  selectionIssue?: string | null;
+  nestedRunLabel?: string | null;
   onCheckedChange: (checked: boolean) => void;
   onClick: () => void;
   onPreviewClick: () => void;
@@ -3096,8 +3729,10 @@ function JobCard({
       >
         <Checkbox
           checked={isChecked}
+          disabled={!!selectionIssue}
           onCheckedChange={(checked) => onCheckedChange(checked === true)}
           aria-label={`Select ${item.jobNumber} ${item.productName}`}
+          title={selectionIssue || "Select for nesting"}
         />
       </div>
       <div
@@ -3135,6 +3770,11 @@ function JobCard({
             <span className={cn("text-[8px] font-bold px-1.5 py-0.5 rounded border tracking-wider", config.bgClass, config.textClass, config.borderClass)}>
               {config.label}
             </span>
+            {nestedRunLabel ? (
+              <span className="rounded border border-violet-400/40 bg-violet-500/10 px-1.5 py-0.5 text-[8px] font-bold uppercase tracking-wider text-violet-200">
+                Nested {nestedRunLabel}
+              </span>
+            ) : null}
             {config.note && <span className="text-[8px] font-semibold text-emerald-300">{config.note}</span>}
           </div>
         </div>
@@ -3151,6 +3791,13 @@ function JobCard({
           {item.rush && <span className="text-[#e53e3e] font-bold">RUSH</span>}
           {item.dueDate && !item.rush && <span className="text-slate-400">{new Date(item.dueDate).toLocaleDateString()}</span>}
         </div>
+        {selectionIssue ? (
+          <div className="mt-1 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] leading-snug text-amber-100">
+            Cannot nest: {selectionIssue}
+          </div>
+        ) : (
+          <div className="mt-1 text-[10px] font-medium text-emerald-300">Production artwork ready for nesting</div>
+        )}
         {item.activeOwnerJobId ? (
           <div
             className="mt-2"

@@ -46,6 +46,7 @@ import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/porta
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
+import { OrderIdentityError } from "../storage/orders.repo";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import Papa from "papaparse";
@@ -2346,6 +2347,14 @@ export async function registerOrderRoutes(
             }
             if ((error as any)?.code === "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD") {
                 return res.status(409).json({ success: false, message: (error as Error).message, code: (error as any).code });
+            }
+            if (error instanceof OrderIdentityError) {
+                const statusCode = error.code === "ORDER_CONTACT_CUSTOMER_CONFLICT"
+                    ? 409
+                    : error.code === "ORDER_CUSTOMER_NOT_FOUND" || error.code === "ORDER_CONTACT_NOT_FOUND"
+                        ? 404
+                        : 400;
+                return res.status(statusCode).json({ success: false, message: error.message, code: error.code });
             }
             if ((error as any)?.statusCode) {
                 return res.status((error as any).statusCode).json({
@@ -5513,6 +5522,18 @@ export async function registerOrderRoutes(
                     code: error.code,
                 });
             }
+            if (error instanceof OrderIdentityError) {
+                const statusCode = error.code === "ORDER_CONTACT_CUSTOMER_CONFLICT"
+                    ? 409
+                    : error.code === "ORDER_CUSTOMER_NOT_FOUND" || error.code === "ORDER_CONTACT_NOT_FOUND"
+                        ? 404
+                        : 400;
+                return res.status(statusCode).json({
+                    success: false,
+                    message: error.message,
+                    code: error.code,
+                });
+            }
             const status = error?.statusCode || (error?.message?.includes('already converted') ? 409 : 500);
             res.status(status).json({
                 success: false,
@@ -5564,7 +5585,7 @@ export async function registerOrderRoutes(
                 lineItemsCount: quote.lineItems?.length || 0,
             });
 
-            let finalCustomerId: string;
+            let finalCustomerId: string | null;
             let finalContactId: string | null;
 
             // Handle customer quick quote differently
@@ -5589,12 +5610,13 @@ export async function registerOrderRoutes(
                     }
                 }
             } else {
-                finalCustomerId = customerId || quote.customerId;
-                finalContactId = contactId || quote.contactId;
+                finalCustomerId = customerId !== undefined ? customerId || null : quote.customerId || null;
+                finalContactId = contactId !== undefined ? contactId || null : quote.contactId || null;
 
-                if (!finalCustomerId) {
+                if (!finalCustomerId && !finalContactId) {
                     return res.status(400).json({
-                        message: "This quote is missing a customer. Please edit the quote and select a customer before converting to an order."
+                        message: "This quote is missing a customer or contact. Please edit the quote and select a buyer before converting to an order.",
+                        code: "ORDER_IDENTITY_REQUIRED",
                     });
                 }
             }

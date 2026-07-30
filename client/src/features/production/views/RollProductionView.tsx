@@ -35,6 +35,7 @@ import {
   useCompleteProductionJob,
   useProductionJob,
   useProductionJobs,
+  useProductionRuns,
   useReopenProductionJob,
   useSubmitReprintRequest,
   useSetProductionMediaUsed,
@@ -70,6 +71,7 @@ import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsP
 import { ProductionNotesSection } from "@/components/production/ProductionNotesSection";
 import { RecentlyCompletedProductionJobs } from "@/components/production/RecentlyCompletedProductionJobs";
 import { ProductionBulkActions } from "@/features/production/ProductionBulkActions";
+import { isProductionRunItem, ProductionRunPanel, productionRunToBoardItem } from "@/features/production/ProductionRunPanel";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/productionBoard";
@@ -1465,6 +1467,10 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     { view: props.viewKey },
     { enabled: shouldFetchJobs },
   );
+  const { data: runData } = useProductionRuns(
+    { view: props.viewKey },
+    { enabled: shouldFetchJobs },
+  );
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [bulkSelectedJobIds, setBulkSelectedJobIds] = useState<Set<string>>(new Set());
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
@@ -1495,8 +1501,12 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   }, [previewSize]);
 
   const tabJobs = useMemo(
-    () => filterProductionJobsForTab(props.jobs ?? data ?? [], props.status),
-    [data, props.jobs, props.status],
+    () => {
+      const jobs = props.jobs ?? data ?? [];
+      const runs = shouldFetchJobs ? (runData ?? []).map(productionRunToBoardItem) : [];
+      return filterProductionJobsForTab([...runs, ...jobs], props.status);
+    },
+    [data, props.jobs, props.status, runData, shouldFetchJobs],
   );
   const printerOptions = useMemo(() => {
     const names = new Set<string>();
@@ -1518,7 +1528,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     return [...jobsSafe];
   }, [jobsSafe]);
   const bulkEligibleJobs = useMemo(
-    () => sortedJobs.filter((job) => !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
+    () => sortedJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
     [props.status, sortedJobs],
   );
 
@@ -1536,7 +1546,8 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     [sortedJobs, selectedJobId],
   );
 
-  const { data: selectedDetail } = useProductionJob(selectedJob?.id ?? undefined);
+  const selectedRun = isProductionRunItem(selectedJob) ? selectedJob : null;
+  const { data: selectedDetail } = useProductionJob(selectedRun ? undefined : selectedJob?.id ?? undefined);
 
   const recentNotes = useMemo(() => {
     const events = selectedDetail?.events ?? [];
@@ -1667,7 +1678,11 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
     <div className="grid grid-cols-1 lg:grid-cols-[220px_1fr] gap-4">
       <div className="space-y-4">
         {previewsDisabled ? <PreviewDisabledHint /> : null}
-        {selectedJob ? (
+        {selectedRun ? (
+          <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4 text-sm text-titan-text-muted">
+            Run selected.
+          </div>
+        ) : selectedJob ? (
           <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} notes={recentNotes} />
         ) : (
           <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4 text-sm text-titan-text-muted">
@@ -1677,7 +1692,9 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
       </div>
 
       <div className="space-y-4">
-        {selectedJob ? (
+        {selectedRun ? (
+          <ProductionRunPanel run={selectedRun} />
+        ) : selectedJob ? (
           <PreviewPanel
             job={selectedJob}
             timerSeconds={liveTimerSeconds}
@@ -1937,7 +1954,11 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                         {(job as any).assignedPrinterName || "Unassigned"}
                       </TableCell>
                       <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
-                        <StatusDropdown jobId={job.id} currentStatus={job.status} />
+                        {isProductionRunItem(job) ? (
+                          <Badge variant="secondary">{job.runStatus.replace(/_/g, " ")}</Badge>
+                        ) : (
+                          <StatusDropdown jobId={job.id} currentStatus={job.status} />
+                        )}
                       </TableCell>
                     </TableRow>
                   );

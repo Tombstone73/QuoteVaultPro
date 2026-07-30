@@ -114,16 +114,18 @@ const hostedSessionSchema = amountInvoiceSchema.extend({
 
 const recordHostedResultSchema = z.object({
   paymentId: z.string().trim().min(1),
-  epsTransactionId: z.string().trim().min(1).max(160),
+  epsTransactionId: z.string().trim().max(160).optional().nullable(),
   authCode: z.string().trim().max(100).optional().nullable(),
   tokenLast4: z.string().trim().regex(/^\d{4}$/, "EPS card last four digits must contain exactly four digits.").optional().nullable(),
   approvedAmountCents: z.coerce.number().int().min(0),
   responseCode: z.string().trim().max(100).optional().nullable(),
   responseMessage: z.string().trim().max(500).optional().nullable(),
+  internalNote: z.string().trim().max(2000).optional().nullable(),
   result: z.enum(["approved", "failed", "canceled"]),
   amountOverride: z.boolean().optional(),
 }).superRefine((value, context) => {
   if (value.result !== "approved") return;
+  if (!value.epsTransactionId) context.addIssue({ code: z.ZodIssueCode.custom, path: ["epsTransactionId"], message: "EPS transaction id is required for an approved hosted payment." });
   if (!value.authCode) context.addIssue({ code: z.ZodIssueCode.custom, path: ["authCode"], message: "EPS auth code is required for an approved hosted payment." });
   if (!value.tokenLast4) context.addIssue({ code: z.ZodIssueCode.custom, path: ["tokenLast4"], message: "EPS card last four digits are required for an approved hosted payment." });
 });

@@ -106,4 +106,28 @@ describe("buildFileUploadDisplayFilename", () => {
       }),
     ).toBe("12345_nested.name_CUT_FILE.tif");
   });
+
+  test("can place the production tag immediately after the job number", () => {
+    expect(
+      buildFileUploadDisplayFilename({
+        ...base,
+        originalFilename: "customer-art.pdf",
+        fileUploadJobPrefixMode: "full_job_number",
+        prepressLabel: "print",
+        labelPlacement: "after_job_prefix",
+      }),
+    ).toBe("ORD-12345_PRINT_customer-art.pdf");
+  });
+
+  test("inserts the production tag after an existing job prefix", () => {
+    expect(
+      buildFileUploadDisplayFilename({
+        ...base,
+        originalFilename: "ORD-12345_customer-art.pdf",
+        fileUploadJobPrefixMode: "full_job_number",
+        prepressLabel: "print",
+        labelPlacement: "after_job_prefix",
+      }),
+    ).toBe("ORD-12345_PRINT_customer-art.pdf");
+  });
 });

@@ -4,10 +4,12 @@ import { describe, expect, jest, test, beforeAll, beforeEach } from "@jest/globa
 
 const startMutateAsync = jest.fn(async () => ({}));
 const statusMutateAsync = jest.fn(async () => ({}));
+const createRunMutateAsync = jest.fn(async () => ({}));
 
 jest.mock("@/hooks/useProduction", () => ({
   useBulkStartProductionJobs: () => ({ mutateAsync: startMutateAsync, isPending: false }),
   useBulkUpdateProductionJobStatus: () => ({ mutateAsync: statusMutateAsync, isPending: false }),
+  useCreateProductionRun: () => ({ mutateAsync: createRunMutateAsync, isPending: false }),
 }));
 
 jest.mock("@/components/ui/button", () => ({
@@ -39,11 +41,12 @@ beforeAll(async () => {
 beforeEach(() => {
   startMutateAsync.mockClear();
   statusMutateAsync.mockClear();
+  createRunMutateAsync.mockClear();
 });
 
 const jobs = [
-  { id: "job-1", lineItemId: "line-1", status: "queued" },
-  { id: "job-2", lineItemId: "line-2", status: "queued" },
+  { id: "job-1", lineItemId: "line-1", orderId: "order-1", status: "queued", qty: 12, jobDescription: "Panel A" },
+  { id: "job-2", lineItemId: "line-2", orderId: "order-1", status: "queued", qty: 8, jobDescription: "Panel B" },
 ] as any;
 
 function render(status: "queued" | "in_progress") {
@@ -94,6 +97,33 @@ describe("ProductionBulkActions", () => {
     await act(async () => undefined);
 
     expect(statusMutateAsync).toHaveBeenCalledWith({ station: "flatbed", jobIds: ["job-1", "job-2"], status: "done" });
+    cleanup(view.root, view.container);
+  });
+
+  test("creates a same-order combined production run from selected jobs", async () => {
+    const view = render("queued");
+    const selectAll = view.container.querySelector('input[aria-label="Select all eligible jobs currently visible"]') as HTMLInputElement;
+    act(() => selectAll.click());
+
+    click(view.container, "Create combined run");
+    click(view.container, "Create draft run");
+    await act(async () => undefined);
+
+    expect(createRunMutateAsync).toHaveBeenCalledWith({
+      orderId: "order-1",
+      stationKey: "flatbed",
+      members: [
+        { productionJobId: "job-1", allocatedQuantity: 12 },
+        { productionJobId: "job-2", allocatedQuantity: 8 },
+      ],
+      plannedSheetCount: null,
+      nominalPiecesPerSheet: null,
+      sheetWidth: null,
+      sheetHeight: null,
+      notes: null,
+      compatibilityOverrideReason: null,
+    });
+    expect(view.container.textContent).toContain("0 selected");
     cleanup(view.root, view.container);
   });
 });

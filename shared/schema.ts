@@ -2538,6 +2538,11 @@ export const customers = pgTable("customers", {
 
   companyName: varchar("company_name", { length: 255 }).notNull(),
   customerType: varchar("customer_type", { length: 50 }).default("business"),
+  displayName: varchar("display_name", { length: 255 }),
+  individualFirstName: varchar("individual_first_name", { length: 100 }),
+  individualLastName: varchar("individual_last_name", { length: 100 }),
+  sourceContactId: varchar("source_contact_id"),
+  accountCreationSource: varchar("account_creation_source", { length: 50 }),
 
   email: varchar("email", { length: 255 }),
   phone: varchar("phone", { length: 50 }),
@@ -2615,6 +2620,10 @@ export const customers = pgTable("customers", {
   index("customers_organization_id_idx").on(table.organizationId),
   index("customers_user_id_idx").on(table.userId),
   index("customers_email_idx").on(table.email),
+  index("customers_source_contact_idx").on(table.organizationId, table.sourceContactId),
+  uniqueIndex("customers_individual_source_contact_uidx")
+    .on(table.organizationId, table.sourceContactId)
+    .where(sql`customer_type = 'individual' AND source_contact_id IS NOT NULL`),
 ]);
 
 export const insertCustomerSchema = createInsertSchema(customers).omit({
@@ -8059,6 +8068,7 @@ export const lineItemFiles = pgTable("line_item_files", {
   organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: 'cascade' }),
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
+  productionRunId: varchar("production_run_id").references((): AnyPgColumn => productionRuns.id, { onDelete: 'set null' }),
   prepressSessionId: varchar("prepress_session_id").references(() => prepressSessions.id, { onDelete: 'set null' }),
   fileRecordId: varchar("file_record_id").references((): AnyPgColumn => fileRecords.id, { onDelete: 'set null' }),
   
@@ -8071,6 +8081,10 @@ export const lineItemFiles = pgTable("line_item_files", {
   // bytes differ from the original upload.
   productionQuantity: integer("production_quantity"),
   productionGroupId: varchar("production_group_id", { length: 128 }),
+  productionArtworkSourceType: varchar("production_artwork_source_type", { length: 64 }),
+  sourceFileId: varchar("source_file_id").references((): any => lineItemFiles.id, { onDelete: 'set null' }),
+  sourceOrderAttachmentId: varchar("source_order_attachment_id").references(() => orderAttachments.id, { onDelete: 'set null' }),
+  sourceArtworkSide: fileSideEnum("source_artwork_side"),
   
   // Storage information
   storageBucket: varchar("storage_bucket", { length: 255 }),
@@ -8090,10 +8104,16 @@ export const lineItemFiles = pgTable("line_item_files", {
   index("line_item_files_org_idx").on(table.organizationId),
   index("line_item_files_order_idx").on(table.orderId),
   index("line_item_files_line_item_idx").on(table.lineItemId),
+  index("line_item_files_production_run_idx").on(table.productionRunId),
   index("line_item_files_file_record_idx").on(table.fileRecordId),
   index("line_item_files_session_idx").on(table.prepressSessionId),
   index("line_item_files_role_status_idx").on(table.role, table.status),
   index("line_item_files_supersedes_idx").on(table.supersedesFileId),
+  index("line_item_files_source_file_idx").on(table.sourceFileId),
+  index("line_item_files_source_attachment_idx").on(table.sourceOrderAttachmentId),
+  uniqueIndex("line_item_files_active_promoted_source_uidx")
+    .on(table.organizationId, table.lineItemId, table.role, table.status, table.tag, table.sourceArtworkSide, table.sourceFileId, table.sourceOrderAttachmentId)
+    .where(sql`production_artwork_source_type = 'customer_artwork_promotion' AND role = 'final' AND status = 'active'`),
 ]);
 
 export const lineItemProofVersionStatusEnum = pgEnum('line_item_proof_version_status', [

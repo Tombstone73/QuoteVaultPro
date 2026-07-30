@@ -138,6 +138,7 @@ export type ProductionFileSummary = {
 };
 
 export type ProductionJobListItem = {
+  kind?: "production_job" | "production_run";
   id: string;
   lineNumber?: number | null;
   // Effective production due date. A future/tenant line-level due date takes
@@ -248,6 +249,83 @@ export type ProductionJobListItem = {
   };
   createdAt: string;
   updatedAt: string;
+};
+
+export type ProductionRunMemberSummary = {
+  id: string;
+  productionJobId: string;
+  orderLineItemId: string;
+  lineNumber: number | null;
+  description: string;
+  orderedQuantity: number;
+  allocatedQuantity: number;
+  completedQuantity: number;
+  previouslyCompletedQuantity: number;
+  remainingAfterRun: number;
+};
+
+export type ProductionRunFileSummary = {
+  id: string;
+  productionRunId: string;
+  lineItemId: string;
+  fileRecordId: string | null;
+  fileName: string;
+  originalFilename: string;
+  role: "final";
+  status: "active" | "superseded" | "retired";
+  tag: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  thumbnailUrl: string | null;
+  previewUrl: string | null;
+  previewAvailabilityStatus?: "available" | "pending" | "missing" | "failed" | null;
+  downloadUrl: string;
+  openUrl: string;
+  uploadedByUserId: string | null;
+  uploadedByName: string | null;
+  createdAt: string;
+  localBridge: {
+    status: "none" | "pending" | "claimed" | "succeeded" | "failed" | "canceled";
+    unsafeToRetire: boolean;
+    jobCount: number;
+    lastError: string | null;
+    updatedAt: string | null;
+  };
+  supersedesFileId: string | null;
+};
+
+export type ProductionRunListItem = {
+  kind: "production_run";
+  id: string;
+  runId: string;
+  runNumber: number;
+  displayNumber: string;
+  orderId: string;
+  orderNumber: string;
+  customerId: string | null;
+  customerName: string;
+  stationKey: string;
+  status: "queued" | "in_progress" | "done";
+  runStatus: "draft" | "ready_for_production" | "in_production" | "completed" | "canceled";
+  plannedSheetCount: number | null;
+  nominalPiecesPerSheet: number | null;
+  sheetWidth: string | null;
+  sheetHeight: string | null;
+  notes: string | null;
+  memberCount: number;
+  totalAllocatedQuantity: number;
+  fileCount: number;
+  replacementRequired: boolean;
+  files: ProductionRunFileSummary[];
+  members: ProductionRunMemberSummary[];
+  createdAt: string;
+  updatedAt: string;
+};
+
+export type ProductionRunFilesResponse = {
+  files: ProductionRunFileSummary[];
+  activeCount: number;
+  replacementRequired: boolean;
 };
 
 export type RecentlyCompletedProductionJob = {
@@ -395,6 +473,211 @@ export function useProductionJob(jobId: string | undefined) {
     enabled: !!jobId,
     staleTime: 30_000,
     refetchOnWindowFocus: false,
+  });
+}
+
+export function useProductionRuns(
+  filters?: { status?: string; view?: string; station?: string; orderId?: string },
+  options?: { enabled?: boolean },
+) {
+  return useQuery<ProductionRunListItem[]>({
+    queryKey: ["/api/production/runs", filters],
+    queryFn: async () => {
+      const params = new URLSearchParams();
+      if (filters?.status) params.set("status", filters.status);
+      if (filters?.station) params.set("station", filters.station);
+      else if (filters?.view) params.set("view", filters.view);
+      if (filters?.orderId) params.set("orderId", filters.orderId);
+      const res = await fetch(`/api/production/runs${params.toString() ? `?${params.toString()}` : ""}`, { credentials: "include" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || "Failed to fetch production runs");
+      return json.data || [];
+    },
+    enabled: options?.enabled !== false,
+    staleTime: 30_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+export function useCreateProductionRun() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: {
+      orderId: string;
+      stationKey: string;
+      members: Array<{ productionJobId: string; allocatedQuantity?: number }>;
+      plannedSheetCount?: number | null;
+      nominalPiecesPerSheet?: number | null;
+      sheetWidth?: number | null;
+      sheetHeight?: number | null;
+      notes?: string | null;
+      compatibilityOverrideReason?: string | null;
+    }) => {
+      const res = await fetch("/api/production/runs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to create production run");
+      return json.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      toast({ title: "Production run created" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Run creation failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useCreatePrepressProductionRun() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: {
+      orderId: string;
+      stationKey: string;
+      members: Array<{ lineItemId: string; allocatedQuantity?: number }>;
+      plannedSheetCount?: number | null;
+      nominalPiecesPerSheet?: number | null;
+      sheetWidth?: number | null;
+      sheetHeight?: number | null;
+      notes?: string | null;
+      compatibilityOverrideReason?: string | null;
+    }) => {
+      const res = await fetch("/api/production/runs/prepress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to create production run");
+      return json.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      toast({ title: "Combined production run created" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Run creation failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useProductionRunFiles(runId: string | undefined, includeHistory = true) {
+  return useQuery<ProductionRunFilesResponse>({
+    queryKey: ["/api/production/runs", runId, "files", { includeHistory }],
+    queryFn: async () => {
+      if (!runId) throw new Error("runId required");
+      const params = new URLSearchParams();
+      if (includeHistory) params.set("includeHistory", "true");
+      const res = await fetch(`/api/production/runs/${runId}/files${params.toString() ? `?${params.toString()}` : ""}`, { credentials: "include" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to load production run files");
+      return json.data;
+    },
+    enabled: !!runId,
+    staleTime: 15_000,
+    refetchOnWindowFocus: false,
+  });
+}
+
+function productionRunFileMutationOptions(qc: ReturnType<typeof useQueryClient>, toast: ReturnType<typeof useToast>["toast"], title: string) {
+  return {
+    onSuccess: (_data: unknown, args: { runId: string }) => {
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs", args.runId, "files"] });
+      toast({ title });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Production run file update failed", description: e.message, variant: "destructive" });
+    },
+  };
+}
+
+export function useUploadProductionRunFile() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; file: File }) => {
+      const form = new FormData();
+      form.append("file", args.file);
+      const res = await fetch(`/api/production/runs/${args.runId}/files/upload`, { method: "POST", credentials: "include", body: form });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to upload production run file");
+      return json.data;
+    },
+    ...productionRunFileMutationOptions(qc, toast, "Shared production file uploaded"),
+  });
+}
+
+export function useReplaceProductionRunFile() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; fileId: string; file: File }) => {
+      const form = new FormData();
+      form.append("file", args.file);
+      const res = await fetch(`/api/production/runs/${args.runId}/files/${args.fileId}/replace`, { method: "POST", credentials: "include", body: form });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to replace production run file");
+      return json.data;
+    },
+    ...productionRunFileMutationOptions(qc, toast, "Shared production file replaced"),
+  });
+}
+
+export function useRetireProductionRunFile() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; fileId: string; reason?: string | null }) => {
+      const res = await fetch(`/api/production/runs/${args.runId}/files/${args.fileId}/retire`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ reason: args.reason ?? null }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to retire production run file");
+      return json.data;
+    },
+    ...productionRunFileMutationOptions(qc, toast, "Shared production file retired"),
+  });
+}
+
+export function useTransitionProductionRun() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; action: "release" | "start" | "complete" | "cancel"; reason?: string | null }) => {
+      const res = await fetch(`/api/production/runs/${args.runId}/transition`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ action: args.action, reason: args.reason ?? null }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to update production run");
+      return json.data;
+    },
+    onSuccess: (_data, args) => {
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      toast({ title: args.action === "complete" ? "Production run completed" : "Production run updated" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Run update failed", description: e.message, variant: "destructive" });
+    },
   });
 }
 

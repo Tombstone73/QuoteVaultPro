@@ -48,6 +48,23 @@ describe("quote action eligibility", () => {
     expect(result.reason).toContain("recipient");
   });
 
+  test("allows contact-only quote sending when the selected contact has email", () => {
+    const result = getQuoteSendEligibility({
+      quoteId: "quote_1",
+      isSaving: false,
+      lineItems: [validLineItem],
+      selectedCustomer: null,
+      selectedContactId: "contact_standalone",
+      selectedContact: { id: "contact_standalone", email: "standalone@example.com" },
+      workflowState: "draft",
+      requireApproval: false,
+    });
+
+    expect(result.enabled).toBe(true);
+    expect(result.actionState).toBe("can_send");
+    expect(result.reason).toBeNull();
+  });
+
   test("keeps Send blocked for invalid quote state instead of opening recipient fallback", () => {
     const result = getQuoteSendEligibility({
       quoteId: null,

@@ -18,7 +18,10 @@ export type ComplexProductSpecification = {
 };
 
 const normalize = (value: string) => value.trim().replace(/\s+/g, " ");
-const cellKey = (row: string, column: string) => `${normalize(row)}\u0000${normalize(column)}`;
+/** JSONB-safe, collision-resistant matrix-cell identity. PostgreSQL rejects NUL
+ * characters in JSON strings, so an in-memory control-character delimiter must
+ * never be used in a persisted proposal. */
+export const complexProductMatrixCellKey = (row: string, column: string) => `${encodeURIComponent(normalize(row))}:${encodeURIComponent(normalize(column))}`;
 
 export function centsFromCurrency(value: string): number {
   const parsed = Number(value.trim().replace(/^\$/, "").replace(/,/g, ""));
@@ -37,7 +40,7 @@ export function parseTwoDimensionalPricingMatrix(input: string, rowKey: string, 
     if (row.length !== columns.length + 1 || !row[0]) throw new Error("Every matrix row must provide one value for each column.");
     if (rowValues.includes(row[0])) throw new Error(`Duplicate matrix row value: ${row[0]}`);
     rowValues.push(row[0]);
-    columns.forEach((column, index) => { const key = cellKey(row[0], column); if (Object.hasOwn(cells, key)) throw new Error("Duplicate matrix cell."); cells[key] = centsFromCurrency(row[index + 1]); });
+    columns.forEach((column, index) => { const key = complexProductMatrixCellKey(row[0], column); if (Object.hasOwn(cells, key)) throw new Error("Duplicate matrix cell."); cells[key] = centsFromCurrency(row[index + 1]); });
   }
   return { kind: "two_dimensional_per_sqft", rowKey, columnKey, rowValues, columnValues: columns, cells };
 }
@@ -53,7 +56,7 @@ export function validateComplexProductSpecification(spec: ComplexProductSpecific
   if (spec.pricing.rowKey !== rowGroup.proposalKey || spec.pricing.columnKey !== columnGroup.proposalKey) errors.push("Matrix dimensions must refer to the two declared option groups.");
   const expectedRows = rowGroup.values.map((value) => value.value); const expectedColumns = columnGroup.values.map((value) => value.value);
   if (JSON.stringify(spec.pricing.rowValues) !== JSON.stringify(expectedRows) || JSON.stringify(spec.pricing.columnValues) !== JSON.stringify(expectedColumns)) errors.push("Matrix order and option-value order must match.");
-  for (const row of expectedRows) for (const column of expectedColumns) { const value = spec.pricing.cells[cellKey(row, column)]; if (!Number.isInteger(value) || value < 0) errors.push(`Missing or invalid matrix cell: ${row} × ${column}.`); }
+  for (const row of expectedRows) for (const column of expectedColumns) { const value = spec.pricing.cells[complexProductMatrixCellKey(row, column)]; if (!Number.isInteger(value) || value < 0) errors.push(`Missing or invalid matrix cell: ${row} × ${column}.`); }
   return errors;
 }
 
@@ -63,6 +66,6 @@ export function buildCanonicalComplexProductTree(spec: ComplexProductSpecificati
   const errors = validateComplexProductSpecification(spec); if (errors.length) throw new Error(errors.join(" "));
   const nodes: Record<string, unknown> = {}; const rootNodeIds: string[] = []; const edges: Array<Record<string, unknown>> = [];
   spec.optionGroups.forEach((group, groupIndex) => { const id = `ai_${group.proposalKey}`; const groupId = `ai_group_${group.proposalKey}`; rootNodeIds.push(id); nodes[groupId] = { id: groupId, kind: "group", type: "GROUP", status: "ENABLED", key: `${group.proposalKey}_group`, label: group.name, displayOrder: groupIndex + 1, input: { type: "select", required: true } }; nodes[id] = { id, kind: "question", type: "INPUT", status: "ENABLED", key: group.proposalKey, label: group.name, ui: { sortOrder: groupIndex + 1 }, input: { type: "select", required: true, selectionKey: group.proposalKey, valueType: "ENUM", constraints: { select: { allowEmpty: false } } }, choices: group.values.map((value, index) => ({ id: `${id}_${index + 1}`, value: value.value, label: value.label, sortOrder: index + 1 })) }; edges.push({ id: `ai_edge_${group.proposalKey}`, fromNodeId: groupId, toNodeId: id, status: "DISABLED" }); });
-  const matrix: ProductOptionPricingMatrix = { dimensions: [spec.pricing.rowKey, spec.pricing.columnKey], rows: spec.pricing.rowValues.flatMap((row) => spec.pricing.columnValues.map((column) => ({ id: `matrix_${row}_${column}`.replace(/[^a-z0-9_]/gi, "_"), when: { [spec.pricing.rowKey]: row, [spec.pricing.columnKey]: column }, variables: { base_price: spec.pricing.cells[cellKey(row, column)] } }))) };
+  const matrix: ProductOptionPricingMatrix = { dimensions: [spec.pricing.rowKey, spec.pricing.columnKey], rows: spec.pricing.rowValues.flatMap((row) => spec.pricing.columnValues.map((column) => ({ id: `matrix_${row}_${column}`.replace(/[^a-z0-9_]/gi, "_"), when: { [spec.pricing.rowKey]: row, [spec.pricing.columnKey]: column }, variables: { base_price: spec.pricing.cells[complexProductMatrixCellKey(row, column)] } }))) };
   return { schemaVersion: 2, status: "DRAFT", rootNodeIds, nodes, edges, pricingMatrix: matrix, meta: { pricingV2: { unitSystem: "imperial", tierBasis: "line_item_quantity", base: { perSqftCents: null, perPieceCents: null, minimumChargeCents: spec.minimumChargeCents } }, requiresDimensions: true, productIntake: { draftRouting: { stationName: spec.route }, sheet: { widthIn: spec.sheet.widthIn, heightIn: spec.sheet.heightIn, materialForm: spec.materialForm, allowRotation: spec.sheet.allowRotation }, complexProductReview: spec.review } } };
 }

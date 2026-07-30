@@ -37,6 +37,7 @@ import {
   useCompleteProductionJob,
   useProductionJob,
   useProductionJobs,
+  useProductionRuns,
   useReopenProductionJob,
   useSubmitReprintRequest,
   useSetProductionMediaUsed,
@@ -75,6 +76,7 @@ import { ProductionNotesSection } from "@/components/production/ProductionNotesS
 import { ProductionPreviewArea, type ProductionPreviewSize } from "@/components/production/ProductionPreviewArea";
 import { RecentlyCompletedProductionJobs } from "@/components/production/RecentlyCompletedProductionJobs";
 import { ProductionBulkActions } from "@/features/production/ProductionBulkActions";
+import { isProductionRunItem, ProductionRunPanel, productionRunToBoardItem } from "@/features/production/ProductionRunPanel";
 import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/productionBoard";
@@ -1461,6 +1463,10 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     { view: props.viewKey },
     { enabled: shouldFetchJobs },
   );
+  const { data: runData } = useProductionRuns(
+    { view: props.viewKey },
+    { enabled: shouldFetchJobs },
+  );
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [bulkSelectedJobIds, setBulkSelectedJobIds] = useState<Set<string>>(new Set());
   const [previewModalOpen, setPreviewModalOpen] = useState(false);
@@ -1497,8 +1503,12 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   }, [previewSize]);
 
   const tabJobs = useMemo(
-    () => filterProductionJobsForTab(props.jobs ?? data ?? [], props.status),
-    [data, props.jobs, props.status],
+    () => {
+      const jobs = props.jobs ?? data ?? [];
+      const runs = shouldFetchJobs ? (runData ?? []).map(productionRunToBoardItem) : [];
+      return filterProductionJobsForTab([...runs, ...jobs], props.status);
+    },
+    [data, props.jobs, props.status, runData, shouldFetchJobs],
   );
   const printerOptions = useMemo(() => {
     const names = new Set<string>();
@@ -1520,7 +1530,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     return [...jobsSafe];
   }, [jobsSafe]);
   const bulkEligibleJobs = useMemo(
-    () => sortedJobs.filter((job) => !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
+    () => sortedJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
     [props.status, sortedJobs],
   );
 
@@ -1538,7 +1548,8 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     [sortedJobs, selectedJobId],
   );
 
-  const { data: selectedDetail } = useProductionJob(selectedJob?.id ?? undefined);
+  const selectedRun = isProductionRunItem(selectedJob) ? selectedJob : null;
+  const { data: selectedDetail } = useProductionJob(selectedRun ? undefined : selectedJob?.id ?? undefined);
   const selectedDisplayJob = useMemo<ProductionJobListItem | null>(() => {
     if (!selectedJob) return null;
     if (!selectedDetail) return selectedJob;
@@ -1682,7 +1693,11 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     <div className="grid grid-cols-1 lg:grid-cols-[200px_1fr] gap-4">
       <div className="space-y-4">
         {previewsDisabled ? <PreviewDisabledHint /> : null}
-        {selectedJob ? (
+        {selectedRun ? (
+          <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4 text-sm text-titan-text-muted">
+            Run selected.
+          </div>
+        ) : selectedJob ? (
           <ActionRail job={selectedJob} timerSeconds={liveTimerSeconds} timerIsRunning={derivedTimer.isRunning} notes={recentNotes} />
         ) : (
           <div className="rounded-lg border border-titan-border-subtle bg-titan-bg-card p-4 text-sm text-titan-text-muted">
@@ -1692,7 +1707,9 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
       </div>
 
       <div className="space-y-4">
-        {selectedDisplayJob ? (
+        {selectedRun ? (
+          <ProductionRunPanel run={selectedRun} />
+        ) : selectedDisplayJob ? (
           <PreviewPanel
             job={selectedDisplayJob}
             timerSeconds={liveTimerSeconds}
@@ -1952,7 +1969,11 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                         {(job as any).assignedPrinterName || "Unassigned"}
                       </TableCell>
                       <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
-                        <StatusDropdown jobId={job.id} currentStatus={job.status} />
+                        {isProductionRunItem(job) ? (
+                          <Badge variant="secondary">{job.runStatus.replace(/_/g, " ")}</Badge>
+                        ) : (
+                          <StatusDropdown jobId={job.id} currentStatus={job.status} />
+                        )}
                       </TableCell>
                     </TableRow>
                   );

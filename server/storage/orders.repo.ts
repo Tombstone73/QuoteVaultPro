@@ -1025,11 +1025,11 @@ export class OrdersRepository {
         // Enrich orders with customer and contact data
         const enrichedOrders = await Promise.all(rows.map(async (order: Order) => {
             const [customer] = order.customerId
-                ? await this.dbInstance.select().from(customers).where(eq(customers.id, order.customerId))
+                ? await this.dbInstance.select().from(customers).where(and(eq(customers.id, order.customerId), eq(customers.organizationId, organizationId)))
                 : [undefined];
 
             const [contact] = order.contactId
-                ? await this.dbInstance.select().from(customerContacts).where(eq(customerContacts.id, order.contactId))
+                ? await this.dbInstance.select().from(customerContacts).where(and(eq(customerContacts.id, order.contactId), eq(customerContacts.organizationId, organizationId)))
                 : [undefined];
 
             return {
@@ -1108,8 +1108,8 @@ export class OrdersRepository {
                 contactName: sql<string | null>`nullif(trim(concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName})), '')`,
             })
             .from(orders)
-            .leftJoin(customers, eq(customers.id, orders.customerId))
-            .leftJoin(customerContacts, eq(customerContacts.id, orders.contactId))
+            .leftJoin(customers, and(eq(customers.id, orders.customerId), eq(customers.organizationId, organizationId)))
+            .leftJoin(customerContacts, and(eq(customerContacts.id, orders.contactId), eq(customerContacts.organizationId, organizationId)))
             .where(and(...conditions))
             .orderBy(desc(orders.updatedAt))
             .limit(normalizedLimit);
@@ -1183,14 +1183,14 @@ export class OrdersRepository {
             }),
         }));
         const [customer] = order.customerId
-            ? await this.dbInstance.select().from(customers).where(eq(customers.id, order.customerId)).catch(() => [])
+            ? await this.dbInstance.select().from(customers).where(and(eq(customers.id, order.customerId), eq(customers.organizationId, organizationId))).catch(() => [])
             : [];
         
         // Contact resolution with fallback logic
         let contact: CustomerContact | null = null;
         if (order.contactId) {
             // If order has a contact_id, fetch that specific contact
-            const contactRows = await this.dbInstance.select().from(customerContacts).where(eq(customerContacts.id, order.contactId));
+            const contactRows = await this.dbInstance.select().from(customerContacts).where(and(eq(customerContacts.id, order.contactId), eq(customerContacts.organizationId, organizationId)));
             contact = contactRows[0] || null;
         }
         
@@ -1199,7 +1199,7 @@ export class OrdersRepository {
             const contactsForCustomer = await this.dbInstance
                 .select()
                 .from(customerContacts)
-                .where(eq(customerContacts.customerId, order.customerId))
+                .where(and(eq(customerContacts.customerId, order.customerId), eq(customerContacts.organizationId, organizationId)))
                 .orderBy(
                     sql`CASE WHEN ${customerContacts.isPrimary} = true THEN 0 ELSE 1 END`,
                     sql`${customerContacts.createdAt} DESC`
@@ -1649,7 +1649,7 @@ export class OrdersRepository {
             : [];
         let contact: CustomerContact | null = null;
         if (data.contactId) {
-            const contactRows = await this.dbInstance.select().from(customerContacts).where(eq(customerContacts.id, data.contactId));
+            const contactRows = await this.dbInstance.select().from(customerContacts).where(and(eq(customerContacts.id, data.contactId), eq(customerContacts.organizationId, organizationId)));
             contact = contactRows[0] || null;
         }
         const [createdByUser] = await this.dbInstance.select().from(users).where(eq(users.id, data.createdByUserId));
@@ -1733,14 +1733,17 @@ export class OrdersRepository {
             if (!found) throw new OrderIdentityError("ORDER_CONTACT_NOT_FOUND", "Contact was not found for this organization.");
             contact = found;
         }
-        if (customerId && contact && contact.customerId && contact.customerId !== customerId) {
-            const [link] = await this.dbInstance.select({ id: customerContactLinks.id }).from(customerContactLinks).where(and(
+        if (customerId && contact) {
+            const linkRows = await this.dbInstance.select({ customerId: customerContactLinks.customerId }).from(customerContactLinks).where(and(
                 eq(customerContactLinks.organizationId, organizationId),
-                eq(customerContactLinks.customerId, customerId),
                 eq(customerContactLinks.contactId, contact.id),
                 ne(customerContactLinks.status, "removed"),
-            )).limit(1);
-            if (!link) throw new OrderIdentityError("ORDER_CONTACT_CUSTOMER_CONFLICT", "Contact is not linked to the selected customer.");
+            ));
+            const associatedCustomerIds = new Set<string>(linkRows.map((row) => row.customerId));
+            if (contact.customerId) associatedCustomerIds.add(contact.customerId);
+            if (associatedCustomerIds.size > 0 && !associatedCustomerIds.has(customerId)) {
+                throw new OrderIdentityError("ORDER_CONTACT_CUSTOMER_CONFLICT", "Contact is not linked to the selected customer.");
+            }
         }
     }
 
@@ -1780,7 +1783,7 @@ export class OrdersRepository {
             ? await this.dbInstance
                 .select()
                 .from(customerContacts)
-                .where(eq(customerContacts.id, quote.contactId))
+                .where(and(eq(customerContacts.id, quote.contactId), eq(customerContacts.organizationId, organizationId)))
                 .limit(1)
             : [];
         const orderSnapshot = buildOrderSnapshotFromQuote({ quote, customer: customer ?? null, contact: contact ?? null });

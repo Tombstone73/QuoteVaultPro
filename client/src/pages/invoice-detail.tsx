@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { Button } from "@/components/ui/button";
+import { ToastAction } from "@/components/ui/toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Dialog, DialogClose, DialogContent, DialogHeader, DialogTitle, DialogTrigger, DialogFooter } from "@/components/ui/dialog";
@@ -24,7 +25,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
-import { ArrowLeft, Mail, DollarSign, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
+import { ArrowLeft, Mail, Trash2, RefreshCw, CreditCard, HandCoins, AlertCircle, ExternalLink } from "lucide-react";
 import { computeInvoicePaymentRollup, getInvoicePaymentStatusLabel } from "@shared/rollups/invoicePaymentRollup";
 import { useAuth } from "@/hooks/useAuth";
 import { useInvoice, useBillInvoice, useQueueInvoiceQbSync, useSendInvoice, useRefreshInvoiceStatus, useDeleteInvoice, useMarkInvoiceSent, useUpdateInvoice, useInvoicePayments, useRecordManualInvoicePayment, useVoidInvoicePayment, useInvoiceReminderHistory, useSendInvoiceReminder } from "@/hooks/useInvoices";
@@ -42,7 +43,7 @@ import { QBTransientDisconnectBanner } from "@/components/integrations/QBTransie
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { getInvoiceEditLockMessage } from "@/lib/invoiceEditLockCopy";
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@shared/paymentProviderResolution";
-import { resolveInvoiceAutoPaymentAction } from "@/lib/paymentResolutionUi";
+import { getHostedCardUnavailableReason, resolveInvoiceAutoPaymentAction } from "@/lib/paymentResolutionUi";
 
 type StripeIntegrationStatusEnvelope = {
   success: boolean;
@@ -111,6 +112,7 @@ const DESIGN_COST_STATE_LABELS: Record<NonNullable<OrderDesignBillingVisibilityI
 };
 
 type SaveState = 'idle' | 'saving' | 'saved' | 'error';
+type TakePaymentMethod = 'credit_card' | 'cash' | 'check' | 'bank_transfer' | 'other';
 
 function SaveIndicator({ state }: { state: SaveState }) {
   if (state === 'idle') return null;
@@ -210,15 +212,16 @@ export default function InvoiceDetailPage() {
   const [selectedPaymentToVoid, setSelectedPaymentToVoid] = useState<any | null>(null);
   const [selectedEpsPayment, setSelectedEpsPayment] = useState<any | null>(null);
 
-  const [recordPaymentErrors, setRecordPaymentErrors] = useState<{ amount?: string; method?: string }>({});
+  const [recordPaymentErrors, setRecordPaymentErrors] = useState<{ amount?: string; method?: string; reference?: string; methodDescription?: string }>({});
   const [pdfLoadState, setPdfLoadState] = useState<'idle' | 'loading' | 'ready' | 'error'>('idle');
   const [pdfError, setPdfError] = useState<string | null>(null);
 
   const [manualAmount, setManualAmount] = useState<string>('');
-  const [manualMethod, setManualMethod] = useState<string>('');
+  const [manualMethod, setManualMethod] = useState<TakePaymentMethod>('credit_card');
   const [manualAppliedAt, setManualAppliedAt] = useState<string>(() => format(new Date(), 'yyyy-MM-dd'));
   const [manualNotes, setManualNotes] = useState<string>('');
   const [manualReference, setManualReference] = useState<string>('');
+  const [manualMethodDescription, setManualMethodDescription] = useState<string>('');
   const [epsResult, setEpsResult] = useState<'approved' | 'failed' | 'canceled'>('approved');
   const [epsTransactionId, setEpsTransactionId] = useState('');
   const [epsAuthCode, setEpsAuthCode] = useState('');
@@ -226,6 +229,7 @@ export default function InvoiceDetailPage() {
   const [epsApprovedAmount, setEpsApprovedAmount] = useState('');
   const [epsResponseCode, setEpsResponseCode] = useState('');
   const [epsResponseMessage, setEpsResponseMessage] = useState('');
+  const [epsInternalNote, setEpsInternalNote] = useState('');
   const [epsAmountOverride, setEpsAmountOverride] = useState(false);
 
   const [emailDialogOpen, setEmailDialogOpen] = useState(false);
@@ -420,12 +424,13 @@ export default function InvoiceDetailPage() {
     return raw.replaceAll('_', ' ').replace(/\b\w/g, (char) => char.toUpperCase());
   };
 
-  const openRecordPayment = () => {
+  const openTakePayment = (initialMethod: TakePaymentMethod = 'credit_card') => {
     setManualAmount(balanceDue > 0 ? (balanceDue).toFixed(2) : '');
-    setManualMethod('');
+    setManualMethod(initialMethod);
     setManualAppliedAt(format(new Date(), 'yyyy-MM-dd'));
     setManualNotes('');
     setManualReference('');
+    setManualMethodDescription('');
     setRecordPaymentErrors({});
     setRecordPaymentOpen(true);
   };
@@ -433,7 +438,7 @@ export default function InvoiceDetailPage() {
   useEffect(() => {
     if (searchParams.get('recordPayment') !== '1') return;
     if (!canRecordPayment) return;
-    openRecordPayment();
+    openTakePayment('cash');
     const next = new URLSearchParams(searchParams);
     next.delete('recordPayment');
     setSearchParams(next, { replace: true });
@@ -446,27 +451,48 @@ export default function InvoiceDetailPage() {
     return Math.max(0, Math.round(n * 100));
   };
 
-  const manualAmountCentsDraft = parseMoneyToCents(manualAmount);
-  const manualIsOverpaymentDraft = !!invoice && manualAmountCentsDraft > remainingCents;
-
-  const submitManualPayment = async () => {
+  const submitTakePayment = async () => {
     if (!invoiceId) return;
     const amountCents = parseMoneyToCents(manualAmount);
-    const nextErrors: { amount?: string; method?: string } = {};
+    const nextErrors: { amount?: string; method?: string; reference?: string; methodDescription?: string } = {};
 
     if (!manualMethod) nextErrors.method = 'Select a payment method.';
     if (amountCents <= 0) nextErrors.amount = 'Amount must be greater than 0.';
+    if (amountCents > remainingCents) nextErrors.amount = `Amount exceeds remaining balance by ${formatCurrencyFromCents(amountCents - remainingCents)}.`;
+    if (manualMethod === 'credit_card') {
+      if (!canLaunchCardPayment) nextErrors.method = cardPaymentUnavailableReason || 'Configure a card processor in Settings.';
+    }
+    if (manualMethod === 'check' && !manualReference.trim()) {
+      nextErrors.reference = 'Check number is required.';
+    }
+    if (manualMethod === 'bank_transfer' && !manualReference.trim()) {
+      nextErrors.reference = 'Transaction or reference number is required.';
+    }
+    if (manualMethod === 'other' && !manualMethodDescription.trim()) {
+      nextErrors.methodDescription = 'Payment method description is required.';
+    }
 
     setRecordPaymentErrors(nextErrors);
-    if (nextErrors.amount || nextErrors.method) return;
+    if (nextErrors.amount || nextErrors.method || nextErrors.reference || nextErrors.methodDescription) return;
+
+    if (manualMethod === 'credit_card') {
+      setRecordPaymentOpen(false);
+      launchCardPayment();
+      return;
+    }
+
+    const methodForBackend = manualMethod === 'bank_transfer' ? 'bank_transfer' : manualMethod;
+    const methodNote = manualMethod === 'other' && manualMethodDescription.trim()
+      ? `Method: ${manualMethodDescription.trim()}${manualNotes.trim() ? `\n${manualNotes.trim()}` : ''}`
+      : manualNotes || undefined;
 
     try {
       await recordManualPayment.mutateAsync({
         invoiceId,
         amountCents,
-        method: manualMethod,
+        method: methodForBackend,
         appliedAt: manualAppliedAt ? new Date(manualAppliedAt).toISOString() : undefined,
-        notes: manualNotes || undefined,
+        notes: methodNote,
         reference: manualReference || undefined,
       });
       toast({ title: 'Payment recorded' });
@@ -497,6 +523,25 @@ export default function InvoiceDetailPage() {
     String(payment?.epsMode || "").trim().toLowerCase() === "hosted_cnp"
   );
 
+  const openHostedPaymentWindow = (hostedPaymentUrl: string): boolean => {
+    const opened = window.open(hostedPaymentUrl, '_blank', 'noopener,noreferrer');
+    return Boolean(opened);
+  };
+
+  const resumeEpsHostedPayment = (payment: any) => {
+    const hostedPaymentUrl = String(payment?.epsHostedPaymentUrl || '').trim();
+    if (!hostedPaymentUrl) {
+      toast({ title: 'Hosted payment unavailable', description: 'This pending payment does not include a resumable EPS URL.', variant: 'destructive' });
+      return;
+    }
+    const opened = openHostedPaymentWindow(hostedPaymentUrl);
+    toast({
+      title: opened ? 'EPS hosted payment reopened' : 'Popup blocked',
+      description: opened ? 'Record the EPS result after staff confirms it in the EPS portal.' : 'Allow popups or use the stored EPS hosted URL from the pending payment.',
+      variant: opened ? 'default' : 'destructive',
+    });
+  };
+
   const toPaymentMethodLabel = (method: any): string => {
     const raw = String(method || '').trim().toLowerCase();
     if (!raw) return 'Manual';
@@ -517,11 +562,21 @@ export default function InvoiceDetailPage() {
       if (!hostedPaymentUrl) {
         throw new Error('EPS did not return a hosted payment URL');
       }
-      window.open(hostedPaymentUrl, '_blank', 'noopener,noreferrer');
+      const opened = openHostedPaymentWindow(hostedPaymentUrl);
       toast({
-        title: result.reused ? 'EPS hosted session reopened' : 'EPS hosted session created',
-        description: 'The payment is pending until the result is recorded or otherwise confirmed.',
+        title: opened
+          ? (result.reused ? 'EPS hosted session reopened' : 'EPS hosted session created')
+          : 'EPS hosted session created',
+        description: opened
+          ? 'The payment is pending until the result is recorded or otherwise confirmed.'
+          : 'Your browser blocked the hosted page. Use Resume Card Payment in the pending payment panel.',
+        action: !opened ? (
+          <ToastAction altText="Show pending payment" onClick={() => setBottomPanel("payments")}>
+            Show Pending
+          </ToastAction>
+        ) : undefined,
       });
+      if (!opened) setBottomPanel("payments");
       refetch();
       invoicePayments.refetch();
     } catch (error: any) {
@@ -617,15 +672,16 @@ export default function InvoiceDetailPage() {
     }
   };
 
-  const openRecordEpsResult = (payment: any) => {
+  const openRecordEpsResult = (payment: any, initialResult: 'approved' | 'failed' | 'canceled' = 'approved') => {
     setSelectedEpsPayment(payment);
-    setEpsResult('approved');
+    setEpsResult(initialResult);
     setEpsTransactionId('');
     setEpsAuthCode('');
     setEpsTokenLast4('');
-    setEpsApprovedAmount(formatCurrencyFromCents(Number(payment?.amountCents || 0)).replace(/[$,]/g, ''));
+    setEpsApprovedAmount(initialResult === 'approved' ? formatCurrencyFromCents(Number(payment?.amountCents || 0)).replace(/[$,]/g, '') : '0.00');
     setEpsResponseCode('');
     setEpsResponseMessage('');
+    setEpsInternalNote('');
     setEpsAmountOverride(false);
     setRecordEpsResultOpen(true);
   };
@@ -637,7 +693,7 @@ export default function InvoiceDetailPage() {
     const pendingAmountCents = Math.max(0, Math.round(Number(selectedEpsPayment.amountCents || 0)));
     const amountMismatch = epsResult === 'approved' && approvedAmountCents !== pendingAmountCents;
 
-    if (!epsTransactionId.trim()) {
+    if (epsResult === 'approved' && !epsTransactionId.trim()) {
       toast({ title: 'EPS transaction id required', description: 'Copy the transaction id from the EPS portal.', variant: 'destructive' });
       return;
     }
@@ -667,6 +723,7 @@ export default function InvoiceDetailPage() {
         approvedAmountCents,
         responseCode: epsResponseCode.trim() || null,
         responseMessage: epsResponseMessage.trim() || null,
+        internalNote: epsInternalNote.trim() || null,
         result: epsResult,
         amountOverride: amountMismatch && epsAmountOverride,
       });
@@ -909,29 +966,62 @@ export default function InvoiceDetailPage() {
   });
   const canPayInvoice = hostedPaymentResolution.provider === "stripe";
   const epsHostedEnabled = hostedPaymentResolution.provider === "eps";
+  const showPaymentActions = !!invoice && isStaffUser && !['draft', 'paid', 'void'].includes(invoiceStatus) && remainingCents > 0 && !paymentActionsLocked;
+  const cardPaymentDecision = resolveInvoiceAutoPaymentAction({
+    invoiceReady: Boolean(invoice),
+    dependenciesLoading: paymentSettings.isLoading || invoicePayments.isLoading || isStripeIntegrationStatusLoading,
+    invoiceStatus,
+    remainingCents,
+    canPayInvoice,
+    epsHostedEnabled,
+    canRecordPayment,
+  });
+  const cardPaymentUnavailableReason = cardPaymentDecision.action === "blocked"
+    ? cardPaymentDecision.message || getHostedCardUnavailableReason({
+        paymentSettingsProvider: paymentSettings.data?.provider,
+        paymentSettingsMissing: paymentSettings.data?.missing,
+        epsEnabled: paymentSettings.data?.epsEnabled,
+        epsReady: paymentSettings.data?.epsReady,
+        stripeConnected,
+        stripeChargesEnabled,
+      })
+    : null;
+  const cardPaymentBusy = createEpsHostedSessionMutation.isPending;
+  const canLaunchCardPayment = cardPaymentDecision.action === "stripe" || cardPaymentDecision.action === "eps";
+  const launchCardPayment = () => {
+    if (cardPaymentDecision.action === "stripe") {
+      setStripePayOpen(true);
+      return;
+    }
+    if (cardPaymentDecision.action === "eps") {
+      void openEpsHostedPayment();
+      return;
+    }
+    toast({
+      title: 'Card payment unavailable',
+      description: cardPaymentUnavailableReason || 'Configure a card processor in Settings.',
+      variant: 'destructive',
+    });
+  };
 
   useEffect(() => {
-    if (searchParams.get('takePayment') !== '1') return;
+    const shouldTakePayment = searchParams.get('takePayment') === '1';
+    if (!shouldTakePayment) return;
     if (takePaymentAutoLaunchRef.current) return;
-    const decision = resolveInvoiceAutoPaymentAction({
-      invoiceReady: Boolean(invoice),
-      dependenciesLoading: paymentSettings.isLoading || invoicePayments.isLoading || isStripeIntegrationStatusLoading,
-      invoiceStatus,
-      remainingCents,
-      canPayInvoice,
-      epsHostedEnabled,
-      canRecordPayment,
-    });
-    if (decision.action === 'wait') return;
+    if (!invoice || paymentSettings.isLoading || invoicePayments.isLoading || isStripeIntegrationStatusLoading) return;
 
     const next = new URLSearchParams(searchParams);
     next.delete('takePayment');
 
-    if (decision.action === 'blocked') {
+    if (!showPaymentActions) {
       setSearchParams(next, { replace: true });
       toast({
         title: 'Payment unavailable',
-        description: decision.message || 'Payment cannot be launched for this invoice.',
+        description: invoiceStatus === 'draft'
+          ? 'Finalize this invoice before taking payment.'
+          : invoiceStatus === 'paid' || remainingCents <= 0
+            ? 'This invoice is already paid.'
+            : 'Payment cannot be taken for this invoice.',
         variant: invoiceStatus === 'paid' || remainingCents <= 0 ? 'default' : 'destructive',
       });
       return;
@@ -939,30 +1029,14 @@ export default function InvoiceDetailPage() {
 
     takePaymentAutoLaunchRef.current = true;
     setSearchParams(next, { replace: true });
-
-    if (decision.action === 'stripe') {
-      setStripePayOpen(true);
-      return;
-    }
-
-    if (decision.action === 'eps') {
-      void openEpsHostedPayment();
-      return;
-    }
-
-    if (decision.action === 'manual') {
-      openRecordPayment();
-      return;
-    }
+    openTakePayment('credit_card');
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [
     searchParams,
     invoice?.id,
     invoiceStatus,
     remainingCents,
-    canPayInvoice,
-    epsHostedEnabled,
-    canRecordPayment,
+    showPaymentActions,
     paymentSettings.isLoading,
     invoicePayments.isLoading,
     isStripeIntegrationStatusLoading,
@@ -1253,10 +1327,41 @@ export default function InvoiceDetailPage() {
         <Dialog open={recordPaymentOpen} onOpenChange={setRecordPaymentOpen}>
           <DialogContent>
             <DialogHeader>
-              <DialogTitle>Record Payment</DialogTitle>
+              <DialogTitle>Take Payment</DialogTitle>
             </DialogHeader>
 
             <div className="grid gap-4">
+              <div className="rounded-md border bg-muted/30 p-3 text-sm">
+                <div className="grid gap-2 sm:grid-cols-2">
+                  <div>
+                    <div className="text-xs font-medium text-muted-foreground">Invoice</div>
+                    <div className="font-medium">
+                      {resolveDocumentDisplayNumber({
+                        displayNumber: (invoice as any).displayNumber,
+                        numberCore: (invoice as any).numberCore,
+                        legacyNumber: invoice.invoiceNumber,
+                      }) || invoice.invoiceNumber}
+                    </div>
+                  </div>
+                  {orderId ? (
+                    <div>
+                      <div className="text-xs font-medium text-muted-foreground">Order</div>
+                      <div className="font-medium">{(order as any)?.orderNumber || (order as any)?.displayNumber || orderId}</div>
+                    </div>
+                  ) : null}
+                  <div>
+                    <div className="text-xs font-medium text-muted-foreground">Customer / Contact</div>
+                    <div className="font-medium">{orderCustomerName || orderContactName || orderEmail || "Not specified"}</div>
+                  </div>
+                  <div>
+                    <div className="text-xs font-medium text-muted-foreground">Balance</div>
+                    <div className="font-medium">
+                      Total {formatCurrencyFromCents(displayTotalCents)} / Paid {formatCurrencyFromCents(displayPaidCents)} / Remaining {formatCurrencyFromCents(remainingCents)}
+                    </div>
+                  </div>
+                </div>
+              </div>
+
               <div className="grid gap-2">
                 <Label htmlFor="manual-payment-amount">Amount</Label>
                 <Input
@@ -1274,31 +1379,24 @@ export default function InvoiceDetailPage() {
                 {recordPaymentErrors.amount ? (
                   <div className="text-xs text-destructive">{recordPaymentErrors.amount}</div>
                 ) : null}
-                {manualIsOverpaymentDraft && manualAmountCentsDraft > 0 ? (
-                  <div className="rounded-md border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900/30 dark:bg-amber-950/20 dark:text-amber-200">
-                    This exceeds Remaining. It will create an overpayment record. Rollup clamps to the invoice total.
-                  </div>
-                ) : null}
               </div>
 
               <div className="grid gap-2">
                 <Label>Method</Label>
                 <Select value={manualMethod} onValueChange={(v) => {
-                  setManualMethod(v);
-                  if (recordPaymentErrors.method) {
-                    setRecordPaymentErrors((prev) => ({ ...prev, method: undefined }));
+                  setManualMethod(v as TakePaymentMethod);
+                  if (recordPaymentErrors.method || recordPaymentErrors.reference || recordPaymentErrors.methodDescription) {
+                    setRecordPaymentErrors((prev) => ({ ...prev, method: undefined, reference: undefined, methodDescription: undefined }));
                   }
                 }}>
                   <SelectTrigger>
                     <SelectValue placeholder="Select method" />
                   </SelectTrigger>
                   <SelectContent>
+                    <SelectItem value="credit_card">Credit Card</SelectItem>
                     <SelectItem value="cash">Cash</SelectItem>
                     <SelectItem value="check">Check</SelectItem>
-                    <SelectItem value="credit_card">Credit Card</SelectItem>
-                    <SelectItem value="wire">Wire</SelectItem>
-                    <SelectItem value="bank_transfer">Bank Transfer</SelectItem>
-                    <SelectItem value="ach">ACH</SelectItem>
+                    <SelectItem value="bank_transfer">ACH / Bank Transfer</SelectItem>
                     <SelectItem value="other">Other</SelectItem>
                   </SelectContent>
                 </Select>
@@ -1307,8 +1405,51 @@ export default function InvoiceDetailPage() {
                 ) : null}
               </div>
 
+              {manualMethod === "credit_card" ? (
+                <div className="space-y-3 rounded-md border p-3">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <div className="text-sm font-medium">Credit Card</div>
+                      <div className="text-xs text-muted-foreground">
+                        Processor: {epsHostedEnabled ? "EPS Hosted" : canPayInvoice ? "Stripe" : "Unavailable"}
+                      </div>
+                    </div>
+                    {epsHostedEnabled ? (
+                      <Badge variant={paymentSettings.data?.epsMode === "test" ? "secondary" : "outline"}>
+                        {paymentSettings.data?.epsMode === "test" ? "TEST MODE" : "LIVE"}
+                      </Badge>
+                    ) : null}
+                  </div>
+                  {canLaunchCardPayment ? (
+                    <div className="text-xs text-muted-foreground">
+                      TitanOS opens the hosted processor page. Do not enter card numbers in TitanOS.
+                    </div>
+                  ) : (
+                    <Alert>
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertTitle>Card processor unavailable</AlertTitle>
+                      <AlertDescription>
+                        <div className="space-y-2">
+                          <div>{cardPaymentUnavailableReason || "Configure a card processor in Settings."}</div>
+                          {isAdminOrOwner ? (
+                            <Button type="button" size="sm" variant="outline" onClick={() => navigate('/settings/integrations')}>
+                              <ExternalLink className="mr-2 h-4 w-4" />
+                              Open Payment Settings
+                            </Button>
+                          ) : null}
+                        </div>
+                      </AlertDescription>
+                    </Alert>
+                  )}
+                </div>
+              ) : null}
+
+              {manualMethod !== "credit_card" ? (
+                <>
               <div className="grid gap-2">
-                <Label htmlFor="manual-payment-date">Date Applied</Label>
+                <Label htmlFor="manual-payment-date">
+                  {manualMethod === "cash" ? "Date Received" : manualMethod === "check" ? "Check Date" : "Payment Date"}
+                </Label>
                 <Input
                   id="manual-payment-date"
                   type="date"
@@ -1317,14 +1458,48 @@ export default function InvoiceDetailPage() {
                 />
               </div>
 
+              {manualMethod === "other" ? (
+                <div className="grid gap-2">
+                  <Label htmlFor="manual-payment-method-description">Payment method description</Label>
+                  <Input
+                    id="manual-payment-method-description"
+                    value={manualMethodDescription}
+                    onChange={(e) => {
+                      setManualMethodDescription(e.target.value);
+                      if (recordPaymentErrors.methodDescription) {
+                        setRecordPaymentErrors((prev) => ({ ...prev, methodDescription: undefined }));
+                      }
+                    }}
+                    placeholder="Describe how the customer paid"
+                  />
+                  {recordPaymentErrors.methodDescription ? (
+                    <div className="text-xs text-destructive">{recordPaymentErrors.methodDescription}</div>
+                  ) : null}
+                </div>
+              ) : null}
+
               <div className="grid gap-2">
-                <Label htmlFor="manual-payment-reference">Reference (optional)</Label>
+                <Label htmlFor="manual-payment-reference">
+                  {manualMethod === "check"
+                    ? "Check number"
+                    : manualMethod === "bank_transfer"
+                      ? "Transaction / reference number"
+                      : "Receipt / reference (optional)"}
+                </Label>
                 <Input
                   id="manual-payment-reference"
                   value={manualReference}
-                  onChange={(e) => setManualReference(e.target.value)}
-                  placeholder="Check #, wire ref, etc."
+                  onChange={(e) => {
+                    setManualReference(e.target.value);
+                    if (recordPaymentErrors.reference) {
+                      setRecordPaymentErrors((prev) => ({ ...prev, reference: undefined }));
+                    }
+                  }}
+                  placeholder={manualMethod === "check" || manualMethod === "bank_transfer" ? "Required" : "Optional"}
                 />
+                {recordPaymentErrors.reference ? (
+                  <div className="text-xs text-destructive">{recordPaymentErrors.reference}</div>
+                ) : null}
               </div>
 
               <div className="grid gap-2">
@@ -1336,17 +1511,29 @@ export default function InvoiceDetailPage() {
                   placeholder="Internal notes"
                 />
               </div>
+                </>
+              ) : null}
             </div>
 
             <DialogFooter>
               <DialogClose asChild>
-                <Button variant="outline" disabled={recordManualPayment.isPending}>Cancel</Button>
+                <Button variant="outline" disabled={recordManualPayment.isPending || cardPaymentBusy}>Cancel</Button>
               </DialogClose>
               <Button
-                onClick={submitManualPayment}
-                disabled={recordManualPayment.isPending}
+                onClick={submitTakePayment}
+                disabled={recordManualPayment.isPending || cardPaymentBusy || (manualMethod === "credit_card" && !canLaunchCardPayment)}
               >
-                {recordManualPayment.isPending ? 'Recording…' : 'Record Payment'}
+                {manualMethod === "credit_card"
+                  ? cardPaymentBusy ? 'Opening processor...' : 'Process Credit Card'
+                  : recordManualPayment.isPending
+                    ? 'Applying...'
+                    : manualMethod === "cash"
+                      ? 'Apply Cash Payment'
+                      : manualMethod === "check"
+                        ? 'Apply Check Payment'
+                        : manualMethod === "bank_transfer"
+                          ? 'Apply Bank Payment'
+                          : 'Apply Payment'}
               </Button>
             </DialogFooter>
           </DialogContent>
@@ -1387,7 +1574,7 @@ export default function InvoiceDetailPage() {
                   id="eps-transaction-id"
                   value={epsTransactionId}
                   onChange={(event) => setEpsTransactionId(event.target.value)}
-                  placeholder="Required from EPS portal"
+                  placeholder={epsResult === 'approved' ? 'Required from EPS portal' : 'Optional'}
                 />
               </div>
 
@@ -1463,6 +1650,16 @@ export default function InvoiceDetailPage() {
                     placeholder="Optional"
                   />
                 </div>
+              </div>
+
+              <div className="grid gap-2">
+                <Label htmlFor="eps-internal-note">Internal note (optional)</Label>
+                <Textarea
+                  id="eps-internal-note"
+                  value={epsInternalNote}
+                  onChange={(event) => setEpsInternalNote(event.target.value)}
+                  placeholder="What staff verified in the EPS portal"
+                />
               </div>
             </div>
 
@@ -1604,28 +1801,10 @@ export default function InvoiceDetailPage() {
                       </Dialog>
                     ) : null}
 
-                    {canPayInvoice ? (
-                      <Button onClick={() => setStripePayOpen(true)}>
+                    {showPaymentActions ? (
+                      <Button onClick={() => openTakePayment('credit_card')}>
                         <CreditCard className="mr-2 h-4 w-4" />
-                        Pay Invoice
-                      </Button>
-                    ) : null}
-
-                    {epsHostedEnabled ? (
-                      <Button
-                        variant="outline"
-                        onClick={openEpsHostedPayment}
-                        disabled={createEpsHostedSessionMutation.isPending}
-                      >
-                        <ExternalLink className="mr-2 h-4 w-4" />
-                        {createEpsHostedSessionMutation.isPending ? 'Opening EPS...' : paymentSettings.data?.epsMode === 'test' ? 'TEST MODE · Pay with EPS' : 'LIVE · Pay with EPS Hosted Form'}
-                      </Button>
-                    ) : null}
-
-                    {canRecordPayment ? (
-                      <Button onClick={openRecordPayment}>
-                        <DollarSign className="mr-2 h-4 w-4" />
-                        Record Payment
+                        Take Payment
                       </Button>
                     ) : null}
 
@@ -2341,23 +2520,9 @@ export default function InvoiceDetailPage() {
                           <Badge variant="secondary">{paymentStatusLabel}</Badge>
                         </div>
                         <div className="flex items-center gap-2">
-                          {canRecordPayment && (
-                            <Button variant="outline" onClick={openRecordPayment}>
-                              Record Payment
-                            </Button>
-                          )}
-                          {canPayInvoice && (
-                            <Button onClick={() => setStripePayOpen(true)}>
-                              Pay Invoice
-                            </Button>
-                          )}
-                          {epsHostedEnabled && (
-                            <Button
-                              variant="outline"
-                              onClick={openEpsHostedPayment}
-                              disabled={createEpsHostedSessionMutation.isPending}
-                            >
-                              {createEpsHostedSessionMutation.isPending ? 'Opening EPS...' : paymentSettings.data?.epsMode === 'test' ? 'TEST MODE · Pay with EPS' : 'LIVE · Pay with EPS Hosted Form'}
+                          {showPaymentActions && (
+                            <Button onClick={() => openTakePayment('credit_card')}>
+                              Take Payment
                             </Button>
                           )}
                         </div>
@@ -2376,11 +2541,11 @@ export default function InvoiceDetailPage() {
                       {pendingEpsHostedPayments.length > 0 ? (
                         <Alert>
                           <AlertCircle className="h-4 w-4" />
-                          <AlertTitle>EPS hosted payment pending</AlertTitle>
+                          <AlertTitle>Pending Credit Card Payment</AlertTitle>
                           <AlertDescription>
                             <div className="space-y-3">
                               <div>
-                                The EPS document provided does not include a webhook or status endpoint. Keep hosted payments pending until the result is confirmed in the EPS portal and recorded.
+                                EPS does not provide a reliable callback here. Keep hosted payments pending until the result is confirmed in the EPS portal and recorded.
                               </div>
                               <div className="space-y-2">
                                 {pendingEpsHostedPayments.map((payment: any) => (
@@ -2390,16 +2555,36 @@ export default function InvoiceDetailPage() {
                                       <span className="mx-2 text-muted-foreground/50">&bull;</span>
                                       <span className="text-muted-foreground">Created {formatDate(payment.createdAt || payment.appliedAt)}</span>
                                     </div>
-                                    {canRecordEpsHostedResult ? (
+                                    <div className="flex flex-wrap gap-2">
                                       <Button
                                         type="button"
                                         size="sm"
                                         variant="outline"
-                                        onClick={() => openRecordEpsResult(payment)}
+                                        onClick={() => resumeEpsHostedPayment(payment)}
                                       >
-                                        Record EPS Result
+                                        Resume Payment
                                       </Button>
-                                    ) : null}
+                                      {canRecordEpsHostedResult ? (
+                                        <>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => openRecordEpsResult(payment)}
+                                          >
+                                            Record Result
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => openRecordEpsResult(payment, 'canceled')}
+                                          >
+                                            Cancel Attempt
+                                          </Button>
+                                        </>
+                                      ) : null}
+                                    </div>
                                   </div>
                                 ))}
                               </div>
@@ -2682,7 +2867,7 @@ export default function InvoiceDetailPage() {
                                         size="sm"
                                         onClick={() => openRecordEpsResult(payment)}
                                       >
-                                        Record EPS Result
+                                        Record Result
                                       </Button>
                                     ) : canVoid ? (
                                       <Button

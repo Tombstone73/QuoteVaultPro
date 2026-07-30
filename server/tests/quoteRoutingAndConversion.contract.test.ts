@@ -32,6 +32,7 @@ const suffix = `${Date.now()}_${Math.floor(Math.random() * 10000)}`;
 const organizationId = `org_workflow_contract_${suffix}`;
 const userId = `user_workflow_contract_${suffix}`;
 const customerId = `cust_workflow_contract_${suffix}`;
+const standaloneContactId = `contact_workflow_contract_${suffix}`;
 const productId = `prod_workflow_contract_${suffix}`;
 const pbv2PricingSnapshotFixture = {
   pbv2PricingSnapshot: {
@@ -88,6 +89,12 @@ beforeAll(async () => {
   await db.execute(sql`
     insert into customers (id, organization_id, company_name, status)
     values (${customerId}, ${organizationId}, ${"Workflow Contract Customer"}, ${"active"})
+    on conflict (id) do nothing
+  `);
+
+  await db.execute(sql`
+    insert into customer_contacts (id, organization_id, customer_id, first_name, last_name, email, status)
+    values (${standaloneContactId}, ${organizationId}, ${null}, ${"Standalone"}, ${"Buyer"}, ${`standalone-${suffix}@example.com`}, ${"active"})
     on conflict (id) do nothing
   `);
 
@@ -171,6 +178,7 @@ afterAll(async () => {
   await db.execute(sql`delete from product_design_configs where organization_id = ${organizationId}`);
   await db.execute(sql`delete from global_variables where organization_id = ${organizationId}`);
   await db.execute(sql`delete from stations where organization_id = ${organizationId}`);
+  await db.execute(sql`delete from customer_contacts where id = ${standaloneContactId}`);
   await db.execute(sql`delete from user_organizations where user_id = ${userId} and organization_id = ${organizationId}`);
   await db.execute(sql`delete from products where id = ${productId}`);
   await db.execute(sql`delete from customers where id = ${customerId}`);
@@ -690,6 +698,36 @@ describe("quote routing persistence and conversion contract", () => {
 
     expect(quoteAfter?.convertedToOrderId).toBeNull();
     expect(orderRows).toHaveLength(0);
+  });
+
+  test("quote conversion preserves a contact-only buyer without creating a customer", async () => {
+    const quote = await quotesRepo.createQuote(organizationId, {
+      ...buildPrepressOnlyQuoteInput(`Contact only conversion ${suffix}`),
+      customerId: null,
+      contactId: standaloneContactId,
+      customerName: null,
+      billToName: null,
+      billToCompany: null,
+      shippingMethod: "pickup",
+      shippingMode: "single_shipment",
+    } as any);
+
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
+
+    const [orderRow] = await db
+      .select({
+        customerId: orders.customerId,
+        contactId: orders.contactId,
+        billToName: orders.billToName,
+        billToEmail: orders.billToEmail,
+      })
+      .from(orders)
+      .where(eq(orders.id, createdOrder.id));
+
+    expect(orderRow.customerId).toBeNull();
+    expect(orderRow.contactId).toBe(standaloneContactId);
+    expect(orderRow.billToName).toBe("Standalone Buyer");
+    expect(orderRow.billToEmail).toBe(`standalone-${suffix}@example.com`);
   });
 
   test("production ownership cannot advance while parent order is not in production", async () => {
