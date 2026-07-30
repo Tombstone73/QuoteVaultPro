@@ -111,6 +111,32 @@ function orderDueReadPlan(message: string): AssistantProviderPlan | null {
   });
 }
 
+/** A customer explicitly asking what was "done" is asking for completed
+ * production jobs, not due work or financial/billing state. This route runs
+ * before provider planning so the narrow, tenant-resolved report cannot fall
+ * through to the uninvoiced-order tool. */
+function completedJobsReadPlan(message: string): AssistantProviderPlan | null {
+  const match = /\b(?:report|summary)\s+(?:of\s+)?(?:all\s+)?(?:production\s+)?jobs?\s+for\s+(.+?)\s+(?:that\s+)?(?:were\s+)?(?:done|completed)\s+(?:in\s+|during\s+)?(?:last|previous)\s+week\s+(?:and|or|through)\s+(?:this|current)\s+week\b/i.exec(message);
+  if (!match) return null;
+  const customerName = match[1]!.trim().replace(/[.?!]+$/, "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9 &'.,_-]{0,239}$/.test(customerName)) return null;
+  return plan({
+    intent: "production_reporting",
+    selectedSkill: "deterministic_customer_completed_job_report",
+    toolCalls: [{
+      toolName: "production.get_completed_jobs",
+      arguments: {
+        completed: "last_week_through_current_week",
+        customer: { name: customerName },
+        limit: 10,
+      },
+    }],
+    clarificationRequired: false,
+    clarificationQuestion: null,
+    responseStyle: "concise",
+  });
+}
+
 function productionReadPlan(message: string): AssistantProviderPlan | null {
   const remainingAtStation = /\b(?:how many|what)\s+(?:prints?|units?)\s+(?:are\s+)?(?:left|remaining|remain)\s+(?:in|at)\s+(?:the\s+)?([A-Za-z0-9][A-Za-z0-9 _-]{0,99})\??$/i.exec(message);
   if (remainingAtStation) {
@@ -270,6 +296,9 @@ export function resolveDeterministicReadPlan(message: string, rawContext?: Assis
       responseStyle: "concise",
     });
   }
+
+  const completedJobs = completedJobsReadPlan(normalized);
+  if (completedJobs) return completedJobs;
 
   const orderDue = orderDueReadPlan(normalized);
   if (orderDue) return orderDue;

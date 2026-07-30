@@ -3,10 +3,10 @@ import {
   assistantOrderDueSummaryResultSchema,
   type AssistantToolResultEnvelope,
 } from "@shared/assistantContracts";
-import {
+import type {
   AssistantOrderDueSummaryRepository,
-  type AssistantOrderDueDateWindow,
-  type AssistantOrderDueFilters,
+  AssistantOrderDueDateWindow,
+  AssistantOrderDueFilters,
 } from "../../storage/assistantOrderDueSummary.repo";
 import { AssistantToolExecutionError } from "./orchestration";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
@@ -86,6 +86,13 @@ function dateWindow(now: Date, timezone: string, input: ReturnType<typeof assist
   };
 }
 
+/** Shared calendar semantics for customer-scoped historical reports: Monday
+ * of the previous calendar week through the exclusive Monday after this week. */
+export function lastWeekThroughCurrentWeekWindow(now: Date, timezone: string): Pick<AssistantOrderDueDateWindow, "rangeStart" | "rangeEnd"> {
+  const dates = dateWindow(now, timezone, assistantOrderDueSummaryInputSchema.parse({ due: "last_week_through_current_week" }));
+  return { rangeStart: dates.rangeStart, rangeEnd: dates.rangeEnd };
+}
+
 function dueState(dueDate: string, dates: AssistantOrderDueDateWindow): "overdue" | "due_today" | "due_tomorrow" | "future" {
   const due = new Date(dueDate).getTime();
   if (due < dates.startOfToday.getTime()) return "overdue";
@@ -106,11 +113,11 @@ function canViewFinance(permissions: readonly string[]): boolean {
 /** Read-only order-level due summary adapter. The optional operational batch is
  * intentionally best-effort: it cannot hide a valid list of matching orders. */
 export function createAssistantOrderDueSummaryToolAdapters(deps: AssistantOrderDueSummaryToolDependencies = {}): AssistantToolAdapters {
-  const repository = deps.repository ?? new AssistantOrderDueSummaryRepository();
   const now = deps.now ?? (() => new Date());
   return {
     "orders.get_due_summary": {
       async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        const repository = deps.repository ?? new (await import("../../storage/assistantOrderDueSummary.repo")).AssistantOrderDueSummaryRepository();
         const input = assistantOrderDueSummaryInputSchema.parse(rawInput);
         // A human-readable customer reference is resolved and replaced with a
         // tenant-scoped id by the report-resolution boundary before a query.

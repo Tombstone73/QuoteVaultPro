@@ -883,6 +883,7 @@ function renderToolResults(
       "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context",
       "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary",
       "orders.get_due_summary": "order_due_summary",
+      "production.get_completed_jobs": "completed_job_summary",
       "analytics.resolve_customer": "customer_resolution", "analytics.customer_product_sales": "customer_product_sales",
       "analytics.customer_uninvoiced_orders": "uninvoiced_order_summary",
     };
@@ -931,6 +932,7 @@ function displayToolTitle(toolName: string): string {
     "reports.operational_summary": "Operational summary",
     "orders.get_summary": "Order summary",
     "orders.get_due_summary": "Order due summary",
+    "production.get_completed_jobs": "Completed production jobs",
     "products.get_summary": "Product summary",
     "customers.get_summary": "Customer summary",
     "search.global": "Record search",
@@ -993,6 +995,15 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
     const state = orders[0] && (data.orders[0] as { dueState?: string }).dueState;
     const phrase = state === "overdue" ? "overdue" : state === "due_today" ? "due today" : state === "due_tomorrow" ? "due tomorrow" : filter ?? "matching";
     return `${total} ${total === 1 ? "order is" : "orders are"} ${phrase}: ${listed}.`;
+  }
+  if (toolName === "production.get_completed_jobs") {
+    const jobs = Array.isArray(data.jobs) ? data.jobs as Array<{ orderNumber?: string; customerName?: string }> : [];
+    const total = Number(data.totalMatchingJobs ?? jobs.length ?? 0);
+    const customer = jobs[0]?.customerName ?? "This customer";
+    if (!total) return `${customer} has no completed production jobs in the requested date range.`;
+    const labels = jobs.map((job) => job.orderNumber).filter((value): value is string => Boolean(value));
+    const listed = labels.length <= 3 ? labels.join(labels.length === 2 ? " and " : ", ") : `${labels.slice(0, 3).join(", ")}${total > 3 ? ", and more" : ""}`;
+    return `${customer} has ${total} completed production ${total === 1 ? "job" : "jobs"}: ${listed}.`;
   }
   if (toolName === "products.get_summary") return `${data.product?.label ?? "This product"} is ${data.active === false ? "inactive" : data.product?.status ?? "available"}${data.category ? ` in ${data.category}` : ""}.`;
   if (toolName === "reports.operational_summary") return "Here's the current operational picture.";
@@ -1136,7 +1147,7 @@ export function responsePresentationForCards(cards: readonly unknown[]): Assista
   const kinds = new Set(visibleCards.map((card) => card.kind));
   return kinds.has("action_plan") || kinds.has("action_proposal") ? "proposed_action"
       : kinds.has("execution_result") ? "execution_result"
-        : kinds.has("operational_metrics") || kinds.has("production_queue_summary") || kinds.has("station_comparison") || kinds.has("attention_summary") || kinds.has("customer_product_sales") || kinds.has("uninvoiced_order_summary") ? "analytical"
+        : kinds.has("operational_metrics") || kinds.has("production_queue_summary") || kinds.has("station_comparison") || kinds.has("attention_summary") || kinds.has("completed_job_summary") || kinds.has("customer_product_sales") || kinds.has("uninvoiced_order_summary") ? "analytical"
           : kinds.has("search_results") ? "collection"
             : kinds.has("order_summary") || kinds.has("customer_summary") || kinds.has("product_summary") ? "record_summary"
               : kinds.has("provider_unavailable") || kinds.has("tool_warning") || kinds.has("permission_denied") ? "diagnostic"
