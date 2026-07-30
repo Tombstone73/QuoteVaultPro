@@ -196,7 +196,9 @@ const toolMetadata = {
     maxResults: 20,
     timeoutMs: 5_000,
     dataClassification: "internal",
-    sourceLinkBehavior: "required",
+    // An empty due-date report is a successful, bounded read with no order to
+    // link to. Non-empty results remain source-linked by the result schema.
+    sourceLinkBehavior: "optional",
     auditCategory: "assistant_order_due_summary",
     modelSummarizationAllowed: true,
   },
