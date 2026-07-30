@@ -44,8 +44,14 @@ export function toConfigurableProductResult(value: unknown): ConfigurableProduct
 }
 
 export function toConfigurableProductProposal(value: unknown): ConfigurableProductProposalCard | null {
-  const card = record(value); const plan = record(card?.plan) ?? record(card?.proposal);
-  if (!card || card.kind !== "action_proposal" || !plan || plan.action !== "products.create_configurable_draft") return null;
+  const card = record(value);
+  // The authenticated route preserves the persisted plan for display and adds
+  // a separate, turn-bound `proposal` copy for plan creation. Prefer that
+  // browser-safe continuation envelope; the persisted `plan` itself has no
+  // client-usable turn id by design.
+  const plan = [record(card?.proposal), record(card?.plan)]
+    .find((candidate) => candidate?.action === "products.create_configurable_draft") ?? null;
+  if (!card || card.kind !== "action_proposal" || !plan) return null;
   const turnId = text(plan.turnId) ?? text(card.turnId); const confirmation = toConfigurableProductConfirmation(plan.configurableProduct);
   return turnId && confirmation ? { turnId, title: text(card.title) ?? "Create configurable inactive product draft", confirmation } : null;
 }

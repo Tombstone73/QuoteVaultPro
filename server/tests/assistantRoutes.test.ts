@@ -184,6 +184,29 @@ describe("assistant routes", () => {
     ]);
   });
 
+  test("hydrates the turn-bound configurable-product presentation without changing its typed fields", async () => {
+    const service = buildService();
+    const configurableProduct = {
+      kind: "configurable_product_confirmation", version: "v1", proposalId: "11111111-1111-4111-8111-111111111111", fingerprint: "a".repeat(64),
+      product: { name: "PVC Panel", category: "Rigid Substrates", inactive: true, pbv2Status: "DRAFT", unpublished: true, nonLiveQuotable: true, requiresDimensions: true, materialForm: "sheet", sheetWidthIn: 48, sheetHeightIn: 96, allowRotation: true, route: "Flatbed", minimumChargeCents: 2500 },
+      optionGroups: [{ key: "thickness", name: "Thickness", required: true, selectionMode: "single", values: [{ value: "3mm", label: "3mm" }] }, { key: "printed_sides", name: "Printed Sides", required: true, selectionMode: "single", values: [{ value: "single", label: "Single-sided" }] }],
+      matrix: { rowKey: "thickness", columnKey: "printed_sides", rowValues: ["3mm"], columnValues: ["Single-sided"], cells: { "3mm:Single-sided": 450 }, pricingComponent: "per_square_foot" },
+      assumptions: [], warnings: [], blockers: [], readiness: { ready: true, blockers: [], warnings: [] }, goEligible: true,
+    };
+    const plan = { action: "products.create_configurable_draft", proposalId: configurableProduct.proposalId, fingerprint: configurableProduct.fingerprint, configurableProduct };
+    service.getConversation.mockResolvedValue({
+      ...conversation,
+      messages: [{ id: "message_configurable", conversationId: conversation.id, turnId: "turn_configurable", role: "assistant", content: "Ready for review.", createdAt: new Date(NOW), structuredCards: [{ kind: "action_proposal", title: "Create configurable inactive product draft", summary: "", sourceLinks: [], plan }] },
+    });
+    const { app } = buildApp(service);
+
+    const response = await request(app).get("/api/assistant/conversations/conversation_1").expect(200);
+    const card = response.body.data.messages[0].structuredCards[0];
+
+    expect(card.plan.configurableProduct).toEqual(expect.objectContaining({ kind: "configurable_product_confirmation", version: "v1" }));
+    expect(card.proposal).toEqual(expect.objectContaining({ action: "products.create_configurable_draft", turnId: "turn_configurable", configurableProduct: expect.objectContaining({ product: expect.objectContaining({ sheetWidthIn: 48, sheetHeightIn: 96, allowRotation: true, minimumChargeCents: 2500 }), matrix: expect.objectContaining({ cells: expect.objectContaining({ "3mm:Single-sided": 450 }) }) }) }));
+  });
+
   test("classifies each response independently so a prior failure cannot make a successful answer retryable", async () => {
     const service = buildService();
     service.getConversation.mockResolvedValue({
