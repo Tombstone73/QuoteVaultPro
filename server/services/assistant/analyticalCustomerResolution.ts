@@ -109,7 +109,7 @@ export type AnalyticalPreflightResult =
   | { kind: "awaiting_entity_resolution"; resolution: PersistedAnalyticalResolution; message: string }
   | { kind: "persistence_failed"; message: string };
 
-const customerScopedReportToolNames = new Set(["analytics.customer_product_sales", "analytics.customer_uninvoiced_orders", "orders.get_due_summary"]);
+const customerScopedReportToolNames = new Set(["analytics.customer_product_sales", "analytics.customer_uninvoiced_orders", "orders.get_due_summary", "production.get_completed_jobs"]);
 
 function customerScopedReportReference(plan: AssistantProviderPlan): string | null {
   for (const call of plan.toolCalls) {

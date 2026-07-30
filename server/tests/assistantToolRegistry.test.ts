@@ -48,6 +48,7 @@ describe("assistant tool registry", () => {
       "production.get_queue_summary",
       "operations.get_attention_summary",
       "orders.get_due_summary",
+      "production.get_completed_jobs",
       "analytics.resolve_customer",
       "analytics.customer_product_sales",
       "analytics.customer_uninvoiced_orders",

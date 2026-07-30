@@ -43,6 +43,7 @@ export const assistantToolNameValues = [
   "production.get_queue_summary",
   "operations.get_attention_summary",
   "orders.get_due_summary",
+  "production.get_completed_jobs",
   "analytics.resolve_customer",
   "analytics.customer_product_sales",
   "analytics.customer_uninvoiced_orders",
@@ -614,6 +615,34 @@ export const assistantOrderDueSummaryResultSchema = z.object({
   warnings: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
 }).strict();
 
+/** Completed-job reporting is intentionally distinct from due-date and
+ * uninvoiced-order reporting. Its time filter always applies to the canonical
+ * production completion timestamp, not an order status or billing state. */
+export const assistantCompletedJobReportInputSchema = z.object({
+  completed: z.literal("last_week_through_current_week"),
+  customer: assistantOrderDueCustomerFilterSchema,
+  limit: z.number().int().min(1).max(10).optional(),
+}).strict();
+export const assistantCompletedJobReportRowSchema = z.object({
+  productionJobId: assistantSafeIdentifierSchema,
+  orderId: assistantSafeIdentifierSchema,
+  orderNumber: z.string().trim().min(1).max(64),
+  customerName: z.string().trim().min(1).max(240),
+  productOrLineItemDescription: z.string().trim().min(1).max(500),
+  completedAt: assistantIsoDateTimeSchema,
+  quantity: z.number().nonnegative().nullable(),
+  productionStatus: z.string().trim().min(1).max(120),
+  invoiceState: z.string().trim().min(1).max(120).nullable(),
+  sourceLink: assistantSourceLinkSchema,
+  orderSourceLink: assistantSourceLinkSchema,
+}).strict();
+export const assistantCompletedJobReportResultSchema = z.object({
+  totalMatchingJobs: z.number().int().nonnegative(),
+  jobs: z.array(assistantCompletedJobReportRowSchema).max(10),
+  timezone: z.string().trim().min(1).max(80),
+  warnings: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
+}).strict();
+
 export const assistantNavigationCurrentContextInputSchema = z.object({}).strict();
 /** A current-record summary is always server-resolved.  The UI context only
  * nominates a record; it never supplies record attributes or source links. */
@@ -742,6 +771,7 @@ export const assistantStage2CardKindValues = [
   "station_comparison",
   "attention_summary",
   "order_due_summary",
+  "completed_job_summary",
   "urgent_job_list",
   "customer_resolution",
   "customer_product_sales",
