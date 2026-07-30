@@ -2,16 +2,44 @@ export function normalizePbv2ProductIdentity(productId?: string | null): string 
   return typeof productId === "string" && productId.trim().length > 0 ? productId : null;
 }
 
+/**
+ * A product can have more than one DRAFT tree. Keep a requested draft tree in
+ * the hydration identity so changing only the query parameter cannot retain a
+ * dirty tree from a previous editor view of the same product.
+ */
+export function normalizePbv2TreeLoadIdentity(input: {
+  productId?: string | null;
+  requestedDraftTreeVersionId?: string | null;
+}): string | null {
+  const productId = normalizePbv2ProductIdentity(input.productId);
+  if (!productId) return null;
+  const requestedDraftTreeVersionId = normalizePbv2ProductIdentity(input.requestedDraftTreeVersionId);
+  return `${productId}:${requestedDraftTreeVersionId ?? "default"}`;
+}
+
+export function shouldWaitForPbv2TreeLoad(input: {
+  productId?: string | null;
+  isTreeLoading: boolean;
+}): boolean {
+  return Boolean(normalizePbv2ProductIdentity(input.productId) && input.isTreeLoading);
+}
+
 export function shouldBlockPbv2TreeHydration(input: {
   isLocalDirty: boolean;
   hasLocalTree: boolean;
   lastLoadedProductId?: string | null;
   productId?: string | null;
+  lastLoadedTreeIdentity?: string | null;
+  treeIdentity?: string | null;
 }): boolean {
+  const hasTreeIdentities = input.lastLoadedTreeIdentity !== undefined || input.treeIdentity !== undefined;
+  const sameTree = hasTreeIdentities
+    ? input.lastLoadedTreeIdentity === input.treeIdentity
+    : normalizePbv2ProductIdentity(input.lastLoadedProductId) === normalizePbv2ProductIdentity(input.productId);
   return (
     input.isLocalDirty &&
     input.hasLocalTree &&
-    normalizePbv2ProductIdentity(input.lastLoadedProductId) === normalizePbv2ProductIdentity(input.productId)
+    sameTree
   );
 }
 
@@ -62,6 +90,8 @@ export function hasUsablePbv2BuilderTree(treeJson: unknown): boolean {
 export function choosePbv2BuilderTreeSource(input: {
   draft?: Pbv2TreeVersionLike;
   active?: Pbv2TreeVersionLike;
+  /** An explicit draft ID is an ownership-scoped request, never a fallback request. */
+  preferDraft?: boolean;
 }): {
   source: Pbv2TreeVersionLike | null;
   sourceKind: "DRAFT" | "ACTIVE" | null;
@@ -75,6 +105,15 @@ export function choosePbv2BuilderTreeSource(input: {
 
   if (draft && draftUsable) {
     return { source: draft, sourceKind: "DRAFT", repairedFromActive: false, reason: "draft" };
+  }
+
+  // A requested DRAFT version must never silently become the active/default
+  // tree. The route has already confirmed that the requested ID belongs to the
+  // product and tenant; an empty requested DRAFT remains the requested tree.
+  if (input.preferDraft) {
+    return draft
+      ? { source: draft, sourceKind: "DRAFT", repairedFromActive: false, reason: "empty_draft" }
+      : { source: null, sourceKind: null, repairedFromActive: false, reason: "none" };
   }
 
   if (active && activeUsable) {

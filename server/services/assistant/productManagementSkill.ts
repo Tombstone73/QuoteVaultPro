@@ -28,13 +28,16 @@ import { productPricingChangeSetCommandName, productPricingRollbackCommandName }
 import { productPricingChangeSetService } from "./execution/productPricingChangeSetAdapter";
 import { pricingChangeRequestFromMessage } from "./productPricingChangeSetParsing";
 import { productPricingChangeSetStore } from "./productPricingChangeSetDb";
+import { configurableProductDraftCommandName } from "./execution/configurableProductDraftCommand";
+import { applyComplexProductConversationEdit, createInitialComplexProductSpecification, routeComplexProductMessage } from "./complexProductConversation";
+import { getComplexProductConfirmation, persistComplexProductProposal, resolveConfigurableProductContinuation, updateComplexProductProposal } from "./complexProductDraftPersistence";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
   version: "v1",
   purpose: "Conversationally create or continue validated inactive product drafts using the existing Product Intake workflow.",
   allowedReadDomains: ["products", "product_categories", "pbv2_definitions", "pricing_methods", "materials", "production_routing", "option_definitions", "formula_library_metadata"],
-  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1"],
+  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1", "products.create_configurable_draft@v1"],
   requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch", "assistant.products.adjust_pricing"],
   requiredContext: ["organization", "authenticated_internal_actor", "conversation"],
   confirmationPolicy: "dedicated_plan_confirmation",
@@ -294,7 +297,48 @@ export class ProductManagementSkillService {
     };
   }
 
-  async respond(input: { organizationId: string; userId: string; conversationId?: string; message: string; activeSessionId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+  async respond(input: { organizationId: string; userId: string; conversationId?: string; message: string; activeSessionId?: string | null; activeConfigurableProposalId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    // This intentionally precedes pricing and inactive-draft routing.  Its only
+    // state is the one tenant-scoped proposal bound to this conversation.
+    const configurableRoute = routeComplexProductMessage(input.message) === "configurable";
+    let existingConfigurableProposal: Awaited<ReturnType<typeof resolveConfigurableProductContinuation>> = null;
+    // Conversation state, not a fragile continuation-keyword classifier, owns
+    // an in-progress configurable draft. Resolve it before Production routing
+    // can reinterpret a later correction such as "Flatbed" or "$25".
+    if (input.conversationId) {
+      try {
+        existingConfigurableProposal = await resolveConfigurableProductContinuation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId, priorProposalId: input.activeConfigurableProposalId });
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "The configurable-product proposal could not be resolved safely.";
+        return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Configurable product needs correction", summary: "No proposal was updated and no executable action was created.", sourceLinks: [], details: { errors: [message] } }] };
+      }
+    }
+    if (configurableRoute || existingConfigurableProposal) {
+      if (!input.conversationId) return { handled: true, response: "A configurable product needs an active conversation before I can preserve its proposal and confirmation state. No product was changed.", cards: [{ kind: "product_validation_errors", title: "Conversation required", summary: "No configurable-product proposal was created without a conversation binding.", sourceLinks: [], details: { errors: ["Conversation binding is required."] } }] };
+      try {
+        const existing = existingConfigurableProposal;
+        const specification = existing
+          ? applyComplexProductConversationEdit(existing.specification as any, input.message)
+          : createInitialComplexProductSpecification(input.message);
+        let proposalId: string;
+        if (existing) {
+          const saved = await updateComplexProductProposal({ organizationId: input.organizationId, proposalId: existing.id, specification });
+          proposalId = saved.proposal.id;
+        } else {
+          const saved = await persistComplexProductProposal({ organizationId: input.organizationId, conversationId: input.conversationId, actorUserId: input.userId, specification });
+          if (!saved.id) throw new Error("The configurable-product proposal could not be persisted.");
+          proposalId = saved.id;
+        }
+        const confirmation = await getComplexProductConfirmation(input.organizationId, proposalId);
+        if (!confirmation) throw new Error("The configurable-product proposal could not be hydrated.");
+        const cards: ProductManagementCard[] = [{ kind: "product_batch_preview", title: "Configurable product draft", summary: confirmation.goEligible ? "The persisted configurable-product proposal is ready for a dedicated confirmation plan." : "The persisted configurable-product proposal needs the listed blockers resolved before it can be confirmed.", sourceLinks: [], details: { configurableProduct: confirmation } }];
+        if (confirmation.goEligible) cards.push({ kind: "action_proposal", title: "Create configurable inactive product draft", summary: "GO creates exactly this persisted inactive product with a PBV2 DRAFT tree. It cannot activate or publish the product.", sourceLinks: [], plan: { action: configurableProductDraftCommandName, proposalId: confirmation.proposalId, fingerprint: confirmation.fingerprint, configurableProduct: confirmation } });
+        return { handled: true, response: confirmation.goEligible ? "I updated the configurable-product proposal and prepared its bound confirmation action." : `I updated the configurable-product proposal. Resolve ${confirmation.blockers.length} blocker(s) before confirmation can be created.`, cards };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "The configurable-product proposal could not be updated.";
+        return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Configurable product needs correction", summary: "No executable action was created.", sourceLinks: [], details: { errors: [message] } }] };
+      }
+    }
     if (/\bresume\b[\s\S]{0,80}\b(?:batch|rows?)\b/i.test(input.message) && input.conversationId) {
       const [batch] = await productInactiveDraftBatchHistoryService.list(input.organizationId, { conversationId: input.conversationId, limit: 1 });
       if (!batch) return { handled: true, response: "No persisted product batch exists in this conversation to resume.", cards: [] };

@@ -110,10 +110,7 @@ export function useSendAssistantTurn() {
       message: string;
       context: AssistantContextEnvelope;
     }) => {
-      const response = await apiRequest("POST", `/api/assistant/conversations/${conversationId}/turns`, {
-        message,
-        context,
-      });
+      const response = await apiRequest("POST", `/api/assistant/conversations/${conversationId}/turns`, assistantTurnRequestBody(message, context));
       return response.json();
     },
     onSuccess: (_result, variables) => {
@@ -121,6 +118,12 @@ export function useSendAssistantTurn() {
       queryClient.invalidateQueries({ queryKey: [...conversationsKey, variables.conversationId] });
     },
   });
+}
+
+/** The assistant turn body deliberately keeps all internal whitespace intact;
+ * Markdown tables and CSV-style messages depend on their original newlines. */
+export function assistantTurnRequestBody(message: string, context: AssistantContextEnvelope) {
+  return { message, context };
 }
 
 /** Selects an opaque candidate from a server-persisted report-resolution set.

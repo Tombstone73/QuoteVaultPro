@@ -15,7 +15,7 @@ const context = {
   selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-21T12:00:00.000Z", unsavedChanges: false,
 } as const;
 
-function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void } = {}) {
+function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void; onCreatePlan?: (turnId: string) => Promise<unknown> } = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -147,6 +147,33 @@ describe("Assistant workspace presentation", () => {
     const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Show incomplete line items") as HTMLButtonElement;
     act(() => button.click());
     expect(onSubmitSuggestion).toHaveBeenCalledWith("Show incomplete line items for overdue orders.");
+    act(() => root.unmount());
+  });
+
+  test("renders the dedicated configurable-product card from a hydrated persisted proposal", () => {
+    const createdPlanTurns: string[] = [];
+    const onCreatePlan = async (turnId: string) => { createdPlanTurns.push(turnId); };
+    const configurableProduct = {
+      kind: "configurable_product_confirmation", version: "v1", proposalId: "11111111-1111-4111-8111-111111111111", fingerprint: "a".repeat(64),
+      product: { name: "AI VALIDATION 19K PVC", category: "Rigid Substrates", inactive: true, pbv2Status: "DRAFT", unpublished: true, nonLiveQuotable: true, requiresDimensions: true, materialForm: "sheet", sheetWidthIn: 48, sheetHeightIn: 96, allowRotation: true, route: "Flatbed", minimumChargeCents: 2500 },
+      optionGroups: [{ key: "thickness", name: "Thickness", required: true, selectionMode: "single", values: [{ value: "3mm", label: "3mm" }, { value: "6mm", label: "6mm" }, { value: "12mm", label: "12mm" }, { value: "18mm", label: "18mm" }] }, { key: "printed_sides", name: "Printed Sides", required: true, selectionMode: "single", values: [{ value: "single", label: "Single-sided" }, { value: "double", label: "Double-sided" }] }],
+      matrix: { rowValues: ["3mm", "6mm", "12mm", "18mm"], columnValues: ["Single-sided", "Double-sided"], cells: { "3mm:Single-sided": 450, "3mm:Double-sided": 575, "6mm:Single-sided": 625, "6mm:Double-sided": 775, "12mm:Single-sided": 975, "12mm:Double-sided": 1150, "18mm:Single-sided": 1250, "18mm:Double-sided": 1475 }, pricingComponent: "per_square_foot" },
+      assumptions: [], warnings: ["Review before confirmation."], blockers: [], readiness: { ready: true, blockers: [], warnings: ["Review before confirmation."] }, goEligible: true,
+    };
+    const plan = { action: "products.create_configurable_draft", proposalId: configurableProduct.proposalId, fingerprint: configurableProduct.fingerprint, configurableProduct };
+    const { container, root } = render([{ kind: "action_proposal", title: "Create configurable inactive product draft", summary: "", sourceLinks: [], plan, proposal: { ...plan, turnId: "turn_19k" } }], { onCreatePlan });
+
+    expect(container.querySelector('[aria-label="Configurable product confirmation: AI VALIDATION 19K PVC"]')).not.toBeNull();
+    expect(container.textContent).toContain("Inactive · PBV2 DRAFT · Unpublished");
+    expect(container.textContent).toContain("48 × 96 in");
+    expect(container.textContent).toContain("Rotation: Allowed");
+    expect(container.textContent).toContain("Route: Flatbed");
+    expect(container.textContent).toContain("$25.00");
+    expect(container.textContent).toContain("$14.75");
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(4);
+    const review = Array.from(container.querySelectorAll("button")).find((button) => button.textContent === "Review configurable-product plan") as HTMLButtonElement;
+    act(() => review.click());
+    expect(createdPlanTurns).toEqual(["turn_19k"]);
     act(() => root.unmount());
   });
 });

@@ -156,6 +156,16 @@ describe("assistant command registry", () => {
     ]);
   });
 
+  it("explicitly approves the reviewed configurable-product draft command", () => {
+    const commandName = "products.create_configurable_draft";
+    const registry = createProductionAssistantCommandRegistry({
+      ...testCommand(), name: commandName, domain: "products", requiredCapability: "assistant.products.create_inactive_draft",
+      testOnly: false, devEnabled: true, mainEnabled: true,
+    });
+    expect(assistantProductionCommandAllowlist).toContain(commandName);
+    expect(registry.list()).toEqual([expect.objectContaining({ name: commandName, version: "v1" })]);
+  });
+
   it("uses server-shaped idempotency keys and binds hashes to the complete request", () => {
     const key = createAssistantCommandIdempotencyKey("plan_1");
     expect(assertAssistantCommandIdempotencyKey(key)).toBe(key);

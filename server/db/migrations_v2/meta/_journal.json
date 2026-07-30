@@ -1077,6 +1077,13 @@
       "idx": 159,
       "version": "7",
       "when": 1788048000005,
+      "tag": "0159_ai_configurable_product_proposals",
+      "breakpoints": true
+    },
+    {
+      "idx": 160,
+      "version": "7",
+      "when": 1788048000006,
       "tag": "0159_roll_linear_inventory_precision",
       "breakpoints": true
     }

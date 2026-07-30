@@ -34,6 +34,7 @@ import {
 import { deterministicOrderLookupTarget, deterministicSearchTarget, resolveDeterministicReadPlan } from "./deterministicReadRouting";
 import { AnalyticalCustomerResolutionService, type PersistedAnalyticalResolution } from "./analyticalCustomerResolution";
 import { resolveSystemGuideAnswer } from "./systemGuide";
+import { resolveConfigurableProductContinuation } from "./complexProductDraftPersistence";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
@@ -251,6 +252,18 @@ function activeProductIntakeSession(messages: AssistantMessageRecord[]): string 
   return null;
 }
 
+function activeConfigurableProductProposalId(messages: AssistantMessageRecord[]): string | null {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    for (const card of [...(message.structuredCards ?? [])].reverse()) {
+      const candidate = card as { details?: { configurableProduct?: { proposalId?: unknown } }; plan?: { action?: unknown; proposalId?: unknown } };
+      if (candidate.plan?.action === "products.create_configurable_draft" && typeof candidate.plan.proposalId === "string") return candidate.plan.proposalId;
+      if (typeof candidate.details?.configurableProduct?.proposalId === "string") return candidate.details.configurableProduct.proposalId;
+    }
+  }
+  return null;
+}
+
 export class AssistantService {
   constructor(
     private readonly repo: AssistantRepository,
@@ -440,17 +453,35 @@ export class AssistantService {
 
     const correlationId = crypto.randomUUID();
     // System Guide answers are local, read-only, and sourced from the
-    // versioned manifest/approved corpus. They intentionally remain useful
-    // when a configured provider is unavailable; no business tool or mutation
-    // is involved in this path.
+    // versioned manifest/approved corpus. A guide phrase such as "Flatbed"
+    // must not intercept a valid, server-persisted configurable-product
+    // continuation before Product Management can handle it.
     const systemGuide = resolveSystemGuideAnswer(request.message, request.context);
+    let preloadedConversation: Awaited<ReturnType<typeof this.repo.getConversation>> | null = null;
     if (systemGuide) {
-      return this.persistResponse({
-        scope, conversationId, actor, request, correlationId,
-        response: systemGuide.response,
-        status: "responded",
-        structuredCards: systemGuide.cards,
-      });
+      preloadedConversation = await this.repo.getConversation({ ...scope, conversationId });
+      if (!preloadedConversation) throw this.notFound();
+      let deferSystemGuide = false;
+      try {
+        deferSystemGuide = Boolean(await resolveConfigurableProductContinuation({
+          organizationId: scope.organizationId,
+          actorUserId: actor.userId,
+          conversationId: preloadedConversation.id,
+          priorProposalId: activeConfigurableProductProposalId(preloadedConversation.messages),
+        }));
+      } catch {
+        // Ambiguous, stale, or cross-actor continuation state must fail closed
+        // through Product Management rather than falling through to a guide.
+        deferSystemGuide = true;
+      }
+      if (!deferSystemGuide) {
+        return this.persistResponse({
+          scope, conversationId, actor, request, correlationId,
+          response: systemGuide.response,
+          status: "responded",
+          structuredCards: systemGuide.cards,
+        });
+      }
     }
     if (!capability.toolsEnabled) {
       return this.persistResponse({
@@ -484,8 +515,13 @@ export class AssistantService {
       // server-registered quote-note action; execution still requires a
       // server-created plan, confirmation token, reauthorization, and domain
       // service revalidation.
-      const conversation = await this.repo.getConversation({ ...scope, conversationId });
+      const conversation = preloadedConversation ?? await this.repo.getConversation({ ...scope, conversationId });
       if (!conversation) throw this.notFound();
+      // The repository-owned ID is the canonical continuation identity.  Do
+      // not make a persisted configurable proposal depend on a route/client
+      // alias once the conversation has been tenant- and actor-scoped.
+      const canonicalConversationId = conversation.id;
+      const activeConfigurableProposalId = activeConfigurableProductProposalId(conversation.messages);
       const quoteDraft = await quoteDraftIntakeService.respond({
         organizationId: scope.organizationId,
         userId: actor.userId,
@@ -522,6 +558,23 @@ export class AssistantService {
         provider = "local_crm_intake";
         model = "conversational-crm-intake-v1";
       } else {
+      // A configurable-product proposal is conversation-bound. It must see
+      // its incremental corrections before broad operational responders can
+      // reinterpret route, sheet, or minimum-charge wording as a lookup.
+      const productManagement = await productManagementSkillService.respond({
+        organizationId: scope.organizationId,
+        userId: actor.userId,
+        conversationId: canonicalConversationId,
+        message: request.message,
+        activeSessionId: activeProductIntakeSession(conversation.messages),
+        activeConfigurableProposalId,
+      });
+      if (productManagement.handled) {
+        response = productManagement.response;
+        cards = productManagement.cards as AssistantResultCard[];
+        provider = "local_product_intake";
+        model = "product-management-skill-v1";
+      } else {
       const productionIntake = await productionOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
       if (productionIntake.handled) {
         response = productionIntake.response;
@@ -535,19 +588,6 @@ export class AssistantService {
       if (billingIntake.handled) { response = billingIntake.response; cards = billingIntake.cards as AssistantResultCard[]; provider = "local_billing_intake"; model = "conversational-billing-intake-v1"; } else {
       const paymentIntake = await paymentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
       if (paymentIntake.handled) { response = paymentIntake.response; cards = paymentIntake.cards as AssistantResultCard[]; provider = "local_payment_intake"; model = "conversational-payment-intake-v1"; } else {
-      const productManagement = await productManagementSkillService.respond({
-        organizationId: scope.organizationId,
-        userId: actor.userId,
-        conversationId,
-        message: request.message,
-        activeSessionId: activeProductIntakeSession(conversation.messages),
-      });
-      if (productManagement.handled) {
-        response = productManagement.response;
-        cards = productManagement.cards as AssistantResultCard[];
-        provider = "local_product_intake";
-        model = "product-management-skill-v1";
-      } else {
       const quoteNoteIntent = resolveQuoteInternalNoteIntent(request.message, request.context);
       if (quoteNoteIntent.kind === "resolved") {
         response = "I can prepare an internal-only quote note preview. Review it and use the dedicated GO control to continue.";
