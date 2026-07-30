@@ -75,6 +75,26 @@ function requestedResultLimit(value: string | undefined): number {
 /** Explicit order scope is resolved before the production shortcut. The words
  * "overdue" and "due today" alone are not enough to choose a job queue. */
 function orderDueReadPlan(message: string): AssistantProviderPlan | null {
+  const customerWeekRange = /\b(?:report|summary)\s+for\s+(.+?)\s+for\s+(?:all\s+)?(?:production\s+)?(?:jobs?|orders?)\s+(?:that\s+are\s+)?due\s+(?:in\s+|during\s+)?(?:last|previous)\s+week\s+or\s+(?:this|current)\s+week\b/i.exec(message);
+  if (customerWeekRange) {
+    const customerName = customerWeekRange[1]!.trim().replace(/[.?!]+$/, "");
+    if (/^[A-Za-z0-9][A-Za-z0-9 &'.,_-]{0,239}$/.test(customerName)) return plan({
+      intent: "analytical_reporting",
+      selectedSkill: "deterministic_customer_order_due_summary",
+      toolCalls: [{
+        toolName: "orders.get_due_summary",
+        arguments: {
+          due: "last_week_through_current_week",
+          customer: { name: customerName },
+          limit: 10,
+          includeOperationalSummary: true,
+        },
+      }],
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      responseStyle: "concise",
+    });
+  }
   if (resolveExplicitReportingScope(message) !== "order") return null;
   const due = /\bdue\s+today\b/i.test(message) ? "due_today"
     : /\bdue\s+tomorrow\b/i.test(message) ? "due_tomorrow"

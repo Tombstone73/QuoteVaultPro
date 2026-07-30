@@ -45,6 +45,20 @@ function plan(customer: Record<string, string> = { name: "Bright Signs" }) {
   };
 }
 
+function duePlan(customer: Record<string, string> = { name: "Graphic Solutions" }) {
+  return {
+    intent: "analytical_reporting" as const,
+    selectedSkill: "deterministic_customer_order_due_summary" as const,
+    clarificationRequired: false,
+    clarificationQuestion: null,
+    responseStyle: "concise" as const,
+    toolCalls: [{
+      toolName: "orders.get_due_summary" as const,
+      arguments: { due: "last_week_through_current_week", customer, limit: 10, includeOperationalSummary: true },
+    }],
+  };
+}
+
 function persistence(): AnalyticalResolutionPersistence & { rows: Map<string, PersistedAnalyticalResolution> } {
   const rows = new Map<string, PersistedAnalyticalResolution>();
   return {
@@ -153,5 +167,27 @@ describe("analytical customer resolution preflight", () => {
     const original = plan({ name: "Bright Signs" });
     const patched = patchAnalyticalPlanCustomer(original, "Bright Signs", brightMarketing);
     expect(patched).toMatchObject({ toolCalls: [{ arguments: { dateRange: original.toolCalls[0]!.arguments.dateRange, rankingMetric: "revenue", limit: 5, grouping: "category", interactiveReport: true, audience: "customer_safe" } }] });
+  });
+
+  test("resolves the customer filter for an order due report before tool execution", async () => {
+    const store = persistence();
+    const graphicSolutions = { ...brightMarketing, id: "customer-graphic", displayName: "Graphic Solutions" };
+    const resolver = { resolveCustomer: jest.fn(async () => ({ customer: graphicSolutions, alternatives: [], confidence: "exact" as const })) };
+    const service = new AnalyticalCustomerResolutionService(resolver, store);
+
+    await expect(service.preflight({ scope, originalUserRequest: "give me a report for Graphic Solutions", plan: duePlan(), context })).resolves.toMatchObject({
+      kind: "continue",
+      plan: { toolCalls: [{ arguments: { due: "last_week_through_current_week", customer: { id: "customer-graphic", name: "Graphic Solutions" } } }] },
+    });
+    expect(resolver.resolveCustomer).toHaveBeenCalledWith("org-a", "Graphic Solutions");
+  });
+
+  test("pauses an ambiguous customer due report instead of guessing a tenant customer id", async () => {
+    const store = persistence();
+    const resolver = { resolveCustomer: jest.fn(async () => ({ customer: null, alternatives: [brightMarketing, brightOhio], confidence: "ambiguous" as const })) };
+    const service = new AnalyticalCustomerResolutionService(resolver, store);
+
+    await expect(service.preflight({ scope, originalUserRequest: "due report", plan: duePlan(), context })).resolves.toMatchObject({ kind: "awaiting_entity_resolution" });
+    expect(store.pause).toHaveBeenCalledTimes(1);
   });
 });

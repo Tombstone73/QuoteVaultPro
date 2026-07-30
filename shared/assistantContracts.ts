@@ -560,7 +560,13 @@ export const assistantAttentionSummaryResultSchema = z.object({
 /** Order due reporting deliberately has its own order-level contract. It
  * prevents a production-job queue from being used as the headline answer to
  * an order due-date question. */
-export const assistantOrderDueFilterValues = ["overdue", "due_today", "due_tomorrow", "due_within_days", "date_range"] as const;
+export const assistantOrderDueFilterValues = ["overdue", "due_today", "due_tomorrow", "due_within_days", "date_range", "last_week_through_current_week"] as const;
+export const assistantOrderDueCustomerFilterSchema = z.object({
+  id: assistantSafeIdentifierSchema.optional(),
+  name: z.string().trim().min(1).max(240).optional(),
+}).strict().refine((value) => Boolean(value.id || value.name), {
+  message: "customer id or name is required",
+});
 export const assistantOrderDueSummaryInputSchema = z.object({
   due: z.enum(assistantOrderDueFilterValues).optional(),
   dueWithinDays: z.number().int().min(1).max(31).optional(),
@@ -568,6 +574,7 @@ export const assistantOrderDueSummaryInputSchema = z.object({
     start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   }).strict().optional(),
+  customer: assistantOrderDueCustomerFilterSchema.optional(),
   status: z.enum(["new", "in_production", "on_hold", "ready_for_shipment", "completed", "closed", "canceled", "cancelled"]).optional(),
   limit: z.number().int().min(1).max(20).optional(),
   includeOperationalSummary: z.boolean().optional(),
