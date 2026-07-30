@@ -15,7 +15,7 @@ const context = {
   selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-21T12:00:00.000Z", unsavedChanges: false,
 } as const;
 
-function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void; onCreatePlan?: (turnId: string) => Promise<unknown> } = {}) {
+function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void; onCreatePlan?: (turnId: string) => Promise<unknown>; onConfirmPlan?: (input: any) => Promise<unknown>; executionPlans?: Record<string, any> } = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -175,5 +175,38 @@ describe("Assistant workspace presentation", () => {
     act(() => review.click());
     expect(createdPlanTurns).toEqual(["turn_19k"]);
     act(() => root.unmount());
+  });
+
+  test("uses the generic server-bound adapter for registered CRM proposals and reports an expired confirmation", async () => {
+    const fingerprint = "a".repeat(64);
+    const onConfirmPlan = jest.fn(async () => { throw new Error('409: {"error":{"message":"The confirmation has expired."}}'); });
+    const cards = [
+      { kind: "crm_operation_proposal", title: "Customer preview", summary: "", sourceLinks: [{ label: "Open Acme", href: "/customers/customer_1" }], details: { commandName: "customers.update_profile", changes: [{ field: "phone", after: "555-0100" }], warnings: ["Verify the new number."] } },
+      { kind: "action_proposal", title: "Confirm customer change", summary: "Update one customer profile.", sourceLinks: [], plan: { action: "customers.update_profile", crmIntakeSessionId: "session_1", proposalFingerprint: fingerprint }, proposal: { action: "customers.update_profile", crmIntakeSessionId: "session_1", proposalFingerprint: fingerprint, turnId: "turn_crm" } },
+    ];
+    const executionPlans = { turn_crm: { turnId: "turn_crm", confirmationToken: "server-token", plan: { id: "plan_crm", action: "customers.update_profile", status: "awaiting_confirmation", planVersion: 1, riskLevel: "high", confirmationAvailable: true, expiresAt: "2030-01-01T00:10:00.000Z", preview: { summary: "Update one customer profile.", affectedEntities: [{ entityId: "customer_1", entityType: "customer", label: "Acme", sourceLink: { href: "/customers/customer_1" } }] }, missingInformation: [], cancellationAvailable: true, steps: [] } } };
+    const { container, root } = render(cards, { executionPlans, onConfirmPlan });
+    expect(container.textContent).toContain("Customers Update Profile");
+    const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: Customers Update Profile']");
+    expect(go).not.toBeNull();
+    await act(async () => { go?.click(); });
+    expect(onConfirmPlan).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan_crm", confirmationToken: "server-token" }));
+    expect(container.textContent).toContain("The confirmation has expired.");
+    act(() => root.unmount());
+  });
+
+  test("reports generic plan-creation failure and renders a replayed successful result", async () => {
+    const fingerprint = "b".repeat(64);
+    const card = { kind: "action_proposal", title: "Confirm invoice", summary: "Create one invoice.", sourceLinks: [], plan: { action: "billing.create_invoice", billingIntakeSessionId: "session_2", proposalFingerprint: fingerprint }, proposal: { action: "billing.create_invoice", billingIntakeSessionId: "session_2", proposalFingerprint: fingerprint, turnId: "turn_billing" } };
+    const failed = render([card], { onCreatePlan: async () => { throw new Error('409: {"error":{"message":"The invoice proposal changed."}}'); } });
+    const review = Array.from(failed.container.querySelectorAll("button")).find((button) => button.textContent === "Review server plan") as HTMLButtonElement;
+    await act(async () => { review.click(); });
+    expect(failed.container.textContent).toContain("The invoice proposal changed.");
+    act(() => failed.root.unmount());
+
+    const replayed = render([card], { executionPlans: { turn_billing: { turnId: "turn_billing", confirmationToken: null, plan: { id: "plan_billing", action: "billing.create_invoice", status: "succeeded", planVersion: 3, riskLevel: "high", confirmationAvailable: false, preview: { summary: "Created invoice INV-1." }, missingInformation: [], cancellationAvailable: false, steps: [{ id: "step_1", label: "billing.create_invoice@v1", status: "succeeded", summary: "Created once." }] } } } });
+    expect(replayed.container.textContent).toContain("Action completed successfully.");
+    expect(replayed.container.querySelector("button[aria-label^='GO:']")).toBeNull();
+    act(() => replayed.root.unmount());
   });
 });
