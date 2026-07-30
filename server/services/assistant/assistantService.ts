@@ -481,7 +481,6 @@ export class AssistantService {
           status: "responded",
           structuredCards: systemGuide.cards,
         });
-        return result;
       }
     }
     if (!capability.toolsEnabled) {
@@ -492,7 +491,6 @@ export class AssistantService {
         errorCode: "provider_unavailable",
         structuredCards: [{ kind: "provider_unavailable", title: "Business questions unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }],
       });
-      return result;
     }
 
     let response = "I could not complete that business lookup.";

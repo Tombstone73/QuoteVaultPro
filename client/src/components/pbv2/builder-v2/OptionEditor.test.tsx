@@ -23,7 +23,7 @@ import type { EditorOption, EditorOptionGroup } from "@/lib/pbv2/pbv2ViewModel";
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
 const thicknessGroup: EditorOptionGroup = { id: "group_thickness", name: "Thickness", description: "", sortOrder: 0, isRequired: true, isMultiSelect: false, optionIds: ["option_thickness"] };
-const thicknessOption: EditorOption = { id: "option_thickness", name: "Thickness", description: "", type: "dropdown", sortOrder: 0, isDefault: false, isRequired: true, selectionKey: "thickness", hasPricing: false, hasProductionFlags: false, hasConditionals: false, hasWeight: false };
+const thicknessOption: EditorOption = { id: "option_thickness", name: "Thickness", description: "", type: "dropdown", enabled: true, sortOrder: 0, isDefault: false, isRequired: true, selectionKey: "thickness", hasPricing: false, hasProductionFlags: false, hasConditionals: false, hasWeight: false };
 
 function sharedProps() {
   return { onAddChoice: jest.fn(), onUpdateChoice: jest.fn(), onDeleteChoice: jest.fn(), onReorderChoice: jest.fn(), onUpdateNodePricing: jest.fn(), onAddPricingRule: jest.fn(), onDeletePricingRule: jest.fn() };
