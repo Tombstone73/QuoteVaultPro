@@ -8,7 +8,7 @@ import type { AssistantAnalyticsCustomerRecord } from "../../storage/assistantAn
 /**
  * The reporting resolution boundary deliberately lives ahead of orchestration.
  * It is the only component that may inspect a customer reference before a
- * financial tool is invoked.  The durable repository is injected so this code
+ * customer-scoped reporting tool is invoked. The durable repository is injected so this code
  * remains usable by the migration-backed implementation without allowing a
  * browser company id to become trusted input.
  */
@@ -109,11 +109,11 @@ export type AnalyticalPreflightResult =
   | { kind: "awaiting_entity_resolution"; resolution: PersistedAnalyticalResolution; message: string }
   | { kind: "persistence_failed"; message: string };
 
-const financialToolNames = new Set(["analytics.customer_product_sales", "analytics.customer_uninvoiced_orders"]);
+const customerScopedReportToolNames = new Set(["analytics.customer_product_sales", "analytics.customer_uninvoiced_orders", "orders.get_due_summary"]);
 
-function financialCustomerReference(plan: AssistantProviderPlan): string | null {
+function customerScopedReportReference(plan: AssistantProviderPlan): string | null {
   for (const call of plan.toolCalls) {
-    if (!financialToolNames.has(call.toolName)) continue;
+    if (!customerScopedReportToolNames.has(call.toolName)) continue;
     const customer = call.arguments.customer;
     if (!customer || typeof customer !== "object" || Array.isArray(customer)) continue;
     const reference = customer as { id?: unknown; name?: unknown };
@@ -134,8 +134,8 @@ function toCandidate(customer: AssistantAnalyticsCustomerRecord): AnalyticalReso
   };
 }
 
-/** Patches only customer references in financial calls. All report dimensions,
- * periods, financial source and presentation requests stay byte-for-byte as
+/** Patches only customer references in customer-scoped report calls. All report dimensions,
+ * periods, source and presentation requests stay byte-for-byte as
  * they appeared in the validated plan. */
 export function patchAnalyticalPlanCustomer(
   rawPlan: unknown,
@@ -146,7 +146,7 @@ export function patchAnalyticalPlanCustomer(
   return assistantProviderPlanSchema.parse({
     ...plan,
     toolCalls: plan.toolCalls.map((call) => {
-      if (!financialToolNames.has(call.toolName)) return call;
+      if (!customerScopedReportToolNames.has(call.toolName)) return call;
       const current = call.arguments.customer;
       if (!current || typeof current !== "object" || Array.isArray(current)) return call;
       const reference = current as { id?: unknown; name?: unknown };
@@ -172,7 +172,7 @@ export class AnalyticalCustomerResolutionService {
     context: AssistantContextEnvelope;
   }): Promise<AnalyticalPreflightResult> {
     const plan = assistantProviderPlanSchema.parse(input.plan);
-    const reference = financialCustomerReference(plan);
+    const reference = customerScopedReportReference(plan);
     if (!reference) return { kind: "not_applicable", plan };
 
     const resolved = await this.resolver.resolveCustomer(input.scope.organizationId, reference);
