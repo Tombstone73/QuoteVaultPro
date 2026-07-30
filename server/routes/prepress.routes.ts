@@ -83,10 +83,12 @@ import {
   writePrepressProductionDestinationOverride,
 } from "@shared/productionStations";
 import {
+  calculateSheetProductionLayout,
   resolveArtworkSideIntent,
   resolveProductionArtworkSideReadiness,
   resolveProductionSides,
   resolveSheetConfiguration,
+  resolveSheetProductionLayoutUnavailableReason,
 } from "@shared/productionHydration";
 import { GENERATED_PROOF_DESCRIPTION_MARKER } from "@shared/prepressFileClassification";
 import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
@@ -961,6 +963,10 @@ export function registerPrepressQueueRoutes(
           productTypeId: products.productTypeId,
           productShopName: products.shopName,
           productPrimaryMaterialId: products.primaryMaterialId,
+          productSheetWidth: products.sheetWidth,
+          productSheetHeight: products.sheetHeight,
+          productMaterialType: products.materialType,
+          productPricingProfileConfig: products.pricingProfileConfig,
           pbv2TreeVersionId: orderLineItems.pbv2TreeVersionId,
           pbv2SnapshotJson: orderLineItems.pbv2SnapshotJson,
           quantity: orderLineItems.quantity,
@@ -1348,6 +1354,35 @@ export function registerPrepressQueueRoutes(
           .map((row) => `${row.optionLabel}: ${row.selectedLabel}`);
         const optionsRows = specificationsDisplay.optionRows;
         const printSides = resolveProductionSides(item);
+        const sheetConfiguration = resolveSheetConfiguration({
+          pbv2SnapshotJson: item.pbv2SnapshotJson,
+          pricingProfileConfig: treeJson?.meta?.pricingProfileConfig ?? item.productPricingProfileConfig,
+          sheetWidth: item.productSheetWidth,
+          sheetHeight: item.productSheetHeight,
+          materialType: item.productMaterialType,
+        });
+        const productionLayout = calculateSheetProductionLayout({
+          stationKey: destination.selected,
+          materialType: sheetConfiguration.materialType,
+          widthIn: item.width,
+          heightIn: item.height,
+          quantity: item.quantity,
+          sheetWidthIn: sheetConfiguration.sheetWidthIn,
+          sheetHeightIn: sheetConfiguration.sheetHeightIn,
+          allowRotation: sheetConfiguration.allowRotation,
+          sides: printSides,
+        });
+        const productionLayoutUnavailableReason = productionLayout
+          ? null
+          : resolveSheetProductionLayoutUnavailableReason({
+              stationKey: destination.selected,
+              materialType: sheetConfiguration.materialType,
+              widthIn: item.width,
+              heightIn: item.height,
+              quantity: item.quantity,
+              sheetWidthIn: sheetConfiguration.sheetWidthIn,
+              sheetHeightIn: sheetConfiguration.sheetHeightIn,
+            });
         const artworkSideIntent = resolveArtworkSideIntent(item);
         const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
         const activeOwnerIsPrepress = isPrepressOwnershipJob(activeOwner);
@@ -1437,6 +1472,8 @@ export function registerPrepressQueueRoutes(
           finishingBullets,
           optionsRows,
           printSides,
+          productionLayout,
+          productionLayoutUnavailableReason,
           useSameArtworkBothSides: artworkSideIntent.useSameArtworkBothSides,
           sameArtworkFileId: artworkSideIntent.sameArtworkFileId,
         };

@@ -272,6 +272,25 @@ export type PrepressQueueItem = {
     isDefault?: boolean;
   }>;
   printSides?: "Single-sided" | "Double-sided" | "Unknown";
+  productionLayout?: {
+    sheetUsageMethod: "layout_yield" | string;
+    sheetWidthIn: number;
+    sheetHeightIn: number;
+    allowRotation: boolean;
+    sideCount: number;
+    normalPiecesPerSheet: number;
+    rotatedPiecesPerSheet: number;
+    mixedPiecesPerSheet: number;
+    piecesPerSheet: number;
+    fullSheets: number;
+    partialSheetPieces: number;
+    sheetsToPrint: number;
+    totalSheetCount: number;
+    printPasses: number;
+    orientation: "normal" | "rotated" | "mixed";
+    mixedLayoutDescription: string | null;
+  } | null;
+  productionLayoutUnavailableReason?: "not_sheet_job" | "missing_dimensions" | "missing_sheet_configuration" | "layout_error" | string | null;
   useSameArtworkBothSides?: boolean;
   sameArtworkFileId?: string | null;
 };

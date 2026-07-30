@@ -56,4 +56,13 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("labelPlacement: \"after_job_prefix\"");
     expect(source).toContain("setPromotionSourceFile(null)");
   });
+
+  test("mounted Prepress job detail shows sheet-plan data separately from material inventory", () => {
+    expect(source).toContain("Sheet Plan");
+    expect(source).toContain("Production Layout");
+    expect(source).toContain("Inventory usage below remains material consumption and stock availability.");
+    expect(source).toContain("Sheet layout unavailable.");
+    expect(source).toContain("selectedItem?.productionLayout");
+    expect(source).toContain("selectedItem?.productionLayoutUnavailableReason");
+  });
 });

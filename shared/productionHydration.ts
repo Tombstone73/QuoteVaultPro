@@ -1,4 +1,4 @@
-import { calculateSheetYield, parseFormulaBoolean, type SheetYieldOrientation } from "./pbv2/formulaHelpers";
+import { calculateSheetYield, parseFormulaBoolean, type SheetYieldMethod, type SheetYieldOrientation } from "./pbv2/formulaHelpers";
 import { resolveSavedLineItemOptionSelections } from "./lineItemOptionSelections";
 
 export type ProductionSides = "Single-sided" | "Double-sided" | "Unknown";
@@ -47,13 +47,29 @@ export function resolveLineItemProductionArtwork<T extends ProductionArtworkAssi
 }
 
 export type SheetProductionLayout = {
+  sheetUsageMethod: SheetYieldMethod;
   sheetWidthIn: number;
   sheetHeightIn: number;
+  allowRotation: boolean;
+  sideCount: number;
+  normalPiecesPerSheet: number;
+  rotatedPiecesPerSheet: number;
+  mixedPiecesPerSheet: number;
   piecesPerSheet: number;
+  fullSheets: number;
+  partialSheetPieces: number;
   sheetsToPrint: number;
+  totalSheetCount: number;
   printPasses: number;
   orientation: SheetYieldOrientation;
+  mixedLayoutDescription: string | null;
 };
+
+export type SheetProductionLayoutUnavailableReason =
+  | "not_sheet_job"
+  | "missing_dimensions"
+  | "missing_sheet_configuration"
+  | "layout_error";
 
 /** Explains that print passes are sheet impressions derived from sheets and sides. */
 export function describeProductionPrintPasses(input: {
@@ -284,13 +300,48 @@ export function calculateSheetProductionLayout(input: {
   const sheetsToPrint = sheetYield.totalSheetCount;
   const sideCount = input.sides === "Double-sided" ? 2 : 1;
   return {
+    sheetUsageMethod: sheetYield.sheetUsageMethod,
     sheetWidthIn: sheetWidth,
     sheetHeightIn: sheetHeight,
+    allowRotation: sheetYield.allowRotation,
+    sideCount,
+    normalPiecesPerSheet: sheetYield.normalPiecesPerSheet,
+    rotatedPiecesPerSheet: sheetYield.rotatedPiecesPerSheet,
+    mixedPiecesPerSheet: sheetYield.mixedPiecesPerSheet,
     piecesPerSheet,
+    fullSheets: sheetYield.fullSheets,
+    partialSheetPieces: sheetYield.partialSheetPieceCount,
     sheetsToPrint,
+    totalSheetCount: sheetsToPrint,
     printPasses: sheetsToPrint * sideCount,
     orientation: sheetYield.orientationUsed,
+    mixedLayoutDescription: sheetYield.mixedLayoutDescription ?? null,
   };
+}
+
+export function resolveSheetProductionLayoutUnavailableReason(input: {
+  stationKey?: unknown;
+  materialType?: unknown;
+  widthIn?: unknown;
+  heightIn?: unknown;
+  quantity?: unknown;
+  sheetWidthIn?: unknown;
+  sheetHeightIn?: unknown;
+}): SheetProductionLayoutUnavailableReason | null {
+  const station = normalize(input.stationKey);
+  const materialType = normalize(input.materialType);
+  if (station !== "flatbed" || materialType === "roll") return "not_sheet_job";
+
+  const width = finitePositive(input.widthIn);
+  const height = finitePositive(input.heightIn);
+  const quantity = finitePositive(input.quantity);
+  if (!width || !height || !quantity) return "missing_dimensions";
+
+  const sheetWidth = finitePositive(input.sheetWidthIn);
+  const sheetHeight = finitePositive(input.sheetHeightIn);
+  if (!sheetWidth || !sheetHeight) return "missing_sheet_configuration";
+
+  return "layout_error";
 }
 
 /** Selects the snapshot configuration first so production stays tied to what was ordered. */

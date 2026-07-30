@@ -23,7 +23,17 @@ describe("production print passes", () => {
       sides: "Single-sided",
     });
 
-    expect(layout).toMatchObject({ sheetsToPrint: 5, printPasses: 5 });
+    expect(layout).toMatchObject({
+      sheetUsageMethod: "layout_yield",
+      sheetsToPrint: 5,
+      totalSheetCount: 5,
+      fullSheets: 5,
+      partialSheetPieces: 0,
+      piecesPerSheet: 10,
+      printPasses: 5,
+      sideCount: 1,
+      allowRotation: true,
+    });
     expect(describeProductionPrintPasses({ ...layout!, sides: "Single-sided" }))
       .toBe("Single-sided job: 5 sheets");
   });
@@ -41,9 +51,103 @@ describe("production print passes", () => {
       sides: "Double-sided",
     });
 
-    expect(layout).toMatchObject({ sheetsToPrint: 5, printPasses: 10 });
+    expect(layout).toMatchObject({ sheetsToPrint: 5, printPasses: 10, sideCount: 2 });
     expect(describeProductionPrintPasses({ ...layout!, sides: "Double-sided" }))
       .toBe("Double-sided job: 5 sheets \u00d7 2 sides (front + back)");
+  });
+
+  test("carries full and partial sheet details from PBV2 yield", () => {
+    const layout = calculateSheetProductionLayout({
+      stationKey: "flatbed",
+      materialType: "sheet",
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 52,
+      sheetWidthIn: 48,
+      sheetHeightIn: 96,
+      allowRotation: true,
+      sides: "Single-sided",
+    });
+
+    expect(layout).toMatchObject({
+      piecesPerSheet: 10,
+      sheetsToPrint: 6,
+      fullSheets: 5,
+      partialSheetPieces: 2,
+      orientation: "normal",
+    });
+  });
+
+  test("preserves mixed orientation details from canonical sheet-yield logic", () => {
+    const layout = calculateSheetProductionLayout({
+      stationKey: "flatbed",
+      materialType: "sheet",
+      widthIn: 6,
+      heightIn: 4,
+      quantity: 7,
+      sheetWidthIn: 10,
+      sheetHeightIn: 10,
+      allowRotation: true,
+      sides: "Single-sided",
+    });
+
+    expect(layout).toMatchObject({
+      piecesPerSheet: 3,
+      normalPiecesPerSheet: 2,
+      rotatedPiecesPerSheet: 2,
+      mixedPiecesPerSheet: 3,
+      sheetsToPrint: 3,
+      fullSheets: 2,
+      partialSheetPieces: 1,
+      orientation: "mixed",
+      mixedLayoutDescription: "1 normal row(s) x 1; 1 rotated row(s) x 2",
+    });
+  });
+
+  test("keeps rotation disabled when the saved production configuration disallows it", () => {
+    const layout = calculateSheetProductionLayout({
+      stationKey: "flatbed",
+      materialType: "sheet",
+      widthIn: 6,
+      heightIn: 4,
+      quantity: 7,
+      sheetWidthIn: 10,
+      sheetHeightIn: 10,
+      allowRotation: false,
+      sides: "Single-sided",
+    });
+
+    expect(layout).toMatchObject({
+      allowRotation: false,
+      piecesPerSheet: 2,
+      mixedPiecesPerSheet: 3,
+      orientation: "normal",
+    });
+  });
+
+  test("does not produce a sheet layout for roll media or non-flatbed work", () => {
+    expect(calculateSheetProductionLayout({
+      stationKey: "flatbed",
+      materialType: "roll",
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 50,
+      sheetWidthIn: 48,
+      sheetHeightIn: 96,
+      allowRotation: true,
+      sides: "Single-sided",
+    })).toBeNull();
+    expect(calculateSheetProductionLayout({
+      stationKey: "roll",
+      materialType: "sheet",
+      widthIn: 24,
+      heightIn: 18,
+      quantity: 50,
+      sheetWidthIn: 48,
+      sheetHeightIn: 96,
+      allowRotation: true,
+      sides: "Single-sided",
+    })).toBeNull();
   });
 });
 

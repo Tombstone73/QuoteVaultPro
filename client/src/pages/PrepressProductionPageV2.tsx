@@ -59,6 +59,7 @@ import {
 import { resolveProductionArtworkSideReadiness } from "@shared/productionHydration";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
 import { canSelectPrepressCombinedRunItem, getPrepressCombinedRunItemBlocker, validatePrepressCombinedRunSelection } from "@/lib/prepressCombinedRuns";
+import { buildPrepressSheetPlanDisplay, formatPrepressSheetPlanUnavailableReason } from "@/lib/prepressSheetPlan";
 import { ProductionRunPanel } from "@/features/production/ProductionRunPanel";
 
 function promotionTagToPrepressLabel(tag: string): PrepressFileLabel {
@@ -1400,6 +1401,20 @@ export default function PrepressProductionPageV2() {
   const plannedMaterialsMessage = materialsEffectiveData?.message;
   const materialsAvailability = materialsAvailabilityData?.items || [];
   const materialsAllAvailable = materialsAvailabilityData?.allAvailable ?? true;
+  const selectedSheetPlanDisplay = React.useMemo(
+    () => buildPrepressSheetPlanDisplay({
+      layout: selectedItem?.productionLayout,
+      quantity: selectedItem?.quantity ?? null,
+    }),
+    [selectedItem?.productionLayout, selectedItem?.quantity],
+  );
+  const selectedSheetPlanUnavailableMessage = formatPrepressSheetPlanUnavailableReason(
+    selectedItem?.productionLayoutUnavailableReason,
+  );
+  const showSheetPlanFallback =
+    !selectedSheetPlanDisplay &&
+    selectedItem?.selectedProductionDestination === "flatbed" &&
+    Boolean(selectedSheetPlanUnavailableMessage);
   const isOwnedByPrepress = selectedItem?.isActivelyOwnedByPrepress === true;
   const selectedWorkflowState = String(selectedItem?.workflowState || "").toLowerCase();
   const selectedWorkflowDisplay = getPrepressWorkflowDisplay(selectedItem);
@@ -2990,8 +3005,58 @@ export default function PrepressProductionPageV2() {
             </div>
           </section>
 
-          {/* Section 4: Materials Needed */}
+          {/* Section 4: Sheet Plan + Materials Needed */}
           <section>
+            {selectedSheetPlanDisplay ? (
+              <div className="bg-[#1a232e]/70 p-5 border border-[#2d3748]/80 rounded-lg shadow-sm mb-4">
+                <div className="flex items-center justify-between gap-3 mb-3">
+                  <div>
+                    <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Sheet Plan</p>
+                    <p className="text-sm font-semibold text-slate-200 mt-1">{selectedSheetPlanDisplay.primary}</p>
+                  </div>
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-cyan-500 text-cyan-300 bg-cyan-900/20">
+                    Production Layout
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 text-sm">
+                  <div className="rounded border border-slate-700 bg-[#111921] p-3">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-500">Sheet Size</p>
+                    <p className="text-slate-200 font-semibold mt-1">{selectedSheetPlanDisplay.sheetSize}</p>
+                  </div>
+                  <div className="rounded border border-slate-700 bg-[#111921] p-3">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-500">Yield</p>
+                    <p className="text-slate-200 font-semibold mt-1">{selectedSheetPlanDisplay.secondary}</p>
+                  </div>
+                  <div className="rounded border border-slate-700 bg-[#111921] p-3">
+                    <p className="text-[10px] uppercase tracking-widest text-slate-500">Passes</p>
+                    <p className="text-slate-200 font-semibold mt-1">{selectedSheetPlanDisplay.impressions}</p>
+                  </div>
+                </div>
+                {selectedSheetPlanDisplay.layoutDetails.length > 0 ? (
+                  <ul className="mt-3 flex flex-wrap gap-2 text-xs text-slate-400">
+                    {selectedSheetPlanDisplay.layoutDetails.map((detail) => (
+                      <li key={detail} className="rounded border border-slate-700 bg-slate-900/30 px-2 py-1">
+                        {detail}
+                      </li>
+                    ))}
+                  </ul>
+                ) : null}
+                <p className="text-[11px] text-slate-500 mt-3">
+                  Production sheet counts use the saved PBV2 layout yield. Inventory usage below remains material consumption and stock availability.
+                </p>
+              </div>
+            ) : showSheetPlanFallback ? (
+              <div className="bg-[#1a232e]/70 p-5 border border-[#2d3748]/80 rounded-lg shadow-sm mb-4">
+                <div className="flex items-center gap-2 flex-wrap">
+                  <p className="text-xs font-bold uppercase tracking-widest text-slate-500">Sheet Plan</p>
+                  <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded border border-amber-500 text-amber-300 bg-amber-900/20">
+                    Layout Unavailable
+                  </span>
+                </div>
+                <p className="text-sm text-slate-300 mt-2">Sheet layout unavailable.</p>
+                <p className="text-xs text-slate-500 mt-1">{selectedSheetPlanUnavailableMessage}</p>
+              </div>
+            ) : null}
             <div className="bg-[#1a232e]/70 p-5 border border-[#2d3748]/80 rounded-lg shadow-sm">
               <div className="flex items-center justify-between mb-2 gap-3">
                 <div className="flex items-center gap-2 flex-wrap">
