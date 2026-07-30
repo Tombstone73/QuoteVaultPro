@@ -20,7 +20,7 @@ import { stringifyPbv2TreeJson } from "@shared/pbv2/starterTree";
 import { buildSymbolTable } from "@shared/pbv2/symbolTable";
 import { pbv2ToPricingAddons, pbv2ToWeightTotal } from "@shared/pbv2/pricingAdapter";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
-import { choosePbv2BuilderTreeSource, normalizePbv2ProductIdentity, shouldBlockPbv2TreeHydration } from "@shared/pbv2/draftTreeHydration";
+import { choosePbv2BuilderTreeSource, normalizePbv2ProductIdentity, normalizePbv2TreeLoadIdentity, shouldBlockPbv2TreeHydration, shouldWaitForPbv2TreeLoad } from "@shared/pbv2/draftTreeHydration";
 import type { Finding } from "@shared/pbv2/findings";
 import type { ValidationResult } from "@shared/pbv2/validator/types";
 import type { ProductOptionRule } from "@shared/productOptionRules";
@@ -348,7 +348,7 @@ export default function PBV2ProductBuilderSectionV2({
   
   // Dirty lock: Prevent server sync from overwriting local edits
   const [isLocalDirty, setIsLocalDirty] = useState(false);
-  const lastLoadedProductIdRef = useRef<string | null>(null);
+  const lastLoadedTreeIdentityRef = useRef<string | null>(null);
   
   // Saving lock: Prevent nav guard from blocking during save
   const [isSaving, setIsSaving] = useState(false);
@@ -406,6 +406,7 @@ export default function PBV2ProductBuilderSectionV2({
   const draft = treeQuery.data?.data?.draft ?? null;
   const active = treeQuery.data?.data?.active ?? null;
   const requestedDraftLoadError = Boolean(requestedDraftTreeVersionId && treeQuery.data && !treeQuery.data.success);
+  const treeLoadIdentity = normalizePbv2TreeLoadIdentity({ productId, requestedDraftTreeVersionId });
 
   // Expose method to get current tree for external persistence (product creation)
   // CRITICAL: Reads from ref, not state, to avoid stale closure
@@ -470,7 +471,7 @@ export default function PBV2ProductBuilderSectionV2({
         hasDraft: !!draft,
         hasLocal: !!localTreeJson,
         isLocalDirty,
-        lastLoadedProductId: lastLoadedProductIdRef.current,
+        lastLoadedTreeIdentity: lastLoadedTreeIdentityRef.current,
       });
     }
   }, [productId, draft, localTreeJson, isLocalDirty]);
@@ -479,13 +480,21 @@ export default function PBV2ProductBuilderSectionV2({
   useEffect(() => {
     const effectiveProductId = normalizePbv2ProductIdentity(productId);
 
+    // Do not seed an existing product while its server tree request is still
+    // pending. ProductForm can legitimately write metadata on mount; seeding
+    // first turns that metadata write into a dirty local tree which would then
+    // block the exact requested DRAFT from hydrating.
+    if (shouldWaitForPbv2TreeLoad({ productId, isTreeLoading: treeQuery.isLoading })) {
+      return;
+    }
+
     // DIRTY LOCK: Only block sync if localTreeJson is already populated AND productId hasn't changed
     // CRITICAL: Allow hydration when localTreeJson is null, even if isLocalDirty is true
     if (shouldBlockPbv2TreeHydration({
       isLocalDirty,
       hasLocalTree: Boolean(localTreeJson),
-      lastLoadedProductId: lastLoadedProductIdRef.current,
-      productId,
+      lastLoadedTreeIdentity: lastLoadedTreeIdentityRef.current,
+      treeIdentity: treeLoadIdentity,
     })) {
       if (import.meta.env.DEV) {
         console.log('[PBV2_SYNC_BLOCKED]', {
@@ -499,14 +508,15 @@ export default function PBV2ProductBuilderSectionV2({
     }
     
     // Product changed - reset dirty flag and allow hydration
-    if (lastLoadedProductIdRef.current !== effectiveProductId) {
+    if (lastLoadedTreeIdentityRef.current !== treeLoadIdentity) {
       if (import.meta.env.DEV) {
         console.log('[PBV2_PRODUCT_CHANGED]', {
-          oldProductId: lastLoadedProductIdRef.current,
-          newProductId: effectiveProductId,
+          oldTreeIdentity: lastLoadedTreeIdentityRef.current,
+          newTreeIdentity: treeLoadIdentity,
+          productId: effectiveProductId,
         });
       }
-      lastLoadedProductIdRef.current = effectiveProductId;
+      lastLoadedTreeIdentityRef.current = treeLoadIdentity;
       setIsLocalDirty(false);
     }
     
@@ -612,7 +622,11 @@ export default function PBV2ProductBuilderSectionV2({
     }
 
     // Prefer a usable draft, but repair empty/skeletal draft state from ACTIVE when runtime has a published tree.
-    const sourceChoice = choosePbv2BuilderTreeSource({ draft, active });
+    const sourceChoice = choosePbv2BuilderTreeSource({
+      draft,
+      active,
+      preferDraft: Boolean(requestedDraftTreeVersionId),
+    });
     const sourceTree = sourceChoice.source;
     if (!sourceTree) {
       console.error('[PBV2_LOAD_ERROR] No draft or active tree found, should have been handled above');
@@ -680,7 +694,7 @@ export default function PBV2ProductBuilderSectionV2({
     if (import.meta.env.DEV) {
       console.log('[PBV2_HYDRATE] Dirty flag cleared after tree load from', treeSource);
     }
-  }, [productId, requestedDraftTreeVersionId, requestedDraftLoadError, draft?.id, draft?.treeJson, active?.id, active?.treeJson, isLocalDirty, toast]);
+  }, [productId, requestedDraftTreeVersionId, requestedDraftLoadError, draft?.id, draft?.treeJson, active?.id, active?.treeJson, isLocalDirty, treeLoadIdentity, treeQuery.isLoading, toast]);
 
   // Build editor model from local tree
   const editorModel = useMemo(() => {

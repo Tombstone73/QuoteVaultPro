@@ -120,6 +120,24 @@ describe("Stage 3 execution planning service", () => {
     expect(registered.execute).toHaveBeenCalledTimes(1);
   });
 
+  test("replays a successful configurable-draft execution with the original product and DRAFT tree IDs", async () => {
+    const repo = repository();
+    const registered = command({ execute: jest.fn(async () => ({
+      status: "succeeded" as const,
+      summary: "Created inactive PBV2 DRAFT.",
+      details: { configurableProduct: { productId: "61de0641-9b61-4ee1-b8a2-fa79c6946a99", pbv2TreeVersionId: "0294f126-0e78-4064-b086-fef419fb77be", inactive: true, pbv2Status: "DRAFT" } },
+      steps: [{ commandName: "test.change_order", status: "succeeded" as const, summary: "Created once." }],
+    })) });
+    const service = new ExecutionPlanningService(repo, registry([registered]), { now: () => now, allowTestOnlyExecution: true });
+    const plan = await planReady(service);
+    const issued = await service.issueConfirmation(scope, plan.id, plan.version);
+    const first = await service.confirmAndExecute(scope, { planId: plan.id, expectedVersion: issued.plan.version, token: issued.token, context });
+    const replay = await service.confirmAndExecute(scope, { planId: plan.id, expectedVersion: first.plan.version, token: issued.token, context });
+    expect(first.result?.details).toEqual(replay.result?.details);
+    expect(replay.result?.details).toMatchObject({ configurableProduct: { productId: "61de0641-9b61-4ee1-b8a2-fa79c6946a99", pbv2TreeVersionId: "0294f126-0e78-4064-b086-fef419fb77be", inactive: true, pbv2Status: "DRAFT" } });
+    expect(registered.execute).toHaveBeenCalledTimes(1);
+  });
+
   test("invalidates a changed record before an execution lock is acquired", async () => {
     const repo = repository();
     const registered = command({ revalidate: jest.fn(async () => ({ valid: false as const, code: "RECORD_CHANGED", summary: "Order changed." })) });
