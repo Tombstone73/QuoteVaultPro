@@ -32,9 +32,21 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("Nest Selected");
     expect(source).toContain("Clear selection");
     expect(source).toContain("Ready to nest");
-    expect(source).toContain("getPrepressCombinedRunItemIssue");
+    expect(source).toContain("getPrepressCombinedRunItemBlocker");
+    expect(source).toContain("canSelectPrepressCombinedRunItem");
     expect(source).toContain("Already nested in an active production run.");
     expect(source).toContain("Create Nested Run");
+  });
+
+  test("mounted Nest Selected workflow resolves missing production artwork before creation", () => {
+    expect(source).toContain("Resolve production artwork");
+    expect(source).toContain("Use sole artwork");
+    expect(source).toContain("Assign selected artwork");
+    expect(source).toContain("buildCombinedRunArtworkCandidates");
+    expect(source).toContain("/api/prepress/line-item/${lineItemId}/files");
+    expect(source).toContain("/api/prepress/line-item/${item.lineItemId}/assign-customer-artwork");
+    expect(source).toContain("No customer artwork is available for this line item.");
+    expect(source).toContain("Needs production artwork");
   });
 
   test("mounted Prepress page exposes controlled production artwork copy flow", () => {

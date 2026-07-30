@@ -14,6 +14,21 @@ export type PrepressCombinedRunItem = {
   productionReleaseBlockedReason?: string | null;
 };
 
+export type PrepressCombinedRunBlockerCode =
+  | "resolvable_missing_production_artwork"
+  | "hard_missing_prepress_job"
+  | "hard_missing_order"
+  | "hard_wrong_station"
+  | "hard_invalid_quantity"
+  | "hard_invalid_state"
+  | "hard_proof_blocked";
+
+export type PrepressCombinedRunItemBlocker = {
+  code: PrepressCombinedRunBlockerCode;
+  message: string;
+  resolvable: boolean;
+};
+
 export type PrepressCombinedRunValidation = {
   canCreate: boolean;
   reason: string | null;
@@ -23,22 +38,51 @@ export type PrepressCombinedRunValidation = {
   hasStationConflict: boolean;
   hasMaterialConflict: boolean;
   totalAllocatedQuantity: number;
+  requiresArtworkResolution: boolean;
+  resolvableBlockers: Array<{ lineItemId: string; code: PrepressCombinedRunBlockerCode; message: string }>;
+  hardBlockers: Array<{ lineItemId: string; code: PrepressCombinedRunBlockerCode; message: string }>;
 };
 
 const terminalValues = new Set(["done", "complete", "completed", "void", "canceled", "cancelled"]);
 
-export function getPrepressCombinedRunItemIssue(item: PrepressCombinedRunItem): string | null {
-  if (item.productionReleaseBlockedReason) return item.productionReleaseBlockedReason;
-  if (!item.activeOwnerJobId) return "Selected items must have an active Prepress production job.";
-  if (!item.orderId) return "Selected items must belong to an order.";
-  if (!item.selectedProductionDestination) return "Selected items need a production destination.";
-  if ((Number(item.quantity) || 0) <= 0) return "Selected items must have remaining quantity.";
+export function getPrepressCombinedRunItemBlocker(item: PrepressCombinedRunItem): PrepressCombinedRunItemBlocker | null {
+  if (item.productionReleaseBlockedReason) return { code: "hard_proof_blocked", message: item.productionReleaseBlockedReason, resolvable: false };
+  if (!item.activeOwnerJobId) return { code: "hard_missing_prepress_job", message: "Selected items must have an active Prepress production job.", resolvable: false };
+  if (!item.orderId) return { code: "hard_missing_order", message: "Selected items must belong to an order.", resolvable: false };
+  if (!item.selectedProductionDestination) return { code: "hard_wrong_station", message: "Selected items need a production destination.", resolvable: false };
+  if ((Number(item.quantity) || 0) <= 0) return { code: "hard_invalid_quantity", message: "Selected items must have remaining quantity.", resolvable: false };
   const finalFileCount = Number(item.finalFileCount ?? item.fileCounts?.finals ?? 0);
-  if (finalFileCount <= 0) return "Assign production artwork before adding this job to a combined run.";
+  if (finalFileCount <= 0) return { code: "resolvable_missing_production_artwork", message: "Needs production artwork assignment.", resolvable: true };
   if (terminalValues.has(String(item.status || "").toLowerCase()) || terminalValues.has(String(item.workflowState || "").toLowerCase())) {
-    return "Canceled or terminal items cannot be combined.";
+    return { code: "hard_invalid_state", message: "Canceled or terminal items cannot be combined.", resolvable: false };
   }
   return null;
+}
+
+export function getPrepressCombinedRunItemIssue(item: PrepressCombinedRunItem): string | null {
+  return getPrepressCombinedRunItemBlocker(item)?.message ?? null;
+}
+
+export function canSelectPrepressCombinedRunItem(item: PrepressCombinedRunItem): boolean {
+  const blocker = getPrepressCombinedRunItemBlocker(item);
+  return !blocker || blocker.resolvable;
+}
+
+function baseValidation(args: Partial<PrepressCombinedRunValidation>): PrepressCombinedRunValidation {
+  return {
+    canCreate: false,
+    reason: null,
+    orderId: null,
+    orderIds: [],
+    stationKey: null,
+    hasStationConflict: false,
+    hasMaterialConflict: false,
+    totalAllocatedQuantity: 0,
+    requiresArtworkResolution: false,
+    resolvableBlockers: [],
+    hardBlockers: [],
+    ...args,
+  };
 }
 
 export function validatePrepressCombinedRunSelection(
@@ -47,21 +91,40 @@ export function validatePrepressCombinedRunSelection(
   compatibilityOverrideReason: string,
 ): PrepressCombinedRunValidation {
   if (items.length === 0) {
-    return { canCreate: false, reason: "Select at least two eligible Prepress items.", orderId: null, orderIds: [], stationKey: null, hasStationConflict: false, hasMaterialConflict: false, totalAllocatedQuantity: 0 };
+    return baseValidation({ reason: "Select at least two eligible Prepress items." });
   }
   if (items.length === 1) {
-    return { canCreate: false, reason: "Select at least two eligible Prepress items.", orderId: items[0]?.orderId ?? null, orderIds: items[0]?.orderId ? [items[0].orderId] : [], stationKey: items[0]?.selectedProductionDestination ?? null, hasStationConflict: false, hasMaterialConflict: false, totalAllocatedQuantity: 0 };
+    return baseValidation({ reason: "Select at least two eligible Prepress items.", orderId: items[0]?.orderId ?? null, orderIds: items[0]?.orderId ? [items[0].orderId] : [], stationKey: items[0]?.selectedProductionDestination ?? null });
   }
 
-  const itemIssue = items.map(getPrepressCombinedRunItemIssue).find(Boolean);
   const orderIds = Array.from(new Set(items.map((item) => item.orderId).filter(Boolean)));
   const stationKeys = Array.from(new Set(items.map((item) => item.selectedProductionDestination).filter(Boolean)));
   const materialKeys = Array.from(new Set(items.map((item) => item.materialId || item.materialName || "").filter(Boolean)));
   const hasStationConflict = stationKeys.length > 1;
   const hasMaterialConflict = materialKeys.length > 1;
+  const blockers = items
+    .map((item) => ({ item, blocker: getPrepressCombinedRunItemBlocker(item) }))
+    .filter((entry): entry is { item: PrepressCombinedRunItem; blocker: PrepressCombinedRunItemBlocker } => Boolean(entry.blocker));
+  const hardBlockers = blockers
+    .filter((entry) => !entry.blocker.resolvable)
+    .map((entry) => ({ lineItemId: entry.item.lineItemId, code: entry.blocker.code, message: entry.blocker.message }));
+  const resolvableBlockers = blockers
+    .filter((entry) => entry.blocker.resolvable)
+    .map((entry) => ({ lineItemId: entry.item.lineItemId, code: entry.blocker.code, message: entry.blocker.message }));
+  const requiresArtworkResolution = resolvableBlockers.some((blocker) => blocker.code === "resolvable_missing_production_artwork");
 
-  if (itemIssue) {
-    return { canCreate: false, reason: itemIssue, orderId: orderIds.length === 1 ? orderIds[0] : null, orderIds, stationKey: stationKeys[0] ?? null, hasStationConflict, hasMaterialConflict, totalAllocatedQuantity: 0 };
+  if (hardBlockers.length > 0) {
+    return baseValidation({
+      reason: hardBlockers[0].message,
+      orderId: orderIds.length === 1 ? orderIds[0] : null,
+      orderIds,
+      stationKey: stationKeys[0] ?? null,
+      hasStationConflict,
+      hasMaterialConflict,
+      requiresArtworkResolution,
+      resolvableBlockers,
+      hardBlockers,
+    });
   }
 
   let totalAllocatedQuantity = 0;
@@ -79,9 +142,28 @@ export function validatePrepressCombinedRunSelection(
         hasStationConflict,
         hasMaterialConflict,
         totalAllocatedQuantity,
+        requiresArtworkResolution,
+        resolvableBlockers,
+        hardBlockers,
       };
     }
     totalAllocatedQuantity += value;
+  }
+
+  if (requiresArtworkResolution) {
+    return {
+      canCreate: false,
+      reason: `${resolvableBlockers.length} selected ${resolvableBlockers.length === 1 ? "job needs" : "jobs need"} production artwork before the run can be created.`,
+      orderId: orderIds.length === 1 ? orderIds[0] : null,
+      orderIds,
+      stationKey: stationKeys[0] ?? null,
+      hasStationConflict,
+      hasMaterialConflict,
+      totalAllocatedQuantity,
+      requiresArtworkResolution,
+      resolvableBlockers,
+      hardBlockers,
+    };
   }
 
   if ((hasStationConflict || hasMaterialConflict) && !compatibilityOverrideReason.trim()) {
@@ -94,6 +176,9 @@ export function validatePrepressCombinedRunSelection(
       hasStationConflict,
       hasMaterialConflict,
       totalAllocatedQuantity,
+      requiresArtworkResolution,
+      resolvableBlockers,
+      hardBlockers,
     };
   }
 
@@ -106,5 +191,8 @@ export function validatePrepressCombinedRunSelection(
     hasStationConflict,
     hasMaterialConflict,
     totalAllocatedQuantity,
+    requiresArtworkResolution,
+    resolvableBlockers,
+    hardBlockers,
   };
 }

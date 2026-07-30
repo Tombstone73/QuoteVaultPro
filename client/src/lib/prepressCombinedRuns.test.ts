@@ -1,4 +1,4 @@
-import { validatePrepressCombinedRunSelection, type PrepressCombinedRunItem } from "./prepressCombinedRuns";
+import { canSelectPrepressCombinedRunItem, getPrepressCombinedRunItemBlocker, validatePrepressCombinedRunSelection, type PrepressCombinedRunItem } from "./prepressCombinedRuns";
 
 const baseItem = (overrides: Partial<PrepressCombinedRunItem> = {}): PrepressCombinedRunItem => ({
   lineItemId: "line-1",
@@ -81,10 +81,17 @@ describe("prepress combined run selection", () => {
     ], {}, "").reason).toBe("Cannot release to production until proof approved");
   });
 
-  test("requires assigned production artwork before run creation", () => {
+  test("allows selection with missing production artwork but blocks final run creation", () => {
+    const missingArtwork = baseItem({ finalFileCount: 0 });
+    expect(canSelectPrepressCombinedRunItem(missingArtwork)).toBe(true);
+    expect(getPrepressCombinedRunItemBlocker(missingArtwork)).toMatchObject({
+      code: "resolvable_missing_production_artwork",
+      resolvable: true,
+    });
+
     const result = validatePrepressCombinedRunSelection(
       [
-        baseItem({ finalFileCount: 0 }),
+        missingArtwork,
         baseItem({ lineItemId: "line-2", activeOwnerJobId: "prepress-job-2" }),
       ],
       {},
@@ -92,6 +99,30 @@ describe("prepress combined run selection", () => {
     );
 
     expect(result.canCreate).toBe(false);
-    expect(result.reason).toBe("Assign production artwork before adding this job to a combined run.");
+    expect(result.requiresArtworkResolution).toBe(true);
+    expect(result.resolvableBlockers).toEqual([
+      expect.objectContaining({ lineItemId: "line-1", code: "resolvable_missing_production_artwork" }),
+    ]);
+    expect(result.reason).toBe("1 selected job needs production artwork before the run can be created.");
+  });
+
+  test("hard blockers remain non-selectable and stop run creation", () => {
+    const blocked = baseItem({ activeOwnerJobId: null });
+    expect(canSelectPrepressCombinedRunItem(blocked)).toBe(false);
+    expect(getPrepressCombinedRunItemBlocker(blocked)).toMatchObject({
+      code: "hard_missing_prepress_job",
+      resolvable: false,
+    });
+
+    const result = validatePrepressCombinedRunSelection(
+      [blocked, baseItem({ lineItemId: "line-2", activeOwnerJobId: "prepress-job-2" })],
+      {},
+      "",
+    );
+
+    expect(result.canCreate).toBe(false);
+    expect(result.hardBlockers).toEqual([
+      expect.objectContaining({ lineItemId: "line-1", code: "hard_missing_prepress_job" }),
+    ]);
   });
 });
