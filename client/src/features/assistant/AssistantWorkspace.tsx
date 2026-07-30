@@ -1,7 +1,7 @@
 import * as React from "react";
 import { Bot, Expand, Maximize2, Minus, PanelBottom, PanelLeft, PanelRight, RefreshCw, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSendAssistantTurn, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
@@ -11,6 +11,7 @@ import type { AssistantStructuredCard } from "@shared/assistantContracts";
 import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantProductPricingProposalCard, AssistantQuoteDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantProductPricingProposal, toAssistantQuoteDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
+import { ConfigurableProductConfirmationCardView, toConfigurableProductConfirmation, toConfigurableProductProposal } from "./AssistantConfigurableProductCards";
 import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
 import { AssistantConversationSidebar } from "./AssistantConversationManagement";
@@ -375,6 +376,18 @@ export function ResultCards({
   if (!visibleCards.length) return null;
   const diagnosticCards = visibleCards.filter((card) => ["tool_warning", "provider_unavailable", "permission_denied", "not_found", "partial_result"].includes(card.kind));
   return <div className="mt-3 space-y-3">{visibleCards.map((card, index) => {
+    const configurableProposal = toConfigurableProductProposal(card);
+    if (configurableProposal) {
+      const created = executionPlans[configurableProposal.turnId];
+      if (created) {
+        const planCard = { kind: "action_plan", title: configurableProposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
+        const plan = toAssistantPlanCardModel(planCard);
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
+      }
+      return <ConfigurableProductConfirmationCardView key={`configurable-${configurableProposal.turnId}-${index}`} confirmation={configurableProposal.confirmation} onCreatePlan={() => void onCreatePlan(configurableProposal.turnId)} />;
+    }
+    const configurableBlocked = toConfigurableProductConfirmation((card as any)?.details?.configurableProduct);
+    if (configurableBlocked && !configurableBlocked.ready) return <ConfigurableProductConfirmationCardView key={`configurable-blocked-${index}`} confirmation={configurableBlocked} />;
     const productCard = toAssistantProductManagementCard(card);
     if (productCard) return <AssistantProductManagementCardView key={`product-${productCard.kind}-${index}`} card={productCard} />;
     const pricingProposal = toAssistantProductPricingProposal(card);
@@ -486,6 +499,50 @@ function PresentationControls() {
   );
 }
 
+export function AssistantComposer({
+  value,
+  onChange,
+  onRequestSend,
+  disabled,
+  placeholder,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  onRequestSend: () => void;
+  disabled: boolean;
+  placeholder: string;
+}) {
+  const canSend = Boolean(value.trim()) && !disabled;
+  return <div className="flex items-end gap-2">
+    <Textarea
+      id="assistant-message"
+      value={value}
+      onChange={(event) => onChange(event.target.value)}
+      onKeyDown={(event) => {
+        if (event.key !== "Enter") return;
+        if (event.shiftKey) {
+          event.preventDefault();
+          const start = event.currentTarget.selectionStart ?? value.length;
+          const end = event.currentTarget.selectionEnd ?? start;
+          onChange(`${value.slice(0, start)}\n${value.slice(end)}`);
+          return;
+        }
+        if (!event.nativeEvent.isComposing) {
+          event.preventDefault();
+          if (canSend) onRequestSend();
+        }
+      }}
+      placeholder={placeholder}
+      maxLength={8_000}
+      rows={2}
+      disabled={disabled}
+      className="!min-h-12 max-h-48 resize-y py-2 text-sm leading-5"
+      aria-label="Message the assistant"
+    />
+    <Button type="submit" size="icon" disabled={!canSend} aria-label="Send message"><Send className="h-4 w-4" /></Button>
+  </div>;
+}
+
 function ConversationContent() {
   const { capabilities, presentation, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft, executionPlans, saveExecutionPlan, updateExecutionPlan } = useAssistantWorkspace();
   const enabled = Boolean(capabilities?.enabled && capabilities.conversationsEnabled);
@@ -500,7 +557,6 @@ function ConversationContent() {
   const confirmPlan = useConfirmAssistantQuoteInternalNote();
   const createExecutionPlan = useCreateAssistantExecutionPlan();
   const [optimisticUserMessage, setOptimisticUserMessage] = React.useState<AssistantMessage | null>(null);
-
   React.useEffect(() => {
     if (!activeConversationId && conversations.data?.[0]) setActiveConversationId(conversations.data[0].id);
   }, [activeConversationId, conversations.data]);
@@ -511,8 +567,7 @@ function ConversationContent() {
     setDraft("");
   };
 
-  const submit = async (event: React.FormEvent) => {
-    event.preventDefault();
+  const submitCurrentDraft = async () => {
     const message = draft.trim();
     if (!message || sendTurn.isPending || !toolsEnabled) return;
     setOptimisticUserMessage({ id: `pending-${Date.now()}`, role: "user", content: message, structuredCards: [], provider: null, model: null, correlationId: null, createdAt: new Date().toISOString() });
@@ -528,6 +583,11 @@ function ConversationContent() {
     } catch {
       setOptimisticUserMessage(null);
     }
+  };
+
+  const submit = (event: React.FormEvent) => {
+    event.preventDefault();
+    void submitCurrentDraft();
   };
 
   const submitSuggestedPrompt = async (prompt: string) => {
@@ -647,10 +707,7 @@ function ConversationContent() {
         </div>
         <form className="border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)}>
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
-          <div className="flex gap-2">
-            <Input id="assistant-message" value={draft} onChange={(event) => setDraft(event.target.value)} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} maxLength={8_000} disabled={sendTurn.isPending || !toolsEnabled} />
-            <Button type="submit" size="icon" disabled={!draft.trim() || sendTurn.isPending || !toolsEnabled} aria-label="Send message"><Send className="h-4 w-4" /></Button>
-          </div>
+          <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} disabled={sendTurn.isPending || !toolsEnabled} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} />
           <p className={cn("mt-2 text-xs leading-5 text-muted-foreground", composerHelper.compact && "truncate")} title={composerHelper.compact ? composerHelper.fullText : undefined} aria-label={composerHelper.compact ? composerHelper.fullText : undefined}>{composerHelper.text}</p>
         </form>
       </section>

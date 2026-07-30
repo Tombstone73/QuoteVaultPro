@@ -220,4 +220,30 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).toContain("Resolve validation errors before this draft update can be confirmed.");
     expect(container.querySelector("button[aria-label='GO: update inactive product draft']")).toBeNull();
   });
+
+  it("renders only the dedicated configurable-product GO control for a complete typed preview", () => {
+    const configurablePlan = {
+      kind: "action_plan", title: "Create PVC configurable draft",
+      plan: {
+        id: "plan-configurable-1", action: "products.create_configurable_draft", status: "awaiting_confirmation", planVersion: 4,
+        riskLevel: "high", confirmationAvailable: true, confirmationToken: "configurable-token", expiresAt: "2030-01-01T00:10:00.000Z",
+        preview: { summary: "Create one inactive configurable draft.", configurableProduct: {
+          kind: "configurable_product_confirmation", version: "v1", proposalId: "11111111-1111-4111-8111-111111111111", fingerprint: "a".repeat(64),
+          product: { name: "PVC Panel", category: "Rigid Signs", inactive: true, pbv2Status: "DRAFT", unpublished: true, nonLiveQuotable: true, sheetWidthIn: 48, sheetHeightIn: 96, allowRotation: true, route: "Flatbed", minimumChargeCents: 2500 },
+          optionGroups: [{ key: "thickness", name: "Thickness", required: true, selectionMode: "single", values: [{ value: "3mm", label: "3mm" }, { value: "6mm", label: "6mm" }] }, { key: "sides", name: "Sides", required: true, selectionMode: "single", values: [{ value: "single", label: "Single" }, { value: "double", label: "Double" }] }],
+          matrix: { rowValues: ["3mm", "6mm"], columnValues: ["single", "double"], cells: { "3mm:single": 450, "3mm:double": 550, "6mm:single": 650, "6mm:double": 750 } },
+          warnings: [], blockers: [], readiness: { ready: true }, goEligible: true,
+        } }, missingInformation: [], cancellationAvailable: true, steps: [],
+      },
+    };
+    const confirmed = jest.fn();
+    const onConfirm: NonNullable<React.ComponentProps<typeof AssistantPlanCard>["onConfirm"]> = (input) => { confirmed(input); };
+    act(() => root.render(<AssistantPlanCard card={configurablePlan} context={buildSafeAssistantContext("/products", "Products")} onConfirm={onConfirm} />));
+    expect(container.textContent).toContain("PVC Panel");
+    expect(container.textContent).toContain("Per-square-foot pricing matrix");
+    const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: create configurable inactive product draft']");
+    expect(go).not.toBeNull();
+    act(() => go?.click());
+    expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan-configurable-1", expectedPlanVersion: 4, confirmationToken: "configurable-token" }));
+  });
 });
