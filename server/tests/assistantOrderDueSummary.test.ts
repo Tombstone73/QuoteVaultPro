@@ -74,4 +74,28 @@ describe("assistant order due summary", () => {
     expect(result).toMatchObject({ status: "succeeded", data: { totalMatchingOrders: 21, orders: [], warnings: [expect.stringContaining("first 0 of 21")] } });
     expect(repo.listDueOrders).toHaveBeenCalledWith("org-a", expect.any(Object), expect.objectContaining({ limit: 20 }));
   });
+
+  test("uses the tenant calendar's previous-week-through-current-week inclusive window and customer id", async () => {
+    const repo = repository();
+    const tool = createAssistantOrderDueSummaryToolAdapters({ repository: repo as any, now: () => new Date(capturedAt) })["orders.get_due_summary"]!;
+
+    await tool.execute({ due: "last_week_through_current_week", customer: { id: "customer-graphic", name: "Graphic Solutions" } }, context);
+
+    expect(repo.countDueOrders).toHaveBeenCalledWith("org-a", expect.objectContaining({
+      rangeStart: new Date("2026-07-13T04:00:00.000Z"),
+      rangeEnd: new Date("2026-07-27T04:00:00.000Z"),
+    }), expect.objectContaining({ due: "last_week_through_current_week", customerId: "customer-graphic" }));
+    expect(repo.listDueOrders).toHaveBeenCalledWith("org-a", expect.any(Object), expect.objectContaining({ customerId: "customer-graphic" }));
+  });
+
+  test("returns a valid empty report when a tenant-scoped customer range has no matching jobs", async () => {
+    const repo = repository({ countDueOrders: jest.fn(async () => 0), listDueOrders: jest.fn(async () => []) });
+    const tool = createAssistantOrderDueSummaryToolAdapters({ repository: repo as any, now: () => new Date(capturedAt) })["orders.get_due_summary"]!;
+
+    await expect(tool.execute({ due: "last_week_through_current_week", customer: { id: "customer-graphic" } }, context)).resolves.toMatchObject({
+      status: "succeeded",
+      data: { totalMatchingOrders: 0, orders: [] },
+    });
+    expect(repo.countDueOrders).toHaveBeenCalledWith("org-a", expect.any(Object), expect.objectContaining({ customerId: "customer-graphic" }));
+  });
 });

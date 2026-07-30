@@ -629,7 +629,7 @@ export class AssistantService {
       provider = planned.provider;
       model = planned.model;
       let executablePlan = planned.plan;
-      if (this.reportResolutionService && planned.plan.intent === "analytical_reporting" && !planned.plan.clarificationRequired) {
+      if (this.reportResolutionService && !planned.plan.clarificationRequired) {
         const preflight = await this.reportResolutionService.preflight({
           scope: { ...scope, conversationId },
           originalUserRequest: request.message,
