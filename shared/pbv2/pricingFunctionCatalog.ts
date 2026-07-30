@@ -51,4 +51,13 @@ export const PBV2_PRICING_FUNCTIONS: PricingFunctionDefinition[] = [
     example:
       "sheet_consumption_sqft(24, 18, 91, 48, 96, 24, 12, 32) => 320",
   },
+  {
+    key: "roll_nesting_billable_sqft",
+    signature:
+      "roll_nesting_billable_sqft(w, h, q, printable_width, piece_allowance_x, piece_allowance_y, billing_width_increment, billing_length_increment)",
+    description:
+      "Calculates billable square footage for nested roll-media jobs. It uses printable roll width, total production allowances, quantity rows, and billing panel increments while keeping inventory consumption separate.",
+    example:
+      "roll_nesting_billable_sqft(4, 4, 100, 50, 0.25, 0.25, 12, 12) => 16",
+  },
 ];

@@ -5,16 +5,30 @@ import {
   type MaterialUom,
   type UomConversionMaterial,
 } from "./uomConversions";
+import { calculateRollMediaLayout, deriveRollPrintableWidth, type RollMediaLayoutResult } from "./pbv2/rollMediaLayout";
 
 export type ReservationMaterial = UomConversionMaterial & {
   id?: string | null;
   name?: string | null;
   height?: string | number | null;
+  edgeWasteInPerSide?: string | number | null;
 };
 
 export type FlatSheetReservationContext = {
   pieceWidthIn?: string | number | null;
   pieceHeightIn?: string | number | null;
+  allowRotation?: unknown;
+};
+
+export type RollMediaReservationContext = {
+  finishedWidthIn?: string | number | null;
+  finishedHeightIn?: string | number | null;
+  quantity?: string | number | null;
+  productionAllowanceXIn?: string | number | null;
+  productionAllowanceYIn?: string | number | null;
+  registrationWasteIn?: string | number | null;
+  billingWidthIncrementIn?: string | number | null;
+  billingLengthIncrementIn?: string | number | null;
   allowRotation?: unknown;
 };
 
@@ -25,6 +39,7 @@ type MaterialReservationFailureCode =
   | "missing_sheet_dimensions"
   | "missing_piece_dimensions"
   | "invalid_sheet_layout"
+  | "invalid_roll_layout"
   | "unsupported_conversion";
 
 export type MaterialReservationNormalizationResult =
@@ -32,7 +47,8 @@ export type MaterialReservationNormalizationResult =
       ok: true;
       baseUom: MaterialUom;
       convertedQty: number;
-      method: "configured_unit" | "roll_width" | "flat_sheet_yield";
+      method: "configured_unit" | "roll_width" | "roll_layout" | "flat_sheet_yield";
+      rollLayout?: RollMediaLayoutResult;
       layout?: {
         piecesPerSheet: number;
         sheetsRequired: number;
@@ -103,7 +119,56 @@ export function normalizeMaterialReservation(args: {
   requestedUom: string;
   requestedQty: number;
   flatSheet?: FlatSheetReservationContext;
+  rollMedia?: RollMediaReservationContext;
 }): MaterialReservationNormalizationResult {
+  const requestedUom = normalizeMaterialUnit(args.requestedUom);
+  const inventoryUnit = normalizeMaterialUnit(args.material.inventoryUnit);
+  const consumptionUnit = normalizeMaterialUnit(args.material.consumptionUnit);
+
+  if (
+    args.material.materialForm === "roll" &&
+    inventoryUnit === "linear_foot" &&
+    consumptionUnit === "linear_foot" &&
+    requestedUom === "linear_foot" &&
+    args.rollMedia
+  ) {
+    try {
+      const physicalRollWidthIn = positiveNumber(args.material.width);
+      const edgeWasteInPerSide = Number(args.material.edgeWasteInPerSide ?? 0);
+      const printableWidthIn = deriveRollPrintableWidth({ physicalRollWidthIn, edgeWasteInPerSide });
+      const layout = calculateRollMediaLayout({
+        finishedWidthIn: Number(args.rollMedia.finishedWidthIn),
+        finishedHeightIn: Number(args.rollMedia.finishedHeightIn),
+        quantity: Number(args.rollMedia.quantity),
+        physicalRollWidthIn,
+        printableWidthIn,
+        edgeWasteInPerSide,
+        productionAllowanceXIn: Number(args.rollMedia.productionAllowanceXIn ?? 0),
+        productionAllowanceYIn: Number(args.rollMedia.productionAllowanceYIn ?? 0),
+        registrationWasteIn: Number(args.rollMedia.registrationWasteIn ?? 0),
+        billingWidthIncrementIn: Number(args.rollMedia.billingWidthIncrementIn ?? 12),
+        billingLengthIncrementIn: Number(args.rollMedia.billingLengthIncrementIn ?? 12),
+        allowRotation: args.rollMedia.allowRotation,
+        materialId: args.material.id ?? null,
+        materialName: args.material.name ?? null,
+      });
+      return {
+        ok: true,
+        baseUom: inventoryUnit,
+        convertedQty: roundMaterialQuantity(layout.actualConsumedLinearFeet),
+        method: "roll_layout",
+        rollLayout: layout,
+      };
+    } catch (error: any) {
+      return failure({
+        material: args.material,
+        requestedUom: args.requestedUom,
+        code: "invalid_roll_layout",
+        detail: error?.message || "Roll layout could not be calculated for linear-foot reservation.",
+      });
+    }
+  }
+
   const direct = convertReservationInputToBaseQty({
     material: args.material,
     inputUom: args.requestedUom,
@@ -118,9 +183,6 @@ export function normalizeMaterialReservation(args: {
     };
   }
 
-  const requestedUom = normalizeMaterialUnit(args.requestedUom);
-  const inventoryUnit = normalizeMaterialUnit(args.material.inventoryUnit);
-  const consumptionUnit = normalizeMaterialUnit(args.material.consumptionUnit);
   const inventoryCountsSheets = inventoryUnit === "sheet"
     || (inventoryUnit === "each" && consumptionUnit === "sheet");
 
@@ -215,6 +277,7 @@ export function buildNormalizedMaterialReservationPlan(args: {
   requests: MaterialReservationRequest[];
   materials: ReservationMaterial[];
   flatSheet?: FlatSheetReservationContext;
+  rollMedia?: RollMediaReservationContext;
 }):
   | { ok: true; reservations: NormalizedMaterialReservation[] }
   | { ok: false; error: Extract<MaterialReservationNormalizationResult, { ok: false }> } {
@@ -234,6 +297,7 @@ export function buildNormalizedMaterialReservationPlan(args: {
       requestedUom: request.uom,
       requestedQty: request.qty,
       flatSheet: args.flatSheet,
+      rollMedia: args.rollMedia,
     });
     if (!normalized.ok) return { ok: false, error: normalized };
 

@@ -47,6 +47,11 @@ import {
   type Pbv2TierResolutionWarning,
 } from '../../../shared/pbv2/pricingAdapter';
 import { calculateSheetYield, extractFormulaVariables, parseFormulaBoolean, sheetConsumptionSqft } from '../../../shared/pbv2/formulaHelpers';
+import {
+  calculateRollMediaLayout,
+  rollNestingBillableSqft,
+  type RollMediaLayoutResult,
+} from '../../../shared/pbv2/rollMediaLayout';
 import { getProductAllowRotation, parseProductPricingBoolean } from '../../../shared/pbv2/productPricingRotation';
 import { resolvePbv2RuntimeDimensions } from '../../../shared/pbv2/fixedDimensions';
 import { dimensionsForProductPricing } from '../../../shared/productMeasurementMode';
@@ -152,6 +157,7 @@ export type PBV2RuntimePricingSnapshot = {
   finalTotalSource?: "formula" | "pbv2_base" | "manual_override";
   finalTotal?: number;
   sheetYield?: NonNullable<PricingPreviewEvaluationResult["debug"]>["sheetYield"];
+  rollLayout?: RollMediaLayoutResult | null;
   calculatedPrice: number;
   capturedAt: string;
   resolvedWeightDebug?: PBV2ResolvedWeightSnapshotDebug;
@@ -380,6 +386,7 @@ export type PricingPreviewEvaluationResult = {
       totalSheetCount?: number | null;
       available?: boolean;
     };
+    rollLayout?: RollMediaLayoutResult | null;
     tierResolution?: PBV2TierResolutionSnapshot;
     runtimeSelectionContext?: OptionRuntimeSelectionContext;
     weight?: {
@@ -1161,6 +1168,12 @@ export function evaluatePricingPreviewFromTree(input: {
       selectedRate: formulaDebug.selectedRate,
       finalFormulaTotal: formulaDebug.finalFormulaTotal,
       sheetYield: formulaDebug.sheetYield,
+      rollLayout: buildRollLayoutFromFormulaScope({
+        formulaScope: formulaDebug.variables,
+        orderedWidthIn: baseDetails.orderedWidthIn,
+        orderedHeightIn: baseDetails.orderedHeightIn,
+        quantity,
+      }),
       formulaEvaluatedTotal: pricingDebug.formulaEvaluatedTotal,
       rawBasePrice: pricingDebug.rawBasePrice,
       evaluatedFormulaTotalRaw: pricingDebug.evaluatedFormulaTotalRaw,
@@ -4162,6 +4175,12 @@ function buildRuntimePricingSnapshot(input: {
     formulaVariables,
     pricingMatrixVariables: input.pricingMatrixResolution.variables,
   });
+  const rollLayout = buildRollLayoutFromFormulaScope({
+    formulaScope: formulaDebug.variables,
+    orderedWidthIn,
+    orderedHeightIn,
+    quantity: input.quantity,
+  });
   const hasMatrixBasePrice = typeof input.pricingMatrixResolution.variables.base_price === "number";
 
   return cloneJsonValue({
@@ -4209,6 +4228,7 @@ function buildRuntimePricingSnapshot(input: {
       ? input.formulaBasePrice.finalTotalCents / 100
       : input.calculatedPriceCents / 100,
     sheetYield: formulaDebug.sheetYield,
+    rollLayout,
     calculatedPrice: input.calculatedPriceCents / 100,
     capturedAt: input.capturedAt,
     ...(input.resolvedWeightSource
@@ -4229,6 +4249,45 @@ function getTrimAllowancesInches(tree: any): { trimAllowanceX: number; trimAllow
   const trimAllowanceY = Number.isFinite(yRaw) && yRaw >= 0 ? yRaw : normalizedLegacy;
 
   return { trimAllowanceX, trimAllowanceY };
+}
+
+function getFiniteFormulaNumber(scope: Record<string, unknown>, keys: string[]): number | null {
+  for (const key of keys) {
+    const value = Number(scope[key]);
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function buildRollLayoutFromFormulaScope(input: {
+  formulaScope: Record<string, number | string | boolean | null>;
+  orderedWidthIn: number;
+  orderedHeightIn: number;
+  quantity: number;
+}): RollMediaLayoutResult | null {
+  const printableWidth = getFiniteFormulaNumber(input.formulaScope, ["printable_width", "printableWidth"]);
+  const billingWidthIncrement = getFiniteFormulaNumber(input.formulaScope, ["billing_width_increment", "billingWidthIncrement"]);
+  const billingLengthIncrement = getFiniteFormulaNumber(input.formulaScope, ["billing_length_increment", "billingLengthIncrement"]);
+  if (printableWidth === null || billingWidthIncrement === null || billingLengthIncrement === null) return null;
+
+  try {
+    return calculateRollMediaLayout({
+      finishedWidthIn: input.orderedWidthIn,
+      finishedHeightIn: input.orderedHeightIn,
+      quantity: input.quantity,
+      physicalRollWidthIn: getFiniteFormulaNumber(input.formulaScope, ["physical_roll_width", "roll_width", "rollWidth"]),
+      printableWidthIn: printableWidth,
+      edgeWasteInPerSide: getFiniteFormulaNumber(input.formulaScope, ["edge_waste_per_side", "edgeWasteInPerSide"]),
+      productionAllowanceXIn: getFiniteFormulaNumber(input.formulaScope, ["piece_allowance_x", "production_allowance_x", "productionAllowanceX"]) ?? 0,
+      productionAllowanceYIn: getFiniteFormulaNumber(input.formulaScope, ["piece_allowance_y", "production_allowance_y", "productionAllowanceY"]) ?? 0,
+      registrationWasteIn: getFiniteFormulaNumber(input.formulaScope, ["registration_waste", "registrationWasteIn"]) ?? 0,
+      billingWidthIncrementIn: billingWidthIncrement,
+      billingLengthIncrementIn: billingLengthIncrement,
+      allowRotation: input.formulaScope.allow_rotation,
+    });
+  } catch {
+    return null;
+  }
 }
 
 function buildFormulaVariableSourceDebug(input: {
@@ -4370,6 +4429,28 @@ function evaluatePreviewFormulaToCents(input: {
         Number(minimum_billable_sqft),
         (allow_rotation ?? formulaScope.allow_rotation) as string | number | boolean | null | undefined,
         input.sheetYieldMetrics?.allowRotationSource ?? variableSources.allow_rotation,
+      ),
+    roll_nesting_billable_sqft: (
+      w: unknown,
+      h: unknown,
+      q: unknown,
+      printable_width: unknown,
+      piece_allowance_x: unknown,
+      piece_allowance_y: unknown,
+      billing_width_increment: unknown,
+      billing_length_increment: unknown,
+      allow_rotation?: unknown,
+    ) =>
+      rollNestingBillableSqft(
+        Number(w),
+        Number(h),
+        Number(q),
+        Number(printable_width),
+        Number(piece_allowance_x),
+        Number(piece_allowance_y),
+        Number(billing_width_increment),
+        Number(billing_length_increment),
+        (allow_rotation ?? formulaScope.allow_rotation) as string | number | boolean | null | undefined,
       ),
   };
   const formulaResolved = resolveFormulaAliases(input.formula);
@@ -4832,6 +4913,7 @@ function inferFormulaQuantityBasis(formula: string): string {
   if (/\bfinished_sqft\b/.test(normalized)) return "finished_sqft";
   if (/\btotal_sqft\b/.test(normalized)) return "total_sqft";
   if (/\bsqft\b/.test(normalized)) return "sqft";
+  if (/\broll_nesting_billable_sqft\s*\(/.test(normalized)) return "roll_nesting_billable_sqft";
   if (/\bsheet_consumption_sqft\s*\(/.test(normalized)) return "sheet_consumption_sqft";
   return "unknown";
 }
@@ -4845,6 +4927,7 @@ function isLikelyGeometryOnlyFormula(formula: string): boolean {
   if (!normalized.trim()) return false;
   const usesGeometryQuantity =
     /\bsheet_consumption_sqft\s*\(/.test(normalized) ||
+    /\broll_nesting_billable_sqft\s*\(/.test(normalized) ||
     /\b(?:billed_sheet_sqft|computed_sheets|total_sheet_count|sheet_count|billed_sheets|pieces_per_sheet|partial_sheet_billable_sqft|partial_sheet_finished_sqft|total_finished_sqft|finished_sqft|total_sqft|sqft)\b/.test(normalized);
   return usesGeometryQuantity && !formulaReferencesPricingRate(normalized);
 }
@@ -4890,7 +4973,7 @@ function buildPbv2PricingFormulaError(input: {
 function inferFormulaApplication(formula: string): 'unitPrice' | 'totalPrice' | 'unknown' {
   const normalized = String(formula || '').toLowerCase();
   if (!normalized.trim()) return 'unknown';
-  if (/\b(quantity|q|total_sqft|total_finished_sqft|computed_sheets|total_sheet_count|billed_sheets|sheet_count|billed_sheet_sqft|partial_sheet_billable_sqft)\b/.test(normalized) || /\bsheet_consumption_sqft\s*\(/.test(normalized)) {
+  if (/\b(quantity|q|total_sqft|total_finished_sqft|computed_sheets|total_sheet_count|billed_sheets|sheet_count|billed_sheet_sqft|partial_sheet_billable_sqft)\b/.test(normalized) || /\bsheet_consumption_sqft\s*\(/.test(normalized) || /\broll_nesting_billable_sqft\s*\(/.test(normalized)) {
     return 'totalPrice';
   }
   return 'unitPrice';

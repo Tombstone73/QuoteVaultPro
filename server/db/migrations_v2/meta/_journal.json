@@ -1072,6 +1072,13 @@
       "when": 1788048000004,
       "tag": "0158_multi_order_run_member_outcomes",
       "breakpoints": true
+    },
+    {
+      "idx": 159,
+      "version": "7",
+      "when": 1788048000005,
+      "tag": "0159_roll_linear_inventory_precision",
+      "breakpoints": true
     }
   ]
 }

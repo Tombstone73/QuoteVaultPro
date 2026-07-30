@@ -27,18 +27,18 @@ export type ManualReservationRow = {
   createdByEmail: string | null;
 };
 
-function normalizeQty2dp(value: unknown): string {
+function normalizeQty6dp(value: unknown): string {
   const n = typeof value === "number" ? value : Number(String(value));
-  if (!Number.isFinite(n)) return (0).toFixed(2);
-  const rounded = Math.round(n * 100) / 100;
-  return rounded.toFixed(2);
+  if (!Number.isFinite(n)) return (0).toFixed(6);
+  const rounded = Math.round(n * 1_000_000) / 1_000_000;
+  return rounded.toFixed(6);
 }
 
-function addQty2dp(a: unknown, b: unknown): string {
-  const n1 = Number(normalizeQty2dp(a));
-  const n2 = Number(normalizeQty2dp(b));
-  if (!Number.isFinite(n1) || !Number.isFinite(n2)) return (0).toFixed(2);
-  return normalizeQty2dp(n1 + n2);
+function addQty6dp(a: unknown, b: unknown): string {
+  const n1 = Number(normalizeQty6dp(a));
+  const n2 = Number(normalizeQty6dp(b));
+  if (!Number.isFinite(n1) || !Number.isFinite(n2)) return (0).toFixed(6);
+  return normalizeQty6dp(n1 + n2);
 }
 
 export async function listManualReservationsForOrder(
@@ -92,7 +92,7 @@ export async function listManualReservationsForOrder(
     return {
       ...rest,
       sourceType: "MANUAL" as const,
-      qty: normalizeQty2dp(r.qty),
+      qty: normalizeQty6dp(r.qty),
       createdByName,
     };
   });
@@ -110,7 +110,7 @@ export async function createManualReservation(
   },
 ): Promise<InventoryReservation> {
   const now = new Date();
-  const incomingQty = normalizeQty2dp(args.qty);
+  const incomingQty = normalizeQty6dp(args.qty);
 
   const existing = await db
     .select({ id: inventoryReservations.id, qty: inventoryReservations.qty })
@@ -128,7 +128,7 @@ export async function createManualReservation(
     .limit(1);
 
   if (existing[0]) {
-    const nextQty = addQty2dp(existing[0].qty, incomingQty);
+    const nextQty = addQty6dp(existing[0].qty, incomingQty);
     const updated = await db
       .update(inventoryReservations)
       .set({ qty: nextQty, updatedAt: now } as any)
@@ -221,7 +221,7 @@ export async function getManualReservationById(
   return {
     ...rest,
     sourceType: "MANUAL" as const,
-    qty: normalizeQty2dp(row.qty),
+    qty: normalizeQty6dp(row.qty),
     createdByName,
   };
 }

@@ -75,7 +75,7 @@ import {
   resolveDerivativeFileAccess,
 } from "../lib/supabaseObjectHelpers";
 import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
-import { buildNormalizedMaterialReservationPlan } from "@shared/materialReservationNormalization";
+import { buildNormalizedMaterialReservationPlan, type RollMediaReservationContext } from "@shared/materialReservationNormalization";
 import {
   getProductionStationLabel,
   normalizeProductionStationKey,
@@ -314,6 +314,43 @@ const resolveFlatSheetReservationContext = (lineItem: any, treeJson: any) => {
   };
 };
 
+const readNumericConfigValue = (records: Array<Record<string, any> | null | undefined>, keys: string[], fallback?: number): number | null => {
+  for (const record of records) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) continue;
+    for (const key of keys) {
+      const parsed = Number(record[key]);
+      if (Number.isFinite(parsed)) return parsed;
+    }
+  }
+  return fallback ?? null;
+};
+
+const resolveRollMediaReservationContext = (lineItem: any, treeJson: any) => {
+  const snapshot = lineItem?.pbv2SnapshotJson && typeof lineItem.pbv2SnapshotJson === "object" ? lineItem.pbv2SnapshotJson : {};
+  const snapshotMeta = (snapshot as any)?.treeJson?.meta && typeof (snapshot as any).treeJson.meta === "object" ? (snapshot as any).treeJson.meta : {};
+  const treeMeta = treeJson?.meta && typeof treeJson.meta === "object" ? treeJson.meta : {};
+  const configs = [
+    (snapshotMeta as any)?.pricingProfileConfig?.formulaVariables,
+    (snapshotMeta as any)?.pricingFormulaVariables,
+    (snapshotMeta as any)?.formulaVariables,
+    (treeMeta as any)?.pricingProfileConfig?.formulaVariables,
+    (treeMeta as any)?.pricingFormulaVariables,
+    (treeMeta as any)?.formulaVariables,
+  ];
+
+  return {
+    finishedWidthIn: lineItem?.width,
+    finishedHeightIn: lineItem?.height,
+    quantity: lineItem?.quantity,
+    productionAllowanceXIn: readNumericConfigValue(configs, ["piece_allowance_x", "production_allowance_x"], 0),
+    productionAllowanceYIn: readNumericConfigValue(configs, ["piece_allowance_y", "production_allowance_y"], 0),
+    registrationWasteIn: readNumericConfigValue(configs, ["registration_waste"], 0),
+    billingWidthIncrementIn: readNumericConfigValue(configs, ["billing_width_increment"], 12),
+    billingLengthIncrementIn: readNumericConfigValue(configs, ["billing_length_increment"], 12),
+    allowRotation: readNumericConfigValue(configs, ["allow_rotation"], 0),
+  };
+};
+
 const resolveMaterialMetaForOrg = async (organizationId: string, materialIds: string[]) => {
   const uniqueIds = Array.from(new Set(materialIds.filter((id) => typeof id === "string" && id.length > 0)));
   if (uniqueIds.length === 0) return new Map<string, { name: string; consumptionUnit: string | null }>();
@@ -337,13 +374,13 @@ const normalizeMaterialUomForPlanning = (value: unknown): "sqft" | "ft" | "each"
   return null;
 };
 
-const normalizeQty2dp = (value: unknown): string => {
+const normalizeMaterialQty6dp = (value: unknown): string => {
   const n = typeof value === "number" ? value : Number(String(value));
-  if (!Number.isFinite(n)) return (0).toFixed(2);
-  return (Math.round(n * 100) / 100).toFixed(2);
+  if (!Number.isFinite(n)) return (0).toFixed(6);
+  return (Math.round(n * 1_000_000) / 1_000_000).toFixed(6);
 };
 
-const toQtyNumber2dp = (value: unknown): number => Number(normalizeQty2dp(value));
+const toMaterialQtyNumber6dp = (value: unknown): number => Number(normalizeMaterialQty6dp(value));
 
 const buildEffectiveMaterialsFingerprint = (
   materialsInput: Array<{ materialId: string; uom: string; qty: number }>
@@ -352,7 +389,7 @@ const buildEffectiveMaterialsFingerprint = (
     .map((m) => ({
       materialId: String(m.materialId || "").trim(),
       uom: String(m.uom || "").trim(),
-      qty: normalizeQty2dp(m.qty),
+      qty: normalizeMaterialQty6dp(m.qty),
     }))
     .filter((m) => !!m.materialId && !!m.uom && Number(m.qty) > 0)
     .sort((a, b) => `${a.materialId}:${a.uom}`.localeCompare(`${b.materialId}:${b.uom}`));
@@ -368,7 +405,7 @@ const buildReservedFingerprintFromRows = (
     (rows || []).map((r) => ({
       materialId: String(r.sourceKey || "").trim(),
       uom: String(r.uom || "").trim(),
-      qty: toQtyNumber2dp(r.qty),
+      qty: toMaterialQtyNumber6dp(r.qty),
     }))
   );
 };
@@ -610,6 +647,7 @@ const syncReservedMaterialsForLineItem = async (
       pieceHeightIn?: string | number | null;
       allowRotation?: unknown;
     };
+    rollMedia?: RollMediaReservationContext;
   }
 ) => {
   const now = new Date();
@@ -621,7 +659,7 @@ const syncReservedMaterialsForLineItem = async (
 
   const existingByKey = new Map<string, { id: string; qty: string }>();
   for (const row of existing) {
-    existingByKey.set(`${row.sourceKey}::${row.uom}`, { id: row.id, qty: normalizeQty2dp(row.qty) });
+    existingByKey.set(`${row.sourceKey}::${row.uom}`, { id: row.id, qty: normalizeMaterialQty6dp(row.qty) });
   }
 
   const materialIds = Array.from(new Set((args.effectiveMaterials || []).map((item) => String(item.materialId || "").trim()).filter(Boolean)));
@@ -633,13 +671,14 @@ const syncReservedMaterialsForLineItem = async (
     requests: args.effectiveMaterials,
     materials: materialRows,
     flatSheet: args.flatSheet,
+    rollMedia: args.rollMedia,
   });
   if (!reservationPlan.ok) throw new Error(reservationPlan.error.message);
   for (const desired of reservationPlan.reservations) {
     desiredByKey.set(`${desired.materialId}::${desired.uom}`, {
       materialId: desired.materialId,
       uom: desired.uom,
-      qty: normalizeQty2dp(desired.qty),
+      qty: normalizeMaterialQty6dp(desired.qty),
     });
   }
 
@@ -667,7 +706,7 @@ const syncReservedMaterialsForLineItem = async (
       continue;
     }
 
-    if (normalizeQty2dp(existingRow.qty) !== desired.qty) {
+    if (normalizeMaterialQty6dp(existingRow.qty) !== desired.qty) {
       await tx
         .update(inventoryReservations)
         .set({ qty: desired.qty, updatedAt: now } as any)
@@ -796,7 +835,7 @@ const consumeReservedMaterialsForLineItem = async (
   for (const row of reserved) {
     const materialId = String(row.sourceKey || "").trim();
     if (!materialId) continue;
-    const qty = toQtyNumber2dp(row.qty);
+    const qty = toMaterialQtyNumber6dp(row.qty);
     if (!Number.isFinite(qty) || qty <= 0) continue;
     const usageUom = String(row.uom || "each");
     const deductionDecision = canAutoDeductMaterialStock(
@@ -818,7 +857,7 @@ const consumeReservedMaterialsForLineItem = async (
       orderId: args.orderId,
       orderLineItemId: args.lineItemId,
       materialId,
-      quantityUsed: normalizeQty2dp(deductionDecision.convertedQuantity ?? qty),
+      quantityUsed: normalizeMaterialQty6dp(deductionDecision.convertedQuantity ?? qty),
       unitOfMeasure: deductionDecision.materialUom || usageUom,
       calculatedBy: "auto",
     } as any);
@@ -828,7 +867,7 @@ const consumeReservedMaterialsForLineItem = async (
         organizationId: args.organizationId,
         materialId,
         type: "job_usage",
-        quantityChange: normalizeQty2dp(-(deductionDecision.convertedQuantity ?? qty)),
+        quantityChange: normalizeMaterialQty6dp(-(deductionDecision.convertedQuantity ?? qty)),
         reason: `Auto-consumed from reservation for line item ${args.lineItemId}`,
         orderId: args.orderId,
         userId: args.userId,
@@ -837,7 +876,7 @@ const consumeReservedMaterialsForLineItem = async (
       await tx
         .update(materials)
         .set({
-          stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(deductionDecision.convertedQuantity ?? qty)}`,
+          stockQuantity: sql`${materials.stockQuantity} - ${normalizeMaterialQty6dp(deductionDecision.convertedQuantity ?? qty)}`,
           updatedAt: now,
         } as any)
         .where(and(eq(materials.organizationId, args.organizationId), eq(materials.id, materialId)));
@@ -1698,13 +1737,13 @@ export function registerPrepressQueueRoutes(
         : [];
 
       const stockByMaterialId = new Map<string, number>(
-        materialRows.map((row) => [row.id, toQtyNumber2dp(row.stockQuantity)])
+        materialRows.map((row) => [row.id, toMaterialQtyNumber6dp(row.stockQuantity)])
       );
 
       const items = payload.effectiveMaterials.map((m) => {
-        const requiredQty = toQtyNumber2dp(m.qty);
-        const availableQty = toQtyNumber2dp(stockByMaterialId.get(m.materialId) ?? 0);
-        const shortageQty = Math.max(0, toQtyNumber2dp(requiredQty - availableQty));
+        const requiredQty = toMaterialQtyNumber6dp(m.qty);
+        const availableQty = toMaterialQtyNumber6dp(stockByMaterialId.get(m.materialId) ?? 0);
+        const shortageQty = Math.max(0, toMaterialQtyNumber6dp(requiredQty - availableQty));
         return {
           materialId: m.materialId,
           materialName: m.materialName,
@@ -1810,6 +1849,7 @@ export function registerPrepressQueueRoutes(
             createdByUserId: userId ?? null,
             effectiveMaterials: effectiveForAudit.effectiveMaterials,
             flatSheet: resolveFlatSheetReservationContext(context.lineItem, context.treeJson),
+            rollMedia: resolveRollMediaReservationContext(context.lineItem, context.treeJson),
           });
 
           await tx.insert(productionEvents).values({
@@ -3082,6 +3122,7 @@ export function registerPrepressQueueRoutes(
               createdByUserId: userId ?? null,
               effectiveMaterials,
               flatSheet: resolveFlatSheetReservationContext(materialContext.lineItem, materialContext.treeJson),
+              rollMedia: resolveRollMediaReservationContext(materialContext.lineItem, materialContext.treeJson),
             });
 
             await tx.insert(productionEvents).values({

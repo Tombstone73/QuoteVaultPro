@@ -16,9 +16,9 @@ describe("inventoryReservationsRollups (DB-free)", () => {
       {
         sourceKey: "MAT-001",
         uom: "EA",
-        totalQty: "4.25",
-        manualQty: "2.25",
-        nonManualQty: "2.00",
+        totalQty: "4.250000",
+        manualQty: "2.250000",
+        nonManualQty: "2.000000",
       },
     ]);
   });
@@ -31,8 +31,8 @@ describe("inventoryReservationsRollups (DB-free)", () => {
     ]);
 
     expect(rows).toEqual([
-      { sourceKey: "MAT-A", uom: "EA", totalQty: "4.00", manualQty: "1.00", nonManualQty: "3.00" },
-      { sourceKey: "MAT-B", uom: "EA", totalQty: "2.00", manualQty: "2.00", nonManualQty: "0.00" },
+      { sourceKey: "MAT-A", uom: "EA", totalQty: "4.000000", manualQty: "1.000000", nonManualQty: "3.000000" },
+      { sourceKey: "MAT-B", uom: "EA", totalQty: "2.000000", manualQty: "2.000000", nonManualQty: "0.000000" },
     ]);
   });
 
@@ -47,9 +47,9 @@ describe("inventoryReservationsRollups (DB-free)", () => {
       {
         sourceKey: "MAT-001",
         uom: "EA",
-        totalQty: "1.00",
-        manualQty: "1.00",
-        nonManualQty: "0.00",
+        totalQty: "1.000000",
+        manualQty: "1.000000",
+        nonManualQty: "0.000000",
       },
     ]);
   });
@@ -63,6 +63,6 @@ describe("inventoryReservationsRollups (DB-free)", () => {
       { sourceType: "MANUAL", sourceKey: "MAT-001", uom: "EA", qty: 1, status: "RELEASED" },
     ];
 
-    expect(sumManualReservedForOrder(reservations as any, "MAT-001", "EA")).toBe("1.50");
+    expect(sumManualReservedForOrder(reservations as any, "MAT-001", "EA")).toBe("1.500000");
   });
 });

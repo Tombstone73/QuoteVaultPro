@@ -66,6 +66,8 @@ import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "../storage/productDesignConfig.repo";
 import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons, pbv2ToRuntimeSelectionContext } from "@shared/pbv2/pricingAdapter";
+import { enrichRollLinearFootMaterialEffects } from "@shared/pbv2/rollMaterialEffects";
+import { extractFormulaVariables, parseFormulaBoolean } from "@shared/pbv2/formulaHelpers";
 import { computePbv2InputSignature } from "@shared/pbv2/pbv2InputSignature";
 import { pickPbv2EnvExtras } from "@shared/pbv2/pbv2InputSignature";
 import type { OptionRuntimeSelectionContext } from "@shared/optionTreeV2";
@@ -575,6 +577,7 @@ type Pbv2OrderLineItemSnapshot = {
     runtimeSelectionContext: OptionRuntimeSelectionContext;
     pricing: { addOnCents: number; breakdown: any[] };
     materials: any[];
+    materialWarnings?: any[];
     childItems: any[];
 };
 
@@ -647,8 +650,50 @@ async function evaluatePbv2SnapshotForProduct(args: {
         });
         const runtimeSelectionContext = pbv2ToRuntimeSelectionContext(treeVersion.treeJson as any, explicitSelections, env as any);
         const materialsRes = pbv2ToMaterialEffects(treeVersion.treeJson as any, explicitSelections, env as any);
+        const materialIds = Array.from(new Set(
+            (materialsRes.materials ?? [])
+                .map((material: any) => String(material?.skuRef || "").trim())
+                .filter(Boolean),
+        ));
+        const materialRows = materialIds.length > 0
+            ? await db
+                .select({
+                    id: materials.id,
+                    name: materials.name,
+                    materialForm: materials.materialForm,
+                    inventoryUnit: materials.inventoryUnit,
+                    consumptionUnit: materials.consumptionUnit,
+                    width: materials.width,
+                    edgeWasteInPerSide: materials.edgeWasteInPerSide,
+                })
+                .from(materials)
+                .where(and(eq(materials.organizationId, organizationId), inArray(materials.id, materialIds)))
+            : [];
+        const treeMeta = (treeVersion.treeJson as any)?.meta && typeof (treeVersion.treeJson as any).meta === "object"
+            ? (treeVersion.treeJson as any).meta
+            : {};
+        const pricingProfileConfig = product.pricingProfileConfig && typeof product.pricingProfileConfig === "object"
+            ? product.pricingProfileConfig as Record<string, unknown>
+            : {};
+        const formulaVariables = {
+            ...extractFormulaVariables({ variables: (pricingProfileConfig as any).variables }),
+            ...extractFormulaVariables({ variables: (pricingProfileConfig as any).formulaVariables }),
+            ...extractFormulaVariables({ variables: (treeMeta as any).variables }),
+            ...extractFormulaVariables({ variables: (treeMeta as any).formulaVariables }),
+            ...extractFormulaVariables({ variables: (treeMeta as any).pricingFormulaVariables }),
+        };
+        const allowRotation = Object.prototype.hasOwnProperty.call(formulaVariables, "allow_rotation")
+            ? parseFormulaBoolean((formulaVariables as any).allow_rotation)
+            : false;
+        const enrichedMaterials = enrichRollLinearFootMaterialEffects({
+            effects: materialsRes.materials,
+            materials: materialRows,
+            env,
+            formulaVariables,
+            allowRotation,
+        });
         const childItemsRes = pbv2ToChildItemProposals(treeVersion.treeJson as any, explicitSelections, env as any);
-        materials = materialsRes.materials;
+        materials = enrichedMaterials.effects;
         childItems = childItemsRes.childItems;
         pricing = { addOnCents: pricingRes.addOnCents, breakdown: pricingRes.breakdown };
         const snapshotJson: Pbv2OrderLineItemSnapshot = {
@@ -664,6 +709,7 @@ async function evaluatePbv2SnapshotForProduct(args: {
             runtimeSelectionContext,
             pricing,
             materials,
+            materialWarnings: enrichedMaterials.warnings,
             childItems,
         };
 

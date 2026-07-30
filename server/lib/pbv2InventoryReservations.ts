@@ -7,7 +7,7 @@ export type InventoryReservationRow = {
   sourceType: "PBV2_MATERIAL" | "PBV2_COMPONENT" | "MANUAL";
   sourceKey: string;
   uom: string;
-  qty: string; // normalized decimal string (2dp)
+  qty: string; // normalized decimal string (6dp for inventory reservation quantities)
   status: "RESERVED" | "RELEASED";
   createdByUserId?: string | null;
 };
@@ -40,8 +40,8 @@ function normalizeDecimalString(value: unknown, decimals: number): string {
 function addQtyStrings(a: string, b: string): string {
   const n1 = Number(a);
   const n2 = Number(b);
-  if (!Number.isFinite(n1) || !Number.isFinite(n2)) return normalizeDecimalString(0, 2);
-  return normalizeDecimalString(n1 + n2, 2);
+  if (!Number.isFinite(n1) || !Number.isFinite(n2)) return normalizeDecimalString(0, 6);
+  return normalizeDecimalString(n1 + n2, 6);
 }
 
 export function buildInventoryReservationsFromRollup(args: {
@@ -58,7 +58,7 @@ export function buildInventoryReservationsFromRollup(args: {
     const uom = String(m.uom || "");
     if (!sourceKey || !uom) continue;
 
-    const qty = normalizeDecimalString(m.qty, 2);
+    const qty = normalizeDecimalString(m.qty, 6);
     if (Number(qty) <= 0) continue;
 
     const key = `PBV2_MATERIAL::${sourceKey}::${uom}`;
@@ -87,7 +87,7 @@ export function buildInventoryReservationsFromRollup(args: {
     if (!sourceKey) continue;
 
     const uom = "EA";
-    const qty = normalizeDecimalString(c.qty, 2);
+    const qty = normalizeDecimalString(c.qty, 6);
     if (Number(qty) <= 0) continue;
 
     const key = `PBV2_COMPONENT::${sourceKey}::${uom}`;
@@ -149,18 +149,18 @@ export function buildInventoryRollup(args: {
     const uom = String(r.uom || "");
     if (!sourceKey || !uom) continue;
 
-    const qty = normalizeDecimalString(r.qty, 2);
+    const qty = normalizeDecimalString(r.qty, 6);
     if (Number(qty) <= 0) continue;
 
     const key = `${sourceKey}::${uom}`;
     const existing = byKey.get(key) ?? {
       sourceKey,
       uom,
-      qty: normalizeDecimalString(0, 2),
+      qty: normalizeDecimalString(0, 6),
       bySourceType: {
-        PBV2_MATERIAL: normalizeDecimalString(0, 2),
-        PBV2_COMPONENT: normalizeDecimalString(0, 2),
-        MANUAL: normalizeDecimalString(0, 2),
+        PBV2_MATERIAL: normalizeDecimalString(0, 6),
+        PBV2_COMPONENT: normalizeDecimalString(0, 6),
+        MANUAL: normalizeDecimalString(0, 6),
       },
     };
 

@@ -89,7 +89,7 @@ export async function buildOrderPbv2Rollup(args: {
   const warnings: Pbv2RollupWarning[] = [];
 
   // Materials: sum by (skuRef, uom). Use scaled integers to avoid float drift.
-  const SCALE = 10000;
+  const SCALE = 1_000_000;
   const materialTotals = new Map<string, { skuRef: string; uom: string; scaledQty: number; sources: Pbv2RollupMaterialSource[] }>();
 
   for (const li of args.lineItems) {

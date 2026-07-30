@@ -66,7 +66,7 @@ const MATERIAL_UNIT_OPTIONS = [
   { value: "pound", label: "Pound" },
 ] as const;
 const FORM_UNIT_OPTIONS = {
-  roll: { inventory: ["square_foot"], consumption: ["square_foot", "linear_foot"] },
+  roll: { inventory: ["square_foot", "linear_foot"], consumption: ["square_foot", "linear_foot"] },
   sheet: { inventory: ["sheet", "square_foot"], consumption: ["sheet", "square_foot"] },
   liquid: { inventory: ["milliliter"], consumption: ["milliliter"] },
   each: { inventory: ["each"], consumption: ["each"] },
@@ -146,8 +146,8 @@ const materialSchema = z
     }
     if (data.materialForm !== "roll") return;
 
-    if (data.inventoryUnit !== "square_foot") {
-      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Roll inventory must use square feet" });
+    if (data.inventoryUnit !== "square_foot" && data.inventoryUnit !== "linear_foot") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Roll inventory must use square feet or linear feet" });
     }
     if (data.consumptionUnit !== "square_foot" && data.consumptionUnit !== "linear_foot") {
       ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["consumptionUnit"], message: "Roll consumption must use square feet or linear feet" });
@@ -598,12 +598,6 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                       )}
                     </div>
                   </div>
-
-                  {isRoll && inventoryUnit !== "square_foot" ? (
-                    <div className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">
-                      Roll inventory must be tracked in square feet.
-                    </div>
-                  ) : null}
 
                   <div className="rounded-md border p-3 space-y-3">
                     <div>

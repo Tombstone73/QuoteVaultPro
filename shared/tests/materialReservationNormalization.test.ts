@@ -107,6 +107,74 @@ describe("material reservation normalization", () => {
     }));
   });
 
+  it("uses roll nesting to reserve physical linear feet for linear-foot roll inventory", () => {
+    const result = normalizeMaterialReservation({
+      material: {
+        id: "vinyl-roll-linear",
+        name: "54 inch vinyl by the foot",
+        materialForm: "roll",
+        inventoryUnit: "linear_foot",
+        consumptionUnit: "linear_foot",
+        width: 54,
+        edgeWasteInPerSide: 2,
+      },
+      requestedUom: "linear_foot",
+      requestedQty: 48,
+      rollMedia: {
+        finishedWidthIn: 32,
+        finishedHeightIn: 32,
+        quantity: 6,
+        productionAllowanceXIn: 0.25,
+        productionAllowanceYIn: 0.25,
+        registrationWasteIn: 4,
+        billingWidthIncrementIn: 12,
+        billingLengthIncrementIn: 12,
+        allowRotation: false,
+      },
+    });
+
+    expect(result).toEqual(expect.objectContaining({
+      ok: true,
+      baseUom: "linear_foot",
+      convertedQty: 16.458333,
+      method: "roll_layout",
+      rollLayout: expect.objectContaining({
+        billableSqft: 48,
+        actualConsumedLinearFeet: 16.458333,
+      }),
+    }));
+  });
+
+  it("builds deterministic six-decimal roll linear-foot reservation plans", () => {
+    const result = buildNormalizedMaterialReservationPlan({
+      requests: [{ materialId: "vinyl-roll-linear", uom: "linear_foot", qty: 48 }],
+      materials: [{
+        id: "vinyl-roll-linear",
+        name: "54 inch vinyl by the foot",
+        materialForm: "roll",
+        inventoryUnit: "linear_foot",
+        consumptionUnit: "linear_foot",
+        width: 54,
+        edgeWasteInPerSide: 2,
+      }],
+      rollMedia: {
+        finishedWidthIn: 32,
+        finishedHeightIn: 32,
+        quantity: 6,
+        productionAllowanceXIn: 0.25,
+        productionAllowanceYIn: 0.25,
+        registrationWasteIn: 4,
+        billingWidthIncrementIn: 12,
+        billingLengthIncrementIn: 12,
+      },
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      reservations: [{ materialId: "vinyl-roll-linear", uom: "linear_foot", qty: 16.458333 }],
+    });
+  });
+
   it("returns an empty plan for products without material usage", () => {
     expect(buildNormalizedMaterialReservationPlan({ requests: [], materials: [] })).toEqual({
       ok: true,

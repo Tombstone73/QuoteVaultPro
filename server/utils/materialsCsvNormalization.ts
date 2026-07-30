@@ -121,8 +121,8 @@ export function validateNormalizedRow(n: NormalizedMaterialRow): string[] {
   if (n.thicknessUnit && !VALID_THICKNESS_UNITS.includes(n.thicknessUnit)) {
     errors.push(`thickness_unit must be one of: ${VALID_THICKNESS_UNITS.join(", ")}`);
   }
-  if (n.materialForm === "roll" && n.inventoryUnit !== "square_foot") {
-    errors.push("inventory_unit must be square_foot for roll materials");
+  if (n.materialForm === "roll" && n.inventoryUnit !== "square_foot" && n.inventoryUnit !== "linear_foot") {
+    errors.push("inventory_unit must be square_foot or linear_foot for roll materials");
   }
   if (n.materialForm === "roll" && n.consumptionUnit !== "square_foot" && n.consumptionUnit !== "linear_foot") {
     errors.push("consumption_unit must be square_foot or linear_foot for roll materials");

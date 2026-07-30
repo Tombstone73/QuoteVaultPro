@@ -88,7 +88,7 @@ export default function MaterialDetailPage({ params }: Props) {
       </div>
       {material.materialForm === "roll" ? (
         <div className="rounded-md border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900">
-          Roll inventory is tracked in usable square feet; production may consume square or linear feet when the roll dimensions are configured.
+          Roll inventory may be tracked in usable square feet or linear feet; production may consume square or linear feet when roll dimensions are configured.
         </div>
       ) : null}
       <div className="grid md:grid-cols-3 gap-4">

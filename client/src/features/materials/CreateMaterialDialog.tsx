@@ -19,7 +19,7 @@ const optionalNumber = (schema: z.ZodNumber) =>
   );
 
 const FORM_UNIT_OPTIONS = {
-  roll: { inventory: ["square_foot"], consumption: ["square_foot", "linear_foot"] },
+  roll: { inventory: ["square_foot", "linear_foot"], consumption: ["square_foot", "linear_foot"] },
   sheet: { inventory: ["sheet", "square_foot"], consumption: ["sheet", "square_foot"] },
   liquid: { inventory: ["milliliter"], consumption: ["milliliter"] },
   each: { inventory: ["each"], consumption: ["each"] },

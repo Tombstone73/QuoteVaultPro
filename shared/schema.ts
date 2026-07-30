@@ -6054,7 +6054,7 @@ export const materials = pgTable("materials", {
   wholesaleMinCharge: decimal("wholesale_min_charge", { precision: 10, scale: 2 }),
   retailBaseRate: decimal("retail_base_rate", { precision: 10, scale: 4 }),
   retailMinCharge: decimal("retail_min_charge", { precision: 10, scale: 2 }),
-  stockQuantity: decimal("stock_quantity", { precision: 10, scale: 2 }).notNull().default("0"),
+  stockQuantity: decimal("stock_quantity", { precision: 14, scale: 6 }).notNull().default("0"),
   minStockAlert: decimal("min_stock_alert", { precision: 10, scale: 2 }).notNull().default("0"),
   isActive: boolean("is_active").notNull().default(true), // whether material is active/available
   vendorId: varchar("vendor_id"), // legacy placeholder
@@ -6250,8 +6250,8 @@ export const insertMaterialSchema = materialBaseSchema.superRefine((data, ctx) =
   }
   if (data.materialForm !== "roll") return;
 
-  if (data.inventoryUnit !== "square_foot") {
-    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Roll inventory must use square feet." });
+  if (data.inventoryUnit !== "square_foot" && data.inventoryUnit !== "linear_foot") {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["inventoryUnit"], message: "Roll inventory must use square feet or linear feet." });
   }
   if (data.consumptionUnit !== "square_foot" && data.consumptionUnit !== "linear_foot") {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["consumptionUnit"], message: "Roll consumption must use square feet or linear feet." });
@@ -6423,9 +6423,9 @@ export const inventoryAdjustments = pgTable("inventory_adjustments", {
   materialId: varchar("material_id").notNull().references(() => materials.id, { onDelete: 'cascade' }),
   movementType: varchar("movement_type", { length: 20 }).notNull().default("adjustment"),
   type: varchar("type", { length: 50 }).notNull(), // manual_increase, manual_decrease, waste, shrinkage, job_usage
-  quantityChange: decimal("quantity_change", { precision: 10, scale: 2 }).notNull(), // positive or negative
-  quantityBefore: decimal("quantity_before", { precision: 10, scale: 2 }),
-  quantityAfter: decimal("quantity_after", { precision: 10, scale: 2 }),
+  quantityChange: decimal("quantity_change", { precision: 14, scale: 6 }).notNull(), // positive or negative
+  quantityBefore: decimal("quantity_before", { precision: 14, scale: 6 }),
+  quantityAfter: decimal("quantity_after", { precision: 14, scale: 6 }),
   reason: text("reason"),
   notes: text("notes"),
   orderId: varchar("order_id").references(() => orders.id, { onDelete: 'set null' }), // nullable, for job usage tracking
@@ -6612,7 +6612,7 @@ export const orderMaterialUsage = pgTable("order_material_usage", {
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   orderLineItemId: varchar("order_line_item_id").notNull().references(() => orderLineItems.id, { onDelete: 'cascade' }),
   materialId: varchar("material_id").notNull().references(() => materials.id, { onDelete: 'restrict' }),
-  quantityUsed: decimal("quantity_used", { precision: 10, scale: 2 }).notNull(),
+  quantityUsed: decimal("quantity_used", { precision: 14, scale: 6 }).notNull(),
   unitOfMeasure: varchar("unit_of_measure", { length: 50 }).notNull(),
   calculatedBy: varchar("calculated_by", { length: 50 }).notNull().default("auto"), // auto or manual
   createdAt: timestamp("created_at").defaultNow().notNull(),
@@ -6647,7 +6647,7 @@ export const inventoryReservations = pgTable("inventory_reservations", {
   sourceType: text("source_type").notNull(), // PBV2_MATERIAL | PBV2_COMPONENT | MANUAL
   sourceKey: text("source_key").notNull(), // skuRef or productId
   uom: text("uom").notNull(),
-  qty: decimal("qty", { precision: 10, scale: 2 }).notNull(),
+  qty: decimal("qty", { precision: 14, scale: 6 }).notNull(),
 
   status: text("status").notNull().default('RESERVED'), // RESERVED | RELEASED
 

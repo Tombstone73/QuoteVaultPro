@@ -82,4 +82,31 @@ describe("buildOrderPbv2Rollup", () => {
       "li_2:B Title:1.00",
     ]);
   });
+
+  test("preserves six-decimal material quantities for roll linear-foot consumption", async () => {
+    const snapshot = {
+      treeVersionId: "tv_roll",
+      explicitSelections: { material: "mat-roll" },
+      env: { widthIn: 32, heightIn: 32, quantity: 6 },
+      materials: [
+        { skuRef: "MAT-ROLL", uom: "linear_foot", qty: 16.458333, sourceNodeId: "vinyl" },
+        { skuRef: "MAT-ROLL", uom: "linear_foot", qty: 0.000001, sourceNodeId: "sliver" },
+      ],
+    };
+    (snapshot as any).pbv2InputSignature = await computePbv2InputSignature({
+      treeVersionId: snapshot.treeVersionId,
+      explicitSelections: snapshot.explicitSelections,
+      env: snapshot.env,
+    });
+
+    const result = await buildOrderPbv2Rollup({
+      orderId: "ord_roll",
+      lineItems: [{ id: "li_roll", pbv2SnapshotJson: snapshot }],
+      acceptedComponents: [],
+    });
+
+    expect(result.materials).toEqual([
+      expect.objectContaining({ skuRef: "MAT-ROLL", uom: "linear_foot", qty: "16.458334" }),
+    ]);
+  });
 });

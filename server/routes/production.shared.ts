@@ -554,13 +554,13 @@ export const appendEvent = async (args: {
 // Inventory consumption helpers (used by production job complete/status routes)
 // ---------------------------------------------------------------------------
 
-const normalizeQty2dp = (value: unknown): string => {
+const normalizeMaterialQty6dp = (value: unknown): string => {
   const n = typeof value === "number" ? value : Number(String(value));
-  if (!Number.isFinite(n)) return (0).toFixed(2);
-  return (Math.round(n * 100) / 100).toFixed(2);
+  if (!Number.isFinite(n)) return (0).toFixed(6);
+  return (Math.round(n * 1_000_000) / 1_000_000).toFixed(6);
 };
 
-const toQtyNumber2dp = (value: unknown): number => Number(normalizeQty2dp(value));
+const toMaterialQtyNumber6dp = (value: unknown): number => Number(normalizeMaterialQty6dp(value));
 
 const buildEffectiveMaterialsFingerprint = (
   materialsInput: Array<{ materialId: string; uom: string; qty: number }>
@@ -569,7 +569,7 @@ const buildEffectiveMaterialsFingerprint = (
     .map((m) => ({
       materialId: String(m.materialId || "").trim(),
       uom: String(m.uom || "").trim(),
-      qty: normalizeQty2dp(m.qty),
+      qty: normalizeMaterialQty6dp(m.qty),
     }))
     .filter((m) => !!m.materialId && !!m.uom && Number(m.qty) > 0)
     .sort((a, b) => `${a.materialId}:${a.uom}`.localeCompare(`${b.materialId}:${b.uom}`));
@@ -585,7 +585,7 @@ const buildReservedFingerprintFromRows = (
     (rows || []).map((r) => ({
       materialId: String(r.sourceKey || "").trim(),
       uom: String(r.uom || "").trim(),
-      qty: toQtyNumber2dp(r.qty),
+      qty: toMaterialQtyNumber6dp(r.qty),
     }))
   );
 };
@@ -702,7 +702,7 @@ export const consumeReservedMaterialsForLineItem = async (
   for (const row of reserved) {
     const materialId = String(row.sourceKey || "").trim();
     if (!materialId) continue;
-    const qty = toQtyNumber2dp(row.qty);
+    const qty = toMaterialQtyNumber6dp(row.qty);
     if (!Number.isFinite(qty) || qty <= 0) continue;
     const usageUom = String(row.uom || "each");
     const deductionDecision = canAutoDeductMaterialStock(
@@ -724,7 +724,7 @@ export const consumeReservedMaterialsForLineItem = async (
       orderId: args.orderId,
       orderLineItemId: args.lineItemId,
       materialId,
-      quantityUsed: normalizeQty2dp(deductionDecision.convertedQuantity ?? qty),
+      quantityUsed: normalizeMaterialQty6dp(deductionDecision.convertedQuantity ?? qty),
       unitOfMeasure: deductionDecision.materialUom || usageUom,
       calculatedBy: "auto",
     } as any);
@@ -734,7 +734,7 @@ export const consumeReservedMaterialsForLineItem = async (
         organizationId: args.organizationId,
         materialId,
         type: "job_usage",
-        quantityChange: normalizeQty2dp(-(deductionDecision.convertedQuantity ?? qty)),
+        quantityChange: normalizeMaterialQty6dp(-(deductionDecision.convertedQuantity ?? qty)),
         reason: `Auto-consumed from reservation for line item ${args.lineItemId}`,
         orderId: args.orderId,
         userId: args.userId,
@@ -743,7 +743,7 @@ export const consumeReservedMaterialsForLineItem = async (
       await tx
         .update(materials)
         .set({
-          stockQuantity: sql`${materials.stockQuantity} - ${normalizeQty2dp(deductionDecision.convertedQuantity ?? qty)}`,
+          stockQuantity: sql`${materials.stockQuantity} - ${normalizeMaterialQty6dp(deductionDecision.convertedQuantity ?? qty)}`,
           updatedAt: now,
         } as any)
         .where(and(eq(materials.organizationId, args.organizationId), eq(materials.id, materialId)));

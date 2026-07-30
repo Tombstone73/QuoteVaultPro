@@ -1,3 +1,5 @@
+import { rollNestingBillableSqft } from "./rollMediaLayout";
+
 /**
  * Pure formula helper functions shared between the server evaluator (PricingService)
  * and the client-side formula tester (pricing-formulas settings page).
@@ -420,6 +422,28 @@ export function formulaHelperScope(
         Number(usable_drop_min),
         Number(billable_length_increment),
         Number(minimum_billable_sqft),
+        (allow_rotation ?? defaultAllowRotation) as string | number | boolean | null | undefined,
+      ),
+    roll_nesting_billable_sqft: (
+      w: unknown,
+      h: unknown,
+      q: unknown,
+      printable_width: unknown,
+      piece_allowance_x: unknown,
+      piece_allowance_y: unknown,
+      billing_width_increment: unknown,
+      billing_length_increment: unknown,
+      allow_rotation?: unknown,
+    ) =>
+      rollNestingBillableSqft(
+        Number(w),
+        Number(h),
+        Number(q),
+        Number(printable_width),
+        Number(piece_allowance_x),
+        Number(piece_allowance_y),
+        Number(billing_width_increment),
+        Number(billing_length_increment),
         (allow_rotation ?? defaultAllowRotation) as string | number | boolean | null | undefined,
       ),
   };

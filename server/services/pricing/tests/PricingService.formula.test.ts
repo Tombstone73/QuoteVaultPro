@@ -113,6 +113,34 @@ describe("PricingService formula evaluation", () => {
     expect(result.totalPrice).toBeCloseTo(12.0, 1);
   });
 
+  test("roll_nesting_billable_sqft prices on billing layout and exposes physical consumption debug", () => {
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: makeTree(undefined, {
+        formulaVariables: {
+          printable_width: 50,
+          piece_allowance_x: 0.25,
+          piece_allowance_y: 0.25,
+          registration_waste: 4,
+          billing_width_increment: 12,
+          billing_length_increment: 12,
+          allow_rotation: 0,
+        },
+      }),
+      widthIn: 4,
+      heightIn: 4,
+      quantity: 100,
+      pricingFormulaOverride:
+        "roll_nesting_billable_sqft(w, h, q, printable_width, piece_allowance_x, piece_allowance_y, billing_width_increment, billing_length_increment) * base_price",
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBeCloseTo(16, 4);
+    expect(result.debug?.rollLayout).toEqual(expect.objectContaining({
+      billableSqft: 16,
+      actualConsumedLinearFeet: 3.875,
+    }));
+  });
+
   test("Math.ceil produces helpful unsupported-function error", () => {
     const err = runFormulaExpectError("Math.ceil(sqft * q) * p");
     expect(err).not.toBeNull();

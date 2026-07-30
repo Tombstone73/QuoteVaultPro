@@ -34,7 +34,7 @@ describe("PBV2 -> inventory reservations (DB-free)", () => {
     const keys = rows.map((r) => `${r.sourceKey}::${r.uom}::${r.sourceType}`);
     expect(keys).toEqual([...keys].sort());
 
-    // Aggregation + normalization (2dp)
+    // Aggregation + normalization (6dp for reservation quantities)
     const matA = rows.find((r) => r.sourceType === "PBV2_MATERIAL" && r.sourceKey === "MAT-A" && r.uom === "EA");
     expect(matA).toEqual(
       expect.objectContaining({
@@ -44,14 +44,14 @@ describe("PBV2 -> inventory reservations (DB-free)", () => {
         sourceType: "PBV2_MATERIAL",
         sourceKey: "MAT-A",
         uom: "EA",
-        qty: "3.30",
+        qty: "3.300000",
         status: "RESERVED",
         createdByUserId: "user_1",
       }),
     );
 
     const lam = rows.find((r) => r.sourceType === "PBV2_COMPONENT" && r.sourceKey === "LAM-001" && r.uom === "EA");
-    expect(lam?.qty).toBe("2.00");
+    expect(lam?.qty).toBe("2.000000");
   });
 
   test("diffReservationsForInsert is idempotent by (sourceType, sourceKey, uom) for RESERVED", () => {
@@ -63,7 +63,7 @@ describe("PBV2 -> inventory reservations (DB-free)", () => {
         sourceType: "PBV2_MATERIAL" as const,
         sourceKey: "MAT-A",
         uom: "EA",
-        qty: "3.30",
+        qty: "3.300000",
         status: "RESERVED" as const,
       },
       {
@@ -73,7 +73,7 @@ describe("PBV2 -> inventory reservations (DB-free)", () => {
         sourceType: "PBV2_COMPONENT" as const,
         sourceKey: "LAM-001",
         uom: "EA",
-        qty: "2.00",
+        qty: "2.000000",
         status: "RESERVED" as const,
       },
     ];
@@ -104,10 +104,10 @@ describe("PBV2 -> inventory reservations (DB-free)", () => {
   test("buildInventoryRollup groups by (sourceKey,uom) and breaks down by sourceType", () => {
     const { items } = buildInventoryRollup({
       reservations: [
-        { sourceType: "PBV2_MATERIAL", sourceKey: "MAT-A", uom: "EA", qty: "3.30", status: "RESERVED" },
-        { sourceType: "PBV2_COMPONENT", sourceKey: "MAT-A", uom: "EA", qty: "2.00", status: "RESERVED" },
-        { sourceType: "MANUAL", sourceKey: "MAT-A", uom: "EA", qty: "1.00", status: "RESERVED" },
-        { sourceType: "PBV2_MATERIAL", sourceKey: "MAT-B", uom: "FT", qty: "3.00", status: "RESERVED" },
+        { sourceType: "PBV2_MATERIAL", sourceKey: "MAT-A", uom: "EA", qty: "3.300000", status: "RESERVED" },
+        { sourceType: "PBV2_COMPONENT", sourceKey: "MAT-A", uom: "EA", qty: "2.000000", status: "RESERVED" },
+        { sourceType: "MANUAL", sourceKey: "MAT-A", uom: "EA", qty: "1.000000", status: "RESERVED" },
+        { sourceType: "PBV2_MATERIAL", sourceKey: "MAT-B", uom: "FT", qty: "3.000000", status: "RESERVED" },
         { sourceType: "PBV2_MATERIAL", sourceKey: "MAT-A", uom: "EA", qty: "999.00", status: "RELEASED" },
       ],
       status: "RESERVED",
@@ -117,21 +117,21 @@ describe("PBV2 -> inventory reservations (DB-free)", () => {
       {
         sourceKey: "MAT-A",
         uom: "EA",
-        qty: "6.30",
+        qty: "6.300000",
         bySourceType: {
-          PBV2_MATERIAL: "3.30",
-          PBV2_COMPONENT: "2.00",
-          MANUAL: "1.00",
+          PBV2_MATERIAL: "3.300000",
+          PBV2_COMPONENT: "2.000000",
+          MANUAL: "1.000000",
         },
       },
       {
         sourceKey: "MAT-B",
         uom: "FT",
-        qty: "3.00",
+        qty: "3.000000",
         bySourceType: {
-          PBV2_MATERIAL: "3.00",
-          PBV2_COMPONENT: "0.00",
-          MANUAL: "0.00",
+          PBV2_MATERIAL: "3.000000",
+          PBV2_COMPONENT: "0.000000",
+          MANUAL: "0.000000",
         },
       },
     ]);

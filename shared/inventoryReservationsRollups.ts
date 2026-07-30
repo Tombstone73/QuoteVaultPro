@@ -25,8 +25,8 @@ function normalizeDecimalString(value: unknown, decimals: number): string {
 function addQtyStrings(a: string, b: string): string {
   const n1 = Number(a);
   const n2 = Number(b);
-  if (!Number.isFinite(n1) || !Number.isFinite(n2)) return normalizeDecimalString(0, 2);
-  return normalizeDecimalString(n1 + n2, 2);
+  if (!Number.isFinite(n1) || !Number.isFinite(n2)) return normalizeDecimalString(0, 6);
+  return normalizeDecimalString(n1 + n2, 6);
 }
 
 function compareStrings(a: string, b: string): number {
@@ -54,16 +54,16 @@ export function groupReservationsByMaterial(reservations: ReservationLike[]): Re
     const uom = String((r as any).uom || "");
     if (!sourceKey || !uom) continue;
 
-    const qty = normalizeDecimalString((r as any).qty, 2);
+    const qty = normalizeDecimalString((r as any).qty, 6);
     if (Number(qty) <= 0) continue;
 
     const key = `${sourceKey}::${uom}`;
     const existing = byKey.get(key) ?? {
       sourceKey,
       uom,
-      totalQty: normalizeDecimalString(0, 2),
-      manualQty: normalizeDecimalString(0, 2),
-      nonManualQty: normalizeDecimalString(0, 2),
+      totalQty: normalizeDecimalString(0, 6),
+      manualQty: normalizeDecimalString(0, 6),
+      nonManualQty: normalizeDecimalString(0, 6),
     };
 
     const isManual = String((r as any).sourceType) === "MANUAL";
@@ -91,7 +91,7 @@ export function sumManualReservedForOrder(
   sourceKey: string,
   uom: string,
 ): string {
-  let total = normalizeDecimalString(0, 2);
+  let total = normalizeDecimalString(0, 6);
 
   for (const r of reservations ?? []) {
     if (!isReserved((r as any).status)) continue;
@@ -99,7 +99,7 @@ export function sumManualReservedForOrder(
     if (String((r as any).sourceKey || "") !== String(sourceKey)) continue;
     if (String((r as any).uom || "") !== String(uom)) continue;
 
-    const qty = normalizeDecimalString((r as any).qty, 2);
+    const qty = normalizeDecimalString((r as any).qty, 6);
     if (Number(qty) <= 0) continue;
 
     total = addQtyStrings(total, qty);
