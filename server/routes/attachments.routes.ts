@@ -60,7 +60,7 @@ import { ObjectPermission } from "../objectAcl";
 import { resolveLocalStoragePath } from "../services/localStoragePath";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
-import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
+import { deleteStoredObjectKeysIfUnreferenced } from "../services/storage/storageReferenceGuard";
 import { CustomerUploadReviewError, promoteCustomerUpload, reviewCustomerUpload } from "../services/customerUploadReview.service";
 import { storageRegistry } from "../services/storage/StorageRegistry";
 import { storageProviderConfigRepository } from "../storage/storageProviderConfig.repo";
@@ -487,10 +487,16 @@ export async function registerAttachmentRoutes(
           ? derivativeRows.map((row) => row.objectKey ?? null)
           : [(attachment as any).thumbKey ?? null, (attachment as any).previewKey ?? null];
 
-        const derivativeDeletion = await deleteStoredObjectKeys({
+        const derivativeDeletion = await deleteStoredObjectKeysIfUnreferenced({
+          organizationId: args.organizationId,
           fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
           legacyStorageProvider: storageProvider,
           keys: [storageKey, ...derivativeKeys],
+          logContext: {
+            route: "quote-attachment-delete",
+            quoteId: args.quoteId,
+            attachmentId: attachment.id,
+          },
         });
 
         console.log('[QuoteAttachments:DELETE] top-level derivative cleanup result', {
@@ -538,10 +544,16 @@ export async function registerAttachmentRoutes(
               continue;
             }
 
-            const pageDeletion = await deleteStoredObjectKeys({
+            const pageDeletion = await deleteStoredObjectKeysIfUnreferenced({
+              organizationId: args.organizationId,
               fileRecordId,
               legacyStorageProvider: storageProvider,
               keys: [pageStorageKey],
+              logContext: {
+                route: "quote-attachment-page-derivative-delete",
+                quoteId: args.quoteId,
+                attachmentId: attachment.id,
+              },
             });
 
             console.log('[QuoteAttachments:DELETE] page derivative delete result', {
@@ -553,23 +565,27 @@ export async function registerAttachmentRoutes(
               failedKeys: pageDeletion.failedKeys,
             });
 
-            if (fileRecordId && pageDeletion.failedKeys.length === 0) {
+            if (fileRecordId && !pageDeletion.skipped && pageDeletion.failedKeys.length === 0) {
               await fileRecordRepository.deleteById(fileRecordId);
-            } else if (fileRecordId && pageDeletion.failedKeys.length > 0) {
+            } else if (fileRecordId && (pageDeletion.skipped || pageDeletion.failedKeys.length > 0)) {
               console.warn("[QuoteAttachments:DELETE] Skipped page derivative fileRecord cleanup due to storage delete failures", {
                 fileRecordId,
                 failedKeys: pageDeletion.failedKeys,
+                skipped: pageDeletion.skipped,
+                reason: pageDeletion.reason ?? null,
               });
             }
           }
         }
 
-        if (attachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+        if (attachment.fileRecordId && !derivativeDeletion.skipped && derivativeDeletion.failedKeys.length === 0) {
           await fileDerivativeRepository.deleteByFileRecordId(String(attachment.fileRecordId));
-        } else if (attachment.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+        } else if (attachment.fileRecordId && (derivativeDeletion.skipped || derivativeDeletion.failedKeys.length > 0)) {
           console.warn("[QuoteAttachments:DELETE] Skipped derivative row cleanup due to storage delete failures", {
             fileRecordId: String(attachment.fileRecordId),
             failedKeys: derivativeDeletion.failedKeys,
+            skipped: derivativeDeletion.skipped,
+            reason: derivativeDeletion.reason ?? null,
           });
         }
       }

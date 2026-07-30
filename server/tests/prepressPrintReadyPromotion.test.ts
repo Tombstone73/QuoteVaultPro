@@ -7,12 +7,13 @@ describe("Prepress print-ready promotion contract", () => {
   const root = process.cwd();
   const service = fs.readFileSync(path.join(root, "server/prepressFileService.ts"), "utf8");
   const route = fs.readFileSync(path.join(root, "server/routes/prepressFiles.routes.ts"), "utf8");
+  const ui = fs.readFileSync(path.join(root, "client/src/pages/PrepressProductionPageV2.tsx"), "utf8");
   const schema = fs.readFileSync(path.join(root, "shared/schema.ts"), "utf8");
   const migration = fs.readFileSync(path.join(root, "server/db/migrations_v2/0157_line_item_file_promotion_source.sql"), "utf8");
 
   test("promoted production artwork records source provenance without mutating the source", () => {
     expect(service).toContain("promoteCustomerArtworkToProductionArtwork");
-    expect(service).toContain("productionArtworkSourceType: params.source.sourceType ? \"customer_artwork_promotion\" : null");
+    expect(service).toContain("productionArtworkSourceType: params.source.productionArtworkSourceType ?? (params.source.sourceType ? \"customer_artwork_promotion\" : null)");
     expect(service).toContain("sourceFileId: params.source.sourceFileId ?? null");
     expect(service).toContain("sourceOrderAttachmentId: params.source.sourceOrderAttachmentId ?? null");
     expect(service).toContain("sourceArtworkSide: params.source.sourceArtworkSide ?? null");
@@ -27,6 +28,40 @@ describe("Prepress print-ready promotion contract", () => {
     expect(service).toContain("fileRecordId: result.fileRecord.id");
     expect(service).toContain("queueLineItemFilePreviewRepair");
     expect(service).toContain("enqueueFinalProductionFileCopy");
+  });
+
+  test("customer artwork assignment reuses the canonical file identity without copying storage", () => {
+    const assignmentStart = service.indexOf("export async function assignCustomerArtworkAsProductionArtwork");
+    const assignmentEnd = service.indexOf("export function listLineItemFiles", assignmentStart);
+    const assignment = service.slice(assignmentStart, assignmentEnd);
+
+    expect(assignment).toContain("productionArtworkSourceType: \"customer_artwork_assignment\"");
+    expect(assignment).toContain("fileRecordId: original.fileRecordId");
+    expect(assignment).toContain("storagePath: original.storagePath");
+    expect(assignment).toContain("storageKey: original.storageKey");
+    expect(assignment).toContain("fileRecordId: attachment.fileRecordId");
+    expect(assignment).toContain("sharedFileRecordId: source.fileRecordId");
+    expect(assignment).toContain("assigned_customer_artwork_to_production_artwork");
+    expect(assignment).not.toContain("storageApplicationService.finalizeUpload");
+  });
+
+  test("auto-finalization of unchanged customer artwork uses assignment instead of copy", () => {
+    const autoFinalizationStart = service.indexOf("export async function ensureFinalArtworkForLineItem");
+    const autoFinalizationEnd = service.indexOf("/**\n * Delete a file", autoFinalizationStart);
+    const autoFinalization = service.slice(autoFinalizationStart, autoFinalizationEnd);
+
+    expect(autoFinalization).toContain("assignCustomerArtworkAsProductionArtwork");
+    expect(autoFinalization).toContain("createdFiles.push(assigned.file)");
+    expect(autoFinalization).not.toContain("promoteCustomerArtworkToProductionArtwork({");
+  });
+
+  test("mounted prepress UI exposes assignment separately from modified copy creation", () => {
+    expect(route).toContain("/api/prepress/line-item/:lineItemId/assign-customer-artwork");
+    expect(route).toContain("PRODUCTION_ARTWORK_ASSIGNED");
+    expect(ui).toContain("assignCustomerArtworkMutation");
+    expect(ui).toContain("Use as Production Artwork");
+    expect(ui).toContain("Create Modified Copy");
+    expect(ui).toContain("assign-customer-artwork");
   });
 
   test("promotion is idempotent and auditable", () => {

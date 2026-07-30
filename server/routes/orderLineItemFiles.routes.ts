@@ -13,7 +13,7 @@
  */
 
 import type { Express } from "express";
-import { eq, and, desc, sql, or, inArray, ne } from "drizzle-orm";
+import { eq, and, desc, sql, inArray, ne } from "drizzle-orm";
 import { db } from "../db";
 import {
   orders,
@@ -35,7 +35,7 @@ import {
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
 import { createLineItemFileRecord } from "../services/lineItemFileRecordService";
-import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
+import { deleteStoredObjectKeysIfUnreferenced } from "../services/storage/storageReferenceGuard";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
 import { getFileUploadNamingPolicy } from "../prepressFileService";
@@ -1003,10 +1003,19 @@ export function registerOrderLineItemFileRoutes(
                       .from(assetVariants)
                       .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
 
-                    await deleteStoredObjectKeys({
+                    await deleteStoredObjectKeysIfUnreferenced({
+                      organizationId,
                       fileRecordId: record.fileRecordId ? String(record.fileRecordId) : null,
                       legacyStorageProvider: toLegacyStorageProvider(effectiveStorageProvider),
                       keys: [...variants.map((variant) => variant.key || ''), normalizedFileKey],
+                      exclusions: { assetIds: [asset.id] },
+                      logContext: {
+                        route: "order-line-item-attachment-delete",
+                        orderId,
+                        lineItemId,
+                        attachmentId: record.id,
+                        assetId: asset.id,
+                      },
                     });
 
                     await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
@@ -1017,23 +1026,6 @@ export function registerOrderLineItemFileRoutes(
               console.error('[OrderLineItemFiles:DELETE] Asset cleanup failed (non-blocking):', assetCleanupError);
             }
 
-            if (record.fileRecordId || storageKey) {
-              await db
-                .update(lineItemFiles)
-                .set({ status: 'superseded' })
-                .where(
-                  and(
-                    eq(lineItemFiles.organizationId, organizationId),
-                    eq(lineItemFiles.orderId, orderId),
-                    eq(lineItemFiles.lineItemId, lineItemId),
-                    eq(lineItemFiles.status, 'active'),
-                    record.fileRecordId
-                      ? eq(lineItemFiles.fileRecordId, String(record.fileRecordId))
-                      : or(eq(lineItemFiles.storagePath, storageKey), eq(lineItemFiles.storageKey, storageKey))!
-                  )
-                );
-            }
-
             if (Number(orderRefs) + Number(quoteRefs) === 0 && !hasRemainingAssetLinksForFile && effectiveStorageProvider) {
               const derivativeRows = record.fileRecordId
                 ? await fileDerivativeRepository.listByFileRecordId(String(record.fileRecordId))
@@ -1042,18 +1034,27 @@ export function registerOrderLineItemFileRoutes(
                 ? derivativeRows.map((row) => row.objectKey ?? null)
                 : [record.thumbnailRelativePath ?? record.thumbKey ?? null, record.previewKey ?? null];
 
-              const derivativeDeletion = await deleteStoredObjectKeys({
+              const derivativeDeletion = await deleteStoredObjectKeysIfUnreferenced({
+                organizationId,
                 fileRecordId: record.fileRecordId ? String(record.fileRecordId) : null,
                 legacyStorageProvider: effectiveStorageProvider,
                 keys: [storageKey, ...derivativeKeys],
+                logContext: {
+                  route: "order-line-item-attachment-delete",
+                  orderId,
+                  lineItemId,
+                  attachmentId: record.id,
+                },
               });
 
-              if (record.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+              if (record.fileRecordId && !derivativeDeletion.skipped && derivativeDeletion.failedKeys.length === 0) {
                 await fileDerivativeRepository.deleteByFileRecordId(String(record.fileRecordId));
-              } else if (record.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+              } else if (record.fileRecordId && (derivativeDeletion.skipped || derivativeDeletion.failedKeys.length > 0)) {
                 console.warn('[OrderLineItemFiles:DELETE] Skipped derivative row cleanup due to storage delete failures', {
                   fileRecordId: String(record.fileRecordId),
                   failedKeys: derivativeDeletion.failedKeys,
+                  skipped: derivativeDeletion.skipped,
+                  reason: derivativeDeletion.reason ?? null,
                 });
               }
             }
@@ -1161,32 +1162,6 @@ export function registerOrderLineItemFileRoutes(
         lineItemId,
         fileIds: [fileId, removedAsset?.fileRecordId],
       });
-
-      try {
-        const resolvedOriginal = removedAsset?.fileRecordId
-          ? await canonicalFileReadResolver.resolveOriginal(String(removedAsset.fileRecordId))
-          : null;
-        const storageKey = resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? removedAsset?.fileKey ?? null;
-
-        if (removedAsset?.fileRecordId || storageKey) {
-          await db
-            .update(lineItemFiles)
-            .set({ status: 'superseded' })
-            .where(
-              and(
-                eq(lineItemFiles.organizationId, organizationId),
-                eq(lineItemFiles.orderId, orderId),
-                eq(lineItemFiles.lineItemId, lineItemId),
-                eq(lineItemFiles.status, 'active'),
-                removedAsset?.fileRecordId
-                  ? eq(lineItemFiles.fileRecordId, String(removedAsset.fileRecordId))
-                  : or(eq(lineItemFiles.storagePath, String(storageKey)), eq(lineItemFiles.storageKey, String(storageKey)))!
-              )
-            );
-        }
-      } catch (lineItemFileCleanupError) {
-        console.warn('[OrderLineItemFiles:DELETE] line_item_files cleanup failed', lineItemFileCleanupError);
-      }
 
       try {
         const userId = getUserId(req.user);

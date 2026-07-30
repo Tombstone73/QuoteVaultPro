@@ -19,6 +19,7 @@ describe("production run shared file lifecycle contract", () => {
   test("stores one shared final file on the production run without per-member duplication", () => {
     expect(service).toContain("productionRunId: run.id");
     expect(service).toContain("lineItemId: representative.orderLineItemId");
+    expect(service).toContain("representativeLine.orderId");
     expect(service).not.toContain("run.members.map((member) => uploadLineItemFile");
     expect(prepressFileService).toContain("productionRunId?: string | null");
     expect(prepressFileService).toContain("productionRunId: productionRunId ?? null");

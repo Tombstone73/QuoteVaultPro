@@ -28,4 +28,36 @@ describe("prepress production run creation contract", () => {
     expect(service).toContain("PRODUCTION_RUN_ALLOCATION_INVALID");
     expect(service).toContain("inArray(lineItemFiles.lineItemId, uniqueLineItemIds)");
   });
+
+  test("prepress creation no longer requires one order to own the combined run", () => {
+    expect(routes).toContain("orderId: z.string().min(1).nullable().optional()");
+    expect(service).toContain("orderId?: string | null");
+    expect(service).toContain("inArray(orderLineItems.id, uniqueLineItemIds)");
+    expect(service).not.toContain("eq(orderLineItems.orderId, input.orderId), inArray(orderLineItems.id, uniqueLineItemIds)");
+    expect(service).toContain("const runOrderId = orderIds.length === 1 ? orderIds[0] : null");
+    expect(service).toContain("orderId: runOrderId");
+  });
+
+  test("run members preserve per-order identity and per-member outcomes", () => {
+    expect(service).toContain("memberOrderId: orderLineItems.orderId");
+    expect(service).toContain("memberOrderNumber: orders.orderNumber");
+    expect(service).toContain("memberCustomerName: customers.companyName");
+    expect(service).toContain("successfulQuantity");
+    expect(service).toContain("damagedQuantity");
+    expect(service).toContain("remainingQuantity");
+    expect(service).toContain("outcomeStatus");
+    expect(service).toContain("recoveryDisposition");
+  });
+
+  test("run outcomes are recorded per member with idempotency and correct order events", () => {
+    expect(routes).toContain('app.post("/api/production/runs/:runId/outcomes"');
+    expect(routes).toContain("recordProductionRunOutcome");
+    expect(service).toContain("recordProductionRunOutcomeInTransaction");
+    expect(service).toContain("lastOutcomeIdempotencyKey");
+    expect(service).toContain("PRODUCTION_RUN_OUTCOME_CONFIRMED");
+    expect(service).toContain("successfulQuantity + damagedQuantity + remainingQuantity > allocatedQuantity");
+    expect(service).toContain("orderId: line.orderId");
+    expect(service).toContain("production_run_member_outcome_recorded");
+    expect(service).toContain("completed_with_exceptions");
+  });
 });

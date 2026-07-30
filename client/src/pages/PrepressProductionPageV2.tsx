@@ -58,7 +58,7 @@ import {
 } from "@shared/fileUploadNaming";
 import { resolveProductionArtworkSideReadiness } from "@shared/productionHydration";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
-import { getPrepressCombinedRunItemIssue, validatePrepressCombinedRunSelection } from "@/lib/prepressCombinedRuns";
+import { canSelectPrepressCombinedRunItem, getPrepressCombinedRunItemBlocker, validatePrepressCombinedRunSelection } from "@/lib/prepressCombinedRuns";
 import { ProductionRunPanel } from "@/features/production/ProductionRunPanel";
 
 function promotionTagToPrepressLabel(tag: string): PrepressFileLabel {
@@ -128,6 +128,45 @@ type VisibleFileRecord = AttachmentData & {
   artworkAssignable: boolean;
   thumbnailAvailabilityStatus?: "available" | "pending" | "missing" | "failed";
 };
+
+type CombinedRunArtworkCandidate = {
+  id: string;
+  sourceKind: "line_item_original" | "order_attachment";
+  sourceId: string;
+  label: string;
+  uploadedByLabel: string;
+  sideLabel: "front" | "back" | "both" | "na";
+  sizeBytesValue: number | null;
+};
+
+function normalizeCombinedRunArtworkSide(value: unknown): CombinedRunArtworkCandidate["sideLabel"] {
+  return value === "front" || value === "back" || value === "both" ? value : "na";
+}
+
+function buildCombinedRunArtworkCandidates(payload: LineItemFilesPayload | null | undefined): CombinedRunArtworkCandidate[] {
+  if (!payload) return [];
+  const originals = (payload.originals ?? []).map((file) => ({
+    id: `line_item_original:${file.id}`,
+    sourceKind: "line_item_original" as const,
+    sourceId: file.id,
+    label: file.computedDisplayFilename || file.originalFilename || "Customer artwork",
+    uploadedByLabel: file.uploadedBy || "Staff upload",
+    sideLabel: normalizeCombinedRunArtworkSide(file.artworkSide),
+    sizeBytesValue: Number.isFinite(Number(file.sizeBytes)) ? Number(file.sizeBytes) : null,
+  }));
+  const bridged = (payload.bridgedOriginals ?? [])
+    .filter((file) => file.prepressCategory === "original_customer" && file.role === "artwork")
+    .map((file) => ({
+      id: `order_attachment:${file.id}`,
+      sourceKind: "order_attachment" as const,
+      sourceId: file.id,
+      label: file.computedDisplayFilename || file.displayFilename || file.originalFilename || "Customer artwork",
+      uploadedByLabel: file.uploadedBy || "Customer upload",
+      sideLabel: normalizeCombinedRunArtworkSide(file.side),
+      sizeBytesValue: file.sizeBytes != null ? Number(file.sizeBytes) : null,
+    }));
+  return [...originals, ...bridged];
+}
 
 type PendingViewerRequest = {
   lineItemId: string;
@@ -406,6 +445,11 @@ export default function PrepressProductionPageV2() {
   const [combinedRunSearchQuery, setCombinedRunSearchQuery] = useState("");
   const [combinedRunStatusFilter, setCombinedRunStatusFilter] = useState<PrepressCombinedRunStatusFilter>("attention");
   const [combinedRunIncludeHistory, setCombinedRunIncludeHistory] = useState(false);
+  const [combinedRunArtworkByLineItem, setCombinedRunArtworkByLineItem] = useState<Record<string, CombinedRunArtworkCandidate[]>>({});
+  const [combinedRunArtworkSelections, setCombinedRunArtworkSelections] = useState<Record<string, string>>({});
+  const [combinedRunArtworkErrors, setCombinedRunArtworkErrors] = useState<Record<string, string>>({});
+  const [combinedRunArtworkLoading, setCombinedRunArtworkLoading] = useState(false);
+  const [combinedRunArtworkAssigning, setCombinedRunArtworkAssigning] = useState(false);
   const [selectedCombinedRunId, setSelectedCombinedRunId] = useState<string | null>(null);
   const [combinedRunDetailOpen, setCombinedRunDetailOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -839,6 +883,40 @@ export default function PrepressProductionPageV2() {
     },
   });
 
+  const assignCustomerArtworkMutation = useMutation({
+    mutationFn: async ({ lineItemId, file, tag }: { lineItemId: string; file: VisibleFileRecord; tag: string }) => {
+      const sourceKind = file.category === "bridged_original" ? "order_attachment" : "line_item_original";
+      const res = await fetch(`/api/prepress/line-item/${lineItemId}/assign-customer-artwork`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          sourceKind,
+          sourceId: file.artworkAssignmentFileId || file.id,
+          tag,
+          artworkSide: file.sideLabel || "na",
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body?.success === false) throw new Error(body?.error || body?.message || "Unable to assign production artwork.");
+      return body;
+    },
+    onSuccess: async (body, variables) => {
+      await Promise.all([
+        refreshLineItemQueries(variables.lineItemId),
+        refreshPrepressQueue(),
+        refreshPrepressNavigationCount(),
+      ]);
+      toast({
+        title: body?.data?.created === false ? "Production artwork already assigned" : "Production artwork assigned",
+        description: body?.data?.file?.computedDisplayFilename || "The customer artwork now has a production role. The stored file was not copied.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Production artwork assignment failed", description: error.message, variant: "destructive" });
+    },
+  });
+
   // PROMPT B: Send to Print Queue mutation
   const sendToPrintMutation = useMutation({
     mutationFn: (lineItemId: string) => requestReleasePrepressLineItem(lineItemId),
@@ -1052,7 +1130,7 @@ export default function PrepressProductionPageV2() {
   const activeNestedRunByLineItemId = useMemo(() => {
     const map = new Map<string, ProductionRunListItem>();
     for (const run of productionRunsQuery.data ?? []) {
-      if (run.runStatus === "completed" || run.runStatus === "canceled") continue;
+      if (run.runStatus === "completed" || run.runStatus === "completed_with_exceptions" || run.runStatus === "canceled") continue;
       for (const member of run.members) {
         map.set(member.orderLineItemId, run);
       }
@@ -1060,12 +1138,24 @@ export default function PrepressProductionPageV2() {
     return map;
   }, [productionRunsQuery.data]);
   const selectableQueueItems = useMemo(
-    () => filteredQueue.filter((item) => !getPrepressCombinedRunItemIssue(item) && !activeNestedRunByLineItemId.has(item.lineItemId)),
+    () => filteredQueue.filter((item) => canSelectPrepressCombinedRunItem(item) && !activeNestedRunByLineItemId.has(item.lineItemId)),
     [activeNestedRunByLineItemId, filteredQueue],
   );
   const selectedQueueItems = useMemo(
     () => filteredQueue.filter((item) => selectedQueueLineItemIds.has(item.lineItemId)),
     [filteredQueue, selectedQueueLineItemIds],
+  );
+  const selectedQueueItemsNeedingArtwork = useMemo(
+    () => selectedQueueItems.filter((item) => getPrepressCombinedRunItemBlocker(item)?.code === "resolvable_missing_production_artwork"),
+    [selectedQueueItems],
+  );
+  const selectedQueueHardBlockedItems = useMemo(
+    () => selectedQueueItems.filter((item) => {
+      if (activeNestedRunByLineItemId.has(item.lineItemId)) return true;
+      const blocker = getPrepressCombinedRunItemBlocker(item);
+      return Boolean(blocker && !blocker.resolvable);
+    }),
+    [activeNestedRunByLineItemId, selectedQueueItems],
   );
   const combinedRunValidation = validatePrepressCombinedRunSelection(
     selectedQueueItems,
@@ -1079,6 +1169,8 @@ export default function PrepressProductionPageV2() {
   );
   const combinedRunActionReason = combinedRunValidation.canCreate
     ? "Selected lines will become one downstream run; original line items stay separate."
+    : selectedQueueItemsNeedingArtwork.length > 0 && selectedQueueHardBlockedItems.length === 0
+      ? "Next step: assign production artwork for selected jobs, then create the run."
     : combinedRunDialogValidation.canCreate
       ? "Compatibility override required; open to provide the reason."
       : combinedRunValidation.reason;
@@ -1087,12 +1179,25 @@ export default function PrepressProductionPageV2() {
     && combinedRunValidation.totalAllocatedQuantity > 0
     && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity;
   const canSubmitCombinedRun = combinedRunValidation.canCreate && (!combinedRunHasPlacementMismatch || combinedRunMismatchAcknowledged);
+  const canOpenCombinedRunDialog = selectedQueueItems.length >= 2 && selectedQueueHardBlockedItems.length === 0 && !createCombinedRunMutation.isPending;
   const allQueueItemsSelected = selectableQueueItems.length > 0 && selectableQueueItems.every((item) => selectedQueueLineItemIds.has(item.lineItemId));
   const someQueueItemsSelected = selectedQueueItems.length > 0 && !allQueueItemsSelected;
   const selectedQueueTotalQuantity = selectedQueueItems.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
   const selectedQueueOrderNumbers = Array.from(new Set(selectedQueueItems.map((item) => item.jobNumber).filter(Boolean)));
   const selectedQueueDestinationLabels = Array.from(new Set(selectedQueueItems.map((item) => item.productionDestinationLabel || item.selectedProductionDestination || item.suggestedProductionDestination || "No destination")));
-  const selectedQueueValidationLabel = combinedRunValidation.canCreate ? "Ready to nest" : (combinedRunActionReason || "Selection needs review");
+  const selectedQueueValidationLabel = combinedRunValidation.canCreate
+    ? "Ready to nest"
+    : selectedQueueItemsNeedingArtwork.length > 0
+      ? `${selectedQueueItemsNeedingArtwork.length} need production artwork`
+      : (combinedRunActionReason || "Selection needs review");
+  const combinedRunArtworkReadyCount = selectedQueueItemsNeedingArtwork.filter((item) => {
+    const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
+    return candidates.some((candidate) => candidate.id === combinedRunArtworkSelections[item.lineItemId]);
+  }).length;
+  const combinedRunArtworkCanAssign = selectedQueueItemsNeedingArtwork.length > 0
+    && combinedRunArtworkReadyCount === selectedQueueItemsNeedingArtwork.length
+    && !combinedRunArtworkLoading
+    && !combinedRunArtworkAssigning;
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId) ?? null;
   const selectedAlertStation = useMemo<ProductionAlertStation>(() => {
     const station = selectedItem?.selectedProductionDestination || selectedItem?.suggestedProductionDestination;
@@ -1211,6 +1316,56 @@ export default function PrepressProductionPageV2() {
       return next;
     });
   }, [selectedQueueItems]);
+  useEffect(() => {
+    if (!combinedRunOpen || selectedQueueItemsNeedingArtwork.length === 0) {
+      if (!combinedRunOpen) {
+        setCombinedRunArtworkErrors({});
+      }
+      return;
+    }
+
+    let cancelled = false;
+    const lineItemIds = selectedQueueItemsNeedingArtwork.map((item) => item.lineItemId);
+    setCombinedRunArtworkLoading(true);
+    setCombinedRunArtworkErrors({});
+
+    Promise.all(lineItemIds.map(async (lineItemId) => {
+      const res = await fetch(`/api/prepress/line-item/${lineItemId}/files`, { credentials: "include" });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok || body?.success === false) {
+        throw new Error(body?.error || body?.message || "Unable to load available artwork.");
+      }
+      return [lineItemId, buildCombinedRunArtworkCandidates(body?.data)] as const;
+    }))
+      .then((entries) => {
+        if (cancelled) return;
+        const nextArtwork = Object.fromEntries(entries);
+        setCombinedRunArtworkByLineItem(nextArtwork);
+        setCombinedRunArtworkSelections((current) => {
+          const next: Record<string, string> = {};
+          for (const lineItemId of lineItemIds) {
+            const candidates = nextArtwork[lineItemId] ?? [];
+            if (current[lineItemId] && candidates.some((candidate) => candidate.id === current[lineItemId])) {
+              next[lineItemId] = current[lineItemId];
+            } else if (candidates.length === 1) {
+              next[lineItemId] = candidates[0].id;
+            }
+          }
+          return next;
+        });
+      })
+      .catch((error: Error) => {
+        if (cancelled) return;
+        setCombinedRunArtworkErrors({ __load: error.message });
+      })
+      .finally(() => {
+        if (!cancelled) setCombinedRunArtworkLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [combinedRunOpen, selectedQueueItemsNeedingArtwork]);
   const resolveViewerIndex = React.useCallback((preferredFileId?: string | null) => {
     if (normalizedVisibleFiles.length === 0) return -1;
     if (!preferredFileId) return 0;
@@ -1540,7 +1695,7 @@ export default function PrepressProductionPageV2() {
 
   const handleToggleQueueItem = (lineItemId: string, checked: boolean) => {
     const item = filteredQueue.find((entry) => entry.lineItemId === lineItemId);
-    if (checked && item && (getPrepressCombinedRunItemIssue(item) || activeNestedRunByLineItemId.has(item.lineItemId))) return;
+    if (checked && item && (!canSelectPrepressCombinedRunItem(item) || activeNestedRunByLineItemId.has(item.lineItemId))) return;
     setSelectedQueueLineItemIds((current) => {
       const next = new Set(current);
       if (checked) next.add(lineItemId);
@@ -1565,11 +1720,66 @@ export default function PrepressProductionPageV2() {
     setCombinedRunAllocations({});
   };
 
+  const handleAssignCombinedRunArtwork = async () => {
+    if (combinedRunArtworkAssigning || selectedQueueItemsNeedingArtwork.length === 0) return;
+    const errors: Record<string, string> = {};
+    setCombinedRunArtworkAssigning(true);
+    setCombinedRunArtworkErrors({});
+    try {
+      for (const item of selectedQueueItemsNeedingArtwork) {
+        const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
+        const selectedCandidateId = combinedRunArtworkSelections[item.lineItemId];
+        const candidate = candidates.find((entry) => entry.id === selectedCandidateId);
+        if (!candidate) {
+          errors[item.lineItemId] = candidates.length === 0 ? "No customer artwork is available. Upload production artwork or remove this job." : "Choose the customer artwork to use.";
+          continue;
+        }
+
+        const res = await fetch(`/api/prepress/line-item/${item.lineItemId}/assign-customer-artwork`, {
+          method: "POST",
+          credentials: "include",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            sourceKind: candidate.sourceKind,
+            sourceId: candidate.sourceId,
+            tag: "final_print",
+            artworkSide: candidate.sideLabel || "na",
+          }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok || body?.success === false) {
+          errors[item.lineItemId] = body?.error || body?.message || "Unable to assign this artwork.";
+        }
+      }
+
+      if (Object.keys(errors).length > 0) {
+        setCombinedRunArtworkErrors(errors);
+        toast({
+          title: "Artwork resolution needs attention",
+          description: "Some selected jobs still need a valid artwork choice before the run can be created.",
+          variant: "destructive",
+        });
+        return;
+      }
+
+      toast({
+        title: "Production artwork assigned",
+        description: "Selected customer artwork was assigned without copying the stored files.",
+      });
+      await Promise.all([
+        refreshPrepressQueue(),
+        refreshPrepressNavigationCount(),
+      ]);
+    } finally {
+      setCombinedRunArtworkAssigning(false);
+    }
+  };
+
   const handleCreateCombinedRun = async () => {
-    if (!canSubmitCombinedRun || !combinedRunValidation.orderId || !combinedRunValidation.stationKey) return;
+    if (!canSubmitCombinedRun || !combinedRunValidation.stationKey) return;
     try {
       const result = await createCombinedRunMutation.mutateAsync({
-        orderId: combinedRunValidation.orderId,
+        orderId: combinedRunValidation.orderId ?? null,
         stationKey: combinedRunValidation.stationKey,
         members: selectedQueueItems.map((item) => ({
           lineItemId: item.lineItemId,
@@ -1862,8 +2072,12 @@ export default function PrepressProductionPageV2() {
                 />
                 <span>{selectedQueueItems.length > 0 ? `${selectedQueueItems.length} selected` : "Select all"}</span>
               </label>
-              {selectedQueueItems.some((item) => item.productionReleaseBlockedReason) ? (
-                <span className="text-[10px] font-medium text-amber-300">Proof-blocked lines will be reported</span>
+              {selectedQueueItems.length > 0 ? (
+                <span className="text-[10px] font-medium text-slate-400">
+                  {selectedQueueItems.length} selected
+                  {selectedQueueItemsNeedingArtwork.length > 0 ? ` · ${selectedQueueItemsNeedingArtwork.length} need production artwork` : ""}
+                  {selectedQueueHardBlockedItems.length > 0 ? ` · ${selectedQueueHardBlockedItems.length} hard blocked` : ""}
+                </span>
               ) : null}
             </div>
             <div className="grid grid-cols-2 gap-2">
@@ -1894,7 +2108,7 @@ export default function PrepressProductionPageV2() {
                 size="sm"
                 variant="outline"
                 onClick={() => setCombinedRunOpen(true)}
-                disabled={!combinedRunDialogValidation.canCreate || createCombinedRunMutation.isPending}
+                disabled={!canOpenCombinedRunDialog}
                 className="h-auto min-h-9 w-full whitespace-normal border-violet-400/60 px-2 py-1.5 text-[11px] leading-tight text-violet-200 hover:bg-violet-500/10"
               >
                 {createCombinedRunMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
@@ -2013,6 +2227,11 @@ export default function PrepressProductionPageV2() {
                     <span className={cn("rounded border px-2 py-0.5", combinedRunValidation.canCreate ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-200")}>
                       {selectedQueueValidationLabel}
                     </span>
+                    {selectedQueueHardBlockedItems.length > 0 ? (
+                      <span className="rounded border border-red-400/40 px-2 py-0.5 text-red-100">
+                        {selectedQueueHardBlockedItems.length} hard blocked
+                      </span>
+                    ) : null}
                   </div>
                 </div>
                 <div className="flex shrink-0 flex-wrap gap-2">
@@ -2023,7 +2242,7 @@ export default function PrepressProductionPageV2() {
                     type="button"
                     size="sm"
                     onClick={() => setCombinedRunOpen(true)}
-                    disabled={!combinedRunDialogValidation.canCreate || createCombinedRunMutation.isPending}
+                    disabled={!canOpenCombinedRunDialog}
                     title={combinedRunActionReason || undefined}
                     className="bg-violet-600 text-white hover:bg-violet-700"
                   >
@@ -2073,19 +2292,24 @@ export default function PrepressProductionPageV2() {
               <p className="text-xs text-slate-600 mt-1">Adjust filters or clear search to see more jobs</p>
             </div>
           )}
-          {!queueIsLoading && filteredQueue.map((item) => (
-            <JobCard
-              key={item.lineItemId}
-              item={item}
-              isSelected={selectedLineItemId === item.lineItemId}
-              isChecked={selectedQueueLineItemIds.has(item.lineItemId)}
-              selectionIssue={activeNestedRunByLineItemId.has(item.lineItemId) ? "Already nested in an active production run." : getPrepressCombinedRunItemIssue(item)}
-              nestedRunLabel={activeNestedRunByLineItemId.get(item.lineItemId)?.displayNumber ?? null}
-              onCheckedChange={(checked) => handleToggleQueueItem(item.lineItemId, checked)}
-              onClick={() => setSelectedLineItemId(item.lineItemId)}
-              onPreviewClick={() => handleOpenQueuePreview(item)}
-            />
-          ))}
+          {!queueIsLoading && filteredQueue.map((item) => {
+            const selectionBlocker = activeNestedRunByLineItemId.has(item.lineItemId)
+              ? { code: "hard_already_allocated", message: "Already nested in an active production run.", resolvable: false }
+              : getPrepressCombinedRunItemBlocker(item);
+            return (
+              <JobCard
+                key={item.lineItemId}
+                item={item}
+                isSelected={selectedLineItemId === item.lineItemId}
+                isChecked={selectedQueueLineItemIds.has(item.lineItemId)}
+                selectionBlocker={selectionBlocker}
+                nestedRunLabel={activeNestedRunByLineItemId.get(item.lineItemId)?.displayNumber ?? null}
+                onCheckedChange={(checked) => handleToggleQueueItem(item.lineItemId, checked)}
+                onClick={() => setSelectedLineItemId(item.lineItemId)}
+                onPreviewClick={() => handleOpenQueuePreview(item)}
+              />
+            );
+          })}
         </div>
       </aside>
 
@@ -2404,25 +2628,41 @@ export default function PrepressProductionPageV2() {
                             ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
                           </td>
                           <td className="px-4 py-3 text-right">
-                            <button 
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                window.open(file.downloadUrl, "_blank");
-                              }}
-                              className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all"
-                            >
-                              Download
-                            </button>
-                            <button
-                              onClick={(event) => {
-                                event.stopPropagation();
-                                setPromotionSourceFile(file);
-                                setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
-                              }}
-                              className="ml-2 bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
-                            >
-                              Create Production Artwork Copy
-                            </button>
+                            <div className="flex flex-wrap justify-end gap-2">
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  window.open(file.downloadUrl, "_blank");
+                                }}
+                                className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-[#1773cf]/20 hover:border-[#1773cf] transition-all"
+                              >
+                                Download
+                              </button>
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  assignCustomerArtworkMutation.mutate({
+                                    lineItemId: selectedItem!.lineItemId,
+                                    file,
+                                    tag: selectedTag !== "none" ? selectedTag : "final_print",
+                                  });
+                                }}
+                                disabled={!selectedItem || assignCustomerArtworkMutation.isPending}
+                                className="bg-emerald-600/20 border border-emerald-400/50 px-3 py-1 rounded text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-50 transition-all"
+                              >
+                                Use as Production Artwork
+                              </button>
+                              <button
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  setPromotionSourceFile(file);
+                                  setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
+                                }}
+                                className="bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
+                              >
+                                Create Modified Copy
+                              </button>
+                            </div>
                           </td>
                         </tr>
                       ))}
@@ -2470,25 +2710,41 @@ export default function PrepressProductionPageV2() {
                                 ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
                               </td>
                               <td className="px-4 py-3 text-right">
-                                <button
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    window.open(file.downloadUrl, "_blank");
-                                  }}
-                                  className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-amber-900/30 hover:border-amber-600 transition-all"
-                                >
-                                  Download
-                                </button>
-                                <button
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    setPromotionSourceFile(file);
-                                    setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
-                                  }}
-                                  className="ml-2 bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
-                                >
-                                  Create Production Artwork Copy
-                                </button>
+                                <div className="flex flex-wrap justify-end gap-2">
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      window.open(file.downloadUrl, "_blank");
+                                    }}
+                                    className="bg-[#111921] border border-[#2d3748] px-3 py-1 rounded hover:bg-amber-900/30 hover:border-amber-600 transition-all"
+                                  >
+                                    Download
+                                  </button>
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      assignCustomerArtworkMutation.mutate({
+                                        lineItemId: selectedItem!.lineItemId,
+                                        file,
+                                        tag: selectedTag !== "none" ? selectedTag : "final_print",
+                                      });
+                                    }}
+                                    disabled={!selectedItem || assignCustomerArtworkMutation.isPending}
+                                    className="bg-emerald-600/20 border border-emerald-400/50 px-3 py-1 rounded text-emerald-100 hover:bg-emerald-600/30 disabled:opacity-50 transition-all"
+                                  >
+                                    Use as Production Artwork
+                                  </button>
+                                  <button
+                                    onClick={(event) => {
+                                      event.stopPropagation();
+                                      setPromotionSourceFile(file);
+                                      setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
+                                    }}
+                                    className="bg-violet-600/20 border border-violet-400/50 px-3 py-1 rounded text-violet-100 hover:bg-violet-600/30 transition-all"
+                                  >
+                                    Create Modified Copy
+                                  </button>
+                                </div>
                               </td>
                             </tr>
                           ))}
@@ -3139,11 +3395,11 @@ export default function PrepressProductionPageV2() {
           <div className="space-y-4">
             <div className="rounded-lg border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs text-slate-300">
               <div className="font-semibold text-slate-100">
-                {selectedQueueItems.length} selected line items
-                {combinedRunValidation.orderId ? ` - Order ${selectedQueueItems[0]?.jobNumber || combinedRunValidation.orderId}` : ""}
+                Select compatible production jobs to create a combined run.
               </div>
               <div className="mt-1">
-                Customer/contact: {selectedQueueItems[0] ? formatOwnerLabel(selectedQueueItems[0]) || selectedQueueItems[0].customerName : "Not resolved"}.
+                {selectedQueueItems.length} selected line items across {selectedQueueOrderNumbers.length || 0} order{selectedQueueOrderNumbers.length === 1 ? "" : "s"}.
+                {" "}Total allocated quantity: {combinedRunValidation.totalAllocatedQuantity}.
               </div>
               <div className="mt-1">
                 Target station: {combinedRunValidation.stationKey || "Not resolved"}.
@@ -3157,6 +3413,145 @@ export default function PrepressProductionPageV2() {
               ) : null}
             </div>
 
+            {selectedQueueItemsNeedingArtwork.length > 0 ? (
+              <div className="space-y-3 rounded-lg border border-amber-400/40 bg-amber-400/5 p-3">
+                <div className="flex flex-wrap items-start justify-between gap-3">
+                  <div>
+                    <p className="text-sm font-semibold text-amber-100">Resolve production artwork</p>
+                    <p className="mt-1 text-xs text-slate-300">
+                      {selectedQueueItemsNeedingArtwork.length} selected {selectedQueueItemsNeedingArtwork.length === 1 ? "job needs" : "jobs need"} a production-artwork assignment before this run can be created.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      disabled={combinedRunArtworkLoading || combinedRunArtworkAssigning}
+                      onClick={() => {
+                        setCombinedRunArtworkSelections((current) => {
+                          const next = { ...current };
+                          for (const item of selectedQueueItemsNeedingArtwork) {
+                            const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
+                            if (candidates.length === 1) next[item.lineItemId] = candidates[0].id;
+                          }
+                          return next;
+                        });
+                      }}
+                      className="h-8 border-amber-400/50 text-amber-100 hover:bg-amber-500/10"
+                    >
+                      Use sole artwork
+                    </Button>
+                    <Button
+                      type="button"
+                      size="sm"
+                      onClick={handleAssignCombinedRunArtwork}
+                      disabled={!combinedRunArtworkCanAssign}
+                      className="h-8 bg-emerald-600 text-white hover:bg-emerald-700"
+                    >
+                      {combinedRunArtworkAssigning ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                      Assign selected artwork
+                    </Button>
+                  </div>
+                </div>
+                {combinedRunArtworkLoading ? (
+                  <div className="flex items-center gap-2 rounded border border-[#2d3748] bg-[#0f172a] px-2 py-2 text-xs text-slate-300">
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading available customer artwork...
+                  </div>
+                ) : null}
+                {combinedRunArtworkErrors.__load ? (
+                  <div className="rounded border border-red-500/40 bg-red-500/10 px-2 py-2 text-xs text-red-100">
+                    {combinedRunArtworkErrors.__load}
+                  </div>
+                ) : null}
+                <div className="max-h-72 space-y-2 overflow-auto pr-1">
+                  {selectedQueueItemsNeedingArtwork.map((item) => {
+                    const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
+                    const selectedCandidateId = combinedRunArtworkSelections[item.lineItemId];
+                    const rowError = combinedRunArtworkErrors[item.lineItemId] ?? null;
+                    const statusLabel = candidates.length === 0
+                      ? "Needs upload"
+                      : selectedCandidateId
+                        ? "Ready to assign"
+                        : candidates.length === 1
+                          ? "Ready to assign"
+                          : "Needs file choice";
+                    return (
+                      <div key={item.lineItemId} className="rounded-md border border-[#2d3748] bg-[#0f172a] p-3 text-xs">
+                        <div className="flex flex-wrap items-start justify-between gap-2">
+                          <div className="min-w-0">
+                            <div className="font-semibold text-white">
+                              Order {item.jobNumber || item.orderId}{item.lineNumber ? ` · Line ${item.lineNumber}` : ""}: {item.productName}
+                            </div>
+                            <div className="mt-0.5 text-slate-400">{formatOwnerLabel(item) || item.customerName || "Customer not resolved"}</div>
+                          </div>
+                          <span className={cn(
+                            "rounded border px-2 py-0.5 text-[10px] font-semibold",
+                            statusLabel === "Ready to assign"
+                              ? "border-emerald-400/40 text-emerald-200"
+                              : "border-amber-400/40 text-amber-100",
+                          )}>
+                            {statusLabel}
+                          </span>
+                        </div>
+                        <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                          {candidates.length > 0 ? (
+                            <Select
+                              value={selectedCandidateId ?? (candidates.length === 1 ? candidates[0].id : undefined)}
+                              onValueChange={(value) => setCombinedRunArtworkSelections((current) => ({ ...current, [item.lineItemId]: value }))}
+                            >
+                              <SelectTrigger className="h-9 bg-[#111921] border-[#2d3748] text-xs">
+                                <SelectValue placeholder="Choose customer artwork" />
+                              </SelectTrigger>
+                              <SelectContent>
+                                {candidates.map((candidate) => (
+                                  <SelectItem key={candidate.id} value={candidate.id}>
+                                    {candidate.label} · {candidate.sideLabel.toUpperCase()} · {candidate.sizeBytesValue != null ? formatBytes(candidate.sizeBytesValue) : "size unknown"}
+                                  </SelectItem>
+                                ))}
+                              </SelectContent>
+                            </Select>
+                          ) : (
+                            <div className="rounded border border-[#2d3748] px-2 py-2 text-slate-300">
+                              No customer artwork is available for this line item. Upload production artwork from the job detail or remove it from this selection.
+                            </div>
+                          )}
+                          <div className="flex flex-wrap gap-2">
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => {
+                                setSelectedLineItemId(item.lineItemId);
+                                setCombinedRunOpen(false);
+                              }}
+                              className="h-9 px-2 text-[11px]"
+                            >
+                              Open job
+                            </Button>
+                            <Button
+                              type="button"
+                              size="sm"
+                              variant="outline"
+                              onClick={() => handleToggleQueueItem(item.lineItemId, false)}
+                              className="h-9 border-red-400/40 px-2 text-[11px] text-red-100 hover:bg-red-500/10"
+                            >
+                              Remove
+                            </Button>
+                          </div>
+                        </div>
+                        {rowError ? (
+                          <div className="mt-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-100">
+                            {rowError}
+                          </div>
+                        ) : null}
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            ) : null}
+
             <div className="max-h-64 overflow-auto rounded-lg border border-[#2d3748]">
               {selectedQueueItems.map((item) => {
                 const maxQuantity = Number(item.quantity) || 0;
@@ -3165,6 +3560,9 @@ export default function PrepressProductionPageV2() {
                     <div className="min-w-0">
                       <div className="truncate text-sm font-semibold text-white">
                         {item.lineNumber ? `Line ${item.lineNumber}: ` : ""}{item.productName}
+                      </div>
+                      <div className="text-xs text-slate-300">
+                        Order {item.jobNumber || item.orderId} - {formatOwnerLabel(item) || item.customerName || "Customer not resolved"}
                       </div>
                       <div className="text-xs text-slate-400">
                         {item.productionDestinationLabel || item.selectedProductionDestination || "No destination"} - {item.materialName || item.media || "No material"} - {item.width && item.height ? `${item.width} x ${item.height}` : "No dimensions"}
@@ -3685,7 +4083,7 @@ function JobCard({
   item,
   isSelected,
   isChecked,
-  selectionIssue,
+  selectionBlocker,
   nestedRunLabel,
   onCheckedChange,
   onClick,
@@ -3694,7 +4092,7 @@ function JobCard({
   item: PrepressQueueItem;
   isSelected: boolean;
   isChecked: boolean;
-  selectionIssue?: string | null;
+  selectionBlocker?: { code?: string; message: string; resolvable: boolean } | null;
   nestedRunLabel?: string | null;
   onCheckedChange: (checked: boolean) => void;
   onClick: () => void;
@@ -3702,6 +4100,8 @@ function JobCard({
 }) {
   const config = getPrepressWorkflowDisplay(item);
   const ownerLabel = formatOwnerLabel(item);
+  const selectionDisabled = Boolean(selectionBlocker && !selectionBlocker.resolvable);
+  const needsProductionArtwork = selectionBlocker?.code === "resolvable_missing_production_artwork";
 
   React.useEffect(() => {
     if (!import.meta.env.DEV) return;
@@ -3729,10 +4129,10 @@ function JobCard({
       >
         <Checkbox
           checked={isChecked}
-          disabled={!!selectionIssue}
+          disabled={selectionDisabled}
           onCheckedChange={(checked) => onCheckedChange(checked === true)}
           aria-label={`Select ${item.jobNumber} ${item.productName}`}
-          title={selectionIssue || "Select for nesting"}
+          title={selectionBlocker?.message || "Select for nesting"}
         />
       </div>
       <div
@@ -3791,9 +4191,19 @@ function JobCard({
           {item.rush && <span className="text-[#e53e3e] font-bold">RUSH</span>}
           {item.dueDate && !item.rush && <span className="text-slate-400">{new Date(item.dueDate).toLocaleDateString()}</span>}
         </div>
-        {selectionIssue ? (
-          <div className="mt-1 rounded border border-amber-500/30 bg-amber-500/10 px-2 py-1 text-[10px] leading-snug text-amber-100">
-            Cannot nest: {selectionIssue}
+        {selectionBlocker ? (
+          <div className="mt-1 flex flex-wrap items-center gap-1.5 text-[10px] leading-snug">
+            <span className={cn(
+              "rounded border px-1.5 py-0.5 font-semibold",
+              needsProductionArtwork
+                ? "border-amber-400/40 bg-amber-400/10 text-amber-100"
+                : "border-red-400/40 bg-red-500/10 text-red-100",
+            )}>
+              {needsProductionArtwork ? "Needs production artwork" : "Hard blocked"}
+            </span>
+            <span className={needsProductionArtwork ? "text-amber-200" : "text-red-100"}>
+              {selectionBlocker.message}
+            </span>
           </div>
         ) : (
           <div className="mt-1 text-[10px] font-medium text-emerald-300">Production artwork ready for nesting</div>

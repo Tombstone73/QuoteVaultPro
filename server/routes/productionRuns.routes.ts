@@ -9,6 +9,7 @@ import {
   listProductionRunFiles,
   listProductionRuns,
   ProductionRunError,
+  recordProductionRunOutcome,
   replaceProductionRunFile,
   retireProductionRunFile,
   transitionProductionRun,
@@ -16,7 +17,7 @@ import {
 } from "../services/productionRunService";
 
 const createSchema = z.object({
-  orderId: z.string().min(1), stationKey: z.string().min(1).max(40),
+  orderId: z.string().min(1).nullable().optional(), stationKey: z.string().min(1).max(40),
   members: z.array(z.object({ productionJobId: z.string().min(1), allocatedQuantity: z.number().int().positive().optional() })).min(1),
   plannedSheetCount: z.number().int().positive().nullable().optional(), nominalPiecesPerSheet: z.number().int().positive().nullable().optional(),
   sheetWidth: z.number().positive().nullable().optional(), sheetHeight: z.number().positive().nullable().optional(), notes: z.string().max(10000).nullable().optional(), compatibilityOverrideReason: z.string().max(2000).nullable().optional(),
@@ -25,6 +26,19 @@ const createPrepressSchema = createSchema.extend({
   members: z.array(z.object({ lineItemId: z.string().min(1), allocatedQuantity: z.number().int().positive().optional() })).min(1),
 });
 const transitionSchema = z.object({ action: z.enum(["release", "start", "complete", "cancel"]), reason: z.string().max(2000).nullable().optional() });
+const outcomeSchema = z.object({
+  idempotencyKey: z.string().max(160).nullable().optional(),
+  members: z.array(z.object({
+    memberId: z.string().min(1),
+    successfulQuantity: z.number().int().nonnegative(),
+    damagedQuantity: z.number().int().nonnegative().optional(),
+    remainingQuantity: z.number().int().nonnegative().optional(),
+    outcomeStatus: z.enum(["pending", "completed", "partially_completed", "failed", "requires_reprint", "return_to_prepress", "cancelled", "hold_for_review"]).optional(),
+    recoveryDisposition: z.enum(["none", "return_to_prepress", "return_to_production_queue", "requires_reprint", "hold_for_review", "cancel_remaining"]).nullable().optional(),
+    operatorNote: z.string().max(4000).nullable().optional(),
+    segments: z.array(z.record(z.string(), z.unknown())).optional(),
+  })).min(1),
+});
 const retireFileSchema = z.object({ reason: z.string().max(2000).nullable().optional() });
 const userId = (user: any) => user?.claims?.sub ?? user?.id;
 const actorRole = (req: any) => String(req.orgRole || req.user?.role || "").toLowerCase();
@@ -190,6 +204,19 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
     } catch (error) {
       if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
       return res.status(500).json({ success: false, code: "PRODUCTION_RUN_TRANSITION_FAILED", message: "Unable to transition production run." });
+    }
+  });
+  app.post("/api/production/runs/:runId/outcomes", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const body = outcomeSchema.parse(req.body ?? {});
+      return res.json({ success: true, data: await recordProductionRunOutcome({ organizationId, actorUserId, runId: req.params.runId, ...body }) });
+    } catch (error) {
+      if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: "PRODUCTION_RUN_OUTCOME_INVALID", message: error.issues[0]?.message ?? "Invalid production outcome." });
+      console.error("[production-runs] outcome failed", error); return res.status(500).json({ success: false, code: "PRODUCTION_RUN_OUTCOME_FAILED", message: "Unable to record production run outcome." });
     }
   });
 }

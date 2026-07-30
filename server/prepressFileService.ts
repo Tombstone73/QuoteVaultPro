@@ -640,6 +640,7 @@ type PromotableArtworkFile = {
   sourceFileId?: string | null;
   sourceOrderAttachmentId?: string | null;
   sourceType?: "line_item_original" | "order_attachment" | null;
+  productionArtworkSourceType?: string | null;
   sourceArtworkSide?: "front" | "back" | "both" | "na" | null;
   storageBucket?: string | null;
   storagePath: string;
@@ -669,7 +670,7 @@ export function buildPromotedFinalFileLink(params: {
     role: "final" as const,
     status: "active" as const,
     tag: params.tag ?? null,
-    productionArtworkSourceType: params.source.sourceType ? "customer_artwork_promotion" : null,
+    productionArtworkSourceType: params.source.productionArtworkSourceType ?? (params.source.sourceType ? "customer_artwork_promotion" : null),
     sourceFileId: params.source.sourceFileId ?? null,
     sourceOrderAttachmentId: params.source.sourceOrderAttachmentId ?? null,
     sourceArtworkSide: params.source.sourceArtworkSide ?? null,
@@ -886,6 +887,183 @@ export async function promoteCustomerArtworkToProductionArtwork(params: {
   }).completion;
   await enqueueFinalProductionFileCopy({ organizationId: params.organizationId, file: stored.linkedRecord }).catch(() => ({ enqueued: false, copyJobId: null }));
   return { file: stored.linkedRecord, created: true };
+}
+
+export async function assignCustomerArtworkAsProductionArtwork(params: {
+  organizationId: string;
+  orderId: string;
+  lineItemId: string;
+  prepressSessionId?: string | null;
+  createdByUserId: string;
+  tag: string;
+  artworkSide: "front" | "back" | "both" | "na";
+  source: PromoteCustomerArtworkSource;
+}): Promise<{ file: LineItemFile; created: boolean }> {
+  const tag = params.tag.trim();
+  if (!tag || tag === "none") {
+    throw Object.assign(new Error("Production tag is required."), { statusCode: 400, code: "PRODUCTION_TAG_REQUIRED" });
+  }
+
+  let source: PromotableArtworkFile;
+  if (params.source.kind === "line_item_original") {
+    const [original] = await db
+      .select()
+      .from(lineItemFiles)
+      .where(and(
+        eq(lineItemFiles.id, params.source.fileId),
+        eq(lineItemFiles.organizationId, params.organizationId),
+        eq(lineItemFiles.orderId, params.orderId),
+        eq(lineItemFiles.lineItemId, params.lineItemId),
+        eq(lineItemFiles.role, "original"),
+        eq(lineItemFiles.status, "active"),
+      ))
+      .limit(1);
+    if (!original) {
+      throw Object.assign(new Error("Customer artwork source file not found."), { statusCode: 404, code: "SOURCE_ARTWORK_NOT_FOUND" });
+    }
+    if (!original.fileRecordId) {
+      throw Object.assign(new Error("Customer artwork is missing a canonical file identity and cannot be assigned without copying."), { statusCode: 409, code: "SOURCE_STORAGE_PLACEMENT_MISSING" });
+    }
+    source = {
+      fileRecordId: original.fileRecordId,
+      sourceFileId: original.id,
+      sourceOrderAttachmentId: null,
+      sourceType: "line_item_original",
+      sourceArtworkSide: params.artworkSide,
+      storageBucket: original.storageBucket,
+      storagePath: original.storagePath,
+      storageKey: original.storageKey,
+      originalFilename: original.originalFilename,
+      mimeType: original.mimeType,
+      sizeBytes: original.sizeBytes,
+      productionQuantity: original.productionQuantity,
+      productionGroupId: original.productionGroupId,
+    };
+  } else {
+    const [attachment] = await db
+      .select({
+        id: orderAttachments.id,
+        orderId: orderAttachments.orderId,
+        orderLineItemId: orderAttachments.orderLineItemId,
+        fileRecordId: orderAttachments.fileRecordId,
+        fileName: orderAttachments.fileName,
+        originalFilename: orderAttachments.originalFilename,
+        mimeType: orderAttachments.mimeType,
+        fileUrl: orderAttachments.fileUrl,
+        relativePath: orderAttachments.relativePath,
+        sizeBytes: orderAttachments.sizeBytes,
+        fileSize: orderAttachments.fileSize,
+        role: orderAttachments.role,
+        side: orderAttachments.side,
+        productionQuantity: orderAttachments.productionQuantity,
+        productionGroupId: orderAttachments.productionGroupId,
+      })
+      .from(orderAttachments)
+      .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+      .where(and(
+        eq(orderAttachments.id, params.source.attachmentId),
+        eq(orderAttachments.orderId, params.orderId),
+        eq(orderAttachments.orderLineItemId, params.lineItemId),
+        eq(orderAttachments.role, "artwork"),
+        eq(orders.organizationId, params.organizationId),
+      ))
+      .limit(1);
+    if (!attachment) {
+      throw Object.assign(new Error("Customer artwork attachment not found."), { statusCode: 404, code: "SOURCE_ARTWORK_NOT_FOUND" });
+    }
+    if (!attachment.fileRecordId) {
+      throw Object.assign(new Error("Customer artwork is missing a canonical file identity and cannot be assigned without copying."), { statusCode: 409, code: "SOURCE_STORAGE_PLACEMENT_MISSING" });
+    }
+    const resolvedOriginal = await resolveOriginalFileAccess({
+      id: attachment.id,
+      fileRecordId: attachment.fileRecordId,
+      fileName: attachment.fileName,
+      originalFilename: attachment.originalFilename,
+      mimeType: attachment.mimeType,
+      fileUrl: attachment.fileUrl,
+      fileKey: attachment.relativePath,
+    });
+    const resolvedStoragePath = resolvedOriginal.objectPath || attachment.relativePath || attachment.fileUrl || null;
+    if (resolvedOriginal.availabilityStatus !== "available" || !resolvedStoragePath) {
+      throw Object.assign(new Error("Customer artwork source is not available for assignment."), { statusCode: 409, code: "SOURCE_STORAGE_PLACEMENT_MISSING" });
+    }
+    source = {
+      fileRecordId: attachment.fileRecordId,
+      sourceFileId: null,
+      sourceOrderAttachmentId: attachment.id,
+      sourceType: "order_attachment",
+      sourceArtworkSide: params.artworkSide,
+      storageBucket: null,
+      storagePath: resolvedStoragePath,
+      storageKey: resolvedStoragePath,
+      originalFilename: attachment.originalFilename || attachment.fileName || `artwork-${attachment.id}`,
+      mimeType: attachment.mimeType || resolvedOriginal.mimeType || "application/octet-stream",
+      sizeBytes: Math.max(0, Number(attachment.sizeBytes ?? attachment.fileSize ?? 0)),
+      productionQuantity: attachment.productionQuantity ?? null,
+      productionGroupId: attachment.productionGroupId ?? null,
+    };
+  }
+
+  const sourceConditions = params.source.kind === "line_item_original"
+    ? [eq(lineItemFiles.sourceFileId, params.source.fileId)]
+    : [eq(lineItemFiles.sourceOrderAttachmentId, params.source.attachmentId)];
+  const [existing] = await db
+    .select()
+    .from(lineItemFiles)
+    .where(and(
+      eq(lineItemFiles.organizationId, params.organizationId),
+      eq(lineItemFiles.orderId, params.orderId),
+      eq(lineItemFiles.lineItemId, params.lineItemId),
+      eq(lineItemFiles.role, "final"),
+      eq(lineItemFiles.status, "active"),
+      eq(lineItemFiles.tag, tag),
+      eq(lineItemFiles.sourceArtworkSide, params.artworkSide),
+      ...sourceConditions,
+    ))
+    .limit(1);
+  if (existing) return { file: existing, created: false };
+
+  const [inserted] = await db.transaction(async (tx) => {
+    const [created] = await tx.insert(lineItemFiles).values(buildPromotedFinalFileLink({
+      organizationId: params.organizationId,
+      orderId: params.orderId,
+      lineItemId: params.lineItemId,
+      prepressSessionId: params.prepressSessionId ?? null,
+      createdByUserId: params.createdByUserId,
+      tag,
+      source: {
+        ...source,
+        productionArtworkSourceType: "customer_artwork_assignment",
+      },
+    })).returning();
+    await tx.insert(auditLogs).values({
+      organizationId: params.organizationId,
+      userId: params.createdByUserId,
+      actionType: "assigned_customer_artwork_to_production_artwork",
+      entityType: "order_line_item",
+      entityId: params.lineItemId,
+      description: "Assigned customer artwork as production artwork without copying storage.",
+      newValues: {
+        originalCustomerFileId: source.sourceFileId,
+        originalCustomerAttachmentId: source.sourceOrderAttachmentId,
+        productionFileId: created.id,
+        sharedFileRecordId: source.fileRecordId,
+        lineItemId: params.lineItemId,
+        tag,
+        artworkSide: params.artworkSide,
+        sourceType: source.sourceType,
+      },
+    });
+    return [created];
+  });
+
+  await queueLineItemFilePreviewRepair({
+    fileId: inserted.id,
+    organizationId: params.organizationId,
+    actorUserId: params.createdByUserId,
+  }).completion;
+  await enqueueFinalProductionFileCopy({ organizationId: params.organizationId, file: inserted }).catch(() => ({ enqueued: false, copyJobId: null }));
+  return { file: inserted, created: true };
 }
 
 const previewRepairsInFlight = new Map<string, PreviewRepairEntry>();
@@ -1759,7 +1937,7 @@ export async function ensureFinalArtworkForLineItem(params: {
 
   const createdFiles: LineItemFile[] = [];
   for (const { candidate, promotionSource } of preparedSources) {
-    const promoted = await promoteCustomerArtworkToProductionArtwork({
+    const assigned = await assignCustomerArtworkAsProductionArtwork({
       organizationId,
       orderId,
       lineItemId,
@@ -1769,7 +1947,7 @@ export async function ensureFinalArtworkForLineItem(params: {
       artworkSide: candidate.side === "front" || candidate.side === "back" || candidate.side === "both" ? candidate.side : "na",
       source: promotionSource,
     });
-    createdFiles.push(promoted.file);
+    createdFiles.push(assigned.file);
   }
 
   if (forcePromoteArtwork) {
