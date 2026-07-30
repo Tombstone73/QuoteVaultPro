@@ -12,6 +12,7 @@ import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantProductPricingProposalCard, AssistantQuoteDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantProductPricingProposal, toAssistantQuoteDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
 import { ConfigurableProductConfirmationCardView, toConfigurableProductConfirmation, toConfigurableProductProposal } from "./AssistantConfigurableProductCards";
+import { AssistantGenericActionProposalCard, toGenericActionProposal } from "./AssistantGenericActionProposalCard";
 import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
 import { AssistantConversationSidebar } from "./AssistantConversationManagement";
@@ -43,6 +44,16 @@ function diagnosticDetails(card: AssistantStructuredCard): { category: string | 
     code: text(details?.failureCode),
     step: text(details?.failingStep),
   };
+}
+
+function actionErrorMessage(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : "";
+  try {
+    const parsed = JSON.parse(message.replace(/^\d+:\s*/, "")) as { error?: { message?: unknown } };
+    return typeof parsed.error?.message === "string" && parsed.error.message.trim() ? parsed.error.message : fallback;
+  } catch {
+    return message || fallback;
+  }
 }
 
 export function responsePresentationForCards(presentation: AssistantResponsePresentation | undefined): AssistantResponsePresentation {
@@ -370,11 +381,31 @@ export function ResultCards({
   onSubmitSuggestion?: (prompt: string) => void;
 }) {
   const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false);
+  const [genericCreateErrors, setGenericCreateErrors] = React.useState<Record<string, string>>({});
+  const [genericConfirmErrors, setGenericConfirmErrors] = React.useState<Record<string, string>>({});
   const presentation = responsePresentationForCards(serverPresentation);
   // Defense in depth for turns persisted before the response-contract fix.
   const visibleCards = cards.filter((card) => (card as { kind: string }).kind !== "response_presentation");
   if (!visibleCards.length) return null;
   const diagnosticCards = visibleCards.filter((card) => ["tool_warning", "provider_unavailable", "permission_denied", "not_found", "partial_result"].includes(card.kind));
+  const createGenericPlan = async (turnId: string) => {
+    try {
+      await onCreatePlan(turnId);
+      setGenericCreateErrors((current) => { const { [turnId]: _removed, ...remaining } = current; return remaining; });
+    } catch (error) {
+      setGenericCreateErrors((current) => ({ ...current, [turnId]: actionErrorMessage(error, "The server could not prepare this plan.") }));
+    }
+  };
+  const confirmGenericPlan = async (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => {
+    try {
+      const result = await onConfirmPlan(input);
+      setGenericConfirmErrors((current) => { const { [input.planId]: _removed, ...remaining } = current; return remaining; });
+      return result;
+    } catch (error) {
+      setGenericConfirmErrors((current) => ({ ...current, [input.planId]: actionErrorMessage(error, "The server did not confirm this plan.") }));
+      return undefined;
+    }
+  };
   return <div className="mt-3 space-y-3">{visibleCards.map((card, index) => {
     const configurableProposal = toConfigurableProductProposal(card);
     if (configurableProposal) {
@@ -429,6 +460,16 @@ export function ResultCards({
         return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
       }
       return <AssistantQuoteNoteProposalCard key={`proposal-${proposal.turnId}-${index}`} proposal={proposal} onCreatePlan={onCreatePlan} />;
+    }
+    const genericProposal = toGenericActionProposal(card, visibleCards);
+    if (genericProposal) {
+      const created = executionPlans[genericProposal.turnId];
+      if (created) {
+        const planCard = { kind: "action_plan", title: genericProposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
+        const plan = toAssistantPlanCardModel(planCard);
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={confirmGenericPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} allowGenericConfirmation genericActionLabel={genericProposal.humanAction} confirmationError={genericConfirmErrors[plan.id]} /> : null;
+      }
+      return <AssistantGenericActionProposalCard key={`proposal-${genericProposal.turnId}-${index}`} proposal={genericProposal} onCreatePlan={createGenericPlan} error={genericCreateErrors[genericProposal.turnId]} />;
     }
     const plan = toAssistantPlanCardModel(card);
     if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} />;
