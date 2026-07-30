@@ -137,7 +137,7 @@ import { assertValidParentLink } from "../services/lineItemParentLinking";
 import { parentBundlePricingUpdate } from "../services/lineItemBundles";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
-import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
+import { deleteStoredObjectKeysIfUnreferenced } from "../services/storage/storageReferenceGuard";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { buildManualInventoryAdjustment } from "../services/materialInventoryLogic";
 import {
@@ -4723,10 +4723,18 @@ export async function registerOrderRoutes(
                                         .from(assetVariants)
                                         .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
 
-                                    await deleteStoredObjectKeys({
+                                    await deleteStoredObjectKeysIfUnreferenced({
+                                        organizationId,
                                         fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
                                         legacyStorageProvider: storageProvider,
                                         keys: [...variants.map((variant) => variant.key || ""), normalizedFileKey],
+                                        exclusions: { assetIds: [asset.id] },
+                                        logContext: {
+                                            route: "order-attachment-delete",
+                                            orderId,
+                                            attachmentId: attachment.id,
+                                            assetId: asset.id,
+                                        },
                                     });
 
                                     await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
@@ -4745,18 +4753,26 @@ export async function registerOrderRoutes(
                             ? derivativeRows.map((row) => row.objectKey ?? null)
                             : [(attachment as any).thumbKey ?? null, (attachment as any).previewKey ?? null];
 
-                        const derivativeDeletion = await deleteStoredObjectKeys({
+                        const derivativeDeletion = await deleteStoredObjectKeysIfUnreferenced({
+                            organizationId,
                             fileRecordId: attachment.fileRecordId ? String(attachment.fileRecordId) : null,
                             legacyStorageProvider: storageProvider,
                             keys: [storageKey, ...derivativeKeys],
+                            logContext: {
+                                route: "order-attachment-delete",
+                                orderId,
+                                attachmentId: attachment.id,
+                            },
                         });
 
-                        if (attachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+                        if (attachment.fileRecordId && !derivativeDeletion.skipped && derivativeDeletion.failedKeys.length === 0) {
                             await fileDerivativeRepository.deleteByFileRecordId(String(attachment.fileRecordId));
-                        } else if (attachment.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+                        } else if (attachment.fileRecordId && (derivativeDeletion.skipped || derivativeDeletion.failedKeys.length > 0)) {
                             console.warn("[OrderAttachments:DELETE] Skipped derivative row cleanup due to storage delete failures", {
                                 fileRecordId: String(attachment.fileRecordId),
                                 failedKeys: derivativeDeletion.failedKeys,
+                                skipped: derivativeDeletion.skipped,
+                                reason: derivativeDeletion.reason ?? null,
                             });
                         }
                     }
@@ -6599,18 +6615,26 @@ export async function registerOrderRoutes(
                             ? derivativeRows.map((row) => row.objectKey ?? null)
                             : [file.thumbnailRelativePath ?? (file as any).thumbKey ?? null, (file as any).previewKey ?? null];
 
-                        const derivativeDeletion = await deleteStoredObjectKeys({
+                        const derivativeDeletion = await deleteStoredObjectKeysIfUnreferenced({
+                            organizationId,
                             fileRecordId: file.fileRecordId ? String(file.fileRecordId) : null,
                             legacyStorageProvider: storageProvider,
                             keys: [storageKey, ...derivativeKeys],
+                            logContext: {
+                                route: "order-file-delete",
+                                orderId: req.params.orderId,
+                                attachmentId: file.id,
+                            },
                         });
 
-                        if (file.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+                        if (file.fileRecordId && !derivativeDeletion.skipped && derivativeDeletion.failedKeys.length === 0) {
                             await fileDerivativeRepository.deleteByFileRecordId(String(file.fileRecordId));
-                        } else if (file.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+                        } else if (file.fileRecordId && (derivativeDeletion.skipped || derivativeDeletion.failedKeys.length > 0)) {
                             console.warn("[OrderFiles:DELETE] Skipped derivative row cleanup due to storage delete failures", {
                                 fileRecordId: String(file.fileRecordId),
                                 failedKeys: derivativeDeletion.failedKeys,
+                                skipped: derivativeDeletion.skipped,
+                                reason: derivativeDeletion.reason ?? null,
                             });
                         }
                     }

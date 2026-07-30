@@ -43,7 +43,7 @@ import {
 } from "../lib/supabaseObjectHelpers";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
-import { deleteStoredObjectKeys } from "../services/storage/deleteStoredObjectKeys";
+import { deleteStoredObjectKeysIfUnreferenced } from "../services/storage/storageReferenceGuard";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { fileRecordRepository } from "../storage/fileRecord.repo";
 import { assertQuoteEditable } from "./helpers/quoteWorkflow.helpers";
@@ -1144,10 +1144,19 @@ export function registerQuoteLineItemFileRoutes(
                     .from(assetVariants)
                     .where(and(eq(assetVariants.organizationId, organizationId), eq(assetVariants.assetId, asset.id)));
 
-                  await deleteStoredObjectKeys({
+                  await deleteStoredObjectKeysIfUnreferenced({
+                    organizationId,
                     fileRecordId: existingAttachment.fileRecordId ? String(existingAttachment.fileRecordId) : null,
                     legacyStorageProvider: toLegacyStorageProvider(storageProvider),
                     keys: [...variants.map((variant) => variant.key || ''), normalizedFileKey],
+                    exclusions: { assetIds: [asset.id] },
+                    logContext: {
+                      route: "quote-line-item-attachment-delete",
+                      quoteId,
+                      lineItemId,
+                      attachmentId: existingAttachment.id,
+                      assetId: asset.id,
+                    },
                   });
 
                   await db.delete(assets).where(and(eq(assets.organizationId, organizationId), eq(assets.id, asset.id)));
@@ -1166,10 +1175,17 @@ export function registerQuoteLineItemFileRoutes(
               ? derivativeRows.map((row) => row.objectKey ?? null)
               : [existingAttachment.thumbnailRelativePath ?? existingAttachment.thumbKey ?? null, existingAttachment.previewKey ?? null];
 
-            const derivativeDeletion = await deleteStoredObjectKeys({
+            const derivativeDeletion = await deleteStoredObjectKeysIfUnreferenced({
+              organizationId,
               fileRecordId: existingAttachment.fileRecordId ? String(existingAttachment.fileRecordId) : null,
               legacyStorageProvider: toLegacyStorageProvider(storageProvider),
               keys: [storageKey, ...derivativeKeys],
+              logContext: {
+                route: "quote-line-item-attachment-delete",
+                quoteId,
+                lineItemId,
+                attachmentId: existingAttachment.id,
+              },
             });
 
             console.log('[LineItemFiles:DELETE] top-level derivative cleanup result', {
@@ -1220,10 +1236,17 @@ export function registerQuoteLineItemFileRoutes(
                   continue;
                 }
 
-                const pageDeletion = await deleteStoredObjectKeys({
+                const pageDeletion = await deleteStoredObjectKeysIfUnreferenced({
+                  organizationId,
                   fileRecordId,
                   legacyStorageProvider: toLegacyStorageProvider(storageProvider),
                   keys: [pageStorageKey],
+                  logContext: {
+                    route: "quote-line-item-page-derivative-delete",
+                    quoteId,
+                    lineItemId,
+                    attachmentId: existingAttachment.id,
+                  },
                 });
 
                 console.log('[LineItemFiles:DELETE] page derivative delete result', {
@@ -1236,23 +1259,27 @@ export function registerQuoteLineItemFileRoutes(
                   failedKeys: pageDeletion.failedKeys,
                 });
 
-                if (fileRecordId && pageDeletion.failedKeys.length === 0) {
+                if (fileRecordId && !pageDeletion.skipped && pageDeletion.failedKeys.length === 0) {
                   await fileRecordRepository.deleteById(fileRecordId);
-                } else if (fileRecordId && pageDeletion.failedKeys.length > 0) {
+                } else if (fileRecordId && (pageDeletion.skipped || pageDeletion.failedKeys.length > 0)) {
                   console.warn('[LineItemFiles:DELETE] Skipped page derivative fileRecord cleanup due to storage delete failures', {
                     fileRecordId,
                     failedKeys: pageDeletion.failedKeys,
+                    skipped: pageDeletion.skipped,
+                    reason: pageDeletion.reason ?? null,
                   });
                 }
               }
             }
 
-            if (existingAttachment.fileRecordId && derivativeDeletion.failedKeys.length === 0) {
+            if (existingAttachment.fileRecordId && !derivativeDeletion.skipped && derivativeDeletion.failedKeys.length === 0) {
               await fileDerivativeRepository.deleteByFileRecordId(String(existingAttachment.fileRecordId));
-            } else if (existingAttachment.fileRecordId && derivativeDeletion.failedKeys.length > 0) {
+            } else if (existingAttachment.fileRecordId && (derivativeDeletion.skipped || derivativeDeletion.failedKeys.length > 0)) {
               console.warn('[LineItemFiles:DELETE] Skipped derivative row cleanup due to storage delete failures', {
                 fileRecordId: String(existingAttachment.fileRecordId),
                 failedKeys: derivativeDeletion.failedKeys,
+                skipped: derivativeDeletion.skipped,
+                reason: derivativeDeletion.reason ?? null,
               });
             }
           }
