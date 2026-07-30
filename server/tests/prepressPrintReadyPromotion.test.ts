@@ -45,6 +45,16 @@ describe("Prepress print-ready promotion contract", () => {
     expect(assignment).not.toContain("storageApplicationService.finalizeUpload");
   });
 
+  test("auto-finalization of unchanged customer artwork uses assignment instead of copy", () => {
+    const autoFinalizationStart = service.indexOf("export async function ensureFinalArtworkForLineItem");
+    const autoFinalizationEnd = service.indexOf("/**\n * Delete a file", autoFinalizationStart);
+    const autoFinalization = service.slice(autoFinalizationStart, autoFinalizationEnd);
+
+    expect(autoFinalization).toContain("assignCustomerArtworkAsProductionArtwork");
+    expect(autoFinalization).toContain("createdFiles.push(assigned.file)");
+    expect(autoFinalization).not.toContain("promoteCustomerArtworkToProductionArtwork({");
+  });
+
   test("mounted prepress UI exposes assignment separately from modified copy creation", () => {
     expect(route).toContain("/api/prepress/line-item/:lineItemId/assign-customer-artwork");
     expect(route).toContain("PRODUCTION_ARTWORK_ASSIGNED");

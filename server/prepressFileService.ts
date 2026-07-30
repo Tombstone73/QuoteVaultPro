@@ -1937,7 +1937,7 @@ export async function ensureFinalArtworkForLineItem(params: {
 
   const createdFiles: LineItemFile[] = [];
   for (const { candidate, promotionSource } of preparedSources) {
-    const promoted = await promoteCustomerArtworkToProductionArtwork({
+    const assigned = await assignCustomerArtworkAsProductionArtwork({
       organizationId,
       orderId,
       lineItemId,
@@ -1947,7 +1947,7 @@ export async function ensureFinalArtworkForLineItem(params: {
       artworkSide: candidate.side === "front" || candidate.side === "back" || candidate.side === "both" ? candidate.side : "na",
       source: promotionSource,
     });
-    createdFiles.push(promoted.file);
+    createdFiles.push(assigned.file);
   }
 
   if (forcePromoteArtwork) {
