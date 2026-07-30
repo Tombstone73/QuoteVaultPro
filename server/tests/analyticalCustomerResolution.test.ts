@@ -59,6 +59,20 @@ function duePlan(customer: Record<string, string> = { name: "Graphic Solutions" 
   };
 }
 
+function completedJobsPlan(customer: Record<string, string> = { name: "Graphic Solutions" }) {
+  return {
+    intent: "production_reporting" as const,
+    selectedSkill: "deterministic_customer_completed_job_report" as const,
+    clarificationRequired: false,
+    clarificationQuestion: null,
+    responseStyle: "concise" as const,
+    toolCalls: [{
+      toolName: "production.get_completed_jobs" as const,
+      arguments: { completed: "last_week_through_current_week" as const, customer, limit: 10 },
+    }],
+  };
+}
+
 function persistence(): AnalyticalResolutionPersistence & { rows: Map<string, PersistedAnalyticalResolution> } {
   const rows = new Map<string, PersistedAnalyticalResolution>();
   return {
@@ -189,5 +203,22 @@ describe("analytical customer resolution preflight", () => {
 
     await expect(service.preflight({ scope, originalUserRequest: "due report", plan: duePlan(), context })).resolves.toMatchObject({ kind: "awaiting_entity_resolution" });
     expect(store.pause).toHaveBeenCalledTimes(1);
+  });
+
+  test("resolves, pauses, and fails closed for customer-scoped completed-job reports", async () => {
+    const graphicSolutions = { ...brightMarketing, id: "customer-graphic", displayName: "Graphic Solutions" };
+    const exactStore = persistence();
+    const exact = new AnalyticalCustomerResolutionService({ resolveCustomer: jest.fn(async () => ({ customer: graphicSolutions, alternatives: [], confidence: "exact" as const })) }, exactStore);
+    await expect(exact.preflight({ scope, originalUserRequest: "completed jobs", plan: completedJobsPlan(), context })).resolves.toMatchObject({
+      kind: "continue",
+      plan: { toolCalls: [{ toolName: "production.get_completed_jobs", arguments: { customer: { id: "customer-graphic", name: "Graphic Solutions" } } }] },
+    });
+
+    const ambiguousStore = persistence();
+    const ambiguous = new AnalyticalCustomerResolutionService({ resolveCustomer: jest.fn(async () => ({ customer: null, alternatives: [brightMarketing, brightOhio], confidence: "ambiguous" as const })) }, ambiguousStore);
+    await expect(ambiguous.preflight({ scope, originalUserRequest: "completed jobs", plan: completedJobsPlan(), context })).resolves.toMatchObject({ kind: "awaiting_entity_resolution" });
+
+    const missing = new AnalyticalCustomerResolutionService({ resolveCustomer: jest.fn(async () => ({ customer: null, alternatives: [], confidence: "none" as const })) }, persistence());
+    await expect(missing.preflight({ scope, originalUserRequest: "completed jobs", plan: completedJobsPlan({ name: "Unknown Customer" }), context })).resolves.toMatchObject({ kind: "no_match" });
   });
 });
