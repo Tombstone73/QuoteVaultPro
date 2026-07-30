@@ -126,7 +126,10 @@ export function PBV2ProductBuilderLayout({
           {/* Selected group editor */}
           {selectedGroup ? (
             <PBV2EditorErrorBoundary
-              key={`${selectedGroupId ?? ''}_${selectedOptionId ?? ''}`}
+              // The option editor owns its expanded-option state. Keying this
+              // boundary by the selected option remounted it as soon as an
+              // option was opened, immediately collapsing its choice list.
+              key={selectedGroupId ?? ''}
               onReset={() => { onSelectGroup(editorModel.groups[0]?.id ?? ''); onSelectOption(null); }}
             >
               <OptionEditor
