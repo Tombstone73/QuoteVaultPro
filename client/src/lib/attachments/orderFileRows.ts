@@ -65,14 +65,15 @@ export function normalizeOrderFileRows<TAttachment extends OrderFileRow, TAsset 
     const key = makeMatchKey(attachment);
     if (!key) return null;
     const indexes = assetIndexesByKey.get(key) ?? [];
+    let matchedAsset: TAsset | null = null;
     while (indexes.length > 0) {
       const index = indexes.shift();
       if (typeof index === "number" && !usedAssetIndexes.has(index)) {
         usedAssetIndexes.add(index);
-        return assetList[index];
+        matchedAsset ??= assetList[index];
       }
     }
-    return null;
+    return matchedAsset;
   };
 
   const mergedAttachments = attachmentList.map((attachment) => {

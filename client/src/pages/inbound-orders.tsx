@@ -86,6 +86,7 @@ import {
   type ManualInboundOrderCreateRequest,
   type ManualInboundOrderCreateResponse,
 } from "@shared/inboundOrdersApi";
+import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import {
   inboundAttachmentClassificationToRole,
   inboundAttachmentRoleToClassification,
@@ -2580,7 +2581,9 @@ function artworkLinkFromInboundFile(file: ClientInboundOrderFile, source: Inboun
     sizeBytes: file.sizeBytes ?? null,
     role: attachmentRoleForClassification(classification.classification ?? inboundAttachmentRoleToClassification(file.role)),
     assignmentSide: "unassigned",
-    productionQuantity: null,
+    productionQuantity: attachmentRoleForClassification(classification.classification ?? inboundAttachmentRoleToClassification(file.role)) === "artwork"
+      ? defaultNewProductionArtworkAllocation("artwork")
+      : null,
     productionGroupId: null,
     source,
     confidence: source === "staff_selected" ? 100 : null,
@@ -5837,6 +5840,7 @@ function CleanLineItemCard({
       ...lineItem.artworkLinks,
       ...links.map((link) => ({
         ...link,
+        productionQuantity: link.productionQuantity ?? defaultNewProductionArtworkAllocation(link.role),
         source: "staff_selected" as const,
         confidence: 100,
         reason: "Staff assigned artwork attachment to this line item.",
@@ -5863,11 +5867,12 @@ function CleanLineItemCard({
     const exists = activeArtworkLinks.some((candidate) => artworkLinkKey(candidate) === key);
     const artworkLinks = exists
       ? lineItem.artworkLinks.map((candidate) => artworkLinkKey(candidate) === key
-        ? { ...candidate, assignmentSide, source: "staff_selected" as const, confidence: 100, reason: `Staff assigned artwork to ${assignmentSide === "both" ? "front and back" : assignmentSide}.` }
+        ? { ...candidate, assignmentSide, productionQuantity: candidate.productionQuantity ?? defaultNewProductionArtworkAllocation(candidate.role), source: "staff_selected" as const, confidence: 100, reason: `Staff assigned artwork to ${assignmentSide === "both" ? "front and back" : assignmentSide}.` }
         : candidate)
       : [...lineItem.artworkLinks, {
         ...link,
         assignmentSide,
+        productionQuantity: link.productionQuantity ?? defaultNewProductionArtworkAllocation(link.role),
         source: "staff_selected" as const,
         confidence: 100,
         reason: `Staff assigned artwork to ${assignmentSide === "both" ? "front and back" : assignmentSide}.`,

@@ -257,7 +257,11 @@ export function LineItemAttachmentsPanel({
   });
 
   const fileCount = attachments.length + pendingOrderAttachments.length;
-  const productionRows = attachments.filter((file) => (file.role ?? file.productionRole) !== 'reference');
+  const isProductionAllocationRow = (file: LineItemAttachment) => {
+    const role = String(file.productionRole ?? file.role ?? "artwork").toLowerCase();
+    return role === "artwork" || role === "output" || role === "final";
+  };
+  const productionRows = attachments.filter(isProductionAllocationRow);
   const allocationTotal = productionRows.reduce((total, file) => total + (file.productionQuantity ?? 0), 0);
   const allocationSummary = lineQuantity && productionRows.length > 0
     ? `Allocated ${allocationTotal} of ${lineQuantity}${allocationTotal === lineQuantity ? '' : '. Review before production.'}`

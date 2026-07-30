@@ -47,6 +47,7 @@ import { assetPreviewGenerator } from "./services/assets/AssetPreviewGenerator";
 import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
 import { storagePlacementRepository } from "./storage/storagePlacement.repo";
 import { resolveProductionSides } from "@shared/productionHydration";
+import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
@@ -429,6 +430,8 @@ export async function uploadLineItemFile(params: {
   prepressSessionId?: string;
   role: "original" | "final" | "reference";
   tag?: string;
+  productionQuantity?: number | null;
+  productionGroupId?: string | null;
   buffer: Buffer;
   originalFilename: string;
   mimeType: string;
@@ -442,6 +445,8 @@ export async function uploadLineItemFile(params: {
     prepressSessionId,
     role,
     tag,
+    productionQuantity,
+    productionGroupId,
     buffer,
     originalFilename,
     mimeType,
@@ -479,6 +484,8 @@ export async function uploadLineItemFile(params: {
         role,
         status: "active",
         tag: tag || null,
+        productionQuantity: role === "final" ? productionQuantity ?? defaultNewProductionArtworkAllocation("final") : null,
+        productionGroupId: role === "final" ? productionGroupId ?? null : null,
         storageBucket: result.storedObject.bucket,
         storagePath,
         storageKey: result.storedObject.objectKey ?? result.storedObject.localPathRef,
@@ -674,7 +681,7 @@ export function buildPromotedFinalFileLink(params: {
     sourceFileId: params.source.sourceFileId ?? null,
     sourceOrderAttachmentId: params.source.sourceOrderAttachmentId ?? null,
     sourceArtworkSide: params.source.sourceArtworkSide ?? null,
-    productionQuantity: params.source.productionQuantity ?? null,
+    productionQuantity: params.source.productionQuantity ?? defaultNewProductionArtworkAllocation("final"),
     productionGroupId: params.source.productionGroupId ?? null,
     storageBucket: params.source.storageBucket ?? null,
     storagePath: params.source.storagePath,
@@ -1232,6 +1239,8 @@ export async function replaceLineItemFile(params: {
     prepressSessionId: existingFile.prepressSessionId || undefined,
     role: existingFile.role as "original" | "final" | "reference",
     tag: existingFile.tag || undefined,
+    productionQuantity: existingFile.productionQuantity,
+    productionGroupId: existingFile.productionGroupId,
     buffer,
     originalFilename,
     mimeType,

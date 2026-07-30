@@ -50,7 +50,7 @@ import {
   applyArtworkSideAssignmentToSpecs,
   removeArtworkFileReferencesFromSpecs,
 } from "@shared/artworkSideAssignment";
-import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
+import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -443,7 +443,8 @@ export function registerOrderLineItemFileRoutes(
             sizeBytes: c.sizeBytes,
           } as any);
 
-        await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, normalizeRole(c.role) as any);
+        const normalizedAssetRole = normalizeRole(c.role);
+        await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, normalizedAssetRole as any);
 
         const resolvedOriginal = asset.fileRecordId
           ? await canonicalFileReadResolver.resolveOriginal(String(asset.fileRecordId))
@@ -467,8 +468,51 @@ export function registerOrderLineItemFileRoutes(
           });
         }
 
+        const materializedRole = normalizedAssetRole === 'reference'
+          ? 'reference'
+          : normalizedAssetRole === 'proof'
+            ? 'proof'
+            : 'artwork';
+        const materializedFileRecordId = asset.fileRecordId ?? candidateFileRecordId ?? null;
+        const materializedFileUrl = materializedFileRecordId ? null : candidateFileKey;
+        if (materializedFileRecordId || materializedFileUrl) {
+          const existingAttachmentConditions = [
+            eq(orderAttachments.orderId, orderId),
+            eq(orderAttachments.orderLineItemId, lineItemId),
+            materializedFileRecordId
+              ? eq(orderAttachments.fileRecordId, materializedFileRecordId)
+              : eq(orderAttachments.fileUrl, materializedFileUrl as string),
+          ];
+          const [existingAttachment] = await db
+            .select()
+            .from(orderAttachments)
+            .where(and(...existingAttachmentConditions))
+            .limit(1);
+
+          if (!existingAttachment) {
+            await db.insert(orderAttachments).values({
+              orderId,
+              orderLineItemId: lineItemId,
+              fileRecordId: materializedFileRecordId,
+              uploadedByUserId: userId ?? null,
+              uploadedByName: userName,
+              fileName: asset.fileName || candidateFileName,
+              fileUrl: materializedFileUrl,
+              fileSize: asset.sizeBytes ?? c.sizeBytes ?? null,
+              sizeBytes: asset.sizeBytes ?? c.sizeBytes ?? null,
+              mimeType: asset.mimeType ?? c.mimeType ?? null,
+              role: materializedRole,
+              side: "na",
+              isPrimary: false,
+              storageProvider: null,
+              productionQuantity: materializedRole === "artwork" ? defaultNewProductionArtworkAllocation("artwork") : null,
+              productionGroupId: null,
+            });
+          }
+        }
+
         triggerAssetPreviewGeneration(asset, 'order-line-item-file');
-        createdAssets.push({ ...(await enrichAssetWithUrls(asset)), role: normalizeRole(c.role) });
+        createdAssets.push({ ...(await enrichAssetWithUrls(asset)), role: normalizedAssetRole });
 
         try {
           await storage.createOrderAuditLog({
@@ -499,7 +543,7 @@ export function registerOrderLineItemFileRoutes(
                   mimeType: asset.mimeType ?? c.mimeType ?? null,
                   storageProvider: requestedTarget ?? null,
                   fileKey: resolvedOriginal?.objectKey ?? resolvedOriginal?.localPathRef ?? asset.fileKey ?? null,
-                  role: normalizeRole(c.role),
+                  role: normalizedAssetRole,
                 },
               },
             },
@@ -648,6 +692,8 @@ export function registerOrderLineItemFileRoutes(
                   side: "na",
                   isPrimary: false,
                   storageProvider: null,
+                  productionQuantity: defaultNewProductionArtworkAllocation("artwork"),
+                  productionGroupId: null,
                 })
                 .returning();
               return materialized ?? null;
@@ -683,6 +729,8 @@ export function registerOrderLineItemFileRoutes(
                 side: "na",
                 isPrimary: false,
                 storageProvider: null,
+                productionQuantity: defaultNewProductionArtworkAllocation("artwork"),
+                productionGroupId: null,
               })
               .returning();
             return materialized ?? null;
@@ -830,6 +878,7 @@ export function registerOrderLineItemFileRoutes(
             uploadedByUserId: getUserId(req.user) ?? null, uploadedByName: null,
             fileName: asset.fileName, fileUrl: asset.fileKey ?? null, fileSize: asset.sizeBytes ?? null, sizeBytes: asset.sizeBytes ?? null,
             mimeType: asset.mimeType ?? null, role: "artwork", side: "na", isPrimary: false,
+            productionQuantity: defaultNewProductionArtworkAllocation("artwork"), productionGroupId: null,
           }).returning();
         }
         const [updated] = await tx.update(orderAttachments).set({

@@ -77,7 +77,7 @@ import {
   describeCompletedArtworkSummary,
   resolveCompletedArtworkQuantityMode,
 } from "@shared/productionCompleted";
-import { buildArtworkAllocationStatus, defaultSingleArtworkAllocation } from "@shared/artworkAllocation";
+import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -2198,14 +2198,13 @@ export function registerProductionJobsRoutes(
           const quantity = Number(row.lineItemQuantity);
           const totalQuantity = Number.isFinite(quantity) ? quantity : null;
           const quantityMode = resolveCompletedArtworkQuantityMode(row.lineItemSpecsJson);
-          const defaultQuantity = defaultSingleArtworkAllocation(totalQuantity, artwork.length);
           const allocation = buildArtworkAllocationStatus({
             lineQuantity: totalQuantity,
             members: artwork.map((file) => ({
               id: file.id,
               role: "artwork",
               side: file.side,
-              productionQuantity: file.productionQuantity ?? defaultQuantity,
+              productionQuantity: file.productionQuantity ?? null,
               productionGroupId: file.productionGroupId ?? null,
             })),
           });
@@ -2215,7 +2214,7 @@ export function registerProductionJobsRoutes(
           const itemName = String(row.itemDescription || productNameById.get(row.lineItemProductId ?? "") || row.productType || `Job ${String(row.id).slice(-6)}`).trim();
           const completedArtwork = artwork.map((file) => ({
             ...file,
-            allocatedQuantity: file.productionQuantity ?? defaultQuantity,
+            allocatedQuantity: file.productionQuantity ?? null,
           }));
           return {
             id: row.id,

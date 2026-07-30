@@ -52,6 +52,7 @@ describe("assignOrderLineItemArtworkSide", () => {
         fileName: "customer-art.pdf",
         createdAt: "2026-07-16T12:00:00.000Z",
         side: "both",
+        productionQuantity: 1,
       }],
       [{
         id: "asset-1",
@@ -67,6 +68,7 @@ describe("assignOrderLineItemArtworkSide", () => {
       id: "order-attachment-1",
       source: "attachment",
       side: "both",
+      productionQuantity: 1,
       thumbnailUrl: "/asset-thumb.png",
     }));
   });
@@ -102,6 +104,24 @@ describe("assignOrderLineItemArtworkSide", () => {
 
     expect(normalized).toHaveLength(1);
     expect(normalized[0]).toMatchObject({ id: "attachment-1", source: "attachment" });
+  });
+
+  it("suppresses duplicate asset links once a canonical attachment exists for the same file", () => {
+    const normalized = normalizeOrderFileRows(
+      [{ id: "attachment-1", fileRecordId: "record-1", fileName: "art.pdf", productionQuantity: 1 }],
+      [
+        { id: "asset-1", fileRecordId: "record-1", fileName: "art.pdf", thumbUrl: "/first.png" },
+        { id: "asset-retry", fileRecordId: "record-1", fileName: "art.pdf", thumbUrl: "/retry.png" },
+      ],
+    );
+
+    expect(normalized).toHaveLength(1);
+    expect(normalized[0]).toMatchObject({
+      id: "attachment-1",
+      source: "attachment",
+      productionQuantity: 1,
+      thumbUrl: "/first.png",
+    });
   });
 
   it("does not merge a quote asset into an attachment without canonical file identity", () => {

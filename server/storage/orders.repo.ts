@@ -69,6 +69,7 @@ import {
     shouldCreateLegacyProductionJob,
     type ProductionIntakePolicy,
 } from "../services/productionIntakePolicy";
+import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
 
@@ -2477,9 +2478,16 @@ export class OrdersRepository {
     }
 
     async createOrderAttachment(attachment: InsertOrderAttachment): Promise<OrderAttachment> {
+        const role = String((attachment as any).role ?? "").toLowerCase();
+        const attachmentValues = {
+            ...attachment,
+            productionQuantity: (attachment as any).orderLineItemId && ((role === "artwork") || (role === "output"))
+                ? (attachment as any).productionQuantity ?? defaultNewProductionArtworkAllocation(role)
+                : (attachment as any).productionQuantity ?? null,
+        };
         const [newAttachment] = await this.dbInstance
             .insert(orderAttachments)
-            .values(attachment)
+            .values(attachmentValues)
             .returning(ORDER_ATTACHMENT_SAFE_SELECT);
 
         if ((newAttachment as any)?.fileRecordId) {

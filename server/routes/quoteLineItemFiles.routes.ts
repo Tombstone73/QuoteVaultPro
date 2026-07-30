@@ -47,6 +47,7 @@ import { deleteStoredObjectKeysIfUnreferenced } from "../services/storage/storag
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { fileRecordRepository } from "../storage/fileRecord.repo";
 import { assertQuoteEditable } from "./helpers/quoteWorkflow.helpers";
+import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -221,6 +222,8 @@ export function registerQuoteLineItemFileRoutes(
         uploadedByName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
         description: description || null,
         bucket: 'titan-private',
+        productionQuantity: defaultNewProductionArtworkAllocation("artwork"),
+        productionRole: "artwork" as const,
       } as const;
 
       const defaultThumbStatus = isPdfEarly ? ('thumb_pending' as const) : ('uploaded' as const);

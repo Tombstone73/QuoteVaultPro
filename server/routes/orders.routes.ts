@@ -43,6 +43,7 @@ import {
     type InsertOrder
 } from "@shared/schema";
 import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/portalFileVisibility";
+import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
@@ -990,6 +991,10 @@ export async function registerOrderRoutes(
                     role: args.role ?? 'other',
                     side: args.side ?? 'na',
                     isPrimary: args.isPrimary ?? false,
+                    productionQuantity: args.orderLineItemId && (args.role === "artwork" || args.role === "output")
+                        ? defaultNewProductionArtworkAllocation(args.role)
+                        : null,
+                    productionGroupId: null,
                 }).returning();
 
                 if (!created) {
@@ -6253,6 +6258,10 @@ export async function registerOrderRoutes(
                 role: (role || 'other') as FileRole,
                 side: (side || 'na') as FileSide,
                 isPrimary: isPrimary || false,
+                productionQuantity: resolvedLineItemId && (role === "artwork" || role === "output")
+                    ? defaultNewProductionArtworkAllocation(role)
+                    : null,
+                productionGroupId: null,
             };
             uploadStep = fileBuffer && originalFilename
                 ? 'canonical_finalize_buffer'

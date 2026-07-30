@@ -60,7 +60,7 @@ import {
   type ProductionSides,
 } from "@shared/productionHydration";
 import { resolveProofArtworkLayout } from "@shared/proofArtwork";
-import { buildArtworkAllocationStatus, defaultSingleArtworkAllocation } from "@shared/artworkAllocation";
+import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
 type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "cancelled" | "superseded";
@@ -2085,12 +2085,11 @@ export async function getProofArtworkPreparation(tx: any, args: {
   ]);
   const totalQuantity = Number.isFinite(lineItem.quantity) ? lineItem.quantity : null;
   const artworkCount = sources.length;
-  const defaultQuantity = defaultSingleArtworkAllocation(totalQuantity, artworkCount);
   const allocationMembers = sources.map((source) => ({
     id: source.sourceId,
     role: source.role,
     side: source.side,
-    productionQuantity: source.productionQuantity ?? defaultQuantity,
+    productionQuantity: source.productionQuantity ?? null,
     productionGroupId: source.productionGroupId ?? null,
   }));
   const allocation = buildArtworkAllocationStatus({ lineQuantity: totalQuantity, members: allocationMembers });
@@ -2099,7 +2098,7 @@ export async function getProofArtworkPreparation(tx: any, args: {
     artworkCount,
     allocationMode: "unspecified",
     allocationIssue: artworkCount > 1 ? allocation.issue : null,
-    sources: sources.map((source) => ({ ...source, allocatedQuantity: source.productionQuantity ?? defaultQuantity })),
+    sources: sources.map((source) => ({ ...source, allocatedQuantity: source.productionQuantity ?? null })),
   };
 }
 

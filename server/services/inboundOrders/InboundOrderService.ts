@@ -55,6 +55,7 @@ import {
   type InboundUnsupportedRequestFinding,
 } from "@shared/inboundOrderPbv2Options";
 import { resolveProductionSides } from "@shared/productionHydration";
+import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import {
   hasUsableInboundLinePrice,
   resolveInboundLineEffectivePricing,
@@ -4533,7 +4534,7 @@ export class InboundOrderService {
       sizeBytes: file.sizeBytes ?? null,
       role,
       assignmentSide: "unassigned",
-      productionQuantity: null,
+      productionQuantity: role === "artwork" ? defaultNewProductionArtworkAllocation("artwork") : null,
       productionGroupId: null,
       source,
       confidence,

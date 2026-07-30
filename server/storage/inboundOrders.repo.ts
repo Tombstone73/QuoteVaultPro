@@ -55,6 +55,7 @@ import {
   type QuoteLineItem,
 } from "@shared/schema";
 import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
+import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import {
   allocateDocumentNumber,
   isDocumentNumberUniqueViolation,
@@ -2910,7 +2911,7 @@ export class InboundOrdersRepository {
               description: `Artwork attached during inbound review conversion (${input.inboundRecordId}).`,
               originalFilename: file.sourceFilename ?? null,
               sizeBytes: file.sizeBytes ?? null,
-              productionQuantity: allocationByFileId.get(fileId)?.productionQuantity ?? null,
+              productionQuantity: allocationByFileId.get(fileId)?.productionQuantity ?? defaultNewProductionArtworkAllocation("artwork"),
               productionGroupId: allocationByFileId.get(fileId)?.productionGroupId ?? null,
             })
             .returning({ id: quoteAttachments.id });

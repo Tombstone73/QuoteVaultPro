@@ -116,6 +116,61 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     expect(sameArtwork).not.toContain("Back artwork not assigned");
   });
 
+  test("shows defaulted production allocation quantities and excludes proof rows from the summary", () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(["/api/orders/order-1/line-items/line-1/files"], [
+      {
+        id: "art-1",
+        source: "attachment",
+        fileName: "front.pdf",
+        fileUrl: "/objects/front.pdf",
+        mimeType: "application/pdf",
+        createdAt: "2026-07-16T00:00:00.000Z",
+        role: "artwork",
+        side: "front",
+        productionQuantity: 1,
+      },
+      {
+        id: "art-2",
+        source: "attachment",
+        fileName: "back.pdf",
+        fileUrl: "/objects/back.pdf",
+        mimeType: "application/pdf",
+        createdAt: "2026-07-16T00:00:00.000Z",
+        role: "artwork",
+        side: "back",
+        productionQuantity: 1,
+      },
+      {
+        id: "proof-1",
+        source: "attachment",
+        fileName: "proof.pdf",
+        fileUrl: "/objects/proof.pdf",
+        mimeType: "application/pdf",
+        createdAt: "2026-07-16T00:00:00.000Z",
+        role: "proof",
+        productionQuantity: 1,
+      },
+    ]);
+
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={client}>
+        <LineItemAttachmentsPanel
+          quoteId={null}
+          parentType="order"
+          orderId="order-1"
+          lineItemId="line-1"
+          defaultExpanded
+          lineQuantity={2}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(html).toContain("Allocated 2 of 2");
+    expect(html).toContain('value="1"');
+    expect(html).not.toContain("Allocated 3 of 2");
+  });
+
   test("automatically assigns the only artwork file to Both when shared-art intent is active", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const filesPath = "/api/orders/order-1/line-items/line-1/files";

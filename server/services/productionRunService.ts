@@ -762,6 +762,8 @@ export async function replaceProductionRunFile(input: {
     prepressSessionId: file.prepressSessionId ?? undefined,
     role: "final",
     tag: file.tag ?? "nested_run",
+    productionQuantity: file.productionQuantity,
+    productionGroupId: file.productionGroupId,
     buffer: input.buffer,
     originalFilename: input.originalFilename,
     mimeType: input.mimeType,

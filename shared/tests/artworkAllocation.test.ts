@@ -1,4 +1,4 @@
-import { buildArtworkAllocationStatus, defaultSingleArtworkAllocation } from "../artworkAllocation";
+import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "../artworkAllocation";
 
 describe("artwork allocation", () => {
   test("keeps uneven alternatives as a line-item total", () => {
@@ -26,8 +26,11 @@ describe("artwork allocation", () => {
     expect(result.issue).toContain("Assign 3 more");
   });
 
-  test("only defaults a single artwork to the full quantity", () => {
-    expect(defaultSingleArtworkAllocation(10, 1)).toBe(10);
-    expect(defaultSingleArtworkAllocation(10, 2)).toBeNull();
+  test("defaults each new production artwork relationship to one finished piece", () => {
+    expect(defaultNewProductionArtworkAllocation("artwork")).toBe(1);
+    expect(defaultNewProductionArtworkAllocation("final")).toBe(1);
+    expect(defaultNewProductionArtworkAllocation("output")).toBe(1);
+    expect(defaultNewProductionArtworkAllocation("reference")).toBeNull();
+    expect(defaultNewProductionArtworkAllocation("proof")).toBeNull();
   });
 });

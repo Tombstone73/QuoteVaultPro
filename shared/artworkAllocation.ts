@@ -21,6 +21,7 @@ export type ArtworkAllocationStatus = {
 };
 
 const productionRoles = new Set(["artwork", "output", "final"]);
+export const DEFAULT_PRODUCTION_ARTWORK_ALLOCATION = 1;
 
 function finiteInteger(value: unknown): number | null {
   const numeric = Number(value);
@@ -65,6 +66,8 @@ export function buildArtworkAllocationStatus(args: {
   return { allocatedTotal, requiredQuantity, valid: !issue, issue, groups };
 }
 
-export function defaultSingleArtworkAllocation(lineQuantity: unknown, artworkCount: number): number | null {
-  return artworkCount === 1 ? finiteInteger(lineQuantity) : null;
+export function defaultNewProductionArtworkAllocation(role: unknown = "artwork"): number | null {
+  return productionRoles.has(String(role ?? "artwork").toLowerCase())
+    ? DEFAULT_PRODUCTION_ARTWORK_ALLOCATION
+    : null;
 }
