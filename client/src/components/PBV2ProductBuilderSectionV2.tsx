@@ -224,6 +224,10 @@ function ProductIntakeDraftContextPanel({ treeJson }: { treeJson: any }) {
   const material = intake.materialMatch && typeof intake.materialMatch === "object" ? intake.materialMatch : null;
   const materialAssociationRequired = Boolean(intake.materialAssociationRequired || intake.materialMatchStatus === "review_required" || intake.materialMatchStatus === "unresolved");
   const missingDecisions = Array.isArray(intake.missingDecisions) ? intake.missingDecisions : [];
+  const sheet = intake.sheet && typeof intake.sheet === "object" ? intake.sheet : null;
+  const route = typeof intake?.draftRouting?.stationName === "string" && intake.draftRouting.stationName.trim()
+    ? intake.draftRouting.stationName.trim()
+    : null;
   return (
     <div className="rounded-md border border-slate-700 bg-slate-900/70 p-4 text-sm text-slate-200">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -258,6 +262,22 @@ function ProductIntakeDraftContextPanel({ treeJson }: { treeJson: any }) {
           <div className="mt-1">{material ? `${String(material.name ?? "-")} (${Number(material.confidence ?? 0)}%)` : "Needs review"}</div>
         </div>
       </div>
+      {(sheet || route) && (
+        <div className="mt-3 grid gap-3 md:grid-cols-3">
+          <div>
+            <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Draft Sheet</div>
+            <div className="mt-1">{Number(sheet?.widthIn) > 0 && Number(sheet?.heightIn) > 0 ? `${sheet.widthIn} × ${sheet.heightIn} in` : "-"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Rotation</div>
+            <div className="mt-1">{sheet?.allowRotation === true ? "Allowed" : "Not allowed"}</div>
+          </div>
+          <div>
+            <div className="text-xs font-medium uppercase tracking-wide text-slate-400">Draft Route</div>
+            <div className="mt-1">{route ?? "-"}</div>
+          </div>
+        </div>
+      )}
       {materialAssociationRequired && (
         <div className="mt-3 text-xs font-medium text-amber-200">
           Material association required.
@@ -333,6 +353,7 @@ export default function PBV2ProductBuilderSectionV2({
     pricingFormulaVariables?: Record<string, number>;
     pricingProfileKey?: string;
     pricingFormula?: string;
+    productIntake?: any;
   }) => void;
 }) {
   const { toast } = useToast();
@@ -804,6 +825,7 @@ export default function PBV2ProductBuilderSectionV2({
         pricingFormulaVariables: meta?.pricingFormulaVariables ?? undefined,
         pricingProfileKey: meta?.pricingProfileKey ?? undefined,
         pricingFormula: meta?.pricingFormula ?? undefined,
+        productIntake: meta?.productIntake ?? undefined,
       });
     }
   }, [localTreeJson, onTreeMetaChange]);

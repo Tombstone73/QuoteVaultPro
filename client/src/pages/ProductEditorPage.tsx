@@ -38,6 +38,7 @@ import { ensureRootNodeIds, normalizeTreeJson } from "@/lib/pbv2/pbv2ViewModel";
 import { PricingValidationPanel } from "@/components/pbv2/builder-v2/PricingValidationPanel";
 import { ProductIntakeDraftBanner } from "@/components/ProductIntakeDraftBanner";
 import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
+import { resolveRequestedDraftEditorContext } from "@/lib/pbv2/requestedDraftEditorHydration";
 import {
   buildProductAiParsingDescriptionContext,
   hasExistingAiParsingDescription,
@@ -177,6 +178,7 @@ const ProductEditorPage = () => {
     pricingFormulaVariables?: Record<string, number>;
     pricingProfileKey?: string;
     pricingFormula?: string;
+    productIntake?: any;
   }>({});
 
   // Track PBV2 pricing/validation data for page-level pricing panel
@@ -248,6 +250,22 @@ const ProductEditorPage = () => {
   const { data: productTypes, isError: productTypesError } = useProductTypes();
   const draft = useProductBuilderDraft({ form, materials, pricingFormulas });
   const initializedProductFormRef = useRef<string | null>(null);
+  const requestedDraftEditorContext = useMemo(() => resolveRequestedDraftEditorContext({
+    requestedDraftTreeVersionId,
+    productIntake: treeMeta.productIntake,
+    pricingProfileConfig: form.getValues("pricingProfileConfig"),
+  }), [requestedDraftTreeVersionId, treeMeta.productIntake, form]);
+
+  useEffect(() => {
+    if (!requestedDraftEditorContext) return;
+    const currentConfig = form.getValues("pricingProfileConfig");
+    if (JSON.stringify(currentConfig ?? null) !== JSON.stringify(requestedDraftEditorContext.pricingProfileConfig)) {
+      form.setValue("pricingProfileConfig", requestedDraftEditorContext.pricingProfileConfig as FlatGoodsConfig, { shouldDirty: false });
+    }
+    if (form.getValues("pricingProfileKey") !== requestedDraftEditorContext.pricingProfileKey) {
+      form.setValue("pricingProfileKey", requestedDraftEditorContext.pricingProfileKey, { shouldDirty: false });
+    }
+  }, [form, requestedDraftEditorContext]);
 
   const buildAiParsingDescriptionContext = (mode: ProductAiParsingDescriptionMode) => {
     const values = form.getValues();
