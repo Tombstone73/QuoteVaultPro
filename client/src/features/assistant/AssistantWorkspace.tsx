@@ -2,8 +2,10 @@ import * as React from "react";
 import { Bot, Expand, Maximize2, Minus, PanelBottom, PanelLeft, PanelRight, RefreshCw, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSendAssistantTurn, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
+import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSendAssistantTurn, useSubmitAssistantOrderOptionSelections, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
@@ -229,6 +231,35 @@ function CustomerResolutionSelectionCard({ card }: { card: AssistantStructuredCa
   </section>;
 }
 
+function OrderOptionSelectionCard({ card, conversationId, context }: { card: AssistantStructuredCard; conversationId: string | null; context: AssistantContextEnvelope }) {
+  const submitSelection = useSubmitAssistantOrderOptionSelections();
+  const raw = card as unknown as Record<string, unknown>;
+  const details = isRecord(raw.details) ? raw.details : null;
+  const payload = details && isRecord(details.orderOptionSelection) ? details.orderOptionSelection : null;
+  const sessionId = text(payload?.orderIntakeSessionId); const productId = text(payload?.productId); const productName = text(payload?.productName); const treeId = text(payload?.pbv2TreeVersionId);
+  const quantity = numericValue(payload?.quantity); const dimensions = isRecord(payload?.dimensions) ? payload.dimensions : null;
+  const width = numericValue(dimensions?.widthIn); const height = numericValue(dimensions?.heightIn); const unit = text(dimensions?.unit) ?? "in";
+  const groups = Array.isArray(payload?.groups) ? payload.groups.filter(isRecord) : [];
+  const [values, setValues] = React.useState<Record<string, string>>({});
+  const [useDefaults, setUseDefaults] = React.useState(false);
+  if (!conversationId || !sessionId || !productId || !productName || !treeId || !groups.length) return null;
+  const complete = groups.every((group) => Boolean(values[text(group.nodeId) ?? ""]));
+  const submit = () => submitSelection.mutate({ conversationId, orderIntakeSessionId: sessionId, productId, pbv2TreeVersionId: treeId, selections: Object.entries(values).map(([nodeId, valueId]) => ({ nodeId, valueId })), useRemainingDefaults: useDefaults, context });
+  return <section className="mt-3 rounded-xl border border-primary/30 bg-primary/5 px-3 py-3 text-sm shadow-sm" data-testid="assistant-order-option-selection-card">
+    <p className="font-medium text-foreground">{text(raw.title) ?? "Order options needed"}</p>
+    <p className="mt-1 text-muted-foreground">{productName}{quantity !== null ? ` · Quantity: ${quantity}` : ""}{width !== null && height !== null ? ` · ${width} × ${height} ${unit}` : ""}</p>
+    <p className="mt-1 text-xs text-muted-foreground">{text(payload?.helperText) ?? text(raw.summary)}</p>
+    <div className="mt-3 space-y-3">{groups.map((group) => {
+      const nodeId = text(group.nodeId); const label = text(group.label) ?? "Option"; const choices = Array.isArray(group.choices) ? group.choices.filter(isRecord) : [];
+      if (!nodeId || !choices.length) return null;
+      const value = values[nodeId] ?? "";
+      return <fieldset key={nodeId} className="rounded-lg border border-border/60 bg-background/70 p-3"><legend className="px-1 font-medium">{label}</legend>{choices.length <= 4 ? <RadioGroup value={value} onValueChange={(next) => setValues((current) => ({ ...current, [nodeId]: next }))} className="mt-2 gap-2">{choices.map((choice) => { const valueId = text(choice.valueId); const choiceLabel = text(choice.label); if (!valueId || !choiceLabel) return null; return <label key={valueId} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted/60"><RadioGroupItem value={valueId} /><span>{choiceLabel}</span>{choice.isDefault === true ? <span className="text-xs text-muted-foreground">Default</span> : null}</label>; })}</RadioGroup> : <Select value={value} onValueChange={(next) => setValues((current) => ({ ...current, [nodeId]: next }))}><SelectTrigger className="mt-2"><SelectValue placeholder={`Choose ${label}`} /></SelectTrigger><SelectContent>{choices.map((choice) => { const valueId = text(choice.valueId); const choiceLabel = text(choice.label); return valueId && choiceLabel ? <SelectItem key={valueId} value={valueId}>{choiceLabel}{choice.isDefault === true ? " (Default)" : ""}</SelectItem> : null; })}</SelectContent></Select>}</fieldset>;
+    })}</div>
+    <div className="mt-3 flex flex-wrap gap-2"><Button type="button" size="sm" variant={useDefaults ? "secondary" : "outline"} disabled={submitSelection.isPending} onClick={() => setUseDefaults((value) => !value)}>{useDefaults ? "Remaining defaults will be used" : "Use remaining defaults"}</Button><Button type="button" size="sm" disabled={submitSelection.isPending || (!complete && !useDefaults)} onClick={submit}>{submitSelection.isPending ? "Continuing…" : "Continue"}</Button></div>
+    {submitSelection.isError ? <p role="status" className="mt-2 text-xs text-destructive">Unable to continue with these options. Refresh the request and try again.</p> : null}
+  </section>;
+}
+
 type AssistantSourceLink = { href: string; label: string };
 
 function sourceLink(value: unknown): AssistantSourceLink | null {
@@ -364,6 +395,7 @@ export function ResultCards({
   responseState,
   onRetry,
   onSubmitSuggestion,
+  conversationId,
 }: {
   cards: AssistantStructuredCard[];
   context: AssistantContextEnvelope;
@@ -379,6 +411,7 @@ export function ResultCards({
   responseState?: AssistantResponseState;
   onRetry?: () => void;
   onSubmitSuggestion?: (prompt: string) => void;
+  conversationId?: string | null;
 }) {
   const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false);
   const [genericCreateErrors, setGenericCreateErrors] = React.useState<Record<string, string>>({});
@@ -475,6 +508,7 @@ export function ResultCards({
     if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} />;
     if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source" || diagnosticCards.includes(card)) return null;
     if (card.kind === "customer_resolution") return <CustomerResolutionSelectionCard key={`${card.kind}-${index}`} card={card} />;
+    if (card.kind === "order_option_selection") return <OrderOptionSelectionCard key={`${card.kind}-${index}`} card={card} conversationId={conversationId ?? null} context={context} />;
     if (["production_queue_summary", "station_comparison", "attention_summary", "urgent_job_list"].includes(card.kind)) return <ProductionReportingDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (card.kind === "customer_product_sales") return <CustomerProductSalesDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (card.kind === "order_summary") return <OperationalOrderSummaryDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} onSubmitSuggestion={onSubmitSuggestion} />;
@@ -740,7 +774,7 @@ function ConversationContent() {
           ) : messages.map((message, index) => {
             const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
             if (message.role === "user") return <article key={message.id} ref={message.id === latestMessage?.id ? conversationScroll.latestUserRef : undefined} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
-            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} conversationId={activeConversationId} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Your message wasn’t sent. Try again.</p> : null}
           </div>

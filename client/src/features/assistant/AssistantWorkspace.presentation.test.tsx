@@ -5,6 +5,7 @@ import { jest } from "@jest/globals";
 
 jest.mock("@/lib/apiConfig", () => ({ apiUrl: (path: string) => path }));
 jest.mock("./AssistantWorkspaceProvider", () => ({ useAssistantWorkspace: () => ({}) }));
+jest.mock("@/hooks/useAssistantApi", () => ({ useSubmitAssistantOrderOptionSelections: () => ({ mutate: jest.fn(), isPending: false, isError: false }) }));
 
 import { ResultCards, responsePresentationForCards } from "./AssistantWorkspace";
 
@@ -15,7 +16,7 @@ const context = {
   selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-21T12:00:00.000Z", unsavedChanges: false,
 } as const;
 
-function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void; onCreatePlan?: (turnId: string) => Promise<unknown>; onConfirmPlan?: (input: any) => Promise<unknown>; executionPlans?: Record<string, any> } = {}) {
+function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void; onCreatePlan?: (turnId: string) => Promise<unknown>; onConfirmPlan?: (input: any) => Promise<unknown>; executionPlans?: Record<string, any>; conversationId?: string } = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -33,6 +34,18 @@ describe("Assistant workspace presentation", () => {
     expect(container.textContent).toContain("View order");
     expect(container.textContent).not.toContain("navigation.get_current_context");
     expect(container.textContent).not.toContain("Response presentation");
+    act(() => root.unmount());
+  });
+
+  test("renders a structured PBV2 option card with unselected defaults", () => {
+    const { container, root } = render([{ kind: "order_option_selection", title: "Order options needed", summary: "Choose options.", sourceLinks: [], details: { orderOptionSelection: { orderIntakeSessionId: "session_1", productId: "product_1", productName: "ACM Tester", pbv2TreeVersionId: "tree_1", quantity: 1, dimensions: { widthIn: 12, heightIn: 12, unit: "in" }, helperText: "Validated before pricing.", groups: [{ nodeId: "thickness", selectionKey: "thickness", label: "Thickness", required: true, currentExplicitSelection: null, choices: [{ valueId: "3mm", label: "3mm", isDefault: true }, { valueId: "6mm", label: "6mm", isDefault: false }] }, { nodeId: "contour", selectionKey: "contour", label: "Contour Cutting", required: true, currentExplicitSelection: null, choices: [{ valueId: "no", label: "No", isDefault: true }, { valueId: "yes", label: "Yes", isDefault: false }] }] } } }], { conversationId: "conversation_1" });
+    expect(container.querySelector("[data-testid='assistant-order-option-selection-card']")).not.toBeNull();
+    expect(container.textContent).toContain("ACM Tester · Quantity: 1 · 12 × 12 in");
+    expect(container.textContent).toContain("Thickness");
+    expect(container.textContent).toContain("Contour Cutting");
+    expect(container.textContent).toContain("Default");
+    expect(container.textContent).toContain("Use remaining defaults");
+    expect(container.querySelector("button")?.textContent).not.toContain("session_1");
     act(() => root.unmount());
   });
 

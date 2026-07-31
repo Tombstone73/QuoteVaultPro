@@ -120,6 +120,29 @@ export function useSendAssistantTurn() {
   });
 }
 
+/** Submits canonical PBV2 IDs to the server-bound pending order session. */
+export function useSubmitAssistantOrderOptionSelections() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ conversationId, orderIntakeSessionId, productId, pbv2TreeVersionId, selections, useRemainingDefaults, context }: {
+      conversationId: string;
+      orderIntakeSessionId: string;
+      productId: string;
+      pbv2TreeVersionId: string;
+      selections: Array<{ nodeId: string; valueId: string }>;
+      useRemainingDefaults: boolean;
+      context: AssistantContextEnvelope;
+    }) => {
+      const response = await apiRequest("POST", `/api/assistant/conversations/${encodeURIComponent(conversationId)}/order-option-selections/${encodeURIComponent(orderIntakeSessionId)}`, { productId, pbv2TreeVersionId, selections, useRemainingDefaults, context });
+      return response.json();
+    },
+    onSuccess: (_result, variables) => {
+      queryClient.invalidateQueries({ queryKey: conversationsKey });
+      queryClient.invalidateQueries({ queryKey: [...conversationsKey, variables.conversationId] });
+    },
+  });
+}
+
 /** The assistant turn body deliberately keeps all internal whitespace intact;
  * Markdown tables and CSV-style messages depend on their original newlines. */
 export function assistantTurnRequestBody(message: string, context: AssistantContextEnvelope) {
