@@ -63,6 +63,9 @@ export type QuoteLineItemDraft = {
     mimeType: string;
     sizeBytes: number;
     uploadedAt: string;
+    productionQuantity?: number | null;
+    productionGroupId?: string | null;
+    allocationSource?: "automatic" | "manual";
   }>;
 };
 

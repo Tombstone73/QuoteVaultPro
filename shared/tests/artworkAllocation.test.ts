@@ -2,6 +2,7 @@ import {
   buildArtworkAllocationStatus,
   defaultNewProductionArtworkAllocation,
   defaultProductionArtworkAllocationForLine,
+  reconcileStagedArtworkAllocations,
 } from "../artworkAllocation";
 
 describe("artwork allocation", () => {
@@ -45,5 +46,34 @@ describe("artwork allocation", () => {
   test("defaults one each only when the line quantity equals the resulting artwork count", () => {
     expect(defaultProductionArtworkAllocationForLine({ role: "final", lineQuantity: 2, existingProductionArtworkCount: 1 })).toBe(1);
     expect(defaultProductionArtworkAllocationForLine({ role: "final", lineQuantity: 50, existingProductionArtworkCount: 1 })).toBeNull();
+  });
+
+  test("keeps a sole staged artwork aligned to the line quantity until staff edits it", () => {
+    const initial = reconcileStagedArtworkAllocations({
+      lineQuantity: 4,
+      attachments: [{ uploadId: "art-1" }],
+    });
+    expect(initial).toEqual([{ uploadId: "art-1", productionQuantity: 4, allocationSource: "automatic" }]);
+
+    const resized = reconcileStagedArtworkAllocations({ lineQuantity: 6, attachments: initial });
+    expect(resized[0]).toMatchObject({ productionQuantity: 6, allocationSource: "automatic" });
+
+    const manual = [{ ...resized[0], productionQuantity: 2, allocationSource: "manual" as const }];
+    expect(reconcileStagedArtworkAllocations({ lineQuantity: 8, attachments: manual })[0])
+      .toMatchObject({ productionQuantity: 2, allocationSource: "manual" });
+  });
+
+  test("defaults multiple staged artworks only when one each is unambiguous", () => {
+    const matched = reconcileStagedArtworkAllocations({
+      lineQuantity: 2,
+      attachments: [{ uploadId: "art-1" }, { uploadId: "art-2" }],
+    });
+    expect(matched.map((attachment) => attachment.productionQuantity)).toEqual([1, 1]);
+
+    const unresolved = reconcileStagedArtworkAllocations({
+      lineQuantity: 4,
+      attachments: [{ uploadId: "art-1" }, { uploadId: "art-2" }],
+    });
+    expect(unresolved.map((attachment) => attachment.productionQuantity)).toEqual([null, null]);
   });
 });

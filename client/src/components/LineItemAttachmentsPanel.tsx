@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
 import { assignOrderLineItemArtworkSide } from "@/lib/attachments/orderArtworkSideAssignment";
+import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
@@ -104,6 +105,8 @@ interface LineItemAttachmentsPanelProps {
   onTemporaryOrderUpload?: (files: File[]) => Promise<void>;
   /** Remove a staged attachment from the unsaved order draft. */
   onTemporaryOrderAttachmentRemove?: (uploadId: string) => void;
+  /** Update allocation metadata for an unsaved direct-order artwork upload. */
+  onTemporaryOrderAttachmentUpdate?: (uploadId: string, patch: Pick<TemporaryOrderAttachmentUpload, "productionQuantity" | "productionGroupId" | "allocationSource">) => void;
   /** Notify the line-item editor after a persisted attachment is unlinked. */
   onSavedAttachmentRemoved?: (file: Pick<LineItemAttachment, "id" | "fileRecordId" | "side">) => void;
   /** Show explicit Front/Back controls for a double-sided print line. */
@@ -127,6 +130,7 @@ export function LineItemAttachmentsPanel({
   pendingOrderAttachments = [],
   onTemporaryOrderUpload,
   onTemporaryOrderAttachmentRemove,
+  onTemporaryOrderAttachmentUpdate,
   onSavedAttachmentRemoved,
   doubleSided = false,
   useSameArtworkBothSides: controlledUseSameArtworkBothSides,
@@ -262,10 +266,19 @@ export function LineItemAttachmentsPanel({
     return role === "artwork" || role === "output" || role === "final";
   };
   const productionRows = attachments.filter(isProductionAllocationRow);
-  const allocationTotal = productionRows.reduce((total, file) => total + (file.productionQuantity ?? 0), 0);
-  const allocationSummary = lineQuantity && productionRows.length > 0
-    ? `Allocated ${allocationTotal} of ${lineQuantity}${allocationTotal === lineQuantity ? '' : '. Review before production.'}`
-    : null;
+  const allocationStatus = useMemo(() => buildArtworkAllocationStatus({
+    lineQuantity,
+    members: productionRows,
+  }), [lineQuantity, productionRows]);
+  const stagedAllocationStatus = useMemo(() => buildArtworkAllocationStatus({
+    lineQuantity,
+    members: pendingOrderAttachments.map((file) => ({
+      id: file.uploadId,
+      role: "artwork",
+      productionQuantity: file.productionQuantity ?? null,
+      productionGroupId: file.productionGroupId ?? null,
+    })),
+  }), [lineQuantity, pendingOrderAttachments]);
   // Asset-only uploads are assignable too. The backend materializes their
   // order_attachment link when the first explicit side is saved.
   const artworkAttachments = attachments;
@@ -917,10 +930,17 @@ export function LineItemAttachmentsPanel({
       {/* Expanded content - file list */}
       {isExpanded && fileCount > 0 && (
         <div className="px-3 pb-3 space-y-2 border-t">
-          {(parentType === "order" || parentType === "quote") && allocationSummary && (
-            <p className={cn("mt-2 text-xs", allocationTotal === lineQuantity ? "text-emerald-700" : "text-amber-700")} data-testid="artwork-allocation-summary">
-              {allocationSummary}
-            </p>
+          {(parentType === "order" || parentType === "quote") && productionRows.length > 0 && allocationStatus.requiredQuantity != null && (
+            <div className="mt-2 text-xs" data-testid="artwork-allocation-summary" aria-live="polite">
+              <div className="font-medium">Assigned {allocationStatus.allocatedTotal} of {allocationStatus.requiredQuantity}</div>
+              <div className="text-muted-foreground">
+                {allocationStatus.valid
+                  ? "Allocation complete"
+                  : allocationStatus.allocatedTotal < allocationStatus.requiredQuantity
+                    ? `${allocationStatus.requiredQuantity - allocationStatus.allocatedTotal} pieces still need an artwork quantity`
+                    : allocationStatus.issue}
+              </div>
+            </div>
           )}
           {parentType === 'order' && doubleSided && orderId && artworkAttachments.length > 0 && (
             <div className="mt-2 rounded-md border border-violet-400/30 bg-violet-400/5 p-2.5 space-y-2" data-testid="order-double-sided-artwork-assignment">
@@ -973,7 +993,7 @@ export function LineItemAttachmentsPanel({
             </div>
           )}
           {pendingOrderAttachments.length > 0 && (
-            <div className="space-y-1 pt-2">
+            <div className="space-y-2 pt-2" data-testid="staged-artwork-allocation">
               {pendingOrderAttachments.map((file) => (
                 <div key={file.uploadId} className="flex items-center gap-2 p-1.5 rounded bg-background">
                   <File className="w-4 h-4 text-muted-foreground" />
@@ -982,7 +1002,31 @@ export function LineItemAttachmentsPanel({
                     <div className="text-[11px] text-muted-foreground">
                       {formatFileSize(file.sizeBytes)} · staged
                     </div>
+                    {file.allocationSource === "automatic" && (
+                      <div className="text-[11px] text-muted-foreground">Auto-filled from line quantity</div>
+                    )}
                   </div>
+                  {onTemporaryOrderAttachmentUpdate ? (
+                    <label className="grid shrink-0 gap-0.5 text-[10px] text-muted-foreground">
+                      Qty to produce
+                      <input
+                        className="h-7 w-20 rounded border bg-background px-1 text-xs text-foreground"
+                        type="number"
+                        min="1"
+                        step="1"
+                        inputMode="numeric"
+                        aria-label={`Qty to produce for staged artwork ${file.fileName}`}
+                        value={file.productionQuantity ?? ""}
+                        onChange={(event) => {
+                          const value = event.currentTarget.value.trim();
+                          onTemporaryOrderAttachmentUpdate(file.uploadId, {
+                            productionQuantity: value ? Number(value) : null,
+                            allocationSource: "manual",
+                          });
+                        }}
+                      />
+                    </label>
+                  ) : null}
                   {onTemporaryOrderAttachmentRemove ? (
                     <Button
                       type="button"
@@ -1002,6 +1046,18 @@ export function LineItemAttachmentsPanel({
                   ) : null}
                 </div>
               ))}
+              {stagedAllocationStatus.requiredQuantity != null && (
+                <div className="rounded border border-border/70 bg-muted/20 px-2 py-1.5 text-xs" aria-live="polite">
+                  <div className="font-medium">Artwork allocation: Assigned {stagedAllocationStatus.allocatedTotal} of {stagedAllocationStatus.requiredQuantity}</div>
+                  <div className="text-muted-foreground">
+                    {stagedAllocationStatus.valid
+                      ? "Allocation complete"
+                      : stagedAllocationStatus.allocatedTotal < stagedAllocationStatus.requiredQuantity
+                        ? `Remaining ${stagedAllocationStatus.requiredQuantity - stagedAllocationStatus.allocatedTotal}`
+                        : stagedAllocationStatus.issue}
+                  </div>
+                </div>
+              )}
             </div>
           )}
           {/* File list */}

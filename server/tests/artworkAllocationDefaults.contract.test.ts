@@ -13,13 +13,16 @@ describe("production artwork allocation defaults", () => {
   const proofingService = fs.readFileSync(path.join(root, "server/services/proofingService.ts"), "utf8");
   const productionJobsRoute = fs.readFileSync(path.join(root, "server/routes/productionJobs.routes.ts"), "utf8");
 
-  test("new quote and order production artwork relationships default to one", () => {
+  test("new quote and order production artwork relationships default to one when no explicit allocation is supplied", () => {
     expect(quoteLineFilesRoute).toContain('productionQuantity: defaultNewProductionArtworkAllocation("artwork")');
     expect(quoteLineFilesRoute).toContain('productionRole: "artwork"');
     expect(orderLineFilesRoute).toContain('productionQuantity: materializedRole === "artwork" ? defaultNewProductionArtworkAllocation("artwork") : null');
     expect(orderLineFilesRoute).toContain('productionQuantity: defaultNewProductionArtworkAllocation("artwork")');
     expect(ordersRoute).toContain('args.orderLineItemId && (args.role === "artwork" || args.role === "output")');
     expect(ordersRoute).toContain('resolvedLineItemId && (role === "artwork" || role === "output")');
+    expect(ordersRoute).toContain('args.productionQuantity ?? defaultNewProductionArtworkAllocation(args.role)');
+    expect(ordersRoute).toContain('pendingOrderArtworkAllocations');
+    expect(ordersRoute).toContain('ARTWORK_ALLOCATION_UNRESOLVED');
   });
 
   test("inbound artwork defaults before quote or order conversion persists it", () => {

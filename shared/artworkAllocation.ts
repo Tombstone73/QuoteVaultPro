@@ -99,3 +99,43 @@ export function defaultProductionArtworkAllocationForLine(args: {
   if (lineQuantity === resultingArtworkCount) return DEFAULT_PRODUCTION_ARTWORK_ALLOCATION;
   return null;
 }
+
+export type StagedArtworkAllocation = {
+  productionQuantity?: number | null;
+  productionGroupId?: string | null;
+  allocationSource?: "automatic" | "manual";
+};
+
+/**
+ * Keep draft-only artwork allocations predictable before a line item has a
+ * permanent file relationship.  Manual values are deliberately never moved.
+ */
+export function reconcileStagedArtworkAllocations<T extends StagedArtworkAllocation>(args: {
+  lineQuantity: unknown;
+  attachments: T[];
+}): T[] {
+  const lineQuantity = finiteInteger(args.lineQuantity);
+  const count = args.attachments.length;
+  const automaticQuantity = lineQuantity == null
+    ? null
+    : count === 1
+      ? lineQuantity
+      : count === lineQuantity
+        ? DEFAULT_PRODUCTION_ARTWORK_ALLOCATION
+        : null;
+
+  let changed = false;
+  const next = args.attachments.map((attachment) => {
+    if (attachment.allocationSource === "manual") return attachment;
+    const currentQuantity = attachment.productionQuantity ?? null;
+    if (attachment.allocationSource === "automatic" && currentQuantity === automaticQuantity) return attachment;
+    changed = true;
+    return {
+      ...attachment,
+      productionQuantity: automaticQuantity,
+      allocationSource: "automatic" as const,
+    };
+  });
+
+  return changed ? next : args.attachments;
+}

@@ -43,7 +43,7 @@ import {
     type InsertOrder
 } from "@shared/schema";
 import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/portalFileVisibility";
-import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
+import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
@@ -963,6 +963,8 @@ export async function registerOrderRoutes(
         role?: FileRole;
         side?: FileSide;
         isPrimary?: boolean;
+        productionQuantity?: number | null;
+        productionGroupId?: string | null;
         source:
             | {
                 kind: "buffer";
@@ -1038,9 +1040,11 @@ export async function registerOrderRoutes(
                     side: args.side ?? 'na',
                     isPrimary: args.isPrimary ?? false,
                     productionQuantity: args.orderLineItemId && (args.role === "artwork" || args.role === "output")
-                        ? defaultNewProductionArtworkAllocation(args.role)
+                        ? args.productionQuantity ?? defaultNewProductionArtworkAllocation(args.role)
                         : null,
-                    productionGroupId: null,
+                    productionGroupId: args.orderLineItemId && (args.role === "artwork" || args.role === "output")
+                        ? args.productionGroupId ?? null
+                        : null,
                 }).returning();
 
                 if (!created) {
@@ -1149,18 +1153,41 @@ export async function registerOrderRoutes(
         });
     };
 
-    const getPendingOrderAttachmentUploadIds = (lineItem: any): string[] => {
+    const getPendingOrderArtworkUploads = (lineItem: any): Array<{
+        uploadId: string;
+        productionQuantity: number | null;
+        productionGroupId: string | null;
+    }> => {
         const raw = Array.isArray(lineItem?.pendingOrderAttachmentUploadIds)
             ? lineItem.pendingOrderAttachmentUploadIds
             : Array.isArray(lineItem?.pendingOrderAttachments)
                 ? lineItem.pendingOrderAttachments.map((attachment: any) => attachment?.uploadId)
                 : [];
+        const allocationByUploadId = new Map(
+            (Array.isArray(lineItem?.pendingOrderArtworkAllocations) ? lineItem.pendingOrderArtworkAllocations : [])
+                .filter((allocation: any) => typeof allocation?.uploadId === "string" && allocation.uploadId.trim().length > 0)
+                .map((allocation: any) => [
+                    allocation.uploadId.trim(),
+                    {
+                        productionQuantity: allocation.productionQuantity == null || allocation.productionQuantity === ""
+                            ? null
+                            : Number(allocation.productionQuantity),
+                        productionGroupId: typeof allocation.productionGroupId === "string" && allocation.productionGroupId.trim()
+                            ? allocation.productionGroupId.trim()
+                            : null,
+                    },
+                ]),
+        );
 
         return Array.from(new Set(
             raw
                 .map((uploadId: unknown) => typeof uploadId === "string" ? uploadId.trim() : "")
                 .filter((uploadId: string) => uploadId.length > 0)
-        ));
+        )).map((uploadId) => ({
+            uploadId,
+            productionQuantity: allocationByUploadId.get(uploadId)?.productionQuantity ?? null,
+            productionGroupId: allocationByUploadId.get(uploadId)?.productionGroupId ?? null,
+        }));
     };
 
     const promoteDirectOrderPendingArtwork = async (args: {
@@ -1175,19 +1202,19 @@ export async function registerOrderRoutes(
         const warnings: Array<{ lineItemIndex: number; uploadId: string; message: string }> = [];
 
         for (let index = 0; index < args.sourceLineItems.length; index += 1) {
-            const uploadIds = getPendingOrderAttachmentUploadIds(args.sourceLineItems[index]);
-            if (uploadIds.length === 0) continue;
+            const uploads = getPendingOrderArtworkUploads(args.sourceLineItems[index]);
+            if (uploads.length === 0) continue;
 
             const createdLineItem = args.createdLineItems[index];
             const orderLineItemId = createdLineItem?.id ? String(createdLineItem.id) : null;
             if (!orderLineItemId) {
-                for (const uploadId of uploadIds) {
-                    warnings.push({ lineItemIndex: index, uploadId, message: "Created order line item was not returned for TEMP artwork promotion." });
+                for (const upload of uploads) {
+                    warnings.push({ lineItemIndex: index, uploadId: upload.uploadId, message: "Created order line item was not returned for TEMP artwork promotion." });
                 }
                 continue;
             }
 
-            for (const uploadId of uploadIds) {
+            for (const upload of uploads) {
                 try {
                     const attachment = await persistOrderAttachment({
                         orderId: String(args.order.id),
@@ -1201,9 +1228,11 @@ export async function registerOrderRoutes(
                         role: "artwork",
                         side: "na",
                         isPrimary: false,
+                        productionQuantity: upload.productionQuantity,
+                        productionGroupId: upload.productionGroupId,
                         source: {
                             kind: "upload-session",
-                            uploadId,
+                            uploadId: upload.uploadId,
                             expectedPurpose: "order-attachment",
                             expectedParentId: String(args.order.id),
                         },
@@ -1237,10 +1266,10 @@ export async function registerOrderRoutes(
                     console.error("[DirectOrderPendingArtwork] Failed to promote TEMP upload", {
                         orderId: args.order.id,
                         orderLineItemId,
-                        uploadId,
+                        uploadId: upload.uploadId,
                         error: error?.message || String(error),
                     });
-                    warnings.push({ lineItemIndex: index, uploadId, message: error?.message || "Failed to promote TEMP artwork upload." });
+                    warnings.push({ lineItemIndex: index, uploadId: upload.uploadId, message: error?.message || "Failed to promote TEMP artwork upload." });
                 }
             }
         }
@@ -2135,6 +2164,30 @@ export async function registerOrderRoutes(
                     message: "Direct order creation cannot include quote linkage. Use the quote conversion endpoint for quote-derived orders.",
                     code: "DIRECT_ORDER_QUOTE_LINKAGE_NOT_ALLOWED",
                 });
+            }
+
+            for (let index = 0; index < lineItems.length; index += 1) {
+                const lineItem = lineItems[index];
+                if (!Array.isArray(lineItem?.pendingOrderArtworkAllocations)) continue;
+                const uploads = getPendingOrderArtworkUploads(lineItem);
+                if (uploads.length === 0) continue;
+                const allocation = buildArtworkAllocationStatus({
+                    lineQuantity: lineItem.quantity,
+                    members: uploads.map((upload) => ({
+                        id: upload.uploadId,
+                        role: "artwork",
+                        productionQuantity: upload.productionQuantity,
+                        productionGroupId: upload.productionGroupId,
+                    })),
+                });
+                if (!allocation.valid) {
+                    return res.status(400).json({
+                        success: false,
+                        message: `Artwork allocation for line ${index + 1} is unresolved: ${allocation.issue}`,
+                        code: "ARTWORK_ALLOCATION_UNRESOLVED",
+                        allocation,
+                    });
+                }
             }
 
             console.info("[POST /api/orders] Direct order create request reached route", {

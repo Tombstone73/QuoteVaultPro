@@ -52,6 +52,7 @@ import {
   buildQuoteLineItemPricingFingerprint,
   shouldRequestQuoteLineItemPricingPreview,
 } from "../quoteLineItemPricingPreview";
+import { buildArtworkAllocationStatus, reconcileStagedArtworkAllocations } from "@shared/artworkAllocation";
 
 type LineItemsSectionProps = {
   quoteId: string | null;
@@ -555,11 +556,15 @@ export function LineItemsSection({
       }
       if (uploaded.length > 0) {
         const currentItem = lineItems.find((li) => getItemKey(li) === itemKey);
-        onUpdateLineItem(itemKey, {
-          pendingOrderAttachments: [
-            ...((currentItem?.pendingOrderAttachments as any[]) ?? []),
+        const pendingOrderAttachments = reconcileStagedArtworkAllocations({
+          lineQuantity: currentItem?.quantity,
+          attachments: [
+            ...((currentItem?.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? []),
             ...uploaded,
           ],
+        });
+        onUpdateLineItem(itemKey, {
+          pendingOrderAttachments,
         });
       }
       if (uploaded.length === 0 && errorCount > 0) {
@@ -572,10 +577,12 @@ export function LineItemsSection({
   const removeTemporaryOrderAttachment = useCallback((itemKey: string, uploadId: string) => {
     const currentItem = lineItems.find((lineItem) => getItemKey(lineItem) === itemKey);
     if (!currentItem) return;
-    onUpdateLineItem(itemKey, {
-      pendingOrderAttachments: ((currentItem.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [])
+    const pendingOrderAttachments = reconcileStagedArtworkAllocations({
+      lineQuantity: currentItem.quantity,
+      attachments: ((currentItem.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [])
         .filter((attachment) => attachment.uploadId !== uploadId),
     });
+    onUpdateLineItem(itemKey, { pendingOrderAttachments });
   }, [lineItems, onUpdateLineItem]);
 
   // Track saved state snapshot for dirty detection
@@ -845,6 +852,21 @@ export function LineItemsSection({
       setCalcError("Complete required product options before saving.");
       return;
     }
+    if (createTarget === "order" && expandedItem.pendingOrderAttachments?.length) {
+      const allocation = buildArtworkAllocationStatus({
+        lineQuantity: qtyNum,
+        members: expandedItem.pendingOrderAttachments.map((attachment) => ({
+          id: attachment.uploadId,
+          role: "artwork",
+          productionQuantity: attachment.productionQuantity ?? null,
+          productionGroupId: attachment.productionGroupId ?? null,
+        })),
+      });
+      if (!allocation.valid) {
+        setCalcError(`Artwork allocation is unresolved: ${allocation.issue}`);
+        return;
+      }
+    }
     setSavingItemKey(expandedKey);
     setSavedItemKey(null);
     try {
@@ -992,6 +1014,10 @@ export function LineItemsSection({
       requiresDesign,
       requiresPrepress,
       requiresProofApproval,
+      pendingOrderAttachments: reconcileStagedArtworkAllocations({
+        lineQuantity: qtyNum,
+        attachments: (expandedItem.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [],
+      }),
       ...(v2Patch as any),
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1549,6 +1575,15 @@ export function LineItemsSection({
                                   onTemporaryOrderAttachmentRemove={
                                     !readOnly && createTarget === "order"
                                       ? (uploadId) => removeTemporaryOrderAttachment(itemKey, uploadId)
+                                      : undefined
+                                  }
+                                  onTemporaryOrderAttachmentUpdate={
+                                    !readOnly && createTarget === "order"
+                                      ? (uploadId, patch) => {
+                                        const pendingOrderAttachments = ((item.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [])
+                                          .map((attachment) => attachment.uploadId === uploadId ? { ...attachment, ...patch } : attachment);
+                                        onUpdateLineItem(itemKey, { pendingOrderAttachments });
+                                      }
                                       : undefined
                                   }
                                   lineItemKey={itemKey}

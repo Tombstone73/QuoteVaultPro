@@ -44,6 +44,9 @@ describe("buildDirectOrderPayloadFromEditorState", () => {
           mimeType: "application/pdf",
           sizeBytes: 12345,
           uploadedAt: "2026-06-03T12:00:00.000Z",
+          productionQuantity: 2,
+          productionGroupId: "banner-a",
+          allocationSource: "manual",
         },
       ],
     };
@@ -102,6 +105,11 @@ describe("buildDirectOrderPayloadFromEditorState", () => {
       optionSelectionsJson: { schemaVersion: 2, selected: { finish: "hem" } },
       pbv2SnapshotJson: { pricing: { totalCents: 4200 } },
       pendingOrderAttachmentUploadIds: ["upload-temp-1"],
+      pendingOrderArtworkAllocations: [{
+        uploadId: "upload-temp-1",
+        productionQuantity: 2,
+        productionGroupId: "banner-a",
+      }],
     });
     expect(payload.lineItems[0]).not.toHaveProperty("quoteLineItemId");
   });

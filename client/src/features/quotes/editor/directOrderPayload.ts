@@ -90,6 +90,15 @@ export function buildDirectOrderPayloadFromEditorState(input: BuildDirectOrderPa
                     .map((attachment) => attachment?.uploadId)
                     .filter((uploadId): uploadId is string => typeof uploadId === "string" && uploadId.trim().length > 0)
                 : [],
+            pendingOrderArtworkAllocations: Array.isArray(li.pendingOrderAttachments)
+                ? li.pendingOrderAttachments
+                    .filter((attachment) => typeof attachment?.uploadId === "string" && attachment.uploadId.trim().length > 0)
+                    .map((attachment) => ({
+                        uploadId: attachment.uploadId,
+                        productionQuantity: attachment.productionQuantity ?? null,
+                        productionGroupId: attachment.productionGroupId ?? null,
+                    }))
+                : [],
         }));
 
     const dueDate = input.requestedDueDate ? new Date(`${input.requestedDueDate}T00:00:00.000Z`).toISOString() : null;

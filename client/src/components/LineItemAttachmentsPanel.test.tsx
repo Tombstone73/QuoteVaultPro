@@ -166,9 +166,39 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
       </QueryClientProvider>,
     );
 
-    expect(html).toContain("Allocated 2 of 2");
+    expect(html).toContain("Assigned 2 of 2");
     expect(html).toContain('value="1"');
-    expect(html).not.toContain("Allocated 3 of 2");
+    expect(html).not.toContain("Assigned 3 of 2");
+  });
+
+  test("shows staged artwork quantity controls and an allocation total before the line is saved", () => {
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <LineItemAttachmentsPanel
+          quoteId={null}
+          parentType="order"
+          orderId={null}
+          lineItemId="temp-line-1"
+          defaultExpanded
+          lineQuantity={4}
+          pendingOrderAttachments={[{
+            uploadId: "staged-1",
+            fileName: "banner.pdf",
+            mimeType: "application/pdf",
+            sizeBytes: 1200,
+            uploadedAt: "2026-07-31T00:00:00.000Z",
+            productionQuantity: 4,
+            allocationSource: "automatic",
+          }]}
+          onTemporaryOrderAttachmentUpdate={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(html).toContain("Qty to produce");
+    expect(html).toContain("Auto-filled from line quantity");
+    expect(html).toContain("Artwork allocation: Assigned 4 of 4");
+    expect(html).toContain("Allocation complete");
   });
 
   test("automatically assigns the only artwork file to Both when shared-art intent is active", async () => {
