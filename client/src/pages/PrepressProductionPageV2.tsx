@@ -473,6 +473,7 @@ export default function PrepressProductionPageV2() {
   const [combinedRunArtworkErrors, setCombinedRunArtworkErrors] = useState<Record<string, string>>({});
   const [combinedRunArtworkLoading, setCombinedRunArtworkLoading] = useState(false);
   const [combinedRunArtworkAssigning, setCombinedRunArtworkAssigning] = useState(false);
+  const [combinedRunArtworkResolverLineItemId, setCombinedRunArtworkResolverLineItemId] = useState<string | null>(null);
   const [selectedCombinedRunId, setSelectedCombinedRunId] = useState<string | null>(null);
   const [combinedRunDetailOpen, setCombinedRunDetailOpen] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -621,6 +622,39 @@ export default function PrepressProductionPageV2() {
     await queryClient.invalidateQueries({ queryKey });
     await queryClient.refetchQueries({ queryKey, type: "active" });
   }, [queryClient]);
+
+  const refreshCombinedRunArtworkForLineItem = React.useCallback(async (lineItemId: string | null) => {
+    if (!lineItemId) return;
+    const res = await fetch(`/api/prepress/line-item/${lineItemId}/files`, { credentials: "include" });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body?.success === false) {
+      const message = body?.error || body?.message || "Unable to refresh available artwork.";
+      setCombinedRunArtworkErrors((current) => ({ ...current, [lineItemId]: message }));
+      return;
+    }
+
+    const candidates = buildCombinedRunArtworkCandidates(body?.data);
+    setCombinedRunArtworkByLineItem((current) => ({ ...current, [lineItemId]: candidates }));
+    setCombinedRunArtworkSelections((current) => {
+      const currentSelection = current[lineItemId];
+      const next = { ...current };
+      if (currentSelection && candidates.some((candidate) => candidate.id === currentSelection)) {
+        return next;
+      }
+      if (candidates.length === 1) {
+        next[lineItemId] = candidates[0].id;
+      } else {
+        delete next[lineItemId];
+      }
+      return next;
+    });
+    setCombinedRunArtworkErrors((current) => {
+      if (!current[lineItemId]) return current;
+      const next = { ...current };
+      delete next[lineItemId];
+      return next;
+    });
+  }, []);
 
   // Queue Query
   const { data: queueData, isLoading: queueLoading, isFetching: queueFetching, refetch: refetchQueue } = useQuery({
@@ -793,7 +827,12 @@ export default function PrepressProductionPageV2() {
       return body.data as { replacementRequired?: boolean; alreadyRemoved?: boolean };
     },
     onSuccess: async (result) => {
-      if (selectedLineItemId) await refreshLineItemQueries(selectedLineItemId);
+      if (selectedLineItemId) {
+        await Promise.all([
+          refreshLineItemQueries(selectedLineItemId),
+          refreshCombinedRunArtworkForLineItem(selectedLineItemId),
+        ]);
+      }
       await queryClient.invalidateQueries({ queryKey: PREPRESS_QUEUE_QUERY_KEY });
       setFilePendingRemoval(null);
       setRemovalReason("");
@@ -907,6 +946,7 @@ export default function PrepressProductionPageV2() {
       await Promise.all([
         refreshLineItemQueries(variables.lineItemId),
         refreshPrepressQueue(),
+        refreshCombinedRunArtworkForLineItem(variables.lineItemId),
       ]);
       toast({ title: "Upload complete", description: "File uploaded successfully" });
     },
@@ -938,6 +978,7 @@ export default function PrepressProductionPageV2() {
         refreshLineItemQueries(variables.lineItemId),
         refreshPrepressQueue(),
         refreshPrepressNavigationCount(),
+        refreshCombinedRunArtworkForLineItem(variables.lineItemId),
       ]);
       setPromotionSourceFile(null);
       setPromotionTag("final_print");
@@ -974,6 +1015,7 @@ export default function PrepressProductionPageV2() {
         refreshLineItemQueries(variables.lineItemId),
         refreshPrepressQueue(),
         refreshPrepressNavigationCount(),
+        refreshCombinedRunArtworkForLineItem(variables.lineItemId),
       ]);
       toast({
         title: body?.data?.created === false ? "Production artwork already assigned" : "Production artwork assigned",
@@ -1037,6 +1079,7 @@ export default function PrepressProductionPageV2() {
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: ["/api/prepress/line-item", variables.lineItemId, "files"] }),
         refreshPrepressQueue(),
+        refreshCombinedRunArtworkForLineItem(variables.lineItemId),
       ]);
       toast({
         title: "Artwork side assigned",
@@ -1618,6 +1661,16 @@ export default function PrepressProductionPageV2() {
     setSelectedQueueLineItemIds(new Set());
   }, [destinationFilter]);
 
+  React.useEffect(() => {
+    if (!combinedRunOpen) {
+      setCombinedRunArtworkResolverLineItemId(null);
+      return;
+    }
+    if (combinedRunArtworkResolverLineItemId && !selectedQueueLineItemIds.has(combinedRunArtworkResolverLineItemId)) {
+      setCombinedRunArtworkResolverLineItemId(null);
+    }
+  }, [combinedRunArtworkResolverLineItemId, combinedRunOpen, selectedQueueLineItemIds]);
+
   useEffect(() => {
     if (selectedWorkflowState !== "in_prepress" || !selectedItem?.sessionStartedAt) {
       setNowMs(Date.now());
@@ -1864,6 +1917,81 @@ export default function PrepressProductionPageV2() {
   const cancelCombinedRunWizard = () => {
     setCombinedRunOpen(false);
     setCombinedRunWizardStep(1);
+    setCombinedRunArtworkResolverLineItemId(null);
+  };
+
+  const openCombinedRunArtworkResolver = (lineItemId: string) => {
+    setWorkspaceTab("queue");
+    setCombinedRunWizardStep(2);
+    setSelectedLineItemId(lineItemId);
+    setCombinedRunArtworkResolverLineItemId(lineItemId);
+    void refreshCombinedRunArtworkForLineItem(lineItemId);
+  };
+
+  const closeCombinedRunArtworkResolver = () => {
+    setCombinedRunArtworkResolverLineItemId(null);
+  };
+
+  const assignCombinedRunArtworkCandidate = async (
+    lineItemId: string,
+    candidate: CombinedRunArtworkCandidate,
+  ): Promise<string | null> => {
+    const res = await fetch(`/api/prepress/line-item/${lineItemId}/assign-customer-artwork`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        sourceKind: candidate.sourceKind,
+        sourceId: candidate.sourceId,
+        tag: "final_print",
+        artworkSide: candidate.sideLabel || "na",
+      }),
+    });
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok || body?.success === false) {
+      return body?.error || body?.message || "Unable to assign this artwork.";
+    }
+    await Promise.all([
+      refreshLineItemQueries(lineItemId),
+      refreshPrepressQueue(),
+      refreshCombinedRunArtworkForLineItem(lineItemId),
+    ]);
+    return null;
+  };
+
+  const handleAssignSingleCombinedRunArtwork = async (lineItemId: string) => {
+    if (combinedRunArtworkAssigning) return;
+    const candidates = combinedRunArtworkByLineItem[lineItemId] ?? [];
+    const selectedCandidateId = combinedRunArtworkSelections[lineItemId] ?? (candidates.length === 1 ? candidates[0].id : null);
+    const candidate = candidates.find((entry) => entry.id === selectedCandidateId);
+    if (!candidate) {
+      setCombinedRunArtworkErrors((current) => ({
+        ...current,
+        [lineItemId]: candidates.length === 0 ? "No customer artwork is available. Upload production artwork or remove this job." : "Choose the customer artwork to use.",
+      }));
+      return;
+    }
+
+    setCombinedRunArtworkAssigning(true);
+    setCombinedRunArtworkErrors((current) => {
+      const next = { ...current };
+      delete next[lineItemId];
+      return next;
+    });
+    try {
+      const error = await assignCombinedRunArtworkCandidate(lineItemId, candidate);
+      if (error) {
+        setCombinedRunArtworkErrors((current) => ({ ...current, [lineItemId]: error }));
+        toast({ title: "Artwork assignment failed", description: error, variant: "destructive" });
+        return;
+      }
+      toast({
+        title: "Production artwork assigned",
+        description: "The wizard stayed open and refreshed this line's artwork status.",
+      });
+    } finally {
+      setCombinedRunArtworkAssigning(false);
+    }
   };
 
   const handleAssignCombinedRunArtwork = async () => {
@@ -1881,21 +2009,8 @@ export default function PrepressProductionPageV2() {
           continue;
         }
 
-        const res = await fetch(`/api/prepress/line-item/${item.lineItemId}/assign-customer-artwork`, {
-          method: "POST",
-          credentials: "include",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            sourceKind: candidate.sourceKind,
-            sourceId: candidate.sourceId,
-            tag: "final_print",
-            artworkSide: candidate.sideLabel || "na",
-          }),
-        });
-        const body = await res.json().catch(() => ({}));
-        if (!res.ok || body?.success === false) {
-          errors[item.lineItemId] = body?.error || body?.message || "Unable to assign this artwork.";
-        }
+        const error = await assignCombinedRunArtworkCandidate(item.lineItemId, candidate);
+        if (error) errors[item.lineItemId] = error;
       }
 
       if (Object.keys(errors).length > 0) {
@@ -1959,7 +2074,13 @@ export default function PrepressProductionPageV2() {
         queryClient.invalidateQueries({ queryKey: ["/api/production/runs"] }),
       ]);
       await productionRunsQuery.refetch();
-    } catch {
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "";
+      if (/artwork|production file|final file/i.test(message)) {
+        setCombinedRunWizardStep(2);
+        await refreshPrepressQueue();
+        await Promise.all(selectedQueueItems.map((item) => refreshCombinedRunArtworkForLineItem(item.lineItemId)));
+      }
       // The mutation hook owns the retryable, server-provided error message.
     }
   };
@@ -2652,6 +2773,7 @@ export default function PrepressProductionPageV2() {
                   {selectedQueueItemsNeedingArtwork.length === 0 ? (
                     <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-100">All selected jobs have production artwork ready.</div>
                   ) : (
+                    <div className={cn("grid gap-4", combinedRunArtworkResolverLineItemId ? "xl:grid-cols-[minmax(300px,420px)_minmax(0,1fr)]" : "")}>
                     <div className="space-y-3">
                       {selectedQueueItemsNeedingArtwork.map((item) => {
                         const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
@@ -2674,6 +2796,7 @@ export default function PrepressProductionPageV2() {
                                 </div>
                                 <p className="mt-1 text-slate-400">{item.customerName || "Customer/contact not resolved"}</p>
                                 <p className="mt-1 text-slate-500">Current selected file: {selectedCandidate?.label || (candidates.length === 1 ? candidates[0].label : "None selected")}</p>
+                                <p className="mt-1 text-slate-500">Blocker: {getPrepressCombinedRunItemBlocker(item)?.message || "Backend readiness still needs confirmation."}</p>
                               </div>
                               <span className={cn(
                                 "rounded border px-2 py-0.5 text-[10px] font-semibold",
@@ -2701,12 +2824,36 @@ export default function PrepressProductionPageV2() {
                                 </Select>
                               ) : (
                                 <div className="rounded border border-[#2d3748] px-2 py-2 text-slate-300">
-                                  No customer artwork is available for this line item. Upload production artwork from the job detail or remove it from this selection.
+                                  No customer artwork is available for this line item. Upload production artwork or resolve the file assignment here.
                                 </div>
                               )}
                               <div className="flex flex-wrap gap-2">
-                                <Button type="button" size="sm" variant="outline" onClick={() => { setSelectedLineItemId(item.lineItemId); setCombinedRunOpen(false); }} className="h-9 px-2 text-[11px]">
-                                  Open job
+                                {candidates.length > 0 ? (
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleAssignSingleCombinedRunArtwork(item.lineItemId)}
+                                    disabled={combinedRunArtworkAssigning}
+                                    className="h-9 border-emerald-400/40 px-2 text-[11px] text-emerald-100 hover:bg-emerald-500/10"
+                                  >
+                                    Assign Existing Artwork
+                                  </Button>
+                                ) : null}
+                                <Button
+                                  type="button"
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => openCombinedRunArtworkResolver(item.lineItemId)}
+                                  className={cn(
+                                    "h-9 px-2 text-[11px]",
+                                    combinedRunArtworkResolverLineItemId === item.lineItemId
+                                      ? "border-violet-300 bg-violet-500/20 text-violet-50"
+                                      : "border-violet-400/40 text-violet-100 hover:bg-violet-500/10",
+                                  )}
+                                  data-testid="prepress-combined-run-resolve-artwork"
+                                >
+                                  Resolve Artwork
                                 </Button>
                                 <Button type="button" size="sm" variant="outline" onClick={() => handleToggleQueueItem(item.lineItemId, false)} className="h-9 border-red-400/40 px-2 text-[11px] text-red-100 hover:bg-red-500/10">
                                   Remove
@@ -2717,6 +2864,307 @@ export default function PrepressProductionPageV2() {
                           </div>
                         );
                       })}
+                    </div>
+                    {combinedRunArtworkResolverLineItemId ? (
+                      <aside className="min-w-0 rounded-lg border border-violet-400/30 bg-[#111921] shadow-2xl" data-testid="prepress-combined-run-artwork-resolver">
+                        {selectedItem && selectedItem.lineItemId === combinedRunArtworkResolverLineItemId ? (
+                          <div className="grid max-h-[calc(100vh-18rem)] min-h-[520px] grid-rows-[auto_minmax(0,1fr)_auto]">
+                            <header className="border-b border-[#2d3748] bg-[#1a232e] p-4">
+                              <div className="flex items-start justify-between gap-3">
+                                <div className="min-w-0">
+                                  <p className="text-[10px] font-bold uppercase tracking-widest text-violet-300">Artwork Resolver</p>
+                                  <h3 className="mt-1 truncate text-lg font-black text-white">
+                                    Order {selectedItem.jobNumber || selectedItem.orderId}{selectedItem.lineNumber ? ` - Line ${selectedItem.lineNumber}` : ""}
+                                  </h3>
+                                  <p className="mt-1 truncate text-xs text-slate-400">{selectedItem.productName}</p>
+                                </div>
+                                <Button type="button" size="sm" variant="outline" onClick={closeCombinedRunArtworkResolver} className="h-8">
+                                  Close resolver
+                                </Button>
+                              </div>
+                              <div className="mt-3 rounded border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs text-slate-300">
+                                <div><span className="text-slate-500">Current status:</span> {getPrepressCombinedRunItemBlocker(selectedItem)?.message || "Ready pending queue refresh."}</div>
+                                <div><span className="text-slate-500">Production candidate:</span> {visibleFinalFiles[0]?.displayName || "None assigned"}</div>
+                                {selectedItem.printSides === "Double-sided" ? (
+                                  <div><span className="text-slate-500">Double-sided readiness:</span> {artworkSideReadiness.complete ? "Ready" : artworkSideReadiness.warning || "Needs front/back assignment"}</div>
+                                ) : null}
+                              </div>
+                            </header>
+
+                            <div className="min-h-0 space-y-5 overflow-y-auto p-4">
+                              <section>
+                                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                  <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500">
+                                    <Paperclip className="h-4 w-4" /> Customer Artwork
+                                  </h4>
+                                  <div className="flex flex-wrap gap-2">
+                                    <Button
+                                      type="button"
+                                      size="sm"
+                                      variant="outline"
+                                      onClick={() => {
+                                        setUploadRole("original");
+                                        fileInputRef.current?.click();
+                                      }}
+                                      className="h-8 text-[11px]"
+                                    >
+                                      Upload Replacement Artwork
+                                    </Button>
+                                    {(visibleOriginalFiles.length > 0 || visibleBridgedOriginalFiles.length > 0) ? (
+                                      <Button type="button" size="sm" variant="outline" onClick={handleDownloadAllOriginals} className="h-8 text-[11px]">
+                                        Download All
+                                      </Button>
+                                    ) : null}
+                                  </div>
+                                </div>
+                                <input
+                                  ref={fileInputRef}
+                                  type="file"
+                                  multiple
+                                  className="hidden"
+                                  onChange={handleFileSelect}
+                                  disabled={!selectedLineItemId}
+                                  data-testid="prepress-combined-run-resolver-file-input"
+                                />
+                                {visibleOriginalFiles.length === 0 && visibleBridgedOriginalFiles.length === 0 ? (
+                                  <div className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs text-slate-400">
+                                    No customer artwork is available. Upload replacement customer artwork or upload production artwork below.
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {[...visibleOriginalFiles, ...visibleBridgedOriginalFiles].map((file) => (
+                                      <div key={`${file.category}-${file.id}`} className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs">
+                                        <div className="flex gap-3">
+                                          <FileThumbnail
+                                            fileId={file.category === "original_customer" ? file.id : undefined}
+                                            filename={file.originalFilename || file.fileName}
+                                            mimeType={file.mimeType || undefined}
+                                            thumbnailUrl={file.thumbUrl || undefined}
+                                          />
+                                          <div className="min-w-0 flex-1">
+                                            <div className="truncate font-semibold text-slate-100">{file.displayName}</div>
+                                            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                              <span>{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "size unknown"}</span>
+                                              <span>{file.uploadedByLabel}</span>
+                                              <span>{file.tagLabel}</span>
+                                              <PrepressArtworkSideBadge side={file.sideLabel} />
+                                            </div>
+                                          </div>
+                                        </div>
+                                        {selectedItem.printSides === "Double-sided" && file.artworkAssignable ? (
+                                          <div className="mt-3">
+                                            <PrepressArtworkSideSelect
+                                              filename={file.displayName}
+                                              side={file.sideLabel}
+                                              disabled={assignArtworkSideMutation.isPending}
+                                              onAssign={(side) => assignArtworkSideMutation.mutate({
+                                                orderId: selectedItem.orderId,
+                                                lineItemId: selectedItem.lineItemId,
+                                                fileId: file.artworkAssignmentFileId,
+                                                side,
+                                              })}
+                                            />
+                                          </div>
+                                        ) : null}
+                                        <div className="mt-3 flex flex-wrap gap-2">
+                                          <Button type="button" size="sm" variant="outline" onClick={() => window.open(file.downloadUrl, "_blank")} className="h-8 text-[11px]">
+                                            Download
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            onClick={() => assignCustomerArtworkMutation.mutate({
+                                              lineItemId: selectedItem.lineItemId,
+                                              file,
+                                              tag: selectedTag !== "none" ? selectedTag : "final_print",
+                                            })}
+                                            disabled={assignCustomerArtworkMutation.isPending}
+                                            className="h-8 bg-emerald-600 text-[11px] text-white hover:bg-emerald-700"
+                                          >
+                                            Use as Production Artwork
+                                          </Button>
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => {
+                                              setPromotionSourceFile(file);
+                                              setPromotionTag(selectedTag !== "none" ? selectedTag : "final_print");
+                                            }}
+                                            className="h-8 border-violet-400/50 text-[11px] text-violet-100 hover:bg-violet-500/10"
+                                          >
+                                            Create Modified Copy
+                                          </Button>
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </section>
+
+                              <section>
+                                <h4 className="mb-3 flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500">
+                                  <FileText className="h-4 w-4" /> Proof Files
+                                </h4>
+                                {visibleProofFiles.length === 0 ? (
+                                  <div className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs text-slate-400">
+                                    No proof files are available for this line.
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {visibleProofFiles.map((file) => (
+                                      <div key={`resolver-proof-${file.id}`} className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs">
+                                        <div className="flex items-center gap-3">
+                                          <FileThumbnail filename={file.originalFilename || file.fileName} mimeType={file.mimeType || undefined} thumbnailUrl={file.thumbUrl || undefined} />
+                                          <div className="min-w-0 flex-1">
+                                            <div className="truncate font-semibold text-slate-100">{file.displayName}</div>
+                                            <div className="mt-1 text-[11px] text-slate-500">{file.tagLabel} - {file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "size unknown"}</div>
+                                          </div>
+                                          <Button type="button" size="sm" variant="outline" onClick={() => window.open(file.downloadUrl, "_blank")} className="h-8 text-[11px]">
+                                            Download
+                                          </Button>
+                                        </div>
+                                        <p className="mt-2 text-[11px] text-slate-500">Proof files remain read-only here unless the canonical Prepress promotion flow marks them eligible.</p>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                              </section>
+
+                              <section>
+                                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                                  <h4 className="flex items-center gap-2 text-xs font-bold uppercase tracking-widest text-slate-500">
+                                    <CheckCircle className="h-4 w-4" /> Production Art Candidate
+                                  </h4>
+                                  <Button
+                                    type="button"
+                                    size="sm"
+                                    onClick={() => {
+                                      setUploadRole("final");
+                                      fileInputRef.current?.click();
+                                    }}
+                                    className="h-8 bg-[#1773cf] text-[11px] text-white hover:bg-[#1773cf]/90"
+                                  >
+                                    Upload Production Artwork
+                                  </Button>
+                                </div>
+                                <RadioGroup
+                                  value={selectedTag}
+                                  onValueChange={(value) => {
+                                    hasSelectedTagManuallyRef.current = true;
+                                    setSelectedTag(value);
+                                  }}
+                                  className="mb-3 flex flex-wrap items-center gap-4"
+                                >
+                                  {prepressFileLabelMode === "optional" ? (
+                                    <label className="flex items-center gap-2 text-xs text-slate-300">
+                                      <RadioGroupItem value="none" id="combined-run-tag-none" />
+                                      No label
+                                    </label>
+                                  ) : null}
+                                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                                    <RadioGroupItem value="final_print" id="combined-run-tag-print" />
+                                    Print
+                                  </label>
+                                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                                    <RadioGroupItem value="proof_only" id="combined-run-tag-proof" />
+                                    Proof
+                                  </label>
+                                  <label className="flex items-center gap-2 text-xs text-slate-300">
+                                    <RadioGroupItem value="cut_file" id="combined-run-tag-cut" />
+                                    Cut File
+                                  </label>
+                                </RadioGroup>
+                                {visibleFinalFiles.length === 0 ? (
+                                  <div className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs text-slate-400">
+                                    No production-art candidate is currently assigned.
+                                  </div>
+                                ) : (
+                                  <div className="space-y-2">
+                                    {visibleFinalFiles.map((file) => (
+                                      <div key={`resolver-final-${file.id}`} className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs">
+                                        <div className="flex gap-3">
+                                          <FileThumbnail
+                                            fileId={file.id}
+                                            filename={file.originalFilename || file.fileName}
+                                            mimeType={file.mimeType || undefined}
+                                            thumbnailUrl={file.thumbUrl || undefined}
+                                            thumbnailAvailabilityStatus={file.thumbnailAvailabilityStatus}
+                                          />
+                                          <div className="min-w-0 flex-1">
+                                            <div className="truncate font-semibold text-slate-100">{file.displayName}</div>
+                                            <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
+                                              <span>{file.tagLabel}</span>
+                                              <span>{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "size unknown"}</span>
+                                              <span>Uploaded by {file.uploadedByLabel}</span>
+                                            </div>
+                                          </div>
+                                        </div>
+                                        <div className="mt-3 flex flex-wrap gap-2">
+                                          <Button
+                                            type="button"
+                                            size="sm"
+                                            variant="outline"
+                                            onClick={() => downloadFinalFileMutation.mutate({
+                                              url: file.downloadUrl,
+                                              filename: file.displayName || file.originalFilename || "production-file",
+                                            })}
+                                            disabled={downloadFinalFileMutation.isPending}
+                                            className="h-8 text-[11px]"
+                                          >
+                                            Download
+                                          </Button>
+                                          {canRemoveProductionFiles ? (
+                                            <Button
+                                              type="button"
+                                              size="sm"
+                                              variant="outline"
+                                              onClick={() => { setFilePendingRemoval(file); setRemovalReason(""); }}
+                                              disabled={removeFinalFileMutation.isPending}
+                                              className="h-8 border-rose-400/40 text-[11px] text-rose-100 hover:bg-rose-500/10"
+                                            >
+                                              Remove Candidate
+                                            </Button>
+                                          ) : null}
+                                        </div>
+                                      </div>
+                                    ))}
+                                  </div>
+                                )}
+                                {uploadingFiles.length > 0 ? (
+                                  <div className="mt-3 rounded border border-[#1773cf]/40 bg-[#1773cf]/10 p-3 text-xs text-slate-200">
+                                    <div className="font-semibold">Recently Uploaded / In Progress</div>
+                                    <div className="mt-2 flex flex-wrap gap-3">
+                                      {uploadingFiles.map((upload) => (
+                                        <div key={upload.id} className="max-w-[10rem]">
+                                          <div className="h-1 rounded bg-slate-800">
+                                            <div className="h-full rounded bg-[#1773cf]" style={{ width: `${upload.progress}%` }} />
+                                          </div>
+                                          <div className="mt-1 truncate text-[11px] text-slate-400">{upload.filename}</div>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  </div>
+                                ) : null}
+                              </section>
+                            </div>
+
+                            <footer className="border-t border-[#2d3748] bg-[#1a232e] p-3">
+                              <div className="flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400">
+                                <span>{getPrepressCombinedRunItemBlocker(selectedItem) ? "Resolve artwork, then use Next when the line is Ready." : "Ready. Close the resolver and continue when you choose."}</span>
+                                <Button type="button" size="sm" onClick={closeCombinedRunArtworkResolver} className="h-8 bg-violet-600 text-white hover:bg-violet-700">
+                                  Done
+                                </Button>
+                              </div>
+                            </footer>
+                          </div>
+                        ) : (
+                          <div className="p-4 text-sm text-slate-300">
+                            Loading selected line artwork tools...
+                          </div>
+                        )}
+                      </aside>
+                    ) : null}
                     </div>
                   )}
                 </div>

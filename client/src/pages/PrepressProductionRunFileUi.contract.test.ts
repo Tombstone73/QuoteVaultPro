@@ -90,11 +90,52 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("Resolve Production Artwork");
     expect(source).toContain("Use sole artwork");
     expect(source).toContain("Assign selected artwork");
+    expect(source).toContain("Assign Existing Artwork");
+    expect(source).toContain("Resolve Artwork");
     expect(source).toContain("buildCombinedRunArtworkCandidates");
     expect(source).toContain("/api/prepress/line-item/${lineItemId}/files");
-    expect(source).toContain("/api/prepress/line-item/${item.lineItemId}/assign-customer-artwork");
+    expect(source).toContain("/api/prepress/line-item/${lineItemId}/assign-customer-artwork");
     expect(source).toContain("No customer artwork is available for this line item.");
     expect(source).toContain("Needs production artwork");
+    expect(source).not.toContain("Upload production artwork from the job detail");
+  });
+
+  test("mounted Nest Selected workflow includes an inline production artwork resolver", () => {
+    expect(source).toContain("combinedRunArtworkResolverLineItemId");
+    expect(source).toContain("prepress-combined-run-artwork-resolver");
+    expect(source).toContain("openCombinedRunArtworkResolver");
+    expect(source).toContain("closeCombinedRunArtworkResolver");
+    expect(source).toContain("setCombinedRunWizardStep(2)");
+    expect(source).toContain("setSelectedLineItemId(lineItemId)");
+    expect(source).toContain("Upload Replacement Artwork");
+    expect(source).toContain("Upload Production Artwork");
+    expect(source).toContain("Customer Artwork");
+    expect(source).toContain("Proof Files");
+    expect(source).toContain("Production Art Candidate");
+    expect(source).toContain("Use as Production Artwork");
+    expect(source).toContain("Create Modified Copy");
+    expect(source).toContain("Remove Candidate");
+    expect(source).toContain("PrepressArtworkSideSelect");
+  });
+
+  test("inline artwork resolver preserves combined-run draft state and refreshes one line", () => {
+    expect(source).toContain("refreshCombinedRunArtworkForLineItem");
+    expect(source).toContain("setCombinedRunArtworkByLineItem((current) => ({ ...current, [lineItemId]: candidates }))");
+    expect(source).toContain("setCombinedRunArtworkSelections((current) =>");
+    expect(source).toContain("setCombinedRunAllocations((current) => ({ ...current, [item.lineItemId]: event.target.value }))");
+    expect(source).toContain("combinedRunPlannedSheetCount");
+    expect(source).toContain("combinedRunPiecesPerSheet");
+    expect(source).toContain("combinedRunNotes");
+    expect(source).toContain("combinedRunOverrideReason");
+    expect(source).toContain("setCombinedRunArtworkResolverLineItemId(null)");
+    expect(source).not.toContain("setCombinedRunOpen(false); }} className=\"h-9 px-2 text-[11px]\"");
+  });
+
+  test("final combined-run creation returns stale artwork failures to Step 2", () => {
+    expect(source).toContain("if (/artwork|production file|final file/i.test(message))");
+    expect(source).toContain("setCombinedRunWizardStep(2)");
+    expect(source).toContain("Promise.all(selectedQueueItems.map((item) => refreshCombinedRunArtworkForLineItem(item.lineItemId)))");
+    expect(source).toContain("const result = await createCombinedRunMutation.mutateAsync");
   });
 
   test("Combined Runs empty state explains how runs are created", () => {
