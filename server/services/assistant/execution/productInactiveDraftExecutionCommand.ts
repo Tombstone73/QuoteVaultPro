@@ -33,7 +33,7 @@ export function createProductInactiveDraftCanonicalService(
         correlationId: input.correlationId,
       });
       return {
-        product: { id: result.productId, name: result.productName, active: false, sourceLink: `/products/${result.productId}` },
+        product: { id: result.productId, name: result.productName, active: false, sourceLink: `/products/${encodeURIComponent(result.productId)}/edit?draftTreeVersionId=${encodeURIComponent(result.pbv2TreeVersionId)}` },
         intakeSession: { id: input.intakeSessionId, status: "draft_created", sourceLink: current.proposal.sourceLink.href },
         pbv2DraftTreeVersionId: result.pbv2TreeVersionId,
       };

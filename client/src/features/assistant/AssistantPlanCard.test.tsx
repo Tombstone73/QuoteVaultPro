@@ -221,6 +221,19 @@ describe("AssistantPlanCard", () => {
     expect(container.querySelector("button[aria-label='GO: update inactive product draft']")).toBeNull();
   });
 
+  it("opens the exact PBV2 DRAFT after an inactive-draft mutation succeeds", () => {
+    const completed = {
+      kind: "action_plan", title: "Update Banner draft",
+      plan: {
+        id: "plan-product-update-result", action: "products.update_inactive_draft", status: "succeeded", planVersion: 2,
+        riskLevel: "high", confirmationAvailable: false, missingInformation: [], steps: [],
+        executionResult: { details: { productDraft: { id: "banner_1", name: "Banner", sourceLink: "/products/banner_1/edit?draftTreeVersionId=tree_1" } } },
+      },
+    };
+    act(() => root.render(<AssistantPlanCard card={completed} context={buildSafeAssistantContext("/products", "Products")} onConfirm={() => undefined} />));
+    expect(container.querySelector('a[href="/products/banner_1/edit?draftTreeVersionId=tree_1"]')?.textContent).toContain("Open Banner");
+  });
+
   it("renders only the dedicated configurable-product GO control for a complete typed preview", () => {
     const configurablePlan = {
       kind: "action_plan", title: "Create PVC configurable draft",

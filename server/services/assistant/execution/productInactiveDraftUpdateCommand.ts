@@ -53,7 +53,7 @@ export const productInactiveDraftUpdateCommandInputSchema = z.object({
 }).strict();
 export type ProductInactiveDraftUpdateCommandInput = z.infer<typeof productInactiveDraftUpdateCommandInputSchema>;
 
-const productSourceLinkSchema = z.string().regex(/^\/products\/[^\s/]+$/);
+const productSourceLinkSchema = z.string().regex(/^\/products\/[^\s/]+(?:\/edit\?draftTreeVersionId=[^\s/&]+)?$/);
 const productIntakeSourceLinkSchema = z.string().regex(/^\/(?:admin\/catalog-migration-lab(?:\/[^\s/]+)?|admin\/product-intake\/sessions\/[^\s/]+\/review)$/);
 const displayValueSchema = z.union([z.string().max(2_000), z.number().finite(), z.boolean(), z.null()]);
 
