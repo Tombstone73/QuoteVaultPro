@@ -19,6 +19,7 @@ import { resolveQuoteInternalNoteIntent } from "./execution/quoteInternalNoteInt
 import { productManagementSkillService } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
+import { pendingOrderIntakeRequest } from "./orderIntakeContinuation";
 import { crmManagementService } from "./crmManagementService";
 import { productionOperationsService } from "./productionOperationsService";
 import { fulfillmentOperationsService } from "./fulfillmentOperationsService";
@@ -539,6 +540,7 @@ export class AssistantService {
         userId: actor.userId,
         conversationId,
         message: request.message,
+        pendingRequest: pendingOrderIntakeRequest(conversation.messages),
       });
       if (orderIntake.handled) {
         response = orderIntake.response;

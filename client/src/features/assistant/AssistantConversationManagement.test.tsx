@@ -113,4 +113,16 @@ describe("assistant conversation management", () => {
     expect(onRestore).toHaveBeenCalledWith("conversation-2");
     act(() => view.root.unmount());
   });
+
+  it("keeps the conversation rail independently scrollable and hidden before wide desktop layouts", () => {
+    const view = render();
+    const rail = view.container.querySelector('[aria-label="Assistant conversations"]') as HTMLElement;
+    const list = view.container.querySelector('[data-testid="assistant-conversation-list"]') as HTMLElement;
+    expect(rail.className).toContain("min-h-0");
+    expect(rail.className).toContain("xl:flex");
+    expect(list.className).toContain("min-h-0");
+    expect(list.className).toContain("flex-1");
+    expect(list.className).toContain("overflow-y-auto");
+    act(() => view.root.unmount());
+  });
 });

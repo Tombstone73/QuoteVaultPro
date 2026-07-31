@@ -152,6 +152,27 @@ export interface ExecutionPlanPreview {
     warnings: readonly string[];
     downstreamActionsExcluded: readonly string[];
   };
+  /** Server-priced, confirmation-ready presentation for one direct order. */
+  orderCreate?: {
+    customer: { id: string | null; name: string; contactName: string | null };
+    orderStatus: "new";
+    productionDeferred: true;
+    totalCents: number;
+    warnings: readonly string[];
+    lines: readonly {
+      productId: string;
+      productName: string;
+      quantity: number;
+      measurementMode: string | null;
+      dimensions: { widthIn: number; heightIn: number; unit: "in" } | null;
+      pbv2TreeVersionId: string;
+      selections: readonly { groupId: string; groupLabel: string; valueId: string; valueLabel: string }[];
+      unitPriceCents: number;
+      totalCents: number;
+      minimumChargeApplied: boolean;
+      warnings: readonly string[];
+    }[];
+  };
   crmManagement?: {
     commandName: string;
     crmIntakeSessionId: string;

@@ -136,6 +136,6 @@ function AssistantAppContent({ locationPath, orderRightCol }: { locationPath: st
     </main>
   );
   if (!docked) return main;
-  if (presentation === "dock_bottom") return <div className="flex min-h-0 flex-1 flex-col">{main}<AssistantDock side="bottom" /></div>;
-  return <div className="flex min-h-0 flex-1">{presentation === "dock_left" ? <AssistantDock side="left" /> : null}{main}{presentation === "dock_right" ? <AssistantDock side="right" /> : null}</div>;
+  if (presentation === "dock_bottom") return <div className="flex min-h-0 flex-1 flex-col overflow-hidden">{main}<AssistantDock side="bottom" /></div>;
+  return <div className="flex min-h-0 flex-1 overflow-hidden">{presentation === "dock_left" ? <AssistantDock side="left" /> : null}{main}{presentation === "dock_right" ? <AssistantDock side="right" /> : null}</div>;
 }

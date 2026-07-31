@@ -63,6 +63,21 @@ const quoteNotePlanCard = {
   },
 };
 
+const orderCreatePlanCard = {
+  kind: "action_plan",
+  title: "Create order for Cool Cars",
+  plan: {
+    id: "plan-order-1", action: "orders.create", status: "awaiting_confirmation", planVersion: 1, riskLevel: "high", confirmationAvailable: true, confirmationToken: "server-issued-plan-bound-token",
+    preview: {
+      summary: "Create one order for Cool Cars.",
+      affectedEntities: [{ entityId: "customer-1", entityType: "customer", label: "Customer: Cool Cars" }, { entityId: "new:plan-order-1", entityType: "order", label: "One new order will be created" }, { entityId: "product-1", entityType: "product", label: "Product: ACM Tester" }],
+      orderCreate: { customer: { id: "customer-1", name: "Cool Cars", contactName: null }, orderStatus: "new", productionDeferred: true, totalCents: 1500, warnings: [], lines: [{ productId: "product-1", productName: "ACM Tester", quantity: 1, measurementMode: "area", dimensions: { widthIn: 12, heightIn: 12, unit: "in" }, pbv2TreeVersionId: "tree-1", selections: [{ groupId: "sides", groupLabel: "Sides", valueId: "single", valueLabel: "Single Sided" }, { groupId: "thickness", groupLabel: "Thickness", valueId: "3mm", valueLabel: "3mm" }], unitPriceCents: 1500, totalCents: 1500, minimumChargeApplied: true, warnings: [] }, { productId: "product-2", productName: "Setup", quantity: 1, measurementMode: "quantity_only", dimensions: null, pbv2TreeVersionId: "tree-2", selections: [], unitPriceCents: 0, totalCents: 0, minimumChargeApplied: false, warnings: [] }] },
+      sideEffects: [], undo: { available: false, label: null, expiresAt: null },
+    },
+    missingInformation: [], expiresAt: "2030-01-01T00:10:00.000Z", contextBinding: { route: "/orders", entityType: null, entityId: null }, cancellationAvailable: true, steps: [],
+  },
+};
+
 describe("AssistantPlanCard", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -109,6 +124,22 @@ describe("AssistantPlanCard", () => {
   it("reports expiration accessibly without relying on a color", () => {
     expect(getPlanExpirationText("2030-01-01T00:00:01.000Z", Date.parse("2030-01-01T00:00:00.000Z"))).toBe("Expires in 1 minute");
     expect(getPlanExpirationText("2030-01-01T00:00:00.000Z", Date.parse("2030-01-01T00:00:01.000Z"))).toBe("Expired");
+  });
+
+  it("renders authoritative configured-order details without exposing the intake session", () => {
+    const confirmed = jest.fn();
+    const onConfirm: NonNullable<React.ComponentProps<typeof AssistantPlanCard>["onConfirm"]> = (input) => { confirmed(input); };
+    act(() => root.render(<AssistantPlanCard card={orderCreatePlanCard} context={buildSafeAssistantContext("/orders", "Order")} onConfirm={onConfirm} allowGenericConfirmation genericActionLabel="Orders Create" />));
+    expect(container.textContent).toContain("Cool Cars");
+    expect(container.textContent).toContain("ACM Tester");
+    expect(container.textContent).toContain("12 × 12 in");
+    expect(container.textContent).toContain("Sides: Single Sided");
+    expect(container.textContent).toContain("Thickness: 3mm");
+    expect(container.textContent).toContain("Unit price: $15.00");
+    expect(container.textContent).toContain("Minimum charge: Applied");
+    expect(container.textContent).not.toContain("assistant_order_intake_session");
+    expect(container.textContent).toContain("One new order will be created");
+    expect(container.querySelector("button[aria-label='GO: Orders Create']")).not.toBeNull();
   });
 
   it("renders the registered quote-note preview as internal-only text and confirms only through the dedicated control", () => {

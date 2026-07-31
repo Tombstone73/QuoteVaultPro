@@ -58,6 +58,15 @@ export type AssistantPlanCardModel = {
     warnings: string[];
     status: string | null;
   } | null;
+  orderCreate: {
+    customerName: string;
+    contactName: string | null;
+    orderStatus: string;
+    productionDeferred: boolean;
+    totalCents: number;
+    warnings: string[];
+    lines: Array<{ productId: string; productName: string; quantity: number; measurementMode: string | null; dimensions: { widthIn: number; heightIn: number; unit: string } | null; pbv2TreeVersionId: string; selections: Array<{ groupId: string; groupLabel: string; valueId: string; valueLabel: string }>; unitPriceCents: number; totalCents: number; minimumChargeApplied: boolean; warnings: string[] }>;
+  } | null;
   affectedEntities: Array<{ id: string; type: string; label: string; href: string | null }>;
   sideEffects: string[];
   missingInformation: string[];
@@ -302,6 +311,23 @@ function tierLines(value: unknown): string[] {
   });
 }
 
+function toOrderCreate(action: string | null, preview: UnknownRecord | null): AssistantPlanCardModel["orderCreate"] {
+  if (action !== "orders.create" || !preview) return null;
+  const value = asRecord(preview.orderCreate);
+  const customer = asRecord(value?.customer);
+  const customerName = asText(customer?.name);
+  const totalCents = toCents(value?.totalCents);
+  if (!value || !customerName || totalCents === null) return null;
+  const lines = Array.isArray(value.lines) ? value.lines.slice(0, 25).flatMap((item) => {
+    const line = asRecord(item); const productId = asText(line?.productId); const productName = asText(line?.productName); const quantity = asPositiveInteger(line?.quantity); const unitPriceCents = toCents(line?.unitPriceCents); const lineTotalCents = toCents(line?.totalCents); const treeVersionId = asText(line?.pbv2TreeVersionId);
+    if (!line || !productId || !productName || !quantity || unitPriceCents === null || lineTotalCents === null || !treeVersionId) return [];
+    const dimensionsValue = asRecord(line.dimensions); const widthIn = typeof dimensionsValue?.widthIn === "number" && Number.isFinite(dimensionsValue.widthIn) ? dimensionsValue.widthIn : null; const heightIn = typeof dimensionsValue?.heightIn === "number" && Number.isFinite(dimensionsValue.heightIn) ? dimensionsValue.heightIn : null;
+    const selections = Array.isArray(line.selections) ? line.selections.slice(0, 30).flatMap((selection) => { const entry = asRecord(selection); const groupId = asText(entry?.groupId); const groupLabel = asText(entry?.groupLabel); const valueId = asText(entry?.valueId); const valueLabel = asText(entry?.valueLabel); return groupId && groupLabel && valueId && valueLabel ? [{ groupId, groupLabel, valueId, valueLabel }] : []; }) : [];
+    return [{ productId, productName, quantity, measurementMode: asText(line.measurementMode), dimensions: widthIn === null || heightIn === null ? null : { widthIn, heightIn, unit: asText(dimensionsValue?.unit) ?? "in" }, pbv2TreeVersionId: treeVersionId, selections, unitPriceCents, totalCents: lineTotalCents, minimumChargeApplied: line.minimumChargeApplied === true, warnings: asTextList(line.warnings) }];
+  }) : [];
+  return { customerName, contactName: asText(customer?.contactName), orderStatus: asText(value.orderStatus) ?? "new", productionDeferred: value.productionDeferred === true, totalCents, warnings: asTextList(value.warnings), lines };
+}
+
 export type AssistantQuoteNoteProposal = {
   turnId: string;
   title: string;
@@ -431,6 +457,7 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
     preview: asText(plan.preview) ?? asText(cardRecord.preview) ?? getTextFromObject(previewRecord, ["summary", "description", "title"]),
     quoteInternalNote: toQuoteInternalNote(action, previewRecord),
     productDraftCreate: toProductDraftCreate(action, previewRecord),
+    orderCreate: toOrderCreate(action, previewRecord),
     productDraftUpdate: toProductDraftUpdate(action, previewRecord),
     productPricingChangeSet: toProductPricingChangeSet(action, previewRecord),
     productPricingRollback: toProductPricingRollback(action, previewRecord),
@@ -527,6 +554,16 @@ function ProductDraftUpdatePreview({ update }: { update: NonNullable<AssistantPl
 function ProductPricingChangeSetPreview({ changeSet }: { changeSet: NonNullable<AssistantPlanCardModel["productPricingChangeSet"]> }) {
   const price = (values: UnknownRecord) => Object.entries(values).map(([key, value]) => `${key}: ${typeof value === "number" ? moneyFromCents(value) : String(value)}`).join(", ");
   return <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3"><p className="font-semibold">Product pricing change set</p><p className="mt-1 text-muted-foreground">Exact target IDs and scalar values were persisted before confirmation. Product lifecycle, publication, visibility, routing, options, and historical snapshots remain unchanged.</p><p className="mt-2"><span className="font-medium">Targets: </span>{changeSet.eligibleCount} eligible of {changeSet.targetCount}</p><details className="mt-2"><summary className="cursor-pointer font-medium">Exact product list ({changeSet.rows.length})</summary><ul className="mt-1 list-disc pl-4">{changeSet.rows.map((row) => <li key={row.productName}>{row.productName} ({row.active ? "active" : "inactive"}): {price(row.before)} → {price(row.after)}</li>)}</ul></details>{changeSet.excluded.length ? <p className="mt-2 text-muted-foreground">Excluded: {changeSet.excluded.map((row) => `${row.productName} (${row.reason})`).join("; ")}</p> : null}</div>;
+}
+
+function OrderCreatePreview({ order }: { order: NonNullable<AssistantPlanCardModel["orderCreate"]> }) {
+  return <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3">
+    <p className="font-medium">Order to create</p>
+    <dl className="mt-1 grid gap-1 sm:grid-cols-2"><div><dt className="inline font-medium">Customer: </dt><dd className="inline">{order.customerName}</dd></div>{order.contactName ? <div><dt className="inline font-medium">Contact: </dt><dd className="inline">{order.contactName}</dd></div> : null}<div><dt className="inline font-medium">Status: </dt><dd className="inline">{order.orderStatus}</dd></div><div><dt className="inline font-medium">Order total: </dt><dd className="inline">{moneyFromCents(order.totalCents)}</dd></div></dl>
+    {order.productionDeferred ? <p className="mt-2 text-muted-foreground">Production is deferred. This plan will not schedule production, reserve inventory, create fulfillment, invoice, or payment records.</p> : null}
+    <div className="mt-3 space-y-3">{order.lines.map((line) => <div key={`${line.productId}-${line.pbv2TreeVersionId}`} className="rounded border border-border/70 bg-background/70 p-2"><p className="font-medium">{line.productName}</p><dl className="mt-1 grid gap-1 sm:grid-cols-2"><div><dt className="inline font-medium">Quantity: </dt><dd className="inline">{line.quantity}</dd></div>{line.dimensions ? <div><dt className="inline font-medium">Size: </dt><dd className="inline">{line.dimensions.widthIn} × {line.dimensions.heightIn} {line.dimensions.unit}</dd></div> : null}{line.measurementMode ? <div><dt className="inline font-medium">Measurement: </dt><dd className="inline">{line.measurementMode.replaceAll("_", " ")}</dd></div> : null}<div><dt className="inline font-medium">Unit price: </dt><dd className="inline">{moneyFromCents(line.unitPriceCents)}</dd></div><div><dt className="inline font-medium">Line total: </dt><dd className="inline">{moneyFromCents(line.totalCents)}</dd></div>{line.minimumChargeApplied ? <div><dt className="inline font-medium">Minimum charge: </dt><dd className="inline">Applied</dd></div> : null}</dl>{line.selections.length ? <dl className="mt-2 grid gap-1 sm:grid-cols-2">{line.selections.map((selection) => <div key={`${selection.groupId}-${selection.valueId}`}><dt className="inline font-medium">{selection.groupLabel}: </dt><dd className="inline">{selection.valueLabel}</dd></div>)}</dl> : null}<p className="mt-2 text-muted-foreground">PBV2 snapshot: {line.pbv2TreeVersionId}</p>{line.warnings.length ? <ul className="mt-2 list-disc pl-4 text-amber-700 dark:text-amber-300">{line.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul> : null}</div>)}</div>
+    {order.warnings.length ? <ul className="mt-2 list-disc pl-4 text-amber-700 dark:text-amber-300">{order.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul> : null}
+  </div>;
 }
 
 function moneyFromCents(value: number | null): string {
@@ -679,6 +716,7 @@ export function AssistantPlanCard({
     <div className="mt-2 flex flex-wrap gap-x-3 gap-y-1 text-muted-foreground"><span>Status: {plan.status}</span><PlanExpiration expiresAt={plan.expiresAt} /></div>
     {plan.preview ? <p className="mt-2">{plan.preview}</p> : null}
     {plan.quoteInternalNote ? <QuoteInternalNotePreview note={plan.quoteInternalNote} /> : null}
+    {plan.orderCreate ? <OrderCreatePreview order={plan.orderCreate} /> : null}
     {plan.productDraftCreate ? <ProductDraftCreatePreview draft={plan.productDraftCreate} /> : null}
     {plan.productDraftUpdate ? <ProductDraftUpdatePreview update={plan.productDraftUpdate} /> : null}
     {plan.productPricingChangeSet ? <ProductPricingChangeSetPreview changeSet={plan.productPricingChangeSet} /> : null}
