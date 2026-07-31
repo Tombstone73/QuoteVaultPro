@@ -20,6 +20,7 @@ import { priceLineItem } from "../pricing/PricingService";
 import { directOrderRequestText, isDirectOrderRequest, parseOrderQuantity } from "./orderIntakeParsing";
 import { orderIntakePricingFailure } from "./orderIntakePricing";
 import { canonicalDefaultOrderSelections, isAssistantOrderOptionQuestion, orderIntakeOptionGroups, resolveAssistantOrderSelections, type AssistantOrderOptionGroup } from "./orderIntakeSelections";
+import { fingerprintDirectOrderProposal } from "./orderProposalFingerprint";
 import type { LineItemOptionSelectionsV2, OptionTreeV2 } from "@shared/optionTreeV2";
 
 type DirectLine = { productId: string; productName: string; quantity: number; width: number; height: number; pbv2TreeVersionId: string; pbv2Selections: LineItemOptionSelectionsV2; };
@@ -127,7 +128,7 @@ export class OrderIntakeService {
       eq(pbv2TreeVersions.status, "ACTIVE"),
     )).limit(1);
     if (!treeVersion) throw new AssistantOrderIntakeError("ORDER_PRICING_UNAVAILABLE", "The active product pricing snapshot is unavailable. No order proposal was created.");
-    return { product, tree: treeVersion.treeJson as OptionTreeV2 };
+    return { product, tree: treeVersion.treeJson as OptionTreeV2, treeVersionUpdatedAt: treeVersion.updatedAt };
   }
 
   private async newDirectLine(organizationId: string, productId: string, productName: string, quantity: number, width: number, height: number): Promise<DirectLine> {
@@ -244,6 +245,7 @@ export class OrderIntakeService {
       result: Awaited<ReturnType<typeof priceLineItem>>;
       widthIn: number;
       heightIn: number;
+      treeVersionUpdatedAt: Date;
     }>;
     try {
       priced = await this.priceDirectLines(input.organizationId, intake.lines);
@@ -253,7 +255,7 @@ export class OrderIntakeService {
       return { valid: false, code: failure.code, summary: failure.summary, requiredSelectionKeys: failure.requiredSelectionKeys };
     }
     const totals = await calculateQuoteOrderTotals(priced.map(({ line, product, result }) => ({ productId: line.productId, linePrice: result.lineTotalCents / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, null);
-    const fingerprint = hash({ intake, products: priced.map((row) => ({ id: row.product.id, updatedAt: row.product.updatedAt, pricing: row.result.pbv2SnapshotJson })), totals });
+    const fingerprint = fingerprintDirectOrderProposal({ intake, organization: org, customer, contact, priced, totals });
     if (input.expectedProposalFingerprint && input.expectedProposalFingerprint !== fingerprint) return { valid: false, code: "ORDER_PROPOSAL_STALE", summary: "Order pricing or selected records changed." };
     return { valid: true, proposal: { orderIntakeSessionId: session.id, proposalFingerprint: fingerprint, kind: intake.kind, customerName: intake.customerName, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : null, dueDate: intake.dueDate, totalCents: Math.round(totals.total * 100), taxCents: Math.round(totals.taxAmount * 100), lines: priced.map(({ line, result }) => ({ productName: line.productName, productId: line.productId, quantity: line.quantity, width: line.width, height: line.height, pbv2TreeVersionId: line.pbv2TreeVersionId, selections: line.pbv2Selections, unitPriceCents: Math.round(result.lineTotalCents / line.quantity), totalCents: result.lineTotalCents })), warnings: intake.contactId ? [] : ["No contact is selected."], downstreamActionsExcluded: ["production_job_creation", "production_scheduling", "inventory_reservation", "fulfillment_creation", "invoice_creation", "payment_processing"], summary: `Create one order for ${intake.customerName}, totaling $${totals.total.toFixed(2)}. Production remains deferred.` } };
   }
@@ -301,12 +303,12 @@ export class OrderIntakeService {
 
   private async priceDirectLines(organizationId: string, lines: DirectLine[]) {
     return Promise.all(lines.map(async (line) => {
-      const [product] = await db.select().from(products).where(and(eq(products.id, line.productId), eq(products.organizationId, organizationId), eq(products.isActive, true))).limit(1);
-      if (!product) throw new AssistantOrderIntakeError("ORDER_PRODUCT_NOT_FOUND", `Product ${line.productName} is unavailable.`);
+      const snapshot = await this.loadDirectSnapshot(organizationId, line);
+      const product = snapshot.product;
       const size = dimensionsForProductPricing(product, line.width, line.height);
       if (product.pbv2ActiveTreeVersionId !== line.pbv2TreeVersionId) throw new AssistantOrderIntakeError("ORDER_PROPOSAL_STALE", "The product pricing snapshot changed. Start a fresh order request.");
       const result = await priceLineItem({ organizationId, productId: product.id, quantity: line.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: selectedValuesForPricing(line.pbv2Selections), pbv2TreeVersionIdOverride: line.pbv2TreeVersionId });
-      return { line, product, result, widthIn: size.widthIn, heightIn: size.heightIn };
+      return { line, product, result, widthIn: size.widthIn, heightIn: size.heightIn, treeVersionUpdatedAt: snapshot.treeVersionUpdatedAt };
     }));
   }
 }
