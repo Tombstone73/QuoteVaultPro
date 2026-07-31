@@ -5,6 +5,7 @@ import {
   customerContactLinks,
   customerContacts,
   customers,
+  auditLogs,
   inboundEmailMailboxes,
   inboundEmailIgnoreRules,
   inboundEmailTrustRules,
@@ -56,6 +57,7 @@ import {
 } from "@shared/schema";
 import { isPublicFreeEmailDomain } from "@shared/inboundEmailTrustDomains";
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
+import { buildInboundQuoteCreatedAuditLogValues } from "../services/inboundOrders/inboundQuoteProvenance";
 import {
   allocateDocumentNumber,
   isDocumentNumberUniqueViolation,
@@ -2999,6 +3001,20 @@ export class InboundOrdersRepository {
             conversionMetadata: input.conversionMetadata,
           },
         });
+
+      await tx
+        .insert(auditLogs)
+        .values(buildInboundQuoteCreatedAuditLogValues({
+          organizationId,
+          actorUserId: input.actorUserId,
+          inboundRecordId: input.inboundRecordId,
+          quote,
+          record,
+          snapshotId: input.snapshotId,
+          snapshotVersion: input.snapshotVersion,
+          createdLineItemCount: createdLineItems.length,
+          skippedLineItemCount: input.skippedLineItems.length,
+        }));
 
       return {
         quote,

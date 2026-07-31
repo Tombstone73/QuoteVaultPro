@@ -23,6 +23,7 @@ import { fromZodError } from "zod-validation-error";
 
 import {
   auditLogs,
+  customerContacts,
   customers,
   inventoryAdjustments,
   inventoryReservations,
@@ -1023,6 +1024,11 @@ export function registerPrepressQueueRoutes(
           dueDate: orders.dueDate,
           priority: orders.priority,
           customerName: customers.companyName,
+          contactFirstName: customerContacts.firstName,
+          contactLastName: customerContacts.lastName,
+          contactEmail: customerContacts.email,
+          billToName: orders.billToName,
+          billToCompany: orders.billToCompany,
           proofApprovalPolicyOverride: orders.proofApprovalPolicyOverride,
           proofApprovalOverrideReason: orders.proofApprovalOverrideReason,
           proofApprovalOverrideAt: orders.proofApprovalOverrideAt,
@@ -1030,7 +1036,8 @@ export function registerPrepressQueueRoutes(
         })
         .from(orderLineItems)
         .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
-        .innerJoin(customers, eq(orders.customerId, customers.id))
+        .leftJoin(customers, and(eq(orders.customerId, customers.id), eq(customers.organizationId, organizationId)))
+        .leftJoin(customerContacts, and(eq(orders.contactId, customerContacts.id), eq(customerContacts.organizationId, organizationId)))
         .leftJoin(materials, eq(orderLineItems.materialId, materials.id))
         .leftJoin(products, eq(orderLineItems.productId, products.id))
         .where(and(...conditions))
@@ -1393,6 +1400,11 @@ export function registerPrepressQueueRoutes(
           .map((row) => `${row.optionLabel}: ${row.selectedLabel}`);
         const optionsRows = specificationsDisplay.optionRows;
         const printSides = resolveProductionSides(item);
+        const destination = destinationByLineItem.get(item.lineItemId) ?? {
+          suggested: "flatbed" as const,
+          selected: "flatbed" as const,
+          overrideActive: false,
+        };
         const sheetConfiguration = resolveSheetConfiguration({
           pbv2SnapshotJson: item.pbv2SnapshotJson,
           pricingProfileConfig: treeJson?.meta?.pricingProfileConfig ?? item.productPricingProfileConfig,
@@ -1426,11 +1438,17 @@ export function registerPrepressQueueRoutes(
         const activeOwner = activeOwnerByLineItem.get(item.lineItemId) ?? null;
         const activeOwnerIsPrepress = isPrepressOwnershipJob(activeOwner);
         const computedWorkflowState = String(item.workflowState || '').toLowerCase();
-        const destination = destinationByLineItem.get(item.lineItemId) ?? {
-          suggested: "flatbed" as const,
-          selected: "flatbed" as const,
-          overrideActive: false,
-        };
+        const contactName = [item.contactFirstName, item.contactLastName]
+          .map((part) => String(part || "").trim())
+          .filter(Boolean)
+          .join(" ");
+        const customerDisplayName =
+          item.customerName
+          ?? item.billToCompany
+          ?? item.billToName
+          ?? contactName
+          ?? item.contactEmail
+          ?? "Contact-only order";
         const proofBypassed = String(item.proofApprovalPolicyOverride || "").toLowerCase() === "bypass";
         const hasApprovedProof = Boolean(item.approvedProofVersionId);
         const productionReleaseBlockedReason =
@@ -1458,7 +1476,7 @@ export function registerPrepressQueueRoutes(
           lineNumber: lineNumberById.get(String(item.lineItemId)) ?? null,
           orderId: item.orderId,
           jobNumber: item.orderNumber,
-          customerName: item.customerName ?? "—",
+          customerName: customerDisplayName,
           productName: specificationsDisplay.productLabel,
           formalProductName: item.productFormalName ?? item.description,
           printType: item.productType ?? null,

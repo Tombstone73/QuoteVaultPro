@@ -1,6 +1,10 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 
-import { filterPrepressOwnedLineItemIds } from "../services/prepressQueueEligibility";
+jest.unstable_mockModule("../productionHelpers", () => ({
+  appendEvent: jest.fn(),
+}));
+
+const { filterPrepressOwnedLineItemIds, resolvePrepressQueueEligibility } = await import("../services/prepressQueueEligibility");
 
 type Owner = { stationKey: string; stepKey: string };
 
@@ -29,5 +33,47 @@ describe("Prepress queue eligibility shared by queue and sidebar count", () => {
 
     expect(filterPrepressOwnedLineItemIds(candidates, beforeRelease)).toHaveLength(1);
     expect(filterPrepressOwnedLineItemIds(candidates, afterRelease)).toHaveLength(0);
+  });
+
+  test("does not require a customer join before checking Prepress ownership", async () => {
+    const joins: string[] = [];
+    let selectCount = 0;
+    const runner = {
+      select: jest.fn(() => {
+        selectCount += 1;
+        const rows = selectCount === 1
+          ? [{ lineItemId: "contact-only-line" }]
+          : [{
+              id: "job-1",
+              orderId: "order-1",
+              lineItemId: "contact-only-line",
+              stationKey: "prepress",
+              stepKey: "prepress",
+              status: "queued",
+              stationId: "station-prepress",
+              totalSeconds: 0,
+              startedAt: null,
+              completedAt: null,
+              createdAt: new Date("2026-07-31T12:00:00.000Z"),
+              updatedAt: new Date("2026-07-31T12:00:00.000Z"),
+            }];
+        const query = {
+          from: jest.fn(() => query),
+          innerJoin: jest.fn((table: unknown) => {
+            joins.push(String((table as { _: { name?: string } })?._?.name ?? ""));
+            return query;
+          }),
+          where: jest.fn(() => query),
+          orderBy: jest.fn(() => query),
+          then: (resolve: (value: unknown[]) => void) => Promise.resolve(rows).then(resolve),
+        };
+        return query;
+      }),
+    };
+
+    const result = await resolvePrepressQueueEligibility(runner, { organizationId: "org_1" });
+
+    expect(result.lineItemIds).toEqual(["contact-only-line"]);
+    expect(joins).not.toContain("customers");
   });
 });

@@ -1,6 +1,6 @@
 import { and, eq, inArray, notInArray } from "drizzle-orm";
 
-import { customers, orderLineItems, orders } from "@shared/schema";
+import { orderLineItems, orders } from "@shared/schema";
 import {
   isPrepressOwnershipJob,
   resolveActiveProductionOwners,
@@ -34,10 +34,6 @@ export async function resolvePrepressQueueEligibility(
     .select({ lineItemId: orderLineItems.id })
     .from(orderLineItems)
     .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
-    .innerJoin(
-      customers,
-      and(eq(orders.customerId, customers.id), eq(customers.organizationId, args.organizationId)),
-    )
     .where(
       and(
         eq(orders.organizationId, args.organizationId),
