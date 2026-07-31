@@ -17,6 +17,7 @@ import { calculateQuoteOrderTotals, getOrganizationTaxSettings } from "../../quo
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { priceLineItem } from "../pricing/PricingService";
 import { directOrderRequestText, parseOrderQuantity } from "./orderIntakeParsing";
+import { orderIntakePricingFailure } from "./orderIntakePricing";
 
 type DirectLine = { productId: string; productName: string; quantity: number; width: number; height: number; };
 type DirectIntake = { kind: "direct"; customerId: string | null; customerName: string; contactId: string | null; dueDate: string | null; lines: DirectLine[] };
@@ -73,7 +74,13 @@ export class OrderIntakeService {
     if (missing.length) return { handled: true, response: `I need ${missing.join(", ")} before I can prepare an order preview. I will not guess records or dimensions.`, cards: [{ kind: "missing_information", title: "Order information needed", summary: `Please provide: ${missing.join(", ")}.`, sourceLinks: [], details: { missing } }] };
     const session = await this.createSession(input, { kind: "direct", customerId: customer?.id ?? null, customerName: customer?.companyName ?? `${contact!.firstName} ${contact!.lastName}`.trim(), contactId: contact?.id ?? null, dueDate: parseDueDate(message), lines: [{ productId: product!.id, productName: product!.name ?? "Product", quantity: quantity!, width: dimensions!.width, height: dimensions!.height }] });
     const proposal = await this.revalidateCreateProposal({ organizationId: input.organizationId, orderIntakeSessionId: session.id, expectedProposalFingerprint: "" });
-    if (!proposal.valid) throw new AssistantOrderIntakeError(proposal.code, proposal.summary);
+    if (!proposal.valid) {
+      return {
+        handled: true,
+        response: proposal.summary,
+        cards: [{ kind: "missing_information", title: proposal.code === "ORDER_PRICING_INPUT_REQUIRED" ? "Order pricing information needed" : "Order preview unavailable", summary: proposal.summary, sourceLinks: [], details: { code: proposal.code } }],
+      };
+    }
     await db.update(assistantOrderIntakeSessions).set({ status: "preview_ready", proposalFingerprint: proposal.proposal.proposalFingerprint, updatedAt: new Date() }).where(eq(assistantOrderIntakeSessions.id, session.id));
     return { handled: true, response: "I prepared a server-priced order preview. Confirming creates one order with production explicitly deferred; it will not schedule, reserve inventory, create fulfillment, invoice, or payment records.", cards: [
       { kind: "order_intake_summary", title: "Order preview", summary: proposal.proposal.summary, sourceLinks: [], details: proposal.proposal },
@@ -141,13 +148,20 @@ export class OrderIntakeService {
       intake.contactId ? db.select().from(customerContacts).where(and(eq(customerContacts.id, intake.contactId), eq(customerContacts.organizationId, input.organizationId))).limit(1).then((rows) => rows[0]) : Promise.resolve(null),
     ]);
     if (!org || (intake.customerId && !customer) || (intake.contactId && !contact) || (!customer && !contact)) return { valid: false, code: "ORDER_IDENTITY_REQUIRED", summary: "The selected customer or contact is no longer available." };
-    const priced = await Promise.all(intake.lines.map(async (line) => {
-      const [product] = await db.select().from(products).where(and(eq(products.id, line.productId), eq(products.organizationId, input.organizationId), eq(products.isActive, true))).limit(1);
-      if (!product) throw new AssistantOrderIntakeError("ORDER_PRODUCT_NOT_FOUND", `Product ${line.productName} is unavailable.`);
-      const size = dimensionsForProductPricing(product, line.width, line.height);
-      const result = await priceLineItem({ organizationId: input.organizationId, productId: product.id, quantity: line.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: {} });
-      return { line, product, result, widthIn: size.widthIn, heightIn: size.heightIn };
-    }));
+    let priced: Array<{
+      line: DirectLine;
+      product: typeof products.$inferSelect;
+      result: Awaited<ReturnType<typeof priceLineItem>>;
+      widthIn: number;
+      heightIn: number;
+    }>;
+    try {
+      priced = await this.priceDirectLines(input.organizationId, intake.lines);
+    } catch (error) {
+      if (error instanceof AssistantOrderIntakeError) return { valid: false, code: error.code, summary: error.message };
+      const failure = orderIntakePricingFailure(error);
+      return { valid: false, code: failure.code, summary: failure.summary };
+    }
     const totals = await calculateQuoteOrderTotals(priced.map(({ line, product, result }) => ({ productId: line.productId, linePrice: result.lineTotalCents / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, null);
     const fingerprint = hash({ intake, products: priced.map((row) => ({ id: row.product.id, updatedAt: row.product.updatedAt, pricing: row.result.pbv2SnapshotJson })), totals });
     if (input.expectedProposalFingerprint && input.expectedProposalFingerprint !== fingerprint) return { valid: false, code: "ORDER_PROPOSAL_STALE", summary: "Order pricing or selected records changed." };
@@ -192,6 +206,16 @@ export class OrderIntakeService {
     if (!org || (intake.customerId && !customer) || (intake.contactId && !contact) || (!customer && !contact)) throw new AssistantOrderIntakeError("ORDER_IDENTITY_REQUIRED", "The selected customer or contact is unavailable.");
     const totals = await calculateQuoteOrderTotals(priced.map(({ product, line, result }) => ({ productId: product.id, linePrice: result.lineTotalCents / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, null);
     return storage.createOrder(organizationId, { customerId: intake.customerId, contactId: intake.contactId, status: "new", dueDate: intake.dueDate, createdByUserId: actorUserId, taxRate: totals.taxRate, taxAmount: totals.taxAmount, taxableSubtotal: totals.taxableSubtotal, productionIntakePolicy: "deferred", lineItems: priced.map(({ product, line, result, index, size }) => ({ productId: product.id, productType: product.productTypeId ?? "wide_roll", description: product.name, width: size.widthIn, height: size.heightIn, quantity: line.quantity, unitPrice: result.lineTotalCents / 100 / line.quantity, totalPrice: result.lineTotalCents / 100, selectedOptions: result.pbv2SnapshotJson.selectedOptions ?? [], optionSelectionsJson: { selected: {} }, pbv2TreeVersionId: result.pbv2TreeVersionId, pbv2SnapshotJson: result.pbv2SnapshotJson, pricedAt: new Date(), sortOrder: index, taxAmount: totals.lineItemsWithTax[index]?.taxAmount ?? 0, isTaxableSnapshot: Boolean(product.isTaxable), requiresPrepress: Boolean((product as any).requiresPrepress), requiresProofApproval: Boolean((product as any).requiresProofApproval) })) } as any);
+  }
+
+  private async priceDirectLines(organizationId: string, lines: DirectLine[]) {
+    return Promise.all(lines.map(async (line) => {
+      const [product] = await db.select().from(products).where(and(eq(products.id, line.productId), eq(products.organizationId, organizationId), eq(products.isActive, true))).limit(1);
+      if (!product) throw new AssistantOrderIntakeError("ORDER_PRODUCT_NOT_FOUND", `Product ${line.productName} is unavailable.`);
+      const size = dimensionsForProductPricing(product, line.width, line.height);
+      const result = await priceLineItem({ organizationId, productId: product.id, quantity: line.quantity, widthIn: size.widthIn, heightIn: size.heightIn, pbv2ExplicitSelections: {} });
+      return { line, product, result, widthIn: size.widthIn, heightIn: size.heightIn };
+    }));
   }
 }
 
