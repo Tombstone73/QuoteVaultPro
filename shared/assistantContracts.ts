@@ -43,6 +43,7 @@ export const assistantToolNameValues = [
   "production.get_queue_summary",
   "operations.get_attention_summary",
   "orders.get_due_summary",
+  "production.get_completed_jobs",
   "analytics.resolve_customer",
   "analytics.customer_product_sales",
   "analytics.customer_uninvoiced_orders",
@@ -560,7 +561,13 @@ export const assistantAttentionSummaryResultSchema = z.object({
 /** Order due reporting deliberately has its own order-level contract. It
  * prevents a production-job queue from being used as the headline answer to
  * an order due-date question. */
-export const assistantOrderDueFilterValues = ["overdue", "due_today", "due_tomorrow", "due_within_days", "date_range"] as const;
+export const assistantOrderDueFilterValues = ["overdue", "due_today", "due_tomorrow", "due_within_days", "date_range", "last_week_through_current_week"] as const;
+export const assistantOrderDueCustomerFilterSchema = z.object({
+  id: assistantSafeIdentifierSchema.optional(),
+  name: z.string().trim().min(1).max(240).optional(),
+}).strict().refine((value) => Boolean(value.id || value.name), {
+  message: "customer id or name is required",
+});
 export const assistantOrderDueSummaryInputSchema = z.object({
   due: z.enum(assistantOrderDueFilterValues).optional(),
   dueWithinDays: z.number().int().min(1).max(31).optional(),
@@ -568,6 +575,7 @@ export const assistantOrderDueSummaryInputSchema = z.object({
     start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
     end: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
   }).strict().optional(),
+  customer: assistantOrderDueCustomerFilterSchema.optional(),
   status: z.enum(["new", "in_production", "on_hold", "ready_for_shipment", "completed", "closed", "canceled", "cancelled"]).optional(),
   limit: z.number().int().min(1).max(20).optional(),
   includeOperationalSummary: z.boolean().optional(),
@@ -603,6 +611,34 @@ export const assistantOrderDueSummaryOrderSchema = z.object({
 export const assistantOrderDueSummaryResultSchema = z.object({
   totalMatchingOrders: z.number().int().nonnegative(),
   orders: z.array(assistantOrderDueSummaryOrderSchema).max(20),
+  timezone: z.string().trim().min(1).max(80),
+  warnings: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
+}).strict();
+
+/** Completed-job reporting is intentionally distinct from due-date and
+ * uninvoiced-order reporting. Its time filter always applies to the canonical
+ * production completion timestamp, not an order status or billing state. */
+export const assistantCompletedJobReportInputSchema = z.object({
+  completed: z.literal("last_week_through_current_week"),
+  customer: assistantOrderDueCustomerFilterSchema,
+  limit: z.number().int().min(1).max(10).optional(),
+}).strict();
+export const assistantCompletedJobReportRowSchema = z.object({
+  productionJobId: assistantSafeIdentifierSchema,
+  orderId: assistantSafeIdentifierSchema,
+  orderNumber: z.string().trim().min(1).max(64),
+  customerName: z.string().trim().min(1).max(240),
+  productOrLineItemDescription: z.string().trim().min(1).max(500),
+  completedAt: assistantIsoDateTimeSchema,
+  quantity: z.number().nonnegative().nullable(),
+  productionStatus: z.string().trim().min(1).max(120),
+  invoiceState: z.string().trim().min(1).max(120).nullable(),
+  sourceLink: assistantSourceLinkSchema,
+  orderSourceLink: assistantSourceLinkSchema,
+}).strict();
+export const assistantCompletedJobReportResultSchema = z.object({
+  totalMatchingJobs: z.number().int().nonnegative(),
+  jobs: z.array(assistantCompletedJobReportRowSchema).max(10),
   timezone: z.string().trim().min(1).max(80),
   warnings: z.array(z.string().trim().min(1).max(300)).max(10).default([]),
 }).strict();
@@ -735,6 +771,7 @@ export const assistantStage2CardKindValues = [
   "station_comparison",
   "attention_summary",
   "order_due_summary",
+  "completed_job_summary",
   "urgent_job_list",
   "customer_resolution",
   "customer_product_sales",

@@ -13,7 +13,8 @@ export type AssistantOrderDueDateWindow = {
 };
 
 export type AssistantOrderDueFilters = {
-  due?: "overdue" | "due_today" | "due_tomorrow" | "due_within_days" | "date_range";
+  due?: "overdue" | "due_today" | "due_tomorrow" | "due_within_days" | "date_range" | "last_week_through_current_week";
+  customerId?: string;
   status?: string;
   limit: number;
 };
@@ -52,6 +53,7 @@ function dueCondition(due: ReturnType<typeof effectiveDueDate>, dates: Assistant
   if (filter === "due_tomorrow") return and(gte(due, dates.startOfTomorrow), lt(due, dates.startOfDayAfterTomorrow));
   if (filter === "due_within_days") return and(isNotNull(due), gte(due, dates.startOfToday), lt(due, dates.startOfDayAfterWindow ?? dates.startOfTomorrow));
   if (filter === "date_range") return and(isNotNull(due), gte(due, dates.rangeStart ?? dates.startOfToday), lt(due, dates.rangeEnd ?? dates.startOfTomorrow));
+  if (filter === "last_week_through_current_week") return and(isNotNull(due), gte(due, dates.rangeStart ?? dates.startOfToday), lt(due, dates.rangeEnd ?? dates.startOfTomorrow));
   return isNotNull(due);
 }
 
@@ -59,6 +61,7 @@ function baseConditions(organizationId: string, due: ReturnType<typeof effective
   return [
     eq(orders.organizationId, organizationId),
     dueCondition(due, dates, filters.due),
+    ...(filters.customerId ? [eq(orders.customerId, filters.customerId)] : []),
     ...(filters.status ? [eq(orders.status, filters.status)] : []),
   ];
 }

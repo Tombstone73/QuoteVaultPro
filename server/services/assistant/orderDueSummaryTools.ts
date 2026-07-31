@@ -3,10 +3,10 @@ import {
   assistantOrderDueSummaryResultSchema,
   type AssistantToolResultEnvelope,
 } from "@shared/assistantContracts";
-import {
+import type {
   AssistantOrderDueSummaryRepository,
-  type AssistantOrderDueDateWindow,
-  type AssistantOrderDueFilters,
+  AssistantOrderDueDateWindow,
+  AssistantOrderDueFilters,
 } from "../../storage/assistantOrderDueSummary.repo";
 import { AssistantToolExecutionError } from "./orchestration";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
@@ -57,19 +57,40 @@ function addCalendarDays(start: Date, days: number, timezone: string): Date {
   return localMidnight(next.getUTCFullYear(), next.getUTCMonth() + 1, next.getUTCDate(), timezone);
 }
 
+function startOfWeekMonday(startOfToday: Date, timezone: string): Date {
+  const local = zonedDate(startOfToday, timezone);
+  const weekday = new Date(Date.UTC(local.year, local.month - 1, local.day)).getUTCDay();
+  return addCalendarDays(startOfToday, -(weekday === 0 ? 6 : weekday - 1), timezone);
+}
+
 function dateWindow(now: Date, timezone: string, input: ReturnType<typeof assistantOrderDueSummaryInputSchema.parse>): AssistantOrderDueDateWindow {
   const local = zonedDate(now, timezone);
   const startOfToday = localMidnight(local.year, local.month, local.day, timezone);
   const startOfTomorrow = addCalendarDays(startOfToday, 1, timezone);
   const startOfDayAfterTomorrow = addCalendarDays(startOfToday, 2, timezone);
   const dueWithinDays = input.due === "due_within_days" ? input.dueWithinDays! : 1;
+  const explicitRange = input.dateRange
+    ? { rangeStart: calendarMidnight(input.dateRange.start, timezone), rangeEnd: addCalendarDays(calendarMidnight(input.dateRange.end, timezone), 1, timezone) }
+    : input.due === "last_week_through_current_week"
+      ? (() => {
+        const currentWeekStart = startOfWeekMonday(startOfToday, timezone);
+        return { rangeStart: addCalendarDays(currentWeekStart, -7, timezone), rangeEnd: addCalendarDays(currentWeekStart, 7, timezone) };
+      })()
+      : {};
   return {
     startOfToday,
     startOfTomorrow,
     startOfDayAfterTomorrow,
     startOfDayAfterWindow: addCalendarDays(startOfToday, dueWithinDays + 1, timezone),
-    ...(input.dateRange ? { rangeStart: calendarMidnight(input.dateRange.start, timezone), rangeEnd: addCalendarDays(calendarMidnight(input.dateRange.end, timezone), 1, timezone) } : {}),
+    ...explicitRange,
   };
+}
+
+/** Shared calendar semantics for customer-scoped historical reports: Monday
+ * of the previous calendar week through the exclusive Monday after this week. */
+export function lastWeekThroughCurrentWeekWindow(now: Date, timezone: string): Pick<AssistantOrderDueDateWindow, "rangeStart" | "rangeEnd"> {
+  const dates = dateWindow(now, timezone, assistantOrderDueSummaryInputSchema.parse({ due: "last_week_through_current_week" }));
+  return { rangeStart: dates.rangeStart, rangeEnd: dates.rangeEnd };
 }
 
 function dueState(dueDate: string, dates: AssistantOrderDueDateWindow): "overdue" | "due_today" | "due_tomorrow" | "future" {
@@ -92,16 +113,23 @@ function canViewFinance(permissions: readonly string[]): boolean {
 /** Read-only order-level due summary adapter. The optional operational batch is
  * intentionally best-effort: it cannot hide a valid list of matching orders. */
 export function createAssistantOrderDueSummaryToolAdapters(deps: AssistantOrderDueSummaryToolDependencies = {}): AssistantToolAdapters {
-  const repository = deps.repository ?? new AssistantOrderDueSummaryRepository();
   const now = deps.now ?? (() => new Date());
   return {
     "orders.get_due_summary": {
       async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        const repository = deps.repository ?? new (await import("../../storage/assistantOrderDueSummary.repo")).AssistantOrderDueSummaryRepository();
         const input = assistantOrderDueSummaryInputSchema.parse(rawInput);
+        // A human-readable customer reference is resolved and replaced with a
+        // tenant-scoped id by the report-resolution boundary before a query.
+        // Never silently drop it and broaden the report if that boundary is
+        // unavailable or did not complete.
+        if (input.customer && !input.customer.id) {
+          throw new AssistantToolExecutionError("adapter_failed", "adapter_failed", "resolve_customer");
+        }
         const timezone = validTimezone(await repository.getOrganizationTimezone(context.scope.organizationId) ?? deps.timezone);
         const capturedAt = now();
         const dates = dateWindow(capturedAt, timezone, input);
-        const filters: AssistantOrderDueFilters = { due: input.due, status: input.status, limit: input.limit ?? 10 };
+        const filters: AssistantOrderDueFilters = { due: input.due, customerId: input.customer?.id, status: input.status, limit: input.limit ?? 10 };
         let totalMatchingOrders: number;
         let rows: Awaited<ReturnType<AssistantOrderDueSummaryRepository["listDueOrders"]>>;
         try {

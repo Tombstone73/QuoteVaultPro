@@ -75,6 +75,26 @@ function requestedResultLimit(value: string | undefined): number {
 /** Explicit order scope is resolved before the production shortcut. The words
  * "overdue" and "due today" alone are not enough to choose a job queue. */
 function orderDueReadPlan(message: string): AssistantProviderPlan | null {
+  const customerWeekRange = /\b(?:report|summary)\s+for\s+(.+?)\s+for\s+(?:all\s+)?(?:production\s+)?(?:jobs?|orders?)\s+(?:that\s+are\s+)?due\s+(?:in\s+|during\s+)?(?:last|previous)\s+week\s+or\s+(?:this|current)\s+week\b/i.exec(message);
+  if (customerWeekRange) {
+    const customerName = customerWeekRange[1]!.trim().replace(/[.?!]+$/, "");
+    if (/^[A-Za-z0-9][A-Za-z0-9 &'.,_-]{0,239}$/.test(customerName)) return plan({
+      intent: "analytical_reporting",
+      selectedSkill: "deterministic_customer_order_due_summary",
+      toolCalls: [{
+        toolName: "orders.get_due_summary",
+        arguments: {
+          due: "last_week_through_current_week",
+          customer: { name: customerName },
+          limit: 10,
+          includeOperationalSummary: true,
+        },
+      }],
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      responseStyle: "concise",
+    });
+  }
   if (resolveExplicitReportingScope(message) !== "order") return null;
   const due = /\bdue\s+today\b/i.test(message) ? "due_today"
     : /\bdue\s+tomorrow\b/i.test(message) ? "due_tomorrow"
@@ -85,6 +105,32 @@ function orderDueReadPlan(message: string): AssistantProviderPlan | null {
     intent: "operational_summary",
     selectedSkill: "deterministic_order_due_summary",
     toolCalls: [{ toolName: "orders.get_due_summary", arguments: { due, limit: requestedResultLimit(requested?.[1]), includeOperationalSummary: true } }],
+    clarificationRequired: false,
+    clarificationQuestion: null,
+    responseStyle: "concise",
+  });
+}
+
+/** A customer explicitly asking what was "done" is asking for completed
+ * production jobs, not due work or financial/billing state. This route runs
+ * before provider planning so the narrow, tenant-resolved report cannot fall
+ * through to the uninvoiced-order tool. */
+function completedJobsReadPlan(message: string): AssistantProviderPlan | null {
+  const match = /\b(?:report|summary)\s+(?:of\s+)?(?:all\s+)?(?:production\s+)?jobs?\s+for\s+(.+?)\s+(?:that\s+)?(?:were\s+)?(?:done|completed)\s+(?:in\s+|during\s+)?(?:last|previous)\s+week\s+(?:and|or|through)\s+(?:this|current)\s+week\b/i.exec(message);
+  if (!match) return null;
+  const customerName = match[1]!.trim().replace(/[.?!]+$/, "");
+  if (!/^[A-Za-z0-9][A-Za-z0-9 &'.,_-]{0,239}$/.test(customerName)) return null;
+  return plan({
+    intent: "production_reporting",
+    selectedSkill: "deterministic_customer_completed_job_report",
+    toolCalls: [{
+      toolName: "production.get_completed_jobs",
+      arguments: {
+        completed: "last_week_through_current_week",
+        customer: { name: customerName },
+        limit: 10,
+      },
+    }],
     clarificationRequired: false,
     clarificationQuestion: null,
     responseStyle: "concise",
@@ -250,6 +296,9 @@ export function resolveDeterministicReadPlan(message: string, rawContext?: Assis
       responseStyle: "concise",
     });
   }
+
+  const completedJobs = completedJobsReadPlan(normalized);
+  if (completedJobs) return completedJobs;
 
   const orderDue = orderDueReadPlan(normalized);
   if (orderDue) return orderDue;

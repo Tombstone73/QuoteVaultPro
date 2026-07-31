@@ -14,6 +14,8 @@ import {
   assistantAttentionSummaryResultSchema,
   assistantOrderDueSummaryInputSchema,
   assistantOrderDueSummaryResultSchema,
+  assistantCompletedJobReportInputSchema,
+  assistantCompletedJobReportResultSchema,
   analyticsResolveCustomerInputSchema,
   analyticsResolveCustomerResultSchema,
   analyticsCustomerProductSalesInputSchema,
@@ -196,8 +198,25 @@ const toolMetadata = {
     maxResults: 20,
     timeoutMs: 5_000,
     dataClassification: "internal",
-    sourceLinkBehavior: "required",
+    // An empty due-date report is a successful, bounded read with no order to
+    // link to. Non-empty results remain source-linked by the result schema.
+    sourceLinkBehavior: "optional",
     auditCategory: "assistant_order_due_summary",
+    modelSummarizationAllowed: true,
+  },
+  "production.get_completed_jobs": {
+    description: "Return a bounded tenant-scoped list of completed production jobs for one resolved customer and calendar range.",
+    requiredPermission: "internal_staff",
+    requiredContext: ["trusted_actor"] as const,
+    inputSchema: assistantCompletedJobReportInputSchema,
+    resultSchema: assistantCompletedJobReportResultSchema,
+    maxResults: 10,
+    timeoutMs: 5_000,
+    dataClassification: "internal",
+    // A valid empty completed-job range has no record to link to. Each
+    // non-empty row still requires both a production-job and order link.
+    sourceLinkBehavior: "optional",
+    auditCategory: "assistant_completed_job_report",
     modelSummarizationAllowed: true,
   },
   "analytics.resolve_customer": {

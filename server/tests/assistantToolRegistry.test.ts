@@ -48,6 +48,7 @@ describe("assistant tool registry", () => {
       "production.get_queue_summary",
       "operations.get_attention_summary",
       "orders.get_due_summary",
+      "production.get_completed_jobs",
       "analytics.resolve_customer",
       "analytics.customer_product_sales",
       "analytics.customer_uninvoiced_orders",
@@ -82,6 +83,29 @@ describe("assistant tool registry", () => {
     expect(validateAssistantToolResult(tool, successfulSearch)).toMatchObject({ status: "succeeded" });
     expect(() => validateAssistantToolResult(tool, { status: "succeeded", data: { matches: [] } })).toThrow();
     expect(() => validateAssistantToolResult(tool, { status: "not_found", data: { matches: [] } })).toThrow();
+  });
+
+  test("accepts a successful empty due-date report without inventing a source link", () => {
+    const dueSummary = createAssistantToolRegistry().get("orders.get_due_summary")!;
+    const emptyReport = {
+      status: "succeeded" as const,
+      data: {
+        totalMatchingOrders: 0,
+        orders: [],
+        timezone: "America/New_York",
+        warnings: [],
+      },
+      provenance: {
+        sourceLinks: [],
+        freshness: { capturedAt },
+      },
+    };
+
+    expect(dueSummary.sourceLinkBehavior).toBe("optional");
+    expect(validateAssistantToolResult(dueSummary, emptyReport)).toMatchObject({
+      status: "succeeded",
+      data: { totalMatchingOrders: 0, orders: [] },
+    });
   });
 
   test("ignores model identity and authorization fields before adapter invocation", async () => {

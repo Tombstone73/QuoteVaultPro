@@ -12,6 +12,7 @@ import { createStage2OrderProductToolAdapters } from "./orderProductOperationalT
 import { createAssistantProductionReportingToolAdapters } from "./productionReportingTools";
 import { createAssistantAnalyticsReportingToolAdapters } from "./analyticsReportingTools";
 import { createAssistantOrderDueSummaryToolAdapters } from "./orderDueSummaryTools";
+import { createAssistantCompletedJobReportingToolAdapters } from "./completedJobReportingTools";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
 
 const entityTypes = new Set(["customer", "contact", "order", "quote", "product", "invoice", "production_job"]);
@@ -47,6 +48,7 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
     ...createStage2OrderProductToolAdapters(),
     ...createAssistantProductionReportingToolAdapters(),
     ...createAssistantOrderDueSummaryToolAdapters(),
+    ...createAssistantCompletedJobReportingToolAdapters(),
     ...createAssistantAnalyticsReportingToolAdapters(),
     "search.global": {
       async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
