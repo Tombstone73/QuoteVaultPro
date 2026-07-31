@@ -176,6 +176,40 @@ describe("Product Intake draft service", () => {
     expect(values.pbv2ActiveTreeVersionId).toBeNull();
   });
 
+  test("keeps explicit quantity-only service requests out of dimensioned production", () => {
+    const values = buildProductIntakeProductValues({
+      organizationId: "org_1", productId: "prod_service", brief: brief(), productTypeId: null,
+      sourceText: "Create an inactive service product priced at $20 per piece. This is a quantity-only service fee and requires proof approval.",
+    });
+    expect(values).toMatchObject({
+      measurementMode: "quantity_only",
+      workflowIntent: "service_fee",
+      isService: true,
+      requiresProductionJob: false,
+      requiresProofApproval: true,
+      isActive: false,
+      pbv2ActiveTreeVersionId: null,
+    });
+  });
+
+  test("does not add dimension requirements to an explicit quantity-only service PBV2 draft", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief(), sessionId: "sess_service", productName: "Service Fee", userId: "user_1",
+      sourceText: "Create a quantity-only service product priced at $20 per piece.",
+    });
+    expect(tree.meta?.requiresDimensions).toBe(false);
+    expect(tree.meta?.productIntake?.quantity).toMatchObject({ quantityOnly: true });
+  });
+
+  test("stores an explicit fixed-size request as fixed PBV2 metadata", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief(), sessionId: "sess_fixed", productName: "Yard Sign", userId: "user_1",
+      sourceText: "Create a 24 by 18 yard sign product that does not ask for dimensions.",
+    });
+    expect(tree.meta?.requiresDimensions).toBe(false);
+    expect(tree.meta?.fixedDimensions).toMatchObject({ widthIn: 24, heightIn: 18 });
+  });
+
   test("builds a valid PBV2 DRAFT tree from intake options and behaviors", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief(),

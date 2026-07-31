@@ -1714,9 +1714,11 @@ export function buildProductIntakeDraftTree(args: {
   const now = args.now ?? new Date();
   const usedNodeIds = new Set<string>();
   const usedEdgeIds = new Set<string>();
-  const sizeOption = [...args.brief.requiredOptions, ...args.brief.optionalOptions].find(isSizeOption) ?? null;
-  const sizeMode = resolveSizeMode(args.brief, sizeOption);
   const sourceText = collectBriefText(args.brief, args.sourceText, args.sourceJson);
+  const quantityOnly = /\b(?:quantity[-\s]?only|service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
+  const fixedDimensionsRequested = Boolean(parseFixedDimensionText(sourceText)) && /\b(?:fixed(?:[-\s]?size|\s+dimensions?)?|does\s+not\s+(?:ask\s+for|require)\s+dimensions)\b/i.test(sourceText);
+  const sizeOption = [...args.brief.requiredOptions, ...args.brief.optionalOptions].find(isSizeOption) ?? null;
+  const sizeMode = quantityOnly ? "none" as const : fixedDimensionsRequested ? "fixed_dropdown" as const : resolveSizeMode(args.brief, sizeOption);
   const fixedDimensions = fixedDimensionsForBrief(args.brief, sizeOption, sourceText, sizeMode);
   const sizeMetadata = sizeMetadataForBrief({ brief: args.brief, sizeOption, sizeMode, fixedDimensions });
   const materialMatch = bestMaterialMatch(args.brief);
@@ -1746,7 +1748,7 @@ export function buildProductIntakeDraftTree(args: {
         base: pricingReadiness.base,
         qtyTiers: [],
       },
-      requiresDimensions: sizeMode === "custom_dimension",
+      requiresDimensions: !quantityOnly && sizeMode === "custom_dimension",
       ...(fixedDimensions ? { fixedDimensions } : {}),
       productIntake: {
         sessionId: args.sessionId,
@@ -1755,7 +1757,7 @@ export function buildProductIntakeDraftTree(args: {
         sizeMode,
         ...(fixedDimensions ? { fixedDimensions } : {}),
         size: sizeMetadata,
-        quantity: quantityMetadataForBrief(args.brief),
+        quantity: { ...quantityMetadataForBrief(args.brief), quantityOnly },
         pricingReadiness: {
           base: pricingReadiness.base,
           sources: pricingReadiness.sources,
@@ -1999,6 +2001,12 @@ export function buildProductIntakeProductValues(args: {
   const sourceText = collectBriefText(args.brief, args.sourceText, args.sourceJson);
   const allowRotation = explicitAllowRotation(sourceText);
   const sheetOrRollConfig = explicitSheetOrRollConfig(sourceText);
+  // Keep the persisted product lifecycle semantics aligned with the PBV2 DRAFT
+  // generated from the same explicit intake text. The assistant must not turn a
+  // service/quantity-only request into a dimensioned production product.
+  const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
+  const quantityOnly = serviceFee || /\bquantity[-\s]?only\b/i.test(sourceText);
+  const proofRequired = /\b(?:proof\s+(?:required|needed|mandatory)|requires?\s+proof)\b/i.test(sourceText);
   const formulaConfig = args.formulaAssignment?.config ?? {};
   const pricingProfileConfig = Object.keys({ ...formulaConfig, ...sheetOrRollConfig }).length > 0 || allowRotation !== null
     ? { ...formulaConfig, ...sheetOrRollConfig, ...(allowRotation === null ? {} : { allowRotation }) }
@@ -2020,10 +2028,12 @@ export function buildProductIntakeProductValues(args: {
     pricingProfileKey: args.formulaAssignment?.pricingProfileKey ?? "default",
     pricingProfileConfig,
     primaryMaterialId: material?.materialId ?? null,
-    requiresProductionJob: true,
-    requiresProofApproval: false,
+    measurementMode: quantityOnly ? "quantity_only" as const : "dimensions_required" as const,
+    workflowIntent: serviceFee ? "service_fee" as const : "standard_production" as const,
+    requiresProductionJob: !serviceFee,
+    requiresProofApproval: proofRequired,
     isTaxable: true,
-    isService: false,
+    isService: serviceFee,
     isActive: false,
     optionTreeJson: null,
     pbv2ActiveTreeVersionId: null,
