@@ -23,25 +23,85 @@ const normalize = (value: string) => value.trim().replace(/\s+/g, " ");
  * never be used in a persisted proposal. */
 export const complexProductMatrixCellKey = (row: string, column: string) => `${encodeURIComponent(normalize(row))}:${encodeURIComponent(normalize(column))}`;
 
+export type ParsedPricingMatrixTable = {
+  rowHeader: string;
+  rowValues: string[];
+  columnValues: string[];
+  cells: Record<string, number>;
+};
+
 export function centsFromCurrency(value: string): number {
-  const parsed = Number(value.trim().replace(/^\$/, "").replace(/,/g, ""));
+  const normalizedValue = value.trim().replace(/^\$/, "").replace(/,/g, "");
+  if (!normalizedValue) throw new Error(`Invalid non-negative currency value: ${value}`);
+  const parsed = Number(normalizedValue);
   if (!Number.isFinite(parsed) || parsed < 0 || Math.round(parsed * 100) !== parsed * 100) throw new Error(`Invalid non-negative currency value: ${value}`);
   return Math.round(parsed * 100);
 }
 
-export function parseTwoDimensionalPricingMatrix(input: string, rowKey: string, columnKey: string): ComplexProductMatrix {
-  const lines = input.trim().split(/\r?\n/).map((line) => line.trim()).filter((line) => line && !/^\|?\s*[-:]+/.test(line));
-  const rows = lines.map((line) => line.replace(/^\||\|$/g, "").split(line.includes("|") ? "|" : ",").map(normalize));
+function isMarkdownAlignmentRow(cells: string[]): boolean {
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+/** Small CSV reader shared by configurable-product and inactive-draft matrix
+ * input. It deliberately supports only the RFC4180 quoting needed for a
+ * single table row; multiline quoted cells are not meaningful matrix labels. */
+function parseDelimitedMatrixRow(line: string, delimiter: "|" | ","): string[] {
+  const content = delimiter === "|" ? line.trim().replace(/^\||\|$/g, "") : line.trim();
+  const values: string[] = [];
+  let value = "";
+  let quoted = false;
+  for (let index = 0; index < content.length; index += 1) {
+    const character = content[index]!;
+    if (character === '"') {
+      if (quoted && content[index + 1] === '"') { value += '"'; index += 1; continue; }
+      if (!quoted && value.trim().length > 0) throw new Error("A quoted matrix cell must begin at the start of its cell.");
+      quoted = !quoted;
+      continue;
+    }
+    if (character === delimiter && !quoted) { values.push(normalize(value)); value = ""; continue; }
+    value += character;
+  }
+  if (quoted) throw new Error("A matrix row contains an unclosed quoted cell.");
+  values.push(normalize(value));
+  return values;
+}
+
+/** Parse the practical Markdown/CSV table grammar used by configurable
+ * products. The result deliberately retains display labels; callers map them
+ * to their own canonical option identities rather than guessing semantics. */
+export function parsePricingMatrixTable(input: string): ParsedPricingMatrixTable {
+  const sourceLines = input.trim().split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const start = sourceLines.findIndex((line, index) => {
+    const delimiter = line.includes("|") ? "|" : line.includes(",") ? "," : null;
+    return delimiter !== null && index + 1 < sourceLines.length && sourceLines[index + 1]!.includes(delimiter);
+  });
+  if (start < 0) throw new Error("A matrix table needs one header row and at least one data row.");
+  const delimiter: "|" | "," = sourceLines[start]!.includes("|") ? "|" : ",";
+  const tableLines: string[] = [];
+  for (let index = start; index < sourceLines.length; index += 1) {
+    const line = sourceLines[index]!;
+    if (!line.includes(delimiter)) break;
+    if (delimiter === "," && line.includes("|") && !/^\|.*\|$/.test(line)) throw new Error("A pricing matrix cannot mix CSV and Markdown row separators.");
+    tableLines.push(line);
+  }
+  const rows = tableLines.map((line) => parseDelimitedMatrixRow(line, delimiter)).filter((cells) => !isMarkdownAlignmentRow(cells));
   if (rows.length < 2 || rows.some((row) => row.length < 2)) throw new Error("A matrix needs one header row and at least one data row.");
   const [header, ...body] = rows; const columns = header.slice(1);
-  if (!header[0] || !columns.every(Boolean) || new Set(columns).size !== columns.length) throw new Error("Matrix columns must be unique and non-empty.");
+  const normalizedColumns = columns.map((column) => column.toLocaleLowerCase());
+  if (!header[0] || !columns.every(Boolean) || new Set(normalizedColumns).size !== columns.length) throw new Error("Matrix columns must be unique and non-empty.");
   const rowValues: string[] = []; const cells: Record<string, number> = {};
   for (const row of body) {
     if (row.length !== columns.length + 1 || !row[0]) throw new Error("Every matrix row must provide one value for each column.");
-    if (rowValues.includes(row[0])) throw new Error(`Duplicate matrix row value: ${row[0]}`);
+    if (rowValues.some((value) => value.toLocaleLowerCase() === row[0].toLocaleLowerCase())) throw new Error(`Duplicate matrix row value: ${row[0]}`);
     rowValues.push(row[0]);
     columns.forEach((column, index) => { const key = complexProductMatrixCellKey(row[0], column); if (Object.hasOwn(cells, key)) throw new Error("Duplicate matrix cell."); cells[key] = centsFromCurrency(row[index + 1]); });
   }
+  return { rowHeader: header[0]!, rowValues, columnValues: columns, cells };
+}
+
+export function parseTwoDimensionalPricingMatrix(input: string, rowKey: string, columnKey: string): ComplexProductMatrix {
+  const table = parsePricingMatrixTable(input);
+  const { rowValues, columnValues: columns, cells } = table;
   return { kind: "two_dimensional_per_sqft", rowKey, columnKey, rowValues, columnValues: columns, cells };
 }
 

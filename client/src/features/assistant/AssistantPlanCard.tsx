@@ -280,6 +280,28 @@ function toPbv2PricingEdit(action: string | null, preview: UnknownRecord | null,
   return { kind, productName: asText(product?.name), productId: asText(product?.id), treeId: asText(tree?.id), before: value?.before, after: value?.after, resultPath: resultPath?.startsWith("/") ? resultPath : null };
 }
 
+function matrixCellLines(value: unknown): Array<{ key: string; price: string }> {
+  const matrix = asRecord(value); const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
+  return rows.flatMap((row) => {
+    const record = asRecord(row); const match = asRecord(record?.when) ?? asRecord(record?.match) ?? asRecord(record?.combination);
+    const variables = asRecord(record?.variables) ?? asRecord(record?.values);
+    if (!record || !match || !variables) return [];
+    const key = Object.entries(match).map(([dimension, choice]) => `${dimension}: ${String(choice)}`).join(" · ");
+    const price = Object.entries(variables).map(([name, amount]) => `${name}: ${typeof amount === "number" ? moneyFromCents(amount) : String(amount)}`).join(", ");
+    return key && price ? [{ key, price }] : [];
+  });
+}
+
+function tierLines(value: unknown): string[] {
+  const set = asRecord(value); const tiers = Array.isArray(set?.tiers) ? set.tiers : [];
+  return tiers.flatMap((tier, index) => {
+    const record = asRecord(tier); if (!record) return [];
+    const minimum = typeof record.minQty === "number" ? `${record.minQty}+ qty` : typeof record.minSqft === "number" ? `${record.minSqft}+ sq ft` : null;
+    const rates = ["perPieceCents", "perSqftCents", "minimumChargeCents"].flatMap((field) => typeof record[field] === "number" ? [`${field === "perPieceCents" ? "per piece" : field === "perSqftCents" ? "per sq ft" : "minimum"}: ${moneyFromCents(record[field] as number)}`] : []);
+    return minimum && rates.length ? [`${index + 1}. ${minimum} — ${rates.join(", ")}`] : [];
+  });
+}
+
 export type AssistantQuoteNoteProposal = {
   turnId: string;
   title: string;
@@ -653,6 +675,8 @@ export function AssistantPlanCard({
     {plan.productPricingRollback ? <ProductPricingRollbackPreview rollback={plan.productPricingRollback} /> : null}
     {plan.configurableProduct ? <ConfigurableProductConfirmationCardView confirmation={plan.configurableProduct} /> : null}
     {plan.configurableProductResult ? <ConfigurableProductResultCardView result={plan.configurableProductResult} /> : null}
+    {plan.pbv2PricingEdit?.kind === "matrix" ? <div className="mt-2 rounded border border-muted p-2"><p className="font-medium">Matrix comparison</p><div className="mt-1 grid gap-2 md:grid-cols-2"><div><p className="text-muted-foreground">Current</p>{matrixCellLines(plan.pbv2PricingEdit.before).map((cell) => <p key={`readable-before-${cell.key}`}>{cell.key}: {cell.price}</p>)}</div><div><p className="text-muted-foreground">Resulting</p>{matrixCellLines(plan.pbv2PricingEdit.after).map((cell) => <p key={`readable-after-${cell.key}`}>{cell.key}: {cell.price}</p>)}</div></div></div> : null}
+    {plan.pbv2PricingEdit?.kind === "tiers" ? <div className="mt-2 rounded border border-muted p-2"><p className="font-medium">Tier comparison</p><div className="mt-1 grid gap-2 md:grid-cols-2"><div><p className="text-muted-foreground">Current</p>{tierLines(plan.pbv2PricingEdit.before).map((line) => <p key={`readable-before-${line}`}>{line}</p>)}</div><div><p className="text-muted-foreground">Resulting</p>{tierLines(plan.pbv2PricingEdit.after).map((line) => <p key={`readable-after-${line}`}>{line}</p>)}</div></div></div> : null}
     {plan.cloneInactiveDraft ? <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3"><p className="font-semibold">Clone configuration</p><p className="mt-1">{plan.cloneInactiveDraft.sourceName || "Source product"} → {plan.cloneInactiveDraft.productName || "Inactive clone"}</p><p className="mt-1 text-muted-foreground">PBV2 configuration is copied as an exact DRAFT snapshot. Source, activation, and publication are excluded.</p>{plan.cloneInactiveDraft.beforePricing || plan.cloneInactiveDraft.afterPricing ? <p className="mt-2 text-muted-foreground">Base pricing: {JSON.stringify(plan.cloneInactiveDraft.beforePricing)} → {JSON.stringify(plan.cloneInactiveDraft.afterPricing)}</p> : null}{plan.status === "succeeded" && plan.cloneInactiveDraft.resultPath ? <p className="mt-2"><a className="text-primary underline-offset-2 hover:underline" href={plan.cloneInactiveDraft.resultPath}>Open the exact cloned draft in Product Builder</a></p> : null}</div> : null}
     {plan.pbv2PricingEdit ? <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3"><p className="font-semibold">{plan.pbv2PricingEdit.kind === "matrix" ? "Complete pricing matrix" : "Complete quantity-tier family"}</p><p className="mt-1">{plan.pbv2PricingEdit.productName || "Inactive product"} · product {plan.pbv2PricingEdit.productId} · DRAFT {plan.pbv2PricingEdit.treeId}</p><details className="mt-2"><summary className="cursor-pointer font-medium">Current configuration</summary><pre className="mt-1 max-h-48 overflow-auto rounded bg-muted p-2 text-[11px]">{JSON.stringify(plan.pbv2PricingEdit.before, null, 2)}</pre></details><details className="mt-2"><summary className="cursor-pointer font-medium">Resulting configuration</summary><pre className="mt-1 max-h-48 overflow-auto rounded bg-muted p-2 text-[11px]">{JSON.stringify(plan.pbv2PricingEdit.after, null, 2)}</pre></details>{plan.status === "succeeded" && plan.pbv2PricingEdit.resultPath ? <p className="mt-2"><a className="text-primary underline-offset-2 hover:underline" href={plan.pbv2PricingEdit.resultPath}>Open the exact updated draft in Product Builder</a></p> : null}</div> : null}
     {plan.quoteInternalNote && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Internal note added to {plan.quoteInternalNote.quotePath && plan.quoteInternalNote.quoteNumber ? <a className="text-primary underline-offset-2 hover:underline" href={plan.quoteInternalNote.quotePath}>Quote {plan.quoteInternalNote.quoteNumber}</a> : (plan.quoteInternalNote.quoteNumber ? `Quote ${plan.quoteInternalNote.quoteNumber}` : "the quote")}.</p> : null}

@@ -27,6 +27,7 @@ const PRODUCT_CARD_KINDS = new Set([
   "product_validation_warnings", "product_draft_preview", "product_draft_created",
   "product_draft_snapshot", "product_draft_changes", "product_draft_update_preview", "product_draft_updated",
   "product_draft_update_failed", "product_draft_update_unsupported", "product_active_product_unsupported",
+  "product_candidate_selection",
 ]);
 
 export type AssistantProductChange = { label: string; before: string | null; after: string | null; };
@@ -93,12 +94,23 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
     const rendered = text(value);
     return rendered ? [{ label: String(label), value: rendered }] : [];
   }) : [];
+  const candidateItems = kind === "product_candidate_selection" && Array.isArray(details.candidates)
+    ? details.candidates.slice(0, 30).flatMap((candidate) => {
+      const item = record(candidate); if (!item) return [];
+      const candidateId = text(item.candidateId); const name = text(item.productName); const productId = text(item.productId);
+      if (!candidateId || !name || !productId) return [];
+      const status = item.isActive === true ? "active" : "inactive";
+      const tree = text(item.pbv2TreeVersionId) ?? "no eligible DRAFT";
+      const mode = text(item.pricingMode) ?? "pricing mode unavailable";
+      const blocking = text(item.blockingReason);
+      return [`${name} (${status}; ${mode}; product ${productId}; DRAFT ${tree}) — select ${candidateId}${blocking ? `; ${blocking}` : ""}`];
+    }) : [];
   return {
     kind,
     title: text(source.title) ?? "Product Management",
     summary: text(source.summary),
     fields: [...namedFields, ...objectFields, ...proposedDraftFields].slice(0, 16),
-    items: list(details.items ?? details.questions ?? details.errors ?? details.warnings ?? details.options ?? details.reusedRecords),
+    items: candidateItems.length ? candidateItems : list(details.items ?? details.questions ?? details.errors ?? details.warnings ?? details.options ?? details.reusedRecords),
     assumptions: list(details.assumptions ?? details.inheritedAssumptions),
     changes: toChanges(details.changes ?? details.beforeAfter ?? details.patchChanges ?? details.fieldChanges),
     validationErrors: list(details.validationErrors ?? details.errors),
