@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@jest/globals";
 import type { OptionTreeV2 } from "@shared/optionTreeV2";
-import { canonicalDefaultOrderSelections, isAssistantOrderOptionQuestion, orderIntakeOptionGroups, resolveAssistantOrderSelections } from "../services/assistant/orderIntakeSelections";
+import { acceptAssistantOrderDefaults, acceptsAssistantOrderDefaults, canonicalDefaultOrderSelections, isAssistantOrderOptionQuestion, orderIntakeOptionGroups, resolveAssistantOrderSelections, unresolvedAssistantOrderOptionGroups } from "../services/assistant/orderIntakeSelections";
 
 const tree: OptionTreeV2 = {
   schemaVersion: 2,
@@ -37,5 +37,38 @@ describe("assistant direct-order PBV2 selections", () => {
   it("recognizes option questions without treating them as selections", () => {
     expect(isAssistantOrderOptionQuestion("What are the options?")).toBe(true);
     expect(isAssistantOrderOptionQuestion("Use single sided and 3mm")).toBe(false);
+  });
+
+  it("keeps visible defaults unresolved until the user explicitly accepts them", () => {
+    const withContour: OptionTreeV2 = {
+      ...tree,
+      rootNodeIds: ["sides", "thickness", "contour", "retired"],
+      nodes: { ...tree.nodes, contour: { id: "contour", kind: "question", label: "Contour Cutting", input: { type: "select", selectionKey: "contour", defaultValue: "no" }, choices: [{ value: "no", label: "No" }, { value: "yes", label: "Yes" }] } },
+    };
+    const defaults = canonicalDefaultOrderSelections(withContour);
+    const unresolved = unresolvedAssistantOrderOptionGroups({ tree: withContour, selections: defaults, selectionSources: { sides: "explicit", thickness: "explicit" } });
+    expect(unresolved.map((group) => group.label)).toEqual(["Contour Cutting"]);
+    expect(unresolved[0].choices).toEqual([expect.objectContaining({ label: "No", isDefault: true }), expect.objectContaining({ label: "Yes", isDefault: false })]);
+    const accepted = acceptAssistantOrderDefaults({ tree: withContour, selections: defaults, selectionSources: { sides: "explicit", thickness: "explicit" } });
+    expect(accepted.selectionSources).toMatchObject({ contour: "default_accepted" });
+    expect(unresolvedAssistantOrderOptionGroups({ tree: withContour, selections: accepted.selections, selectionSources: accepted.selectionSources })).toEqual([]);
+  });
+
+  it("resolves only the named group for shared values and accepts clear default instructions", () => {
+    const withSharedNo: OptionTreeV2 = {
+      ...tree,
+      rootNodeIds: ["sides", "thickness", "contour", "grommets", "retired"],
+      nodes: {
+        ...tree.nodes,
+        contour: { id: "contour", kind: "question", label: "Contour Cutting", input: { type: "select", selectionKey: "contour", defaultValue: "no" }, choices: [{ value: "no", label: "No" }, { value: "yes", label: "Yes" }] },
+        grommets: { id: "grommets", kind: "question", label: "Grommets", input: { type: "select", selectionKey: "grommets", defaultValue: "no" }, choices: [{ value: "no", label: "No" }, { value: "yes", label: "Yes" }] },
+      },
+    };
+    const resolved = resolveAssistantOrderSelections({ tree: withSharedNo, existingSelections: canonicalDefaultOrderSelections(withSharedNo), message: "contour cutting no" });
+    expect(resolved).toMatchObject({ ok: true, resolvedSelectionKeys: ["contour"] });
+    expect(acceptsAssistantOrderDefaults("use defaults for the rest")).toBe(true);
+    expect(acceptsAssistantOrderDefaults("use the default selections for all remaining options")).toBe(true);
+    expect(acceptsAssistantOrderDefaults("default options are fine")).toBe(true);
+    expect(acceptsAssistantOrderDefaults("the default looks right")).toBe(false);
   });
 });

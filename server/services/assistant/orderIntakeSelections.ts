@@ -5,8 +5,10 @@ import { resolveRuntimeVisibility } from "@shared/optionTreeV2Runtime";
 
 export type AssistantOrderOptionChoice = { value: string; label: string; isDefault: boolean };
 export type AssistantOrderOptionGroup = { nodeId: string; selectionKey: string; label: string; choices: AssistantOrderOptionChoice[] };
+/** The assistant records why a visible customer choice may be sent to PBV2. */
+export type AssistantOrderSelectionSource = "explicit" | "default_accepted";
 export type AssistantOrderSelectionResult =
-  | { ok: true; selections: LineItemOptionSelectionsV2; groups: AssistantOrderOptionGroup[] }
+  | { ok: true; selections: LineItemOptionSelectionsV2; groups: AssistantOrderOptionGroup[]; resolvedSelectionKeys: string[] }
   | { ok: false; code: "ORDER_OPTION_AMBIGUOUS" | "ORDER_OPTION_CONTRADICTORY" | "ORDER_OPTION_INVALID"; summary: string; groups: AssistantOrderOptionGroup[] };
 
 const normalize = (value: unknown) => String(value ?? "")
@@ -68,6 +70,48 @@ export function canonicalDefaultOrderSelections(tree: OptionTreeV2): LineItemOpt
   return buildPbv2DefaultSelections(tree) ?? { schemaVersion: 2, selected: {} };
 }
 
+/**
+ * PBV2 defaults are useful to evaluate visibility and pricing, but a visible
+ * customer choice must have an explicit origin before assistant order intake
+ * may use it. Hidden/system nodes are deliberately absent from these groups.
+ */
+export function unresolvedAssistantOrderOptionGroups(input: {
+  tree: OptionTreeV2;
+  selections: LineItemOptionSelectionsV2;
+  selectionSources?: Readonly<Record<string, AssistantOrderSelectionSource>>;
+}) {
+  return orderIntakeOptionGroups(input.tree, input.selections)
+    .filter((group) => input.selectionSources?.[group.selectionKey] !== "explicit" && input.selectionSources?.[group.selectionKey] !== "default_accepted");
+}
+
+/** Accept only the currently visible choices that actually have a configured default. */
+export function acceptAssistantOrderDefaults(input: {
+  tree: OptionTreeV2;
+  selections: LineItemOptionSelectionsV2;
+  selectionSources?: Readonly<Record<string, AssistantOrderSelectionSource>>;
+}) {
+  const selected = { ...input.selections.selected };
+  const selectionSources: Record<string, AssistantOrderSelectionSource> = { ...(input.selectionSources ?? {}) };
+  const acceptedSelectionKeys: string[] = [];
+  for (const group of unresolvedAssistantOrderOptionGroups(input)) {
+    const defaultChoice = group.choices.find((choice) => choice.isDefault);
+    if (!defaultChoice) continue;
+    selected[group.selectionKey] = { value: defaultChoice.value };
+    selectionSources[group.selectionKey] = "default_accepted";
+    acceptedSelectionKeys.push(group.selectionKey);
+  }
+  return { selections: { schemaVersion: 2 as const, selected }, selectionSources, acceptedSelectionKeys };
+}
+
+/** A deliberate instruction is required; a bare mention of a default is never acceptance. */
+export function acceptsAssistantOrderDefaults(message: string) {
+  const value = normalize(message);
+  return /\b(?:use|keep)\s+(?:all\s+)?(?:the\s+)?(?:remaining\s+)?defaults?\b/.test(value)
+    || /\buse\s+(?:the\s+)?defaults?(?:\s+selections?)?\s+(?:for\s+)?(?:all\s+)?(?:remaining\s+)?options?\b/.test(value)
+    || /\bdefaults?\s+(?:for\s+)?(?:the\s+)?(?:rest|everything\s+else)\b/.test(value)
+    || /\bdefault\s+options?\s+(?:are\s+)?fine\b/.test(value);
+}
+
 /** Resolve only exact, visible canonical choice labels/values. This never guesses a first choice. */
 export function resolveAssistantOrderSelections(input: {
   tree: OptionTreeV2;
@@ -79,6 +123,7 @@ export function resolveAssistantOrderSelections(input: {
   const message = normalize(input.message);
   const selected = { ...input.existingSelections.selected };
   const matchesByGroup = new Map<AssistantOrderOptionGroup, AssistantOrderOptionChoice[]>();
+  const namedGroups = new Set(groups.filter((group) => hasPhrase(message, group.label) || hasPhrase(message, group.selectionKey)));
 
   for (const group of groups) {
     const matches = group.choices.filter((choice) => hasPhrase(message, choice.label) || hasPhrase(message, choice.value));
@@ -95,17 +140,27 @@ export function resolveAssistantOrderSelections(input: {
       return { ok: false, code: "ORDER_OPTION_INVALID", summary: `${group.label} must use one of the listed canonical values.`, groups };
     }
   }
+  // A named group owns a shared value such as "No". Do not let that value
+  // silently select every other visible yes/no group in the same reply.
+  const choicesOwnedByNamedGroups = new Set(
+    Array.from(namedGroups).flatMap((group) => matchesByGroup.get(group)?.map((choice) => `${choice.value}\u0000${choice.label}`) ?? []),
+  );
+  for (const group of groups) {
+    if (namedGroups.has(group)) continue;
+    const match = matchesByGroup.get(group)?.[0];
+    if (match && choicesOwnedByNamedGroups.has(`${match.value}\u0000${match.label}`)) matchesByGroup.delete(group);
+  }
   const unmatchedGroupNames = groups.filter((group) => !hasPhrase(message, group.label) && !hasPhrase(message, group.selectionKey));
-  for (const group of matchedGroups) {
+  for (const group of Array.from(matchesByGroup.keys())) {
     const choice = matchesByGroup.get(group)![0];
     const sameChoiceElsewhere = unmatchedGroupNames.filter((other) => other.choices.some((candidate) => candidate.value === choice.value || candidate.label === choice.label));
-    if (sameChoiceElsewhere.length > 0) {
+    if (!namedGroups.has(group) && sameChoiceElsewhere.length > 0) {
       return { ok: false, code: "ORDER_OPTION_AMBIGUOUS", summary: `Please name the option group for ${choice.label}.`, groups };
     }
     selected[group.selectionKey] = { value: choice.value };
   }
 
-  return { ok: true, selections: { schemaVersion: 2, selected }, groups };
+  return { ok: true, selections: { schemaVersion: 2, selected }, groups, resolvedSelectionKeys: Array.from(matchesByGroup.keys()).map((group) => group.selectionKey) };
 }
 
 export function isAssistantOrderOptionQuestion(message: string) {

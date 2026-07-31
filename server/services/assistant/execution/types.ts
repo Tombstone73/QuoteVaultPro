@@ -154,7 +154,7 @@ export interface ExecutionPlanPreview {
       measurementMode: string | null;
       dimensions: { widthIn: number; heightIn: number; unit: "in" } | null;
       pbv2TreeVersionId: string;
-      selections: readonly { groupId: string; groupLabel: string; valueId: string; valueLabel: string }[];
+      selections: readonly { groupId: string; groupLabel: string; valueId: string; valueLabel: string; source: "explicit" | "default_accepted" | "system" }[];
       unitPriceCents: number;
       totalCents: number;
       minimumChargeApplied: boolean;

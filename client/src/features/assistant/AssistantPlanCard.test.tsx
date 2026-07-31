@@ -71,7 +71,7 @@ const orderCreatePlanCard = {
     preview: {
       summary: "Create one order for Cool Cars.",
       affectedEntities: [{ entityId: "customer-1", entityType: "customer", label: "Customer: Cool Cars" }, { entityId: "new:plan-order-1", entityType: "order", label: "One new order will be created" }, { entityId: "product-1", entityType: "product", label: "Product: ACM Tester" }],
-      orderCreate: { customer: { id: "customer-1", name: "Cool Cars", contactName: null }, orderStatus: "new", productionDeferred: true, totalCents: 1500, warnings: [], lines: [{ productId: "product-1", productName: "ACM Tester", quantity: 1, measurementMode: "area", dimensions: { widthIn: 12, heightIn: 12, unit: "in" }, pbv2TreeVersionId: "tree-1", selections: [{ groupId: "sides", groupLabel: "Sides", valueId: "single", valueLabel: "Single Sided" }, { groupId: "thickness", groupLabel: "Thickness", valueId: "3mm", valueLabel: "3mm" }], unitPriceCents: 1500, totalCents: 1500, minimumChargeApplied: true, warnings: [] }, { productId: "product-2", productName: "Setup", quantity: 1, measurementMode: "quantity_only", dimensions: null, pbv2TreeVersionId: "tree-2", selections: [], unitPriceCents: 0, totalCents: 0, minimumChargeApplied: false, warnings: [] }] },
+      orderCreate: { customer: { id: "customer-1", name: "Cool Cars", contactName: null }, orderStatus: "new", productionDeferred: true, totalCents: 1500, warnings: [], lines: [{ productId: "product-1", productName: "ACM Tester", quantity: 1, measurementMode: "area", dimensions: { widthIn: 12, heightIn: 12, unit: "in" }, pbv2TreeVersionId: "tree-1", selections: [{ groupId: "sides", groupLabel: "Sides", valueId: "single", valueLabel: "Single Sided", source: "explicit" }, { groupId: "thickness", groupLabel: "Thickness", valueId: "3mm", valueLabel: "3mm", source: "explicit" }, { groupId: "contour", groupLabel: "Contour Cutting", valueId: "no", valueLabel: "No", source: "default_accepted" }], unitPriceCents: 1500, totalCents: 1500, minimumChargeApplied: true, warnings: [] }, { productId: "product-2", productName: "Setup", quantity: 1, measurementMode: "quantity_only", dimensions: null, pbv2TreeVersionId: "tree-2", selections: [], unitPriceCents: 0, totalCents: 0, minimumChargeApplied: false, warnings: [] }] },
       sideEffects: [], undo: { available: false, label: null, expiresAt: null },
     },
     missingInformation: [], expiresAt: "2030-01-01T00:10:00.000Z", contextBinding: { route: "/orders", entityType: null, entityId: null }, cancellationAvailable: true, steps: [],
@@ -135,6 +135,7 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).toContain("12 × 12 in");
     expect(container.textContent).toContain("Sides: Single Sided");
     expect(container.textContent).toContain("Thickness: 3mm");
+    expect(container.textContent).toContain("Contour Cutting: No (default accepted)");
     expect(container.textContent).toContain("Unit price: $15.00");
     expect(container.textContent).toContain("Minimum charge: Applied");
     expect(container.textContent).not.toContain("assistant_order_intake_session");
