@@ -44,6 +44,7 @@ import {
 } from "@shared/schema";
 import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/portalFileVisibility";
 import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
+import { synchronizeFinalArtworkForLineQuantityChange } from "../services/canonicalArtworkAllocationService";
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
@@ -7631,6 +7632,18 @@ export async function registerOrderRoutes(
             }
 
             const lineItem = await storage.updateOrderLineItem(lineItemId, updateData);
+            const quantityChanged =
+                updateData.quantity !== undefined &&
+                Number((oldLineItem as any).quantity) !== Number((lineItem as any).quantity);
+            const finalArtworkSynchronization = quantityChanged
+                ? await synchronizeFinalArtworkForLineQuantityChange({
+                    organizationId,
+                    lineItemId,
+                    previousLineQuantity: (oldLineItem as any).quantity,
+                    actorUserId: userId ?? null,
+                    actorName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email || null,
+                })
+                : null;
 
             if (proofApprovalManualOverride) {
                 await createProofApprovalManualOverrideAuditLog({
@@ -7873,7 +7886,10 @@ export async function registerOrderRoutes(
             await recomputeOrderTotalsFromPersistedLineItems(String(lineItem.orderId), organizationId);
             await recomputeOrderBillingStatus({ organizationId, orderId: String(lineItem.orderId) });
 
-            res.json(enrichLineItemWithEffectivePricing((finalLineItem ?? lineItem) as any));
+            res.json({
+                ...enrichLineItemWithEffectivePricing((finalLineItem ?? lineItem) as any),
+                finalArtworkSynchronization,
+            });
         } catch (error) {
             if (error instanceof z.ZodError) return res.status(400).json({ message: fromZodError(error).message });
             if ((error as any)?.code === 'PBV2_FORMULA_ERROR') {

@@ -12,6 +12,9 @@ describe("production artwork allocation defaults", () => {
   const prepressService = fs.readFileSync(path.join(root, "server/prepressFileService.ts"), "utf8");
   const proofingService = fs.readFileSync(path.join(root, "server/services/proofingService.ts"), "utf8");
   const productionJobsRoute = fs.readFileSync(path.join(root, "server/routes/productionJobs.routes.ts"), "utf8");
+  const canonicalAllocationService = fs.readFileSync(path.join(root, "server/services/canonicalArtworkAllocationService.ts"), "utf8");
+  const prepressFilesRoute = fs.readFileSync(path.join(root, "server/routes/prepressFiles.routes.ts"), "utf8");
+  const prepressQueueRoute = fs.readFileSync(path.join(root, "server/routes/prepress.routes.ts"), "utf8");
 
   test("new quote and order production artwork relationships default to one when no explicit allocation is supplied", () => {
     expect(quoteLineFilesRoute).toContain('productionQuantity: defaultNewProductionArtworkAllocation("artwork")');
@@ -39,10 +42,21 @@ describe("production artwork allocation defaults", () => {
     expect(prepressService).toContain("productionGroupId: existingFile.productionGroupId");
   });
 
-  test("historical null allocations are not inferred during proof or completed-job hydration", () => {
+  test("proof and completed-job hydration preserve canonical quantities while Prepress repairs only safe historical nulls", () => {
     expect(proofingService).toContain("productionQuantity: source.productionQuantity ?? null");
     expect(proofingService).toContain("allocatedQuantity: source.productionQuantity ?? null");
     expect(productionJobsRoute).toContain("productionQuantity: file.productionQuantity ?? null");
     expect(productionJobsRoute).toContain("allocatedQuantity: file.productionQuantity ?? null");
+    expect(canonicalAllocationService).toContain("getSafeArtworkAllocationDefaults");
+    expect(canonicalAllocationService).toContain("normalizeFinalProductionArtworkAllocations");
+    expect(prepressFilesRoute).toContain("normalizeFinalProductionArtworkAllocations");
+    expect(prepressQueueRoute).toContain("normalizeFinalProductionArtworkAllocations");
+  });
+
+  test("saved Order artwork edits synchronize only explicitly mapped final production artwork", () => {
+    expect(orderLineFilesRoute).toContain("sourceOrderAttachmentId");
+    expect(orderLineFilesRoute).toContain("canonicalFinalArtwork");
+    expect(ordersRoute).toContain("synchronizeFinalArtworkForLineQuantityChange");
+    expect(ordersRoute).toContain("finalArtworkSynchronization");
   });
 });

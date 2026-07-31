@@ -333,7 +333,15 @@ export function LineItemAttachmentsPanel({
           },
         }),
       ]);
-      toast({ title: 'Artwork allocation updated', description: json?.allocation?.issue || 'Production instruction saved.' });
+      const canonicalUpdated = json?.canonicalFinalArtwork?.updated === true;
+      toast({
+        title: 'Artwork allocation updated',
+        description: canonicalUpdated
+          ? (json?.allocation?.issue || 'The linked final production artwork was updated.')
+          : parentType === "order"
+            ? 'Customer artwork allocation saved. Final production artwork remains separately managed in Prepress.'
+            : (json?.allocation?.issue || 'Production instruction saved.'),
+      });
     } catch (error: any) {
       toast({ title: 'Artwork allocation failed', description: error?.message || 'Please try again.', variant: 'destructive' });
     }

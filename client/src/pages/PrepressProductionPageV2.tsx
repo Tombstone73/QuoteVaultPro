@@ -228,10 +228,14 @@ function ArtworkProductionBreakdownList({
   item,
   compact = false,
   showHeader = false,
+  onUpdateQuantity,
+  updating = false,
 }: {
   item: PrepressQueueItem | null | undefined;
   compact?: boolean;
   showHeader?: boolean;
+  onUpdateQuantity?: (fileId: string, productionQuantity: number | null) => void;
+  updating?: boolean;
 }) {
   const breakdown = item?.artworkProductionBreakdown;
   const designs = breakdown?.designs ?? [];
@@ -286,9 +290,31 @@ function ArtworkProductionBreakdownList({
                 <span>{normalizeArtworkSideLabel(design.side)}</span>
               </div>
             </div>
-            <div className="shrink-0 rounded border border-[#2d3748] px-2 py-1 font-mono text-[11px] font-semibold text-slate-100">
-              QTY {formatArtworkQuantity(design.productionQuantity)}
-            </div>
+            {onUpdateQuantity && breakdown?.source === "final_production" ? (
+              <label className="flex shrink-0 items-center gap-1 text-[11px] text-slate-400">
+                <span>Qty</span>
+                <Input
+                  key={`${design.id}:${design.productionQuantity ?? "unresolved"}`}
+                  aria-label={`Production quantity for ${design.filename || "artwork design"}`}
+                  defaultValue={design.productionQuantity ?? ""}
+                  inputMode="numeric"
+                  disabled={updating}
+                  className="h-7 w-16 border-[#2d3748] bg-[#111921] px-2 text-xs text-slate-100"
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") event.currentTarget.blur();
+                  }}
+                  onBlur={(event) => {
+                    const raw = event.currentTarget.value.trim();
+                    const nextQuantity = raw ? Number(raw) : null;
+                    if (nextQuantity !== (design.productionQuantity ?? null)) onUpdateQuantity(design.id, nextQuantity);
+                  }}
+                />
+              </label>
+            ) : (
+              <div className="shrink-0 rounded border border-[#2d3748] px-2 py-1 font-mono text-[11px] font-semibold text-slate-100">
+                QTY {formatArtworkQuantity(design.productionQuantity)}
+              </div>
+            )}
           </div>
         ))}
       </div>
@@ -1800,6 +1826,11 @@ export default function PrepressProductionPageV2() {
       cancelled = true;
     };
   }, [combinedRunOpen, selectedQueueItemsNeedingArtwork]);
+  useEffect(() => {
+    if (!combinedRunOpen || !isPageVisible) return;
+    void refreshPrepressQueue();
+    void Promise.all(Array.from(selectedQueueLineItemIds).map((lineItemId) => refreshCombinedRunArtworkForLineItem(lineItemId)));
+  }, [combinedRunOpen, isPageVisible, refreshCombinedRunArtworkForLineItem, refreshPrepressQueue, selectedQueueLineItemIds]);
   const resolveViewerIndex = React.useCallback((preferredFileId?: string | null) => {
     if (normalizedVisibleFiles.length === 0) return -1;
     if (!preferredFileId) return 0;
@@ -3034,6 +3065,20 @@ export default function PrepressProductionPageV2() {
                           type="button"
                           size="sm"
                           variant="outline"
+                          onClick={() => {
+                            void refreshPrepressQueue();
+                            void Promise.all(selectedQueueItems.map((item) => refreshCombinedRunArtworkForLineItem(item.lineItemId)));
+                          }}
+                          disabled={combinedRunArtworkLoading || updateFinalArtworkAllocationMutation.isPending}
+                          className="h-8 border-[#2d3748] text-slate-200 hover:bg-white/5"
+                          data-testid="prepress-combined-run-refresh-artwork"
+                        >
+                          <RefreshCw className="mr-1 h-3 w-3" /> Refresh Artwork
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
                           disabled={combinedRunArtworkLoading || combinedRunArtworkAssigning || selectedQueueItemsMissingProductionArtwork.length === 0}
                           onClick={() => {
                             setCombinedRunArtworkSelections((current) => {
@@ -3101,7 +3146,16 @@ export default function PrepressProductionPageV2() {
                                 ) : null}
                                 <p className="mt-1 text-slate-500">Blocker: {blocker?.message || "Backend readiness still needs confirmation."}</p>
                                 <div className="mt-2">
-                                  <ArtworkProductionBreakdownList item={item} compact />
+                                  <ArtworkProductionBreakdownList
+                                    item={item}
+                                    compact
+                                    updating={updateFinalArtworkAllocationMutation.isPending}
+                                    onUpdateQuantity={(fileId, productionQuantity) => updateFinalArtworkAllocationMutation.mutate({
+                                      lineItemId: item.lineItemId,
+                                      fileId,
+                                      productionQuantity,
+                                    })}
+                                  />
                                 </div>
                               </div>
                               <span className={cn(
@@ -3200,7 +3254,16 @@ export default function PrepressProductionPageV2() {
                                 ) : null}
                               </div>
                               <div className="mt-3">
-                                <ArtworkProductionBreakdownList item={selectedItem} showHeader />
+                                <ArtworkProductionBreakdownList
+                                  item={selectedItem}
+                                  showHeader
+                                  updating={updateFinalArtworkAllocationMutation.isPending}
+                                  onUpdateQuantity={(fileId, productionQuantity) => updateFinalArtworkAllocationMutation.mutate({
+                                    lineItemId: selectedItem.lineItemId,
+                                    fileId,
+                                    productionQuantity,
+                                  })}
+                                />
                               </div>
                             </header>
 
@@ -4113,7 +4176,19 @@ export default function PrepressProductionPageV2() {
               </div>
             </div>
             <div className="mb-3">
-              <ArtworkProductionBreakdownList item={selectedItem} showHeader />
+              <ArtworkProductionBreakdownList
+                item={selectedItem}
+                showHeader
+                updating={updateFinalArtworkAllocationMutation.isPending}
+                onUpdateQuantity={(fileId, productionQuantity) => {
+                  if (!selectedItem) return;
+                  updateFinalArtworkAllocationMutation.mutate({
+                    lineItemId: selectedItem.lineItemId,
+                    fileId,
+                    productionQuantity,
+                  });
+                }}
+              />
             </div>
             <div className="border border-[#2d3748] rounded-lg overflow-hidden bg-[#1a232e]">
               <table className="w-full text-left text-xs">

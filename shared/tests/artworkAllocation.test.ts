@@ -2,6 +2,7 @@ import {
   buildArtworkAllocationStatus,
   defaultNewProductionArtworkAllocation,
   defaultProductionArtworkAllocationForLine,
+  getSafeArtworkAllocationDefaults,
   reconcileStagedArtworkAllocations,
 } from "../artworkAllocation";
 
@@ -75,5 +76,45 @@ describe("artwork allocation", () => {
       attachments: [{ uploadId: "art-1" }, { uploadId: "art-2" }],
     });
     expect(unresolved.map((attachment) => attachment.productionQuantity)).toEqual([null, null]);
+  });
+
+  test("repairs one unresolved final output group to the full line quantity", () => {
+    expect(getSafeArtworkAllocationDefaults({
+      lineQuantity: 25,
+      members: [{ id: "final", role: "final", productionQuantity: null }],
+    })).toEqual([{ id: "final", productionQuantity: 25 }]);
+  });
+
+  test("repairs separate unresolved designs one each only when their count matches the line quantity", () => {
+    expect(getSafeArtworkAllocationDefaults({
+      lineQuantity: 2,
+      members: [
+        { id: "design-a", role: "final", productionQuantity: null },
+        { id: "design-b", role: "final", productionQuantity: null },
+      ],
+    })).toEqual([
+      { id: "design-a", productionQuantity: 1 },
+      { id: "design-b", productionQuantity: 1 },
+    ]);
+  });
+
+  test("does not mistake unresolved front and back files for two separate designs", () => {
+    expect(getSafeArtworkAllocationDefaults({
+      lineQuantity: 2,
+      members: [
+        { id: "front", role: "final", side: "front", productionQuantity: null },
+        { id: "back", role: "final", side: "back", productionQuantity: null },
+      ],
+    })).toEqual([]);
+  });
+
+  test("does not overwrite a partially allocated final-artwork distribution", () => {
+    expect(getSafeArtworkAllocationDefaults({
+      lineQuantity: 20,
+      members: [
+        { id: "english", role: "final", productionQuantity: 12 },
+        { id: "spanish", role: "final", productionQuantity: null },
+      ],
+    })).toEqual([]);
   });
 });

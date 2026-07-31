@@ -23,6 +23,7 @@ import { getStorageAuthMode } from "../objectStorage";
 import * as prepressFileService from "../prepressFileService";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
+import { normalizeFinalProductionArtworkAllocations } from "../services/canonicalArtworkAllocationService";
 
 // ---------------------------------------------------------------------------
 // Module-private helpers
@@ -771,6 +772,13 @@ export function registerPrepressFileRoutes(
       if (!assertInternalUser(req, res)) return;
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      await normalizeFinalProductionArtworkAllocations({
+        organizationId,
+        lineItemId: req.params.lineItemId,
+        actorUserId: getUserId(req.user) ?? null,
+        actorName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+      });
 
       const files = await prepressFileService.getLineItemFiles(req.params.lineItemId, organizationId);
       const [lineItemRow] = await db

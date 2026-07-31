@@ -98,6 +98,9 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("/api/prepress/line-item/${lineItemId}/assign-customer-artwork");
     expect(source).toContain("No customer artwork is available for this line item.");
     expect(source).toContain("Production artwork exists, but the assigned print quantities are not valid yet.");
+    expect(source).toContain("Refresh Artwork");
+    expect(source).toContain("onUpdateQuantity");
+    expect(source).toContain("/api/prepress/files/${fileId}/artwork-allocation");
     expect(source).toContain("Needs production artwork");
     expect(source).not.toContain("Upload production artwork from the job detail");
   });
@@ -140,6 +143,7 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("combinedRunNotes");
     expect(source).toContain("combinedRunOverrideReason");
     expect(source).toContain("setCombinedRunArtworkResolverLineItemId(null)");
+    expect(source).toContain("isPageVisible");
     expect(source).not.toContain("setCombinedRunOpen(false); }} className=\"h-9 px-2 text-[11px]\"");
   });
 

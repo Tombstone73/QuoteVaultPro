@@ -100,6 +100,53 @@ export function defaultProductionArtworkAllocationForLine(args: {
   return null;
 }
 
+export type SafeArtworkAllocationDefault = {
+  id: string;
+  productionQuantity: number;
+};
+
+/**
+ * Provides narrow repair defaults for historical final-production rows.  It
+ * deliberately requires every relevant value to be unresolved so it never
+ * redistributes a staff-entered allocation.
+ */
+export function getSafeArtworkAllocationDefaults(args: {
+  lineQuantity: unknown;
+  members: ArtworkAllocationMember[];
+}): SafeArtworkAllocationDefault[] {
+  const lineQuantity = finiteInteger(args.lineQuantity);
+  if (lineQuantity == null) return [];
+
+  const members = args.members.filter((member) =>
+    member.active !== false && productionRoles.has(String(member.role ?? "final").toLowerCase()),
+  );
+  if (members.length === 0 || members.some((member) => member.productionQuantity != null)) {
+    return [];
+  }
+
+  const groups = new Map<string, ArtworkAllocationMember[]>();
+  for (const member of members) {
+    const groupId = member.productionGroupId?.trim() || member.id;
+    groups.set(groupId, [...(groups.get(groupId) ?? []), member]);
+  }
+
+  // A single output group may be represented by one file or an explicit
+  // Front/Back pair. Both members carry the same produced quantity.
+  if (groups.size === 1) {
+    return members.map((member) => ({ id: member.id, productionQuantity: lineQuantity }));
+  }
+
+  // Multiple ungrouped sides are ambiguous. Only default one-per-file when
+  // every file is a standalone design rather than a Front/Back output pair.
+  const areSeparateDesigns =
+    groups.size === lineQuantity &&
+    Array.from(groups.values()).every((group) => group.length === 1) &&
+    members.every((member) => member.side !== "front" && member.side !== "back");
+  if (!areSeparateDesigns) return [];
+
+  return members.map((member) => ({ id: member.id, productionQuantity: DEFAULT_PRODUCTION_ARTWORK_ALLOCATION }));
+}
+
 export type StagedArtworkAllocation = {
   productionQuantity?: number | null;
   productionGroupId?: string | null;

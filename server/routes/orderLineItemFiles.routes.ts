@@ -837,8 +837,9 @@ export function registerOrderLineItemFileRoutes(
     }
   });
 
-  // Allocation belongs to this line-item attachment relationship.  It is
-  // intentionally separate from filenames and from the order's billable qty.
+  // Customer artwork remains a separate relationship, but a promoted final
+  // file records its source attachment. Keep that canonical production row in
+  // sync whenever the mapping is unambiguous.
   app.patch("/api/orders/:orderId/line-items/:lineItemId/files/:fileId/artwork-allocation", isAuthenticated, tenantContext, async (req: any, res) => {
     const { orderId, lineItemId, fileId } = req.params;
     const organizationId = getRequestOrganizationId(req);
@@ -889,15 +890,57 @@ export function registerOrderLineItemFileRoutes(
         }).where(eq(orderAttachments.id, attachment.id)).returning();
         const members = await tx.select({ id: orderAttachments.id, role: orderAttachments.role, side: orderAttachments.side, productionQuantity: orderAttachments.productionQuantity, productionGroupId: orderAttachments.productionGroupId })
           .from(orderAttachments).where(and(eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId)));
-        return { updated, status: buildArtworkAllocationStatus({ lineQuantity: lineItem.quantity, members }) };
+        const mappedFinalCandidates = role === "artwork"
+          ? await tx.select({ id: lineItemFiles.id, productionGroupId: lineItemFiles.productionGroupId }).from(lineItemFiles).where(and(
+              eq(lineItemFiles.organizationId, organizationId),
+              eq(lineItemFiles.orderId, orderId),
+              eq(lineItemFiles.lineItemId, lineItemId),
+              eq(lineItemFiles.role, "final"),
+              eq(lineItemFiles.status, "active"),
+              eq(lineItemFiles.sourceOrderAttachmentId, attachment.id),
+            ))
+          : [];
+        const mappedFinalGroupIds = new Set(mappedFinalCandidates.map((file) => file.productionGroupId?.trim() || ""));
+        const mappedFinals = mappedFinalCandidates.length <= 1 || (mappedFinalGroupIds.size === 1 && !mappedFinalGroupIds.has(""))
+          ? mappedFinalCandidates
+          : [];
+        if (mappedFinals.length > 0) {
+          await tx.update(lineItemFiles).set({
+            productionQuantity,
+            productionGroupId,
+          }).where(and(
+            eq(lineItemFiles.organizationId, organizationId),
+            inArray(lineItemFiles.id, mappedFinals.map((file) => file.id)),
+          ));
+        }
+        const canonicalMembers = mappedFinals.length > 0
+          ? await tx.select({ id: lineItemFiles.id, role: lineItemFiles.role, side: lineItemFiles.sourceArtworkSide, productionQuantity: lineItemFiles.productionQuantity, productionGroupId: lineItemFiles.productionGroupId })
+              .from(lineItemFiles).where(and(
+                eq(lineItemFiles.organizationId, organizationId),
+                eq(lineItemFiles.lineItemId, lineItemId),
+                eq(lineItemFiles.role, "final"),
+                eq(lineItemFiles.status, "active"),
+              ))
+          : [];
+        return {
+          updated,
+          status: buildArtworkAllocationStatus({
+            lineQuantity: lineItem.quantity,
+            members: canonicalMembers.length > 0 ? canonicalMembers : members,
+          }),
+          canonicalFinalArtwork: {
+            updated: mappedFinals.length > 0,
+            finalFileIds: mappedFinals.map((file) => file.id),
+          },
+        };
       });
       await storage.createOrderAuditLog({
         orderId, orderLineItemId: lineItemId, userId: getUserId(req.user), userName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
         actionType: "artwork_allocation_updated", fromStatus: null, toStatus: null,
         note: role === "reference" ? "Artwork marked reference-only" : `Production allocation set to ${productionQuantity ?? "unallocated"}`,
-        metadata: { attachmentId: result.updated.id, productionQuantity: result.updated.productionQuantity, productionGroupId: result.updated.productionGroupId, role },
+        metadata: { attachmentId: result.updated.id, productionQuantity: result.updated.productionQuantity, productionGroupId: result.updated.productionGroupId, role, canonicalFinalFileIds: result.canonicalFinalArtwork.finalFileIds },
       });
-      return res.json({ success: true, data: result.updated, allocation: result.status });
+      return res.json({ success: true, data: result.updated, allocation: result.status, canonicalFinalArtwork: result.canonicalFinalArtwork });
     } catch (error: any) {
       if (error?.statusCode === 404) return res.status(404).json({ error: error.message });
       console.error("[OrderLineItemFiles:ARTWORK_ALLOCATION] Failed", { orderId, lineItemId, fileId, message: error?.message });

@@ -77,6 +77,7 @@ import {
 } from "../lib/supabaseObjectHelpers";
 import { canAutoDeductMaterialStock } from "../lib/materialStockDeductionGuard";
 import { buildNormalizedMaterialReservationPlan, type RollMediaReservationContext } from "@shared/materialReservationNormalization";
+import { normalizeFinalProductionArtworkAllocations } from "../services/canonicalArtworkAllocationService";
 import {
   getProductionStationLabel,
   normalizeProductionStationKey,
@@ -1089,6 +1090,10 @@ export function registerPrepressQueueRoutes(
 
       // Get file counts for each line item
       const lineItemIdsForQueue = queueItems.map((i) => i.lineItemId);
+      await Promise.all(lineItemIdsForQueue.map((lineItemId) => normalizeFinalProductionArtworkAllocations({
+        organizationId,
+        lineItemId,
+      })));
       const fileCounts = lineItemIdsForQueue.length > 0
         ? await db
             .select({
