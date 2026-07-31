@@ -275,13 +275,13 @@ function ArtworkProductionBreakdownList({
         {designs.map((design) => (
           <div key={design.id} className={cn("flex min-w-0 items-center gap-2", showHeader ? "rounded border border-[#2d3748] bg-[#111921] p-2" : "")}>
             {!compact ? (
-              <div className="h-10 w-10 shrink-0 overflow-hidden rounded border border-[#2d3748] bg-black/20">
-                {design.thumbnailUrl ? (
-                  <img src={design.thumbnailUrl} alt="" className="h-full w-full object-cover" />
-                ) : (
-                  <div className="flex h-full w-full items-center justify-center text-[9px] text-slate-500">No preview</div>
-                )}
-              </div>
+              <FileThumbnail
+                fileId={design.source === "final_production" ? design.id : undefined}
+                filename={design.filename || "Artwork design"}
+                mimeType={design.mimeType || undefined}
+                thumbnailUrl={design.thumbnailUrl || undefined}
+                compact
+              />
             ) : null}
             <div className="min-w-0 flex-1">
               <div className="truncate font-semibold text-slate-100">{design.filename || "Artwork design"}</div>
@@ -596,6 +596,8 @@ export default function PrepressProductionPageV2() {
   const [combinedRunOpen, setCombinedRunOpen] = useState(false);
   const [combinedRunWizardStep, setCombinedRunWizardStep] = useState<CombinedRunWizardStep>(1);
   const [combinedRunAllocations, setCombinedRunAllocations] = useState<Record<string, string>>({});
+  const [combinedRunProductionQuantityDrafts, setCombinedRunProductionQuantityDrafts] = useState<Record<string, string>>({});
+  const [combinedRunProductionQuantityErrors, setCombinedRunProductionQuantityErrors] = useState<Record<string, string>>({});
   const [combinedRunPlannedSheetCount, setCombinedRunPlannedSheetCount] = useState("");
   const [combinedRunPiecesPerSheet, setCombinedRunPiecesPerSheet] = useState("");
   const [combinedRunSheetWidth, setCombinedRunSheetWidth] = useState("");
@@ -1205,6 +1207,28 @@ export default function PrepressProductionPageV2() {
     },
   });
 
+  const saveCombinedRunProductionQuantity = async (lineItemId: string, fileId: string) => {
+    const raw = (combinedRunProductionQuantityDrafts[fileId] ?? "").trim();
+    const productionQuantity = raw === "" ? null : Number(raw);
+    if (productionQuantity !== null && (!Number.isInteger(productionQuantity) || productionQuantity <= 0)) {
+      setCombinedRunProductionQuantityErrors((current) => ({ ...current, [fileId]: "Enter a positive whole number, or leave it blank to mark the allocation unresolved." }));
+      return;
+    }
+    setCombinedRunProductionQuantityErrors((current) => {
+      const next = { ...current };
+      delete next[fileId];
+      return next;
+    });
+    try {
+      await updateFinalArtworkAllocationMutation.mutateAsync({ lineItemId, fileId, productionQuantity });
+    } catch (error) {
+      setCombinedRunProductionQuantityErrors((current) => ({
+        ...current,
+        [fileId]: error instanceof Error ? error.message : "Unable to save this production-art allocation.",
+      }));
+    }
+  };
+
   // PROMPT B: Send to Print Queue mutation
   const sendToPrintMutation = useMutation({
     mutationFn: (lineItemId: string) => requestReleasePrepressLineItem(lineItemId),
@@ -1443,7 +1467,7 @@ export default function PrepressProductionPageV2() {
     [selectedQueueItemsNeedingArtwork],
   );
   const selectedQueueItemsWithAllocationIssues = useMemo(
-    () => selectedQueueItemsNeedingArtwork.filter((item) => getPrepressCombinedRunItemBlocker(item)?.code === "resolvable_artwork_allocation_unresolved"),
+    () => selectedQueueItemsNeedingArtwork.filter((item) => getPrepressCombinedRunItemBlocker(item)?.code === "resolvable_production_artwork_allocation"),
     [selectedQueueItemsNeedingArtwork],
   );
   const selectedQueueHardBlockedItems = useMemo(
@@ -1563,6 +1587,8 @@ export default function PrepressProductionPageV2() {
       : null;
   const combinedRunStep2Blocker = selectedQueueItemsNeedingArtwork.length === 0
     ? null
+    : selectedQueueItemsWithAllocationIssues.length > 0
+      ? "Save a valid Qty to Produce for every final production-art file before planning the run."
     : combinedRunArtworkLoading
       ? "Loading available customer artwork."
       : combinedRunArtworkErrors.__load
@@ -1745,18 +1771,9 @@ export default function PrepressProductionPageV2() {
     file,
     group: finalArtworkAllocation.groups.find((group) => group.memberIds.includes(file.id)) ?? null,
   })), [finalArtworkAllocation.groups, visibleFinalFiles]);
-  const visibleFileProductionQuantity = (file: VisibleFileRecord): number | null => {
-    const direct = Number(file.productionQuantity);
-    if (Number.isInteger(direct) && direct > 0) return direct;
-    const match = selectedItem?.artworkProductionBreakdown?.designs?.find((design) =>
-      design.id === file.id
-      || design.filename === file.displayName
-      || design.filename === file.originalFilename
-      || design.filename === file.fileName,
-    );
-    const quantity = Number(match?.productionQuantity);
-    return Number.isInteger(quantity) && quantity > 0 ? quantity : null;
-  };
+  const sourceArtworkStatus = visibleFinalFiles.length > 0
+    ? "Source artwork"
+    : "Not assigned to production";
   useEffect(() => {
     setCombinedRunAllocations((current) => {
       const next: Record<string, string> = {};
@@ -1768,6 +1785,19 @@ export default function PrepressProductionPageV2() {
   }, [selectedQueueItems]);
   useEffect(() => {
     if (!combinedRunOpen) return;
+    setCombinedRunProductionQuantityDrafts((current) => {
+      const next = { ...current };
+      for (const item of selectedQueueItems) {
+        for (const design of item.artworkProductionBreakdown?.designs ?? []) {
+          if (design.source !== "final_production" || next[design.id] !== undefined) continue;
+          next[design.id] = design.productionQuantity == null ? "" : String(design.productionQuantity);
+        }
+      }
+      return next;
+    });
+  }, [combinedRunOpen, selectedQueueItems]);
+  useEffect(() => {
+    if (!combinedRunOpen) return;
     if (!combinedRunSheetWidth && combinedRunSheetPlan.sheetWidth) setCombinedRunSheetWidth(String(combinedRunSheetPlan.sheetWidth));
     if (!combinedRunSheetHeight && combinedRunSheetPlan.sheetHeight) setCombinedRunSheetHeight(String(combinedRunSheetPlan.sheetHeight));
     if (!combinedRunManualSheetOverride && combinedRunSheetPlan.canAutoPlan) {
@@ -1777,7 +1807,7 @@ export default function PrepressProductionPageV2() {
     }
   }, [combinedRunManualSheetOverride, combinedRunOpen, combinedRunSheetHeight, combinedRunSheetPlan, combinedRunSheetWidth]);
   useEffect(() => {
-    if (!combinedRunOpen || selectedQueueItemsNeedingArtwork.length === 0) {
+    if (!combinedRunOpen || selectedQueueItemsMissingProductionArtwork.length === 0) {
       if (!combinedRunOpen) {
         setCombinedRunArtworkErrors({});
       }
@@ -1785,7 +1815,7 @@ export default function PrepressProductionPageV2() {
     }
 
     let cancelled = false;
-    const lineItemIds = selectedQueueItemsNeedingArtwork.map((item) => item.lineItemId);
+    const lineItemIds = selectedQueueItemsMissingProductionArtwork.map((item) => item.lineItemId);
     setCombinedRunArtworkLoading(true);
     setCombinedRunArtworkErrors({});
 
@@ -2312,7 +2342,7 @@ export default function PrepressProductionPageV2() {
     setCombinedRunArtworkAssigning(true);
     setCombinedRunArtworkErrors({});
     try {
-      for (const item of selectedQueueItemsMissingProductionArtwork) {
+    for (const item of selectedQueueItemsMissingProductionArtwork) {
         const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
         const selectedCandidateId = combinedRunArtworkSelections[item.lineItemId];
         const candidate = candidates.find((entry) => entry.id === selectedCandidateId);
@@ -3029,8 +3059,60 @@ export default function PrepressProductionPageV2() {
                               <p className="mt-2 text-[11px] text-emerald-300">Production artwork ready</p>
                             )}
                             <div className="mt-2">
-                              <ArtworkProductionBreakdownList item={item} compact />
+                              <ArtworkProductionBreakdownList item={item} />
                             </div>
+                            {item.artworkProductionBreakdown?.source === "final_production" ? (
+                              <div className="mt-3 rounded border border-[#2d3748] bg-[#0f172a] p-2">
+                                <div className="flex flex-wrap items-center justify-between gap-2 text-[11px]">
+                                  <span className="font-semibold text-slate-200">Final production-art allocation</span>
+                                  <span className={item.artworkProductionBreakdown.valid ? "text-emerald-300" : "text-amber-200"}>
+                                    Assigned {item.artworkProductionBreakdown.allocatedTotal} of {item.artworkProductionBreakdown.requiredQuantity ?? item.quantity}
+                                    {item.artworkProductionBreakdown.requiredQuantity != null ? ` · ${Math.max(0, item.artworkProductionBreakdown.requiredQuantity - item.artworkProductionBreakdown.allocatedTotal)} remaining` : ""}
+                                  </span>
+                                </div>
+                                <div className="mt-2 space-y-2">
+                                  {(item.artworkProductionBreakdown.designs ?? []).filter((design) => design.source === "final_production").map((design) => (
+                                    <div key={`combined-run-allocation-${design.id}`} className="grid gap-2 rounded border border-[#2d3748] bg-[#111921] p-2 md:grid-cols-[40px_minmax(0,1fr)_130px_auto] md:items-center">
+                                      <FileThumbnail fileId={design.id} filename={design.filename || "Production artwork"} mimeType={design.mimeType || undefined} thumbnailUrl={design.thumbnailUrl || undefined} compact />
+                                      <div className="min-w-0">
+                                        <div className="truncate font-semibold text-slate-100">{design.filename || "Production artwork"}</div>
+                                        <div className="mt-1 flex flex-wrap gap-2 text-[10px] text-slate-400">
+                                          <span>{normalizeArtworkSideLabel(design.side)}</span>
+                                          <span>Output group: {design.productionGroupId || "Individual"}</span>
+                                        </div>
+                                      </div>
+                                      <label className="flex items-center gap-1 text-[11px] text-slate-300">
+                                        <span>Qty to Produce</span>
+                                        <Input
+                                          aria-label={`Qty to Produce for ${design.filename || "production artwork"}`}
+                                          value={combinedRunProductionQuantityDrafts[design.id] ?? (design.productionQuantity == null ? "" : String(design.productionQuantity))}
+                                          onChange={(event) => setCombinedRunProductionQuantityDrafts((current) => ({ ...current, [design.id]: event.target.value }))}
+                                          inputMode="numeric"
+                                          disabled={updateFinalArtworkAllocationMutation.isPending}
+                                          className="h-8 w-16 border-[#2d3748] bg-[#0f172a] px-2 text-xs"
+                                        />
+                                      </label>
+                                      <Button
+                                        type="button"
+                                        size="sm"
+                                        variant="outline"
+                                        onClick={() => void saveCombinedRunProductionQuantity(item.lineItemId, design.id)}
+                                        disabled={updateFinalArtworkAllocationMutation.isPending}
+                                        className="h-8 text-[11px]"
+                                      >
+                                        {updateFinalArtworkAllocationMutation.isPending ? "Saving..." : "Save Allocation"}
+                                      </Button>
+                                      {combinedRunProductionQuantityErrors[design.id] ? (
+                                        <div className="md:col-span-4 text-[11px] text-red-200">{combinedRunProductionQuantityErrors[design.id]}</div>
+                                      ) : null}
+                                    </div>
+                                  ))}
+                                </div>
+                                <Button type="button" size="sm" variant="ghost" onClick={() => void refreshPrepressQueue()} className="mt-2 h-7 px-1 text-[11px] text-slate-300">
+                                  <RefreshCw className="mr-1 h-3 w-3" /> Refresh Artwork
+                                </Button>
+                              </div>
+                            ) : null}
                           </div>
                           <label className="space-y-1">
                             <span className="text-[11px] font-medium text-slate-400">Allocated quantity</span>
@@ -3114,6 +3196,10 @@ export default function PrepressProductionPageV2() {
                   ) : null}
                   {selectedQueueItemsNeedingArtwork.length === 0 ? (
                     <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-100">All selected jobs have production artwork ready.</div>
+                  ) : selectedQueueItemsMissingProductionArtwork.length === 0 ? (
+                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-4 text-sm text-amber-100">
+                      Final production artwork is present, but {selectedQueueItemsWithAllocationIssues.length} selected {selectedQueueItemsWithAllocationIssues.length === 1 ? "line has" : "lines have"} an incomplete allocation. Update Qty to Produce in Step 1 and save; this wizard will retain its current selection and planning state.
+                    </div>
                   ) : (
                     <div className={cn("grid gap-4", combinedRunArtworkResolverLineItemId ? "xl:grid-cols-[minmax(300px,420px)_minmax(0,1fr)]" : "")}>
                     <div className="space-y-3">
@@ -3321,7 +3407,7 @@ export default function PrepressProductionPageV2() {
                                             <div className="truncate font-semibold text-slate-100">{file.displayName}</div>
                                             <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
                                               <span>{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "size unknown"}</span>
-                                              <span className="font-semibold text-slate-300">Print QTY {formatArtworkQuantity(visibleFileProductionQuantity(file))}</span>
+                                              <span className="font-semibold text-slate-300">{sourceArtworkStatus}</span>
                                               <span>{file.uploadedByLabel}</span>
                                               <span>{file.tagLabel}</span>
                                               <PrepressArtworkSideBadge side={file.sideLabel} />
@@ -4201,7 +4287,7 @@ export default function PrepressProductionPageV2() {
                     <th className="px-4 py-3 font-semibold">Uploaded By</th>
                     <th className="px-4 py-3 font-semibold">Tag</th>
                     <th className="px-4 py-3 font-semibold">Artwork Side</th>
-                    <th className="px-4 py-3 font-semibold">Print Qty</th>
+                    <th className="px-4 py-3 font-semibold">Source Status</th>
                     <th className="px-4 py-3 font-semibold text-right">Actions</th>
                   </tr>
                 </thead>
@@ -4246,11 +4332,7 @@ export default function PrepressProductionPageV2() {
                               />
                             ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
                           </td>
-                          <td className="px-4 py-3">
-                            <span className="rounded border border-[#2d3748] bg-[#0f172a] px-2 py-1 font-mono text-[11px] font-semibold text-slate-100">
-                              QTY {formatArtworkQuantity(visibleFileProductionQuantity(file))}
-                            </span>
-                          </td>
+                          <td className="px-4 py-3 text-slate-400">{sourceArtworkStatus}</td>
                           <td className="px-4 py-3 text-right">
                             <div className="flex flex-wrap justify-end gap-2">
                               <button
@@ -4333,11 +4415,7 @@ export default function PrepressProductionPageV2() {
                                   />
                                 ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
                               </td>
-                              <td className="px-4 py-3">
-                                <span className="rounded border border-[#2d3748] bg-[#0f172a] px-2 py-1 font-mono text-[11px] font-semibold text-slate-100">
-                                  QTY {formatArtworkQuantity(visibleFileProductionQuantity(file))}
-                                </span>
-                              </td>
+                              <td className="px-4 py-3 text-slate-400">{sourceArtworkStatus}</td>
                               <td className="px-4 py-3 text-right">
                                 <div className="flex flex-wrap justify-end gap-2">
                                   <button

@@ -291,6 +291,8 @@ export type ProductionRunFileSummary = {
   role: "final";
   status: "active" | "superseded" | "retired";
   tag: string | null;
+  productionQuantity: number | null;
+  productionGroupId: string | null;
   mimeType: string | null;
   sizeBytes: number | null;
   thumbnailUrl: string | null;

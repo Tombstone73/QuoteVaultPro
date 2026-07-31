@@ -558,7 +558,7 @@ export async function createPrepressProductionRun(input: {
       if (!allocation.valid) {
         throw new ProductionRunError(
           "PRODUCTION_RUN_ARTWORK_ALLOCATION_INVALID",
-          `${line.description || "Selected line item"}: ${summarizeArtworkAllocationIssue(allocation)}`,
+          `Resolve production artwork allocation for ${line.description || "the selected line item"}: ${summarizeArtworkAllocationIssue(allocation)}`,
           409,
         );
       }

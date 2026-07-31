@@ -103,7 +103,27 @@ describe("prepress combined run selection", () => {
     expect(result.resolvableBlockers).toEqual([
       expect.objectContaining({ lineItemId: "line-1", code: "resolvable_missing_production_artwork" }),
     ]);
-    expect(result.reason).toBe("1 selected job needs production artwork before the run can be created.");
+    expect(result.reason).toBe("1 selected job needs production artwork or a valid artwork allocation before the run can be created.");
+  });
+
+  test("keeps an allocation-incomplete final file selectable but blocks run creation until it is corrected", () => {
+    const incompleteAllocation = baseItem({
+      artworkProductionBreakdown: {
+        source: "final_production",
+        valid: false,
+        issue: "Allocated 1 of 5. Assign 4 more before production.",
+      },
+    });
+
+    expect(canSelectPrepressCombinedRunItem(incompleteAllocation)).toBe(true);
+    expect(getPrepressCombinedRunItemBlocker(incompleteAllocation)).toMatchObject({
+      code: "resolvable_production_artwork_allocation",
+      resolvable: true,
+    });
+    expect(validatePrepressCombinedRunSelection([
+      incompleteAllocation,
+      baseItem({ lineItemId: "line-2", activeOwnerJobId: "prepress-job-2" }),
+    ], {}, "").canCreate).toBe(false);
   });
 
   test("blocks final run creation when production artwork quantity is unresolved", () => {
@@ -120,7 +140,7 @@ describe("prepress combined run selection", () => {
 
     expect(canSelectPrepressCombinedRunItem(unresolved)).toBe(true);
     expect(getPrepressCombinedRunItemBlocker(unresolved)).toMatchObject({
-      code: "resolvable_artwork_allocation_unresolved",
+      code: "resolvable_production_artwork_allocation",
       message: "Quantity allocation unresolved.",
       resolvable: true,
     });
@@ -137,7 +157,7 @@ describe("prepress combined run selection", () => {
     expect(result.canCreate).toBe(false);
     expect(result.requiresArtworkResolution).toBe(true);
     expect(result.resolvableBlockers).toEqual([
-      expect.objectContaining({ lineItemId: "line-1", code: "resolvable_artwork_allocation_unresolved" }),
+      expect.objectContaining({ lineItemId: "line-1", code: "resolvable_production_artwork_allocation" }),
     ]);
     expect(result.reason).toBe("1 selected job has unresolved production artwork quantities.");
   });

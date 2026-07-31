@@ -84,6 +84,7 @@ export function registerPrepressFileRoutes(
             role: lineItemFiles.role,
             status: lineItemFiles.status,
             originalFilename: lineItemFiles.originalFilename,
+            productionGroupId: lineItemFiles.productionGroupId,
           })
           .from(lineItemFiles)
           .where(and(eq(lineItemFiles.id, req.params.fileId), eq(lineItemFiles.organizationId, organizationId)))
@@ -105,11 +106,20 @@ export function registerPrepressFileRoutes(
           throw Object.assign(new Error("Line item not found"), { statusCode: 404, code: "LINE_ITEM_NOT_FOUND" });
         }
 
-        const [updated] = await tx
+        const updatedRows = await tx
           .update(lineItemFiles)
           .set({ productionQuantity })
-          .where(and(eq(lineItemFiles.id, file.id), eq(lineItemFiles.organizationId, organizationId)))
+          .where(file.productionGroupId
+            ? and(
+              eq(lineItemFiles.organizationId, organizationId),
+              eq(lineItemFiles.lineItemId, file.lineItemId),
+              eq(lineItemFiles.role, "final"),
+              eq(lineItemFiles.status, "active"),
+              eq(lineItemFiles.productionGroupId, file.productionGroupId),
+            )
+            : and(eq(lineItemFiles.id, file.id), eq(lineItemFiles.organizationId, organizationId)))
           .returning();
+        const updated = updatedRows.find((row) => row.id === file.id) ?? updatedRows[0];
 
         const members = await tx
           .select({

@@ -24,7 +24,7 @@ export type PrepressCombinedRunItem = {
 
 export type PrepressCombinedRunBlockerCode =
   | "resolvable_missing_production_artwork"
-  | "resolvable_artwork_allocation_unresolved"
+  | "resolvable_production_artwork_allocation"
   | "hard_missing_prepress_job"
   | "hard_missing_order"
   | "hard_wrong_station"
@@ -64,8 +64,8 @@ export function getPrepressCombinedRunItemBlocker(item: PrepressCombinedRunItem)
   if (finalFileCount <= 0) return { code: "resolvable_missing_production_artwork", message: "Needs production artwork assignment.", resolvable: true };
   if (item.artworkProductionBreakdown?.source === "final_production" && item.artworkProductionBreakdown.valid === false) {
     return {
-      code: "resolvable_artwork_allocation_unresolved",
-      message: item.artworkProductionBreakdown.issue || "Quantity allocation unresolved.",
+      code: "resolvable_production_artwork_allocation",
+      message: item.artworkProductionBreakdown.issue || "Production artwork allocation needs correction.",
       resolvable: true,
     };
   }
@@ -127,7 +127,7 @@ export function validatePrepressCombinedRunSelection(
   const resolvableBlockers = blockers
     .filter((entry) => entry.blocker.resolvable)
     .map((entry) => ({ lineItemId: entry.item.lineItemId, code: entry.blocker.code, message: entry.blocker.message }));
-  const requiresArtworkResolution = resolvableBlockers.some((blocker) => blocker.code === "resolvable_missing_production_artwork" || blocker.code === "resolvable_artwork_allocation_unresolved");
+  const requiresArtworkResolution = resolvableBlockers.some((blocker) => blocker.code === "resolvable_missing_production_artwork" || blocker.code === "resolvable_production_artwork_allocation");
 
   if (hardBlockers.length > 0) {
     return baseValidation({
@@ -168,14 +168,12 @@ export function validatePrepressCombinedRunSelection(
 
   if (requiresArtworkResolution) {
     const missingArtworkCount = resolvableBlockers.filter((blocker) => blocker.code === "resolvable_missing_production_artwork").length;
-    const allocationIssueCount = resolvableBlockers.filter((blocker) => blocker.code === "resolvable_artwork_allocation_unresolved").length;
+    const allocationIssueCount = resolvableBlockers.filter((blocker) => blocker.code === "resolvable_production_artwork_allocation").length;
     return {
       canCreate: false,
       reason: allocationIssueCount > 0 && missingArtworkCount === 0
         ? `${allocationIssueCount} selected ${allocationIssueCount === 1 ? "job has" : "jobs have"} unresolved production artwork quantities.`
-        : missingArtworkCount > 0 && allocationIssueCount > 0
-          ? `${missingArtworkCount} selected ${missingArtworkCount === 1 ? "job needs" : "jobs need"} production artwork and ${allocationIssueCount} ${allocationIssueCount === 1 ? "has" : "have"} unresolved quantities.`
-          : `${resolvableBlockers.length} selected ${resolvableBlockers.length === 1 ? "job needs" : "jobs need"} production artwork before the run can be created.`,
+        : `${resolvableBlockers.length} selected ${resolvableBlockers.length === 1 ? "job needs" : "jobs need"} production artwork or a valid artwork allocation before the run can be created.`,
       orderId: orderIds.length === 1 ? orderIds[0] : null,
       orderIds,
       stationKey: stationKeys[0] ?? null,
