@@ -45,11 +45,27 @@ export function createDeferredOrderExecutionCommand(name: typeof assistantOrderC
       if (!validation.valid) throw new ExecutionPlanError(validation.code, validation.summary);
       const p = validation.proposal;
       const conversion = p.kind === "conversion";
+      const orderCreate = !conversion && p.kind === "direct" ? {
+        customer: { id: typeof p.customerId === "string" ? p.customerId : null, name: String(p.customerName), contactName: typeof p.contactName === "string" ? p.contactName : null },
+        orderStatus: "new" as const,
+        productionDeferred: true as const,
+        totalCents: Number(p.totalCents),
+        warnings: Array.isArray(p.warnings) ? p.warnings.filter((warning: unknown): warning is string => typeof warning === "string") : [],
+        lines: Array.isArray(p.lines) ? p.lines.map((line: any) => ({
+          productId: String(line.productId), productName: String(line.productName), quantity: Number(line.quantity), measurementMode: typeof line.measurementMode === "string" ? line.measurementMode : null,
+          dimensions: line.dimensions && typeof line.dimensions === "object" && Number.isFinite(line.dimensions.widthIn) && Number.isFinite(line.dimensions.heightIn) ? { widthIn: Number(line.dimensions.widthIn), heightIn: Number(line.dimensions.heightIn), unit: "in" as const } : null,
+          pbv2TreeVersionId: String(line.pbv2TreeVersionId),
+          selections: Array.isArray(line.selections) ? line.selections.map((selection: any) => ({ groupId: String(selection.groupId), groupLabel: String(selection.groupLabel), valueId: String(selection.valueId), valueLabel: String(selection.valueLabel) })) : [],
+          unitPriceCents: Number(line.unitPriceCents), totalCents: Number(line.totalCents), minimumChargeApplied: line.minimumChargeApplied === true,
+          warnings: Array.isArray(line.warnings) ? line.warnings.filter((warning: unknown): warning is string => typeof warning === "string") : [],
+        })) : [],
+      } : undefined;
       const preview: ExecutionPlanPreview = {
         title: conversion ? "Convert quote to order" : `Create order for ${p.customerName}`,
         summary: `${p.summary} No production job, production scheduling, material reservation, fulfillment record, invoice, or payment will be created.`,
         sideEffects: [p.summary, ...(p.lines ?? []).map((line: any) => `${line.quantity} × ${line.productName}: $${(line.totalCents / 100).toFixed(2)}.`)],
         affectedRecords: [{ entityType: "assistant_order_intake_session", entityId: p.orderIntakeSessionId, fingerprint: p.proposalFingerprint }],
+        ...(orderCreate ? { orderCreate } : {}),
       };
       return { arguments: { orderIntakeSessionId: p.orderIntakeSessionId, proposalFingerprint: p.proposalFingerprint }, preview };
     },

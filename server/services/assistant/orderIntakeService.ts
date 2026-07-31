@@ -38,6 +38,21 @@ const normalized = (value: string) => value.trim().toLocaleLowerCase();
 const selectedValuesForPricing = (selections: LineItemOptionSelectionsV2) => Object.fromEntries(
   Object.entries(selections.selected).map(([key, entry]) => [key, entry?.value])
 );
+const configuredSelectionsForPlan = (result: Awaited<ReturnType<typeof priceLineItem>>) => {
+  const snapshot = result.pbv2SnapshotJson as any;
+  const tree = snapshot.treeJson as OptionTreeV2 | null;
+  const nodes = tree?.nodes ?? {};
+  const selections: Array<{ groupId: string; groupLabel: string; valueId: string; valueLabel: string }> = (Array.isArray(snapshot.selectedOptions) ? snapshot.selectedOptions : []).flatMap((entry: any) => {
+    const groupId = typeof entry?.optionId === "string" ? entry.optionId : null;
+    if (!groupId) return [];
+    const node = nodes[groupId];
+    const valueId = entry?.value === undefined || entry?.value === null ? null : String(entry.value);
+    if (!valueId) return [];
+    const choice = Array.isArray(node?.choices) ? node.choices.find((candidate: any) => String(candidate?.value) === valueId) : null;
+    return [{ groupId, groupLabel: String(node?.label ?? entry?.optionName ?? groupId), valueId, valueLabel: String(choice?.label ?? valueId) }];
+  });
+  return selections.sort((left, right) => left.groupId.localeCompare(right.groupId) || left.valueId.localeCompare(right.valueId));
+};
 const parseDimensions = (message: string) => {
   const match = message.match(/(\d+(?:\.\d+)?)\s*(?:in(?:ches)?|\")?\s*(?:x|×)\s*(\d+(?:\.\d+)?)\s*(?:in(?:ches)?|\")?/i);
   return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
@@ -257,7 +272,7 @@ export class OrderIntakeService {
     const totals = await calculateQuoteOrderTotals(priced.map(({ line, product, result }) => ({ productId: line.productId, linePrice: result.lineTotalCents / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, null);
     const fingerprint = fingerprintDirectOrderProposal({ intake, organization: org, customer, contact, priced, totals });
     if (input.expectedProposalFingerprint && input.expectedProposalFingerprint !== fingerprint) return { valid: false, code: "ORDER_PROPOSAL_STALE", summary: "Order pricing or selected records changed." };
-    return { valid: true, proposal: { orderIntakeSessionId: session.id, proposalFingerprint: fingerprint, kind: intake.kind, customerName: intake.customerName, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : null, dueDate: intake.dueDate, totalCents: Math.round(totals.total * 100), taxCents: Math.round(totals.taxAmount * 100), lines: priced.map(({ line, result }) => ({ productName: line.productName, productId: line.productId, quantity: line.quantity, width: line.width, height: line.height, pbv2TreeVersionId: line.pbv2TreeVersionId, selections: line.pbv2Selections, unitPriceCents: Math.round(result.lineTotalCents / line.quantity), totalCents: result.lineTotalCents })), warnings: intake.contactId ? [] : ["No contact is selected."], downstreamActionsExcluded: ["production_job_creation", "production_scheduling", "inventory_reservation", "fulfillment_creation", "invoice_creation", "payment_processing"], summary: `Create one order for ${intake.customerName}, totaling $${totals.total.toFixed(2)}. Production remains deferred.` } };
+    return { valid: true, proposal: { orderIntakeSessionId: session.id, proposalFingerprint: fingerprint, kind: intake.kind, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, contactName: contact ? `${contact.firstName} ${contact.lastName}`.trim() : null, dueDate: intake.dueDate, totalCents: Math.round(totals.total * 100), taxCents: Math.round(totals.taxAmount * 100), lines: priced.map(({ line, product, result, widthIn, heightIn }) => ({ productName: line.productName, productId: line.productId, quantity: line.quantity, measurementMode: product.measurementMode ?? null, dimensions: product.measurementMode === "quantity_only" ? null : { widthIn, heightIn, unit: "in" }, pbv2TreeVersionId: result.pbv2TreeVersionId, selections: configuredSelectionsForPlan(result), unitPriceCents: Math.round(result.lineTotalCents / line.quantity), totalCents: result.lineTotalCents, minimumChargeApplied: (result.pbv2SnapshotJson as any)?.pbv2PricingSnapshot?.minimumApplied === true, warnings: [] })), warnings: intake.contactId ? [] : ["No contact is selected."], downstreamActionsExcluded: ["production_job_creation", "production_scheduling", "inventory_reservation", "fulfillment_creation", "invoice_creation", "payment_processing"], summary: `Create one order for ${intake.customerName}, totaling $${totals.total.toFixed(2)}. Production remains deferred.` } };
   }
 
   async createConfirmedOrder(input: { organizationId: string; actorUserId: string; orderIntakeSessionId: string; proposalFingerprint: string }) {

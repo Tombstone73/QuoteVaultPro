@@ -77,17 +77,23 @@ function planDto(plan: ExecutionPlanRecord, executionStarted = false): Assistant
   const productInactiveDraftUpdate = plan.preview.productInactiveDraftUpdate;
   const productPricingChangeSet = plan.preview.productPricingChangeSet;
   const configurableProduct = plan.preview.configurableProduct;
+  const orderCreate = plan.preview.orderCreate;
+  const affectedEntities = orderCreate ? [
+    ...(orderCreate.customer.id ? [{ entityType: "customer" as const, entityId: orderCreate.customer.id, label: `Customer: ${orderCreate.customer.name}` }] : [{ entityType: "customer" as const, entityId: `selected:${plan.id}`, label: `Customer/contact: ${orderCreate.customer.name}` }]),
+    { entityType: "order" as const, entityId: `new:${plan.id}`, label: "One new order will be created" },
+    ...orderCreate.lines.map((line) => ({ entityType: "product" as const, entityId: line.productId, label: `Product: ${line.productName}` })),
+  ] : plan.affectedRecords.map((record) => ({
+    entityType: record.entityType as any,
+    entityId: record.entityId,
+    label: quoteInternalNote?.quoteId === record.entityId ? `Quote ${quoteInternalNote.quoteNumber}` : productInactiveDraft?.intakeSessionId === record.entityId ? `Product Intake: ${productInactiveDraft.productName}` : productInactiveDraftUpdate?.productId === record.entityId ? `Inactive draft: ${productInactiveDraftUpdate.productName}` : `${record.entityType} ${record.entityId}`,
+    ...(quoteInternalNote?.quoteId === record.entityId ? { sourceLink: quoteInternalNote.sourceLink } : productInactiveDraft?.intakeSessionId === record.entityId ? { sourceLink: productInactiveDraft.sourceLink } : productInactiveDraftUpdate?.productId === record.entityId ? { sourceLink: { label: "Open inactive draft", href: productInactiveDraftUpdate.editorLink, entityType: "product" as const, entityId: productInactiveDraftUpdate.productId } } : {}),
+  }));
   return {
     id: plan.id, conversationId: plan.conversationId, turnId: plan.turnId ?? null, action: plan.normalizedAction,
     commandVersion: plan.commandVersion, status, riskLevel: plan.riskLevel as AssistantExecutionPlan["riskLevel"],
     planVersion: plan.version, contextVersion: "v1", preview: {
       title: plan.preview.title, summary: plan.preview.summary,
-      affectedEntities: plan.affectedRecords.map((record) => ({
-        entityType: record.entityType as any,
-        entityId: record.entityId,
-        label: quoteInternalNote?.quoteId === record.entityId ? `Quote ${quoteInternalNote.quoteNumber}` : productInactiveDraft?.intakeSessionId === record.entityId ? `Product Intake: ${productInactiveDraft.productName}` : productInactiveDraftUpdate?.productId === record.entityId ? `Inactive draft: ${productInactiveDraftUpdate.productName}` : `${record.entityType} ${record.entityId}`,
-        ...(quoteInternalNote?.quoteId === record.entityId ? { sourceLink: quoteInternalNote.sourceLink } : productInactiveDraft?.intakeSessionId === record.entityId ? { sourceLink: productInactiveDraft.sourceLink } : productInactiveDraftUpdate?.productId === record.entityId ? { sourceLink: { label: "Open inactive draft", href: productInactiveDraftUpdate.editorLink, entityType: "product" as const, entityId: productInactiveDraftUpdate.productId } } : {}),
-      })),
+      affectedEntities,
       sideEffects: plan.preview.sideEffects.map((description) => ({ label: "Planned side effect", description, affectedRecordCount: plan.affectedRecords.length, reversible: false })),
       undo: { available: false, label: null, expiresAt: null },
       ...(quoteInternalNote ? { quoteInternalNote: { ...quoteInternalNote, unchanged: [...quoteInternalNote.unchanged] } } : {}),
@@ -95,6 +101,7 @@ function planDto(plan: ExecutionPlanRecord, executionStarted = false): Assistant
       ...(productInactiveDraftUpdate ? { productInactiveDraftUpdate: { ...productInactiveDraftUpdate, changes: productInactiveDraftUpdate.changes.map((change) => ({ ...change })), warnings: [...productInactiveDraftUpdate.warnings], validationErrors: [...productInactiveDraftUpdate.validationErrors], unchanged: [...productInactiveDraftUpdate.unchanged] } } : {}),
       ...(productPricingChangeSet ? { productPricingChangeSet: { ...productPricingChangeSet, excluded: productPricingChangeSet.excluded.map((row) => ({ ...row })), rows: productPricingChangeSet.rows.map((row) => ({ ...row, before: { ...row.before }, after: { ...row.after } })), unchanged: [...productPricingChangeSet.unchanged] } } : {}),
       ...(configurableProduct ? { configurableProduct } : {}),
+      ...(orderCreate ? { orderCreate: { ...orderCreate, warnings: [...orderCreate.warnings], lines: orderCreate.lines.map((line) => ({ ...line, selections: line.selections.map((selection) => ({ ...selection })), warnings: [...line.warnings] })) } } : {}),
     },
     missingInformation: (plan.preview.missingInformation ?? []).map((label) => ({ field: label, label, description: label })),
     // Execution state comes only from the server-created plan and its stored
