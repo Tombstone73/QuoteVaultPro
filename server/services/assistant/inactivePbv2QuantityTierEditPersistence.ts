@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { and, eq, isNull } from "drizzle-orm";
 import { aiConfigurableProductProposals, pbv2TreeVersions, products } from "@shared/schema";
-import { db } from "../../db";
 import {
   InactivePbv2QuantityTierEditError,
   type InactivePbv2QuantityTierEditStore,
@@ -16,6 +15,11 @@ import {
 
 const tierProposalKind = "inactive_pbv2_quantity_tier_edit" as const;
 const tierProposalVersion = 1 as const;
+
+/** Keep injected-store execution tests independent from DATABASE_URL. */
+async function loadDatabase() {
+  return (await import("../../db")).db;
+}
 
 type PersistedTierProposal = {
   kind: typeof tierProposalKind;
@@ -53,7 +57,7 @@ function persistedProposal(proposal: Omit<InactivePbv2QuantityTierProposal, "id"
 function parseProposal(row: typeof aiConfigurableProductProposals.$inferSelect): InactivePbv2QuantityTierProposal | null {
   const value = row.specification as Partial<PersistedTierProposal>;
   if (value.kind !== tierProposalKind || value.version !== tierProposalVersion || !value.proposal) return null;
-  const parsed = inactivePbv2QuantityTierProposalSchema.safeParse({ id: row.id, ...value.proposal });
+  const parsed = inactivePbv2QuantityTierProposalSchema.safeParse({ id: row.id, ...value.proposal, status: row.status });
   return parsed.success ? parsed.data : null;
 }
 
@@ -73,6 +77,7 @@ function replaceTierFamily(treeJson: Record<string, unknown>, preview: InactiveP
  * so a tier proposal cannot be interpreted as a configurable-product proposal. */
 export class DrizzleInactivePbv2QuantityTierEditStore implements InactivePbv2QuantityTierEditStore {
   async loadSource(input: { organizationId: string; productId: string; pbv2TreeVersionId: string }): Promise<InactivePbv2QuantityTierSourceSnapshot | null> {
+    const db = await loadDatabase();
     const [product] = await db.select().from(products).where(and(
       eq(products.organizationId, input.organizationId), eq(products.id, input.productId), eq(products.isActive, false), isNull(products.pbv2ActiveTreeVersionId),
     )).limit(1);
@@ -84,6 +89,7 @@ export class DrizzleInactivePbv2QuantityTierEditStore implements InactivePbv2Qua
   }
 
   async createProposal(input: Omit<InactivePbv2QuantityTierProposal, "id">): Promise<InactivePbv2QuantityTierProposal> {
+    const db = await loadDatabase();
     const [created] = await db.insert(aiConfigurableProductProposals).values({
       orgId: input.organizationId, actorUserId: input.actorUserId, specification: persistedProposal(input), fingerprint: input.fingerprint, status: input.status,
     }).returning();
@@ -94,6 +100,7 @@ export class DrizzleInactivePbv2QuantityTierEditStore implements InactivePbv2Qua
   }
 
   async getProposal(input: { organizationId: string; proposalId: string }): Promise<InactivePbv2QuantityTierProposal | null> {
+    const db = await loadDatabase();
     const [row] = await db.select().from(aiConfigurableProductProposals).where(and(
       eq(aiConfigurableProductProposals.orgId, input.organizationId), eq(aiConfigurableProductProposals.id, input.proposalId),
     )).limit(1);
@@ -101,6 +108,7 @@ export class DrizzleInactivePbv2QuantityTierEditStore implements InactivePbv2Qua
   }
 
   async executeTierReplacementIdempotently(input: { organizationId: string; actorUserId: string; proposalId: string; proposalFingerprint: string; expectedSourceFingerprint: string; idempotencyKey: string; preview: InactivePbv2QuantityTierPreview }): Promise<InactivePbv2QuantityTierExecutionResult> {
+    const db = await loadDatabase();
     return db.transaction(async (tx) => {
       const [row] = await tx.select().from(aiConfigurableProductProposals).where(and(
         eq(aiConfigurableProductProposals.orgId, input.organizationId), eq(aiConfigurableProductProposals.id, input.proposalId),

@@ -1,6 +1,5 @@
 import { and, eq, sql } from "drizzle-orm";
 import { aiConfigurableProductProposals, pbv2TreeVersions, products } from "@shared/schema";
-import { db } from "../../db";
 import {
   CloneInactiveProductDraftError,
   type CloneInactiveProductDraftStore,
@@ -17,6 +16,11 @@ import {
 const cloneProposalKind = "clone_inactive_product_draft" as const;
 const cloneProposalVersion = 1 as const;
 
+/** Keep injected-store execution tests independent from DATABASE_URL. */
+async function loadDatabase() {
+  return (await import("../../db")).db;
+}
+
 type PersistedCloneProposal = {
   kind: typeof cloneProposalKind;
   version: typeof cloneProposalVersion;
@@ -30,7 +34,7 @@ function persistedProposal(value: Omit<CloneInactiveProductProposal, "id">): Rec
 function parseProposal(row: typeof aiConfigurableProductProposals.$inferSelect): CloneInactiveProductProposal | null {
   const value = row.specification as Partial<PersistedCloneProposal>;
   if (value.kind !== cloneProposalKind || value.version !== cloneProposalVersion || !value.proposal) return null;
-  const parsed = cloneInactiveProductProposalSchema.safeParse({ id: row.id, ...value.proposal });
+  const parsed = cloneInactiveProductProposalSchema.safeParse({ id: row.id, ...value.proposal, status: row.status });
   return parsed.success ? parsed.data : null;
 }
 
@@ -71,6 +75,7 @@ function snapshot(product: typeof products.$inferSelect, tree: typeof pbv2TreeVe
  */
 export class DrizzleCloneInactiveProductDraftStore implements CloneInactiveProductDraftStore {
   async loadSource(input: { organizationId: string; productId: string }): Promise<CloneInactiveProductSourceSnapshot | null> {
+    const db = await loadDatabase();
     const [product] = await db.select().from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
     if (!product) return null;
     const trees = product.pbv2ActiveTreeVersionId
@@ -84,6 +89,7 @@ export class DrizzleCloneInactiveProductDraftStore implements CloneInactiveProdu
   }
 
   async findProductsByNormalizedName(input: { organizationId: string; normalizedName: string }): Promise<Array<{ id: string; name: string }>> {
+    const db = await loadDatabase();
     return db.select({ id: products.id, name: products.name }).from(products).where(and(
       eq(products.organizationId, input.organizationId),
       sql`lower(regexp_replace(trim(${products.name}), '\\s+', ' ', 'g')) = ${input.normalizedName}`,
@@ -91,6 +97,7 @@ export class DrizzleCloneInactiveProductDraftStore implements CloneInactiveProdu
   }
 
   async createProposal(input: Omit<CloneInactiveProductProposal, "id">): Promise<CloneInactiveProductProposal> {
+    const db = await loadDatabase();
     const [created] = await db.insert(aiConfigurableProductProposals).values({
       orgId: input.organizationId, actorUserId: input.actorUserId,
       specification: persistedProposal(input), fingerprint: input.fingerprint, status: input.status,
@@ -102,6 +109,7 @@ export class DrizzleCloneInactiveProductDraftStore implements CloneInactiveProdu
   }
 
   async getProposal(input: { organizationId: string; proposalId: string }): Promise<CloneInactiveProductProposal | null> {
+    const db = await loadDatabase();
     const [row] = await db.select().from(aiConfigurableProductProposals).where(and(
       eq(aiConfigurableProductProposals.orgId, input.organizationId), eq(aiConfigurableProductProposals.id, input.proposalId),
     )).limit(1);
@@ -112,6 +120,7 @@ export class DrizzleCloneInactiveProductDraftStore implements CloneInactiveProdu
     organizationId: string; actorUserId: string; proposalId: string; proposalFingerprint: string;
     expectedSourceFingerprint: string; idempotencyKey: string; preview: CloneInactiveProductPreview;
   }): Promise<CloneInactiveProductExecutionResult> {
+    const db = await loadDatabase();
     return db.transaction(async (tx) => {
       const [row] = await tx.select().from(aiConfigurableProductProposals).where(and(
         eq(aiConfigurableProductProposals.orgId, input.organizationId), eq(aiConfigurableProductProposals.id, input.proposalId),

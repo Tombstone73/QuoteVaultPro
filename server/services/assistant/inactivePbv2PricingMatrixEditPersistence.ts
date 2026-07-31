@@ -35,7 +35,7 @@ function persistedProposal(proposal: Omit<InactivePbv2PricingMatrixProposal, "id
 function parseProposal(row: typeof aiConfigurableProductProposals.$inferSelect): InactivePbv2PricingMatrixProposal | null {
   const value = row.specification as Partial<PersistedMatrixProposal>;
   if (value.kind !== matrixProposalKind || value.version !== matrixProposalVersion || !value.proposal) return null;
-  const parsed = inactivePbv2PricingMatrixProposalSchema.safeParse({ id: row.id, ...value.proposal });
+  const parsed = inactivePbv2PricingMatrixProposalSchema.safeParse({ id: row.id, ...value.proposal, status: row.status });
   return parsed.success ? parsed.data : null;
 }
 
