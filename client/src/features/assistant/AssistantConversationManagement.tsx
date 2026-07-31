@@ -210,11 +210,11 @@ export function AssistantConversationSidebar({
     onArchiveComplete?.(conversationId);
   };
 
-  return <aside className="hidden w-40 shrink-0 border-r bg-muted/20 p-2 md:block" aria-label="Assistant conversations">
-    <Button type="button" variant="outline" className="mb-2 w-full justify-start gap-2" onClick={onCreate} disabled={creating}>
+  return <aside className="hidden min-h-0 w-40 shrink-0 flex-col border-r bg-muted/20 p-2 xl:flex" aria-label="Assistant conversations">
+    <Button type="button" variant="outline" className="mb-2 w-full shrink-0 justify-start gap-2" onClick={onCreate} disabled={creating}>
       <MessageSquarePlus className="h-4 w-4" /> New chat
     </Button>
-    <div className="space-y-1 overflow-y-auto">
+    <div className="min-h-0 flex-1 space-y-1 overflow-y-auto pr-1" data-testid="assistant-conversation-list">
       {conversations.map((conversation) => <ConversationRow
         key={conversation.id}
         conversation={conversation}
@@ -224,12 +224,11 @@ export function AssistantConversationSidebar({
         onRename={onRename}
         onArchive={archive}
       />)}
-    </div>
-    {onRestore ? <div className="mt-2 border-t pt-2">
-      <Button type="button" variant="ghost" size="sm" className="h-7 w-full justify-start px-2 text-xs" onClick={() => setShowArchived((visible) => !visible)} aria-expanded={showArchived}>
-        {showArchived ? "Hide archived" : "Archived conversations"}
-      </Button>
-      {showArchived ? <div className="mt-1 space-y-1" aria-label="Archived conversations">
+      {onRestore ? <div className="mt-2 border-t pt-2">
+        <Button type="button" variant="ghost" size="sm" className="h-7 w-full justify-start px-2 text-xs" onClick={() => setShowArchived((visible) => !visible)} aria-expanded={showArchived}>
+          {showArchived ? "Hide archived" : "Archived conversations"}
+        </Button>
+        {showArchived ? <div className="mt-1 space-y-1" aria-label="Archived conversations">
         {archivedLoading ? <p className="px-2 py-1 text-xs text-muted-foreground">Loading archived chats…</p> : null}
         {!archivedLoading && !archivedConversations.length ? <p className="px-2 py-1 text-xs text-muted-foreground">No archived chats.</p> : null}
         {archivedConversations.map((conversation) => <ConversationRow
@@ -242,6 +241,7 @@ export function AssistantConversationSidebar({
           onRestore={onRestore}
         />)}
       </div> : null}
-    </div> : null}
+        </div> : null}
+    </div>
   </aside>;
 }

@@ -693,7 +693,7 @@ function ConversationContent() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
       <AssistantConversationSidebar
         conversations={conversationItems}
         archivedConversations={archivedConversations.data ?? []}
@@ -721,15 +721,15 @@ function ConversationContent() {
           ))}
         </div>
       */}
-      <section className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground">
           <span className="truncate">Context: {context.pageTitle}{context.entityType ? ` · ${context.entityType}${context.entityId ? ` ${context.entityId}` : ""}` : ""}</span>
           <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2" onClick={refreshContext} title="Refresh page context">
             <RefreshCw className="h-3.5 w-3.5" /> Refresh
           </Button>
         </div>
-        <div className="relative min-h-0 flex-1">
-        <div ref={conversationScroll.containerRef} onScroll={conversationScroll.onScroll} className="h-full space-y-5 overflow-y-auto px-4 py-5 sm:px-6" aria-live="polite">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div ref={conversationScroll.containerRef} onScroll={conversationScroll.onScroll} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6" aria-live="polite" data-testid="assistant-message-history">
           {detail.isLoading ? <p className="text-sm text-muted-foreground">Loading conversation…</p> : null}
           {!messages.length && !detail.isLoading ? (
             <div className="mx-auto mt-8 max-w-sm text-center">
@@ -743,10 +743,10 @@ function ConversationContent() {
             return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Your message wasn’t sent. Try again.</p> : null}
+          </div>
+          {conversationScroll.showJumpToLatest ? <Button type="button" variant="secondary" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-md" onClick={() => conversationScroll.scrollToLatest("assistant", true)}>Jump to latest</Button> : null}
         </div>
-        {conversationScroll.showJumpToLatest ? <Button type="button" variant="secondary" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-md" onClick={() => conversationScroll.scrollToLatest("assistant", true)}>Jump to latest</Button> : null}
-        </div>
-        <form className="border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)}>
+        <form className="shrink-0 border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)} data-testid="assistant-composer">
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
           <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} disabled={sendTurn.isPending || !toolsEnabled} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} />
           <p className={cn("mt-2 text-xs leading-5 text-muted-foreground", composerHelper.compact && "truncate")} title={composerHelper.compact ? composerHelper.fullText : undefined} aria-label={composerHelper.compact ? composerHelper.fullText : undefined}>{composerHelper.text}</p>
@@ -781,7 +781,7 @@ export function AssistantDock({ side }: { side: "left" | "right" | "bottom" }) {
     const finish = () => { persistLayout(); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", finish); };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", finish, { once: true });
   };
-  return <div className={cn("relative flex shrink-0", horizontal ? "h-[var(--assistant-dock-size)] w-full flex-col" : "h-full w-[var(--assistant-dock-size)]")} style={{ ["--assistant-dock-size" as string]: `${layout.dockSize}px` }}>
+  return <div className={cn("relative flex min-h-0 min-w-0 shrink-0 overflow-hidden", horizontal ? "h-[var(--assistant-dock-size)] w-full flex-col" : "h-full w-[var(--assistant-dock-size)]")} style={{ ["--assistant-dock-size" as string]: `${layout.dockSize}px` }}>
     <div onPointerDown={resizeStart} className={cn("z-10 shrink-0 touch-none bg-border hover:bg-primary/50", horizontal ? "h-1 cursor-row-resize" : "w-1 cursor-col-resize", side === "left" && "order-last", side === "bottom" && "order-first")} aria-label="Resize assistant workspace" role="separator" />
     <WorkspacePanel className="min-h-0 flex-1 border-0 shadow-none" />
   </div>;
