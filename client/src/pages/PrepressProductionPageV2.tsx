@@ -1706,6 +1706,18 @@ export default function PrepressProductionPageV2() {
     file,
     group: finalArtworkAllocation.groups.find((group) => group.memberIds.includes(file.id)) ?? null,
   })), [finalArtworkAllocation.groups, visibleFinalFiles]);
+  const visibleFileProductionQuantity = (file: VisibleFileRecord): number | null => {
+    const direct = Number(file.productionQuantity);
+    if (Number.isInteger(direct) && direct > 0) return direct;
+    const match = selectedItem?.artworkProductionBreakdown?.designs?.find((design) =>
+      design.id === file.id
+      || design.filename === file.displayName
+      || design.filename === file.originalFilename
+      || design.filename === file.fileName,
+    );
+    const quantity = Number(match?.productionQuantity);
+    return Number.isInteger(quantity) && quantity > 0 ? quantity : null;
+  };
   useEffect(() => {
     setCombinedRunAllocations((current) => {
       const next: Record<string, string> = {};
@@ -3222,6 +3234,7 @@ export default function PrepressProductionPageV2() {
                                             <div className="truncate font-semibold text-slate-100">{file.displayName}</div>
                                             <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-500">
                                               <span>{file.sizeBytesValue != null ? formatBytes(file.sizeBytesValue) : "size unknown"}</span>
+                                              <span className="font-semibold text-slate-300">Print QTY {formatArtworkQuantity(visibleFileProductionQuantity(file))}</span>
                                               <span>{file.uploadedByLabel}</span>
                                               <span>{file.tagLabel}</span>
                                               <PrepressArtworkSideBadge side={file.sideLabel} />
@@ -4035,6 +4048,9 @@ export default function PrepressProductionPageV2() {
                 )}
               </div>
             </div>
+            <div className="mb-3">
+              <ArtworkProductionBreakdownList item={selectedItem} showHeader />
+            </div>
             <div className="border border-[#2d3748] rounded-lg overflow-hidden bg-[#1a232e]">
               <table className="w-full text-left text-xs">
                 <thead className="bg-[#111921] border-b border-[#2d3748] text-slate-400">
@@ -4046,13 +4062,14 @@ export default function PrepressProductionPageV2() {
                     <th className="px-4 py-3 font-semibold">Uploaded By</th>
                     <th className="px-4 py-3 font-semibold">Tag</th>
                     <th className="px-4 py-3 font-semibold">Artwork Side</th>
+                    <th className="px-4 py-3 font-semibold">Print Qty</th>
                     <th className="px-4 py-3 font-semibold text-right">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#2d3748]">
                   {visibleOriginalFiles.length === 0 && visibleBridgedOriginalFiles.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="px-4 py-8 text-center text-slate-500">
+                      <td colSpan={9} className="px-4 py-8 text-center text-slate-500">
                         {selectedLineItemId ? "No customer artwork uploaded" : "Select a line item to view files"}
                       </td>
                     </tr>
@@ -4089,6 +4106,11 @@ export default function PrepressProductionPageV2() {
                                 })}
                               />
                             ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
+                          </td>
+                          <td className="px-4 py-3">
+                            <span className="rounded border border-[#2d3748] bg-[#0f172a] px-2 py-1 font-mono text-[11px] font-semibold text-slate-100">
+                              QTY {formatArtworkQuantity(visibleFileProductionQuantity(file))}
+                            </span>
                           </td>
                           <td className="px-4 py-3 text-right">
                             <div className="flex flex-wrap justify-end gap-2">
@@ -4133,7 +4155,7 @@ export default function PrepressProductionPageV2() {
                       {visibleBridgedOriginalFiles.length > 0 && (
                         <>
                           <tr className="bg-amber-950/20">
-                            <td colSpan={8} className="px-4 py-1.5">
+                            <td colSpan={9} className="px-4 py-1.5">
                               <span className="text-[10px] font-bold uppercase tracking-widest text-amber-400/80">
                                 Pre-submitted by customer (from order)
                               </span>
@@ -4171,6 +4193,11 @@ export default function PrepressProductionPageV2() {
                                     })}
                                   />
                                 ) : <PrepressArtworkSideBadge side={file.sideLabel} />}
+                              </td>
+                              <td className="px-4 py-3">
+                                <span className="rounded border border-[#2d3748] bg-[#0f172a] px-2 py-1 font-mono text-[11px] font-semibold text-slate-100">
+                                  QTY {formatArtworkQuantity(visibleFileProductionQuantity(file))}
+                                </span>
                               </td>
                               <td className="px-4 py-3 text-right">
                                 <div className="flex flex-wrap justify-end gap-2">
