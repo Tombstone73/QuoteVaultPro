@@ -72,12 +72,14 @@ function snapshot(product: typeof products.$inferSelect, tree: typeof pbv2TreeVe
 export class DrizzleCloneInactiveProductDraftStore implements CloneInactiveProductDraftStore {
   async loadSource(input: { organizationId: string; productId: string }): Promise<CloneInactiveProductSourceSnapshot | null> {
     const [product] = await db.select().from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
-    if (!product || !product.pbv2ActiveTreeVersionId) return null;
-    const [tree] = await db.select().from(pbv2TreeVersions).where(and(
-      eq(pbv2TreeVersions.organizationId, input.organizationId),
-      eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId),
-      eq(pbv2TreeVersions.productId, product.id),
-    )).limit(1);
+    if (!product) return null;
+    const trees = product.pbv2ActiveTreeVersionId
+      ? await db.select().from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId), eq(pbv2TreeVersions.productId, product.id))).limit(1)
+      : await db.select().from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.productId, product.id), eq(pbv2TreeVersions.status, "DRAFT"))).limit(2);
+    // An inactive source is cloneable only when it has exactly one explicit
+    // DRAFT snapshot. Multiple drafts require a future explicit tree selector.
+    if (!product.pbv2ActiveTreeVersionId && trees.length !== 1) return null;
+    const tree = trees[0];
     return tree ? snapshot(product, tree) : null;
   }
 
@@ -123,11 +125,11 @@ export class DrizzleCloneInactiveProductDraftStore implements CloneInactiveProdu
         return { productId: row.createdProductId, productName: proposal.preview.result.product.name, pbv2TreeVersionId: row.createdPbv2TreeVersionId, inactive: true, pbv2Status: "DRAFT", reused: true };
       }
       const [sourceProduct] = await tx.select().from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, proposal.sourceProductId))).limit(1);
-      if (!sourceProduct || !sourceProduct.pbv2ActiveTreeVersionId) throw new CloneInactiveProductDraftError("CLONE_SOURCE_NOT_FOUND", "The source product is no longer available in this organization.");
+      if (!sourceProduct) throw new CloneInactiveProductDraftError("CLONE_SOURCE_NOT_FOUND", "The source product is no longer available in this organization.");
       const [sourceTree] = await tx.select().from(pbv2TreeVersions).where(and(
         eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, proposal.sourcePbv2TreeVersionId), eq(pbv2TreeVersions.productId, sourceProduct.id),
       )).limit(1);
-      if (!sourceTree || sourceProduct.pbv2ActiveTreeVersionId !== proposal.sourcePbv2TreeVersionId) {
+      if (!sourceTree || (sourceProduct.pbv2ActiveTreeVersionId ? sourceProduct.pbv2ActiveTreeVersionId !== proposal.sourcePbv2TreeVersionId : sourceTree.status !== "DRAFT")) {
         throw new CloneInactiveProductDraftError("CLONE_SOURCE_STALE", "The source product or its PBV2 tree changed; review a new clone preview.");
       }
       // This check repeats the service's fingerprint validation within the

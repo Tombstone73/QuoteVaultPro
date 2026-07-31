@@ -72,6 +72,7 @@ export type AssistantPlanCardModel = {
   configurableProduct: ConfigurableProductConfirmationCard | null;
   configurableProductResult: ConfigurableProductResultCard | null;
   cloneInactiveDraft: { sourceName: string | null; productName: string | null; beforePricing: UnknownRecord | null; afterPricing: UnknownRecord | null; resultPath: string | null } | null;
+  pbv2PricingEdit: { kind: "matrix" | "tiers"; productName: string | null; productId: string | null; treeId: string | null; before: unknown; after: unknown; resultPath: string | null } | null;
 };
 
 type UnknownRecord = Record<string, unknown>;
@@ -266,6 +267,19 @@ function toCloneInactiveDraft(action: string | null, preview: UnknownRecord | nu
   return { sourceName: asText(sourceProduct?.name), productName: asText(resultProduct?.name), beforePricing: asRecord(pricing?.before), afterPricing: asRecord(pricing?.after), resultPath: resultPath?.startsWith("/") ? resultPath : null };
 }
 
+function toPbv2PricingEdit(action: string | null, preview: UnknownRecord | null, details: UnknownRecord | null): AssistantPlanCardModel["pbv2PricingEdit"] {
+  const kind = action === "products.replace_inactive_matrix" ? "matrix" : action === "products.replace_inactive_quantity_tiers" ? "tiers" : null;
+  if (!kind || !preview) return null;
+  const envelope = asRecord(kind === "matrix" ? preview.inactivePbv2MatrixEdit : preview.inactivePbv2TierEdit);
+  const value = asRecord(envelope?.preview);
+  const source = asRecord(value?.source);
+  const product = asRecord(source?.product);
+  const tree = asRecord(source?.pbv2Tree);
+  const resultDetails = asRecord(details?.[kind === "matrix" ? "inactivePbv2MatrixEdit" : "inactivePbv2TierEdit"]);
+  const resultPath = asText(resultDetails?.editorLink);
+  return { kind, productName: asText(product?.name), productId: asText(product?.id), treeId: asText(tree?.id), before: value?.before, after: value?.after, resultPath: resultPath?.startsWith("/") ? resultPath : null };
+}
+
 export type AssistantQuoteNoteProposal = {
   turnId: string;
   title: string;
@@ -277,7 +291,7 @@ export type AssistantProductDraftProposal = {
   turnId: string;
   title: string;
   summary: string | null;
-  action: "products.create_inactive_draft" | "products.update_inactive_draft" | "products.clone_to_inactive_draft";
+  action: "products.create_inactive_draft" | "products.update_inactive_draft" | "products.clone_to_inactive_draft" | "products.replace_inactive_matrix" | "products.replace_inactive_quantity_tiers";
 };
 
 export type AssistantProductPricingProposal = {
@@ -335,15 +349,15 @@ export function toAssistantProductDraftProposal(card: unknown): AssistantProduct
   if (!record || asText(record.kind) !== "action_proposal") return null;
   const proposal = asRecord(record.proposal) ?? asRecord(record.plan) ?? record;
   const action = asText(proposal.action);
-  if (action !== "products.create_inactive_draft" && action !== "products.update_inactive_draft" && action !== "products.clone_to_inactive_draft") return null;
+  if (action !== "products.create_inactive_draft" && action !== "products.update_inactive_draft" && action !== "products.clone_to_inactive_draft" && action !== "products.replace_inactive_matrix" && action !== "products.replace_inactive_quantity_tiers") return null;
   const turnId = asText(proposal.turnId) ?? asText(record.turnId);
-  const hasBoundReference = action === "products.clone_to_inactive_draft"
+  const hasBoundReference = action === "products.clone_to_inactive_draft" || action === "products.replace_inactive_matrix" || action === "products.replace_inactive_quantity_tiers"
     ? Boolean(asText(proposal.proposalId) && asText(proposal.proposalFingerprint))
     : action === "products.create_inactive_draft"
     ? Boolean(asText(proposal.intakeSessionId) && asText(proposal.proposalFingerprint))
     : Boolean((asText(proposal.intakeSessionId) || asText(proposal.draftReference) || asText(proposal.productDraftId)) && asText(proposal.proposalFingerprint));
   if (!turnId || !hasBoundReference) return null;
-  return { turnId, title: asText(record.title) ?? (action === "products.clone_to_inactive_draft" ? "Clone to inactive product draft" : action === "products.update_inactive_draft" ? "Update inactive product draft" : "Create inactive product draft"), summary: asText(record.summary), action };
+  return { turnId, title: asText(record.title) ?? (action === "products.clone_to_inactive_draft" ? "Clone to inactive product draft" : action === "products.replace_inactive_matrix" ? "Replace inactive matrix" : action === "products.replace_inactive_quantity_tiers" ? "Replace inactive quantity tiers" : action === "products.update_inactive_draft" ? "Update inactive product draft" : "Create inactive product draft"), summary: asText(record.summary), action };
 }
 
 /** A proposal is display-only until the browser asks the server to create a plan. */
@@ -418,6 +432,7 @@ export function toAssistantPlanCardModel(card: unknown): AssistantPlanCardModel 
     configurableProduct: action === "products.create_configurable_draft" ? toConfigurableProductConfirmation(previewRecord?.configurableProduct) : null,
     configurableProductResult: toConfigurableProductResult(executionDetails?.configurableProduct),
     cloneInactiveDraft: toCloneInactiveDraft(action, previewRecord, executionDetails),
+    pbv2PricingEdit: toPbv2PricingEdit(action, previewRecord, executionDetails),
   };
 }
 
@@ -600,9 +615,10 @@ export function AssistantPlanCard({
   const isProductPricingRollback = plan.action === "products.rollback_pricing_change_set";
   const isConfigurableProduct = plan.action === "products.create_configurable_draft";
   const isCloneInactiveDraft = plan.action === "products.clone_to_inactive_draft";
+  const isPbv2PricingEdit = plan.action === "products.replace_inactive_matrix" || plan.action === "products.replace_inactive_quantity_tiers";
   const isQuoteDraft = plan.action === "quotes.create_draft" || plan.action === "quotes.update_draft";
   const isQuoteDraftUpdate = plan.action === "quotes.update_draft";
-  const hasConfirmableDraft = Boolean(plan.quoteInternalNote?.noteText || (isQuoteDraft && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary) || (isProductDraft && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && (!isProductDraftUpdate || Boolean(plan.productDraftUpdate && plan.productDraftUpdate.changes.length > 0 && plan.productDraftUpdate.validationErrors.length === 0))) || (isConfigurableProduct && plan.configurableProduct?.ready && plan.missingInformation.length === 0 && !plan.partialFailureSummary) || (isCloneInactiveDraft && plan.cloneInactiveDraft?.productName && plan.missingInformation.length === 0 && !plan.partialFailureSummary) || (isProductPricingChangeSet && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && Boolean(plan.productPricingChangeSet?.rows.length)) || (isProductPricingRollback && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && Boolean(plan.productPricingRollback?.rows.length)));
+  const hasConfirmableDraft = Boolean(plan.quoteInternalNote?.noteText || (isQuoteDraft && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary) || (isProductDraft && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && (!isProductDraftUpdate || Boolean(plan.productDraftUpdate && plan.productDraftUpdate.changes.length > 0 && plan.productDraftUpdate.validationErrors.length === 0))) || (isConfigurableProduct && plan.configurableProduct?.ready && plan.missingInformation.length === 0 && !plan.partialFailureSummary) || (isCloneInactiveDraft && plan.cloneInactiveDraft?.productName && plan.missingInformation.length === 0 && !plan.partialFailureSummary) || (isPbv2PricingEdit && plan.pbv2PricingEdit?.productId && plan.missingInformation.length === 0 && !plan.partialFailureSummary) || (isProductPricingChangeSet && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && Boolean(plan.productPricingChangeSet?.rows.length)) || (isProductPricingRollback && plan.preview && plan.missingInformation.length === 0 && !plan.partialFailureSummary && Boolean(plan.productPricingRollback?.rows.length)));
   const canConfirm = Boolean(
     onConfirm
     && hasConfirmableDraft
@@ -621,8 +637,8 @@ export function AssistantPlanCard({
       void onConfirm({ planId: plan.id, expectedPlanVersion: plan.planVersion, confirmationToken: plan.confirmationToken, context });
     }
   };
-  const actionLabel = plan.quoteInternalNote ? "Add internal quote note" : isCloneInactiveDraft ? "Clone to inactive product draft" : isConfigurableProduct ? "Create configurable inactive product draft" : isProductPricingRollback ? "Roll back product pricing" : isProductPricingChangeSet ? "Adjust product pricing" : isQuoteDraftUpdate ? "Update draft quote" : isQuoteDraft ? "Create draft quote" : isProductDraftUpdate ? "Update inactive product draft" : isProductDraft ? "Create inactive product draft" : "Proposed action";
-  const goLabel = isCloneInactiveDraft ? "GO clone inactive draft" : isConfigurableProduct ? "GO create configurable inactive draft" : isProductPricingRollback ? "GO roll back product pricing" : isProductPricingChangeSet ? "GO adjust product pricing" : isQuoteDraftUpdate ? "GO update draft quote" : isQuoteDraft ? "GO create draft quote" : isProductDraftUpdate ? "GO update inactive draft" : isProductDraft ? "GO create inactive draft" : "GO add internal note";
+  const actionLabel = plan.quoteInternalNote ? "Add internal quote note" : isPbv2PricingEdit ? (plan.pbv2PricingEdit?.kind === "matrix" ? "Replace inactive pricing matrix" : "Replace inactive quantity tiers") : isCloneInactiveDraft ? "Clone to inactive product draft" : isConfigurableProduct ? "Create configurable inactive product draft" : isProductPricingRollback ? "Roll back product pricing" : isProductPricingChangeSet ? "Adjust product pricing" : isQuoteDraftUpdate ? "Update draft quote" : isQuoteDraft ? "Create draft quote" : isProductDraftUpdate ? "Update inactive product draft" : isProductDraft ? "Create inactive product draft" : "Proposed action";
+  const goLabel = isPbv2PricingEdit ? (plan.pbv2PricingEdit?.kind === "matrix" ? "GO replace inactive matrix" : "GO replace inactive quantity tiers") : isCloneInactiveDraft ? "GO clone inactive draft" : isConfigurableProduct ? "GO create configurable inactive draft" : isProductPricingRollback ? "GO roll back product pricing" : isProductPricingChangeSet ? "GO adjust product pricing" : isQuoteDraftUpdate ? "GO update draft quote" : isQuoteDraft ? "GO create draft quote" : isProductDraftUpdate ? "GO update inactive draft" : isProductDraft ? "GO create inactive draft" : "GO add internal note";
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Execution plan: ${plan.title}`}>
     <div className="flex items-start justify-between gap-3">
       <div><p className="font-semibold">{plan.title}</p>{plan.action ? <p className="mt-0.5 text-muted-foreground">Action: {actionLabel}</p> : null}</div>
@@ -638,6 +654,7 @@ export function AssistantPlanCard({
     {plan.configurableProduct ? <ConfigurableProductConfirmationCardView confirmation={plan.configurableProduct} /> : null}
     {plan.configurableProductResult ? <ConfigurableProductResultCardView result={plan.configurableProductResult} /> : null}
     {plan.cloneInactiveDraft ? <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3"><p className="font-semibold">Clone configuration</p><p className="mt-1">{plan.cloneInactiveDraft.sourceName || "Source product"} → {plan.cloneInactiveDraft.productName || "Inactive clone"}</p><p className="mt-1 text-muted-foreground">PBV2 configuration is copied as an exact DRAFT snapshot. Source, activation, and publication are excluded.</p>{plan.cloneInactiveDraft.beforePricing || plan.cloneInactiveDraft.afterPricing ? <p className="mt-2 text-muted-foreground">Base pricing: {JSON.stringify(plan.cloneInactiveDraft.beforePricing)} → {JSON.stringify(plan.cloneInactiveDraft.afterPricing)}</p> : null}{plan.status === "succeeded" && plan.cloneInactiveDraft.resultPath ? <p className="mt-2"><a className="text-primary underline-offset-2 hover:underline" href={plan.cloneInactiveDraft.resultPath}>Open the exact cloned draft in Product Builder</a></p> : null}</div> : null}
+    {plan.pbv2PricingEdit ? <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3"><p className="font-semibold">{plan.pbv2PricingEdit.kind === "matrix" ? "Complete pricing matrix" : "Complete quantity-tier family"}</p><p className="mt-1">{plan.pbv2PricingEdit.productName || "Inactive product"} · product {plan.pbv2PricingEdit.productId} · DRAFT {plan.pbv2PricingEdit.treeId}</p><details className="mt-2"><summary className="cursor-pointer font-medium">Current configuration</summary><pre className="mt-1 max-h-48 overflow-auto rounded bg-muted p-2 text-[11px]">{JSON.stringify(plan.pbv2PricingEdit.before, null, 2)}</pre></details><details className="mt-2"><summary className="cursor-pointer font-medium">Resulting configuration</summary><pre className="mt-1 max-h-48 overflow-auto rounded bg-muted p-2 text-[11px]">{JSON.stringify(plan.pbv2PricingEdit.after, null, 2)}</pre></details>{plan.status === "succeeded" && plan.pbv2PricingEdit.resultPath ? <p className="mt-2"><a className="text-primary underline-offset-2 hover:underline" href={plan.pbv2PricingEdit.resultPath}>Open the exact updated draft in Product Builder</a></p> : null}</div> : null}
     {plan.quoteInternalNote && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Internal note added to {plan.quoteInternalNote.quotePath && plan.quoteInternalNote.quoteNumber ? <a className="text-primary underline-offset-2 hover:underline" href={plan.quoteInternalNote.quotePath}>Quote {plan.quoteInternalNote.quoteNumber}</a> : (plan.quoteInternalNote.quoteNumber ? `Quote ${plan.quoteInternalNote.quoteNumber}` : "the quote")}.</p> : null}
     {isProductDraft && plan.status === "succeeded" ? <p className="mt-3 flex items-center gap-1 rounded border border-primary/25 bg-primary/5 p-2 font-medium" role="status"><CheckCircle2 className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />Inactive product draft {isProductDraftUpdate ? "updated" : "created"}. {plan.productDraftResult?.href ? <a className="text-primary underline-offset-2 hover:underline" href={plan.productDraftResult.href}>Open {plan.productDraftResult.name} in the existing editor</a> : "Activation and publication remain unavailable in the assistant."}</p> : null}
     {staleForContext || plan.staleReason ? <p className="mt-2 flex items-center gap-1 rounded border border-amber-500/30 bg-amber-500/10 p-2 text-foreground"><CircleAlert className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{plan.staleReason || "This preview is stale for the page you are viewing. The server must revalidate it before any future action."}</p> : null}
@@ -649,7 +666,7 @@ export function AssistantPlanCard({
     {plan.partialFailureSummary ? <p className="mt-2 flex items-center gap-1 rounded border border-destructive/30 bg-destructive/5 p-2"><XCircle className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />{plan.status === "partially_failed" ? "Partial failure" : "Execution issue"}: {plan.partialFailureSummary}</p> : null}
     {plan.quoteInternalNote ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan adds one internal-only quote note. It does not make any customer-facing or operational change.</p> : isConfigurableProduct ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan creates exactly one inactive, unpublished product with a PBV2 DRAFT tree. It cannot activate, publish, or make the product live-quotable.</p> : isProductPricingRollback ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">The rollback restores only exact scalar fields that have not been changed since the original execution. It cannot alter lifecycle, publication, visibility, or historical transactions.</p> : isProductPricingChangeSet ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Effective immediately for future pricing calculations only. The exact persisted rows can be rolled back later if their values remain unchanged.</p> : isQuoteDraft ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan {isQuoteDraftUpdate ? "updates" : "creates"} exactly one internal draft quote. It cannot send, accept, convert, schedule production, reserve inventory, invoice, collect payment, fulfill, or email.</p> : isProductDraft ? <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">This plan {isProductDraftUpdate ? "updates" : "creates"} one inactive product draft only. It cannot activate, publish, or modify an active product.</p> : <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">Preview only. Production business write commands are not enabled, and this workspace does not provide a GO or execute control.</p>}
     {isProductDraftUpdate && plan.productDraftUpdate?.validationErrors.length ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2" role="status">Resolve validation errors before this draft update can be confirmed.</p> : null}
-    {canConfirm ? <div className="mt-2"><Button type="button" size="sm" disabled={confirming} onClick={confirm} aria-label={isConfigurableProduct ? "GO: create configurable inactive product draft" : isProductPricingRollback ? "GO: roll back product pricing" : isProductPricingChangeSet ? "GO: adjust product pricing" : isQuoteDraftUpdate ? "GO: update draft quote" : isQuoteDraft ? "GO: create draft quote" : isProductDraftUpdate ? "GO: update inactive product draft" : isProductDraft ? "GO: create inactive product draft" : "GO: add internal quote note"}>{confirming ? "Confirming…" : isConfigurableProduct ? "GO — create configurable inactive draft" : isProductPricingRollback ? "GO — roll back product pricing" : isProductPricingChangeSet ? "GO — adjust product pricing" : isQuoteDraftUpdate ? "GO — update draft quote" : isQuoteDraft ? "GO — create draft quote" : isProductDraftUpdate ? "GO — update inactive draft" : isProductDraft ? "GO — create inactive draft" : "GO — add internal note"}</Button></div> : null}
+    {canConfirm ? <div className="mt-2"><Button type="button" size="sm" disabled={confirming} onClick={confirm} aria-label={isPbv2PricingEdit ? (plan.pbv2PricingEdit?.kind === "matrix" ? "GO: replace inactive matrix" : "GO: replace inactive quantity tiers") : isCloneInactiveDraft ? "GO: clone to inactive product draft" : isConfigurableProduct ? "GO: create configurable inactive product draft" : isProductPricingRollback ? "GO: roll back product pricing" : isProductPricingChangeSet ? "GO: adjust product pricing" : isQuoteDraftUpdate ? "GO: update draft quote" : isQuoteDraft ? "GO: create draft quote" : isProductDraftUpdate ? "GO: update inactive product draft" : isProductDraft ? "GO: create inactive product draft" : "GO: add internal quote note"}>{confirming ? "Confirming…" : goLabel}</Button></div> : null}
     {plan.quoteInternalNote && plan.confirmationAvailable && !plan.confirmationToken && plan.status === "awaiting_confirmation" ? <p className="mt-2 text-muted-foreground" role="status">Confirmation is not ready. Reload this plan before continuing.</p> : null}
     {canCancel ? <div className="mt-2"><Button type="button" size="sm" variant="outline" disabled={cancelling} onClick={cancel}>{cancelling ? "Cancelling plan…" : "Cancel plan"}</Button></div> : null}
   </section>;

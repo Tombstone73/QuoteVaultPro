@@ -112,6 +112,10 @@ export interface ExecutionPlanPreview {
     fingerprint: string;
     preview: Record<string, unknown>;
   };
+  /** Authoritative, complete inactive-DRAFT matrix replacement preview. */
+  inactivePbv2MatrixEdit?: Record<string, unknown>;
+  /** Authoritative, complete inactive-DRAFT quantity-tier replacement preview. */
+  inactivePbv2TierEdit?: Record<string, unknown>;
   productInactiveDraftUpdate?: {
     productId: string;
     productName: string;
@@ -224,6 +228,8 @@ export interface ExecutionCommandResult {
       pbv2Status: "DRAFT";
       reused: boolean;
     };
+    inactivePbv2MatrixEdit?: Record<string, unknown>;
+    inactivePbv2TierEdit?: Record<string, unknown>;
   };
 }
 

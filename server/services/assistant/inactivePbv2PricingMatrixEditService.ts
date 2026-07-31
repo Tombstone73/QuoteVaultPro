@@ -213,7 +213,9 @@ function requireCompleteReplacement(treeJson: Record<string, unknown>, replaceme
   return candidate;
 }
 
-function sourceFingerprint(source: InactivePbv2PricingMatrixSourceSnapshot): string {
+/** Shared with the transactional store so the write boundary repeats the exact
+ * snapshot check performed during plan creation. */
+export function inactivePbv2PricingMatrixSourceFingerprint(source: InactivePbv2PricingMatrixSourceSnapshot): string {
   return fingerprint(source);
 }
 
@@ -236,7 +238,7 @@ export class InactivePbv2PricingMatrixEditService {
     const before = inactivePbv2PricingMatrixReplacementSchema.parse(current.matrix);
     const after = inactivePbv2PricingMatrixReplacementSchema.parse(requireCompleteReplacement(source.pbv2Tree.treeJson, replacement));
     if (stable(before) === stable(after)) throw new InactivePbv2PricingMatrixEditError("PBV2_MATRIX_NO_CHANGES", "The requested pricing-matrix replacement already matches this PBV2 DRAFT.");
-    const sourceHash = sourceFingerprint(source);
+    const sourceHash = inactivePbv2PricingMatrixSourceFingerprint(source);
     const preview = inactivePbv2PricingMatrixPreviewSchema.parse({
       source: cloneJson(source), location: current.location, before: cloneJson(before), after: cloneJson(after), sourceFingerprint: sourceHash,
       proposalFingerprint: fingerprint({ sourceHash, location: current.location, before, after }), editorLink: exactDraftEditorLink(source.product.id, source.pbv2Tree.id),
@@ -262,7 +264,7 @@ export class InactivePbv2PricingMatrixEditService {
     const loaded = await this.store.loadSource({ organizationId: input.organizationId, productId: proposal.productId, pbv2TreeVersionId: proposal.pbv2TreeVersionId });
     if (!loaded) throw new InactivePbv2PricingMatrixEditError("INACTIVE_DRAFT_NOT_FOUND", "The exact inactive PBV2 DRAFT is no longer available.");
     const current = inactivePbv2PricingMatrixSourceSnapshotSchema.parse(loaded);
-    if (current.organizationId !== input.organizationId || current.product.id !== proposal.productId || current.pbv2Tree.id !== proposal.pbv2TreeVersionId || sourceFingerprint(current) !== proposal.sourceFingerprint) {
+    if (current.organizationId !== input.organizationId || current.product.id !== proposal.productId || current.pbv2Tree.id !== proposal.pbv2TreeVersionId || inactivePbv2PricingMatrixSourceFingerprint(current) !== proposal.sourceFingerprint) {
       throw new InactivePbv2PricingMatrixEditError("PBV2_MATRIX_SOURCE_STALE", "The inactive PBV2 DRAFT changed; review a new pricing-matrix preview.");
     }
     return proposal;

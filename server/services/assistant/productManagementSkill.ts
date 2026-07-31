@@ -1,5 +1,5 @@
-import { eq } from "drizzle-orm";
-import { materials, pbv2OptionGroupTemplates, products } from "@shared/schema";
+import { and, eq } from "drizzle-orm";
+import { materials, pbv2OptionGroupTemplates, pbv2TreeVersions, products } from "@shared/schema";
 import {
   productIntakeWizardAnalyzeRequestSchema,
   type ProductIntakeSessionDetail,
@@ -34,13 +34,19 @@ import { getComplexProductConfirmation, persistComplexProductProposal, resolveCo
 import { CloneInactiveProductDraftError, CloneInactiveProductDraftService } from "./cloneInactiveProductDraftService";
 import { createDrizzleCloneInactiveProductDraftStore } from "./cloneInactiveProductDraftPersistence";
 import { cloneInactiveProductDraftCommandName } from "./execution/cloneInactiveProductDraftCommand";
+import { InactivePbv2PricingMatrixEditService } from "./inactivePbv2PricingMatrixEditService";
+import { createDrizzleInactivePbv2PricingMatrixEditStore } from "./inactivePbv2PricingMatrixEditPersistence";
+import { inactivePbv2PricingMatrixEditCommandName } from "./execution/inactivePbv2PricingMatrixEditCommand";
+import { InactivePbv2QuantityTierEditService } from "./inactivePbv2QuantityTierEditService";
+import { createDrizzleInactivePbv2QuantityTierEditStore } from "./inactivePbv2QuantityTierEditPersistence";
+import { inactivePbv2QuantityTierEditCommandName } from "./execution/inactivePbv2QuantityTierEditCommand";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
   version: "v1",
   purpose: "Conversationally create or continue validated inactive product drafts using the existing Product Intake workflow.",
   allowedReadDomains: ["products", "product_categories", "pbv2_definitions", "pricing_methods", "materials", "production_routing", "option_definitions", "formula_library_metadata"],
-  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1", "products.create_configurable_draft@v1", "products.clone_to_inactive_draft@v1"],
+  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1", "products.create_configurable_draft@v1", "products.clone_to_inactive_draft@v1", "products.replace_inactive_matrix@v1", "products.replace_inactive_quantity_tiers@v1"],
   requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch", "assistant.products.adjust_pricing"],
   requiredContext: ["organization", "authenticated_internal_actor", "conversation"],
   confirmationPolicy: "dedicated_plan_confirmation",
@@ -175,11 +181,65 @@ function money(centsValue: number | null | undefined): string {
   return centsValue == null ? "Not set" : `$${(centsValue / 100).toFixed(2)}`;
 }
 
-function cloneRequestFromMessage(message: string): { sourceProductId: string; newName: string } | null {
-  const match = message.match(/\bclone\s+(?:product\s*)?(?:id\s*)?([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\s+(?:as|to)\s*[“"]?([^“"\n,.]{1,255})/i);
+function normalizeProductReference(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
+function cloneRequestFromMessage(message: string): { sourceProductId?: string; sourceProductName?: string; newName: string } | null {
+  const match = message.match(/\b(?:clone|duplicate|make\s+a\s+copy\s+of)\s+(?:the\s+)?(?:product\s*)?(?:id\s*)?([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}|[^,.\n]{1,255}?)\s+(?:product\s*)?(?:as|called|to)\s*[“"]?([^“"\n,.]{1,255})/i);
   if (!match) return null;
+  const source = match[1]!.trim().replace(/\s+product$/i, "").trim();
   const newName = match[2]!.trim();
-  return newName ? { sourceProductId: match[1]!, newName } : null;
+  if (!newName || !source) return null;
+  return /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(source)
+    ? { sourceProductId: source, newName }
+    : { sourceProductName: source, newName };
+}
+
+type ExactInactiveDraftResolution =
+  | { kind: "resolved"; productId: string; productName: string; pbv2TreeVersionId: string }
+  | { kind: "active"; candidates: Array<{ id: string; name: string }> }
+  | { kind: "ambiguous"; candidates: Array<{ id: string; name: string; isActive: boolean; treeIds: string[]; updatedAt: string }> }
+  | { kind: "missing" };
+
+async function resolveExactInactiveDraft(organizationId: string, identifier: string): Promise<ExactInactiveDraftResolution> {
+  const byId = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i.test(identifier);
+  const productsInTenant = await db.select({ id: products.id, name: products.name, isActive: products.isActive, updatedAt: products.updatedAt }).from(products).where(eq(products.organizationId, organizationId));
+  const candidates = productsInTenant.filter((product) => byId ? product.id === identifier : normalizeProductReference(product.name) === normalizeProductReference(identifier));
+  if (!candidates.length) return { kind: "missing" };
+  // Limit draft lookup by product after exact product matching; this intentionally
+  // refuses any product with more than one eligible DRAFT rather than guessing.
+  const resolved = [] as Array<{ productId: string; productName: string; treeId: string }>;
+  const presentation = [] as Array<{ id: string; name: string; isActive: boolean; treeIds: string[]; updatedAt: string }>;
+  for (const candidate of candidates) {
+    const matchingTrees = candidate.isActive ? [] : await db.select({ id: pbv2TreeVersions.id }).from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, organizationId), eq(pbv2TreeVersions.productId, candidate.id), eq(pbv2TreeVersions.status, "DRAFT"), eq(pbv2TreeVersions.schemaVersion, 2))).limit(2);
+    presentation.push({ id: candidate.id, name: candidate.name, isActive: candidate.isActive, treeIds: matchingTrees.map((tree) => tree.id), updatedAt: candidate.updatedAt.toISOString() });
+    if (!candidate.isActive && matchingTrees.length === 1) resolved.push({ productId: candidate.id, productName: candidate.name, treeId: matchingTrees[0]!.id });
+  }
+  if (resolved.length === 1 && candidates.length === 1) return { kind: "resolved", productId: resolved[0]!.productId, productName: resolved[0]!.productName, pbv2TreeVersionId: resolved[0]!.treeId };
+  if (candidates.every((candidate) => candidate.isActive)) return { kind: "active", candidates: candidates.map(({ id, name }) => ({ id, name })) };
+  return { kind: "ambiguous", candidates: presentation };
+}
+
+function draftTargetFromMessage(message: string, subject: "matrix" | "tier"): string | null {
+  const expression = subject === "matrix"
+    ? /\b(?:inactive\s+)?(.{1,160}?)\s+(?:product\s+)?(?:draft\s+)?(?:price\s+)?matrix\b/i
+    : /\b(?:inactive\s+)?(.{1,160}?)\s+(?:product\s+)?(?:draft\s+)?(?:quantity\s+)?(?:tiers?|breaks?)\b/i;
+  const match = message.match(expression);
+  return match?.[1]?.replace(/^(?:update|replace|change|set)\s+(?:the\s+)?/i, "").replace(/^(?:the\s+)?inactive\s+/i, "").trim() || null;
+}
+
+function jsonAfterLabel(message: string, label: string): unknown | null {
+  const match = message.match(new RegExp(`\\b${label}\\s*[:=]\\s*(\\{[\\s\\S]*\\})\\s*$`, "i"));
+  if (!match) return null;
+  try { return JSON.parse(match[1]!); } catch { return null; }
+}
+
+function quantityTierReplacementFromMessage(message: string): { tierType: "qtyTiers"; tiers: Array<{ minQty: number; perPieceCents: number }> } | null {
+  const values = Array.from(message.matchAll(/(\d+)\s*(?:(?:through|[-–])\s*\d+|or\s+more|\+)\s*(?:at)?\s*\$?(\d+(?:\.\d+)?)\s*(?:each|per\s+piece)?/gi));
+  if (!values.length) return null;
+  const tiers = values.map((match) => ({ minQty: Number(match[1]), perPieceCents: Math.round(Number(match[2]) * 100) }));
+  return tiers.every((tier) => Number.isSafeInteger(tier.minQty) && Number.isSafeInteger(tier.perPieceCents)) ? { tierType: "qtyTiers", tiers } : null;
 }
 
 function unsupportedDraftChange(message: string): boolean {
@@ -308,10 +368,46 @@ export class ProductManagementSkillService {
   }
 
   async respond(input: { organizationId: string; userId: string; conversationId?: string; message: string; activeSessionId?: string | null; activeConfigurableProposalId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    const matrixTarget = /\bmatrix\b/i.test(input.message) ? draftTargetFromMessage(input.message, "matrix") : null;
+    if (matrixTarget) {
+      const resolved = await resolveExactInactiveDraft(input.organizationId, matrixTarget);
+      if (resolved.kind !== "resolved") {
+        const message = resolved.kind === "active" ? "Direct matrix edits are blocked for active products. Create or select an inactive PBV2 DRAFT first." : resolved.kind === "ambiguous" ? "More than one inactive draft matches. Select one exact product ID; no matrix proposal was created." : "No exact inactive PBV2 DRAFT matched that matrix request.";
+        return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Matrix replacement needs selection", summary: "No product was changed.", sourceLinks: [], details: { candidates: resolved.kind === "ambiguous" ? resolved.candidates : resolved.kind === "active" ? resolved.candidates : [] } }] };
+      }
+      const replacement = jsonAfterLabel(input.message, "matrix");
+      if (!replacement) return { handled: true, response: "I found the exact inactive draft. Provide the complete replacement matrix as JSON after `matrix:`; every option combination must be present exactly once.", cards: [{ kind: "product_missing_information", title: "Complete matrix required", summary: "No executable plan exists until every matrix cell is explicit.", sourceLinks: [{ label: "Open exact inactive draft", href: `/products/${resolved.productId}/edit?draftTreeVersionId=${resolved.pbv2TreeVersionId}` }], details: { productId: resolved.productId, pbv2TreeVersionId: resolved.pbv2TreeVersionId } }] };
+      try {
+        const proposal = await new InactivePbv2PricingMatrixEditService(createDrizzleInactivePbv2PricingMatrixEditStore()).prepareProposal({ organizationId: input.organizationId, actorUserId: input.userId, productId: resolved.productId, pbv2TreeVersionId: resolved.pbv2TreeVersionId, replacement: replacement as any });
+        return { handled: true, response: "I prepared a complete matrix replacement for one exact inactive PBV2 DRAFT. Review all current and resulting cells before GO.", cards: [{ kind: "product_draft_preview", title: "Inactive matrix replacement", summary: "Full authoritative matrix before/after preview; active products are excluded.", sourceLinks: [{ label: "Open exact inactive draft", href: proposal.preview.editorLink }], details: { productId: proposal.productId, productName: proposal.preview.source.product.name, pbv2TreeVersionId: proposal.pbv2TreeVersionId, before: proposal.preview.before, after: proposal.preview.after, warnings: [] } }, { kind: "action_proposal", title: "Replace inactive matrix", summary: "Create a server plan and use its dedicated GO control to replace only this complete matrix.", sourceLinks: [], plan: { action: inactivePbv2PricingMatrixEditCommandName, proposalId: proposal.id, proposalFingerprint: proposal.fingerprint } }] };
+      } catch (error) { const message = error instanceof Error ? error.message : "The matrix proposal could not be prepared."; return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Matrix replacement rejected", summary: "No product was changed.", sourceLinks: [], details: { errors: [message] } }] }; }
+    }
+    const tierTarget = /\b(?:tiers?|breaks?)\b/i.test(input.message) ? draftTargetFromMessage(input.message, "tier") : null;
+    if (tierTarget) {
+      const resolved = await resolveExactInactiveDraft(input.organizationId, tierTarget);
+      if (resolved.kind !== "resolved") {
+        const message = resolved.kind === "active" ? "Direct tier edits are blocked for active products. Create or select an inactive PBV2 DRAFT first." : resolved.kind === "ambiguous" ? "More than one inactive draft matches. Select one exact product ID; no tier proposal was created." : "No exact inactive PBV2 DRAFT matched that tier request.";
+        return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Tier replacement needs selection", summary: "No product was changed.", sourceLinks: [], details: { candidates: resolved.kind === "ambiguous" ? resolved.candidates : resolved.kind === "active" ? resolved.candidates : [] } }] };
+      }
+      const replacement = jsonAfterLabel(input.message, "tiers") ?? quantityTierReplacementFromMessage(input.message);
+      if (!replacement) return { handled: true, response: "I found the exact inactive draft. Provide the full resulting tier set, for example `1 through 24 at $3, 25 through 49 at $2.50, and 50 or more at $2`.", cards: [{ kind: "product_missing_information", title: "Complete tier set required", summary: "No executable plan exists until every resulting tier is explicit.", sourceLinks: [{ label: "Open exact inactive draft", href: `/products/${resolved.productId}/edit?draftTreeVersionId=${resolved.pbv2TreeVersionId}` }], details: { productId: resolved.productId, pbv2TreeVersionId: resolved.pbv2TreeVersionId } }] };
+      try {
+        const proposal = await new InactivePbv2QuantityTierEditService(createDrizzleInactivePbv2QuantityTierEditStore()).prepareProposal({ organizationId: input.organizationId, actorUserId: input.userId, productId: resolved.productId, pbv2TreeVersionId: resolved.pbv2TreeVersionId, replacement: replacement as any });
+        return { handled: true, response: "I prepared the complete resulting quantity-tier family for one exact inactive PBV2 DRAFT. Review every preserved, changed, and resulting tier before GO.", cards: [{ kind: "product_draft_preview", title: "Inactive quantity-tier replacement", summary: "Full authoritative tier before/after preview; active products are excluded.", sourceLinks: [{ label: "Open exact inactive draft", href: proposal.preview.editorLink }], details: { productId: proposal.productId, productName: proposal.preview.source.product.name, pbv2TreeVersionId: proposal.pbv2TreeVersionId, before: proposal.preview.before, after: proposal.preview.after, warnings: [] } }, { kind: "action_proposal", title: "Replace inactive quantity tiers", summary: "Create a server plan and use its dedicated GO control to replace only this complete tier family.", sourceLinks: [], plan: { action: inactivePbv2QuantityTierEditCommandName, proposalId: proposal.id, proposalFingerprint: proposal.fingerprint } }] };
+      } catch (error) { const message = error instanceof Error ? error.message : "The tier proposal could not be prepared."; return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Tier replacement rejected", summary: "No product was changed.", sourceLinks: [], details: { errors: [message] } }] }; }
+    }
     const cloneRequest = cloneRequestFromMessage(input.message);
     if (cloneRequest) {
       try {
-        const proposal = await new CloneInactiveProductDraftService(createDrizzleCloneInactiveProductDraftStore()).prepareProposal({ organizationId: input.organizationId, actorUserId: input.userId, sourceProductId: cloneRequest.sourceProductId, requestedChanges: { newName: cloneRequest.newName } });
+        const sourceProductId = cloneRequest.sourceProductId ?? (() => undefined)();
+        const candidates = sourceProductId ? [] : (await db.select({ id: products.id, name: products.name, isActive: products.isActive, pricingMode: products.pricingMode, updatedAt: products.updatedAt }).from(products).where(eq(products.organizationId, input.organizationId))).filter((product) => normalizeProductReference(product.name) === normalizeProductReference(cloneRequest.sourceProductName ?? ""));
+        if (!sourceProductId && candidates.length !== 1) {
+          return { handled: true, response: candidates.length ? "More than one tenant-scoped product has that exact normalized name. Select one product ID; no clone proposal was created." : "No tenant-scoped product has that exact normalized name. Provide the exact product name or UUID.", cards: [{ kind: "product_validation_errors", title: candidates.length ? "Select a clone source" : "Clone source not found", summary: "No product was created.", sourceLinks: [], details: { candidates: candidates.map((candidate) => ({ productId: candidate.id, productName: candidate.name, status: candidate.isActive ? "active" : "inactive", pricingMode: candidate.pricingMode, updatedAt: candidate.updatedAt.toISOString() })) } }] };
+        }
+        const resolvedId = sourceProductId ?? candidates[0]!.id;
+        const parsedPricing = pricingPatchFromMessage(input.message)?.basePricing;
+        const clonePricing = parsedPricing ? Object.fromEntries(Object.entries(parsedPricing).filter((entry): entry is [string, number] => typeof entry[1] === "number")) : undefined;
+        const proposal = await new CloneInactiveProductDraftService(createDrizzleCloneInactiveProductDraftStore()).prepareProposal({ organizationId: input.organizationId, actorUserId: input.userId, sourceProductId: resolvedId, requestedChanges: { newName: cloneRequest.newName, ...(clonePricing && Object.keys(clonePricing).length ? { basePricing: clonePricing } : {}) } });
         return { handled: true, response: "I prepared an exact inactive clone snapshot. Review the source, result, and full PBV2 configuration before creating the dedicated confirmation plan.", cards: [
           { kind: "product_draft_preview", title: "Clone inactive product draft", summary: "The source is unchanged. The result will be inactive with a PBV2 DRAFT tree.", sourceLinks: [{ label: `Open source ${proposal.preview.source.product.name}`, href: `/products/${proposal.sourceProductId}` }], details: { source: proposal.preview.source.product, result: proposal.preview.result.product, basePricing: proposal.preview.basePricing, warnings: proposal.preview.warnings } },
           { kind: "action_proposal", title: "Clone to inactive product draft", summary: "Review the server-generated clone plan and use its dedicated GO control once.", sourceLinks: [], plan: { action: cloneInactiveProductDraftCommandName, proposalId: proposal.id, proposalFingerprint: proposal.fingerprint } },

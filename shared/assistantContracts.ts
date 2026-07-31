@@ -1043,6 +1043,9 @@ export const assistantExecutionPreviewSchema = z.object({
   }).strict().optional(),
   /** Versioned, fail-closed UI payload for configurable inactive PBV2 drafts. */
   configurableProduct: z.unknown().optional(),
+  cloneInactiveDraft: z.unknown().optional(),
+  inactivePbv2MatrixEdit: z.unknown().optional(),
+  inactivePbv2TierEdit: z.unknown().optional(),
 }).strict();
 export const assistantMissingInformationSchema = z.object({
   field: z.string().trim().min(1).max(120),
