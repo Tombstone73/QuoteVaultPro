@@ -19,6 +19,7 @@ import {
 } from "@shared/schema";
 import {
   inboundOrderParsedDraftSchema,
+  inboundOrderReviewedLineItemSchema,
   inboundOrderReviewDraftPayloadSchema,
   type InboundEmailPullDiagnosticsResponse,
   type InboundAttachmentDownloadPolicy,
@@ -58,6 +59,7 @@ import { resolveProductionSides } from "@shared/productionHydration";
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import {
   hasUsableInboundLinePrice,
+  preserveInboundPricingResolution,
   resolveInboundLineEffectivePricing,
 } from "@shared/inboundOrderPricing";
 import { resolvePbv2RuntimeDimensions } from "@shared/pbv2/fixedDimensions";
@@ -769,38 +771,6 @@ function firstPoPricingForLine(
   }) ?? poItems.find((item) => item.poSummary?.pricing);
   const pricing = matched?.poSummary?.pricing ?? null;
   return pricing ? { pricing, sourceEvidence: pricingSourceEvidenceForPoSummary(matched!) } : null;
-}
-
-function preservePricingResolution(
-  previous: InboundOrderLinePricingReview | null | undefined,
-  next: InboundOrderLinePricingReview,
-  quantity: number,
-): InboundOrderLinePricingReview {
-  const withOverride = {
-    ...next,
-    priceOverrideMode: previous?.priceOverrideMode ?? null,
-    priceOverrideValueCents: previous?.priceOverrideValueCents ?? null,
-    priceOverrideSource: previous?.priceOverrideSource ?? null,
-  };
-  const effective = resolveInboundLineEffectivePricing(withOverride, quantity);
-  const withEffective = {
-    ...withOverride,
-    effectiveUnitPriceCents: effective.effectiveUnitPriceCents,
-    effectiveTotalCents: effective.effectiveTotalCents,
-  };
-  if (!previous?.acknowledged || !previous.resolution) return withEffective;
-  const sameComparison = previous.poPriceCents === next.poPriceCents
-    && previous.systemPriceCents === next.systemPriceCents
-    && previous.differenceCents === next.differenceCents
-    && previous.comparisonType === next.comparisonType;
-  if (!sameComparison) return withEffective;
-  return {
-    ...withEffective,
-    status: next.status === "mismatch" ? "resolved" : next.status,
-    acknowledged: true,
-    resolution: previous.resolution,
-    resolutionNote: previous.resolutionNote ?? null,
-  };
 }
 
 function pricingReviewAuditSummary(payload: InboundOrderReviewDraftPayload): Record<string, unknown> {
@@ -3595,6 +3565,114 @@ export class InboundOrderService {
     };
   }
 
+  async priceReviewLine(args: {
+    organizationId: string;
+    lineItem: unknown;
+  }): Promise<InboundOrderLinePricingReview> {
+    const lineItem = inboundOrderReviewedLineItemSchema.parse(args.lineItem);
+    const previous = lineItem.pricingReviewJson ?? null;
+    const quantity = lineItem.quantity ?? 1;
+    const nextReview: InboundOrderLinePricingReview = {
+      status: "not_available",
+      message: null,
+      acknowledged: false,
+      resolution: null,
+      resolutionNote: null,
+      poPriceCents: previous?.poPriceCents ?? null,
+      poUnitPriceCents: previous?.poUnitPriceCents ?? null,
+      poExtendedPriceCents: previous?.poExtendedPriceCents ?? null,
+      poRushFeesCents: previous?.poRushFeesCents ?? null,
+      poTotalPriceCents: previous?.poTotalPriceCents ?? null,
+      systemPriceCents: null,
+      systemUnitPriceCents: null,
+      differenceCents: null,
+      comparisonType: null,
+      sourceEvidence: previous?.sourceEvidence ?? [],
+      alternatePricingNotes: previous?.alternatePricingNotes ?? [],
+      evaluatedAt: new Date().toISOString(),
+      priceOverrideMode: null,
+      priceOverrideValueCents: null,
+      priceOverrideSource: null,
+      effectiveUnitPriceCents: null,
+      effectiveTotalCents: null,
+    };
+
+    if (!lineItem.selectedProductId) {
+      return preserveInboundPricingResolution(previous, {
+        ...nextReview,
+        message: "Select a catalog product before calculating price.",
+      }, quantity);
+    }
+    if (!lineItem.quantity || lineItem.quantity <= 0) {
+      return preserveInboundPricingResolution(previous, {
+        ...nextReview,
+        message: "Enter a valid quantity before calculating price.",
+      }, quantity);
+    }
+
+    try {
+      const pricing = await this.priceInboundReviewLine({
+        organizationId: args.organizationId,
+        productId: lineItem.selectedProductId,
+        quantity: lineItem.quantity,
+        width: lineItem.width,
+        height: lineItem.height,
+        optionSelections: lineItem.optionSelectionsJson,
+        pbv2TreeVersionId: lineItem.pbv2TreeVersionId,
+      });
+      const systemPriceCents = Number.isFinite(pricing.lineTotalCents) ? Math.round(pricing.lineTotalCents) : null;
+      const systemUnitPriceCents = systemPriceCents != null && quantity > 0 ? Math.round(systemPriceCents / quantity) : null;
+      const comparisons = [
+        { type: "total" as const, po: previous?.poTotalPriceCents, system: systemPriceCents },
+        { type: "extended" as const, po: previous?.poExtendedPriceCents, system: systemPriceCents },
+        {
+          type: previous?.comparisonType === "unit" ? "unit" as const : "total" as const,
+          po: previous?.poPriceCents,
+          system: previous?.comparisonType === "unit" ? systemUnitPriceCents : systemPriceCents,
+        },
+        { type: "unit" as const, po: previous?.poUnitPriceCents, system: systemUnitPriceCents },
+      ]
+        .filter((comparison): comparison is {
+          type: "total" | "extended" | "unit";
+          po: number;
+          system: number;
+        } => comparison.po != null && comparison.system != null)
+        .map((comparison) => ({
+          ...comparison,
+          differenceCents: comparison.system - comparison.po,
+        }));
+      const selectedComparison = comparisons.find((comparison) => Math.abs(comparison.differenceCents) >= 1) ?? comparisons[0] ?? null;
+      return preserveInboundPricingResolution(previous, {
+        ...nextReview,
+        status: selectedComparison
+          ? Math.abs(selectedComparison.differenceCents) >= 1 ? "mismatch" : "matched"
+          : "not_available",
+        message: selectedComparison && Math.abs(selectedComparison.differenceCents) >= 1
+          ? "PO price differs from system price."
+          : null,
+        poPriceCents: selectedComparison?.po ?? previous?.poPriceCents ?? null,
+        systemPriceCents,
+        systemUnitPriceCents,
+        differenceCents: selectedComparison?.differenceCents ?? null,
+        comparisonType: selectedComparison?.type ?? null,
+        sourceEvidence: selectedComparison
+          ? [
+              ...nextReview.sourceEvidence,
+              `System ${selectedComparison.type === "unit" ? "unit" : "line"} price: ${formatCents(selectedComparison.system)}`,
+            ]
+          : nextReview.sourceEvidence,
+      }, quantity);
+    } catch (error) {
+      const failureReason = error instanceof Error && error.message.trim()
+        ? error.message.trim()
+        : "Pricing calculation failed.";
+      return preserveInboundPricingResolution(previous, {
+        ...nextReview,
+        message: `System pricing unavailable: ${failureReason} Enter a valid pricing override before conversion.`,
+      }, quantity);
+    }
+  }
+
   async matchCustomer(args: MatchInboundCustomerReviewInput): Promise<InboundOrderDetail> {
     const record = await this.repository.getRecord(args.organizationId, args.inboundRecordId);
     if (!record) {
@@ -4639,7 +4717,7 @@ export class InboundOrderService {
       ));
       const refreshedQuantity = quantityWasStaffSelected ? existingLineItem.quantity : lineItem.quantity;
       const pricingReviewJson = existingLineItem.pricingReviewJson?.acknowledged || existingLineItem.pricingReviewJson?.priceOverrideMode
-        ? preservePricingResolution(existingLineItem.pricingReviewJson, lineItem.pricingReviewJson ?? {
+        ? preserveInboundPricingResolution(existingLineItem.pricingReviewJson, lineItem.pricingReviewJson ?? {
           status: "not_available",
           message: null,
           acknowledged: false,
@@ -4805,7 +4883,7 @@ export class InboundOrderService {
 
       reviewedLineItemsJson.push({
         ...lineItem,
-        pricingReviewJson: preservePricingResolution(lineItem.pricingReviewJson, nextReview, quantity),
+        pricingReviewJson: preserveInboundPricingResolution(lineItem.pricingReviewJson, nextReview, quantity),
       });
     }
 

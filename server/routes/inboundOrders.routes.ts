@@ -1039,6 +1039,32 @@ export function registerInboundOrderRoutes(
     }
   });
 
+  app.post("/api/inbound-orders/review-line-pricing", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+
+      const pricingReviewJson = await service.priceReviewLine({
+        organizationId,
+        lineItem: req.body?.lineItem ?? null,
+      });
+
+      res.json({ success: true, data: { pricingReviewJson } });
+    } catch (error) {
+      if (error instanceof z.ZodError) {
+        return res.status(400).json({ message: fromZodError(error).message });
+      }
+      if (error instanceof InboundOrderTransitionError) {
+        return res.status(error.statusCode).json({ message: error.message });
+      }
+
+      console.error("Error pricing inbound review line:", error);
+      res.status(500).json({ message: "Failed to calculate inbound review line pricing" });
+    }
+  });
+
   app.get("/api/inbound-orders/order-search", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;

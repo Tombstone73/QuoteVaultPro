@@ -137,6 +137,12 @@ type ClientInboundOrderParseAttempt = NonNullable<InboundOrderDraftPreviewRespon
 type ClientInboundOrderDraftPreviewResponse = InboundOrderDraftPreviewResponse;
 type ClientInboundOrderReviewDraftResponse = InboundOrderReviewDraftResponse;
 type ReviewDraftFormState = InboundOrderReviewDraftSaveRequest;
+type ClientInboundReviewLinePricingResponse = {
+  success: true;
+  data: {
+    pricingReviewJson: NonNullable<ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"]>;
+  };
+};
 
 type DraftOrderConversionAttempt = {
   draft: ReviewDraftFormState;
@@ -919,6 +925,78 @@ function optionalNumber(value: string): number | null {
 
 function formatCents(value: number | null | undefined): string {
   return value == null ? "-" : `$${(value / 100).toFixed(2)}`;
+}
+
+function inboundLinePricingDependencyKey(lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number]): string {
+  return JSON.stringify({
+    productId: lineItem.selectedProductId ?? null,
+    quantity: lineItem.quantity ?? null,
+    width: lineItem.width ?? null,
+    height: lineItem.height ?? null,
+    dimensionsUnit: lineItem.dimensionsUnit ?? null,
+    materialText: lineItem.materialText ?? null,
+    printSpecs: lineItem.printSpecs ?? [],
+    optionTexts: lineItem.optionTexts ?? [],
+    finishingTexts: lineItem.finishingTexts ?? [],
+    optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
+    pbv2TreeVersionId: lineItem.pbv2TreeVersionId ?? null,
+    productionSides: isDoubleSidedReviewLineItem(lineItem) ? "double" : "single",
+    priceOverrideMode: lineItem.pricingReviewJson?.priceOverrideMode ?? null,
+    priceOverrideValueCents: lineItem.pricingReviewJson?.priceOverrideValueCents ?? null,
+    priceOverrideSource: lineItem.pricingReviewJson?.priceOverrideSource ?? null,
+  });
+}
+
+function inboundLinePricingDependenciesChanged(
+  previous: ReviewDraftFormState["reviewedLineItemsJson"][number],
+  next: ReviewDraftFormState["reviewedLineItemsJson"][number],
+): boolean {
+  const withoutOverrides = (lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number]) => JSON.stringify({
+    productId: lineItem.selectedProductId ?? null,
+    quantity: lineItem.quantity ?? null,
+    width: lineItem.width ?? null,
+    height: lineItem.height ?? null,
+    dimensionsUnit: lineItem.dimensionsUnit ?? null,
+    materialText: lineItem.materialText ?? null,
+    printSpecs: lineItem.printSpecs ?? [],
+    optionTexts: lineItem.optionTexts ?? [],
+    finishingTexts: lineItem.finishingTexts ?? [],
+    optionSelectionsJson: lineItem.optionSelectionsJson ?? null,
+    pbv2TreeVersionId: lineItem.pbv2TreeVersionId ?? null,
+    productionSides: isDoubleSidedReviewLineItem(lineItem) ? "double" : "single",
+  });
+  return withoutOverrides(previous) !== withoutOverrides(next);
+}
+
+function markInboundLinePricingNeedsRecalculation(
+  review: ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"],
+  quantity: number | null,
+): ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"] {
+  const effective = resolveInboundLineEffectivePricing(review, quantity ?? 1);
+  return {
+    status: "not_available",
+    message: "Pricing needs recalculation.",
+    acknowledged: false,
+    resolution: null,
+    resolutionNote: null,
+    poPriceCents: review?.poPriceCents ?? null,
+    poUnitPriceCents: review?.poUnitPriceCents ?? null,
+    poExtendedPriceCents: review?.poExtendedPriceCents ?? null,
+    poRushFeesCents: review?.poRushFeesCents ?? null,
+    poTotalPriceCents: review?.poTotalPriceCents ?? null,
+    systemPriceCents: null,
+    systemUnitPriceCents: null,
+    differenceCents: null,
+    comparisonType: null,
+    sourceEvidence: review?.sourceEvidence ?? [],
+    alternatePricingNotes: review?.alternatePricingNotes ?? [],
+    evaluatedAt: null,
+    priceOverrideMode: review?.priceOverrideMode ?? null,
+    priceOverrideValueCents: review?.priceOverrideValueCents ?? null,
+    priceOverrideSource: review?.priceOverrideSource ?? null,
+    effectiveUnitPriceCents: effective.effectiveUnitPriceCents,
+    effectiveTotalCents: effective.effectiveTotalCents,
+  };
 }
 
 function formatRelative(value: string | Date | null | undefined) {
@@ -6334,7 +6412,7 @@ function CleanLineItemCard({
             )}
           </section>
           <div data-clean-resolution-target="pricing">
-            <PricingReviewCard review={lineItem.pricingReviewJson} quantity={lineItem.quantity} onChange={(pricingReviewJson) => onChange({ pricingReviewJson })} />
+            <InboundLinePricingControl lineItem={lineItem} onChange={onChange} />
           </div>
         </div>
       )}
@@ -6781,7 +6859,14 @@ function CleanOrderWorkstation({
     updateForm({ reviewedCustomerJson: { ...form.reviewedCustomerJson, ...patch } });
   };
   const updateLineItem = (index: number, patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => {
-    const reviewedLineItemsJson = form.reviewedLineItemsJson.map((item, itemIndex) => itemIndex === index ? { ...item, ...patch } : item);
+    const reviewedLineItemsJson = form.reviewedLineItemsJson.map((item, itemIndex) => {
+      if (itemIndex !== index) return item;
+      const next = { ...item, ...patch };
+      if (!Object.prototype.hasOwnProperty.call(patch, "pricingReviewJson") && inboundLinePricingDependenciesChanged(item, next)) {
+        next.pricingReviewJson = markInboundLinePricingNeedsRecalculation(item.pricingReviewJson, next.quantity);
+      }
+      return next;
+    });
     updateForm(reconcileResolvedLineItemDecisions(form, reviewedLineItemsJson));
   };
   const addLineItem = () => {
@@ -7667,15 +7752,108 @@ function ReviewLineItemProductOptions({
   );
 }
 
+function InboundLinePricingControl({
+  lineItem,
+  onChange,
+}: {
+  lineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
+  onChange: (patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => void;
+}) {
+  const pricingDependencyKey = useMemo(() => inboundLinePricingDependencyKey(lineItem), [lineItem]);
+  const latestPricingKeyRef = useRef(pricingDependencyKey);
+  const lastAutoPricingKeyRef = useRef<string | null>(null);
+  latestPricingKeyRef.current = pricingDependencyKey;
+  const pricingCalculationReady = Boolean(lineItem.selectedProductId && lineItem.quantity);
+  const pricingNeedsCalculation = pricingCalculationReady && (
+    !lineItem.pricingReviewJson
+    || lineItem.pricingReviewJson.message === "Pricing needs recalculation."
+    || (
+      lineItem.pricingReviewJson.systemPriceCents == null
+      && lineItem.pricingReviewJson.priceOverrideMode == null
+      && lineItem.pricingReviewJson.message == null
+    )
+  );
+  const priceLineMutation = useMutation({
+    mutationFn: ({ requestLineItem }: {
+      requestKey: string;
+      requestLineItem: ReviewDraftFormState["reviewedLineItemsJson"][number];
+    }) => postJson<ClientInboundReviewLinePricingResponse>("/api/inbound-orders/review-line-pricing", { lineItem: requestLineItem }),
+    onSuccess: (response, variables) => {
+      if (variables.requestKey !== latestPricingKeyRef.current) return;
+      onChange({ pricingReviewJson: response.data.pricingReviewJson });
+    },
+    onError: (error: Error, variables) => {
+      if (variables.requestKey !== latestPricingKeyRef.current) return;
+      onChange({
+        pricingReviewJson: {
+          ...markInboundLinePricingNeedsRecalculation(lineItem.pricingReviewJson, lineItem.quantity),
+          message: error.message || "Pricing calculation failed. Retry after checking product requirements.",
+          evaluatedAt: new Date().toISOString(),
+        },
+      });
+    },
+  });
+  const requestPriceRecalculation = useCallback((mode: "auto" | "manual" = "manual") => {
+    if (!pricingCalculationReady) return;
+    if (mode === "auto" && lastAutoPricingKeyRef.current === pricingDependencyKey) return;
+    if (mode === "auto") lastAutoPricingKeyRef.current = pricingDependencyKey;
+    priceLineMutation.mutate({ requestKey: pricingDependencyKey, requestLineItem: lineItem });
+  }, [lineItem, priceLineMutation, pricingCalculationReady, pricingDependencyKey]);
+  useEffect(() => {
+    if (!pricingNeedsCalculation) return;
+    const handle = window.setTimeout(() => requestPriceRecalculation("auto"), 350);
+    return () => window.clearTimeout(handle);
+  }, [pricingNeedsCalculation, requestPriceRecalculation]);
+
+  return (
+    <PricingReviewCard
+      review={lineItem.pricingReviewJson}
+      quantity={lineItem.quantity}
+      isCalculating={priceLineMutation.isPending}
+      canRecalculate={pricingCalculationReady}
+      missingRequirement={!lineItem.selectedProductId
+        ? "Select a catalog product before calculating price."
+        : !lineItem.quantity
+          ? "Enter a valid quantity before calculating price."
+          : null}
+      onRecalculate={() => requestPriceRecalculation("manual")}
+      onChange={(pricingReviewJson) => onChange({ pricingReviewJson })}
+    />
+  );
+}
+
 function PricingReviewCard({
   review,
   quantity: quantityValue,
+  isCalculating = false,
+  canRecalculate = false,
+  missingRequirement = null,
+  onRecalculate,
   onChange,
 }: {
   review: ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"];
   quantity: number | null;
+  isCalculating?: boolean;
+  canRecalculate?: boolean;
+  missingRequirement?: string | null;
+  onRecalculate?: () => void;
   onChange: (review: NonNullable<ReviewDraftFormState["reviewedLineItemsJson"][number]["pricingReviewJson"]>) => void;
 }) {
+  if (!review) {
+    return (
+      <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div>
+            <div className="font-semibold text-foreground">Pricing review</div>
+            <div className="mt-1">{missingRequirement ?? (isCalculating ? "Calculating product price..." : "Product pricing has not been calculated.")}</div>
+          </div>
+          <Button type="button" size="sm" variant="outline" disabled={!canRecalculate || isCalculating} onClick={onRecalculate}>
+            {isCalculating ? "Calculating..." : "Calculate price"}
+          </Button>
+        </div>
+      </div>
+    );
+  }
   const initialOverrideCents = review?.priceOverrideValueCents ?? null;
   const overrideInputRef = useRef<HTMLInputElement>(null);
   const overrideCentsRef = useRef<number | null>(initialOverrideCents);
@@ -7756,6 +7934,7 @@ function PricingReviewCard({
           Pricing review
         </div>
         <div className="flex items-center gap-2">
+          {isCalculating ? <Badge variant="outline">Calculating</Badge> : null}
           <Badge variant={effective.hasPriceOverride ? "default" : "outline"}>{overrideLabel}</Badge>
           {review.acknowledged ? <Badge variant="outline">Acknowledged</Badge> : null}
         </div>
@@ -7788,6 +7967,9 @@ function PricingReviewCard({
           {review.message ? `System pricing error: ${review.message} ` : "System pricing is unavailable. "}
           Enter a unit or total override before conversion.
         </div>
+      ) : null}
+      {missingRequirement ? (
+        <div className="mt-2 text-amber-600 dark:text-amber-300">{missingRequirement}</div>
       ) : null}
       {hasMismatch ? (
         <div className="mt-2 text-amber-700 dark:text-amber-200">
@@ -7877,6 +8059,9 @@ function PricingReviewCard({
           placeholder="0.00"
         />
         <div className="flex flex-wrap gap-2">
+          <Button type="button" size="sm" variant="outline" disabled={!canRecalculate || isCalculating} onClick={onRecalculate}>
+            {isCalculating ? "Calculating..." : "Recalculate"}
+          </Button>
           {poSuggestion ? (
             <Button type="button" size="sm" variant="outline" onClick={applyPoSuggestion}>
               Apply detected PO price
@@ -8187,9 +8372,14 @@ function DraftBuilderPanel({
   };
   const updateLineItem = (index: number, patch: Partial<ReviewDraftFormState["reviewedLineItemsJson"][number]>) => {
     updateForm({
-      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, itemIndex) => (
-        itemIndex === index ? { ...item, ...patch } : item
-      )),
+      reviewedLineItemsJson: form.reviewedLineItemsJson.map((item, itemIndex) => {
+        if (itemIndex !== index) return item;
+        const next = { ...item, ...patch };
+        if (!Object.prototype.hasOwnProperty.call(patch, "pricingReviewJson") && inboundLinePricingDependenciesChanged(item, next)) {
+          next.pricingReviewJson = markInboundLinePricingNeedsRecalculation(item.pricingReviewJson, next.quantity);
+        }
+        return next;
+      }),
     });
   };
   const storedAttachmentLinks = dedupeAttachmentFiles(detail?.files ?? []).map((file) => artworkLinkFromInboundFile(file, "staff_selected"));
@@ -8909,10 +9099,9 @@ function DraftBuilderPanel({
                             </OrderEntryField>
                           </div>
                           <ReviewLineItemProductOptions lineItem={lineItem} index={index} showDiagnostics={false} onChange={(patch) => updateLineItem(index, patch)} />
-                          <PricingReviewCard
-                            review={lineItem.pricingReviewJson}
-                            quantity={lineItem.quantity}
-                            onChange={(pricingReviewJson) => updateLineItem(index, { pricingReviewJson })}
+                          <InboundLinePricingControl
+                            lineItem={lineItem}
+                            onChange={(patch) => updateLineItem(index, patch)}
                           />
                           <div className="grid gap-2 lg:grid-cols-3">
                             <OrderEntryField label="Print specs">
@@ -9436,10 +9625,9 @@ function DraftBuilderPanel({
                       index={index}
                       onChange={(patch) => updateLineItem(index, patch)}
                     />
-                    <PricingReviewCard
-                      review={lineItem.pricingReviewJson}
-                      quantity={lineItem.quantity}
-                      onChange={(pricingReviewJson) => updateLineItem(index, { pricingReviewJson })}
+                    <InboundLinePricingControl
+                      lineItem={lineItem}
+                      onChange={(patch) => updateLineItem(index, patch)}
                     />
                     <label className="flex items-center gap-2 text-sm text-foreground">
                       <input type="checkbox" checked={lineItem.productUnresolved} onChange={(event) => updateLineItem(index, { productUnresolved: event.target.checked })} />

@@ -12,6 +12,11 @@ export type InboundPriceOverrideMode = (typeof inboundPriceOverrideModes)[number
 export type InboundPriceOverrideSource = "staff" | "po";
 
 export type InboundPricingReviewLike = {
+  status?: "not_available" | "matched" | "mismatch" | "resolved" | null;
+  message?: string | null;
+  acknowledged?: boolean | null;
+  resolution?: "accept_system_price" | "honor_po_price" | "pricing_exception" | null;
+  resolutionNote?: string | null;
   systemPriceCents?: number | null;
   systemUnitPriceCents?: number | null;
   poPriceCents?: number | null;
@@ -22,6 +27,8 @@ export type InboundPricingReviewLike = {
   priceOverrideMode?: InboundPriceOverrideMode | null;
   priceOverrideValueCents?: number | null;
   priceOverrideSource?: InboundPriceOverrideSource | null;
+  effectiveUnitPriceCents?: number | null;
+  effectiveTotalCents?: number | null;
 };
 
 function positiveCents(value: unknown): number | null {
@@ -75,4 +82,36 @@ export function hasUsableInboundLinePrice(
   quantity: unknown,
 ) {
   return resolveInboundLineEffectivePricing(review, quantity).effectiveTotalCents > 0;
+}
+
+export function preserveInboundPricingResolution<T extends InboundPricingReviewLike>(
+  previous: T | null | undefined,
+  next: T,
+  quantity: unknown,
+): T {
+  const withOverride = {
+    ...next,
+    priceOverrideMode: previous?.priceOverrideMode ?? null,
+    priceOverrideValueCents: previous?.priceOverrideValueCents ?? null,
+    priceOverrideSource: previous?.priceOverrideSource ?? null,
+  };
+  const effective = resolveInboundLineEffectivePricing(withOverride, quantity);
+  const withEffective = {
+    ...withOverride,
+    effectiveUnitPriceCents: effective.effectiveUnitPriceCents,
+    effectiveTotalCents: effective.effectiveTotalCents,
+  };
+  if (!previous?.acknowledged || !previous.resolution) return withEffective as T;
+  const sameComparison = previous.poPriceCents === next.poPriceCents
+    && previous.systemPriceCents === next.systemPriceCents
+    && previous.differenceCents === next.differenceCents
+    && previous.comparisonType === next.comparisonType;
+  if (!sameComparison) return withEffective as T;
+  return {
+    ...withEffective,
+    status: next.status === "mismatch" ? "resolved" : next.status,
+    acknowledged: true,
+    resolution: previous.resolution,
+    resolutionNote: previous.resolutionNote ?? null,
+  } as T;
 }
