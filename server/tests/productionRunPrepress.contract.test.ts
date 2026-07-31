@@ -27,6 +27,8 @@ describe("prepress production run creation contract", () => {
     expect(service).toContain("PRODUCTION_RUN_FINAL_FILE_REQUIRED");
     expect(service).toContain("PRODUCTION_RUN_ALLOCATION_INVALID");
     expect(service).toContain("inArray(lineItemFiles.lineItemId, uniqueLineItemIds)");
+    expect(service).toContain("buildArtworkAllocationStatus");
+    expect(service).toContain("Resolve production artwork allocation");
   });
 
   test("prepress creation no longer requires one order to own the combined run", () => {

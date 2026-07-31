@@ -64,6 +64,36 @@ describe("Prepress final production thumbnail", () => {
     expect(html).not.toContain("<img");
   });
 
+  test("retries the tenant-scoped thumbnail endpoint after a supplied thumbnail fails", async () => {
+    const ReactClient = require("react-dom/client") as typeof import("react-dom/client");
+    const { act } = require("react") as typeof import("react");
+    (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+    const fetchMock = jest.fn<() => Promise<Response>>().mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: { thumbnailStatus: "ready", thumbnailUrl: "/objects/canonical-thumb.jpg" } }),
+    } as Response);
+    (globalThis as any).fetch = fetchMock;
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const container = document.createElement("div");
+    const root = ReactClient.createRoot(container);
+
+    await act(async () => {
+      root.render(<QueryClientProvider client={client}><PrepressFileThumbnail fileId="file_retry" filename="final.pdf" mimeType="application/pdf" thumbnailUrl="/objects/expired-thumb.jpg" /></QueryClientProvider>);
+    });
+    await act(async () => {
+      container.querySelector("img")?.dispatchEvent(new Event("error", { bubbles: true }));
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    });
+
+    expect(fetchMock).toHaveBeenCalledWith("/api/prepress/files/file_retry/thumbnail", { credentials: "include" });
+    expect(container.innerHTML).not.toContain("expired-thumb.jpg");
+    expect(container.innerHTML).toContain("PDF");
+    await act(async () => root.unmount());
+    client.clear();
+    delete (globalThis as any).fetch;
+    delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;
+  });
+
   test("polls a processing repair until the final PDF thumbnail is ready", async () => {
     const ReactClient = require("react-dom/client") as typeof import("react-dom/client");
     const { act } = require("react") as typeof import("react");

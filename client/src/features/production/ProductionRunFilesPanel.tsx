@@ -1,5 +1,5 @@
 import { useRef, useState, type ChangeEvent } from "react";
-import { AlertTriangle, Download, ExternalLink, RefreshCw, Trash2, Upload } from "lucide-react";
+import { AlertTriangle, Download, ExternalLink, FileText, RefreshCw, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
   AlertDialog,
@@ -49,8 +49,17 @@ function bridgeLabel(file: ProductionRunFileSummary) {
 }
 
 function productionQuantityLabel(file: ProductionRunFileSummary) {
-  const quantity = Number(file.productionQuantity ?? file.allocatedQuantity);
+  const quantity = Number(file.productionQuantity);
   return Number.isInteger(quantity) && quantity > 0 ? `Design quantity: ${quantity}` : "Design quantity unresolved";
+}
+
+function ProductionRunFileThumbnail({ file }: { file: ProductionRunFileSummary }) {
+  const [failed, setFailed] = useState(false);
+  const source = failed ? null : file.thumbnailUrl;
+  if (!source) {
+    return <div className="flex h-full w-full items-center justify-center text-titan-text-muted" aria-label={`${file.fileName} preview unavailable`}><FileText className="h-5 w-5" /></div>;
+  }
+  return <img src={source} alt="" className="h-full w-full object-cover" onError={() => setFailed(true)} />;
 }
 
 type ProductionRunFilesPanelProps = {
@@ -138,7 +147,7 @@ export function ProductionRunFilesPanel({ run }: ProductionRunFilesPanelProps) {
             return (
               <div key={file.id} className="grid gap-2 px-3 py-2 text-xs md:grid-cols-[56px_minmax(0,1fr)_auto]">
                 <div className="h-12 w-12 overflow-hidden rounded border border-titan-border-subtle bg-black/20">
-                  {file.thumbnailUrl ? <img src={file.thumbnailUrl} alt="" className="h-full w-full object-cover" /> : <div className="flex h-full items-center justify-center text-[10px] text-titan-text-muted">No preview</div>}
+                  <ProductionRunFileThumbnail file={file} />
                 </div>
                 <div className="min-w-0">
                   <div className="truncate font-semibold">{file.fileName}</div>
