@@ -51,4 +51,13 @@ describe("configurable-product conversation integration helpers", () => {
     expect(corrected.sheet).toMatchObject({ widthIn: 48, heightIn: 96, allowRotation: true });
     expect(corrected.route).toBe("Flatbed");
   });
+
+  it("treats paired thickness and printed-side prices as a two-dimensional product matrix", () => {
+    const initial = createInitialComplexProductSpecification("I want to add a new product called Yard Signs. It has two thicknesses, 3mm and 6mm, and each thickness is available single-sided or double-sided. The prices are $12/$18 for 3mm and $16/$22 for 6mm.");
+    expect(initial.pricing.kind).toBe("two_dimensional_per_sqft");
+    expect(initial.pricing.rowValues).toEqual(["3mm", "6mm"]);
+    expect(initial.pricing.columnValues).toEqual(["single_sided", "double_sided"]);
+    expect(initial.pricing.cells).toMatchObject({ "3mm:single_sided": 1200, "3mm:double_sided": 1800, "6mm:single_sided": 1600, "6mm:double_sided": 2200 });
+    expect(initial.review.blockers).toEqual([]);
+  });
 });

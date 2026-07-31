@@ -74,6 +74,7 @@ export type ProductManagementCard = {
 export interface ProductManagementSkillDependencies {
   sessions: ProductIntakeSessionStore;
   references: (organizationId: string) => Promise<{ materials: ProductIntakeMaterialReference[]; templates: ProductIntakeTemplateReference[] }>;
+  findProductsByNormalizedName?: (organizationId: string, normalizedName: string) => Promise<Array<{ id: string; name: string; isActive: boolean }>>;
 }
 
 async function loadReferences(organizationId: string) {
@@ -91,13 +92,32 @@ function isProductIntent(message: string): boolean {
   return /\b(create|build|add|clone|configure|continue|update|change|set)\b[\s\S]{0,80}\b(product|banner|sign|print|draft)\b/i.test(message) || draftLookupFromMessage(message) !== null;
 }
 
+function isExplicitProductCreation(message: string): boolean {
+  return /\b(?:create|add|build|make|start)\b[\s\S]{0,100}\b(?:new|brand-new)?\s*(?:inactive\s+)?(?:service\s+)?(?:product|banner|sign|print)\b/i.test(message)
+    || /\b(?:new|brand-new)\s+(?:inactive\s+)?(?:service\s+)?product\b/i.test(message);
+}
+
+function isMatrixCreationRequest(message: string): boolean {
+  return isExplicitProductCreation(message) && /\b(?:pricing\s+)?matrix\b|\b(?:thickness|printed[-\s]?sides?)\b/i.test(message);
+}
+
+function isProductIntakeContinuationAnswer(message: string): boolean {
+  return /\b(?:matrix\s+rows?|matrix\s+columns?|pricing\s+matrix|width\s+and\s+height|requires?\s+dimensions)\b/i.test(message)
+    && !/\b(?:update|edit|change|replace)\b[\s\S]{0,80}\b(?:existing|inactive|draft|product)\b/i.test(message);
+}
+
+function isExplicitExistingProductUpdate(message: string): boolean {
+  return /\b(?:update|edit|change|replace)\b[\s\S]{0,120}\b(?:existing|inactive|draft|product|matrix|tiers?|breaks?)\b/i.test(message);
+}
+
 function isBatchProductIntent(message: string): boolean {
   const rowCount = (message.match(/^\s*(?:[-*]|\d+[.)])\s+/gm) ?? []).length;
   return /\b(?:batch|multiple|several|list of)\s+(?:new\s+)?products?\b/i.test(message) || message.includes("|") || (rowCount >= 2 && /\b(?:product|draft|banner|sign)\b/i.test(message));
 }
 
 function isUnsupportedProductMutation(message: string): boolean {
-  return /\b(activate|publish)\b/i.test(message) || /\b(edit|update|change)\b[\s\S]{0,80}\bactive\s+product\b/i.test(message);
+  const requested = message.replace(/\b(?:do\s+not|don't|never|without)\s+(?:activate|publish)\b/gi, "");
+  return /\b(?:activate|publish)\b/i.test(requested) || /\b(edit|update|change)\b[\s\S]{0,80}\bactive\s+product\b/i.test(requested);
 }
 
 function exactBulkProductIds(message: string): string[] {
@@ -331,8 +351,51 @@ function answerFor(question: ProductIntakeSessionDetail["questions"][number], me
   return question.questionType === "text" ? { questionKey: question.questionKey, answer: text } : null;
 }
 
+function plainQuestion(question: ProductIntakeSessionDetail["questions"][number]): string {
+  if (question.questionKey === "confirm-matrix-dimension") return "Which option should be listed down the left side of the pricing table?";
+  if (question.questionKey === "confirm-size-behavior") return "Should customers enter width and height for this product?";
+  if (question.questionKey === "confirm-quantity-behavior") return "How should customers enter quantity for this product?";
+  return question.helpText ? `${question.label}: ${question.helpText}` : question.label;
+}
+
+function unresolvedQuestions(detail: ProductIntakeSessionDetail) {
+  return detail.questions.filter((question) => question.required && !detail.answers.some((answer) => answer.questionKey === question.questionKey && answer.answer !== null));
+}
+
+function asksForOpenQuestions(message: string): boolean {
+  return /\b(?:what|which|show|repeat)\b[\s\S]{0,40}\b(?:open|remaining|required|unresolved|two|questions?)\b/i.test(message);
+}
+
+function continuationAnswers(detail: ProductIntakeSessionDetail, message: string): ProductIntakeAnswerPatchItem[] {
+  const unresolved = unresolvedQuestions(detail);
+  const answers: ProductIntakeAnswerPatchItem[] = [];
+  const matrixRows = message.match(/\b(?:use|set)\s+([a-z][a-z\s-]{1,60}?)\s+for\s+(?:the\s+)?matrix\s+rows?/i)?.[1]?.trim();
+  const requiresDimensions = /\b(?:require|requires)\s+(?:width\s+and\s+height|dimensions)\b/i.test(message);
+  const productMatrix = /\bproduct\s+pricing\s+matrix\b/i.test(message) && /\bnot\s+quantity\s+tiers?\b/i.test(message);
+  for (const question of unresolved) {
+    if (question.questionKey === "confirm-matrix-dimension" && matrixRows) {
+      const match = question.options?.find((option) => option.label.toLowerCase() === matrixRows.toLowerCase() || String(option.value).toLowerCase() === matrixRows.toLowerCase());
+      if (match) answers.push({ questionKey: question.questionKey, answer: match.value });
+      continue;
+    }
+    if (question.questionKey === "confirm-size-behavior" && requiresDimensions) {
+      answers.push({ questionKey: question.questionKey, answer: "custom_size" });
+      continue;
+    }
+    if (question.questionKey === "confirm-quantity-behavior" && productMatrix) {
+      answers.push({ questionKey: question.questionKey, answer: "per_piece" });
+      continue;
+    }
+  }
+  if (!answers.length) {
+    const next = unresolved[0]; const answer = next ? answerFor(next, message) : null;
+    if (answer) answers.push(answer);
+  }
+  return answers;
+}
+
 async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductManagementCard[]> {
-  const missing = detail.questions.filter((question) => question.required && !detail.answers.some((answer) => answer.questionKey === question.questionKey && answer.answer !== null));
+  const missing = unresolvedQuestions(detail);
   const productName = detail.brief.productIdentity.likelyProductName.value || "New product";
   const common = { productName, category: detail.brief.productIdentity.category.value, draftStatus: detail.session.status };
   const cards: ProductManagementCard[] = [{
@@ -340,12 +403,12 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
     details: { ...common, sessionId: detail.session.id, assumptions: detail.brief.draftWarnings.map((warning) => warning.message).slice(0, 10) },
   }];
   if (missing.length) {
-    cards.push({ kind: "product_missing_information", title: "Information needed", summary: "Answer the unresolved required Product Intake question in your next message.", sourceLinks: [], details: { questions: missing.slice(0, 1).map((question) => question.helpText ? `${question.label} — ${question.helpText}` : question.label) } });
+    cards.push({ kind: "product_missing_information", title: "Information needed", summary: `${missing.length} ${missing.length === 1 ? "question remains" : "questions remain"}.`, sourceLinks: [], details: { questionCount: missing.length, questions: missing.map(plainQuestion) } });
   }
   if (detail.brief.materialAnalysis.likelyMaterialMatches.length) cards.push({ kind: "product_material_selection", title: "Material references", summary: "Existing materials are only proposed for reuse; no material record will be created.", sourceLinks: [], details: { items: detail.brief.materialAnalysis.likelyMaterialMatches.map((material) => material.name) } });
   if (detail.brief.requiredOptions.length) cards.push({ kind: "product_options_summary", title: "Options", summary: "Existing Product Intake and PBV2 validation remain authoritative.", sourceLinks: [], details: { items: detail.brief.requiredOptions.map((option) => option.label) } });
   cards.push({ kind: "product_pricing_summary", title: "Pricing basis", summary: "Pricing is server-validated. High-impact pricing assumptions are never silently inferred.", sourceLinks: [], details: { pricingBasis: detail.brief.pricingAnalysis.behavior || "Unresolved" } });
-  cards.push({ kind: "product_routing_summary", title: "Production routing", summary: "Existing routing is reused only after Product Intake validation.", sourceLinks: [], details: { routing: detail.brief.quantityBehavior.behavior || "Unresolved" } });
+  cards.push({ kind: "product_routing_summary", title: "Production routing", summary: "Existing routing is reused only after Product Intake validation.", sourceLinks: [], details: { routing: "Not set" } });
   const blockers = (detail.readiness.penalties ?? []).filter((penalty) => penalty.severity === "blocker").map((penalty) => penalty.label);
   if (blockers.length) cards.push({ kind: "product_validation_errors", title: "Validation blocks draft creation", summary: "Resolve these server-derived checks before confirmation is available.", sourceLinks: [], details: { errors: blockers } });
   const warnings = detail.brief.draftWarnings.map((warning) => warning.message);
@@ -427,7 +490,8 @@ export class ProductManagementSkillService {
         }
       }
     }
-    const matrixTarget = /\bmatrix\b/i.test(input.message) ? draftTargetFromMessage(input.message, "matrix") : null;
+    const cloneRequest = cloneRequestFromMessage(input.message);
+    const matrixTarget = !isExplicitProductCreation(input.message) && !cloneRequest && !(input.activeSessionId && isProductIntakeContinuationAnswer(input.message)) && isExplicitExistingProductUpdate(input.message) && /\bmatrix\b/i.test(input.message) ? draftTargetFromMessage(input.message, "matrix") : null;
     if (matrixTarget) {
       const resolved = await resolveExactInactiveDraft(input.organizationId, matrixTarget);
       if (resolved.kind !== "resolved") {
@@ -457,7 +521,7 @@ export class ProductManagementSkillService {
         return { handled: true, response: "I prepared a complete matrix replacement for one exact inactive PBV2 DRAFT. Review all current and resulting cells before GO.", cards: [{ kind: "product_draft_preview", title: "Inactive matrix replacement", summary: "Full authoritative matrix before/after preview; active products are excluded.", sourceLinks: [{ label: "Open exact inactive draft", href: proposal.preview.editorLink }], details: { productId: proposal.productId, productName: proposal.preview.source.product.name, pbv2TreeVersionId: proposal.pbv2TreeVersionId, before: proposal.preview.before, after: proposal.preview.after, warnings: [] } }, { kind: "action_proposal", title: "Replace inactive matrix", summary: "Create a server plan and use its dedicated GO control to replace only this complete matrix.", sourceLinks: [], plan: { action: inactivePbv2PricingMatrixEditCommandName, proposalId: proposal.id, proposalFingerprint: proposal.fingerprint } }] };
       } catch (error) { const message = error instanceof Error ? error.message : "The matrix proposal could not be prepared."; return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Matrix replacement rejected", summary: "No product was changed.", sourceLinks: [], details: { errors: [message] } }] }; }
     }
-    const tierTarget = /\b(?:tiers?|breaks?)\b/i.test(input.message) ? draftTargetFromMessage(input.message, "tier") : null;
+    const tierTarget = !isExplicitProductCreation(input.message) && !cloneRequest && !(input.activeSessionId && isProductIntakeContinuationAnswer(input.message)) && isExplicitExistingProductUpdate(input.message) && /\b(?:tiers?|breaks?)\b/i.test(input.message) ? draftTargetFromMessage(input.message, "tier") : null;
     if (tierTarget) {
       const requestedTierReplacement = jsonAfterLabel(input.message, "tiers") ?? quantityTierReplacementFromMessage(input.message);
       const resolved = await resolveExactInactiveDraft(input.organizationId, tierTarget);
@@ -478,7 +542,6 @@ export class ProductManagementSkillService {
         return { handled: true, response: "I prepared the complete resulting quantity-tier family for one exact inactive PBV2 DRAFT. Review every preserved, changed, and resulting tier before GO.", cards: [{ kind: "product_draft_preview", title: "Inactive quantity-tier replacement", summary: "Full authoritative tier before/after preview; active products are excluded.", sourceLinks: [{ label: "Open exact inactive draft", href: proposal.preview.editorLink }], details: { productId: proposal.productId, productName: proposal.preview.source.product.name, pbv2TreeVersionId: proposal.pbv2TreeVersionId, before: proposal.preview.before, after: proposal.preview.after, warnings: [] } }, { kind: "action_proposal", title: "Replace inactive quantity tiers", summary: "Create a server plan and use its dedicated GO control to replace only this complete tier family.", sourceLinks: [], plan: { action: inactivePbv2QuantityTierEditCommandName, proposalId: proposal.id, proposalFingerprint: proposal.fingerprint } }] };
       } catch (error) { const message = error instanceof Error ? error.message : "The tier proposal could not be prepared."; return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Tier replacement rejected", summary: "No product was changed.", sourceLinks: [], details: { errors: [message] } }] }; }
     }
-    const cloneRequest = cloneRequestFromMessage(input.message);
     if (cloneRequest) {
       try {
         const sourceProductId = cloneRequest.sourceProductId ?? (() => undefined)();
@@ -511,7 +574,8 @@ export class ProductManagementSkillService {
     }
     // This intentionally precedes pricing and inactive-draft routing.  Its only
     // state is the one tenant-scoped proposal bound to this conversation.
-    const configurableRoute = routeComplexProductMessage(input.message) === "configurable";
+    const explicitCreation = isExplicitProductCreation(input.message);
+    const configurableRoute = routeComplexProductMessage(input.message) === "configurable" || isMatrixCreationRequest(input.message);
     let existingConfigurableProposal: Awaited<ReturnType<typeof resolveConfigurableProductContinuation>> = null;
     // Conversation state, not a fragile continuation-keyword classifier, owns
     // an in-progress configurable draft. Resolve it before Production routing
@@ -636,7 +700,7 @@ export class ProductManagementSkillService {
       return { handled: true, response: updates.length ? `Found ${updates.length} bulk inactive-draft update record(s). No products were changed.` : "No bulk inactive-draft updates were found.", cards: [{ kind: "product_batch_preview", title: "Bulk inactive-draft update history", summary: "Read-only tenant-scoped history.", sourceLinks: [], details: { updates: updates.map((proposal) => ({ bulkUpdateId: proposal.id, status: proposal.executionStatus, targetCount: proposal.targetCount, eligibleCount: proposal.eligibleCount, noChangeCount: proposal.noChangeCount, blockedCount: proposal.blockedCount, createdAt: proposal.createdAt })) } }] };
     }
     const listRequest = draftReadinessListRequest(input.message);
-    if (listRequest && !input.activeSessionId) {
+    if (listRequest && !input.activeSessionId && !explicitCreation) {
       const result = await productIntakeDraftReadinessService.listDrafts({ organizationId: input.organizationId, ...listRequest });
       return {
         handled: true,
@@ -700,11 +764,14 @@ export class ProductManagementSkillService {
           return { handled: true, response: message, cards: [{ kind: "product_active_product_unsupported", title: "Draft editing unavailable", summary: message, sourceLinks: [], details: { unsupportedReasons: ["Only organization-owned inactive Product Intake drafts with a PBV2 DRAFT tree are eligible."] } }] };
         }
       }
-      if (existing && !["draft_created", "abandoned"].includes(existing.session.status)) {
-        const next = existing.questions.find((question) => question.required && !existing.answers.some((answer) => answer.questionKey === question.questionKey && answer.answer !== null));
-        const answer = next ? answerFor(next, input.message) : null;
-        if (next && !answer && !isProductIntent(input.message)) return { handled: true, response: `I still need: ${next.label}`, cards: await cardsFor(existing) };
-        const detail = answer ? await this.deps.sessions.upsertAnswers({ organizationId: input.organizationId, sessionId: existing.session.id, userId: input.userId, answers: [answer] }) : existing;
+      if (existing && !["draft_created", "abandoned"].includes(existing.session.status) && !explicitCreation) {
+        const missing = unresolvedQuestions(existing);
+        if (missing.length && asksForOpenQuestions(input.message)) {
+          return { handled: true, response: missing.map((question, index) => `${index + 1}. ${plainQuestion(question)}`).join("\n"), cards: [] };
+        }
+        const answers = continuationAnswers(existing, input.message);
+        if (missing.length && !answers.length && !isProductIntent(input.message)) return { handled: true, response: `I still need: ${plainQuestion(missing[0]!)}`, cards: await cardsFor(existing) };
+        const detail = answers.length ? await this.deps.sessions.upsertAnswers({ organizationId: input.organizationId, sessionId: existing.session.id, userId: input.userId, answers }) : existing;
         if (detail) return { handled: true, response: detail.readiness.canCreateDraft ? "The Product Intake proposal is ready for a dedicated inactive-draft plan review." : "I saved that answer. I will ask only the next required Product Intake question.", cards: await cardsFor(detail) };
       }
     }
@@ -716,6 +783,20 @@ export class ProductManagementSkillService {
     const request = productIntakeWizardAnalyzeRequestSchema.parse({ sourceType: "text_description", description: input.message });
     const references = await this.deps.references(input.organizationId);
     const generated = await generateProductIntakeBriefWithRun({ orgId: input.organizationId, request, analyzer: null, templates: references.templates, materials: references.materials, createdByUserId: input.userId });
+    const requestedName = generated.brief.productIdentity.likelyProductName.value;
+    const normalizedName = requestedName ? normalizeProductReference(requestedName) : "";
+    if (normalizedName) {
+      const existingProducts = this.deps.findProductsByNormalizedName
+        ? await this.deps.findProductsByNormalizedName(input.organizationId, normalizedName)
+        : (await db.select({ id: products.id, name: products.name, isActive: products.isActive }).from(products).where(eq(products.organizationId, input.organizationId))).filter((product) => normalizeProductReference(product.name) === normalizedName);
+      if (existingProducts.length === 1) {
+        const product = existingProducts[0]!;
+        return { handled: true, response: `A product named ${product.name} already exists. Open it, update its inactive draft when eligible, or request an explicit clone; no new session was created.`, cards: [{ kind: "product_validation_errors", title: "Existing product found", summary: "The assistant will not silently create a duplicate product.", sourceLinks: [{ label: `Open ${product.name}`, href: `/products/${product.id}` }], details: { errors: ["Use an explicit clone request to create a new inactive draft from this product."] } }] };
+      }
+      if (existingProducts.length > 1) {
+        return { handled: true, response: `More than one product has the exact name ${requestedName}. Select an existing product before requesting an update or clone; no new session was created.`, cards: [{ kind: "product_candidate_selection", title: "Choose an existing product", summary: "The assistant will not guess between duplicate names.", sourceLinks: [], details: { candidates: existingProducts.map((product) => ({ candidateId: product.id, productId: product.id, productName: product.name, isActive: product.isActive, pricingMode: null, pbv2TreeVersionId: null, blockingReason: "Choose one product before requesting an update or clone." })) } }] };
+      }
+    }
     const detail = await this.deps.sessions.createFromAnalysis({ organizationId: input.organizationId, userId: input.userId, request, analyzer: null, brief: generated.brief });
     return { handled: true, response: detail.readiness.canCreateDraft ? "I prepared a server-validated Product Intake proposal for one inactive draft." : "I created a structured Product Intake session and will ask only the required follow-up questions.", cards: await cardsFor(detail) };
   }

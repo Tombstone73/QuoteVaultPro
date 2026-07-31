@@ -67,6 +67,14 @@ describe("AssistantProductManagementCards", () => {
     expect(container.querySelector("button")).toBeNull();
   });
 
+  it("shows every unresolved question as a numbered actionable list", () => {
+    const missing = toAssistantProductManagementCard({ kind: "product_missing_information", title: "Information needed", summary: "Two questions remain.", details: { questions: ["Which option should be listed down the left side of the pricing table?", "Should customers enter width and height for this product?"] } })!;
+    act(() => root.render(<AssistantProductManagementCardView card={missing} />));
+    expect(container.textContent).toContain("Two questions remain.");
+    expect(container.querySelectorAll("ol > li")).toHaveLength(2);
+    expect(container.textContent).not.toContain("confirm-matrix-dimension");
+  });
+
   it("rejects unrelated cards and only uses internal editor paths", () => {
     expect(toAssistantProductManagementCard({ kind: "action_plan" })).toBeNull();
     const unsafe = toAssistantProductManagementCard({ kind: "product_draft_created", title: "Draft created", details: { reviewUrl: "https://outside.example/draft" } })!;
