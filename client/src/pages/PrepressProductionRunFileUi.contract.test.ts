@@ -34,13 +34,38 @@ describe("mounted Prepress combined run file UI contract", () => {
 
   test("mounted Prepress queue exposes operator-facing Nest Selected workflow", () => {
     expect(source).toContain("prepress-bottom-action-bar");
+    expect(source).toContain("prepress-queue-selection-footer");
+    expect(source).toContain("prepress-queue-scroll-area");
+    expect(source).toContain("prepress-queue-nest-selected");
+    expect(source).toContain("prepress-queue-clear-selection");
     expect(source).toContain("Nest Selected");
-    expect(source).toContain("Clear selection");
+    expect(source).toContain("Clear Selection");
     expect(source).toContain("Ready to nest");
+    expect(source).toContain("{selectedQueueItems.length} selected");
+    expect(source).toContain("disabled={!canOpenCombinedRunDialog}");
+    expect(source).toContain("onClick={openCombinedRunWizard}");
+    expect(source).toContain("onClick={() => setSelectedQueueLineItemIds(new Set())}");
     expect(source).toContain("getPrepressCombinedRunItemBlocker");
     expect(source).toContain("canSelectPrepressCombinedRunItem");
     expect(source).toContain("Already nested in an active production run.");
     expect(source).toContain("Create Combined Run");
+  });
+
+  test("queue selection actions are not duplicated in the global bottom bar", () => {
+    const scrollIndex = source.indexOf("prepress-queue-scroll-area");
+    const queueFooterIndex = source.indexOf("prepress-queue-selection-footer");
+    expect(scrollIndex).toBeGreaterThan(-1);
+    expect(queueFooterIndex).toBeGreaterThan(scrollIndex);
+    expect(source).toContain("pb-4");
+
+    const footerStart = source.indexOf("prepress-bottom-action-bar");
+    expect(footerStart).toBeGreaterThan(-1);
+    const globalFooterSource = source.slice(footerStart, footerStart + 5000);
+    expect(globalFooterSource).toContain("Start Prepress");
+    expect(globalFooterSource).toContain("Mark Prepress Complete");
+    expect(globalFooterSource).toContain("Complete and Release");
+    expect(globalFooterSource).not.toContain("Nest Selected");
+    expect(globalFooterSource).not.toContain("Clear Selection");
   });
 
   test("mounted Nest Selected workflow is an in-pane four-step wizard", () => {
@@ -54,6 +79,8 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("Next: Resolve Artwork");
     expect(source).toContain("Next: Plan Run");
     expect(source).toContain("Next: Final Review");
+    expect(source).toContain("Cancel");
+    expect(source).toContain("Back");
     expect(source).toContain("currentCombinedRunStepBlocker");
     expect(source).toContain("Advanced / Authorized Override");
     expect(source).toContain("{!combinedRunOpen ? (");

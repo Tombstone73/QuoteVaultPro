@@ -1248,6 +1248,11 @@ export default function PrepressProductionPageV2() {
     && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity;
   const canSubmitCombinedRun = combinedRunValidation.canCreate && (!combinedRunHasPlacementMismatch || combinedRunMismatchAcknowledged);
   const canOpenCombinedRunDialog = selectedQueueItems.length >= 2 && selectedQueueHardBlockedItems.length === 0 && !createCombinedRunMutation.isPending;
+  const queueNestSelectedReason = canOpenCombinedRunDialog
+    ? "Open the combined-run wizard for the selected jobs."
+    : selectedQueueItems.length < 2
+      ? "Select two or more compatible jobs to create a combined run."
+      : combinedRunActionReason || "Selection needs review before nesting.";
   const allQueueItemsSelected = selectableQueueItems.length > 0 && selectableQueueItems.every((item) => selectedQueueLineItemIds.has(item.lineItemId));
   const someQueueItemsSelected = selectedQueueItems.length > 0 && !allQueueItemsSelected;
   const selectedQueueTotalQuantity = selectedQueueItems.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0);
@@ -1258,6 +1263,13 @@ export default function PrepressProductionPageV2() {
     : selectedQueueItemsNeedingArtwork.length > 0
       ? `${selectedQueueItemsNeedingArtwork.length} need production artwork`
       : (combinedRunActionReason || "Selection needs review");
+  const queueSelectionHelperText = selectedQueueItems.length === 0
+    ? "Select compatible jobs from the queue to create a combined run."
+    : selectedQueueHardBlockedItems.length > 0
+      ? `${selectedQueueHardBlockedItems.length} hard blocked`
+      : selectedQueueItemsNeedingArtwork.length > 0
+        ? `${selectedQueueItemsNeedingArtwork.length} need production artwork`
+        : selectedQueueValidationLabel;
   const combinedRunArtworkReadyCount = selectedQueueItemsNeedingArtwork.filter((item) => {
     const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
     return candidates.some((candidate) => candidate.id === combinedRunArtworkSelections[item.lineItemId]);
@@ -2373,7 +2385,8 @@ export default function PrepressProductionPageV2() {
 
         {/* Job List */}
         {workspaceTab === "queue" ? (
-        <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-2 pb-24">
+        <>
+        <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-2 pb-4" data-testid="prepress-queue-scroll-area">
           {!queueIsLoading && hasActivePrepressView && (
             <div className="rounded-lg border border-[#1773cf]/40 bg-[#1773cf]/10 px-3 py-2 text-xs text-slate-200">
               <div className="flex items-start justify-between gap-3">
@@ -2432,6 +2445,40 @@ export default function PrepressProductionPageV2() {
             );
           })}
         </div>
+        <div className="shrink-0 border-t border-[#2d3748] bg-[#111921]/95 p-3" data-testid="prepress-queue-selection-footer">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0 text-xs">
+              <div className="font-bold text-white">{selectedQueueItems.length} selected</div>
+              <div className="mt-0.5 truncate text-[11px] text-slate-400">{queueSelectionHelperText}</div>
+            </div>
+            <div className="flex shrink-0 flex-wrap gap-2">
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setSelectedQueueLineItemIds(new Set())}
+                disabled={selectedQueueItems.length === 0}
+                className="h-8 border-[#2d3748] px-3 text-[11px] text-slate-300 hover:bg-white/10 disabled:opacity-50"
+                data-testid="prepress-queue-clear-selection"
+              >
+                Clear Selection
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                onClick={openCombinedRunWizard}
+                disabled={!canOpenCombinedRunDialog}
+                title={queueNestSelectedReason}
+                className="h-8 bg-violet-600 px-3 text-[11px] text-white hover:bg-violet-700 disabled:bg-slate-700 disabled:text-slate-400"
+                data-testid="prepress-queue-nest-selected"
+              >
+                {createCombinedRunMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                Nest Selected
+              </Button>
+            </div>
+          </div>
+        </div>
+        </>
         ) : (
           <div className="min-h-0 flex-1 overflow-y-auto p-2 pb-24" aria-label="Combined runs tab spacer" />
         )}
@@ -3874,7 +3921,7 @@ export default function PrepressProductionPageV2() {
               </span>
               {hasProofReleaseBlock ? <span className="ml-2 text-amber-300">Proof approval blocks release</span> : null}
               {artworkSideReadiness.warning && selectedItem ? <span className="ml-2 text-amber-300">{artworkSideReadiness.warning}</span> : null}
-              {selectedQueueItems.length > 1 ? <span className="ml-2 text-slate-500">{combinedRunActionReason}</span> : null}
+              {selectedQueueItems.length > 1 ? <span className="ml-2 text-slate-500">Use the queue footer to create a combined run.</span> : null}
             </div>
 
             <div className="flex flex-wrap items-center justify-end gap-2">
@@ -3916,22 +3963,6 @@ export default function PrepressProductionPageV2() {
                 {(selectedQueueItems.length > 0 ? bulkPrintReadyMutation.isPending : completeAndReleaseMutation.isPending) ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
                 Complete and Release
               </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={openCombinedRunWizard}
-                disabled={!canOpenCombinedRunDialog}
-                title={combinedRunActionReason || undefined}
-                className="border-violet-400/60 text-violet-200 hover:bg-violet-500/10 disabled:opacity-50"
-              >
-                {createCombinedRunMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                Nest Selected
-              </Button>
-              {selectedQueueItems.length > 0 ? (
-                <Button type="button" variant="ghost" onClick={() => setSelectedQueueLineItemIds(new Set())} className="text-slate-300 hover:bg-white/10">
-                  Clear selection
-                </Button>
-              ) : null}
             </div>
           </div>
         </div>
