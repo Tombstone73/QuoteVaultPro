@@ -11,7 +11,8 @@ function requestedOrderInformation(message: OrderContinuationMessage): boolean {
     && message.structuredCards.some((card) => {
       if (!card || typeof card !== "object") return false;
       const candidate = card as { kind?: unknown; title?: unknown };
-      return candidate.kind === "missing_information" && candidate.title === "Order information needed";
+      return candidate.kind === "missing_information"
+        && (candidate.title === "Order information needed" || candidate.title === "Order pricing information needed");
     });
 }
 

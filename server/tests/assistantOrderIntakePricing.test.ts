@@ -16,6 +16,14 @@ describe("order intake pricing failures", () => {
     });
   });
 
+  it("retains canonical required option keys when pricing provides them", () => {
+    expect(orderIntakePricingFailure({
+      code: "PBV2_PRICING_MATRIX_ERROR",
+      message: "Select required options before pricing: Sides.",
+      details: [{ optionGroup: "sides" }, { optionGroup: "thickness" }],
+    })).toMatchObject({ code: "ORDER_PRICING_INPUT_REQUIRED", requiredSelectionKeys: ["sides", "thickness"] });
+  });
+
   it("keeps option-rule rejections server-authored", () => {
     expect(orderIntakePricingFailure({
       code: "PBV2_OPTION_RULE_VALIDATION_FAILED",

@@ -10,6 +10,13 @@ describe("order intake continuation", () => {
     ])).toBe("Create an order for Acme");
   });
 
+  it("continues only the immediately pending pricing-selection request", () => {
+    expect(pendingOrderIntakeRequest([
+      { role: "user", content: "Create an order for Acme using ACM Tester" },
+      { role: "assistant", content: "Choose Sides", provider: "local_order_intake", structuredCards: [{ kind: "missing_information", title: "Order pricing information needed" }] },
+    ])).toBe("Create an order for Acme using ACM Tester");
+  });
+
   it("fails closed for another provider, another card, or no prior user request", () => {
     expect(pendingOrderIntakeRequest([
       { role: "user", content: "Create an order for Acme" },
