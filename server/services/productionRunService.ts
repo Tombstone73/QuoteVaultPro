@@ -11,6 +11,7 @@ import {
   type CombinedRunSheetPlanSubmission,
 } from "@shared/combinedRunSheetPlan";
 import { resolveProductionSides } from "@shared/productionHydration";
+import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 import type { Response } from "express";
 
 type MemberInput = { productionJobId: string; allocatedQuantity?: number };
@@ -517,7 +518,14 @@ export async function createPrepressProductionRun(input: {
     }
 
     const finalRows = await tx
-      .select({ lineItemId: lineItemFiles.lineItemId })
+      .select({
+        id: lineItemFiles.id,
+        lineItemId: lineItemFiles.lineItemId,
+        role: lineItemFiles.role,
+        side: lineItemFiles.sourceArtworkSide,
+        productionQuantity: lineItemFiles.productionQuantity,
+        productionGroupId: lineItemFiles.productionGroupId,
+      })
       .from(lineItemFiles)
       .where(and(
         eq(lineItemFiles.organizationId, input.organizationId),
@@ -529,6 +537,27 @@ export async function createPrepressProductionRun(input: {
     const missingFinal = selectedRows.find(({ line }) => !finalLineItemIds.has(line.id));
     if (missingFinal) {
       throw new ProductionRunError("PRODUCTION_RUN_FINAL_FILE_REQUIRED", `Assign production artwork before creating a run for ${missingFinal.line.description || "the selected line item"}.`, 409);
+    }
+    const finalRowsByLineItem = new Map<string, typeof finalRows>();
+    for (const row of finalRows) {
+      const rows = finalRowsByLineItem.get(row.lineItemId) ?? [];
+      rows.push(row);
+      finalRowsByLineItem.set(row.lineItemId, rows);
+    }
+    for (const { line } of selectedRows) {
+      const allocation = buildArtworkAllocationStatus({
+        lineQuantity: line.quantity,
+        members: (finalRowsByLineItem.get(line.id) ?? []).map((file) => ({
+          id: file.id,
+          role: file.role,
+          side: file.side,
+          productionQuantity: file.productionQuantity,
+          productionGroupId: file.productionGroupId,
+        })),
+      });
+      if (!allocation.valid) {
+        throw new ProductionRunError("PRODUCTION_RUN_ALLOCATION_INVALID", `Resolve production artwork allocation for ${line.description || "the selected line item"}: ${allocation.issue}`, 409);
+      }
     }
     const sheetPlanPersistence = buildSheetPlanPersistence({
       stationKey: input.stationKey,

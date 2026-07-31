@@ -12,10 +12,16 @@ export type PrepressCombinedRunItem = {
   status?: string | null;
   workflowState?: string | null;
   productionReleaseBlockedReason?: string | null;
+  artworkProductionBreakdown?: {
+    source?: "final_production" | "customer_artwork" | "none";
+    valid?: boolean;
+    issue?: string | null;
+  } | null;
 };
 
 export type PrepressCombinedRunBlockerCode =
   | "resolvable_missing_production_artwork"
+  | "resolvable_production_artwork_allocation"
   | "hard_missing_prepress_job"
   | "hard_missing_order"
   | "hard_wrong_station"
@@ -53,6 +59,13 @@ export function getPrepressCombinedRunItemBlocker(item: PrepressCombinedRunItem)
   if ((Number(item.quantity) || 0) <= 0) return { code: "hard_invalid_quantity", message: "Selected items must have remaining quantity.", resolvable: false };
   const finalFileCount = Number(item.finalFileCount ?? item.fileCounts?.finals ?? 0);
   if (finalFileCount <= 0) return { code: "resolvable_missing_production_artwork", message: "Needs production artwork assignment.", resolvable: true };
+  if (item.artworkProductionBreakdown?.source === "final_production" && item.artworkProductionBreakdown.valid === false) {
+    return {
+      code: "resolvable_production_artwork_allocation",
+      message: item.artworkProductionBreakdown.issue || "Production artwork allocation needs correction.",
+      resolvable: true,
+    };
+  }
   if (terminalValues.has(String(item.status || "").toLowerCase()) || terminalValues.has(String(item.workflowState || "").toLowerCase())) {
     return { code: "hard_invalid_state", message: "Canceled or terminal items cannot be combined.", resolvable: false };
   }
@@ -111,7 +124,9 @@ export function validatePrepressCombinedRunSelection(
   const resolvableBlockers = blockers
     .filter((entry) => entry.blocker.resolvable)
     .map((entry) => ({ lineItemId: entry.item.lineItemId, code: entry.blocker.code, message: entry.blocker.message }));
-  const requiresArtworkResolution = resolvableBlockers.some((blocker) => blocker.code === "resolvable_missing_production_artwork");
+  const requiresArtworkResolution = resolvableBlockers.some((blocker) =>
+    blocker.code === "resolvable_missing_production_artwork" || blocker.code === "resolvable_production_artwork_allocation",
+  );
 
   if (hardBlockers.length > 0) {
     return baseValidation({
@@ -153,7 +168,7 @@ export function validatePrepressCombinedRunSelection(
   if (requiresArtworkResolution) {
     return {
       canCreate: false,
-      reason: `${resolvableBlockers.length} selected ${resolvableBlockers.length === 1 ? "job needs" : "jobs need"} production artwork before the run can be created.`,
+      reason: `${resolvableBlockers.length} selected ${resolvableBlockers.length === 1 ? "job needs" : "jobs need"} production artwork or a valid artwork allocation before the run can be created.`,
       orderId: orderIds.length === 1 ? orderIds[0] : null,
       orderIds,
       stationKey: stationKeys[0] ?? null,

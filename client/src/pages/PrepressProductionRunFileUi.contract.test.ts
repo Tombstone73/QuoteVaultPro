@@ -131,6 +131,23 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).not.toContain("setCombinedRunOpen(false); }} className=\"h-9 px-2 text-[11px]\"");
   });
 
+  test("customer artwork remains source/reference artwork once final production files exist", () => {
+    expect(source).toContain("Source Status");
+    expect(source).toContain("const sourceArtworkStatus = visibleFinalFiles.length > 0");
+    expect(source).toContain('"Source artwork"');
+    expect(source).toContain('"Not assigned to production"');
+  });
+
+  test("Combined Run edits canonical final-art quantities without resetting wizard state", () => {
+    expect(source).toContain("Qty to Produce");
+    expect(source).toContain("Save Allocation");
+    expect(source).toContain("/api/prepress/files/${fileId}/artwork-allocation");
+    expect(source).toContain("saveCombinedRunProductionQuantity");
+    expect(source).toContain("Refresh Artwork");
+    expect(source).toContain("setCombinedRunProductionQuantityDrafts");
+    expect(source).toContain("combinedRunProductionQuantityErrors");
+  });
+
   test("final combined-run creation returns stale artwork failures to Step 2", () => {
     expect(source).toContain("if (/artwork|production file|final file/i.test(message))");
     expect(source).toContain("setCombinedRunWizardStep(2)");

@@ -23,7 +23,8 @@ export function PrepressFileThumbnail({
 }) {
   const isImage = !!mimeType?.startsWith("image/");
   const isPdf = !!mimeType?.includes("pdf") || filename.toLowerCase().endsWith(".pdf");
-  const [thumbFailed, setThumbFailed] = useState(false);
+  const [providedThumbnailFailed, setProvidedThumbnailFailed] = useState(false);
+  const [resolvedThumbnailFailed, setResolvedThumbnailFailed] = useState(false);
 
   const { data: resolvedThumbnail } = useQuery({
     queryKey: ["/api/prepress/files", fileId, "thumbnail"],
@@ -38,7 +39,7 @@ export function PrepressFileThumbnail({
         processingStartedAt: (json?.data?.processingStartedAt as string | null) || null,
       };
     },
-    enabled: !!fileId && !thumbnailUrl && (isImage || isPdf),
+    enabled: !!fileId && (isImage || isPdf) && (!thumbnailUrl || providedThumbnailFailed),
     refetchInterval: (query) => getFilePreviewPollInterval(
       query.state.data?.status,
       query.state.data?.processingStartedAt,
@@ -53,21 +54,25 @@ export function PrepressFileThumbnail({
     if (!value) return undefined;
     return resolveObjectsPublicUrl(value) ?? undefined;
   };
-  const finalThumbnailUrl = normalizeThumbnailUrl(thumbnailUrl) || normalizeThumbnailUrl(resolvedThumbnail?.url);
+  const providedThumbnailUrl = normalizeThumbnailUrl(thumbnailUrl);
+  const finalThumbnailUrl = (providedThumbnailFailed ? undefined : providedThumbnailUrl) || normalizeThumbnailUrl(resolvedThumbnail?.url);
   const resolvedStatus = resolvedThumbnail?.status
     ?? (thumbnailAvailabilityStatus === "available"
       ? "ready"
       : thumbnailAvailabilityStatus === "pending"
         ? "processing"
         : thumbnailAvailabilityStatus ?? "missing");
-  const displayThumbnailUrl = thumbFailed ? undefined : finalThumbnailUrl;
+  const displayThumbnailUrl = resolvedThumbnailFailed ? undefined : finalThumbnailUrl;
   const processingTimedOut = isFilePreviewProcessingTimedOut(
     resolvedThumbnail?.status,
     resolvedThumbnail?.processingStartedAt,
   );
   const baseClass = compact ? "h-16 w-16" : "h-20 w-20";
 
-  useEffect(() => setThumbFailed(false), [finalThumbnailUrl]);
+  useEffect(() => {
+    setProvidedThumbnailFailed(false);
+    setResolvedThumbnailFailed(false);
+  }, [fileId, thumbnailUrl]);
 
   return (
     <div className={cn("group relative flex items-center justify-center overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]", baseClass)}>
@@ -77,7 +82,13 @@ export function PrepressFileThumbnail({
           alt={filename}
           className="absolute inset-0 h-full w-full object-cover"
           loading="lazy"
-          onError={() => setThumbFailed(true)}
+          onError={() => {
+            if (!providedThumbnailFailed && displayThumbnailUrl === providedThumbnailUrl) {
+              setProvidedThumbnailFailed(true);
+            } else {
+              setResolvedThumbnailFailed(true);
+            }
+          }}
         />
       ) : resolvedStatus === "processing" ? (
         <div className="absolute inset-0 flex flex-col items-center justify-center gap-1 bg-slate-700/60 text-white">
