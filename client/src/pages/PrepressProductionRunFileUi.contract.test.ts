@@ -88,6 +88,7 @@ describe("mounted Prepress combined run file UI contract", () => {
 
   test("mounted Nest Selected workflow resolves missing production artwork before creation", () => {
     expect(source).toContain("Resolve Production Artwork");
+    expect(source).toContain("Selected jobs missing production artwork or valid print quantities appear here.");
     expect(source).toContain("Use sole artwork");
     expect(source).toContain("Assign selected artwork");
     expect(source).toContain("Assign Existing Artwork");
@@ -96,8 +97,19 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("/api/prepress/line-item/${lineItemId}/files");
     expect(source).toContain("/api/prepress/line-item/${lineItemId}/assign-customer-artwork");
     expect(source).toContain("No customer artwork is available for this line item.");
+    expect(source).toContain("Production artwork exists, but the assigned print quantities are not valid yet.");
     expect(source).toContain("Needs production artwork");
     expect(source).not.toContain("Upload production artwork from the job detail");
+  });
+
+  test("Final Review shows member artwork evidence and production file strategy", () => {
+    expect(source).toContain("Total member quantity:");
+    expect(source).toContain("<ArtworkProductionBreakdownList item={item} showHeader />");
+    expect(source).toContain("Production File Strategy");
+    expect(source).toContain("RIP will nest member artwork");
+    expect(source).toContain("Upload prepared nested file after run creation");
+    expect(source).toContain("Source member artwork remains unchanged.");
+    expect(source).toContain("Release remains blocked until an active run-owned file exists.");
   });
 
   test("mounted Nest Selected workflow includes an inline production artwork resolver", () => {

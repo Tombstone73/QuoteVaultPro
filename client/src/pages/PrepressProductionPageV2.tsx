@@ -587,6 +587,7 @@ export default function PrepressProductionPageV2() {
   const [combinedRunNotes, setCombinedRunNotes] = useState("");
   const [combinedRunOverrideReason, setCombinedRunOverrideReason] = useState("");
   const [combinedRunMismatchAcknowledged, setCombinedRunMismatchAcknowledged] = useState(false);
+  const [combinedRunFileStrategy, setCombinedRunFileStrategy] = useState<"rip_managed" | "manual_upload_after_create">("rip_managed");
   const [combinedRunSearchQuery, setCombinedRunSearchQuery] = useState("");
   const [combinedRunStatusFilter, setCombinedRunStatusFilter] = useState<PrepressCombinedRunStatusFilter>("attention");
   const [combinedRunIncludeHistory, setCombinedRunIncludeHistory] = useState(false);
@@ -1408,8 +1409,16 @@ export default function PrepressProductionPageV2() {
     [filteredQueue, selectedQueueLineItemIds],
   );
   const selectedQueueItemsNeedingArtwork = useMemo(
-    () => selectedQueueItems.filter((item) => getPrepressCombinedRunItemBlocker(item)?.code === "resolvable_missing_production_artwork"),
+    () => selectedQueueItems.filter((item) => getPrepressCombinedRunItemBlocker(item)?.resolvable === true),
     [selectedQueueItems],
+  );
+  const selectedQueueItemsMissingProductionArtwork = useMemo(
+    () => selectedQueueItemsNeedingArtwork.filter((item) => getPrepressCombinedRunItemBlocker(item)?.code === "resolvable_missing_production_artwork"),
+    [selectedQueueItemsNeedingArtwork],
+  );
+  const selectedQueueItemsWithAllocationIssues = useMemo(
+    () => selectedQueueItemsNeedingArtwork.filter((item) => getPrepressCombinedRunItemBlocker(item)?.code === "resolvable_artwork_allocation_unresolved"),
+    [selectedQueueItemsNeedingArtwork],
   );
   const selectedQueueHardBlockedItems = useMemo(
     () => selectedQueueItems.filter((item) => {
@@ -1465,7 +1474,7 @@ export default function PrepressProductionPageV2() {
   const combinedRunActionReason = combinedRunValidation.canCreate
     ? "Selected lines will become one downstream run; original line items stay separate."
     : selectedQueueItemsNeedingArtwork.length > 0 && selectedQueueHardBlockedItems.length === 0
-      ? "Next step: assign production artwork for selected jobs, then create the run."
+      ? "Next step: resolve production artwork or quantity allocation for selected jobs, then create the run."
     : combinedRunDialogValidation.canCreate
       ? "Compatibility override required; open to provide the reason."
       : combinedRunValidation.reason;
@@ -1504,21 +1513,21 @@ export default function PrepressProductionPageV2() {
   const selectedQueueValidationLabel = combinedRunValidation.canCreate
     ? "Ready to nest"
     : selectedQueueItemsNeedingArtwork.length > 0
-      ? `${selectedQueueItemsNeedingArtwork.length} need production artwork`
+      ? `${selectedQueueItemsNeedingArtwork.length} need artwork review`
       : (combinedRunActionReason || "Selection needs review");
   const queueSelectionHelperText = selectedQueueItems.length === 0
     ? "Select compatible jobs from the queue to create a combined run."
     : selectedQueueHardBlockedItems.length > 0
       ? `${selectedQueueHardBlockedItems.length} hard blocked`
       : selectedQueueItemsNeedingArtwork.length > 0
-        ? `${selectedQueueItemsNeedingArtwork.length} need production artwork`
+        ? `${selectedQueueItemsNeedingArtwork.length} need artwork review`
         : selectedQueueValidationLabel;
-  const combinedRunArtworkReadyCount = selectedQueueItemsNeedingArtwork.filter((item) => {
+  const combinedRunArtworkReadyCount = selectedQueueItemsMissingProductionArtwork.filter((item) => {
     const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
     return candidates.some((candidate) => candidate.id === combinedRunArtworkSelections[item.lineItemId]);
   }).length;
-  const combinedRunArtworkCanAssign = selectedQueueItemsNeedingArtwork.length > 0
-    && combinedRunArtworkReadyCount === selectedQueueItemsNeedingArtwork.length
+  const combinedRunArtworkCanAssign = selectedQueueItemsMissingProductionArtwork.length > 0
+    && combinedRunArtworkReadyCount === selectedQueueItemsMissingProductionArtwork.length
     && !combinedRunArtworkLoading
     && !combinedRunArtworkAssigning;
   const combinedRunStep1Blocker = selectedQueueItems.length < 2
@@ -1532,9 +1541,13 @@ export default function PrepressProductionPageV2() {
       ? "Loading available customer artwork."
       : combinedRunArtworkErrors.__load
         ? combinedRunArtworkErrors.__load
-        : combinedRunArtworkReadyCount < selectedQueueItemsNeedingArtwork.length
+        : selectedQueueItemsMissingProductionArtwork.length > 0 && combinedRunArtworkReadyCount < selectedQueueItemsMissingProductionArtwork.length
           ? "Choose customer artwork for each unresolved job."
-          : "Assign selected artwork before planning the run.";
+          : selectedQueueItemsMissingProductionArtwork.length > 0
+            ? "Assign selected artwork before planning the run."
+            : selectedQueueItemsWithAllocationIssues.length > 0
+              ? "Open the artwork resolver and save valid production quantities."
+              : "Resolve production artwork before planning the run.";
   const combinedRunStep3Blocker = combinedRunSheetPlanImpossible
     ? combinedRunSheetPlan.reason || "The selected artwork does not fit the sheet inputs."
     : combinedRunNeedsManualSheetPlan
@@ -2172,6 +2185,7 @@ export default function PrepressProductionPageV2() {
     setCombinedRunNotes("");
     setCombinedRunOverrideReason("");
     setCombinedRunMismatchAcknowledged(false);
+    setCombinedRunFileStrategy("rip_managed");
     setCombinedRunAllocations({});
   };
 
@@ -2262,12 +2276,12 @@ export default function PrepressProductionPageV2() {
   };
 
   const handleAssignCombinedRunArtwork = async () => {
-    if (combinedRunArtworkAssigning || selectedQueueItemsNeedingArtwork.length === 0) return;
+    if (combinedRunArtworkAssigning || selectedQueueItemsMissingProductionArtwork.length === 0) return;
     const errors: Record<string, string> = {};
     setCombinedRunArtworkAssigning(true);
     setCombinedRunArtworkErrors({});
     try {
-      for (const item of selectedQueueItemsNeedingArtwork) {
+      for (const item of selectedQueueItemsMissingProductionArtwork) {
         const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
         const selectedCandidateId = combinedRunArtworkSelections[item.lineItemId];
         const candidate = candidates.find((entry) => entry.id === selectedCandidateId);
@@ -3013,18 +3027,18 @@ export default function PrepressProductionPageV2() {
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
                         <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 2: Resolve Production Artwork</h3>
-                        <p className="mt-1 text-xs text-slate-400">Only selected jobs missing production artwork appear here.</p>
+                        <p className="mt-1 text-xs text-slate-400">Selected jobs missing production artwork or valid print quantities appear here.</p>
                       </div>
                       <div className="flex flex-wrap gap-2">
                         <Button
                           type="button"
                           size="sm"
                           variant="outline"
-                          disabled={combinedRunArtworkLoading || combinedRunArtworkAssigning || selectedQueueItemsNeedingArtwork.length === 0}
+                          disabled={combinedRunArtworkLoading || combinedRunArtworkAssigning || selectedQueueItemsMissingProductionArtwork.length === 0}
                           onClick={() => {
                             setCombinedRunArtworkSelections((current) => {
                               const next = { ...current };
-                              for (const item of selectedQueueItemsNeedingArtwork) {
+                              for (const item of selectedQueueItemsMissingProductionArtwork) {
                                 const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
                                 if (candidates.length === 1) next[item.lineItemId] = candidates[0].id;
                               }
@@ -3059,11 +3073,15 @@ export default function PrepressProductionPageV2() {
                     <div className={cn("grid gap-4", combinedRunArtworkResolverLineItemId ? "xl:grid-cols-[minmax(300px,420px)_minmax(0,1fr)]" : "")}>
                     <div className="space-y-3">
                       {selectedQueueItemsNeedingArtwork.map((item) => {
+                        const blocker = getPrepressCombinedRunItemBlocker(item);
+                        const missingProductionArtwork = blocker?.code === "resolvable_missing_production_artwork";
                         const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
                         const selectedCandidateId = combinedRunArtworkSelections[item.lineItemId];
                         const selectedCandidate = candidates.find((candidate) => candidate.id === selectedCandidateId);
                         const rowError = combinedRunArtworkErrors[item.lineItemId] ?? null;
-                        const statusLabel = candidates.length === 0
+                        const statusLabel = !missingProductionArtwork
+                          ? "Quantity review"
+                          : candidates.length === 0
                           ? "Needs artwork"
                           : selectedCandidateId
                             ? "Ready"
@@ -3078,8 +3096,10 @@ export default function PrepressProductionPageV2() {
                                   Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}
                                 </div>
                                 <p className="mt-1 text-slate-400">{item.customerName || "Customer/contact not resolved"}</p>
-                                <p className="mt-1 text-slate-500">Current selected file: {selectedCandidate?.label || (candidates.length === 1 ? candidates[0].label : "None selected")}</p>
-                                <p className="mt-1 text-slate-500">Blocker: {getPrepressCombinedRunItemBlocker(item)?.message || "Backend readiness still needs confirmation."}</p>
+                                {missingProductionArtwork ? (
+                                  <p className="mt-1 text-slate-500">Current selected file: {selectedCandidate?.label || (candidates.length === 1 ? candidates[0].label : "None selected")}</p>
+                                ) : null}
+                                <p className="mt-1 text-slate-500">Blocker: {blocker?.message || "Backend readiness still needs confirmation."}</p>
                                 <div className="mt-2">
                                   <ArtworkProductionBreakdownList item={item} compact />
                                 </div>
@@ -3092,7 +3112,7 @@ export default function PrepressProductionPageV2() {
                               </span>
                             </div>
                             <div className="mt-3 grid gap-2 xl:grid-cols-[minmax(0,1fr)_auto]">
-                              {candidates.length > 0 ? (
+                              {missingProductionArtwork && candidates.length > 0 ? (
                                 <Select
                                   value={selectedCandidateId ?? (candidates.length === 1 ? candidates[0].id : undefined)}
                                   onValueChange={(value) => setCombinedRunArtworkSelections((current) => ({ ...current, [item.lineItemId]: value }))}
@@ -3108,13 +3128,17 @@ export default function PrepressProductionPageV2() {
                                     ))}
                                   </SelectContent>
                                 </Select>
-                              ) : (
+                              ) : missingProductionArtwork ? (
                                 <div className="rounded border border-[#2d3748] px-2 py-2 text-slate-300">
                                   No customer artwork is available for this line item. Upload production artwork or resolve the file assignment here.
                                 </div>
+                              ) : (
+                                <div className="rounded border border-amber-400/30 bg-amber-500/10 px-2 py-2 text-amber-100">
+                                  Production artwork exists, but the assigned print quantities are not valid yet. Open the resolver and update the Qty fields.
+                                </div>
                               )}
                               <div className="flex flex-wrap gap-2">
-                                {candidates.length > 0 ? (
+                                {missingProductionArtwork && candidates.length > 0 ? (
                                   <Button
                                     type="button"
                                     size="sm"
@@ -3675,23 +3699,63 @@ export default function PrepressProductionPageV2() {
                   </div>
                   <div className="divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]">
                     {selectedQueueItems.map((item) => {
-                      const needsArtwork = selectedQueueItemsNeedingArtwork.some((artItem) => artItem.lineItemId === item.lineItemId);
+                      const blocker = getPrepressCombinedRunItemBlocker(item);
+                      const needsArtwork = Boolean(blocker);
                       return (
-                        <div key={item.lineItemId} className="grid gap-2 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_160px_120px]">
+                        <div key={item.lineItemId} className="grid gap-3 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_160px_120px]">
                           <div className="min-w-0">
                             <div className="truncate font-semibold text-white">Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}</div>
                             <div className="mt-1 text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
-                            <div className="mt-2">
-                              <ArtworkProductionBreakdownList item={item} compact />
+                            <div className="mt-1 text-slate-500">Total member quantity: {combinedRunAllocations[item.lineItemId] ?? item.quantity} of {item.quantity} ordered</div>
+                            <div className="mt-3">
+                              <ArtworkProductionBreakdownList item={item} showHeader />
                             </div>
                           </div>
                           <span className={cn("rounded border px-2 py-1 text-center text-[11px] font-semibold", needsArtwork ? "border-amber-400/40 text-amber-100" : "border-emerald-400/40 text-emerald-200")}>
-                            {needsArtwork ? "Artwork unresolved" : "Artwork ready"}
+                            {needsArtwork ? blocker?.message || "Artwork unresolved" : "Ready"}
                           </span>
                           <span className="font-mono text-slate-200">Qty {combinedRunAllocations[item.lineItemId] ?? item.quantity}</span>
                         </div>
                       );
                     })}
+                  </div>
+                  <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Production File Strategy</h3>
+                    <RadioGroup
+                      value={combinedRunFileStrategy}
+                      onValueChange={(value) => setCombinedRunFileStrategy(value === "manual_upload_after_create" ? "manual_upload_after_create" : "rip_managed")}
+                      className="mt-3 grid gap-3 md:grid-cols-2"
+                    >
+                      <label className={cn(
+                        "flex cursor-pointer gap-3 rounded border p-3 text-xs",
+                        combinedRunFileStrategy === "rip_managed" ? "border-emerald-400/50 bg-emerald-500/10 text-emerald-100" : "border-[#2d3748] bg-[#0f172a] text-slate-300",
+                      )}>
+                        <RadioGroupItem value="rip_managed" id="combined-run-file-strategy-rip" />
+                        <span>
+                          <span className="block font-semibold">RIP will nest member artwork</span>
+                          <span className="mt-1 block text-slate-400">Create the run with the source member files shown above. The downstream operator or RIP creates the final nesting.</span>
+                        </span>
+                      </label>
+                      <label className={cn(
+                        "flex cursor-pointer gap-3 rounded border p-3 text-xs",
+                        combinedRunFileStrategy === "manual_upload_after_create" ? "border-violet-400/50 bg-violet-500/10 text-violet-100" : "border-[#2d3748] bg-[#0f172a] text-slate-300",
+                      )}>
+                        <RadioGroupItem value="manual_upload_after_create" id="combined-run-file-strategy-manual" />
+                        <span>
+                          <span className="block font-semibold">Upload prepared nested file after run creation</span>
+                          <span className="mt-1 block text-slate-400">Create a draft run, open its detail panel, and upload the shared production file there. Release remains blocked until an active run-owned file exists.</span>
+                        </span>
+                      </label>
+                    </RadioGroup>
+                    {combinedRunFileStrategy === "manual_upload_after_create" ? (
+                      <div className="mt-3 rounded border border-violet-400/40 bg-violet-500/10 px-3 py-2 text-xs text-violet-100">
+                        After Create Combined Run, use the Shared Production Files upload in the opened run detail. Source member artwork remains unchanged.
+                      </div>
+                    ) : (
+                      <div className="mt-3 rounded border border-emerald-400/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+                        No run-owned upload is required before creation for RIP-managed nesting.
+                      </div>
+                    )}
                   </div>
                   {combinedRunOverrideReason.trim() ? (
                     <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-3 text-xs text-violet-100">

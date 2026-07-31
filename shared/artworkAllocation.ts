@@ -66,6 +66,15 @@ export function buildArtworkAllocationStatus(args: {
   return { allocatedTotal, requiredQuantity, valid: !issue, issue, groups };
 }
 
+export function summarizeArtworkAllocationIssue(status: Pick<ArtworkAllocationStatus, "issue" | "allocatedTotal" | "requiredQuantity"> | null | undefined): string {
+  const issue = status?.issue?.trim();
+  if (!issue) return "Quantity allocation unresolved.";
+  if (/missing or inconsistent within an output group/i.test(issue)) return "Quantity allocation unresolved.";
+  if (/Allocated \d+ of \d+\. Assign/i.test(issue)) return issue.replace("before production.", "before creating a combined run.");
+  if (/Allocated \d+ of \d+\. Reduce/i.test(issue)) return issue.replace("before production.", "before creating a combined run.");
+  return issue;
+}
+
 export function defaultNewProductionArtworkAllocation(role: unknown = "artwork"): number | null {
   return productionRoles.has(String(role ?? "artwork").toLowerCase())
     ? DEFAULT_PRODUCTION_ARTWORK_ALLOCATION

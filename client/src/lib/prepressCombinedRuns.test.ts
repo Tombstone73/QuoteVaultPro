@@ -106,6 +106,62 @@ describe("prepress combined run selection", () => {
     expect(result.reason).toBe("1 selected job needs production artwork before the run can be created.");
   });
 
+  test("blocks final run creation when production artwork quantity is unresolved", () => {
+    const unresolved = baseItem({
+      artworkProductionBreakdown: {
+        source: "final_production",
+        productionArtStatus: "Production art",
+        allocatedTotal: 0,
+        requiredQuantity: 10,
+        valid: false,
+        issue: "Quantity allocation unresolved.",
+      },
+    });
+
+    expect(canSelectPrepressCombinedRunItem(unresolved)).toBe(true);
+    expect(getPrepressCombinedRunItemBlocker(unresolved)).toMatchObject({
+      code: "resolvable_artwork_allocation_unresolved",
+      message: "Quantity allocation unresolved.",
+      resolvable: true,
+    });
+
+    const result = validatePrepressCombinedRunSelection(
+      [
+        unresolved,
+        baseItem({ lineItemId: "line-2", activeOwnerJobId: "prepress-job-2" }),
+      ],
+      {},
+      "",
+    );
+
+    expect(result.canCreate).toBe(false);
+    expect(result.requiresArtworkResolution).toBe(true);
+    expect(result.resolvableBlockers).toEqual([
+      expect.objectContaining({ lineItemId: "line-1", code: "resolvable_artwork_allocation_unresolved" }),
+    ]);
+    expect(result.reason).toBe("1 selected job has unresolved production artwork quantities.");
+  });
+
+  test("does not report ready and unresolved for the same final artwork state", () => {
+    const resolved = baseItem({
+      artworkProductionBreakdown: {
+        source: "final_production",
+        productionArtStatus: "Production art",
+        allocatedTotal: 10,
+        requiredQuantity: 10,
+        valid: true,
+        issue: null,
+      },
+    });
+
+    expect(getPrepressCombinedRunItemBlocker(resolved)).toBeNull();
+    expect(validatePrepressCombinedRunSelection(
+      [resolved, baseItem({ lineItemId: "line-2", activeOwnerJobId: "prepress-job-2" })],
+      {},
+      "",
+    ).canCreate).toBe(true);
+  });
+
   test("hard blockers remain non-selectable and stop run creation", () => {
     const blocked = baseItem({ activeOwnerJobId: null });
     expect(canSelectPrepressCombinedRunItem(blocked)).toBe(false);

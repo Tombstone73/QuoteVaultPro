@@ -47,4 +47,12 @@ describe("production run shared file lifecycle contract", () => {
     expect(localBridgeRoutes).toContain("Local Bridge copy completed for shared run file");
     expect(localBridgeRoutes).toContain("Local Bridge copy failed for shared run file");
   });
+
+  test("prepress run creation validates final artwork allocation before creating a run", () => {
+    expect(service).toContain("buildArtworkAllocationStatus");
+    expect(service).toContain("PRODUCTION_RUN_ARTWORK_ALLOCATION_INVALID");
+    expect(service).toContain("summarizeArtworkAllocationIssue");
+    expect(service).toContain("productionQuantity: file.productionQuantity");
+    expect(service).toContain("productionGroupId: file.productionGroupId");
+  });
 });

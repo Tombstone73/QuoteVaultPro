@@ -304,7 +304,22 @@ export function LineItemAttachmentsPanel({
       });
       const json = await response.json();
       if (!response.ok) throw new Error(json?.error || 'Failed to update allocation');
-      await queryClient.invalidateQueries({ queryKey: [filesApiPath] });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [filesApiPath] }),
+        queryClient.invalidateQueries({
+          predicate: (query) => {
+            const key = query.queryKey;
+            return Array.isArray(key)
+              && typeof key[0] === "string"
+              && (
+                key[0] === "/api/prepress/queue"
+                || key[0] === `/api/prepress/line-item/${lineItemId}/files`
+                || key[0] === "/api/production/jobs"
+                || key[0] === "/api/production/runs"
+              );
+          },
+        }),
+      ]);
       toast({ title: 'Artwork allocation updated', description: json?.allocation?.issue || 'Production instruction saved.' });
     } catch (error: any) {
       toast({ title: 'Artwork allocation failed', description: error?.message || 'Please try again.', variant: 'destructive' });
