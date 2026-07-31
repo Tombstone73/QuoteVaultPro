@@ -65,6 +65,23 @@ export function applyComplexProductConversationEdit(current: ComplexProductSpeci
   if (/\brotation\s+(?:allowed|enabled)\b|\ballow\s+rotation\b/i.test(source)) next.sheet.allowRotation = true;
   if (/\brotation\s+(?:disabled|not allowed)\b|\bdo not allow rotation\b/i.test(source)) next.sheet.allowRotation = false;
   if (/\bflatbed\b/i.test(source)) next.route = "Flatbed";
+  // A paired price list such as "$12/$18 for 3mm and $16/$22 for 6mm"
+  // is a two-dimensional product matrix, never quantity-tier pricing.
+  const pairedPrices = Array.from(source.matchAll(/\$?(\d+(?:\.\d{1,2})?)\s*\/\s*\$?(\d+(?:\.\d{1,2})?)\s+for\s+(\d+(?:\.\d+)?)\s*mm/gi));
+  if (pairedPrices.length >= 2 && /\b(?:thickness|single[-\s]?sided|double[-\s]?sided|printed[-\s]?sides?)\b/i.test(source)) {
+    const rows = pairedPrices.map((match) => `${match[3]}mm`);
+    const columns = ["single_sided", "double_sided"];
+    const cells: Record<string, number> = {};
+    for (const match of pairedPrices) {
+      const row = `${match[3]}mm`;
+      cells[complexProductMatrixCellKey(row, columns[0])] = Math.round(Number(match[1]) * 100);
+      cells[complexProductMatrixCellKey(row, columns[1])] = Math.round(Number(match[2]) * 100);
+    }
+    next.optionGroups[0].values = rows.map((value) => ({ value, label: value }));
+    next.optionGroups[1].values = columns.map((value) => ({ value, label: value === "single_sided" ? "Single-Sided" : "Double-Sided" }));
+    next.pricing = { kind: "two_dimensional_per_sqft", rowKey: "thickness", columnKey: "printed_sides", rowValues: rows, columnValues: columns, cells };
+    next.review.blockers = next.review.blockers.filter((blocker) => !/pricing matrix/i.test(blocker));
+  }
   const matrixStart = source.indexOf("|");
   if (matrixStart >= 0) {
     next.pricing = parseTwoDimensionalPricingMatrix(source.slice(matrixStart), next.pricing.rowKey, next.pricing.columnKey);
