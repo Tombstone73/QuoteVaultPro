@@ -149,7 +149,7 @@ type TextDescriptionSignals = {
   sides: string[];
   printOptions: string[];
   finishingOptions: string[];
-  customOptions: Array<{ label: string; choices: string[] }>;
+  customOptions: Array<{ label: string; choices: string[]; defaultChoice?: string | null }>;
   quantityBasedPricing: boolean;
   proofSignals: string[];
   routingSignals: string[];
@@ -222,6 +222,15 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
       return { label, choices: colonChoices.length > 0 ? colonChoices : booleanModifier ? ["No", "Yes"] : [] };
     })
     .filter(Boolean) as Array<{ label: string; choices: string[] }>;
+  const explicitChoiceOptions = Array.from(description.matchAll(/\b([a-z][a-z0-9 &\/-]{1,60}?)\s+choices?\s+(?:of\s+)?([^\.\n]+?)(?:,\s*default(?:ing)?\s+to\s+([^\.\n]+))?(?:[\.\n]|$)/gi))
+    .map((match) => {
+      const label = titleCaseProductName(String(match[1] ?? "").trim());
+      const choicesText = String(match[2] ?? "").replace(/,\s*default(?:ing)?\s+to\s+.*$/i, "");
+      const choices = choicesText.split(/,\s*(?:and\s+)?|\s+and\s+/i).map((value) => stripDefaultChoiceAnnotation(value).label).filter(Boolean);
+      const defaultChoice = stripDefaultChoiceAnnotation(match[3] ?? "").label || null;
+      return label && choices.length ? { label, choices, defaultChoice } : null;
+    })
+    .filter(Boolean) as Array<{ label: string; choices: string[]; defaultChoice: string | null }>;
 
   const proofSignals: string[] = [];
   if (/proof\s+(required|needed|mandatory)|requires?\s+proof/i.test(description)) proofSignals.push("Proof required");
@@ -264,7 +273,7 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
     sides: unique(sides),
     printOptions: unique(printOptions),
     finishingOptions: unique(finishingOptions),
-    customOptions: customOptions.filter((entry, index) => customOptions.findIndex((candidate) => normalizeText(candidate.label) === normalizeText(entry.label)) === index),
+    customOptions: [...customOptions, ...explicitChoiceOptions].filter((entry, index, all) => all.findIndex((candidate) => normalizeText(candidate.label) === normalizeText(entry.label)) === index),
     quantityBasedPricing,
     proofSignals,
     routingSignals,
@@ -774,6 +783,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
         confidence: custom.choices.length > 0 ? 82 : 68,
         templates: input.templates,
         reason: "The description explicitly asked Product Intake to add this product-specific option.",
+        defaultChoice: custom.defaultChoice,
       })),
   ].filter(Boolean) as ReturnType<typeof textOptionGroup>[] : [];
   const requiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions];

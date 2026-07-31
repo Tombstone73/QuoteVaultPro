@@ -119,6 +119,18 @@ describe("Product Intake Brief service", () => {
     expect(generateProductIntakeQuestions(brief).map((question) => question.questionKey)).not.toContain("choose-pricing-model");
   });
 
+  test("preserves an explicit option group, values, and default from normal assistant wording", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "Create an inactive vinyl product with lamination choices None, Gloss, and Matte, defaulting to None." },
+      analyzer: null,
+      templates,
+      provider: null,
+    });
+    const lamination = brief.optionalOptions.find((option) => option.normalizedGroup === "Lamination");
+    expect(lamination).toMatchObject({ sampleValues: ["None", "Gloss", "Matte"], defaultChoice: "None" });
+  });
+
   test("matches existing option templates with threshold recommendations", () => {
     const matches = matchOptionTemplates({
       optionLabel: "Grommets",
