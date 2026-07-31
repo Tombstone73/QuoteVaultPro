@@ -21,10 +21,46 @@ const normalize = (value: unknown) => String(value ?? "")
   .trim();
 
 const hasPhrase = (message: string, phrase: string) => {
-  const normalizedPhrase = normalize(phrase);
+  const singularize = (value: string) => value.replace(/\b([a-rt-z0-9]+)s\b/g, "$1");
+  const normalizedPhrase = singularize(normalize(phrase));
   if (!normalizedPhrase) return false;
-  return new RegExp(`(?:^|\\s)${normalizedPhrase.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")}(?=$|\\s)`).test(normalize(message));
+  const normalizedMessage = singularize(normalize(message));
+  return new RegExp(`(?:^|\\s)${normalizedPhrase.split(" ").map((part) => part.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")).join("\\s+")}(?=$|\\s)`).test(normalizedMessage);
 };
+
+const booleanChoice = (choice: AssistantOrderOptionChoice) => {
+  const value = normalize(choice.value);
+  const label = normalize(choice.label);
+  return value === "no" || label === "no" ? "no" : value === "yes" || label === "yes" ? "yes" : null;
+};
+
+function groupPhrases(group: AssistantOrderOptionGroup) {
+  const base = [group.label, group.selectionKey]
+    .map(normalize)
+    .filter(Boolean)
+    .flatMap((value) => [value, value.replace(/\b(?:cutting|option|options)\b/g, "").replace(/\s+/g, " ").trim()])
+    .flatMap((value) => [value, value.replace(/\b([a-rt-z0-9]+)s\b/g, "$1")]);
+  return Array.from(new Set(base.filter(Boolean)));
+}
+
+function matchesCanonicalChoice(message: string, group: AssistantOrderOptionGroup, choice: AssistantOrderOptionChoice) {
+  const boolean = booleanChoice(choice);
+  const directPhrases = [choice.label, choice.value];
+  if (!boolean && directPhrases.some((phrase) => hasPhrase(message, phrase))) return true;
+  if (!boolean) {
+    const aliases = directPhrases.flatMap((phrase) => {
+      const normalized = normalize(phrase);
+      return [
+        normalized.replace(/\bsingle\b/g, "one").replace(/\bsided\b/g, "side"),
+        normalized.replace(/\bsided\b/g, "side"),
+      ];
+    });
+    return aliases.some((alias) => alias && hasPhrase(message, alias));
+  }
+  return groupPhrases(group).some((groupPhrase) => boolean === "no"
+    ? hasPhrase(message, `no ${groupPhrase}`) || hasPhrase(message, `${groupPhrase} no`) || hasPhrase(message, `without ${groupPhrase}`) || hasPhrase(message, `${groupPhrase} off`)
+    : hasPhrase(message, `yes ${groupPhrase}`) || hasPhrase(message, `${groupPhrase} yes`) || hasPhrase(message, `with ${groupPhrase}`) || hasPhrase(message, `${groupPhrase} on`));
+}
 
 const selectedValues = (selections: LineItemOptionSelectionsV2 | null | undefined) => Object.fromEntries(
   Object.entries(selections?.selected ?? {}).map(([key, entry]) => [key, entry?.value])
@@ -126,7 +162,7 @@ export function resolveAssistantOrderSelections(input: {
   const namedGroups = new Set(groups.filter((group) => hasPhrase(message, group.label) || hasPhrase(message, group.selectionKey)));
 
   for (const group of groups) {
-    const matches = group.choices.filter((choice) => hasPhrase(message, choice.label) || hasPhrase(message, choice.value));
+    const matches = group.choices.filter((choice) => matchesCanonicalChoice(message, group, choice));
     if (matches.length > 1) {
       return { ok: false, code: "ORDER_OPTION_CONTRADICTORY", summary: `Choose one ${group.label} value from the listed options.`, groups };
     }
@@ -153,7 +189,7 @@ export function resolveAssistantOrderSelections(input: {
   const unmatchedGroupNames = groups.filter((group) => !hasPhrase(message, group.label) && !hasPhrase(message, group.selectionKey));
   for (const group of Array.from(matchesByGroup.keys())) {
     const choice = matchesByGroup.get(group)![0];
-    const sameChoiceElsewhere = unmatchedGroupNames.filter((other) => other.choices.some((candidate) => candidate.value === choice.value || candidate.label === choice.label));
+    const sameChoiceElsewhere = unmatchedGroupNames.filter((other) => other !== group && other.choices.some((candidate) => candidate.value === choice.value || candidate.label === choice.label));
     if (!namedGroups.has(group) && sameChoiceElsewhere.length > 0) {
       return { ok: false, code: "ORDER_OPTION_AMBIGUOUS", summary: `Please name the option group for ${choice.label}.`, groups };
     }

@@ -316,6 +316,47 @@ export class AssistantService {
     };
   }
 
+  /** Server-bound continuation for the typed PBV2 option card. The browser
+   * supplies canonical identifiers only; this service reloads the scoped
+   * intake session and persists the resulting assistant turn. */
+  async submitOrderOptionSelections(
+    scope: AssistantScope,
+    conversationId: string,
+    actor: AssistantActor,
+    input: { orderIntakeSessionId: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: AssistantContextEnvelope },
+  ) {
+    const conversation = await this.repo.getConversation({ ...scope, conversationId });
+    if (!conversation) throw this.notFound();
+    const rendered = await orderIntakeService.submitOptionSelections({
+      organizationId: scope.organizationId,
+      userId: actor.userId,
+      conversationId: conversation.id,
+      orderIntakeSessionId: input.orderIntakeSessionId,
+      productId: input.productId,
+      pbv2TreeVersionId: input.pbv2TreeVersionId,
+      selections: input.selections,
+      useRemainingDefaults: input.useRemainingDefaults,
+    });
+    const correlationId = crypto.randomUUID();
+    const result = await this.persistFoundationTurn({
+      ...scope,
+      conversationId: conversation.id,
+      actor,
+      message: "Selected order options.",
+      context: input.context,
+      response: rendered.response,
+      correlationId,
+      status: "responded",
+      structuredCards: rendered.cards as AssistantStructuredCard[],
+      provider: "local_order_intake",
+      model: "conversational-order-intake-v1",
+      mode: "assistant_order_option_continuation",
+      promptVersion: "assistant-order-option-continuation-v1",
+    });
+    if (!result) throw this.notFound();
+    return result;
+  }
+
   async listConversations(scope: AssistantScope, status?: "active" | "archived") {
     return this.repo.listConversations(scope, status);
   }

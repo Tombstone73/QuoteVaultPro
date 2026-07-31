@@ -71,4 +71,17 @@ describe("assistant direct-order PBV2 selections", () => {
     expect(acceptsAssistantOrderDefaults("default options are fine")).toBe(true);
     expect(acceptsAssistantOrderDefaults("the default looks right")).toBe(false);
   });
+
+  it("resolves unique natural-language values across every unresolved group", () => {
+    const configured: OptionTreeV2 = {
+      ...tree,
+      rootNodeIds: ["thickness", "sides", "contour", "retired"],
+      nodes: {
+        ...tree.nodes,
+        contour: { id: "contour", kind: "question", label: "Contour Cutting", input: { type: "select", selectionKey: "contour", defaultValue: "no" }, choices: [{ value: "no", label: "No" }, { value: "yes", label: "Yes" }] },
+      },
+    };
+    const resolved = resolveAssistantOrderSelections({ tree: configured, existingSelections: canonicalDefaultOrderSelections(configured), message: "3mm single sided with no contours" });
+    expect(resolved).toMatchObject({ ok: true, resolvedSelectionKeys: expect.arrayContaining(["thickness", "sides", "contour"]), selections: { selected: { thickness: { value: "3mm" }, sides: { value: "single" }, contour: { value: "no" } } } });
+  });
 });

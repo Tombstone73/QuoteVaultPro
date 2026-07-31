@@ -2,6 +2,7 @@ import type { Express, Request, RequestHandler, Response } from "express";
 import { z } from "zod";
 import {
   assistantCreateConversationRequestSchema,
+  assistantContextEnvelopeSchema,
   assistantReportResolutionCancelRequestSchema,
   assistantReportResolutionSelectionRequestSchema,
   assistantUpdateConversationRequestSchema,
@@ -155,6 +156,7 @@ function withoutUntrustedIdentity(raw: unknown): unknown {
 
 export interface AssistantRouteDependencies {
   service?: AssistantService;
+  orderOptionSelectionService?: AssistantOrderOptionSelectionService;
   /**
    * Reporting entity selection is intentionally a separate server-owned
    * continuation boundary.  The route only supplies authenticated scope,
@@ -177,6 +179,25 @@ export interface AssistantReportResolutionSelectionService {
     actor: AssistantActor,
     input: AssistantReportResolutionCancelRequest,
   ): Promise<unknown>;
+}
+
+export interface AssistantOrderOptionSelectionService {
+  submitOrderOptionSelections(scope: AssistantScope, conversationId: string, actor: AssistantActor, input: { orderIntakeSessionId: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: unknown }): Promise<any>;
+}
+
+const assistantOrderOptionSelectionRequestSchema = z.object({
+  productId: z.string().trim().min(1).max(128),
+  pbv2TreeVersionId: z.string().trim().min(1).max(128),
+  selections: z.array(z.object({ nodeId: z.string().trim().min(1).max(128), valueId: z.string().trim().min(1).max(256) }).strict()).max(30),
+  useRemainingDefaults: z.boolean(),
+  context: assistantContextEnvelopeSchema,
+}).strict();
+
+function sendOrderOptionSelectionError(res: Response, error: unknown) {
+  const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+  if (code === "ORDER_OPTION_SELECTION_STALE") return res.status(409).json({ error: { code: "order_option_selection_stale", message: "This option selection is no longer available. Refresh the order request.", retryable: false } });
+  if (code === "ORDER_OPTION_SELECTION_INVALID") return res.status(400).json({ error: { code: "order_option_selection_invalid", message: "One or more selected options are not available for this order.", retryable: false } });
+  return sendError(res, error);
 }
 
 type ReportResolutionFailureCode =
@@ -240,6 +261,8 @@ export function registerAssistantRoutes(
   // into the browser.
   const reportResolutionService = dependencies.reportResolutionService
     ?? (service as unknown as Partial<AssistantReportResolutionSelectionService>);
+  const orderOptionSelectionService = dependencies.orderOptionSelectionService
+    ?? (service as unknown as Partial<AssistantOrderOptionSelectionService>);
   const { isAuthenticated, tenantContext } = middleware;
   const guarded: RequestHandler[] = [isAuthenticated, tenantContext];
 
@@ -327,6 +350,18 @@ export function registerAssistantRoutes(
       });
     } catch (error) {
       return sendError(res, error);
+    }
+  });
+
+  app.post("/api/assistant/conversations/:conversationId/order-option-selections/:orderIntakeSessionId", ...guarded, async (req, res) => {
+    try {
+      const input = assistantOrderOptionSelectionRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
+      const scope = resolveScope(req);
+      if (typeof orderOptionSelectionService.submitOrderOptionSelections !== "function") throw new AssistantServiceError("ASSISTANT_DISABLED", "Order option selection is not available.", 503);
+      const result = await orderOptionSelectionService.submitOrderOptionSelections(scope, req.params.conversationId, buildActor(req, scope.userId), { ...input, orderIntakeSessionId: req.params.orderIntakeSessionId });
+      return res.json({ success: true, data: { turnId: result.turnId, correlationId: result.correlationId, message: messageDto(result.assistantMessage, result.turnId), status: result.status } });
+    } catch (error) {
+      return sendOrderOptionSelectionError(res, error);
     }
   });
 
