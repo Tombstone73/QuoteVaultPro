@@ -5,7 +5,11 @@ describe("mounted Prepress combined run file UI contract", () => {
   const root = process.cwd();
   const source = fs.readFileSync(path.join(root, "client/src/pages/PrepressProductionPageV2.tsx"), "utf8");
 
-  test("mounted Prepress page exposes a Combined Runs area and detail panel", () => {
+  test("mounted Prepress page exposes the resizable workspace and Combined Runs tab", () => {
+    expect(source).toContain("prepress-resizable-workspace");
+    expect(source).toContain("prepress-pane-divider");
+    expect(source).toContain("PREPRESS_PANE_WIDTH_STORAGE_KEY");
+    expect(source).toContain("Prepress Queue");
     expect(source).toContain("Combined Runs");
     expect(source).toContain("Manage shared nested production files without leaving Prepress.");
     expect(source).toContain("useProductionRuns");
@@ -29,17 +33,27 @@ describe("mounted Prepress combined run file UI contract", () => {
   });
 
   test("mounted Prepress queue exposes operator-facing Nest Selected workflow", () => {
+    expect(source).toContain("prepress-bottom-action-bar");
     expect(source).toContain("Nest Selected");
     expect(source).toContain("Clear selection");
     expect(source).toContain("Ready to nest");
     expect(source).toContain("getPrepressCombinedRunItemBlocker");
     expect(source).toContain("canSelectPrepressCombinedRunItem");
     expect(source).toContain("Already nested in an active production run.");
-    expect(source).toContain("Create Nested Run");
+    expect(source).toContain("Create Run");
+  });
+
+  test("mounted Nest Selected workflow is an in-pane four-step wizard", () => {
+    expect(source).toContain("prepress-combined-run-wizard");
+    expect(source).toContain("Step 1: Selected Jobs");
+    expect(source).toContain("Step 2: Resolve Production Artwork");
+    expect(source).toContain("Step 3: Plan Run");
+    expect(source).toContain("Step 4: Final Review");
+    expect(source).toContain("Advanced / Authorized Override");
   });
 
   test("mounted Nest Selected workflow resolves missing production artwork before creation", () => {
-    expect(source).toContain("Resolve production artwork");
+    expect(source).toContain("Resolve Production Artwork");
     expect(source).toContain("Use sole artwork");
     expect(source).toContain("Assign selected artwork");
     expect(source).toContain("buildCombinedRunArtworkCandidates");

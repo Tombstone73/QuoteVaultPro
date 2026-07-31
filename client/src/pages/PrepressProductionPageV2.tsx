@@ -382,9 +382,27 @@ function formatPrepressTagLabel(tag: string | null | undefined, defaultTag: stri
 const PREPRESS_QUEUE_QUERY_KEY = ["/api/prepress/queue"] as const;
 const EMPTY_PREPRESS_QUEUE: PrepressQueueItem[] = [];
 type PrepressCombinedRunStatusFilter = "attention" | "active" | "draft" | "ready_for_production" | "in_production" | "completed" | "canceled" | "all";
+type PrepressWorkspaceTab = "queue" | "runs";
+type CombinedRunWizardStep = 1 | 2 | 3 | 4;
+
+const PREPRESS_PANE_WIDTH_STORAGE_KEY = "prepress.workspace.leftPanePercent.v1";
+const PREPRESS_LEFT_PANE_DEFAULT_PERCENT = 36;
+const PREPRESS_LEFT_PANE_MIN_PERCENT = 24;
+const PREPRESS_LEFT_PANE_MAX_PERCENT = 55;
 
 function getPrepressLineItemQueryKey(lineItemId: string | null) {
   return ["/api/prepress/line-item", lineItemId] as const;
+}
+
+function clampPrepressPanePercent(value: number) {
+  if (!Number.isFinite(value)) return PREPRESS_LEFT_PANE_DEFAULT_PERCENT;
+  return Math.min(PREPRESS_LEFT_PANE_MAX_PERCENT, Math.max(PREPRESS_LEFT_PANE_MIN_PERCENT, value));
+}
+
+function readPersistedPrepressPanePercent() {
+  if (typeof window === "undefined") return PREPRESS_LEFT_PANE_DEFAULT_PERCENT;
+  const raw = window.localStorage.getItem(PREPRESS_PANE_WIDTH_STORAGE_KEY);
+  return clampPrepressPanePercent(raw == null ? PREPRESS_LEFT_PANE_DEFAULT_PERCENT : Number(raw));
 }
 
 function productionRunNeedsPrepressAttention(run: ProductionRunListItem): boolean {
@@ -434,7 +452,11 @@ export default function PrepressProductionPageV2() {
   // UI State
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
   const [selectedQueueLineItemIds, setSelectedQueueLineItemIds] = useState<Set<string>>(() => new Set());
+  const [workspaceTab, setWorkspaceTab] = useState<PrepressWorkspaceTab>("queue");
+  const [leftPanePercent, setLeftPanePercent] = useState(() => readPersistedPrepressPanePercent());
+  const workspaceFrameRef = useRef<HTMLDivElement>(null);
   const [combinedRunOpen, setCombinedRunOpen] = useState(false);
+  const [combinedRunWizardStep, setCombinedRunWizardStep] = useState<CombinedRunWizardStep>(1);
   const [combinedRunAllocations, setCombinedRunAllocations] = useState<Record<string, string>>({});
   const [combinedRunPlannedSheetCount, setCombinedRunPlannedSheetCount] = useState("");
   const [combinedRunPiecesPerSheet, setCombinedRunPiecesPerSheet] = useState("");
@@ -524,6 +546,51 @@ export default function PrepressProductionPageV2() {
     if (!preferencesReady || !userId) return;
     persistPrepressListPreferences(userId, currentListPreferences);
   }, [currentListPreferences, preferencesReady, userId]);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(PREPRESS_PANE_WIDTH_STORAGE_KEY, String(leftPanePercent));
+  }, [leftPanePercent]);
+
+  const updateLeftPanePercentFromClientX = React.useCallback((clientX: number) => {
+    const frame = workspaceFrameRef.current;
+    if (!frame) return;
+    const rect = frame.getBoundingClientRect();
+    if (rect.width <= 0) return;
+    const minPxPercent = Math.min(PREPRESS_LEFT_PANE_MAX_PERCENT, (320 / rect.width) * 100);
+    const nextPercent = (clientX - rect.left) / rect.width * 100;
+    setLeftPanePercent(Math.min(PREPRESS_LEFT_PANE_MAX_PERCENT, Math.max(minPxPercent, clampPrepressPanePercent(nextPercent))));
+  }, []);
+
+  const handlePaneDividerPointerDown = (event: React.PointerEvent<HTMLButtonElement>) => {
+    event.preventDefault();
+    const pointerId = event.pointerId;
+    event.currentTarget.setPointerCapture(pointerId);
+    updateLeftPanePercentFromClientX(event.clientX);
+
+    const handlePointerMove = (moveEvent: PointerEvent) => updateLeftPanePercentFromClientX(moveEvent.clientX);
+    const handlePointerUp = () => {
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", handlePointerUp);
+    };
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", handlePointerUp);
+  };
+
+  const handlePaneDividerKeyDown = (event: React.KeyboardEvent<HTMLButtonElement>) => {
+    if (event.key !== "ArrowLeft" && event.key !== "ArrowRight" && event.key !== "Home" && event.key !== "End") return;
+    event.preventDefault();
+    if (event.key === "Home") {
+      setLeftPanePercent(PREPRESS_LEFT_PANE_MIN_PERCENT);
+      return;
+    }
+    if (event.key === "End") {
+      setLeftPanePercent(PREPRESS_LEFT_PANE_MAX_PERCENT);
+      return;
+    }
+    setLeftPanePercent((current) => clampPrepressPanePercent(current + (event.key === "ArrowRight" ? 2 : -2)));
+  };
 
   const queueFilters = useMemo(
     () => ({
@@ -1735,6 +1802,17 @@ export default function PrepressProductionPageV2() {
     setCombinedRunAllocations({});
   };
 
+  const openCombinedRunWizard = () => {
+    setWorkspaceTab("queue");
+    setCombinedRunWizardStep(1);
+    setCombinedRunOpen(true);
+  };
+
+  const cancelCombinedRunWizard = () => {
+    setCombinedRunOpen(false);
+    setCombinedRunWizardStep(1);
+  };
+
   const handleAssignCombinedRunArtwork = async () => {
     if (combinedRunArtworkAssigning || selectedQueueItemsNeedingArtwork.length === 0) return;
     const errors: Record<string, string> = {};
@@ -1809,6 +1887,7 @@ export default function PrepressProductionPageV2() {
       });
       setSelectedQueueLineItemIds(new Set());
       setCombinedRunOpen(false);
+      setCombinedRunWizardStep(1);
       resetCombinedRunDraft();
       const createdRunId = (result as any)?.run?.id ?? (result as any)?.id ?? null;
       const createdRunNumber = (result as any)?.run?.runNumber ?? (result as any)?.runNumber ?? null;
@@ -1988,22 +2067,66 @@ export default function PrepressProductionPageV2() {
   };
 
   return (
-    <div className="flex h-full min-h-0 bg-[#111921] text-slate-100 font-sans overflow-hidden">
-      {/* LEFT COLUMN: Prepress Queue */}
-      <aside className="w-[400px] min-h-0 flex-shrink-0 border-r border-[#2d3748] flex flex-col h-full bg-[#1a232e]/50">
-        {/* Header & Search */}
-        <div className="p-4 border-b border-[#2d3748] space-y-4">
+    <div className="flex h-full min-h-0 flex-col bg-[#111921] text-slate-100 font-sans overflow-hidden">
+      <div
+        ref={workspaceFrameRef}
+        className="grid min-h-0 flex-1 overflow-hidden"
+        style={{ gridTemplateColumns: `minmax(320px, ${leftPanePercent}%) 8px minmax(0, 1fr)` }}
+        data-testid="prepress-resizable-workspace"
+      >
+        {/* LEFT COLUMN: Prepress Queue and Combined Runs */}
+        <aside className="min-h-0 min-w-[320px] flex flex-col h-full bg-[#1a232e]/50">
+        <div className="border-b border-[#2d3748]">
+          <div className="space-y-3 p-4 pb-3">
           <div className="flex items-center justify-between">
             <div>
-              <h1 className="text-xl font-bold tracking-tight">Prepress Queue</h1>
+              <h1 className="text-xl font-bold tracking-tight">Prepress Workspace</h1>
+              <p className="text-[11px] text-slate-500">Production board and nested runs</p>
             </div>
-            <button onClick={handleRefresh} className="p-2 hover:bg-white/10 rounded-lg transition-colors" disabled={queueFetching}>
-              <RefreshCw className={cn("w-4 h-4", queueFetching && "animate-spin")} />
+            <button
+              onClick={workspaceTab === "queue" ? handleRefresh : () => productionRunsQuery.refetch()}
+              className="p-2 hover:bg-white/10 rounded-lg transition-colors disabled:opacity-50"
+              disabled={workspaceTab === "queue" ? queueFetching : productionRunsQuery.isFetching}
+              aria-label={workspaceTab === "queue" ? "Refresh prepress queue" : "Refresh combined runs"}
+            >
+              <RefreshCw className={cn("w-4 h-4", (workspaceTab === "queue" ? queueFetching : productionRunsQuery.isFetching) && "animate-spin")} />
             </button>
           </div>
 
+          <div className="grid grid-cols-2 gap-2 rounded-lg border border-[#2d3748] bg-[#111921] p-1" role="tablist" aria-label="Prepress workspace tabs">
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceTab === "queue"}
+              onClick={() => setWorkspaceTab("queue")}
+              className={cn(
+                "flex items-center justify-center gap-2 rounded-md px-2 py-1.5 text-xs font-bold transition-colors",
+                workspaceTab === "queue" ? "bg-[#1773cf] text-white" : "text-slate-400 hover:bg-white/5 hover:text-slate-100",
+              )}
+            >
+              Prepress Queue
+              <span className="rounded bg-black/20 px-1.5 py-0.5 text-[10px]">{filteredQueueCount}</span>
+            </button>
+            <button
+              type="button"
+              role="tab"
+              aria-selected={workspaceTab === "runs"}
+              onClick={() => setWorkspaceTab("runs")}
+              className={cn(
+                "flex items-center justify-center gap-2 rounded-md px-2 py-1.5 text-xs font-bold transition-colors",
+                workspaceTab === "runs" ? "bg-violet-600 text-white" : "text-slate-400 hover:bg-white/5 hover:text-slate-100",
+              )}
+            >
+              Combined Runs
+              <span className="rounded bg-black/20 px-1.5 py-0.5 text-[10px]">{prepressCombinedRuns.length}</span>
+            </button>
+          </div>
+          </div>
+
           {/* Filters */}
-          <div className="space-y-3">
+          {workspaceTab === "queue" ? (
+          <>
+          <div className="space-y-3 border-t border-[#2d3748]/60 p-4 pt-3">
             <div className="relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400 w-4 h-4" />
               <Input
@@ -2095,46 +2218,10 @@ export default function PrepressProductionPageV2() {
                 </span>
               ) : null}
             </div>
-            <div className="grid grid-cols-2 gap-2">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => handleBulkPrintReady(false)}
-                disabled={selectedQueueItems.length === 0 || bulkPrintReadyMutation.isPending}
-                className="h-auto min-h-9 whitespace-normal border-[#1773cf]/60 px-2 py-1.5 text-[11px] leading-tight text-[#8ec5ff]"
-              >
-                {bulkPrintReadyMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                Complete Prepress
-              </Button>
-              <Button
-                type="button"
-                size="sm"
-                onClick={() => handleBulkPrintReady(true)}
-                disabled={selectedQueueItems.length === 0 || bulkPrintReadyMutation.isPending}
-                className="h-auto min-h-9 whitespace-normal bg-emerald-600 px-2 py-1.5 text-[11px] leading-tight text-white hover:bg-emerald-700"
-              >
-                Complete &amp; Release selected
-              </Button>
-            </div>
-            <div className="space-y-1">
-              <Button
-                type="button"
-                size="sm"
-                variant="outline"
-                onClick={() => setCombinedRunOpen(true)}
-                disabled={!canOpenCombinedRunDialog}
-                className="h-auto min-h-9 w-full whitespace-normal border-violet-400/60 px-2 py-1.5 text-[11px] leading-tight text-violet-200 hover:bg-violet-500/10"
-              >
-                {createCombinedRunMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                Nest Selected
-              </Button>
-              <p className="text-[10px] leading-snug text-slate-400">
-                {combinedRunActionReason}
-              </p>
-            </div>
-
-            <div className="space-y-2 rounded-lg border border-violet-400/30 bg-violet-500/5 p-3">
+          </div>
+          </>
+          ) : (
+            <div className="space-y-2 border-t border-[#2d3748]/60 p-4 pt-3">
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <p className="text-xs font-semibold text-violet-100">Combined Runs</p>
@@ -2189,7 +2276,7 @@ export default function PrepressProductionPageV2() {
               ) : prepressCombinedRuns.length === 0 ? (
                 <div className="rounded border border-[#2d3748] px-2 py-2 text-[11px] text-slate-400">No combined runs match this view.</div>
               ) : (
-                <div className="max-h-60 space-y-2 overflow-y-auto pr-1">
+                <div className="space-y-2">
                   {prepressCombinedRuns.slice(0, 12).map((run) => {
                     const needsAttention = productionRunNeedsPrepressAttention(run);
                     return (
@@ -2223,51 +2310,12 @@ export default function PrepressProductionPageV2() {
                 </div>
               )}
             </div>
-          </div>
+          )}
         </div>
 
         {/* Job List */}
-        <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-2">
-          {selectedQueueItems.length > 0 ? (
-            <div className="sticky top-0 z-20 rounded-lg border border-violet-400/40 bg-[#111921]/95 p-3 shadow-xl backdrop-blur">
-              <div className="flex flex-wrap items-start justify-between gap-3">
-                <div className="min-w-0 space-y-1 text-xs text-slate-300">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="font-bold text-violet-100">{selectedQueueItems.length} selected</span>
-                    <span>Order: {selectedQueueOrderNumbers.length === 1 ? selectedQueueOrderNumbers[0] : "Mixed orders"}</span>
-                    <span>Total qty: {selectedQueueTotalQuantity}</span>
-                  </div>
-                  <div className="flex flex-wrap items-center gap-2 text-[11px]">
-                    <span>Destination: {selectedQueueDestinationLabels.length === 1 ? selectedQueueDestinationLabels[0] : "Mixed destinations"}</span>
-                    <span className={cn("rounded border px-2 py-0.5", combinedRunValidation.canCreate ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-200")}>
-                      {selectedQueueValidationLabel}
-                    </span>
-                    {selectedQueueHardBlockedItems.length > 0 ? (
-                      <span className="rounded border border-red-400/40 px-2 py-0.5 text-red-100">
-                        {selectedQueueHardBlockedItems.length} hard blocked
-                      </span>
-                    ) : null}
-                  </div>
-                </div>
-                <div className="flex shrink-0 flex-wrap gap-2">
-                  <Button type="button" size="sm" variant="outline" onClick={() => setSelectedQueueLineItemIds(new Set())}>
-                    Clear selection
-                  </Button>
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={() => setCombinedRunOpen(true)}
-                    disabled={!canOpenCombinedRunDialog}
-                    title={combinedRunActionReason || undefined}
-                    className="bg-violet-600 text-white hover:bg-violet-700"
-                  >
-                    {createCombinedRunMutation.isPending ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                    Nest Selected
-                  </Button>
-                </div>
-              </div>
-            </div>
-          ) : null}
+        {workspaceTab === "queue" ? (
+        <div className="min-h-0 flex-1 overflow-y-auto p-2 space-y-2 pb-24">
           {!queueIsLoading && hasActivePrepressView && (
             <div className="rounded-lg border border-[#1773cf]/40 bg-[#1773cf]/10 px-3 py-2 text-xs text-slate-200">
               <div className="flex items-start justify-between gap-3">
@@ -2326,10 +2374,405 @@ export default function PrepressProductionPageV2() {
             );
           })}
         </div>
+        ) : (
+          <div className="min-h-0 flex-1 overflow-y-auto p-2 pb-24" aria-label="Combined runs tab spacer" />
+        )}
       </aside>
+
+      <button
+        type="button"
+        role="separator"
+        aria-orientation="vertical"
+        aria-label="Resize Prepress queue pane"
+        aria-valuemin={PREPRESS_LEFT_PANE_MIN_PERCENT}
+        aria-valuemax={PREPRESS_LEFT_PANE_MAX_PERCENT}
+        aria-valuenow={Math.round(leftPanePercent)}
+        onPointerDown={handlePaneDividerPointerDown}
+        onKeyDown={handlePaneDividerKeyDown}
+        className="group flex h-full cursor-col-resize items-center justify-center border-x border-[#2d3748] bg-[#0f172a] focus:outline-none focus:ring-2 focus:ring-[#1773cf]"
+        data-testid="prepress-pane-divider"
+      >
+        <span className="h-12 w-1 rounded-full bg-slate-600 group-hover:bg-[#1773cf]" />
+      </button>
 
       {/* RIGHT COLUMN: Main Workspace */}
       <main className="flex-1 min-h-0 flex flex-col h-full overflow-hidden bg-[#111921]">
+        {combinedRunOpen ? (
+          <div className="flex min-h-0 flex-1 flex-col" data-testid="prepress-combined-run-wizard">
+            <header className="shrink-0 border-b border-[#2d3748] bg-[#1a232e]/40 px-6 py-4">
+              <div className="flex flex-wrap items-start justify-between gap-4">
+                <div>
+                  <p className="text-[10px] font-bold uppercase tracking-widest text-violet-300">Combined Run Wizard</p>
+                  <h2 className="mt-1 text-2xl font-black text-white">Nest Selected</h2>
+                  <p className="mt-1 text-xs text-slate-400">
+                    {selectedQueueItems.length} selected line items across {selectedQueueOrderNumbers.length || 0} order{selectedQueueOrderNumbers.length === 1 ? "" : "s"}.
+                  </p>
+                </div>
+                <div className="flex flex-wrap gap-2 text-[11px]">
+                  {([1, 2, 3, 4] as CombinedRunWizardStep[]).map((step) => (
+                    <button
+                      key={step}
+                      type="button"
+                      onClick={() => setCombinedRunWizardStep(step)}
+                      className={cn(
+                        "rounded border px-3 py-1.5 font-semibold",
+                        combinedRunWizardStep === step
+                          ? "border-violet-300 bg-violet-500/20 text-violet-50"
+                          : "border-[#2d3748] text-slate-400 hover:bg-white/5 hover:text-slate-100",
+                      )}
+                    >
+                      Step {step}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            </header>
+
+            <div className="min-h-0 flex-1 overflow-y-auto p-6 pb-28">
+              {combinedRunWizardStep === 1 ? (
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 1: Selected Jobs</h3>
+                        <p className="mt-1 text-xs text-slate-400">Review compatibility, ordered quantity, available quantity, and allocation before planning the run.</p>
+                      </div>
+                      <span className={cn("rounded border px-2 py-1 text-xs font-semibold", combinedRunValidation.canCreate ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-100")}>
+                        {selectedQueueValidationLabel}
+                      </span>
+                    </div>
+                    {!combinedRunValidation.canCreate && combinedRunValidation.reason ? (
+                      <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                        {combinedRunValidation.reason}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  <div className="divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]">
+                    {selectedQueueItems.map((item) => {
+                      const maxQuantity = Number(item.quantity) || 0;
+                      const blocker = activeNestedRunByLineItemId.has(item.lineItemId)
+                        ? { code: "hard_already_allocated", message: "Already nested in an active production run.", resolvable: false }
+                        : getPrepressCombinedRunItemBlocker(item);
+                      return (
+                        <div key={item.lineItemId} className="grid gap-3 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_140px_auto]">
+                          <div className="min-w-0">
+                            <div className="truncate text-sm font-semibold text-white">
+                              Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}
+                            </div>
+                            <div className="mt-1 truncate text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
+                            <div className="mt-1 grid gap-1 text-[11px] text-slate-500 sm:grid-cols-3 xl:grid-cols-5">
+                              <span>{item.productionDestinationLabel || item.selectedProductionDestination || "No destination"}</span>
+                              <span>{item.materialName || item.media || "No material"}</span>
+                              <span>{item.width && item.height ? `${item.width}" x ${item.height}"` : "No dimensions"}</span>
+                              <span>Ordered: {item.quantity}</span>
+                              <span>Available: {maxQuantity}</span>
+                            </div>
+                            {blocker ? (
+                              <p className={cn("mt-2 text-[11px]", blocker.resolvable ? "text-amber-200" : "text-red-100")}>{blocker.message}</p>
+                            ) : (
+                              <p className="mt-2 text-[11px] text-emerald-300">Production artwork ready</p>
+                            )}
+                          </div>
+                          <label className="space-y-1">
+                            <span className="text-[11px] font-medium text-slate-400">Allocated quantity</span>
+                            <Input
+                              aria-label={`Allocated quantity for ${item.productName}`}
+                              value={combinedRunAllocations[item.lineItemId] ?? String(maxQuantity || 1)}
+                              onChange={(event) => setCombinedRunAllocations((current) => ({ ...current, [item.lineItemId]: event.target.value }))}
+                              inputMode="numeric"
+                              className="h-8 bg-[#0f172a] border-[#2d3748]"
+                            />
+                          </label>
+                          <Button type="button" size="sm" variant="outline" onClick={() => handleToggleQueueItem(item.lineItemId, false)} className="h-8 border-red-400/40 text-red-100 hover:bg-red-500/10">
+                            Remove
+                          </Button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                </div>
+              ) : null}
+
+              {combinedRunWizardStep === 2 ? (
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div>
+                        <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 2: Resolve Production Artwork</h3>
+                        <p className="mt-1 text-xs text-slate-400">Only selected jobs missing production artwork appear here.</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          disabled={combinedRunArtworkLoading || combinedRunArtworkAssigning || selectedQueueItemsNeedingArtwork.length === 0}
+                          onClick={() => {
+                            setCombinedRunArtworkSelections((current) => {
+                              const next = { ...current };
+                              for (const item of selectedQueueItemsNeedingArtwork) {
+                                const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
+                                if (candidates.length === 1) next[item.lineItemId] = candidates[0].id;
+                              }
+                              return next;
+                            });
+                          }}
+                          className="h-8 border-amber-400/50 text-amber-100 hover:bg-amber-500/10"
+                        >
+                          Use sole artwork
+                        </Button>
+                        <Button type="button" size="sm" onClick={handleAssignCombinedRunArtwork} disabled={!combinedRunArtworkCanAssign} className="h-8 bg-emerald-600 text-white hover:bg-emerald-700">
+                          {combinedRunArtworkAssigning ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                          Assign selected artwork
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+
+                  {combinedRunArtworkLoading ? (
+                    <div className="flex items-center gap-2 rounded border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs text-slate-300">
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading available customer artwork...
+                    </div>
+                  ) : null}
+                  {combinedRunArtworkErrors.__load ? (
+                    <div className="rounded border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+                      {combinedRunArtworkErrors.__load}
+                    </div>
+                  ) : null}
+                  {selectedQueueItemsNeedingArtwork.length === 0 ? (
+                    <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-4 text-sm text-emerald-100">All selected jobs have production artwork ready.</div>
+                  ) : (
+                    <div className="space-y-3">
+                      {selectedQueueItemsNeedingArtwork.map((item) => {
+                        const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
+                        const selectedCandidateId = combinedRunArtworkSelections[item.lineItemId];
+                        const selectedCandidate = candidates.find((candidate) => candidate.id === selectedCandidateId);
+                        const rowError = combinedRunArtworkErrors[item.lineItemId] ?? null;
+                        const statusLabel = candidates.length === 0
+                          ? "Needs artwork"
+                          : selectedCandidateId
+                            ? "Ready"
+                            : candidates.length === 1
+                              ? "Ready"
+                              : "Ambiguous";
+                        return (
+                          <div key={item.lineItemId} className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-4 text-xs">
+                            <div className="flex flex-wrap items-start justify-between gap-3">
+                              <div className="min-w-0">
+                                <div className="truncate text-sm font-semibold text-white">
+                                  Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}
+                                </div>
+                                <p className="mt-1 text-slate-400">{item.customerName || "Customer/contact not resolved"}</p>
+                                <p className="mt-1 text-slate-500">Current selected file: {selectedCandidate?.label || (candidates.length === 1 ? candidates[0].label : "None selected")}</p>
+                              </div>
+                              <span className={cn(
+                                "rounded border px-2 py-0.5 text-[10px] font-semibold",
+                                statusLabel === "Ready" ? "border-emerald-400/40 text-emerald-200" : rowError ? "border-red-400/40 text-red-100" : "border-amber-400/40 text-amber-100",
+                              )}>
+                                {rowError ? "Error" : statusLabel}
+                              </span>
+                            </div>
+                            <div className="mt-3 grid gap-2 xl:grid-cols-[minmax(0,1fr)_auto]">
+                              {candidates.length > 0 ? (
+                                <Select
+                                  value={selectedCandidateId ?? (candidates.length === 1 ? candidates[0].id : undefined)}
+                                  onValueChange={(value) => setCombinedRunArtworkSelections((current) => ({ ...current, [item.lineItemId]: value }))}
+                                >
+                                  <SelectTrigger className="h-9 bg-[#111921] border-[#2d3748] text-xs">
+                                    <SelectValue placeholder="Choose customer artwork" />
+                                  </SelectTrigger>
+                                  <SelectContent>
+                                    {candidates.map((candidate) => (
+                                      <SelectItem key={candidate.id} value={candidate.id}>
+                                        {candidate.label} - {candidate.sideLabel.toUpperCase()} - {candidate.sizeBytesValue != null ? formatBytes(candidate.sizeBytesValue) : "size unknown"}
+                                      </SelectItem>
+                                    ))}
+                                  </SelectContent>
+                                </Select>
+                              ) : (
+                                <div className="rounded border border-[#2d3748] px-2 py-2 text-slate-300">
+                                  No customer artwork is available for this line item. Upload production artwork from the job detail or remove it from this selection.
+                                </div>
+                              )}
+                              <div className="flex flex-wrap gap-2">
+                                <Button type="button" size="sm" variant="outline" onClick={() => { setSelectedLineItemId(item.lineItemId); setCombinedRunOpen(false); }} className="h-9 px-2 text-[11px]">
+                                  Open job
+                                </Button>
+                                <Button type="button" size="sm" variant="outline" onClick={() => handleToggleQueueItem(item.lineItemId, false)} className="h-9 border-red-400/40 px-2 text-[11px] text-red-100 hover:bg-red-500/10">
+                                  Remove
+                                </Button>
+                              </div>
+                            </div>
+                            {rowError ? <div className="mt-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-100">{rowError}</div> : null}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+              ) : null}
+
+              {combinedRunWizardStep === 3 ? (
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 3: Plan Run</h3>
+                    <p className="mt-1 text-xs text-slate-400">Preserve the existing allocation, sheet planning, mismatch acknowledgement, and override requirements.</p>
+                  </div>
+                  <div className="divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]">
+                    {selectedQueueItems.map((item) => (
+                      <div key={item.lineItemId} className="grid gap-3 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_120px]">
+                        <div className="min-w-0">
+                          <div className="truncate font-semibold text-white">{item.lineNumber ? `Line ${item.lineNumber}: ` : ""}{item.productName}</div>
+                          <div className="mt-1 text-slate-400">
+                            {item.productionDestinationLabel || item.selectedProductionDestination || "No destination"} - {item.materialName || item.media || "No material"}
+                          </div>
+                        </div>
+                        <div className="font-mono text-slate-200">Qty {combinedRunAllocations[item.lineItemId] ?? item.quantity}</div>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
+                    <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Planned sheets</span><Input value={combinedRunPlannedSheetCount} onChange={(event) => setCombinedRunPlannedSheetCount(event.target.value)} inputMode="numeric" className="h-9 bg-[#0f172a] border-[#2d3748]" /></label>
+                    <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Pieces per sheet</span><Input value={combinedRunPiecesPerSheet} onChange={(event) => setCombinedRunPiecesPerSheet(event.target.value)} inputMode="numeric" className="h-9 bg-[#0f172a] border-[#2d3748]" /></label>
+                    <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Sheet width</span><Input value={combinedRunSheetWidth} onChange={(event) => setCombinedRunSheetWidth(event.target.value)} inputMode="decimal" className="h-9 bg-[#0f172a] border-[#2d3748]" /></label>
+                    <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Sheet height</span><Input value={combinedRunSheetHeight} onChange={(event) => setCombinedRunSheetHeight(event.target.value)} inputMode="decimal" className="h-9 bg-[#0f172a] border-[#2d3748]" /></label>
+                  </div>
+                  {combinedRunPlannedSheetCount && combinedRunPiecesPerSheet ? (
+                    <div className={cn("rounded-lg border px-3 py-2 text-xs", combinedRunExpectedPlacements > 0 && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity ? "border-amber-500/40 bg-amber-500/10 text-amber-100" : "border-[#2d3748] bg-[#0f172a] text-slate-300")}>
+                      Planned nest: {combinedRunExpectedPlacements} placements from {combinedRunPlannedSheetCount} sheets x {combinedRunPiecesPerSheet} pieces per sheet. Allocated quantity: {combinedRunValidation.totalAllocatedQuantity}.
+                    </div>
+                  ) : null}
+                  {combinedRunHasPlacementMismatch ? (
+                    <label className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100">
+                      <Checkbox checked={combinedRunMismatchAcknowledged} onCheckedChange={(checked) => setCombinedRunMismatchAcknowledged(checked === true)} aria-label="Acknowledge nested placement mismatch" />
+                      <span>I reviewed the placement mismatch and still want to create this nested run.</span>
+                    </label>
+                  ) : null}
+                  <details className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-3">
+                    <summary className="cursor-pointer text-xs font-semibold text-slate-300">Advanced / Authorized Override</summary>
+                    <div className="mt-3 space-y-3">
+                      {(combinedRunValidation.hasStationConflict || combinedRunValidation.hasMaterialConflict) ? (
+                        <label className="block space-y-1">
+                          <span className="text-xs font-medium text-slate-400">Authorized compatibility override reason</span>
+                          <Input value={combinedRunOverrideReason} onChange={(event) => setCombinedRunOverrideReason(event.target.value)} placeholder="Explain why these lines can share one physical run" className="bg-[#111921] border-[#2d3748]" />
+                        </label>
+                      ) : <p className="text-xs text-slate-500">No compatibility override is currently required.</p>}
+                    </div>
+                  </details>
+                  <label className="block space-y-1">
+                    <span className="text-xs font-medium text-slate-400">Nesting notes</span>
+                    <Textarea value={combinedRunNotes} onChange={(event) => setCombinedRunNotes(event.target.value)} placeholder="Sheet layout, orientation, grouping, or operator notes" className="min-h-20 bg-[#0f172a] border-[#2d3748]" />
+                  </label>
+                </div>
+              ) : null}
+
+              {combinedRunWizardStep === 4 ? (
+                <div className="space-y-4">
+                  <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
+                    <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 4: Final Review</h3>
+                    <div className="mt-3 grid gap-3 text-xs md:grid-cols-4">
+                      <div><span className="text-slate-500">Target station:</span> {combinedRunValidation.stationKey || "Not resolved"}</div>
+                      <div><span className="text-slate-500">Material:</span> {selectedQueueDestinationLabels.length === 1 ? selectedQueueDestinationLabels[0] : "Mixed / override required"}</div>
+                      <div><span className="text-slate-500">Allocated:</span> {combinedRunValidation.totalAllocatedQuantity}</div>
+                      <div><span className="text-slate-500">Sheet planning:</span> {combinedRunExpectedPlacements > 0 ? `${combinedRunExpectedPlacements} placements` : "Not entered"}</div>
+                    </div>
+                    {!canSubmitCombinedRun && combinedRunValidation.reason ? (
+                      <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{combinedRunValidation.reason}</div>
+                    ) : null}
+                  </div>
+                  <div className="divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]">
+                    {selectedQueueItems.map((item) => {
+                      const needsArtwork = selectedQueueItemsNeedingArtwork.some((artItem) => artItem.lineItemId === item.lineItemId);
+                      return (
+                        <div key={item.lineItemId} className="grid gap-2 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_160px_120px]">
+                          <div className="min-w-0">
+                            <div className="truncate font-semibold text-white">Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}</div>
+                            <div className="mt-1 text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
+                          </div>
+                          <span className={cn("rounded border px-2 py-1 text-center text-[11px] font-semibold", needsArtwork ? "border-amber-400/40 text-amber-100" : "border-emerald-400/40 text-emerald-200")}>
+                            {needsArtwork ? "Artwork unresolved" : "Artwork ready"}
+                          </span>
+                          <span className="font-mono text-slate-200">Qty {combinedRunAllocations[item.lineItemId] ?? item.quantity}</span>
+                        </div>
+                      );
+                    })}
+                  </div>
+                  {combinedRunOverrideReason.trim() ? (
+                    <div className="rounded-lg border border-violet-400/30 bg-violet-500/10 p-3 text-xs text-violet-100">
+                      Authorized override reason: {combinedRunOverrideReason}
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+
+            <footer className="sticky bottom-0 z-20 shrink-0 border-t border-[#2d3748] bg-[#1a232e] p-4">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="text-xs text-slate-300">
+                  <span className="font-bold text-violet-100">{selectedQueueItems.length} selected</span>
+                  <span className="ml-2">Step {combinedRunWizardStep} of 4</span>
+                  {combinedRunActionReason ? <span className="ml-2 text-slate-500">{combinedRunActionReason}</span> : null}
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  <Button type="button" variant="outline" onClick={cancelCombinedRunWizard} disabled={createCombinedRunMutation.isPending}>Cancel</Button>
+                  <Button type="button" variant="outline" onClick={() => setCombinedRunWizardStep((step) => Math.max(1, step - 1) as CombinedRunWizardStep)} disabled={combinedRunWizardStep === 1 || createCombinedRunMutation.isPending}>Back</Button>
+                  {combinedRunWizardStep < 4 ? (
+                    <Button type="button" onClick={() => setCombinedRunWizardStep((step) => Math.min(4, step + 1) as CombinedRunWizardStep)}>Next</Button>
+                  ) : (
+                    <Button type="button" onClick={handleCreateCombinedRun} disabled={!canSubmitCombinedRun || createCombinedRunMutation.isPending} className="bg-violet-600 text-white hover:bg-violet-700">
+                      {createCombinedRunMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                      Create Run
+                    </Button>
+                  )}
+                </div>
+              </div>
+            </footer>
+          </div>
+        ) : selectedQueueItems.length > 1 ? (
+          <div className="flex min-h-0 flex-1 flex-col">
+            <header className="border-b border-[#2d3748] bg-[#1a232e]/30 px-6 py-5">
+              <p className="text-[10px] font-bold uppercase tracking-widest text-violet-300">Multi-selection</p>
+              <h2 className="mt-1 text-2xl font-black text-white">{selectedQueueItems.length} selected jobs</h2>
+              <p className="mt-1 text-xs text-slate-400">Review the batch before completing or nesting from the bottom action bar.</p>
+            </header>
+            <div className="min-h-0 flex-1 overflow-y-auto p-6 pb-28">
+              <div className="grid gap-3 text-xs md:grid-cols-4">
+                <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Orders</p><p className="mt-1 text-lg font-bold text-white">{selectedQueueOrderNumbers.length || 0}</p></div>
+                <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Total quantity</p><p className="mt-1 text-lg font-bold text-white">{selectedQueueTotalQuantity}</p></div>
+                <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Destination</p><p className="mt-1 text-sm font-bold text-white">{selectedQueueDestinationLabels.length === 1 ? selectedQueueDestinationLabels[0] : "Mixed"}</p></div>
+                <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Nesting status</p><p className="mt-1 text-sm font-bold text-white">{selectedQueueValidationLabel}</p></div>
+              </div>
+              <div className="mt-4 divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]">
+                {selectedQueueItems.map((item) => (
+                  <div key={item.lineItemId} className="grid gap-2 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_150px_120px]">
+                    <div className="min-w-0">
+                      <div className="truncate text-sm font-semibold text-white">Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}</div>
+                      <div className="mt-1 truncate text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
+                    </div>
+                    <div className="text-slate-400">{item.productionDestinationLabel || item.selectedProductionDestination || "No destination"}</div>
+                    <Button type="button" size="sm" variant="outline" onClick={() => { setSelectedLineItemId(item.lineItemId); setSelectedQueueLineItemIds(new Set([item.lineItemId])); }} className="h-8">Open job</Button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : !selectedItem ? (
+          <div className="flex min-h-0 flex-1 items-center justify-center p-6">
+            <div className="max-w-md text-center">
+              <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-lg border border-[#2d3748] bg-[#1a232e]">
+                <FileText className="h-7 w-7 text-slate-500" />
+              </div>
+              <h2 className="mt-5 text-xl font-black text-white">Select a job item</h2>
+              <p className="mt-2 text-sm text-slate-400">Choose a queue item to review job specifications, customer artwork, proof files, and production artwork.</p>
+              <div className="mt-5 grid grid-cols-2 gap-3 text-xs">
+                <div className="rounded border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Queue</p><p className="mt-1 font-bold text-white">{filteredQueueCount} jobs</p></div>
+                <div className="rounded border border-[#2d3748] bg-[#1a232e] p-3"><p className="text-slate-500">Selected</p><p className="mt-1 font-bold text-white">{selectedQueueItems.length}</p></div>
+              </div>
+            </div>
+          </div>
+        ) : (
+          <>
         {/* Workspace Header */}
         <header className="p-6 border-b border-[#2d3748] bg-[#1a232e]/30 flex justify-between items-center">
           <div className="flex items-center gap-6">
@@ -3328,411 +3771,86 @@ export default function PrepressProductionPageV2() {
           </section>
         </div>
 
-        {/* Sticky Footer */}
-        <div className="sticky bottom-0 z-20 shrink-0 border-t border-[#2d3748] bg-[#1a232e] p-4 flex items-center justify-between">
-          <div className="flex items-center gap-4">
-            {hasProofReleaseBlock ? (
-              <div className="flex items-center gap-2 text-amber-300" role="alert">
-                <AlertCircle className="w-4 h-4" />
-                <span className="text-xs font-medium">Awaiting Proof Approval - completion and release are blocked</span>
-              </div>
-            ) : null}
-            {artworkSideReadiness.warning ? (
-              <div className="flex items-center gap-2 text-amber-400" role="alert">
-                <AlertCircle className="w-4 h-4" />
-                <span className="text-xs font-medium">{artworkSideReadiness.warning}</span>
-              </div>
-            ) : null}
-            {selectedItem?.proofBypassed ? (
-              <div className="flex items-center gap-2 text-green-500">
-                <CheckCircle className="w-4 h-4" />
-                <span className="text-xs font-medium">Proof Bypassed</span>
-              </div>
-            ) : null}
-            {hasFinalFiles ? (
-              <div className="flex items-center gap-2 text-green-500">
-                <CheckCircle className="w-4 h-4" />
-                <span className="text-xs font-medium">
-                  {hasProofReleaseBlock ? "Final file detected - awaiting proof approval" : "Final file detected"}
-                </span>
-              </div>
-            ) : canCompleteWithExistingArtwork ? (
-              <div className="flex items-center gap-2 text-green-500">
-                <CheckCircle className="w-4 h-4" />
-                <span className="text-xs font-medium">Existing artwork ready for completion</span>
-              </div>
-            ) : (
-              <div className="flex items-center gap-2 text-amber-500">
-                <AlertCircle className="w-4 h-4" />
-                <span className="text-xs font-medium">No final files uploaded</span>
-              </div>
-            )}
-          </div>
-
-          <div className="flex flex-wrap items-center justify-end gap-3">
-            <Button
-              onClick={handleStartPrepress}
-              disabled={!canStartPrepress || startSessionMutation.isPending || completeAndReleaseMutation.isPending}
-              variant="outline"
-              className="bg-transparent border-[#2d3748] text-slate-300 hover:bg-[#2d3748] hover:text-white disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              {startSessionMutation.isPending ? (
-                <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Starting...</>
-              ) : (
-                "Start Prepress"
+          </>
               )}
-            </Button>
-            <Button
-              onClick={handleComplete}
-              disabled={!canComplete || completeSessionMutation.isPending || completeAndReleaseMutation.isPending}
-              className={cn(
-                "font-bold shadow-lg transition-all",
-                canComplete
-                  ? "bg-[#1773cf] text-white hover:bg-[#1773cf]/90"
-                  : "bg-slate-700 text-slate-500 cursor-not-allowed"
-              )}
-            >
-              {completeSessionMutation.isPending ? (
-                <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Completing...</>
-              ) : (
-                <>
-                  Mark Prepress Complete
-                  <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
-                  </svg>
-                </>
-              )}
-            </Button>
-
-            <Button
-              onClick={handleCompleteAndRelease}
-              disabled={
-                !canCompleteAndRelease ||
-                completeAndReleaseMutation.isPending ||
-                completeSessionMutation.isPending ||
-                sendToPrintMutation.isPending
-              }
-              className={cn(
-                "max-w-[220px] whitespace-normal text-center font-bold leading-tight shadow-lg transition-all",
-                canCompleteAndRelease
-                  ? "bg-emerald-600 text-white hover:bg-emerald-700"
-                  : "bg-slate-700 text-slate-500 cursor-not-allowed"
-              )}
-            >
-              {completeAndReleaseMutation.isPending ? (
-                <><Loader2 className="w-4 h-4 mr-2 shrink-0 animate-spin" /> Completing &amp; releasing...</>
-              ) : (
-                "Complete Prepress"
-              )}
-            </Button>
-
-            {/* PROMPT B: Send to Print Queue button */}
-            <Button
-              onClick={handleSendToPrint}
-              disabled={!canSendToPrint || sendToPrintMutation.isPending || completeAndReleaseMutation.isPending}
-              className={cn(
-                "font-bold shadow-lg transition-all",
-                canSendToPrint
-                  ? "bg-green-600 text-white hover:bg-green-700"
-                  : "bg-slate-700 text-slate-500 cursor-not-allowed"
-              )}
-            >
-              {sendToPrintMutation.isPending ? (
-                <><Loader2 className="w-4 h-4 mr-2 animate-spin" /> Sending...</>
-              ) : (
-                <>
-                  {hasProofReleaseBlock ? "Awaiting Proof Approval" : "Release to Production"}
-                  <svg className="w-4 h-4 ml-2" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
-                  </svg>
-                </>
-              )}
-            </Button>
-          </div>
-        </div>
       </main>
+      </div>
 
-      <Dialog open={combinedRunOpen} onOpenChange={setCombinedRunOpen}>
-        <DialogContent className="max-w-3xl bg-[#111921] border-[#2d3748] text-slate-100">
-          <DialogHeader>
-            <DialogTitle>Nest Selected</DialogTitle>
-          </DialogHeader>
-          <div className="space-y-4">
-            <div className="rounded-lg border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs text-slate-300">
-              <div className="font-semibold text-slate-100">
-                Select compatible production jobs to create a combined run.
-              </div>
-              <div className="mt-1">
-                {selectedQueueItems.length} selected line items across {selectedQueueOrderNumbers.length || 0} order{selectedQueueOrderNumbers.length === 1 ? "" : "s"}.
-                {" "}Total allocated quantity: {combinedRunValidation.totalAllocatedQuantity}.
-              </div>
-              <div className="mt-1">
-                Target station: {combinedRunValidation.stationKey || "Not resolved"}.
-                {combinedRunValidation.hasStationConflict ? " Mixed destinations selected." : " Destinations match."}
-                {combinedRunValidation.hasMaterialConflict ? " Mixed materials selected." : " Materials match."}
-              </div>
-              {!combinedRunValidation.canCreate && combinedRunValidation.reason ? (
-                <div className="mt-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-amber-100">
-                  {combinedRunValidation.reason}
-                </div>
+      {!combinedRunOpen ? (
+        <div className="shrink-0 border-t border-[#2d3748] bg-[#1a232e] px-4 py-3" data-testid="prepress-bottom-action-bar">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div className="min-w-0 text-xs text-slate-300">
+              <span className="font-bold text-white">
+                {selectedQueueItems.length > 0
+                  ? `${selectedQueueItems.length} selected`
+                  : selectedItem
+                    ? `1 job open${selectedItem.lineNumber ? ` - Line ${selectedItem.lineNumber}` : ""}`
+                    : "No job selected"}
+              </span>
+              {hasProofReleaseBlock ? <span className="ml-2 text-amber-300">Proof approval blocks release</span> : null}
+              {artworkSideReadiness.warning && selectedItem ? <span className="ml-2 text-amber-300">{artworkSideReadiness.warning}</span> : null}
+              {selectedQueueItems.length > 1 ? <span className="ml-2 text-slate-500">{combinedRunActionReason}</span> : null}
+            </div>
+
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              <Button
+                type="button"
+                onClick={handleStartPrepress}
+                disabled={selectedQueueItems.length > 1 || !canStartPrepress || startSessionMutation.isPending || completeAndReleaseMutation.isPending}
+                variant="outline"
+                title={selectedQueueItems.length > 1 ? "Start Prepress applies to one open job at a time." : undefined}
+                className="bg-transparent border-[#2d3748] text-slate-300 hover:bg-[#2d3748] hover:text-white disabled:opacity-50"
+              >
+                {startSessionMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Start Prepress
+              </Button>
+              <Button
+                type="button"
+                onClick={() => selectedQueueItems.length > 0 ? handleBulkPrintReady(false) : handleComplete()}
+                disabled={
+                  selectedQueueItems.length > 0
+                    ? bulkPrintReadyMutation.isPending
+                    : !canComplete || completeSessionMutation.isPending || completeAndReleaseMutation.isPending
+                }
+                variant="outline"
+                className="border-[#1773cf]/60 text-[#8ec5ff] hover:bg-[#1773cf]/10 disabled:opacity-50"
+              >
+                {(selectedQueueItems.length > 0 ? bulkPrintReadyMutation.isPending : completeSessionMutation.isPending) ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Mark Prepress Complete
+              </Button>
+              <Button
+                type="button"
+                onClick={() => selectedQueueItems.length > 0 ? handleBulkPrintReady(true) : handleCompleteAndRelease()}
+                disabled={
+                  selectedQueueItems.length > 0
+                    ? bulkPrintReadyMutation.isPending
+                    : !canCompleteAndRelease || completeAndReleaseMutation.isPending || completeSessionMutation.isPending || sendToPrintMutation.isPending
+                }
+                className="bg-emerald-600 text-white hover:bg-emerald-700 disabled:bg-slate-700 disabled:text-slate-500"
+              >
+                {(selectedQueueItems.length > 0 ? bulkPrintReadyMutation.isPending : completeAndReleaseMutation.isPending) ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Complete and Release
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={openCombinedRunWizard}
+                disabled={!canOpenCombinedRunDialog}
+                title={combinedRunActionReason || undefined}
+                className="border-violet-400/60 text-violet-200 hover:bg-violet-500/10 disabled:opacity-50"
+              >
+                {createCombinedRunMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
+                Nest Selected
+              </Button>
+              {selectedQueueItems.length > 0 ? (
+                <Button type="button" variant="ghost" onClick={() => setSelectedQueueLineItemIds(new Set())} className="text-slate-300 hover:bg-white/10">
+                  Clear selection
+                </Button>
               ) : null}
             </div>
-
-            {selectedQueueItemsNeedingArtwork.length > 0 ? (
-              <div className="space-y-3 rounded-lg border border-amber-400/40 bg-amber-400/5 p-3">
-                <div className="flex flex-wrap items-start justify-between gap-3">
-                  <div>
-                    <p className="text-sm font-semibold text-amber-100">Resolve production artwork</p>
-                    <p className="mt-1 text-xs text-slate-300">
-                      {selectedQueueItemsNeedingArtwork.length} selected {selectedQueueItemsNeedingArtwork.length === 1 ? "job needs" : "jobs need"} a production-artwork assignment before this run can be created.
-                    </p>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="outline"
-                      disabled={combinedRunArtworkLoading || combinedRunArtworkAssigning}
-                      onClick={() => {
-                        setCombinedRunArtworkSelections((current) => {
-                          const next = { ...current };
-                          for (const item of selectedQueueItemsNeedingArtwork) {
-                            const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
-                            if (candidates.length === 1) next[item.lineItemId] = candidates[0].id;
-                          }
-                          return next;
-                        });
-                      }}
-                      className="h-8 border-amber-400/50 text-amber-100 hover:bg-amber-500/10"
-                    >
-                      Use sole artwork
-                    </Button>
-                    <Button
-                      type="button"
-                      size="sm"
-                      onClick={handleAssignCombinedRunArtwork}
-                      disabled={!combinedRunArtworkCanAssign}
-                      className="h-8 bg-emerald-600 text-white hover:bg-emerald-700"
-                    >
-                      {combinedRunArtworkAssigning ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
-                      Assign selected artwork
-                    </Button>
-                  </div>
-                </div>
-                {combinedRunArtworkLoading ? (
-                  <div className="flex items-center gap-2 rounded border border-[#2d3748] bg-[#0f172a] px-2 py-2 text-xs text-slate-300">
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading available customer artwork...
-                  </div>
-                ) : null}
-                {combinedRunArtworkErrors.__load ? (
-                  <div className="rounded border border-red-500/40 bg-red-500/10 px-2 py-2 text-xs text-red-100">
-                    {combinedRunArtworkErrors.__load}
-                  </div>
-                ) : null}
-                <div className="max-h-72 space-y-2 overflow-auto pr-1">
-                  {selectedQueueItemsNeedingArtwork.map((item) => {
-                    const candidates = combinedRunArtworkByLineItem[item.lineItemId] ?? [];
-                    const selectedCandidateId = combinedRunArtworkSelections[item.lineItemId];
-                    const rowError = combinedRunArtworkErrors[item.lineItemId] ?? null;
-                    const statusLabel = candidates.length === 0
-                      ? "Needs upload"
-                      : selectedCandidateId
-                        ? "Ready to assign"
-                        : candidates.length === 1
-                          ? "Ready to assign"
-                          : "Needs file choice";
-                    return (
-                      <div key={item.lineItemId} className="rounded-md border border-[#2d3748] bg-[#0f172a] p-3 text-xs">
-                        <div className="flex flex-wrap items-start justify-between gap-2">
-                          <div className="min-w-0">
-                            <div className="font-semibold text-white">
-                              Order {item.jobNumber || item.orderId}{item.lineNumber ? ` · Line ${item.lineNumber}` : ""}: {item.productName}
-                            </div>
-                            <div className="mt-0.5 text-slate-400">{formatOwnerLabel(item) || item.customerName || "Customer not resolved"}</div>
-                          </div>
-                          <span className={cn(
-                            "rounded border px-2 py-0.5 text-[10px] font-semibold",
-                            statusLabel === "Ready to assign"
-                              ? "border-emerald-400/40 text-emerald-200"
-                              : "border-amber-400/40 text-amber-100",
-                          )}>
-                            {statusLabel}
-                          </span>
-                        </div>
-                        <div className="mt-2 grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-                          {candidates.length > 0 ? (
-                            <Select
-                              value={selectedCandidateId ?? (candidates.length === 1 ? candidates[0].id : undefined)}
-                              onValueChange={(value) => setCombinedRunArtworkSelections((current) => ({ ...current, [item.lineItemId]: value }))}
-                            >
-                              <SelectTrigger className="h-9 bg-[#111921] border-[#2d3748] text-xs">
-                                <SelectValue placeholder="Choose customer artwork" />
-                              </SelectTrigger>
-                              <SelectContent>
-                                {candidates.map((candidate) => (
-                                  <SelectItem key={candidate.id} value={candidate.id}>
-                                    {candidate.label} · {candidate.sideLabel.toUpperCase()} · {candidate.sizeBytesValue != null ? formatBytes(candidate.sizeBytesValue) : "size unknown"}
-                                  </SelectItem>
-                                ))}
-                              </SelectContent>
-                            </Select>
-                          ) : (
-                            <div className="rounded border border-[#2d3748] px-2 py-2 text-slate-300">
-                              No customer artwork is available for this line item. Upload production artwork from the job detail or remove it from this selection.
-                            </div>
-                          )}
-                          <div className="flex flex-wrap gap-2">
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() => {
-                                setSelectedLineItemId(item.lineItemId);
-                                setCombinedRunOpen(false);
-                              }}
-                              className="h-9 px-2 text-[11px]"
-                            >
-                              Open job
-                            </Button>
-                            <Button
-                              type="button"
-                              size="sm"
-                              variant="outline"
-                              onClick={() => handleToggleQueueItem(item.lineItemId, false)}
-                              className="h-9 border-red-400/40 px-2 text-[11px] text-red-100 hover:bg-red-500/10"
-                            >
-                              Remove
-                            </Button>
-                          </div>
-                        </div>
-                        {rowError ? (
-                          <div className="mt-2 rounded border border-red-500/40 bg-red-500/10 px-2 py-1 text-[11px] text-red-100">
-                            {rowError}
-                          </div>
-                        ) : null}
-                      </div>
-                    );
-                  })}
-                </div>
-              </div>
-            ) : null}
-
-            <div className="max-h-64 overflow-auto rounded-lg border border-[#2d3748]">
-              {selectedQueueItems.map((item) => {
-                const maxQuantity = Number(item.quantity) || 0;
-                return (
-                  <div key={item.lineItemId} className="grid grid-cols-[minmax(0,1fr)_120px] gap-3 border-b border-[#2d3748] px-3 py-2 last:border-b-0">
-                    <div className="min-w-0">
-                      <div className="truncate text-sm font-semibold text-white">
-                        {item.lineNumber ? `Line ${item.lineNumber}: ` : ""}{item.productName}
-                      </div>
-                      <div className="text-xs text-slate-300">
-                        Order {item.jobNumber || item.orderId} - {formatOwnerLabel(item) || item.customerName || "Customer not resolved"}
-                      </div>
-                      <div className="text-xs text-slate-400">
-                        {item.productionDestinationLabel || item.selectedProductionDestination || "No destination"} - {item.materialName || item.media || "No material"} - {item.width && item.height ? `${item.width} x ${item.height}` : "No dimensions"}
-                      </div>
-                      <div className="mt-1 grid gap-1 text-[11px] text-slate-500 sm:grid-cols-4">
-                        <span>Ordered: {item.quantity}</span>
-                        <span>Completed: not reported</span>
-                        <span>Reserved: not reported</span>
-                        <span>Available: {maxQuantity}</span>
-                      </div>
-                    </div>
-                    <label className="space-y-1">
-                      <span className="text-[11px] font-medium text-slate-400">Allocated qty</span>
-                      <Input
-                        aria-label={`Allocated quantity for ${item.productName}`}
-                        value={combinedRunAllocations[item.lineItemId] ?? String(maxQuantity || 1)}
-                        onChange={(event) => setCombinedRunAllocations((current) => ({ ...current, [item.lineItemId]: event.target.value }))}
-                        inputMode="numeric"
-                        className="h-8 bg-[#111921] border-[#2d3748]"
-                      />
-                    </label>
-                  </div>
-                );
-              })}
-            </div>
-
-            <div className="grid grid-cols-2 gap-3 md:grid-cols-4">
-              <label className="space-y-1">
-                <span className="text-xs font-medium text-slate-400">Planned sheets</span>
-                <Input value={combinedRunPlannedSheetCount} onChange={(event) => setCombinedRunPlannedSheetCount(event.target.value)} inputMode="numeric" className="h-9 bg-[#0f172a] border-[#2d3748]" />
-              </label>
-              <label className="space-y-1">
-                <span className="text-xs font-medium text-slate-400">Pieces per sheet</span>
-                <Input value={combinedRunPiecesPerSheet} onChange={(event) => setCombinedRunPiecesPerSheet(event.target.value)} inputMode="numeric" className="h-9 bg-[#0f172a] border-[#2d3748]" />
-              </label>
-              <label className="space-y-1">
-                <span className="text-xs font-medium text-slate-400">Sheet width</span>
-                <Input value={combinedRunSheetWidth} onChange={(event) => setCombinedRunSheetWidth(event.target.value)} inputMode="decimal" className="h-9 bg-[#0f172a] border-[#2d3748]" />
-              </label>
-              <label className="space-y-1">
-                <span className="text-xs font-medium text-slate-400">Sheet height</span>
-                <Input value={combinedRunSheetHeight} onChange={(event) => setCombinedRunSheetHeight(event.target.value)} inputMode="decimal" className="h-9 bg-[#0f172a] border-[#2d3748]" />
-              </label>
-            </div>
-
-            {combinedRunPlannedSheetCount && combinedRunPiecesPerSheet ? (
-              <div className={cn(
-                "rounded-lg border px-3 py-2 text-xs",
-                combinedRunExpectedPlacements > 0 && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity
-                  ? "border-amber-500/40 bg-amber-500/10 text-amber-100"
-                  : "border-[#2d3748] bg-[#0f172a] text-slate-300",
-              )}>
-                Planned nest: {combinedRunExpectedPlacements} placements from {combinedRunPlannedSheetCount} sheets x {combinedRunPiecesPerSheet} pieces per sheet.
-                {" "}Allocated quantity: {combinedRunValidation.totalAllocatedQuantity}.
-                {combinedRunExpectedPlacements > 0 && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity
-                  ? " Review this mismatch before creating the nested run."
-                  : null}
-              </div>
-            ) : null}
-
-            {combinedRunHasPlacementMismatch ? (
-              <label className="flex items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100">
-                <Checkbox
-                  checked={combinedRunMismatchAcknowledged}
-                  onCheckedChange={(checked) => setCombinedRunMismatchAcknowledged(checked === true)}
-                  aria-label="Acknowledge nested placement mismatch"
-                />
-                <span>I reviewed the placement mismatch and still want to create this nested run.</span>
-              </label>
-            ) : null}
-
-            {(combinedRunValidation.hasStationConflict || combinedRunValidation.hasMaterialConflict) ? (
-              <label className="block space-y-1">
-                <span className="text-xs font-medium text-slate-400">Authorized compatibility override reason</span>
-                <Input
-                  value={combinedRunOverrideReason}
-                  onChange={(event) => setCombinedRunOverrideReason(event.target.value)}
-                  placeholder="Explain why these lines can share one physical run"
-                  className="bg-[#0f172a] border-[#2d3748]"
-                />
-              </label>
-            ) : null}
-
-            <label className="block space-y-1">
-              <span className="text-xs font-medium text-slate-400">Nesting notes</span>
-              <Textarea
-                value={combinedRunNotes}
-                onChange={(event) => setCombinedRunNotes(event.target.value)}
-                placeholder="Sheet layout, orientation, grouping, or operator notes"
-                className="min-h-20 bg-[#0f172a] border-[#2d3748]"
-              />
-            </label>
-
-            <div className="flex flex-wrap justify-end gap-2">
-              <Button type="button" variant="outline" onClick={() => setCombinedRunOpen(false)} disabled={createCombinedRunMutation.isPending}>
-                Cancel
-              </Button>
-              <Button type="button" onClick={handleCreateCombinedRun} disabled={!canSubmitCombinedRun || createCombinedRunMutation.isPending}>
-                {createCombinedRunMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                Create Nested Run
-              </Button>
-            </div>
           </div>
-        </DialogContent>
-      </Dialog>
+        </div>
+      ) : null}
 
       <Dialog open={combinedRunDetailOpen} onOpenChange={setCombinedRunDetailOpen}>
         <DialogContent className="max-h-[90vh] max-w-5xl overflow-y-auto bg-[#111921] border-[#2d3748] text-slate-100">
@@ -4243,7 +4361,7 @@ function JobCard({
             {config.note && <span className="text-[8px] font-semibold text-emerald-300">{config.note}</span>}
           </div>
         </div>
-        <p className="text-xs font-semibold truncate text-slate-200">{item.customerName}</p>
+        <p className="text-xs font-semibold truncate text-slate-200">{item.customerName || "Customer/contact not resolved"}</p>
         <p className="text-[10px] truncate text-slate-400">
           {item.lineNumber ? `Line ${item.lineNumber} · ` : ""}{item.productName}
         </p>
