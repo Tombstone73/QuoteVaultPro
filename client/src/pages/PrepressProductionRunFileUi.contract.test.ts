@@ -40,16 +40,23 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("getPrepressCombinedRunItemBlocker");
     expect(source).toContain("canSelectPrepressCombinedRunItem");
     expect(source).toContain("Already nested in an active production run.");
-    expect(source).toContain("Create Run");
+    expect(source).toContain("Create Combined Run");
   });
 
   test("mounted Nest Selected workflow is an in-pane four-step wizard", () => {
     expect(source).toContain("prepress-combined-run-wizard");
+    expect(source).toContain("grid-rows-[auto_minmax(0,1fr)_auto]");
+    expect(source).toContain("prepress-combined-run-wizard-footer");
     expect(source).toContain("Step 1: Selected Jobs");
     expect(source).toContain("Step 2: Resolve Production Artwork");
     expect(source).toContain("Step 3: Plan Run");
     expect(source).toContain("Step 4: Final Review");
+    expect(source).toContain("Next: Resolve Artwork");
+    expect(source).toContain("Next: Plan Run");
+    expect(source).toContain("Next: Final Review");
+    expect(source).toContain("currentCombinedRunStepBlocker");
     expect(source).toContain("Advanced / Authorized Override");
+    expect(source).toContain("{!combinedRunOpen ? (");
   });
 
   test("mounted Nest Selected workflow resolves missing production artwork before creation", () => {
@@ -61,6 +68,14 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("/api/prepress/line-item/${item.lineItemId}/assign-customer-artwork");
     expect(source).toContain("No customer artwork is available for this line item.");
     expect(source).toContain("Needs production artwork");
+  });
+
+  test("Combined Runs empty state explains how runs are created", () => {
+    expect(source).toContain("No combined runs yet.");
+    expect(source).toContain("Select two or more compatible jobs from the Prepress Queue and choose Nest Selected to create one.");
+    expect(source).toContain("Go to Prepress Queue");
+    expect(source).toContain("onClick={() => setWorkspaceTab(\"queue\")}");
+    expect(source).toContain("onClick={openCombinedRunWizard}");
   });
 
   test("mounted Prepress page exposes controlled production artwork copy flow", () => {

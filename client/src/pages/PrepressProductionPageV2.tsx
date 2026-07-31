@@ -1266,6 +1266,47 @@ export default function PrepressProductionPageV2() {
     && combinedRunArtworkReadyCount === selectedQueueItemsNeedingArtwork.length
     && !combinedRunArtworkLoading
     && !combinedRunArtworkAssigning;
+  const combinedRunStep1Blocker = selectedQueueItems.length < 2
+    ? "Select at least two compatible Prepress jobs from the queue."
+    : selectedQueueHardBlockedItems.length > 0
+      ? `${selectedQueueHardBlockedItems.length} selected job${selectedQueueHardBlockedItems.length === 1 ? " is" : "s are"} hard blocked. Remove blocked jobs before continuing.`
+      : null;
+  const combinedRunStep2Blocker = selectedQueueItemsNeedingArtwork.length === 0
+    ? null
+    : combinedRunArtworkLoading
+      ? "Loading available customer artwork."
+      : combinedRunArtworkErrors.__load
+        ? combinedRunArtworkErrors.__load
+        : combinedRunArtworkReadyCount < selectedQueueItemsNeedingArtwork.length
+          ? "Choose customer artwork for each unresolved job."
+          : "Assign selected artwork before planning the run.";
+  const combinedRunStep3Blocker = combinedRunHasPlacementMismatch && !combinedRunMismatchAcknowledged
+    ? "Acknowledge the placement mismatch before final review."
+    : combinedRunValidation.canCreate
+      ? null
+      : combinedRunValidation.reason || "Resolve allocation, compatibility, or override requirements before final review.";
+  const combinedRunStep4Blocker = canSubmitCombinedRun
+    ? null
+    : combinedRunHasPlacementMismatch && !combinedRunMismatchAcknowledged
+      ? "Acknowledge the placement mismatch before creating the run."
+      : combinedRunValidation.reason || "Resolve all required validation before creating the run.";
+  const currentCombinedRunStepBlocker =
+    combinedRunWizardStep === 1 ? combinedRunStep1Blocker
+      : combinedRunWizardStep === 2 ? combinedRunStep2Blocker
+        : combinedRunWizardStep === 3 ? combinedRunStep3Blocker
+          : combinedRunStep4Blocker;
+  const combinedRunNextLabel =
+    combinedRunWizardStep === 1 ? "Next: Resolve Artwork"
+      : combinedRunWizardStep === 2 ? "Next: Plan Run"
+        : combinedRunWizardStep === 3 ? "Next: Final Review"
+          : "Create Combined Run";
+  const canNavigateToCombinedRunStep = (targetStep: CombinedRunWizardStep) => {
+    if (targetStep <= combinedRunWizardStep) return true;
+    if (targetStep >= 2 && combinedRunStep1Blocker) return false;
+    if (targetStep >= 3 && combinedRunStep2Blocker) return false;
+    if (targetStep >= 4 && combinedRunStep3Blocker) return false;
+    return true;
+  };
   const selectedItem = queue.find(q => q.lineItemId === selectedLineItemId) ?? null;
   const selectedAlertStation = useMemo<ProductionAlertStation>(() => {
     const station = selectedItem?.selectedProductionDestination || selectedItem?.suggestedProductionDestination;
@@ -1891,6 +1932,7 @@ export default function PrepressProductionPageV2() {
       resetCombinedRunDraft();
       const createdRunId = (result as any)?.run?.id ?? (result as any)?.id ?? null;
       const createdRunNumber = (result as any)?.run?.runNumber ?? (result as any)?.runNumber ?? null;
+      setWorkspaceTab("runs");
       if (createdRunId) {
         setSelectedCombinedRunId(createdRunId);
         setCombinedRunDetailOpen(true);
@@ -2274,7 +2316,22 @@ export default function PrepressProductionPageV2() {
               ) : productionRunsQuery.isLoading ? (
                 <div className="flex items-center gap-2 text-[11px] text-slate-400"><Loader2 className="h-3.5 w-3.5 animate-spin" /> Loading combined runs...</div>
               ) : prepressCombinedRuns.length === 0 ? (
-                <div className="rounded border border-[#2d3748] px-2 py-2 text-[11px] text-slate-400">No combined runs match this view.</div>
+                <div className="rounded-lg border border-violet-400/30 bg-violet-500/5 px-3 py-5 text-center text-xs text-slate-300">
+                  <p className="font-semibold text-violet-100">No combined runs yet.</p>
+                  <p className="mx-auto mt-2 max-w-[28rem] text-slate-400">
+                    Select two or more compatible jobs from the Prepress Queue and choose Nest Selected to create one.
+                  </p>
+                  <div className="mt-4 flex flex-wrap justify-center gap-2">
+                    <Button type="button" size="sm" variant="outline" onClick={() => setWorkspaceTab("queue")} className="h-8 px-3 text-[11px]">
+                      Go to Prepress Queue
+                    </Button>
+                    {canOpenCombinedRunDialog ? (
+                      <Button type="button" size="sm" onClick={openCombinedRunWizard} className="h-8 bg-violet-600 px-3 text-[11px] text-white hover:bg-violet-700">
+                        Create Combined Run
+                      </Button>
+                    ) : null}
+                  </div>
+                </div>
               ) : (
                 <div className="space-y-2">
                   {prepressCombinedRuns.slice(0, 12).map((run) => {
@@ -2290,6 +2347,7 @@ export default function PrepressProductionPageV2() {
                             </div>
                             <div className="mt-1 truncate text-slate-300">Order {run.orderNumber} - {run.customerName}</div>
                             <div className="truncate text-slate-500">{run.stationKey} - {run.memberCount} lines - {run.fileCount} active files</div>
+                            <div className="truncate text-slate-600">Created {run.createdAt ? new Date(run.createdAt).toLocaleDateString() : "date unknown"}</div>
                           </div>
                           <Button
                             type="button"
@@ -2398,7 +2456,7 @@ export default function PrepressProductionPageV2() {
       {/* RIGHT COLUMN: Main Workspace */}
       <main className="flex-1 min-h-0 flex flex-col h-full overflow-hidden bg-[#111921]">
         {combinedRunOpen ? (
-          <div className="flex min-h-0 flex-1 flex-col" data-testid="prepress-combined-run-wizard">
+          <div className="grid h-full min-h-0 grid-rows-[auto_minmax(0,1fr)_auto]" data-testid="prepress-combined-run-wizard">
             <header className="shrink-0 border-b border-[#2d3748] bg-[#1a232e]/40 px-6 py-4">
               <div className="flex flex-wrap items-start justify-between gap-4">
                 <div>
@@ -2413,9 +2471,13 @@ export default function PrepressProductionPageV2() {
                     <button
                       key={step}
                       type="button"
-                      onClick={() => setCombinedRunWizardStep(step)}
+                      onClick={() => {
+                        if (canNavigateToCombinedRunStep(step)) setCombinedRunWizardStep(step);
+                      }}
+                      disabled={!canNavigateToCombinedRunStep(step)}
+                      title={!canNavigateToCombinedRunStep(step) ? "Complete the earlier wizard step first." : undefined}
                       className={cn(
-                        "rounded border px-3 py-1.5 font-semibold",
+                        "rounded border px-3 py-1.5 font-semibold disabled:cursor-not-allowed disabled:opacity-50",
                         combinedRunWizardStep === step
                           ? "border-violet-300 bg-violet-500/20 text-violet-50"
                           : "border-[#2d3748] text-slate-400 hover:bg-white/5 hover:text-slate-100",
@@ -2707,22 +2769,45 @@ export default function PrepressProductionPageV2() {
               ) : null}
             </div>
 
-            <footer className="sticky bottom-0 z-20 shrink-0 border-t border-[#2d3748] bg-[#1a232e] p-4">
+            <footer className="z-30 shrink-0 border-t border-[#2d3748] bg-[#1a232e] p-4 shadow-2xl" data-testid="prepress-combined-run-wizard-footer">
               <div className="flex flex-wrap items-center justify-between gap-3">
-                <div className="text-xs text-slate-300">
+                <div className="min-w-0 text-xs text-slate-300">
                   <span className="font-bold text-violet-100">{selectedQueueItems.length} selected</span>
                   <span className="ml-2">Step {combinedRunWizardStep} of 4</span>
-                  {combinedRunActionReason ? <span className="ml-2 text-slate-500">{combinedRunActionReason}</span> : null}
+                  {currentCombinedRunStepBlocker ? (
+                    <span className="ml-2 text-amber-300" role="status">{currentCombinedRunStepBlocker}</span>
+                  ) : (
+                    <span className="ml-2 text-slate-500">{combinedRunWizardStep === 4 ? "Ready for final validation." : "Ready to continue."}</span>
+                  )}
                 </div>
                 <div className="flex flex-wrap gap-2">
-                  <Button type="button" variant="outline" onClick={cancelCombinedRunWizard} disabled={createCombinedRunMutation.isPending}>Cancel</Button>
-                  <Button type="button" variant="outline" onClick={() => setCombinedRunWizardStep((step) => Math.max(1, step - 1) as CombinedRunWizardStep)} disabled={combinedRunWizardStep === 1 || createCombinedRunMutation.isPending}>Back</Button>
+                  <Button type="button" variant="outline" onClick={cancelCombinedRunWizard} disabled={createCombinedRunMutation.isPending}>
+                    Cancel
+                  </Button>
+                  {combinedRunWizardStep > 1 ? (
+                    <Button type="button" variant="outline" onClick={() => setCombinedRunWizardStep((step) => Math.max(1, step - 1) as CombinedRunWizardStep)} disabled={createCombinedRunMutation.isPending}>
+                      Back
+                    </Button>
+                  ) : null}
                   {combinedRunWizardStep < 4 ? (
-                    <Button type="button" onClick={() => setCombinedRunWizardStep((step) => Math.min(4, step + 1) as CombinedRunWizardStep)}>Next</Button>
+                    <Button
+                      type="button"
+                      onClick={() => setCombinedRunWizardStep((step) => Math.min(4, step + 1) as CombinedRunWizardStep)}
+                      disabled={Boolean(currentCombinedRunStepBlocker) || createCombinedRunMutation.isPending}
+                      title={currentCombinedRunStepBlocker || undefined}
+                    >
+                      {combinedRunNextLabel}
+                    </Button>
                   ) : (
-                    <Button type="button" onClick={handleCreateCombinedRun} disabled={!canSubmitCombinedRun || createCombinedRunMutation.isPending} className="bg-violet-600 text-white hover:bg-violet-700">
+                    <Button
+                      type="button"
+                      onClick={handleCreateCombinedRun}
+                      disabled={Boolean(currentCombinedRunStepBlocker) || createCombinedRunMutation.isPending}
+                      title={currentCombinedRunStepBlocker || undefined}
+                      className="bg-violet-600 text-white hover:bg-violet-700 disabled:bg-slate-700 disabled:text-slate-500"
+                    >
                       {createCombinedRunMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                      Create Run
+                      Create Combined Run
                     </Button>
                   )}
                 </div>
