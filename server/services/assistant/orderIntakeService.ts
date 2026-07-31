@@ -16,6 +16,7 @@ import { storage } from "../../storage";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings } from "../../quoteOrderPricing";
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { priceLineItem } from "../pricing/PricingService";
+import { directOrderRequestText, parseOrderQuantity } from "./orderIntakeParsing";
 
 type DirectLine = { productId: string; productName: string; quantity: number; width: number; height: number; };
 type DirectIntake = { kind: "direct"; customerId: string | null; customerName: string; contactId: string | null; dueDate: string | null; lines: DirectLine[] };
@@ -32,10 +33,6 @@ const normalized = (value: string) => value.trim().toLocaleLowerCase();
 const parseDimensions = (message: string) => {
   const match = message.match(/(\d+(?:\.\d+)?)\s*(?:in(?:ches)?|\")?\s*(?:x|×)\s*(\d+(?:\.\d+)?)\s*(?:in(?:ches)?|\")?/i);
   return match ? { width: Number(match[1]), height: Number(match[2]) } : null;
-};
-const parseQuantity = (message: string) => {
-  const match = message.match(/\b(\d+)\s*(?:qty|pieces?|units?|each)\b/i);
-  return match && Number(match[1]) > 0 ? Number(match[1]) : null;
 };
 const parseDueDate = (message: string) => {
   const match = message.match(/\bdue\s+(\d{4}-\d{2}-\d{2})\b/i);
@@ -57,23 +54,24 @@ export type AssistantOrderCard = { kind: "order_intake_summary" | "missing_infor
  * explicit deferred-production policy are recalculated at planning/execution.
  */
 export class OrderIntakeService {
-  async respond(input: { organizationId: string; userId: string; conversationId: string; message: string }): Promise<{ handled: boolean; response: string; cards: AssistantOrderCard[] }> {
+  async respond(input: { organizationId: string; userId: string; conversationId: string; message: string; pendingRequest?: string | null }): Promise<{ handled: boolean; response: string; cards: AssistantOrderCard[] }> {
     if (/\b(?:update|change|edit)\b[\s\S]{0,40}\border\b/i.test(input.message)) return this.prepareUpdate(input);
     if (/\b(?:convert|turn)\b[\s\S]{0,40}\bquote\b[\s\S]{0,40}\b(?:order|into)\b|\bconvert\s+quote\s+\S+\s+(?:to|into)\s+order\b/i.test(input.message)) return this.prepareConversion(input);
-    if (!/\b(?:create|start|make|build)\b[\s\S]{0,50}\border\b/i.test(input.message)) return { handled: false, response: "", cards: [] };
+    const message = directOrderRequestText(input.message, input.pendingRequest);
+    if (!message) return { handled: false, response: "", cards: [] };
     const [customerRows, contactRows, productRows] = await Promise.all([
       db.select({ id: customers.id, companyName: customers.companyName }).from(customers).where(eq(customers.organizationId, input.organizationId)),
       db.select({ id: customerContacts.id, firstName: customerContacts.firstName, lastName: customerContacts.lastName, email: customerContacts.email, customerId: customerContacts.customerId }).from(customerContacts).where(eq(customerContacts.organizationId, input.organizationId)),
       db.select({ id: products.id, name: products.name }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.isActive, true))),
     ]);
-    const customer = findNamed(input.message, customerRows, "companyName");
-    const contact = contactRows.find((row) => normalized(input.message).includes(normalized(`${row.firstName} ${row.lastName}`))) ?? null;
-    const product = findNamed(input.message, productRows, "name");
-    const dimensions = parseDimensions(input.message);
-    const quantity = parseQuantity(input.message);
+    const customer = findNamed(message, customerRows, "companyName");
+    const contact = contactRows.find((row) => normalized(message).includes(normalized(`${row.firstName} ${row.lastName}`))) ?? null;
+    const product = findNamed(message, productRows, "name");
+    const dimensions = parseDimensions(message);
+    const quantity = parseOrderQuantity(message);
     const missing = [!customer && !contact && "Customer/company or contact", !product && "Product", !dimensions && "Finished width and height", !quantity && "Quantity"].filter(Boolean) as string[];
     if (missing.length) return { handled: true, response: `I need ${missing.join(", ")} before I can prepare an order preview. I will not guess records or dimensions.`, cards: [{ kind: "missing_information", title: "Order information needed", summary: `Please provide: ${missing.join(", ")}.`, sourceLinks: [], details: { missing } }] };
-    const session = await this.createSession(input, { kind: "direct", customerId: customer?.id ?? null, customerName: customer?.companyName ?? `${contact!.firstName} ${contact!.lastName}`.trim(), contactId: contact?.id ?? null, dueDate: parseDueDate(input.message), lines: [{ productId: product!.id, productName: product!.name ?? "Product", quantity: quantity!, width: dimensions!.width, height: dimensions!.height }] });
+    const session = await this.createSession(input, { kind: "direct", customerId: customer?.id ?? null, customerName: customer?.companyName ?? `${contact!.firstName} ${contact!.lastName}`.trim(), contactId: contact?.id ?? null, dueDate: parseDueDate(message), lines: [{ productId: product!.id, productName: product!.name ?? "Product", quantity: quantity!, width: dimensions!.width, height: dimensions!.height }] });
     const proposal = await this.revalidateCreateProposal({ organizationId: input.organizationId, orderIntakeSessionId: session.id, expectedProposalFingerprint: "" });
     if (!proposal.valid) throw new AssistantOrderIntakeError(proposal.code, proposal.summary);
     await db.update(assistantOrderIntakeSessions).set({ status: "preview_ready", proposalFingerprint: proposal.proposal.proposalFingerprint, updatedAt: new Date() }).where(eq(assistantOrderIntakeSessions.id, session.id));
