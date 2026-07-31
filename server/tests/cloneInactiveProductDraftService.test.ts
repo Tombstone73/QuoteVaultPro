@@ -72,6 +72,20 @@ describe("CloneInactiveProductDraftService", () => {
     expect(store.proposals.size).toBe(0);
   });
 
+  test("applies only explicit scalar base-pricing changes and presents complete before/after rates", async () => {
+    const store = new FakeStore(); const service = new CloneInactiveProductDraftService(store);
+    const proposal = await service.prepareProposal({ organizationId: "org_1", actorUserId: "user_1", sourceProductId: "source_1", requestedChanges: { newName: "Economy PVC Signs", basePricing: { perSqftCents: 110, minimumChargeCents: 2000 } } });
+    expect(proposal.preview.basePricing).toEqual({ before: { perSqftCents: null, perPieceCents: null, minimumChargeCents: 2500 }, after: { perSqftCents: 110, perPieceCents: null, minimumChargeCents: 2000 } });
+    expect((proposal.preview.result.pbv2Tree.treeJson.meta as any).pricingV2.base).toMatchObject({ perSqftCents: 110, minimumChargeCents: 2000 });
+    expect((proposal.preview.source.pbv2Tree.treeJson.meta as any).pricingV2.base).toEqual({ minimumChargeCents: 2500 });
+  });
+
+  test("does not invent a base-pricing path for an explicit rate change", async () => {
+    const store = new FakeStore(); delete (store.current.pbv2Tree.treeJson as any).meta.pricingV2;
+    const service = new CloneInactiveProductDraftService(store);
+    await expect(service.prepareProposal({ organizationId: "org_1", actorUserId: "user_1", sourceProductId: "source_1", requestedChanges: { newName: "Economy PVC Signs", basePricing: { perSqftCents: 110 } } })).rejects.toMatchObject({ code: "CLONE_BASE_PRICING_UNSUPPORTED" });
+  });
+
   test("rejects a stale PBV2 source snapshot and a different actor before execution", async () => {
     const store = new FakeStore(); const service = new CloneInactiveProductDraftService(store);
     const proposal = await service.prepareProposal({ organizationId: "org_1", actorUserId: "user_1", sourceProductId: "source_1", requestedChanges: { newName: "PVC Signs Copy" } });

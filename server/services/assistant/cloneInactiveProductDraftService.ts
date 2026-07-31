@@ -11,6 +11,12 @@ export const cloneInactiveProductRequestedChangesSchema = z.object({
   newName: z.string().trim().min(1).max(255),
   description: z.string().trim().min(1).max(20_000).optional(),
   category: z.string().trim().min(1).max(100).nullable().optional(),
+  /** Explicit base-rate changes only; no matrix or tier inference occurs here. */
+  basePricing: z.object({
+    perSqftCents: z.number().int().nonnegative().optional(),
+    perPieceCents: z.number().int().nonnegative().optional(),
+    minimumChargeCents: z.number().int().nonnegative().optional(),
+  }).strict().refine((value) => Object.keys(value).length > 0, "Provide at least one explicit base-pricing value.").optional(),
 }).strict();
 export type CloneInactiveProductRequestedChanges = z.infer<typeof cloneInactiveProductRequestedChangesSchema>;
 
@@ -57,6 +63,10 @@ export const cloneInactiveProductPreviewSchema = z.object({
     pbv2Tree: z.object({
       status: z.literal("DRAFT"), schemaVersion: z.literal(2), treeJson: z.record(z.unknown()),
     }).strict(),
+  }).strict(),
+  basePricing: z.object({
+    before: z.object({ perSqftCents: z.number().nullable(), perPieceCents: z.number().nullable(), minimumChargeCents: z.number().nullable() }).strict(),
+    after: z.object({ perSqftCents: z.number().nullable(), perPieceCents: z.number().nullable(), minimumChargeCents: z.number().nullable() }).strict(),
   }).strict(),
   sourceFingerprint: z.string().regex(/^[a-f0-9]{64}$/i),
   proposalFingerprint: z.string().regex(/^[a-f0-9]{64}$/i),
@@ -135,12 +145,36 @@ export function normalizeCloneProductName(name: string): string {
   return name.trim().replace(/\s+/g, " ").toLocaleLowerCase();
 }
 
-function sourceFingerprint(source: CloneInactiveProductSourceSnapshot): string {
+/** Shared with the transactional store so the write boundary repeats the exact
+ * snapshot check performed during plan creation. */
+export function cloneInactiveProductSourceFingerprint(source: CloneInactiveProductSourceSnapshot): string {
   return fingerprint(source);
 }
 
+type BasePricing = { perSqftCents: number | null; perPieceCents: number | null; minimumChargeCents: number | null };
+function basePricing(treeJson: Record<string, unknown>, requireCanonicalPath: boolean): BasePricing {
+  const meta = treeJson.meta;
+  const pricingV2 = meta && typeof meta === "object" && !Array.isArray(meta) ? (meta as Record<string, unknown>).pricingV2 : null;
+  const base = pricingV2 && typeof pricingV2 === "object" && !Array.isArray(pricingV2) ? (pricingV2 as Record<string, unknown>).base : null;
+  if ((!base || typeof base !== "object" || Array.isArray(base)) && requireCanonicalPath) throw new CloneInactiveProductDraftError("CLONE_BASE_PRICING_UNSUPPORTED", "The source PBV2 tree has no canonical meta.pricingV2.base block for this requested price change.");
+  const values = base && typeof base === "object" && !Array.isArray(base) ? base as Record<string, unknown> : {};
+  const rate = (key: keyof BasePricing) => typeof values[key] === "number" && Number.isFinite(values[key]) && values[key] >= 0 ? values[key] : null;
+  return { perSqftCents: rate("perSqftCents"), perPieceCents: rate("perPieceCents"), minimumChargeCents: rate("minimumChargeCents") };
+}
+
+function applyBasePricing(treeJson: Record<string, unknown>, changes: CloneInactiveProductRequestedChanges): { treeJson: Record<string, unknown>; before: BasePricing; after: BasePricing } {
+  const before = basePricing(treeJson, Boolean(changes.basePricing));
+  if (!changes.basePricing) return { treeJson, before, after: before };
+  const updated = cloneJson(treeJson); const meta = updated.meta as Record<string, unknown>; const pricingV2 = meta.pricingV2 as Record<string, unknown>; const base = pricingV2.base as Record<string, unknown>;
+  const after = { ...before, ...changes.basePricing };
+  pricingV2.base = { ...base, ...changes.basePricing };
+  return { treeJson: updated, before, after };
+}
+
 function buildPreview(source: CloneInactiveProductSourceSnapshot, changes: CloneInactiveProductRequestedChanges): CloneInactiveProductPreview {
-  const sourceHash = sourceFingerprint(source);
+  const sourceHash = cloneInactiveProductSourceFingerprint(source);
+  const inheritedTree = cloneJson(source.pbv2Tree.treeJson);
+  const pricing = applyBasePricing(inheritedTree, changes);
   const result = {
     product: {
       name: changes.newName,
@@ -157,11 +191,11 @@ function buildPreview(source: CloneInactiveProductSourceSnapshot, changes: Clone
     pbv2Tree: {
       status: "DRAFT" as const,
       schemaVersion: 2 as const,
-      treeJson: { ...cloneJson(source.pbv2Tree.treeJson), status: "DRAFT" },
+      treeJson: { ...pricing.treeJson, status: "DRAFT" },
     },
   };
   return cloneInactiveProductPreviewSchema.parse({
-    source: cloneJson(source), requestedChanges: cloneJson(changes), result,
+    source: cloneJson(source), requestedChanges: cloneJson(changes), result, basePricing: { before: pricing.before, after: pricing.after },
     sourceFingerprint: sourceHash,
     proposalFingerprint: fingerprint({ sourceHash, requestedChanges: changes, result }),
     warnings: source.product.isActive ? ["The source product remains unchanged; only the new inactive PBV2 DRAFT will be created."] : [],
@@ -215,7 +249,7 @@ export class CloneInactiveProductDraftService {
     const source = await this.store.loadSource({ organizationId: input.organizationId, productId: proposal.sourceProductId });
     if (!source) throw new CloneInactiveProductDraftError("CLONE_SOURCE_NOT_FOUND", "The source product is no longer available in this organization.");
     const current = cloneInactiveProductSourceSnapshotSchema.parse(source);
-    if (current.organizationId !== input.organizationId || current.pbv2Tree.id !== proposal.sourcePbv2TreeVersionId || sourceFingerprint(current) !== proposal.sourceFingerprint) {
+    if (current.organizationId !== input.organizationId || current.pbv2Tree.id !== proposal.sourcePbv2TreeVersionId || cloneInactiveProductSourceFingerprint(current) !== proposal.sourceFingerprint) {
       throw new CloneInactiveProductDraftError("CLONE_SOURCE_STALE", "The source product or its PBV2 tree changed; review a new clone preview.");
     }
     await this.requireUniqueName(input.organizationId, proposal.preview.result.product.name);

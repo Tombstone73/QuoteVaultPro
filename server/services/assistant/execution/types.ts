@@ -104,6 +104,14 @@ export interface ExecutionPlanPreview {
     rows: Array<{ productId: string; productName: string; active: boolean; before: Record<string, unknown>; current: Record<string, unknown>; proposedRestore: Record<string, unknown>; state: string; reason?: string }>;
   };
   configurableProduct?: Record<string, unknown>;
+  /** Exact snapshot preview for a clone-to-inactive-draft command. */
+  cloneInactiveDraft?: {
+    action: "products.clone_to_inactive_draft";
+    proposalId: string;
+    proposalFingerprint: string;
+    fingerprint: string;
+    preview: Record<string, unknown>;
+  };
   productInactiveDraftUpdate?: {
     productId: string;
     productName: string;
@@ -203,7 +211,20 @@ export interface ExecutionCommandResult {
   summary: string;
   steps: readonly ExecutionStepResult[];
   /** Bounded post-execution presentation data. This never feeds another command. */
-  details?: { productDraft?: { id: string; name: string; sourceLink: string }; configurableProduct?: Record<string, unknown> };
+  details?: {
+    productDraft?: { id: string; name: string; sourceLink: string };
+    configurableProduct?: Record<string, unknown>;
+    cloneInactiveDraft?: {
+      action: "products.clone_to_inactive_draft";
+      productId: string;
+      productName: string;
+      pbv2TreeVersionId: string;
+      editorLink: string;
+      inactive: true;
+      pbv2Status: "DRAFT";
+      reused: boolean;
+    };
+  };
 }
 
 export interface ExecutionCommandDefinition {

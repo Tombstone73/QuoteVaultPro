@@ -31,13 +31,16 @@ import { productPricingChangeSetStore } from "./productPricingChangeSetDb";
 import { configurableProductDraftCommandName } from "./execution/configurableProductDraftCommand";
 import { applyComplexProductConversationEdit, createInitialComplexProductSpecification, routeComplexProductMessage } from "./complexProductConversation";
 import { getComplexProductConfirmation, persistComplexProductProposal, resolveConfigurableProductContinuation, updateComplexProductProposal } from "./complexProductDraftPersistence";
+import { CloneInactiveProductDraftError, CloneInactiveProductDraftService } from "./cloneInactiveProductDraftService";
+import { createDrizzleCloneInactiveProductDraftStore } from "./cloneInactiveProductDraftPersistence";
+import { cloneInactiveProductDraftCommandName } from "./execution/cloneInactiveProductDraftCommand";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
   version: "v1",
   purpose: "Conversationally create or continue validated inactive product drafts using the existing Product Intake workflow.",
   allowedReadDomains: ["products", "product_categories", "pbv2_definitions", "pricing_methods", "materials", "production_routing", "option_definitions", "formula_library_metadata"],
-  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1", "products.create_configurable_draft@v1"],
+  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1", "products.create_configurable_draft@v1", "products.clone_to_inactive_draft@v1"],
   requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch", "assistant.products.adjust_pricing"],
   requiredContext: ["organization", "authenticated_internal_actor", "conversation"],
   confirmationPolicy: "dedicated_plan_confirmation",
@@ -172,6 +175,13 @@ function money(centsValue: number | null | undefined): string {
   return centsValue == null ? "Not set" : `$${(centsValue / 100).toFixed(2)}`;
 }
 
+function cloneRequestFromMessage(message: string): { sourceProductId: string; newName: string } | null {
+  const match = message.match(/\bclone\s+(?:product\s*)?(?:id\s*)?([0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12})\s+(?:as|to)\s*[“"]?([^“"\n,.]{1,255})/i);
+  if (!match) return null;
+  const newName = match[2]!.trim();
+  return newName ? { sourceProductId: match[1]!, newName } : null;
+}
+
 function unsupportedDraftChange(message: string): boolean {
   return /\b(option|grommet|hem|pole\s*pocket|single[-\s]?sided|double[-\s]?sided|material|route|routing|prepress|station|default)\b/i.test(message);
 }
@@ -298,6 +308,19 @@ export class ProductManagementSkillService {
   }
 
   async respond(input: { organizationId: string; userId: string; conversationId?: string; message: string; activeSessionId?: string | null; activeConfigurableProposalId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    const cloneRequest = cloneRequestFromMessage(input.message);
+    if (cloneRequest) {
+      try {
+        const proposal = await new CloneInactiveProductDraftService(createDrizzleCloneInactiveProductDraftStore()).prepareProposal({ organizationId: input.organizationId, actorUserId: input.userId, sourceProductId: cloneRequest.sourceProductId, requestedChanges: { newName: cloneRequest.newName } });
+        return { handled: true, response: "I prepared an exact inactive clone snapshot. Review the source, result, and full PBV2 configuration before creating the dedicated confirmation plan.", cards: [
+          { kind: "product_draft_preview", title: "Clone inactive product draft", summary: "The source is unchanged. The result will be inactive with a PBV2 DRAFT tree.", sourceLinks: [{ label: `Open source ${proposal.preview.source.product.name}`, href: `/products/${proposal.sourceProductId}` }], details: { source: proposal.preview.source.product, result: proposal.preview.result.product, basePricing: proposal.preview.basePricing, warnings: proposal.preview.warnings } },
+          { kind: "action_proposal", title: "Clone to inactive product draft", summary: "Review the server-generated clone plan and use its dedicated GO control once.", sourceLinks: [], plan: { action: cloneInactiveProductDraftCommandName, proposalId: proposal.id, proposalFingerprint: proposal.fingerprint } },
+        ] };
+      } catch (error) {
+        const message = error instanceof CloneInactiveProductDraftError ? error.message : "The clone proposal could not be prepared.";
+        return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Clone needs correction", summary: "No product was created.", sourceLinks: [], details: { errors: [message] } }] };
+      }
+    }
     // This intentionally precedes pricing and inactive-draft routing.  Its only
     // state is the one tenant-scoped proposal bound to this conversation.
     const configurableRoute = routeComplexProductMessage(input.message) === "configurable";
