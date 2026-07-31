@@ -328,6 +328,13 @@ export type ProductionRunListItem = {
   nominalPiecesPerSheet: number | null;
   sheetWidth: string | null;
   sheetHeight: string | null;
+  sheetPlanInputSnapshot?: Record<string, unknown> | null;
+  calculatedSheetPlanSnapshot?: Record<string, unknown> | null;
+  effectiveSheetPlanSnapshot?: Record<string, unknown> | null;
+  sheetPlanOverrideReason?: string | null;
+  sheetPlanOverrideByUserId?: string | null;
+  sheetPlanOverrideAt?: string | null;
+  sheetPlanCalculatorVersion?: string | null;
   notes: string | null;
   memberCount: number;
   totalAllocatedQuantity: number;
@@ -530,6 +537,7 @@ export function useCreateProductionRun() {
       sheetHeight?: number | null;
       notes?: string | null;
       compatibilityOverrideReason?: string | null;
+      sheetPlan?: import("@shared/combinedRunSheetPlan").CombinedRunSheetPlanSubmission | null;
     }) => {
       const res = await fetch("/api/production/runs", {
         method: "POST",
@@ -566,6 +574,7 @@ export function useCreatePrepressProductionRun() {
       sheetHeight?: number | null;
       notes?: string | null;
       compatibilityOverrideReason?: string | null;
+      sheetPlan?: import("@shared/combinedRunSheetPlan").CombinedRunSheetPlanSubmission | null;
     }) => {
       const res = await fetch("/api/production/runs/prepress", {
         method: "POST",

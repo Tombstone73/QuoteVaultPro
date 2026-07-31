@@ -16,11 +16,51 @@ import {
   uploadProductionRunFile,
 } from "../services/productionRunService";
 
+const sheetPlanInputsSchema = z.object({
+  sheetWidth: z.number().positive().nullable(),
+  sheetHeight: z.number().positive().nullable(),
+  allowRotation: z.boolean(),
+  bleed: z.number().nonnegative(),
+  spacing: z.number().nonnegative(),
+  marginTop: z.number().nonnegative(),
+  marginRight: z.number().nonnegative(),
+  marginBottom: z.number().nonnegative(),
+  marginLeft: z.number().nonnegative(),
+});
+const sheetPlanCalculatedSchema = z.object({
+  canAutoPlan: z.boolean(),
+  reason: z.string().nullable(),
+  reasonCode: z.enum(["none", "empty", "missing_layout", "missing_inputs", "mixed_size", "item_too_large", "layout_error"]),
+  inputKey: z.string().min(1),
+  calculatorVersion: z.string().min(1),
+  totalQuantity: z.number(),
+  plannedSheetCount: z.number().int().positive().nullable(),
+  nominalPiecesPerSheet: z.number().int().positive().nullable(),
+  sheetWidth: z.number().positive().nullable(),
+  sheetHeight: z.number().positive().nullable(),
+  printPasses: z.number().int().positive().nullable(),
+  fullSheets: z.number().int().nonnegative().nullable(),
+  partialSheetPieces: z.number().int().nonnegative().nullable(),
+  memberQuantities: z.array(z.object({ lineItemId: z.string().min(1), quantity: z.number().nonnegative() })),
+});
+const sheetPlanSchema = z.object({
+  inputs: sheetPlanInputsSchema,
+  calculated: sheetPlanCalculatedSchema,
+  manualOverride: z.object({
+    enabled: z.boolean(),
+    plannedSheetCount: z.number().int().positive().nullable().optional(),
+    nominalPiecesPerSheet: z.number().int().positive().nullable().optional(),
+    reason: z.string().max(2000).nullable().optional(),
+    inputKey: z.string().nullable().optional(),
+  }).nullable().optional(),
+}).optional().nullable();
+
 const createSchema = z.object({
   orderId: z.string().min(1).nullable().optional(), stationKey: z.string().min(1).max(40),
   members: z.array(z.object({ productionJobId: z.string().min(1), allocatedQuantity: z.number().int().positive().optional() })).min(1),
   plannedSheetCount: z.number().int().positive().nullable().optional(), nominalPiecesPerSheet: z.number().int().positive().nullable().optional(),
   sheetWidth: z.number().positive().nullable().optional(), sheetHeight: z.number().positive().nullable().optional(), notes: z.string().max(10000).nullable().optional(), compatibilityOverrideReason: z.string().max(2000).nullable().optional(),
+  sheetPlan: sheetPlanSchema,
 });
 const createPrepressSchema = createSchema.extend({
   members: z.array(z.object({ lineItemId: z.string().min(1), allocatedQuantity: z.number().int().positive().optional() })).min(1),

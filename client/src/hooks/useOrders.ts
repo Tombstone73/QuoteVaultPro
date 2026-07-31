@@ -291,6 +291,27 @@ export type PrepressQueueItem = {
     mixedLayoutDescription: string | null;
   } | null;
   productionLayoutUnavailableReason?: "not_sheet_job" | "missing_dimensions" | "missing_sheet_configuration" | "layout_error" | string | null;
+  artworkProductionBreakdown?: {
+    source: "final_production" | "customer_artwork" | "none";
+    productionArtStatus: string;
+    allocatedTotal: number;
+    requiredQuantity: number | null;
+    valid: boolean;
+    issue: string | null;
+    designs: Array<{
+      id: string;
+      source: "final_production" | "customer_artwork";
+      filename: string;
+      thumbnailUrl: string | null;
+      productionArtStatus: string;
+      side: "front" | "back" | "both" | "na" | string | null;
+      productionQuantity: number | null;
+      productionGroupId: string | null;
+      tag?: string | null;
+      mimeType?: string | null;
+      sizeBytes?: number | null;
+    }>;
+  };
   useSameArtworkBothSides?: boolean;
   sameArtworkFileId?: string | null;
 };

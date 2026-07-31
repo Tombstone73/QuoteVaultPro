@@ -16,6 +16,11 @@ function runAction(runStatus: ProductionRunListItem["runStatus"]): "release" | "
   return null;
 }
 
+function designQuantityLabel(file: ProductionRunListItem["files"][number]) {
+  const quantity = Number(file.productionQuantity);
+  return Number.isInteger(quantity) && quantity > 0 ? `QTY ${quantity}` : "QTY unresolved";
+}
+
 export function ProductionRunPanel({ run }: { run: ProductionRunListItem }) {
   const transition = useTransitionProductionRun();
   const recordOutcome = useRecordProductionRunOutcome();
@@ -113,6 +118,11 @@ export function ProductionRunPanel({ run }: { run: ProductionRunListItem }) {
           {placements} expected placements differs from {run.totalAllocatedQuantity} allocated pieces.
         </div>
       ) : null}
+      {run.sheetPlanOverrideReason ? (
+        <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
+          Authorized manual sheet plan: {run.sheetPlanOverrideReason}
+        </div>
+      ) : null}
       {replacementRequired ? (
         <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
           {releaseBlockedReason ?? "Shared nested final production file required before this run can be completed."}
@@ -130,6 +140,17 @@ export function ProductionRunPanel({ run }: { run: ProductionRunListItem }) {
                 Order {member.orderNumber || "unknown"} - {member.customerName} - {member.outcomeStatus.replace(/_/g, " ")}
                 {member.recoveryDisposition && member.recoveryDisposition !== "none" ? ` - ${member.recoveryDisposition.replace(/_/g, " ")}` : ""}
               </div>
+              {run.files?.filter((file) => file.lineItemId === member.orderLineItemId && file.status === "active").length ? (
+                <div className="mt-1 flex flex-wrap gap-1 text-[11px] text-titan-text-muted">
+                  {run.files
+                    .filter((file) => file.lineItemId === member.orderLineItemId && file.status === "active")
+                    .map((file) => (
+                      <span key={file.id} className="rounded border border-titan-border-subtle px-1.5 py-0.5">
+                        {file.fileName}: {designQuantityLabel(file)}
+                      </span>
+                    ))}
+                </div>
+              ) : null}
             </div>
             <div>Ordered {member.orderedQuantity}</div>
             <div>Run {member.allocatedQuantity} / Good {member.successfulQuantity} / Damaged {member.damagedQuantity}</div>

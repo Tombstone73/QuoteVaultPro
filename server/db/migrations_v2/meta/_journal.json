@@ -1086,6 +1086,13 @@
       "when": 1788048000006,
       "tag": "0160_roll_linear_inventory_precision",
       "breakpoints": true
+    },
+    {
+      "idx": 161,
+      "version": "7",
+      "when": 1788048000007,
+      "tag": "0161_production_run_sheet_plan_snapshots",
+      "breakpoints": true
     }
   ]
 }

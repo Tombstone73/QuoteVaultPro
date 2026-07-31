@@ -61,7 +61,11 @@ import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
 import { canSelectPrepressCombinedRunItem, getPrepressCombinedRunItemBlocker, validatePrepressCombinedRunSelection } from "@/lib/prepressCombinedRuns";
 import { buildPrepressSheetPlanDisplay, formatPrepressSheetPlanUnavailableReason } from "@/lib/prepressSheetPlan";
-import { buildCombinedRunSheetPlanRecommendation } from "@/lib/combinedRunSheetPlan";
+import {
+  buildCombinedRunSheetPlanRecommendation,
+  snapshotCombinedRunSheetPlan,
+  type CombinedRunSheetPlanInputs,
+} from "@/lib/combinedRunSheetPlan";
 import { ProductionRunPanel } from "@/features/production/ProductionRunPanel";
 
 function promotionTagToPrepressLabel(tag: string): PrepressFileLabel {
@@ -211,6 +215,85 @@ const PREPRESS_STATUS_LABELS: Record<PrepressStatusFilter, string> = {
 function formatOwnerLabel(item: Pick<PrepressQueueItem, "activeOwnerStepKey" | "activeOwnerStationKey"> | null | undefined) {
   const rawValue = item?.activeOwnerStepKey || item?.activeOwnerStationKey;
   return rawValue ? rawValue.replace(/_/g, " ") : null;
+}
+
+function normalizeArtworkSideLabel(side: unknown) {
+  if (side === "front") return "Front";
+  if (side === "back") return "Back";
+  if (side === "both") return "Both sides";
+  return "Side not assigned";
+}
+
+function ArtworkProductionBreakdownList({
+  item,
+  compact = false,
+  showHeader = false,
+}: {
+  item: PrepressQueueItem | null | undefined;
+  compact?: boolean;
+  showHeader?: boolean;
+}) {
+  const breakdown = item?.artworkProductionBreakdown;
+  const designs = breakdown?.designs ?? [];
+  if (!item || designs.length === 0) {
+    if (!showHeader) return null;
+    return (
+      <div className="rounded border border-[#2d3748] bg-[#0f172a] p-3 text-xs text-slate-400">
+        <div className="font-bold uppercase tracking-widest text-slate-400">Artwork Production Breakdown</div>
+        <div className="mt-1">No artwork allocation is available yet.</div>
+      </div>
+    );
+  }
+  return (
+    <div className={cn(showHeader ? "rounded border border-[#2d3748] bg-[#0f172a] p-3" : "", "text-xs")}>
+      {showHeader ? (
+        <div className="mb-2 flex flex-wrap items-start justify-between gap-2">
+          <div>
+            <div className="font-bold uppercase tracking-widest text-slate-400">Artwork Production Breakdown</div>
+            <div className="mt-1 text-slate-500">
+              Assigned {breakdown?.allocatedTotal ?? 0} of {breakdown?.requiredQuantity ?? item.quantity} ordered pieces.
+            </div>
+          </div>
+          <span className={cn(
+            "rounded border px-2 py-1 text-[11px] font-semibold",
+            breakdown?.valid ? "border-emerald-400/40 text-emerald-200" : "border-amber-400/40 text-amber-100",
+          )}>
+            {breakdown?.valid ? "Production art ready" : breakdown?.productionArtStatus || "Needs input"}
+          </span>
+        </div>
+      ) : null}
+      {breakdown?.issue ? (
+        <div className="mb-2 rounded border border-amber-500/40 bg-amber-500/10 px-2 py-1 text-[11px] text-amber-100">
+          {breakdown.issue}
+        </div>
+      ) : null}
+      <div className={cn("grid gap-2", compact ? "" : "md:grid-cols-2")}>
+        {designs.map((design) => (
+          <div key={design.id} className={cn("flex min-w-0 items-center gap-2", showHeader ? "rounded border border-[#2d3748] bg-[#111921] p-2" : "")}>
+            {!compact ? (
+              <div className="h-10 w-10 shrink-0 overflow-hidden rounded border border-[#2d3748] bg-black/20">
+                {design.thumbnailUrl ? (
+                  <img src={design.thumbnailUrl} alt="" className="h-full w-full object-cover" />
+                ) : (
+                  <div className="flex h-full w-full items-center justify-center text-[9px] text-slate-500">No preview</div>
+                )}
+              </div>
+            ) : null}
+            <div className="min-w-0 flex-1">
+              <div className="truncate font-semibold text-slate-100">{design.filename || "Artwork design"}</div>
+              <div className="mt-1 flex flex-wrap gap-2 text-[11px] text-slate-400">
+                <span>{design.productionArtStatus}</span>
+                <span>{normalizeArtworkSideLabel(design.side)}</span>
+              </div>
+            </div>
+            <div className="shrink-0 rounded border border-[#2d3748] px-2 py-1 font-mono text-[11px] font-semibold text-slate-100">
+              QTY {formatArtworkQuantity(design.productionQuantity)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
 }
 
 function getPrepressWorkflowDisplay(item: Pick<PrepressQueueItem, "workflowState" | "hasCompletedSession" | "productionReleaseBlockedReason"> | null | undefined) {
@@ -398,6 +481,16 @@ function formatSheetPlanNumber(value: number | null | undefined): string {
   if (!Number.isFinite(numeric) || numeric <= 0) return "Not calculated";
   return Number.isInteger(numeric) ? String(numeric) : numeric.toFixed(2).replace(/\.?0+$/, "");
 }
+
+function positiveSheetNumber(value: string): number | null {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
+function nonNegativeSheetNumber(value: string): number {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) && numeric >= 0 ? numeric : 0;
+}
 const PREPRESS_QUEUE_QUERY_KEY = ["/api/prepress/queue"] as const;
 const EMPTY_PREPRESS_QUEUE: PrepressQueueItem[] = [];
 type PrepressCombinedRunStatusFilter = "attention" | "active" | "draft" | "ready_for_production" | "in_production" | "completed" | "canceled" | "all";
@@ -481,7 +574,16 @@ export default function PrepressProductionPageV2() {
   const [combinedRunPiecesPerSheet, setCombinedRunPiecesPerSheet] = useState("");
   const [combinedRunSheetWidth, setCombinedRunSheetWidth] = useState("");
   const [combinedRunSheetHeight, setCombinedRunSheetHeight] = useState("");
+  const [combinedRunAllowRotation, setCombinedRunAllowRotation] = useState(false);
+  const [combinedRunBleed, setCombinedRunBleed] = useState("0");
+  const [combinedRunSpacing, setCombinedRunSpacing] = useState("0");
+  const [combinedRunMarginTop, setCombinedRunMarginTop] = useState("0");
+  const [combinedRunMarginRight, setCombinedRunMarginRight] = useState("0");
+  const [combinedRunMarginBottom, setCombinedRunMarginBottom] = useState("0");
+  const [combinedRunMarginLeft, setCombinedRunMarginLeft] = useState("0");
   const [combinedRunManualSheetOverride, setCombinedRunManualSheetOverride] = useState(false);
+  const [combinedRunSheetPlanOverrideReason, setCombinedRunSheetPlanOverrideReason] = useState("");
+  const [combinedRunSheetPlanOverrideInputKey, setCombinedRunSheetPlanOverrideInputKey] = useState<string | null>(null);
   const [combinedRunNotes, setCombinedRunNotes] = useState("");
   const [combinedRunOverrideReason, setCombinedRunOverrideReason] = useState("");
   const [combinedRunMismatchAcknowledged, setCombinedRunMismatchAcknowledged] = useState(false);
@@ -1327,16 +1429,39 @@ export default function PrepressProductionPageV2() {
     combinedRunAllocations,
     combinedRunOverrideReason || "__override_pending__",
   );
-  const combinedRunSheetPlan = useMemo(() => buildCombinedRunSheetPlanRecommendation(
-    selectedQueueItems.map((item) => ({
-      lineItemId: item.lineItemId,
-      quantity: Number(combinedRunAllocations[item.lineItemId] ?? item.quantity) || 0,
-      width: item.width ?? null,
-      height: item.height ?? null,
-      productionLayout: item.productionLayout ?? null,
-      productionLayoutUnavailableReason: item.productionLayoutUnavailableReason ?? null,
-    })),
-  ), [combinedRunAllocations, selectedQueueItems]);
+  const combinedRunSheetPlanItems = useMemo(() => selectedQueueItems.map((item) => ({
+    lineItemId: item.lineItemId,
+    quantity: Number(combinedRunAllocations[item.lineItemId] ?? item.quantity) || 0,
+    width: item.width ?? null,
+    height: item.height ?? null,
+    productionLayout: item.productionLayout ?? null,
+    productionLayoutUnavailableReason: item.productionLayoutUnavailableReason ?? null,
+  })), [combinedRunAllocations, selectedQueueItems]);
+  const combinedRunSheetPlanInputs = useMemo<CombinedRunSheetPlanInputs>(() => ({
+    sheetWidth: positiveSheetNumber(combinedRunSheetWidth),
+    sheetHeight: positiveSheetNumber(combinedRunSheetHeight),
+    allowRotation: combinedRunAllowRotation,
+    bleed: nonNegativeSheetNumber(combinedRunBleed),
+    spacing: nonNegativeSheetNumber(combinedRunSpacing),
+    marginTop: nonNegativeSheetNumber(combinedRunMarginTop),
+    marginRight: nonNegativeSheetNumber(combinedRunMarginRight),
+    marginBottom: nonNegativeSheetNumber(combinedRunMarginBottom),
+    marginLeft: nonNegativeSheetNumber(combinedRunMarginLeft),
+  }), [
+    combinedRunAllowRotation,
+    combinedRunBleed,
+    combinedRunMarginBottom,
+    combinedRunMarginLeft,
+    combinedRunMarginRight,
+    combinedRunMarginTop,
+    combinedRunSheetHeight,
+    combinedRunSheetWidth,
+    combinedRunSpacing,
+  ]);
+  const combinedRunSheetPlan = useMemo(
+    () => buildCombinedRunSheetPlanRecommendation(combinedRunSheetPlanItems, combinedRunSheetPlanInputs),
+    [combinedRunSheetPlanInputs, combinedRunSheetPlanItems],
+  );
   const combinedRunActionReason = combinedRunValidation.canCreate
     ? "Selected lines will become one downstream run; original line items stay separate."
     : selectedQueueItemsNeedingArtwork.length > 0 && selectedQueueHardBlockedItems.length === 0
@@ -1344,13 +1469,27 @@ export default function PrepressProductionPageV2() {
     : combinedRunDialogValidation.canCreate
       ? "Compatibility override required; open to provide the reason."
       : combinedRunValidation.reason;
-  const combinedRunExpectedPlacements = (Number(combinedRunPlannedSheetCount) || 0) * (Number(combinedRunPiecesPerSheet) || 0);
+  const effectiveCombinedRunPlannedSheetCount = combinedRunManualSheetOverride
+    ? positiveSheetNumber(combinedRunPlannedSheetCount)
+    : combinedRunSheetPlan.plannedSheetCount;
+  const effectiveCombinedRunPiecesPerSheet = combinedRunManualSheetOverride
+    ? positiveSheetNumber(combinedRunPiecesPerSheet)
+    : combinedRunSheetPlan.nominalPiecesPerSheet;
+  const combinedRunManualSheetOverrideIsStale = combinedRunManualSheetOverride
+    && combinedRunSheetPlanOverrideInputKey !== combinedRunSheetPlan.inputKey;
+  const combinedRunExpectedPlacements = (effectiveCombinedRunPlannedSheetCount || 0) * (effectiveCombinedRunPiecesPerSheet || 0);
   const combinedRunHasPlacementMismatch = combinedRunExpectedPlacements > 0
     && combinedRunValidation.totalAllocatedQuantity > 0
     && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity;
   const combinedRunNeedsManualSheetPlan = !combinedRunSheetPlan.canAutoPlan
-    && (!combinedRunPlannedSheetCount || !combinedRunPiecesPerSheet || !combinedRunSheetWidth || !combinedRunSheetHeight);
-  const canSubmitCombinedRun = combinedRunValidation.canCreate && (!combinedRunHasPlacementMismatch || combinedRunMismatchAcknowledged);
+    && combinedRunSheetPlan.reasonCode !== "item_too_large"
+    && (!positiveSheetNumber(combinedRunPlannedSheetCount) || !positiveSheetNumber(combinedRunPiecesPerSheet) || !combinedRunSheetPlanOverrideReason.trim() || combinedRunManualSheetOverrideIsStale);
+  const combinedRunSheetPlanImpossible = combinedRunSheetPlan.reasonCode === "item_too_large";
+  const canSubmitCombinedRun = combinedRunValidation.canCreate
+    && !combinedRunSheetPlanImpossible
+    && (!combinedRunNeedsManualSheetPlan)
+    && (!combinedRunManualSheetOverride || (!combinedRunManualSheetOverrideIsStale && !!combinedRunSheetPlanOverrideReason.trim()))
+    && (!combinedRunHasPlacementMismatch || combinedRunMismatchAcknowledged);
   const canOpenCombinedRunDialog = selectedQueueItems.length >= 2 && selectedQueueHardBlockedItems.length === 0 && !createCombinedRunMutation.isPending;
   const queueNestSelectedReason = canOpenCombinedRunDialog
     ? "Open the combined-run wizard for the selected jobs."
@@ -1396,18 +1535,32 @@ export default function PrepressProductionPageV2() {
         : combinedRunArtworkReadyCount < selectedQueueItemsNeedingArtwork.length
           ? "Choose customer artwork for each unresolved job."
           : "Assign selected artwork before planning the run.";
-  const combinedRunStep3Blocker = combinedRunNeedsManualSheetPlan
+  const combinedRunStep3Blocker = combinedRunSheetPlanImpossible
+    ? combinedRunSheetPlan.reason || "The selected artwork does not fit the sheet inputs."
+    : combinedRunNeedsManualSheetPlan
     ? "Enter a manual sheet plan because automatic layout is unavailable."
+    : combinedRunManualSheetOverrideIsStale
+    ? "Reconfirm the authorized manual sheet plan because layout inputs changed."
+    : combinedRunManualSheetOverride && !combinedRunSheetPlanOverrideReason.trim()
+    ? "Enter an authorized manual sheet-plan override reason."
     : combinedRunHasPlacementMismatch && !combinedRunMismatchAcknowledged
     ? "Acknowledge the placement mismatch before final review."
     : combinedRunValidation.canCreate
       ? null
       : combinedRunValidation.reason || "Resolve allocation, compatibility, or override requirements before final review.";
   const combinedRunStep4Blocker = canSubmitCombinedRun
-    ? (combinedRunNeedsManualSheetPlan ? "Enter a manual sheet plan because automatic layout is unavailable." : null)
-    : combinedRunHasPlacementMismatch && !combinedRunMismatchAcknowledged
-      ? "Acknowledge the placement mismatch before creating the run."
-      : combinedRunValidation.reason || "Resolve all required validation before creating the run.";
+    ? null
+    : combinedRunSheetPlanImpossible
+      ? combinedRunSheetPlan.reason || "The selected artwork does not fit the sheet inputs."
+      : combinedRunNeedsManualSheetPlan
+        ? "Enter and authorize a manual sheet plan because automatic layout is unavailable."
+        : combinedRunManualSheetOverrideIsStale
+          ? "Reconfirm the authorized manual sheet plan because layout inputs changed."
+          : combinedRunManualSheetOverride && !combinedRunSheetPlanOverrideReason.trim()
+            ? "Enter an authorized manual sheet-plan override reason."
+            : combinedRunHasPlacementMismatch && !combinedRunMismatchAcknowledged
+              ? "Acknowledge the placement mismatch before creating the run."
+              : combinedRunValidation.reason || "Resolve all required validation before creating the run.";
   const currentCombinedRunStepBlocker =
     combinedRunWizardStep === 1 ? combinedRunStep1Blocker
       : combinedRunWizardStep === 2 ? combinedRunStep2Blocker
@@ -1563,12 +1716,15 @@ export default function PrepressProductionPageV2() {
     });
   }, [selectedQueueItems]);
   useEffect(() => {
-    if (!combinedRunOpen || combinedRunManualSheetOverride || !combinedRunSheetPlan.canAutoPlan) return;
-    setCombinedRunPlannedSheetCount(combinedRunSheetPlan.plannedSheetCount ? String(combinedRunSheetPlan.plannedSheetCount) : "");
-    setCombinedRunPiecesPerSheet(combinedRunSheetPlan.nominalPiecesPerSheet ? String(combinedRunSheetPlan.nominalPiecesPerSheet) : "");
-    setCombinedRunSheetWidth(combinedRunSheetPlan.sheetWidth ? String(combinedRunSheetPlan.sheetWidth) : "");
-    setCombinedRunSheetHeight(combinedRunSheetPlan.sheetHeight ? String(combinedRunSheetPlan.sheetHeight) : "");
-  }, [combinedRunManualSheetOverride, combinedRunOpen, combinedRunSheetPlan]);
+    if (!combinedRunOpen) return;
+    if (!combinedRunSheetWidth && combinedRunSheetPlan.sheetWidth) setCombinedRunSheetWidth(String(combinedRunSheetPlan.sheetWidth));
+    if (!combinedRunSheetHeight && combinedRunSheetPlan.sheetHeight) setCombinedRunSheetHeight(String(combinedRunSheetPlan.sheetHeight));
+    if (!combinedRunManualSheetOverride && combinedRunSheetPlan.canAutoPlan) {
+      setCombinedRunPlannedSheetCount(combinedRunSheetPlan.plannedSheetCount ? String(combinedRunSheetPlan.plannedSheetCount) : "");
+      setCombinedRunPiecesPerSheet(combinedRunSheetPlan.nominalPiecesPerSheet ? String(combinedRunSheetPlan.nominalPiecesPerSheet) : "");
+      setCombinedRunSheetPlanOverrideInputKey(null);
+    }
+  }, [combinedRunManualSheetOverride, combinedRunOpen, combinedRunSheetHeight, combinedRunSheetPlan, combinedRunSheetWidth]);
   useEffect(() => {
     if (!combinedRunOpen || selectedQueueItemsNeedingArtwork.length === 0) {
       if (!combinedRunOpen) {
@@ -1991,7 +2147,16 @@ export default function PrepressProductionPageV2() {
     setCombinedRunPiecesPerSheet("");
     setCombinedRunSheetWidth("");
     setCombinedRunSheetHeight("");
+    setCombinedRunAllowRotation(false);
+    setCombinedRunBleed("0");
+    setCombinedRunSpacing("0");
+    setCombinedRunMarginTop("0");
+    setCombinedRunMarginRight("0");
+    setCombinedRunMarginBottom("0");
+    setCombinedRunMarginLeft("0");
     setCombinedRunManualSheetOverride(false);
+    setCombinedRunSheetPlanOverrideReason("");
+    setCombinedRunSheetPlanOverrideInputKey(null);
     setCombinedRunNotes("");
     setCombinedRunOverrideReason("");
     setCombinedRunMismatchAcknowledged(false);
@@ -2140,6 +2305,19 @@ export default function PrepressProductionPageV2() {
         nominalPiecesPerSheet: combinedRunPiecesPerSheet ? Number(combinedRunPiecesPerSheet) : null,
         sheetWidth: combinedRunSheetWidth ? Number(combinedRunSheetWidth) : null,
         sheetHeight: combinedRunSheetHeight ? Number(combinedRunSheetHeight) : null,
+        sheetPlan: {
+          inputs: combinedRunSheetPlan.inputs,
+          calculated: snapshotCombinedRunSheetPlan(combinedRunSheetPlan),
+          manualOverride: combinedRunManualSheetOverride
+            ? {
+                enabled: true,
+                plannedSheetCount: positiveSheetNumber(combinedRunPlannedSheetCount),
+                nominalPiecesPerSheet: positiveSheetNumber(combinedRunPiecesPerSheet),
+                reason: combinedRunSheetPlanOverrideReason.trim(),
+                inputKey: combinedRunSheetPlanOverrideInputKey,
+              }
+            : { enabled: false },
+        },
         notes: combinedRunNotes.trim() || null,
         compatibilityOverrideReason: combinedRunOverrideReason.trim() || null,
       });
@@ -2793,6 +2971,9 @@ export default function PrepressProductionPageV2() {
                             ) : (
                               <p className="mt-2 text-[11px] text-emerald-300">Production artwork ready</p>
                             )}
+                            <div className="mt-2">
+                              <ArtworkProductionBreakdownList item={item} compact />
+                            </div>
                           </div>
                           <label className="space-y-1">
                             <span className="text-[11px] font-medium text-slate-400">Allocated quantity</span>
@@ -2887,6 +3068,9 @@ export default function PrepressProductionPageV2() {
                                 <p className="mt-1 text-slate-400">{item.customerName || "Customer/contact not resolved"}</p>
                                 <p className="mt-1 text-slate-500">Current selected file: {selectedCandidate?.label || (candidates.length === 1 ? candidates[0].label : "None selected")}</p>
                                 <p className="mt-1 text-slate-500">Blocker: {getPrepressCombinedRunItemBlocker(item)?.message || "Backend readiness still needs confirmation."}</p>
+                                <div className="mt-2">
+                                  <ArtworkProductionBreakdownList item={item} compact />
+                                </div>
                               </div>
                               <span className={cn(
                                 "rounded border px-2 py-0.5 text-[10px] font-semibold",
@@ -2978,6 +3162,9 @@ export default function PrepressProductionPageV2() {
                                 {selectedItem.printSides === "Double-sided" ? (
                                   <div><span className="text-slate-500">Double-sided readiness:</span> {artworkSideReadiness.complete ? "Ready" : artworkSideReadiness.warning || "Needs front/back assignment"}</div>
                                 ) : null}
+                              </div>
+                              <div className="mt-3">
+                                <ArtworkProductionBreakdownList item={selectedItem} showHeader />
                               </div>
                             </header>
 
@@ -3329,10 +3516,33 @@ export default function PrepressProductionPageV2() {
                           <div className="mt-1 text-slate-400">
                             {item.productionDestinationLabel || item.selectedProductionDestination || "No destination"} - {item.materialName || item.media || "No material"}
                           </div>
+                          <div className="mt-2">
+                            <ArtworkProductionBreakdownList item={item} compact />
+                          </div>
                         </div>
                         <div className="font-mono text-slate-200">Qty {combinedRunAllocations[item.lineItemId] ?? item.quantity}</div>
                       </div>
                     ))}
+                  </div>
+                  <div className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-4">
+                    <h4 className="text-xs font-bold uppercase tracking-widest text-slate-300">Sheet and Layout Inputs</h4>
+                    <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
+                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Sheet width</span><Input value={combinedRunSheetWidth} onChange={(event) => setCombinedRunSheetWidth(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Sheet height</span><Input value={combinedRunSheetHeight} onChange={(event) => setCombinedRunSheetHeight(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Bleed</span><Input value={combinedRunBleed} onChange={(event) => setCombinedRunBleed(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Spacing / gutter</span><Input value={combinedRunSpacing} onChange={(event) => setCombinedRunSpacing(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                    </div>
+                    <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-5">
+                      <label className="flex items-center gap-2 text-xs text-slate-300">
+                        <Checkbox checked={combinedRunAllowRotation} onCheckedChange={(checked) => setCombinedRunAllowRotation(checked === true)} aria-label="Allow sheet rotation" />
+                        Rotation allowed
+                      </label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Top margin</span><Input value={combinedRunMarginTop} onChange={(event) => setCombinedRunMarginTop(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Right margin</span><Input value={combinedRunMarginRight} onChange={(event) => setCombinedRunMarginRight(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Bottom margin</span><Input value={combinedRunMarginBottom} onChange={(event) => setCombinedRunMarginBottom(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Left margin</span><Input value={combinedRunMarginLeft} onChange={(event) => setCombinedRunMarginLeft(event.target.value)} inputMode="decimal" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                    </div>
+                    <p className="mt-2 text-[11px] text-slate-500">Changing these inputs recalculates the recommendation automatically.</p>
                   </div>
                   <div className={cn(
                     "rounded-lg border p-4",
@@ -3340,52 +3550,30 @@ export default function PrepressProductionPageV2() {
                   )}>
                     <div className="flex flex-wrap items-start justify-between gap-3">
                       <div>
-                        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-300">Calculated Sheet Layout</h4>
+                        <h4 className="text-xs font-bold uppercase tracking-widest text-slate-300">Calculated Result</h4>
                         <p className="mt-1 text-xs text-slate-400">
                           {combinedRunSheetPlan.canAutoPlan
                             ? `${combinedRunSheetPlan.totalQuantity} pieces at ${formatSheetPlanNumber(combinedRunSheetPlan.nominalPiecesPerSheet)} up on ${formatSheetPlanNumber(combinedRunSheetPlan.sheetWidth)} x ${formatSheetPlanNumber(combinedRunSheetPlan.sheetHeight)} sheets.`
                             : combinedRunSheetPlan.reason}
                         </p>
                       </div>
-                      {combinedRunManualSheetOverride ? (
-                        <Button type="button" size="sm" variant="outline" onClick={() => setCombinedRunManualSheetOverride(false)} disabled={!combinedRunSheetPlan.canAutoPlan}>
-                          Use Calculated Plan
-                        </Button>
-                      ) : (
-                        <span className="rounded border border-emerald-400/40 px-2 py-1 text-[11px] font-semibold text-emerald-100">
-                          Calculated
-                        </span>
-                      )}
+                      <span className={cn("rounded border px-2 py-1 text-[11px] font-semibold", combinedRunSheetPlan.canAutoPlan ? "border-emerald-400/40 text-emerald-100" : "border-amber-400/40 text-amber-100")}>
+                        {combinedRunSheetPlan.canAutoPlan ? "Recalculated" : "Needs plan"}
+                      </span>
                     </div>
                     {combinedRunSheetPlan.canAutoPlan ? (
-                      <div className="mt-3 grid gap-2 text-xs md:grid-cols-4">
-                        <div><span className="text-slate-500">Sheets:</span> {combinedRunSheetPlan.plannedSheetCount}</div>
+                      <div className="mt-3 grid gap-2 text-xs md:grid-cols-5">
                         <div><span className="text-slate-500">Pieces/sheet:</span> {combinedRunSheetPlan.nominalPiecesPerSheet}</div>
+                        <div><span className="text-slate-500">Full sheets:</span> {combinedRunSheetPlan.fullSheets}</div>
                         <div><span className="text-slate-500">Partial:</span> {combinedRunSheetPlan.partialSheetPieces ? `${combinedRunSheetPlan.partialSheetPieces} pieces` : "none"}</div>
+                        <div><span className="text-slate-500">Total sheets:</span> {combinedRunSheetPlan.plannedSheetCount}</div>
                         <div><span className="text-slate-500">Impressions:</span> {combinedRunSheetPlan.printPasses}</div>
                       </div>
                     ) : null}
                   </div>
-                  <details className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-3" open={combinedRunManualSheetOverride || !combinedRunSheetPlan.canAutoPlan}>
-                    <summary className="cursor-pointer text-xs font-semibold text-slate-300">Manual Sheet Override</summary>
-                    <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Planned sheets</span><Input value={combinedRunPlannedSheetCount} onChange={(event) => { setCombinedRunManualSheetOverride(true); setCombinedRunPlannedSheetCount(event.target.value); }} inputMode="numeric" className="h-9 bg-[#0f172a] border-[#2d3748]" /></label>
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Pieces per sheet</span><Input value={combinedRunPiecesPerSheet} onChange={(event) => { setCombinedRunManualSheetOverride(true); setCombinedRunPiecesPerSheet(event.target.value); }} inputMode="numeric" className="h-9 bg-[#0f172a] border-[#2d3748]" /></label>
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Sheet width</span><Input value={combinedRunSheetWidth} onChange={(event) => { setCombinedRunManualSheetOverride(true); setCombinedRunSheetWidth(event.target.value); }} inputMode="decimal" className="h-9 bg-[#0f172a] border-[#2d3748]" /></label>
-                      <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Sheet height</span><Input value={combinedRunSheetHeight} onChange={(event) => { setCombinedRunManualSheetOverride(true); setCombinedRunSheetHeight(event.target.value); }} inputMode="decimal" className="h-9 bg-[#0f172a] border-[#2d3748]" /></label>
-                    </div>
-                    {combinedRunManualSheetOverride ? (
-                      <p className="mt-2 text-[11px] text-amber-100">Manual override will be saved with this run; the calculated recommendation remains visible above.</p>
-                    ) : null}
-                  </details>
-                  {combinedRunManualSheetOverride && combinedRunSheetPlan.canAutoPlan ? (
-                    <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                      Override active. Calculated recommendation: {combinedRunSheetPlan.plannedSheetCount} sheets x {combinedRunSheetPlan.nominalPiecesPerSheet} pieces per sheet.
-                    </div>
-                  ) : null}
                   {combinedRunPlannedSheetCount && combinedRunPiecesPerSheet ? (
                     <div className={cn("rounded-lg border px-3 py-2 text-xs", combinedRunExpectedPlacements > 0 && combinedRunExpectedPlacements !== combinedRunValidation.totalAllocatedQuantity ? "border-amber-500/40 bg-amber-500/10 text-amber-100" : "border-[#2d3748] bg-[#0f172a] text-slate-300")}>
-                      Planned nest: {combinedRunExpectedPlacements} placements from {combinedRunPlannedSheetCount} sheets x {combinedRunPiecesPerSheet} pieces per sheet. Allocated quantity: {combinedRunValidation.totalAllocatedQuantity}.
+                      Effective nest: {combinedRunExpectedPlacements} placements from {effectiveCombinedRunPlannedSheetCount ?? "unresolved"} sheets x {effectiveCombinedRunPiecesPerSheet ?? "unresolved"} pieces per sheet. Allocated quantity: {combinedRunValidation.totalAllocatedQuantity}.
                     </div>
                   ) : null}
                   {combinedRunHasPlacementMismatch ? (
@@ -3394,9 +3582,46 @@ export default function PrepressProductionPageV2() {
                       <span>I reviewed the placement mismatch and still want to create this nested run.</span>
                     </label>
                   ) : null}
-                  <details className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-3">
+                  <details className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-3" open={combinedRunManualSheetOverride || !combinedRunSheetPlan.canAutoPlan}>
                     <summary className="cursor-pointer text-xs font-semibold text-slate-300">Advanced / Authorized Override</summary>
                     <div className="mt-3 space-y-3">
+                      <label className="flex items-start gap-2 rounded border border-[#2d3748] bg-[#111921] px-3 py-2 text-xs text-slate-300">
+                        <Checkbox
+                          checked={combinedRunManualSheetOverride}
+                          onCheckedChange={(checked) => {
+                            const enabled = checked === true;
+                            setCombinedRunManualSheetOverride(enabled);
+                            setCombinedRunSheetPlanOverrideInputKey(enabled ? combinedRunSheetPlan.inputKey : null);
+                            if (!enabled) {
+                              setCombinedRunSheetPlanOverrideReason("");
+                              setCombinedRunPlannedSheetCount(combinedRunSheetPlan.plannedSheetCount ? String(combinedRunSheetPlan.plannedSheetCount) : "");
+                              setCombinedRunPiecesPerSheet(combinedRunSheetPlan.nominalPiecesPerSheet ? String(combinedRunSheetPlan.nominalPiecesPerSheet) : "");
+                            }
+                          }}
+                          aria-label="Use authorized manual sheet-plan override"
+                        />
+                        <span>Use an authorized manual output override for planned sheets and pieces per sheet.</span>
+                      </label>
+                      {combinedRunManualSheetOverride ? (
+                        <div className="grid gap-3 md:grid-cols-3">
+                          <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Manual planned sheets</span><Input value={combinedRunPlannedSheetCount} onChange={(event) => setCombinedRunPlannedSheetCount(event.target.value)} inputMode="numeric" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                          <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Manual pieces per sheet</span><Input value={combinedRunPiecesPerSheet} onChange={(event) => setCombinedRunPiecesPerSheet(event.target.value)} inputMode="numeric" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                          <label className="space-y-1"><span className="text-xs font-medium text-slate-400">Override reason</span><Input value={combinedRunSheetPlanOverrideReason} onChange={(event) => setCombinedRunSheetPlanOverrideReason(event.target.value)} placeholder="Who authorized this plan and why" className="h-9 bg-[#111921] border-[#2d3748]" /></label>
+                        </div>
+                      ) : null}
+                      {combinedRunManualSheetOverrideIsStale ? (
+                        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                          Layout inputs changed after this override was enabled. Review the calculated result and reconfirm the manual override before continuing.
+                          <Button type="button" size="sm" variant="outline" className="ml-2 h-7 border-amber-400/40 text-[11px] text-amber-100 hover:bg-amber-500/10" onClick={() => setCombinedRunSheetPlanOverrideInputKey(combinedRunSheetPlan.inputKey)}>
+                            Reconfirm override
+                          </Button>
+                        </div>
+                      ) : null}
+                      {combinedRunManualSheetOverride && combinedRunSheetPlan.canAutoPlan ? (
+                        <div className="rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                          Manual output override active. Calculated recommendation remains {combinedRunSheetPlan.plannedSheetCount} sheets x {combinedRunSheetPlan.nominalPiecesPerSheet} pieces per sheet.
+                        </div>
+                      ) : null}
                       {(combinedRunValidation.hasStationConflict || combinedRunValidation.hasMaterialConflict) ? (
                         <label className="block space-y-1">
                           <span className="text-xs font-medium text-slate-400">Authorized compatibility override reason</span>
@@ -3443,6 +3668,9 @@ export default function PrepressProductionPageV2() {
                           <div className="min-w-0">
                             <div className="truncate font-semibold text-white">Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}</div>
                             <div className="mt-1 text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
+                            <div className="mt-2">
+                              <ArtworkProductionBreakdownList item={item} compact />
+                            </div>
                           </div>
                           <span className={cn("rounded border px-2 py-1 text-center text-[11px] font-semibold", needsArtwork ? "border-amber-400/40 text-amber-100" : "border-emerald-400/40 text-emerald-200")}>
                             {needsArtwork ? "Artwork unresolved" : "Artwork ready"}
@@ -4059,7 +4287,11 @@ export default function PrepressProductionPageV2() {
               <CheckCircle className="w-4 h-4" /> {selectedItem?.hasCompletedSession ? "Final Production Files" : "Production Art Candidate"}
             </h3>
 
-            {visibleFinalFiles.length > 0 ? (
+            {visibleFinalFiles.length === 0 && selectedItem?.artworkProductionBreakdown?.designs?.length ? (
+              <div className="mb-4">
+                <ArtworkProductionBreakdownList item={selectedItem} showHeader />
+              </div>
+            ) : visibleFinalFiles.length > 0 ? (
               <div className="mb-4 rounded-lg border border-[#2d3748] bg-[#111921] p-4">
                 <div className="flex flex-wrap items-start justify-between gap-3">
                   <div>

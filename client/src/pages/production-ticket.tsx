@@ -53,6 +53,11 @@ function titleCase(value: string | null | undefined): string {
   return s ? s.charAt(0).toUpperCase() + s.slice(1) : "";
 }
 
+function artworkQuantityLabel(value: unknown) {
+  const quantity = Number(value);
+  return Number.isInteger(quantity) && quantity > 0 ? `QTY ${quantity}` : "QTY unresolved";
+}
+
 /**
  * Mock ticket data for the station "Test Ticket" — lets each station confirm
  * its printer setup without touching a real production job.
@@ -215,7 +220,13 @@ export default function ProductionTicketPage() {
     return <CenteredMessage>Failed to load production job ticket.</CenteredMessage>;
   }
 
-  const artwork = (data?.artwork || [])[0] ?? null;
+  const ticketArtwork = (data?.productionFiles?.length ? data.productionFiles : data?.artwork || []).map((art: any) => ({
+    id: art.id,
+    fileName: art.fileName || art.originalFilename || "Artwork",
+    thumbnailUrl: art.thumbnailUrl || art.thumbUrl || null,
+    productionQuantity: art.productionQuantity ?? art.allocatedQuantity ?? null,
+    side: art.side || art.sourceArtworkSide || null,
+  }));
 
   return (
     <div className="min-h-screen bg-muted/40 print:bg-white">
@@ -313,19 +324,34 @@ export default function ProductionTicketPage() {
           <ThermalDivider />
           <ThermalSection compact>
             <ThermalLabel>Artwork</ThermalLabel>
-            {artwork?.thumbnailUrl ? (
-              <img
-                src={artwork.thumbnailUrl}
-                alt="Artwork preview"
-                style={{
-                  width: "100%",
-                  maxHeight: "40mm",
-                  objectFit: "contain",
-                  filter: "grayscale(1) contrast(1.15)",
-                  border: "1.5px solid #000",
-                  marginTop: "1mm",
-                }}
-              />
+            {ticketArtwork.length > 0 ? (
+              ticketArtwork.map((art) => (
+                <div key={art.id} style={{ marginTop: "1.5mm" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "2mm", fontSize: "13px", fontWeight: 900, lineHeight: 1.1 }}>
+                    <span>{art.fileName}</span>
+                    <span>{artworkQuantityLabel(art.productionQuantity)}</span>
+                  </div>
+                  {art.side ? (
+                    <div style={{ fontSize: "11px", fontWeight: 700, lineHeight: 1.1 }}>
+                      {String(art.side).toUpperCase()}
+                    </div>
+                  ) : null}
+                  {art.thumbnailUrl ? (
+                    <img
+                      src={art.thumbnailUrl}
+                      alt="Artwork preview"
+                      style={{
+                        width: "100%",
+                        maxHeight: "40mm",
+                        objectFit: "contain",
+                        filter: "grayscale(1) contrast(1.15)",
+                        border: "1.5px solid #000",
+                        marginTop: "1mm",
+                      }}
+                    />
+                  ) : null}
+                </div>
+              ))
             ) : (
               <div
                 style={{

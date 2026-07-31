@@ -92,7 +92,7 @@ import {
   resolveSheetProductionLayoutUnavailableReason,
 } from "@shared/productionHydration";
 import { GENERATED_PROOF_DESCRIPTION_MARKER } from "@shared/prepressFileClassification";
-import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
+import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 
 // ---------------------------------------------------------------------------
 // Local utility (mirrors top-level helper in routes.ts)
@@ -1144,6 +1144,142 @@ export function registerPrepressQueueRoutes(
             .orderBy(desc(lineItemFiles.createdAt))
         : [];
 
+      const finalArtworkRows = lineItemIdsForQueue.length > 0
+        ? await db
+            .select({
+              id: lineItemFiles.id,
+              lineItemId: lineItemFiles.lineItemId,
+              fileRecordId: lineItemFiles.fileRecordId,
+              originalFilename: lineItemFiles.originalFilename,
+              tag: lineItemFiles.tag,
+              mimeType: lineItemFiles.mimeType,
+              sizeBytes: lineItemFiles.sizeBytes,
+              side: lineItemFiles.sourceArtworkSide,
+              productionQuantity: lineItemFiles.productionQuantity,
+              productionGroupId: lineItemFiles.productionGroupId,
+            })
+            .from(lineItemFiles)
+            .where(and(
+              eq(lineItemFiles.organizationId, organizationId),
+              inArray(lineItemFiles.lineItemId, lineItemIdsForQueue),
+              eq(lineItemFiles.role, "final"),
+              eq(lineItemFiles.status, "active"),
+            ))
+            .orderBy(asc(lineItemFiles.createdAt))
+        : [];
+      const finalArtworkByLineItem = new Map<string, any[]>();
+      for (const row of finalArtworkRows) {
+        const thumbnail = row.fileRecordId
+          ? await resolveDerivativeFileAccess({ id: row.id, fileRecordId: row.fileRecordId }, "thumbnail")
+          : { url: null };
+        const list = finalArtworkByLineItem.get(row.lineItemId) ?? [];
+        list.push({
+          id: row.id,
+          source: "final_production",
+          filename: row.originalFilename || "Production artwork",
+          thumbnailUrl: thumbnail.url ?? null,
+          productionArtStatus: "Production art",
+          side: row.side ?? "na",
+          productionQuantity: row.productionQuantity ?? null,
+          productionGroupId: row.productionGroupId ?? null,
+          tag: row.tag ?? null,
+          mimeType: row.mimeType ?? null,
+          sizeBytes: row.sizeBytes ?? null,
+        });
+        finalArtworkByLineItem.set(row.lineItemId, list);
+      }
+
+      const customerArtworkRows = lineItemIdsForQueue.length > 0
+        ? await db
+            .select({
+              id: orderAttachments.id,
+              lineItemId: orderAttachments.orderLineItemId,
+              fileRecordId: orderAttachments.fileRecordId,
+              fileName: orderAttachments.fileName,
+              originalFilename: orderAttachments.originalFilename,
+              role: orderAttachments.role,
+              side: orderAttachments.side,
+              productionQuantity: orderAttachments.productionQuantity,
+              productionGroupId: orderAttachments.productionGroupId,
+              thumbKey: orderAttachments.thumbKey,
+              thumbnailUrl: orderAttachments.thumbnailUrl,
+              fileUrl: orderAttachments.fileUrl,
+              isPrimary: orderAttachments.isPrimary,
+            })
+            .from(orderAttachments)
+            .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
+            .where(and(
+              eq(orders.organizationId, organizationId),
+              inArray(orderAttachments.orderLineItemId as any, lineItemIdsForQueue),
+              sql`coalesce(${orderAttachments.role}::text, 'other') in ('artwork','output')`,
+              sql`coalesce(${orderAttachments.description}, '') not like ${`%${GENERATED_PROOF_DESCRIPTION_MARKER}%`}`,
+            ))
+            .orderBy(desc(orderAttachments.isPrimary), asc(orderAttachments.createdAt))
+        : [];
+      const originalArtworkRows = lineItemIdsForQueue.length > 0
+        ? await db
+            .select({
+              id: lineItemFiles.id,
+              lineItemId: lineItemFiles.lineItemId,
+              fileRecordId: lineItemFiles.fileRecordId,
+              originalFilename: lineItemFiles.originalFilename,
+              mimeType: lineItemFiles.mimeType,
+              sizeBytes: lineItemFiles.sizeBytes,
+              side: lineItemFiles.sourceArtworkSide,
+              productionQuantity: lineItemFiles.productionQuantity,
+              productionGroupId: lineItemFiles.productionGroupId,
+            })
+            .from(lineItemFiles)
+            .where(and(
+              eq(lineItemFiles.organizationId, organizationId),
+              inArray(lineItemFiles.lineItemId, lineItemIdsForQueue),
+              eq(lineItemFiles.role, "original"),
+              eq(lineItemFiles.status, "active"),
+            ))
+            .orderBy(asc(lineItemFiles.createdAt))
+        : [];
+      const customerLogOnce = createRequestLogOnce();
+      const enrichedCustomerArtworkRows = await Promise.all(customerArtworkRows.map((row) => enrichAttachmentWithUrls(row, { logOnce: customerLogOnce })));
+      const customerArtworkByLineItem = new Map<string, any[]>();
+      for (const row of originalArtworkRows) {
+        const thumbnail = row.fileRecordId
+          ? await resolveDerivativeFileAccess({ id: row.id, fileRecordId: row.fileRecordId }, "thumbnail")
+          : { url: null };
+        const list = customerArtworkByLineItem.get(row.lineItemId) ?? [];
+        list.push({
+          id: row.id,
+          source: "customer_artwork",
+          filename: row.originalFilename || "Customer artwork",
+          thumbnailUrl: thumbnail.url ?? null,
+          productionArtStatus: "Needs production-art assignment",
+          side: row.side ?? "na",
+          productionQuantity: row.productionQuantity ?? defaultNewProductionArtworkAllocation("artwork"),
+          productionGroupId: row.productionGroupId ?? null,
+          tag: null,
+          mimeType: row.mimeType ?? null,
+          sizeBytes: row.sizeBytes ?? null,
+        });
+        customerArtworkByLineItem.set(row.lineItemId, list);
+      }
+      for (const row of enrichedCustomerArtworkRows) {
+        if (!row.lineItemId) continue;
+        const list = customerArtworkByLineItem.get(row.lineItemId) ?? [];
+        list.push({
+          id: row.id,
+          source: "customer_artwork",
+          filename: row.originalFilename || row.fileName || "Customer artwork",
+          thumbnailUrl: (row.thumbnailUrl as string | null) ?? (row.previewThumbnailUrl as string | null) ?? (row.thumbUrl as string | null) ?? null,
+          productionArtStatus: "Needs production-art assignment",
+          side: row.side ?? "na",
+          productionQuantity: row.productionQuantity ?? defaultNewProductionArtworkAllocation(row.role),
+          productionGroupId: row.productionGroupId ?? null,
+          tag: null,
+          mimeType: null,
+          sizeBytes: null,
+        });
+        customerArtworkByLineItem.set(row.lineItemId, list);
+      }
+
       const treeVersionIds = Array.from(new Set(items
         .map((item) => item.pbv2TreeVersionId)
         .filter((id): id is string => typeof id === "string" && id.length > 0)));
@@ -1455,6 +1591,20 @@ export function registerPrepressQueueRoutes(
           item.requiresProofApproval && !hasApprovedProof && !proofBypassed
             ? "Cannot release to production until proof approved"
             : null;
+        const finalArtwork = finalArtworkByLineItem.get(item.lineItemId) ?? [];
+        const customerArtwork = customerArtworkByLineItem.get(item.lineItemId) ?? [];
+        const artworkBreakdownDesigns = finalArtwork.length > 0 ? finalArtwork : customerArtwork;
+        const artworkAllocation = buildArtworkAllocationStatus({
+          lineQuantity: item.quantity,
+          members: artworkBreakdownDesigns.map((design) => ({
+            id: design.id,
+            role: finalArtwork.length > 0 ? "final" : "artwork",
+            side: design.side,
+            productionQuantity: design.productionQuantity,
+            productionGroupId: design.productionGroupId,
+            active: true,
+          })),
+        });
 
         if (process.env.NODE_ENV !== "production" && index === 0) {
           const selectedCount = (() => {
@@ -1531,6 +1681,17 @@ export function registerPrepressQueueRoutes(
           printSides,
           productionLayout,
           productionLayoutUnavailableReason,
+          artworkProductionBreakdown: {
+            source: finalArtwork.length > 0 ? "final_production" : customerArtwork.length > 0 ? "customer_artwork" : "none",
+            productionArtStatus: finalArtwork.length > 0 ? "Production art" : customerArtwork.length > 0 ? "Needs production-art assignment" : "No artwork",
+            allocatedTotal: artworkAllocation.allocatedTotal,
+            requiredQuantity: artworkAllocation.requiredQuantity,
+            valid: artworkAllocation.valid && finalArtwork.length > 0,
+            issue: finalArtwork.length === 0 && customerArtwork.length > 0
+              ? "Production artwork is not assigned yet."
+              : artworkAllocation.issue,
+            designs: artworkBreakdownDesigns,
+          },
           useSameArtworkBothSides: artworkSideIntent.useSameArtworkBothSides,
           sameArtworkFileId: artworkSideIntent.sameArtworkFileId,
         };

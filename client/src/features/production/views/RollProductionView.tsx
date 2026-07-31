@@ -395,6 +395,20 @@ function artworkThumbs(job: ProductionJobListItem): ProductionOrderArtworkSummar
   return job.order.artwork ?? [];
 }
 
+function productionDesignQuantities(job: ProductionJobListItem) {
+  const files = job.productionFiles ?? job.order.productionFiles ?? [];
+  return files
+    .filter((file) => file.status !== "retired")
+    .map((file) => {
+      const quantity = Number(file.productionQuantity ?? file.allocatedQuantity);
+      return {
+        id: file.id,
+        label: file.fileName || "Production design",
+        quantityLabel: Number.isInteger(quantity) && quantity > 0 ? `QTY ${quantity}` : "QTY unresolved",
+      };
+    });
+}
+
 function normalizeSide(side: string | null | undefined): "front" | "back" | "na" {
   const s = String(side || "").toLowerCase();
   if (s === "front") return "front";
@@ -1213,6 +1227,7 @@ function PreviewPanel({
 
   const productionFiles = job.productionFiles ?? job.order.productionFiles ?? [];
   const primaryProductionFile = productionFiles[0] ?? null;
+  const designQuantities = productionDesignQuantities(job);
   const previewColumnClass = artworkCollapsed && productionFileCollapsed
     ? "xl:grid-cols-[300px_minmax(260px,1fr)_minmax(280px,360px)]"
     : previewSize === "compact"
@@ -1440,6 +1455,18 @@ function PreviewPanel({
             />
             {timerIsRunning ? <div className="text-[11px] text-titan-text-muted text-right">RUNNING</div> : null}
           </div>
+          {designQuantities.length > 0 ? (
+            <div className="col-span-2 rounded-md border border-titan-border-subtle bg-titan-bg-subtle px-3 py-2">
+              <div className="text-[11px] font-semibold uppercase tracking-wide text-titan-text-muted">Artwork design quantities</div>
+              <div className="mt-1 flex flex-wrap gap-1 text-xs text-titan-text-primary">
+                {designQuantities.map((design) => (
+                  <span key={design.id} className="rounded border border-titan-border-subtle px-2 py-0.5">
+                    {design.label}: {design.quantityLabel}
+                  </span>
+                ))}
+              </div>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>

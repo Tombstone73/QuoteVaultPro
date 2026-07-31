@@ -5,6 +5,12 @@ import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 import { findActiveJobForLineItem, isPrepressOwnershipJob } from "./productionOwnership";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { downloadLineItemFile, enqueueFinalProductionFileCopy, queueLineItemFilePreviewRepair, uploadLineItemFile } from "../prepressFileService";
+import {
+  buildCombinedRunSheetPlanRecommendation,
+  snapshotCombinedRunSheetPlan,
+  type CombinedRunSheetPlanSubmission,
+} from "@shared/combinedRunSheetPlan";
+import { resolveProductionSides } from "@shared/productionHydration";
 import type { Response } from "express";
 
 type MemberInput = { productionJobId: string; allocatedQuantity?: number };
@@ -12,6 +18,19 @@ type PrepressMemberInput = { lineItemId: string; allocatedQuantity?: number };
 type RunStatus = "draft" | "ready_for_production" | "in_production" | "partially_completed" | "completed" | "completed_with_exceptions" | "canceled";
 type MemberOutcomeStatus = "pending" | "completed" | "partially_completed" | "failed" | "requires_reprint" | "return_to_prepress" | "cancelled" | "hold_for_review";
 type RecoveryDisposition = "none" | "return_to_prepress" | "return_to_production_queue" | "requires_reprint" | "hold_for_review" | "cancel_remaining";
+type SheetPlanPersistence = {
+  plannedSheetCount: number | null;
+  nominalPiecesPerSheet: number | null;
+  sheetWidth: number | null;
+  sheetHeight: number | null;
+  sheetPlanInputSnapshot: Record<string, unknown> | null;
+  calculatedSheetPlanSnapshot: Record<string, unknown> | null;
+  effectiveSheetPlanSnapshot: Record<string, unknown> | null;
+  sheetPlanOverrideReason: string | null;
+  sheetPlanOverrideByUserId: string | null;
+  sheetPlanOverrideAt: Date | null;
+  sheetPlanCalculatorVersion: string | null;
+};
 type MemberOutcomeInput = {
   memberId: string;
   successfulQuantity: number;
@@ -30,6 +49,119 @@ export class ProductionRunError extends Error {
 const activeStatuses: RunStatus[] = ["draft", "ready_for_production", "in_production", "partially_completed"];
 const terminalJobStatuses = new Set(["done", "void", "canceled", "cancelled"]);
 
+const finitePositiveInteger = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+};
+
+const finitePositiveNumber = (value: unknown): number | null => {
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
+};
+
+const sameNumber = (left: unknown, right: unknown) => {
+  const a = left == null ? null : Number(left);
+  const b = right == null ? null : Number(right);
+  if (a == null || b == null) return a == null && b == null;
+  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 0.0001;
+};
+
+const sameCalculatedPlan = (submitted: CombinedRunSheetPlanSubmission["calculated"] | undefined, canonical: ReturnType<typeof buildCombinedRunSheetPlanRecommendation>) => {
+  if (!submitted) return false;
+  return submitted.calculatorVersion === canonical.calculatorVersion
+    && submitted.inputKey === canonical.inputKey
+    && submitted.canAutoPlan === canonical.canAutoPlan
+    && submitted.reasonCode === canonical.reasonCode
+    && sameNumber(submitted.totalQuantity, canonical.totalQuantity)
+    && sameNumber(submitted.plannedSheetCount, canonical.plannedSheetCount)
+    && sameNumber(submitted.nominalPiecesPerSheet, canonical.nominalPiecesPerSheet)
+    && sameNumber(submitted.sheetWidth, canonical.sheetWidth)
+    && sameNumber(submitted.sheetHeight, canonical.sheetHeight)
+    && sameNumber(submitted.printPasses, canonical.printPasses)
+    && sameNumber(submitted.fullSheets, canonical.fullSheets)
+    && sameNumber(submitted.partialSheetPieces, canonical.partialSheetPieces);
+};
+
+function buildSheetPlanPersistence(input: {
+  stationKey: string;
+  actorUserId: string;
+  sheetPlan?: CombinedRunSheetPlanSubmission | null;
+  rows: Array<{ line: typeof orderLineItems.$inferSelect }>;
+  requestedMembers: PrepressMemberInput[];
+}): SheetPlanPersistence | null {
+  if (input.stationKey !== "flatbed" && !input.sheetPlan) return null;
+  if (!input.sheetPlan) {
+    throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_REQUIRED", "Create the combined run with a current server-validated sheet plan.", 409);
+  }
+
+  const items = input.rows.map(({ line }) => {
+    const requested = input.requestedMembers.find((member) => member.lineItemId === line.id)?.allocatedQuantity ?? Number(line.quantity);
+    return {
+      lineItemId: line.id,
+      quantity: requested,
+      width: line.width == null ? null : Number(line.width),
+      height: line.height == null ? null : Number(line.height),
+      productionLayout: {
+        sheetWidthIn: input.sheetPlan?.inputs?.sheetWidth ?? null,
+        sheetHeightIn: input.sheetPlan?.inputs?.sheetHeight ?? null,
+        allowRotation: input.sheetPlan?.inputs?.allowRotation ?? false,
+        sideCount: resolveProductionSides(line) === "Double-sided" ? 2 : 1,
+      },
+    };
+  });
+  const canonical = buildCombinedRunSheetPlanRecommendation(items, input.sheetPlan.inputs);
+  const calculated = snapshotCombinedRunSheetPlan(canonical);
+  if (!sameCalculatedPlan(input.sheetPlan.calculated, canonical)) {
+    throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_STALE", "The submitted sheet plan is stale. Recalculate the run plan before creating the combined run.", 409);
+  }
+  if (canonical.reasonCode === "item_too_large") {
+    throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_IMPOSSIBLE", canonical.reason || "The selected item does not fit the sheet plan.", 409);
+  }
+
+  const manualOverride = input.sheetPlan.manualOverride?.enabled === true ? input.sheetPlan.manualOverride : null;
+  if (!canonical.canAutoPlan && !manualOverride) {
+    throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_REQUIRED", canonical.reason || "Automatic layout is unavailable; provide an authorized manual plan.", 409);
+  }
+  if (manualOverride && manualOverride.inputKey !== canonical.inputKey) {
+    throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_OVERRIDE_STALE", "Sheet inputs changed after the manual override. Reconfirm the authorized plan before creating the run.", 409);
+  }
+
+  const overrideSheets = finitePositiveInteger(manualOverride?.plannedSheetCount);
+  const overridePieces = finitePositiveInteger(manualOverride?.nominalPiecesPerSheet);
+  const overrideReason = String(manualOverride?.reason || "").trim();
+  if (manualOverride && (!overrideSheets || !overridePieces || !overrideReason)) {
+    throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_OVERRIDE_REASON_REQUIRED", "Authorized manual sheet-plan overrides require sheets, pieces per sheet, and a reason.", 409);
+  }
+
+  const plannedSheetCount = manualOverride ? overrideSheets : canonical.plannedSheetCount;
+  const nominalPiecesPerSheet = manualOverride ? overridePieces : canonical.nominalPiecesPerSheet;
+  const sheetWidth = finitePositiveNumber(canonical.sheetWidth);
+  const sheetHeight = finitePositiveNumber(canonical.sheetHeight);
+  const effective = {
+    ...calculated,
+    manuallyOverridden: Boolean(manualOverride),
+    plannedSheetCount,
+    nominalPiecesPerSheet,
+    sheetWidth,
+    sheetHeight,
+    overrideReason: manualOverride ? overrideReason : null,
+  };
+
+  return {
+    plannedSheetCount: plannedSheetCount ?? null,
+    nominalPiecesPerSheet: nominalPiecesPerSheet ?? null,
+    sheetWidth,
+    sheetHeight,
+    sheetPlanInputSnapshot: canonical.inputs as unknown as Record<string, unknown>,
+    calculatedSheetPlanSnapshot: calculated as unknown as Record<string, unknown>,
+    effectiveSheetPlanSnapshot: effective as unknown as Record<string, unknown>,
+    sheetPlanOverrideReason: manualOverride ? overrideReason : null,
+    sheetPlanOverrideByUserId: manualOverride ? input.actorUserId : null,
+    sheetPlanOverrideAt: manualOverride ? new Date() : null,
+    sheetPlanCalculatorVersion: canonical.calculatorVersion,
+  };
+}
+
 export type ProductionRunListItem = {
   kind: "production_run";
   id: string;
@@ -47,6 +179,13 @@ export type ProductionRunListItem = {
   nominalPiecesPerSheet: number | null;
   sheetWidth: string | null;
   sheetHeight: string | null;
+  sheetPlanInputSnapshot: Record<string, unknown> | null;
+  calculatedSheetPlanSnapshot: Record<string, unknown> | null;
+  effectiveSheetPlanSnapshot: Record<string, unknown> | null;
+  sheetPlanOverrideReason: string | null;
+  sheetPlanOverrideByUserId: string | null;
+  sheetPlanOverrideAt: Date | null;
+  sheetPlanCalculatorVersion: string | null;
   notes: string | null;
   memberCount: number;
   totalAllocatedQuantity: number;
@@ -267,6 +406,7 @@ async function createProductionRunInTransaction(tx: any, input: {
   members: MemberInput[]; plannedSheetCount?: number | null; nominalPiecesPerSheet?: number | null;
   sheetWidth?: number | null; sheetHeight?: number | null; notes?: string | null;
   compatibilityOverrideReason?: string | null;
+  sheetPlanPersistence?: SheetPlanPersistence | null;
 }) {
   if (!input.members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "Select at least one eligible production job.");
   const uniqueIds = Array.from(new Set(input.members.map((member) => member.productionJobId).filter(Boolean)));
@@ -309,7 +449,27 @@ async function createProductionRunInTransaction(tx: any, input: {
     allocations.push({ productionJobId: job.id, orderLineItemId: line.id, allocatedQuantity: requested, remainingQuantity: requested });
   }
   const [numberRow] = await tx.select({ next: sql<number>`coalesce(max(${productionRuns.runNumber}), 0) + 1` }).from(productionRuns).where(eq(productionRuns.organizationId, input.organizationId));
-  const [run] = await tx.insert(productionRuns).values({ organizationId: input.organizationId, orderId: runOrderId, runNumber: Number(numberRow?.next ?? 1), stationKey: input.stationKey, plannedSheetCount: input.plannedSheetCount ?? null, nominalPiecesPerSheet: input.nominalPiecesPerSheet ?? null, sheetWidth: input.sheetWidth?.toString() ?? null, sheetHeight: input.sheetHeight?.toString() ?? null, notes: input.notes ?? null, compatibilityOverrideReason: input.compatibilityOverrideReason ?? null, createdByUserId: input.actorUserId }).returning();
+  const sheetPlan = input.sheetPlanPersistence ?? null;
+  const [run] = await tx.insert(productionRuns).values({
+    organizationId: input.organizationId,
+    orderId: runOrderId,
+    runNumber: Number(numberRow?.next ?? 1),
+    stationKey: input.stationKey,
+    plannedSheetCount: sheetPlan?.plannedSheetCount ?? input.plannedSheetCount ?? null,
+    nominalPiecesPerSheet: sheetPlan?.nominalPiecesPerSheet ?? input.nominalPiecesPerSheet ?? null,
+    sheetWidth: (sheetPlan?.sheetWidth ?? input.sheetWidth)?.toString() ?? null,
+    sheetHeight: (sheetPlan?.sheetHeight ?? input.sheetHeight)?.toString() ?? null,
+    sheetPlanInputSnapshot: sheetPlan?.sheetPlanInputSnapshot ?? null,
+    calculatedSheetPlanSnapshot: sheetPlan?.calculatedSheetPlanSnapshot ?? null,
+    effectiveSheetPlanSnapshot: sheetPlan?.effectiveSheetPlanSnapshot ?? null,
+    sheetPlanOverrideReason: sheetPlan?.sheetPlanOverrideReason ?? null,
+    sheetPlanOverrideByUserId: sheetPlan?.sheetPlanOverrideByUserId ?? null,
+    sheetPlanOverrideAt: sheetPlan?.sheetPlanOverrideAt ?? null,
+    sheetPlanCalculatorVersion: sheetPlan?.sheetPlanCalculatorVersion ?? null,
+    notes: input.notes ?? null,
+    compatibilityOverrideReason: input.compatibilityOverrideReason ?? null,
+    createdByUserId: input.actorUserId,
+  }).returning();
   const members = await tx.insert(productionRunMembers).values(allocations.map((member) => ({ ...member, organizationId: input.organizationId, productionRunId: run.id }))).returning();
   await tx.insert(auditLogs).values({
     organizationId: input.organizationId,
@@ -329,6 +489,7 @@ export async function createPrepressProductionRun(input: {
   members: PrepressMemberInput[]; plannedSheetCount?: number | null; nominalPiecesPerSheet?: number | null;
   sheetWidth?: number | null; sheetHeight?: number | null; notes?: string | null;
   compatibilityOverrideReason?: string | null;
+  sheetPlan?: CombinedRunSheetPlanSubmission | null;
 }) {
   if (!input.members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "Select at least one eligible prepress item.");
   const uniqueLineItemIds = Array.from(new Set(input.members.map((member) => member.lineItemId).filter(Boolean)));
@@ -369,6 +530,13 @@ export async function createPrepressProductionRun(input: {
     if (missingFinal) {
       throw new ProductionRunError("PRODUCTION_RUN_FINAL_FILE_REQUIRED", `Assign production artwork before creating a run for ${missingFinal.line.description || "the selected line item"}.`, 409);
     }
+    const sheetPlanPersistence = buildSheetPlanPersistence({
+      stationKey: input.stationKey,
+      actorUserId: input.actorUserId,
+      sheetPlan: input.sheetPlan ?? null,
+      rows: selectedRows,
+      requestedMembers: input.members,
+    });
 
     const downstreamMembers: MemberInput[] = [];
     for (const { line } of selectedRows) {
@@ -402,7 +570,7 @@ export async function createPrepressProductionRun(input: {
       downstreamMembers.push({ productionJobId: transition.activeOwnerJobId, allocatedQuantity: requested });
     }
 
-    return createProductionRunInTransaction(tx, { ...input, members: downstreamMembers });
+    return createProductionRunInTransaction(tx, { ...input, members: downstreamMembers, sheetPlanPersistence });
   });
 }
 
@@ -591,6 +759,13 @@ export async function listProductionRuns(input: {
         nominalPiecesPerSheet: run.nominalPiecesPerSheet ?? null,
         sheetWidth: run.sheetWidth ? String(run.sheetWidth) : null,
         sheetHeight: run.sheetHeight ? String(run.sheetHeight) : null,
+        sheetPlanInputSnapshot: run.sheetPlanInputSnapshot ?? null,
+        calculatedSheetPlanSnapshot: run.calculatedSheetPlanSnapshot ?? null,
+        effectiveSheetPlanSnapshot: run.effectiveSheetPlanSnapshot ?? null,
+        sheetPlanOverrideReason: run.sheetPlanOverrideReason ?? null,
+        sheetPlanOverrideByUserId: run.sheetPlanOverrideByUserId ?? null,
+        sheetPlanOverrideAt: run.sheetPlanOverrideAt ?? null,
+        sheetPlanCalculatorVersion: run.sheetPlanCalculatorVersion ?? null,
         notes: run.notes ?? null,
         memberCount: members.length,
         totalAllocatedQuantity: members.reduce((sum, member) => sum + member.allocatedQuantity, 0),
