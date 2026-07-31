@@ -22,6 +22,7 @@ import { getRequestOrganizationId } from "../tenantContext";
 import { getStorageAuthMode } from "../objectStorage";
 import * as prepressFileService from "../prepressFileService";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
+import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 
 // ---------------------------------------------------------------------------
 // Module-private helpers
@@ -58,6 +59,103 @@ export function registerPrepressFileRoutes(
   const { isAuthenticated, tenantContext, assertInternalUser } = middleware;
   const downloadLineItemFile = middleware.downloadLineItemFile ?? prepressFileService.downloadLineItemFile;
   const downloadProductionFileForJob = middleware.downloadProductionFileForJob ?? prepressFileService.downloadProductionFileForJob;
+
+  app.patch("/api/prepress/files/:fileId/artwork-allocation", isAuthenticated, tenantContext, async (req: any, res) => {
+    if (!assertInternalUser(req, res)) return;
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+    const rawQuantity = req.body?.productionQuantity;
+    const productionQuantity = rawQuantity == null || rawQuantity === "" ? null : Number(rawQuantity);
+    if (productionQuantity !== null && (!Number.isInteger(productionQuantity) || productionQuantity <= 0)) {
+      return res.status(400).json({
+        error: "Production artwork quantity must be a positive whole number, or blank while the draft is incomplete.",
+        code: "INVALID_ARTWORK_ALLOCATION",
+      });
+    }
+
+    try {
+      const result = await db.transaction(async (tx) => {
+        const [file] = await tx
+          .select({
+            id: lineItemFiles.id,
+            orderId: lineItemFiles.orderId,
+            lineItemId: lineItemFiles.lineItemId,
+            role: lineItemFiles.role,
+            status: lineItemFiles.status,
+            originalFilename: lineItemFiles.originalFilename,
+          })
+          .from(lineItemFiles)
+          .where(and(eq(lineItemFiles.id, req.params.fileId), eq(lineItemFiles.organizationId, organizationId)))
+          .limit(1);
+        if (!file || file.role !== "final") {
+          throw Object.assign(new Error("Production file not found"), { statusCode: 404, code: "PRODUCTION_FILE_NOT_FOUND" });
+        }
+        if (file.status !== "active") {
+          throw Object.assign(new Error("Production file is no longer active"), { statusCode: 409, code: "PRODUCTION_FILE_NOT_ACTIVE" });
+        }
+
+        const [lineItem] = await tx
+          .select({ quantity: orderLineItems.quantity })
+          .from(orderLineItems)
+          .innerJoin(orders, and(eq(orderLineItems.orderId, orders.id), eq(orders.organizationId, organizationId)))
+          .where(and(eq(orderLineItems.id, file.lineItemId), eq(orderLineItems.orderId, file.orderId)))
+          .limit(1);
+        if (!lineItem) {
+          throw Object.assign(new Error("Line item not found"), { statusCode: 404, code: "LINE_ITEM_NOT_FOUND" });
+        }
+
+        const [updated] = await tx
+          .update(lineItemFiles)
+          .set({ productionQuantity })
+          .where(and(eq(lineItemFiles.id, file.id), eq(lineItemFiles.organizationId, organizationId)))
+          .returning();
+
+        const members = await tx
+          .select({
+            id: lineItemFiles.id,
+            role: lineItemFiles.role,
+            side: lineItemFiles.sourceArtworkSide,
+            productionQuantity: lineItemFiles.productionQuantity,
+            productionGroupId: lineItemFiles.productionGroupId,
+          })
+          .from(lineItemFiles)
+          .where(and(
+            eq(lineItemFiles.organizationId, organizationId),
+            eq(lineItemFiles.lineItemId, file.lineItemId),
+            eq(lineItemFiles.role, "final"),
+            eq(lineItemFiles.status, "active"),
+          ));
+
+        await tx.insert(orderAuditLog).values({
+          orderId: file.orderId,
+          orderLineItemId: file.lineItemId,
+          userId: getUserId(req.user) ?? null,
+          userName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+          actionType: "production_artwork_allocation_updated",
+          fromStatus: null,
+          toStatus: null,
+          note: `Production quantity for ${file.originalFilename} set to ${productionQuantity ?? "unresolved"}.`,
+          metadata: {
+            productionFileId: file.id,
+            productionQuantity,
+          },
+        } as any);
+
+        return {
+          updated,
+          allocation: buildArtworkAllocationStatus({ lineQuantity: lineItem.quantity, members }),
+        };
+      });
+
+      return res.json({ success: true, data: result.updated, allocation: result.allocation });
+    } catch (error: any) {
+      const status = error?.statusCode ?? 500;
+      const code = error?.code ?? "ARTWORK_ALLOCATION_UPDATE_FAILED";
+      if (status < 500) return res.status(status).json({ error: error.message, code });
+      console.error("[Prepress] Artwork allocation update failed", { fileId: req.params.fileId, code, message: error?.message });
+      return res.status(500).json({ error: "Failed to update production artwork allocation", code });
+    }
+  });
 
   // Retires only the active final-production relationship. It deliberately
   // leaves file records, object storage, customer artwork, proofs, completed

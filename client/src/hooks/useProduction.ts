@@ -117,6 +117,9 @@ export type ProductionOrderArtworkSummary = {
   mimeType: string | null;
   sizeBytes: number | null;
   fileRecordId?: string | null;
+  productionQuantity?: number | null;
+  productionGroupId?: string | null;
+  allocatedQuantity?: number | null;
   sameAsFront?: boolean;
 };
 
@@ -127,6 +130,9 @@ export type ProductionFileSummary = {
   fileName: string;
   role: "final";
   tag: string | null;
+  productionQuantity?: number | null;
+  productionGroupId?: string | null;
+  allocatedQuantity?: number | null;
   mimeType: string | null;
   sizeBytes: number | null;
   thumbnailUrl: string | null;

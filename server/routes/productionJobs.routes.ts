@@ -1230,8 +1230,11 @@ export function registerProductionJobsRoutes(
       const activeFinalFileRows = productionLineItemIds.length > 0
         ? await db
             .select({
+              id: lineItemFiles.id,
               lineItemId: lineItemFiles.lineItemId,
               fileRecordId: lineItemFiles.fileRecordId,
+              productionQuantity: lineItemFiles.productionQuantity,
+              productionGroupId: lineItemFiles.productionGroupId,
             })
             .from(lineItemFiles)
             .where(and(
@@ -1243,11 +1246,16 @@ export function registerProductionJobsRoutes(
             .orderBy(desc(lineItemFiles.createdAt))
         : [];
       const finalFileRecordIdsByLineItem = new Map<string, string[]>();
+      const finalFileAllocationByLineItemAndRecordId = new Map<string, { productionQuantity: number | null; productionGroupId: string | null }>();
       for (const file of activeFinalFileRows) {
         if (!file.fileRecordId) continue;
         const current = finalFileRecordIdsByLineItem.get(file.lineItemId) ?? [];
         if (!current.includes(file.fileRecordId)) current.push(file.fileRecordId);
         finalFileRecordIdsByLineItem.set(file.lineItemId, current);
+        finalFileAllocationByLineItemAndRecordId.set(`${file.lineItemId}:${file.fileRecordId}`, {
+          productionQuantity: file.productionQuantity ?? null,
+          productionGroupId: file.productionGroupId ?? null,
+        });
       }
 
       // Query strategy: Fetch line items by order ID (for context) OR by explicit line item ID
@@ -1535,6 +1543,8 @@ export function registerProductionJobsRoutes(
           thumbnailUrl: string | null;
           side: string;
           isPrimary: boolean;
+          productionQuantity: number | null;
+          productionGroupId: string | null;
           thumbStatus: string | null;
         }>
       >();
@@ -1556,6 +1566,8 @@ export function registerProductionJobsRoutes(
           thumbnailUrl: string | null;
           side: string;
           isPrimary: boolean;
+          productionQuantity: number | null;
+          productionGroupId: string | null;
           thumbStatus: string | null;
         }>
       >();
@@ -1566,6 +1578,9 @@ export function registerProductionJobsRoutes(
       );
 
       for (const a of enrichedAttachmentRows) {
+        const finalAllocation = a.orderLineItemId && a.fileRecordId
+          ? finalFileAllocationByLineItemAndRecordId.get(`${a.orderLineItemId}:${a.fileRecordId}`)
+          : null;
         const mapped = {
           id: a.id,
           orderLineItemId: a.orderLineItemId ?? null,
@@ -1581,6 +1596,8 @@ export function registerProductionJobsRoutes(
           thumbnailUrl: a.thumbnailUrl ?? null,
           side: a.side ?? "unassigned",
           isPrimary: !!a.isPrimary,
+          productionQuantity: finalAllocation?.productionQuantity ?? null,
+          productionGroupId: finalAllocation?.productionGroupId ?? null,
           thumbStatus: a.thumbStatus ?? null,
         };
 
@@ -1609,6 +1626,9 @@ export function registerProductionJobsRoutes(
           resolveOriginalFileAccess(link, { logOnce: assetLogOnce }),
           enrichAssetPreviewUrls(link as any),
         ]);
+        const finalAllocation = link.parentType === "order_line_item" && link.fileRecordId
+          ? finalFileAllocationByLineItemAndRecordId.get(`${link.parentId}:${link.fileRecordId}`)
+          : null;
         const mapped = {
           id: link.id,
           orderLineItemId: link.parentType === "order_line_item" ? link.parentId : null,
@@ -1628,6 +1648,8 @@ export function registerProductionJobsRoutes(
             null,
           side: "unassigned", // Side metadata is genuinely unavailable; UI must not assign it by position.
           isPrimary: false, // New assets system doesn't track isPrimary yet
+          productionQuantity: finalAllocation?.productionQuantity ?? null,
+          productionGroupId: finalAllocation?.productionGroupId ?? null,
           thumbStatus: link.previewStatus ?? null,
         };
 
@@ -1800,6 +1822,9 @@ export function registerProductionJobsRoutes(
           previewUrl: a.previewUrl,
           side: a.side,
           isPrimary: a.isPrimary,
+          productionQuantity: a.productionQuantity ?? null,
+          productionGroupId: a.productionGroupId ?? null,
+          allocatedQuantity: a.productionQuantity ?? null,
           thumbStatus: a.thumbStatus,
           sameAsFront: sameArtworkBothSides && a.id === backArt?.id,
         }));
@@ -2670,6 +2695,8 @@ export function registerProductionJobsRoutes(
           role: lineItemFiles.role,
           status: lineItemFiles.status,
           tag: lineItemFiles.tag,
+          productionQuantity: lineItemFiles.productionQuantity,
+          productionGroupId: lineItemFiles.productionGroupId,
           originalFilename: lineItemFiles.originalFilename,
           mimeType: lineItemFiles.mimeType,
           sizeBytes: lineItemFiles.sizeBytes,
@@ -2685,12 +2712,6 @@ export function registerProductionJobsRoutes(
           ),
         )
         .orderBy(desc(lineItemFiles.createdAt));
-
-      const artwork = resolveLineItemProductionArtwork({
-        lineItemArtwork,
-        orderArtwork: byOrder,
-        productionFileRecordIds: finalFileRows.map((file) => file.fileRecordId),
-      });
 
       const productionFileLogOnce = createRequestLogOnce();
       const productionFiles = await Promise.all(
@@ -2716,6 +2737,9 @@ export function registerProductionJobsRoutes(
             fileName: file.originalFilename,
             role: "final" as const,
             tag: file.tag ?? null,
+            productionQuantity: file.productionQuantity ?? null,
+            productionGroupId: file.productionGroupId ?? null,
+            allocatedQuantity: file.productionQuantity ?? null,
             mimeType: file.mimeType,
             sizeBytes: file.sizeBytes,
             thumbnailUrl: thumbnailAccess.url ?? null,
@@ -2727,6 +2751,27 @@ export function registerProductionJobsRoutes(
           };
         }),
       );
+      const finalAllocationByFileRecordId = new Map(
+        finalFileRows
+          .filter((file) => file.fileRecordId)
+          .map((file) => [file.fileRecordId, {
+            productionQuantity: file.productionQuantity ?? null,
+            productionGroupId: file.productionGroupId ?? null,
+          }]),
+      );
+      const artwork = resolveLineItemProductionArtwork({
+        lineItemArtwork,
+        orderArtwork: byOrder,
+        productionFileRecordIds: finalFileRows.map((file) => file.fileRecordId),
+      }).map((file) => {
+        const allocation = file.fileRecordId ? finalAllocationByFileRecordId.get(file.fileRecordId) : null;
+        return {
+          ...file,
+          productionQuantity: allocation?.productionQuantity ?? null,
+          productionGroupId: allocation?.productionGroupId ?? null,
+          allocatedQuantity: allocation?.productionQuantity ?? null,
+        };
+      });
 
       const sidesSet = new Set<string>();
       for (const a of artwork) {

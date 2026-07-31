@@ -2754,16 +2754,30 @@ export function registerPrepressQueueRoutes(
         completeFailureStage = "validate_artwork_allocation";
         const [allocationLine] = await tx.select({ quantity: orderLineItems.quantity })
           .from(orderLineItems).where(eq(orderLineItems.id, session.lineItemId)).limit(1);
-        const allocationMembers = await tx.select({
+        const attachmentAllocationMembers = await tx.select({
           id: orderAttachments.id,
           role: orderAttachments.role,
           side: orderAttachments.side,
           productionQuantity: orderAttachments.productionQuantity,
           productionGroupId: orderAttachments.productionGroupId,
         }).from(orderAttachments).where(and(eq(orderAttachments.orderId, session.orderId), eq(orderAttachments.orderLineItemId, session.lineItemId)));
-        const productionMemberCount = allocationMembers.filter((member) => member.role === "artwork" || member.role === "output").length;
+        const finalAllocationMembers = await tx.select({
+          id: lineItemFiles.id,
+          role: lineItemFiles.role,
+          side: lineItemFiles.sourceArtworkSide,
+          productionQuantity: lineItemFiles.productionQuantity,
+          productionGroupId: lineItemFiles.productionGroupId,
+        }).from(lineItemFiles).where(and(
+          eq(lineItemFiles.organizationId, orgId),
+          eq(lineItemFiles.orderId, session.orderId),
+          eq(lineItemFiles.lineItemId, session.lineItemId),
+          eq(lineItemFiles.role, "final"),
+          eq(lineItemFiles.status, "active"),
+        ));
+        const allocationMembers = finalAllocationMembers.length > 0 ? finalAllocationMembers : attachmentAllocationMembers;
+        const productionMemberCount = allocationMembers.filter((member) => member.role === "artwork" || member.role === "output" || member.role === "final").length;
         const allocation = buildArtworkAllocationStatus({ lineQuantity: allocationLine?.quantity ?? null, members: allocationMembers });
-        if (productionMemberCount > 1 && !allocation.valid) {
+        if (productionMemberCount > 0 && !allocation.valid) {
           throw Object.assign(new Error(allocation.issue || "Resolve production artwork allocation before completing prepress."), {
             statusCode: 409,
             code: "ARTWORK_ALLOCATION_INCOMPLETE",

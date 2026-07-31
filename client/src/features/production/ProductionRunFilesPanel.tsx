@@ -48,6 +48,11 @@ function bridgeLabel(file: ProductionRunFileSummary) {
   return "Local Bridge: queued";
 }
 
+function productionQuantityLabel(file: ProductionRunFileSummary) {
+  const quantity = Number(file.productionQuantity ?? file.allocatedQuantity);
+  return Number.isInteger(quantity) && quantity > 0 ? `Design quantity: ${quantity}` : "Design quantity unresolved";
+}
+
 type ProductionRunFilesPanelProps = {
   run: ProductionRunListItem;
 };
@@ -140,6 +145,7 @@ export function ProductionRunFilesPanel({ run }: ProductionRunFilesPanelProps) {
                   <div className="text-titan-text-muted">
                     Uploaded {formatDateTime(file.createdAt)} by {file.uploadedByName || "Unknown user"} - {formatFileSize(file.sizeBytes)} - {file.mimeType || "Unknown MIME"}
                   </div>
+                  <div className="text-titan-text-muted">{productionQuantityLabel(file)}</div>
                   <div className="text-titan-text-muted">{bridgeLabel(file)}</div>
                   {unsafeToChange ? (
                     <div className="mt-1 flex items-center gap-1 text-amber-300">

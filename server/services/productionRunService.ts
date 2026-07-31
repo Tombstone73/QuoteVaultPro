@@ -90,6 +90,8 @@ export type ProductionRunFileSummary = {
   role: "final";
   status: "active" | "superseded" | "retired";
   tag: string | null;
+  productionQuantity: number | null;
+  productionGroupId: string | null;
   mimeType: string | null;
   sizeBytes: number | null;
   thumbnailUrl: string | null;
@@ -175,6 +177,8 @@ async function buildProductionRunFileSummaries(
       role: "final",
       status: file.status as ProductionRunFileSummary["status"],
       tag: file.tag ?? null,
+      productionQuantity: file.productionQuantity ?? null,
+      productionGroupId: file.productionGroupId ?? null,
       mimeType: file.mimeType ?? null,
       sizeBytes: file.sizeBytes ?? null,
       thumbnailUrl: thumbnail.url ?? null,

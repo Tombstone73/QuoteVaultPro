@@ -47,13 +47,44 @@ import { assetPreviewGenerator } from "./services/assets/AssetPreviewGenerator";
 import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
 import { storagePlacementRepository } from "./storage/storagePlacement.repo";
 import { resolveProductionSides } from "@shared/productionHydration";
-import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
+import { defaultProductionArtworkAllocationForLine } from "@shared/artworkAllocation";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
 function buildPrepressDownloadEtag(fileId: string, sizeBytes: number | null | undefined, createdAt: Date | string | null | undefined) {
   const createdAtValue = createdAt ? new Date(createdAt).getTime() : 0;
   return `W/\"prepress-${fileId}-${sizeBytes ?? 0}-${createdAtValue}\"`;
+}
+
+async function defaultFinalProductionQuantityForLine(
+  tx: any,
+  args: {
+    organizationId: string;
+    lineItemId: string;
+  },
+): Promise<number | null> {
+  const [line] = await tx
+    .select({ quantity: orderLineItems.quantity })
+    .from(orderLineItems)
+    .innerJoin(orders, and(eq(orderLineItems.orderId, orders.id), eq(orders.organizationId, args.organizationId)))
+    .where(eq(orderLineItems.id, args.lineItemId))
+    .limit(1);
+
+  const existingFinals = await tx
+    .select({ id: lineItemFiles.id })
+    .from(lineItemFiles)
+    .where(and(
+      eq(lineItemFiles.organizationId, args.organizationId),
+      eq(lineItemFiles.lineItemId, args.lineItemId),
+      eq(lineItemFiles.role, "final"),
+      eq(lineItemFiles.status, "active"),
+    ));
+
+  return defaultProductionArtworkAllocationForLine({
+    role: "final",
+    lineQuantity: line?.quantity ?? null,
+    existingProductionArtworkCount: existingFinals.length,
+  });
 }
 
 type DownloadFailureStatus = 404 | 409 | 410 | 422 | 502 | 503;
@@ -191,6 +222,8 @@ export type BridgedOriginal = {
   sizeBytes: number | null;
   role: string;
   side: "front" | "back" | "both" | "na";
+  productionQuantity: number | null;
+  productionGroupId: string | null;
   createdAt: Date;
   source: 'order_attachment';
   prepressCategory: PrepressFileDisplayCategory;
@@ -474,6 +507,9 @@ export async function uploadLineItemFile(params: {
     },
     persistLink: async (tx, result) => {
       const storagePath = result.legacyRelativePath ?? result.legacyFileUrl;
+      const resolvedProductionQuantity = role === "final"
+        ? productionQuantity ?? await defaultFinalProductionQuantityForLine(tx, { organizationId, lineItemId })
+        : null;
       const [inserted] = await tx.insert(lineItemFiles).values({
         organizationId,
         orderId,
@@ -484,7 +520,7 @@ export async function uploadLineItemFile(params: {
         role,
         status: "active",
         tag: tag || null,
-        productionQuantity: role === "final" ? productionQuantity ?? defaultNewProductionArtworkAllocation("final") : null,
+        productionQuantity: resolvedProductionQuantity,
         productionGroupId: role === "final" ? productionGroupId ?? null : null,
         storageBucket: result.storedObject.bucket,
         storagePath,
@@ -666,6 +702,7 @@ export function buildPromotedFinalFileLink(params: {
   prepressSessionId?: string | null;
   createdByUserId: string;
   tag?: string | null;
+  fallbackProductionQuantity?: number | null;
   source: PromotableArtworkFile;
 }) {
   return {
@@ -681,7 +718,7 @@ export function buildPromotedFinalFileLink(params: {
     sourceFileId: params.source.sourceFileId ?? null,
     sourceOrderAttachmentId: params.source.sourceOrderAttachmentId ?? null,
     sourceArtworkSide: params.source.sourceArtworkSide ?? null,
-    productionQuantity: params.source.productionQuantity ?? defaultNewProductionArtworkAllocation("final"),
+    productionQuantity: params.source.productionQuantity ?? params.fallbackProductionQuantity ?? null,
     productionGroupId: params.source.productionGroupId ?? null,
     storageBucket: params.source.storageBucket ?? null,
     storagePath: params.source.storagePath,
@@ -849,6 +886,12 @@ export async function promoteCustomerArtworkToProductionArtwork(params: {
     },
     persistLink: async (tx, result) => {
       const storagePath = result.legacyRelativePath ?? result.legacyFileUrl;
+      const fallbackProductionQuantity = source.productionQuantity == null
+        ? await defaultFinalProductionQuantityForLine(tx, {
+            organizationId: params.organizationId,
+            lineItemId: params.lineItemId,
+          })
+        : null;
       const [inserted] = await tx.insert(lineItemFiles).values(buildPromotedFinalFileLink({
         organizationId: params.organizationId,
         orderId: params.orderId,
@@ -856,6 +899,7 @@ export async function promoteCustomerArtworkToProductionArtwork(params: {
         prepressSessionId: params.prepressSessionId ?? null,
         createdByUserId: params.createdByUserId,
         tag,
+        fallbackProductionQuantity,
         source: {
           ...source,
           fileRecordId: result.fileRecord.id,
@@ -1031,6 +1075,12 @@ export async function assignCustomerArtworkAsProductionArtwork(params: {
   if (existing) return { file: existing, created: false };
 
   const [inserted] = await db.transaction(async (tx) => {
+    const fallbackProductionQuantity = source.productionQuantity == null
+      ? await defaultFinalProductionQuantityForLine(tx, {
+          organizationId: params.organizationId,
+          lineItemId: params.lineItemId,
+        })
+      : null;
     const [created] = await tx.insert(lineItemFiles).values(buildPromotedFinalFileLink({
       organizationId: params.organizationId,
       orderId: params.orderId,
@@ -1038,6 +1088,7 @@ export async function assignCustomerArtworkAsProductionArtwork(params: {
       prepressSessionId: params.prepressSessionId ?? null,
       createdByUserId: params.createdByUserId,
       tag,
+      fallbackProductionQuantity,
       source: {
         ...source,
         productionArtworkSourceType: "customer_artwork_assignment",
@@ -1649,6 +1700,8 @@ export async function getLineItemFiles(
       sizeBytes: row.sizeBytes ?? row.fileSize ?? null,
       role: row.role ?? "other",
       side: row.side === "front" || row.side === "back" || row.side === "both" ? row.side : "na",
+      productionQuantity: row.productionQuantity ?? null,
+      productionGroupId: row.productionGroupId ?? null,
       createdAt: row.createdAt,
       source: "order_attachment" as const,
       prepressCategory: classification.category,

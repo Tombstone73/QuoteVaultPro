@@ -1,4 +1,8 @@
-import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "../artworkAllocation";
+import {
+  buildArtworkAllocationStatus,
+  defaultNewProductionArtworkAllocation,
+  defaultProductionArtworkAllocationForLine,
+} from "../artworkAllocation";
 
 describe("artwork allocation", () => {
   test("keeps uneven alternatives as a line-item total", () => {
@@ -32,5 +36,14 @@ describe("artwork allocation", () => {
     expect(defaultNewProductionArtworkAllocation("output")).toBe(1);
     expect(defaultNewProductionArtworkAllocation("reference")).toBeNull();
     expect(defaultNewProductionArtworkAllocation("proof")).toBeNull();
+  });
+
+  test("defaults a single production artwork to the full line quantity", () => {
+    expect(defaultProductionArtworkAllocationForLine({ role: "final", lineQuantity: 50, existingProductionArtworkCount: 0 })).toBe(50);
+  });
+
+  test("defaults one each only when the line quantity equals the resulting artwork count", () => {
+    expect(defaultProductionArtworkAllocationForLine({ role: "final", lineQuantity: 2, existingProductionArtworkCount: 1 })).toBe(1);
+    expect(defaultProductionArtworkAllocationForLine({ role: "final", lineQuantity: 50, existingProductionArtworkCount: 1 })).toBeNull();
   });
 });

@@ -27,9 +27,11 @@ describe("production artwork allocation defaults", () => {
     expect(inboundRepo).toContain('allocationByFileId.get(fileId)?.productionQuantity ?? defaultNewProductionArtworkAllocation("artwork")');
   });
 
-  test("prepress final artwork defaults without overwriting replacement allocations", () => {
-    expect(prepressService).toContain('productionQuantity: role === "final" ? productionQuantity ?? defaultNewProductionArtworkAllocation("final") : null');
-    expect(prepressService).toContain('productionQuantity: params.source.productionQuantity ?? defaultNewProductionArtworkAllocation("final")');
+  test("prepress final artwork defaults from line quantity without overwriting replacement allocations", () => {
+    expect(prepressService).toContain("defaultFinalProductionQuantityForLine");
+    expect(prepressService).toContain("defaultProductionArtworkAllocationForLine");
+    expect(prepressService).toContain("productionQuantity: resolvedProductionQuantity");
+    expect(prepressService).toContain("productionQuantity: params.source.productionQuantity ?? params.fallbackProductionQuantity ?? null");
     expect(prepressService).toContain("productionQuantity: existingFile.productionQuantity");
     expect(prepressService).toContain("productionGroupId: existingFile.productionGroupId");
   });

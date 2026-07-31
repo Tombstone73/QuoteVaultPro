@@ -71,3 +71,22 @@ export function defaultNewProductionArtworkAllocation(role: unknown = "artwork")
     ? DEFAULT_PRODUCTION_ARTWORK_ALLOCATION
     : null;
 }
+
+export function defaultProductionArtworkAllocationForLine(args: {
+  role?: unknown;
+  lineQuantity?: unknown;
+  existingProductionArtworkCount?: unknown;
+}): number | null {
+  if (!productionRoles.has(String(args.role ?? "artwork").toLowerCase())) return null;
+
+  const lineQuantity = finiteInteger(args.lineQuantity);
+  if (lineQuantity == null) return null;
+
+  const existingCount = Number(args.existingProductionArtworkCount);
+  const existingProductionArtworkCount = Number.isInteger(existingCount) && existingCount >= 0 ? existingCount : 0;
+  const resultingArtworkCount = existingProductionArtworkCount + 1;
+
+  if (resultingArtworkCount === 1) return lineQuantity;
+  if (lineQuantity === resultingArtworkCount) return DEFAULT_PRODUCTION_ARTWORK_ALLOCATION;
+  return null;
+}
