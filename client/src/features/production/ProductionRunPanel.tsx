@@ -21,7 +21,12 @@ function designQuantityLabel(file: ProductionRunListItem["files"][number]) {
   return Number.isInteger(quantity) && quantity > 0 ? `QTY ${quantity}` : "QTY unresolved";
 }
 
-export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNestedFileUploadFocused }: { run: ProductionRunListItem; focusNestedFileUpload?: boolean; onNestedFileUploadFocused?: () => void }) {
+export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNestedFileUploadFocused, onCanceled }: {
+  run: ProductionRunListItem;
+  focusNestedFileUpload?: boolean;
+  onNestedFileUploadFocused?: () => void;
+  onCanceled?: (result: { restoredMemberCount?: number; alreadyRestoredMemberCount?: number; unresolvedMemberJobIds?: string[] }) => void;
+}) {
   const transition = useTransitionProductionRun();
   const recordOutcome = useRecordProductionRunOutcome();
   const action = runAction(run.runStatus);
@@ -94,7 +99,10 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
             <Button
               size="sm"
               variant="outline"
-              onClick={() => transition.mutate({ runId: run.id, action: "cancel", reason: "Canceled from production board" })}
+              onClick={() => transition.mutate(
+                { runId: run.id, action: "cancel", reason: "Canceled from production board" },
+                { onSuccess: (result) => onCanceled?.(result as any) },
+              )}
               disabled={transition.isPending}
             >
               Cancel

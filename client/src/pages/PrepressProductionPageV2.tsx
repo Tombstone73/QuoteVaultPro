@@ -5213,6 +5213,19 @@ export default function PrepressProductionPageV2() {
                 run={selectedCombinedRun}
                 focusNestedFileUpload={focusNestedFileUpload}
                 onNestedFileUploadFocused={() => setFocusNestedFileUpload(false)}
+                onCanceled={(result) => {
+                  setCombinedRunDetailOpen(false);
+                  setSelectedCombinedRunId(null);
+                  setFocusNestedFileUpload(false);
+                  if ((Number(result.restoredMemberCount) || 0) + (Number(result.alreadyRestoredMemberCount) || 0) > 0) {
+                    setWorkspaceTab("queue");
+                  }
+                  void Promise.all([
+                    refreshPrepressQueue(),
+                    refreshPrepressNavigationCount(),
+                    queryClient.invalidateQueries({ queryKey: ["/api/production/runs"] }),
+                  ]);
+                }}
               />
             </div>
           ) : productionRunsQuery.isLoading || productionRunsQuery.isFetching ? (

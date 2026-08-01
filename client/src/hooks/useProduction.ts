@@ -740,10 +740,21 @@ export function useTransitionProductionRun() {
       if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to update production run");
       return json.data;
     },
-    onSuccess: (_data, args) => {
+    onSuccess: (data, args) => {
       qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
       qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
-      toast({ title: args.action === "complete" ? "Production run completed" : "Production run updated" });
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+      const restoredMemberCount = Number((data as any)?.restoredMemberCount) || 0;
+      const unresolvedMemberJobIds = Array.isArray((data as any)?.unresolvedMemberJobIds) ? (data as any).unresolvedMemberJobIds : [];
+      toast({
+        title: args.action === "cancel" ? "Combined Run canceled" : args.action === "complete" ? "Production run completed" : "Production run updated",
+        description: args.action === "cancel"
+          ? unresolvedMemberJobIds.length > 0
+            ? `${restoredMemberCount} unfinished ${restoredMemberCount === 1 ? "job was" : "jobs were"} returned to Prepress. Recovery required for: ${unresolvedMemberJobIds.join(", ")}.`
+            : `${restoredMemberCount} unfinished ${restoredMemberCount === 1 ? "job was" : "jobs were"} returned to Prepress.`
+          : undefined,
+      });
     },
     onError: (e: Error) => {
       toast({ title: "Run update failed", description: e.message, variant: "destructive" });

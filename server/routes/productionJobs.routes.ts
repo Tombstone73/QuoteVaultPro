@@ -24,6 +24,7 @@ import {
   reprintRequests,
   users,
 } from "@shared/schema";
+import { ACTIVE_PRODUCTION_RUN_STATUSES } from "@shared/productionRunLifecycle";
 
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
@@ -1082,7 +1083,8 @@ export function registerProductionJobsRoutes(
           .where(and(
             eq(productionRunMembers.organizationId, organizationId),
             inArray(productionRunMembers.productionJobId, candidateJobIds),
-            inArray(productionRuns.status, ["draft", "ready_for_production", "in_production"]),
+            inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES]),
+            sql`coalesce(${productionRunMembers.remainingQuantity}, 0) > 0`,
           ));
         const groupedJobIds = new Set(groupedMemberRows.map((row) => row.productionJobId));
         if (groupedJobIds.size > 0) {

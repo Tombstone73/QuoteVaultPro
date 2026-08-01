@@ -12,6 +12,7 @@ import {
 } from "@shared/combinedRunSheetPlan";
 import { resolveProductionSides } from "@shared/productionHydration";
 import { buildArtworkAllocationStatus, summarizeArtworkAllocationIssue } from "@shared/artworkAllocation";
+import { ACTIVE_PRODUCTION_RUN_STATUSES, isUnfinishedProductionRunMember } from "@shared/productionRunLifecycle";
 import type { Response } from "express";
 
 type MemberInput = { productionJobId: string; allocatedQuantity?: number };
@@ -47,7 +48,7 @@ export class ProductionRunError extends Error {
   constructor(readonly code: string, message: string, readonly statusCode = 400) { super(message); }
 }
 
-const activeStatuses: RunStatus[] = ["draft", "ready_for_production", "in_production", "partially_completed"];
+const activeStatuses: RunStatus[] = [...ACTIVE_PRODUCTION_RUN_STATUSES];
 const terminalJobStatuses = new Set(["done", "void", "canceled", "cancelled"]);
 
 const finitePositiveInteger = (value: unknown): number | null => {
@@ -442,7 +443,7 @@ async function createProductionRunInTransaction(tx: any, input: {
   const runOrderId = orderIds.length === 1 ? orderIds[0] : null;
   for (const { job, line } of jobs) {
     const [totals] = await tx.select({
-      reserved: sql<number>`coalesce(sum(case when ${productionRuns.status} in ('draft','ready_for_production','in_production') then ${productionRunMembers.allocatedQuantity} else 0 end), 0)`,
+      reserved: sql<number>`coalesce(sum(case when ${productionRuns.status} in ('draft','ready_for_production','in_production','partially_completed') then ${productionRunMembers.allocatedQuantity} else 0 end), 0)`,
       completed: sql<number>`coalesce(sum(case when ${productionRuns.status} in ('completed','completed_with_exceptions') then ${productionRunMembers.completedQuantity} else 0 end), 0)`,
     }).from(productionRunMembers).innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
       .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionJobId, job.id)));
@@ -1251,12 +1252,175 @@ export async function recordProductionRunOutcome(input: {
   return db.transaction(async (tx) => recordProductionRunOutcomeInTransaction(tx, input));
 }
 
+type CanceledRunReconciliation = {
+  restoredMemberCount: number;
+  alreadyRestoredMemberCount: number;
+  returnedToExistingQueueMemberCount: number;
+  unresolvedMemberJobIds: string[];
+};
+
+function isPrepressCombinedRunCreationEvent(payload: unknown): boolean {
+  const data = (payload && typeof payload === "object" ? payload : {}) as Record<string, any>;
+  return data?.metadata?.source === "prepress_combined_production_run";
+}
+
+async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
+  organizationId: string;
+  run: typeof productionRuns.$inferSelect;
+  actorUserId: string;
+}): Promise<CanceledRunReconciliation> {
+  if (input.run.status !== "canceled") {
+    throw new ProductionRunError("PRODUCTION_RUN_NOT_CANCELED", "Only canceled production runs can be reconciled.", 409);
+  }
+
+  const memberRows = await tx
+    .select({ member: productionRunMembers, line: orderLineItems })
+    .from(productionRunMembers)
+    .innerJoin(orderLineItems, eq(orderLineItems.id, productionRunMembers.orderLineItemId))
+    .where(and(
+      eq(productionRunMembers.organizationId, input.organizationId),
+      eq(productionRunMembers.productionRunId, input.run.id),
+    ));
+  const unfinishedRows = memberRows.filter(({ member }: any) => isUnfinishedProductionRunMember(member));
+  if (unfinishedRows.length === 0) {
+    return { restoredMemberCount: 0, alreadyRestoredMemberCount: 0, returnedToExistingQueueMemberCount: 0, unresolvedMemberJobIds: [] };
+  }
+
+  const memberJobIds: string[] = Array.from(new Set(
+    unfinishedRows
+      .map(({ member }: any) => String(member.productionJobId || "").trim())
+      .filter(Boolean),
+  ));
+  const originEventRows = memberJobIds.length > 0
+    ? await tx
+        .select({ productionJobId: productionEvents.productionJobId, payload: productionEvents.payload })
+        .from(productionEvents)
+        .where(and(
+          eq(productionEvents.organizationId, input.organizationId),
+          inArray(productionEvents.productionJobId, memberJobIds),
+        ))
+    : [];
+  const prepressOriginJobIds = new Set(
+    originEventRows
+      .filter((event: any) => isPrepressCombinedRunCreationEvent(event.payload))
+      .map((event: any) => event.productionJobId),
+  );
+
+  const result: CanceledRunReconciliation = {
+    restoredMemberCount: 0,
+    alreadyRestoredMemberCount: 0,
+    returnedToExistingQueueMemberCount: 0,
+    unresolvedMemberJobIds: [],
+  };
+
+  for (const { member, line } of unfinishedRows as Array<any>) {
+    const activeOwner = await findActiveJobForLineItem(tx, {
+      organizationId: input.organizationId,
+      lineItemId: member.orderLineItemId,
+    });
+
+    if (!prepressOriginJobIds.has(member.productionJobId)) {
+      // General production-run creation does not change ownership. Removing the
+      // canceled run's active claim is enough to expose this existing owner.
+      if (activeOwner) result.returnedToExistingQueueMemberCount += 1;
+      else result.unresolvedMemberJobIds.push(member.productionJobId);
+      continue;
+    }
+
+    if (activeOwner && isPrepressOwnershipJob(activeOwner)) {
+      // This makes the repair endpoint retry-safe and prevents duplicate jobs.
+      result.alreadyRestoredMemberCount += 1;
+      continue;
+    }
+
+    if (!activeOwner || activeOwner.id !== member.productionJobId) {
+      result.unresolvedMemberJobIds.push(member.productionJobId);
+      continue;
+    }
+
+    const workflowTransition = await transitionLineItemWorkflowState(tx, {
+      organizationId: input.organizationId,
+      lineItemId: member.orderLineItemId,
+      toState: "in_prepress",
+      actorUserId: input.actorUserId,
+      note: `Combined production run PR-${String(input.run.runNumber).padStart(4, "0")} canceled before production started.`,
+      metadata: {
+        source: "combined_run_cancellation_recovery",
+        productionRunId: input.run.id,
+        productionRunMemberId: member.id,
+      },
+    });
+    if (!workflowTransition.activeOwnerJobId || !isPrepressOwnershipJob({
+      stationKey: workflowTransition.activeOwnerStationKey,
+      stepKey: workflowTransition.activeOwnerStepKey,
+    })) {
+      throw new ProductionRunError("PRODUCTION_RUN_RESTORE_FAILED", "Canceled run member could not be restored to Prepress safely.", 409);
+    }
+
+    const recoveryNote = `[COMBINED RUN CANCELED]\nPR-${String(input.run.runNumber).padStart(4, "0")} was canceled before production started.`;
+    const [activeSession] = await tx
+      .select({ id: prepressSessions.id, notesText: prepressSessions.notesText })
+      .from(prepressSessions)
+      .where(and(
+        eq(prepressSessions.organizationId, input.organizationId),
+        eq(prepressSessions.lineItemId, member.orderLineItemId),
+        eq(prepressSessions.status, "active"),
+      ))
+      .orderBy(desc(prepressSessions.updatedAt), desc(prepressSessions.startedAt))
+      .limit(1);
+    if (activeSession) {
+      const previousNotes = String(activeSession.notesText || "").trim();
+      await tx.update(prepressSessions).set({
+        lockOwnerUserId: input.actorUserId,
+        issueFlag: true,
+        issueType: "combined_run_canceled",
+        notesText: previousNotes.includes(recoveryNote) ? previousNotes : [previousNotes, recoveryNote].filter(Boolean).join("\n\n"),
+        updatedAt: new Date(),
+      }).where(eq(prepressSessions.id, activeSession.id));
+    } else {
+      await tx.insert(prepressSessions).values({
+        organizationId: input.organizationId,
+        orderId: line.orderId,
+        lineItemId: member.orderLineItemId,
+        status: "active",
+        startedByUserId: input.actorUserId,
+        lockOwnerUserId: input.actorUserId,
+        issueFlag: true,
+        issueType: "combined_run_canceled",
+        notesText: recoveryNote,
+      });
+    }
+    result.restoredMemberCount += 1;
+  }
+
+  return result;
+}
+
+/** Narrow, idempotent repair path for legacy runs canceled before cancellation recovery existed. */
+export async function reconcileCanceledProductionRun(input: { organizationId: string; runId: string; actorUserId: string }) {
+  return db.transaction(async (tx) => {
+    const [run] = await tx.select().from(productionRuns).where(and(
+      eq(productionRuns.id, input.runId),
+      eq(productionRuns.organizationId, input.organizationId),
+    )).limit(1);
+    if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
+    const reconciliation = await restoreCanceledPrepressRunMembersInTransaction(tx, { ...input, run });
+    return { ...run, ...reconciliation };
+  });
+}
+
 export async function transitionProductionRun(input: { organizationId: string; runId: string; actorUserId: string; action: "release" | "start" | "complete" | "cancel"; reason?: string | null }) {
   return db.transaction(async (tx) => {
     const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).limit(1);
     if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
+    if (input.action === "cancel" && run.status === "canceled") {
+      return { ...run, restoredMemberCount: 0, alreadyRestoredMemberCount: 0, returnedToExistingQueueMemberCount: 0, unresolvedMemberJobIds: [] };
+    }
     if (input.action === "complete" && (run.status === "completed" || run.status === "completed_with_exceptions")) return run;
     if (run.status === "completed" || run.status === "completed_with_exceptions" || run.status === "canceled") throw new ProductionRunError("PRODUCTION_RUN_TERMINAL", "Completed or canceled production runs cannot be changed.", 409);
+    if (input.action === "cancel" && (run.status === "in_production" || run.status === "partially_completed")) {
+      throw new ProductionRunError("PRODUCTION_RUN_CANCEL_RECOVERY_REQUIRED", "Started production runs must use the partial-recovery workflow; cancellation cannot reset completed or remaining quantities.", 409);
+    }
     const now = new Date();
     const next: Partial<typeof productionRuns.$inferInsert> = input.action === "release" ? { status: "ready_for_production", releasedAt: now } : input.action === "start" ? { status: "in_production", startedAt: now } : input.action === "cancel" ? { status: "canceled", canceledAt: now, canceledByUserId: input.actorUserId, cancelReason: input.reason?.trim() || null } : { status: "completed", completedAt: now };
     if (input.action === "release") {
@@ -1291,6 +1455,16 @@ export async function transitionProductionRun(input: { organizationId: string; r
       });
     }
     const [updated] = await tx.update(productionRuns).set({ ...next, updatedAt: now }).where(and(eq(productionRuns.id, run.id), eq(productionRuns.organizationId, input.organizationId))).returning();
+    const reconciliation = input.action === "cancel"
+      ? await restoreCanceledPrepressRunMembersInTransaction(tx, { organizationId: input.organizationId, run: updated, actorUserId: input.actorUserId })
+      : null;
+    if (reconciliation?.unresolvedMemberJobIds.length) {
+      throw new ProductionRunError(
+        "PRODUCTION_RUN_RESTORE_REQUIRED",
+        `Cancellation could not safely restore member jobs: ${reconciliation.unresolvedMemberJobIds.join(", ")}. No changes were applied.`,
+        409,
+      );
+    }
     await tx.insert(auditLogs).values({
       organizationId: input.organizationId,
       userId: input.actorUserId,
@@ -1300,8 +1474,8 @@ export async function transitionProductionRun(input: { organizationId: string; r
       entityName: `PR-${String(run.runNumber).padStart(4, "0")}`,
       description: `Production run ${input.action}`,
       oldValues: { status: run.status },
-      newValues: { status: updated.status, reason: input.reason ?? null },
+      newValues: { status: updated.status, reason: input.reason ?? null, ...(reconciliation ?? {}) },
     } as any);
-    return updated;
+    return reconciliation ? { ...updated, ...reconciliation } : updated;
   });
 }

@@ -10,6 +10,7 @@ import {
   listProductionRuns,
   ProductionRunError,
   recordProductionRunOutcome,
+  reconcileCanceledProductionRun,
   replaceProductionRunFile,
   retireProductionRunFile,
   transitionProductionRun,
@@ -245,6 +246,17 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
     } catch (error) {
       if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
       return res.status(500).json({ success: false, code: "PRODUCTION_RUN_TRANSITION_FAILED", message: "Unable to transition production run." });
+    }
+  });
+  app.post("/api/production/runs/:runId/reconcile-canceled-members", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      if (!actorIsAdmin(req)) return res.status(403).json({ success: false, code: "FORBIDDEN", message: "Only an administrator may reconcile a canceled production run." });
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      return res.json({ success: true, data: await reconcileCanceledProductionRun({ organizationId, actorUserId, runId: req.params.runId }) });
+    } catch (error) {
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_RECONCILE_FAILED", "Unable to reconcile the canceled production run.");
     }
   });
   app.post("/api/production/runs/:runId/outcomes", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
