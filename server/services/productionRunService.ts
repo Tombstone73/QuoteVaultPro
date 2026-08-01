@@ -1254,8 +1254,11 @@ export async function recordProductionRunOutcome(input: {
 
 type CanceledRunReconciliation = {
   restoredMemberCount: number;
+  restoredMemberJobIds: string[];
   alreadyRestoredMemberCount: number;
+  alreadyRestoredMemberJobIds: string[];
   returnedToExistingQueueMemberCount: number;
+  returnedToExistingQueueMemberJobIds: string[];
   unresolvedMemberJobIds: string[];
 };
 
@@ -1283,7 +1286,7 @@ async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
     ));
   const unfinishedRows = memberRows.filter(({ member }: any) => isUnfinishedProductionRunMember(member));
   if (unfinishedRows.length === 0) {
-    return { restoredMemberCount: 0, alreadyRestoredMemberCount: 0, returnedToExistingQueueMemberCount: 0, unresolvedMemberJobIds: [] };
+    return { restoredMemberCount: 0, restoredMemberJobIds: [], alreadyRestoredMemberCount: 0, alreadyRestoredMemberJobIds: [], returnedToExistingQueueMemberCount: 0, returnedToExistingQueueMemberJobIds: [], unresolvedMemberJobIds: [] };
   }
 
   const memberJobIds: string[] = Array.from(new Set(
@@ -1305,11 +1308,35 @@ async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
       .filter((event: any) => isPrepressCombinedRunCreationEvent(event.payload))
       .map((event: any) => event.productionJobId),
   );
+  const predecessorIds: string[] = Array.from(new Set(
+    originEventRows
+      .map((event: any) => String((event.payload as any)?.previousJobId || "").trim())
+      .filter(Boolean),
+  ));
+  if (predecessorIds.length > 0) {
+    const predecessorRows = await tx
+      .select({ id: productionJobs.id, stationKey: productionJobs.stationKey, stepKey: productionJobs.stepKey })
+      .from(productionJobs)
+      .where(and(eq(productionJobs.organizationId, input.organizationId), inArray(productionJobs.id, predecessorIds)));
+    const prepressPredecessorIds = new Set(
+      predecessorRows
+        .filter((job: any) => isPrepressOwnershipJob(job))
+        .map((job: any) => job.id),
+    );
+    for (const event of originEventRows as Array<any>) {
+      if (prepressPredecessorIds.has(String(event.payload?.previousJobId || ""))) {
+        prepressOriginJobIds.add(event.productionJobId);
+      }
+    }
+  }
 
   const result: CanceledRunReconciliation = {
     restoredMemberCount: 0,
+    restoredMemberJobIds: [],
     alreadyRestoredMemberCount: 0,
+    alreadyRestoredMemberJobIds: [],
     returnedToExistingQueueMemberCount: 0,
+    returnedToExistingQueueMemberJobIds: [],
     unresolvedMemberJobIds: [],
   };
 
@@ -1322,7 +1349,10 @@ async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
     if (!prepressOriginJobIds.has(member.productionJobId)) {
       // General production-run creation does not change ownership. Removing the
       // canceled run's active claim is enough to expose this existing owner.
-      if (activeOwner) result.returnedToExistingQueueMemberCount += 1;
+      if (activeOwner) {
+        result.returnedToExistingQueueMemberCount += 1;
+        result.returnedToExistingQueueMemberJobIds.push(member.productionJobId);
+      }
       else result.unresolvedMemberJobIds.push(member.productionJobId);
       continue;
     }
@@ -1330,6 +1360,7 @@ async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
     if (activeOwner && isPrepressOwnershipJob(activeOwner)) {
       // This makes the repair endpoint retry-safe and prevents duplicate jobs.
       result.alreadyRestoredMemberCount += 1;
+      result.alreadyRestoredMemberJobIds.push(member.productionJobId);
       continue;
     }
 
@@ -1391,6 +1422,7 @@ async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
       });
     }
     result.restoredMemberCount += 1;
+    result.restoredMemberJobIds.push(member.productionJobId);
   }
 
   return result;
@@ -1414,7 +1446,7 @@ export async function transitionProductionRun(input: { organizationId: string; r
     const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).limit(1);
     if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
     if (input.action === "cancel" && run.status === "canceled") {
-      return { ...run, restoredMemberCount: 0, alreadyRestoredMemberCount: 0, returnedToExistingQueueMemberCount: 0, unresolvedMemberJobIds: [] };
+      return { ...run, restoredMemberCount: 0, restoredMemberJobIds: [], alreadyRestoredMemberCount: 0, alreadyRestoredMemberJobIds: [], returnedToExistingQueueMemberCount: 0, returnedToExistingQueueMemberJobIds: [], unresolvedMemberJobIds: [] };
     }
     if (input.action === "complete" && (run.status === "completed" || run.status === "completed_with_exceptions")) return run;
     if (run.status === "completed" || run.status === "completed_with_exceptions" || run.status === "canceled") throw new ProductionRunError("PRODUCTION_RUN_TERMINAL", "Completed or canceled production runs cannot be changed.", 409);

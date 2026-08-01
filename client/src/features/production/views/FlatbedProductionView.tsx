@@ -44,6 +44,7 @@ import {
   useStartProductionTimer,
   useStopProductionTimer,
   useUpdateProductionJobStatus,
+  useReturnProductionJobsToPrepress,
   useSendLineItemToPrepress,
 } from "@/hooks/useProduction";
 import {
@@ -569,7 +570,7 @@ function ActionRail({
   const [wasteComment, setWasteComment] = useState("");
   const [sendToPrepressOpen, setSendToPrepressOpen] = useState(false);
   const [sendToPrepressNote, setSendToPrepressNote] = useState("");
-  const [sendToPrepressNoPrints, setSendToPrepressNoPrints] = useState(false);
+  const returnToPrepress = useReturnProductionJobsToPrepress();
   const sendToPrepress = useSendLineItemToPrepress();
   const [reprintOpen, setReprintOpen] = useState(false);
   const [reprintQty, setReprintQty] = useState("");
@@ -597,6 +598,7 @@ function ActionRail({
     submitReprint.isPending ||
     addNote.isPending ||
     setMedia.isPending ||
+    returnToPrepress.isPending ||
     sendToPrepress.isPending;
 
   const canAct = job.status !== "done";
@@ -730,8 +732,8 @@ function ActionRail({
           <Button className="w-full justify-start bg-red-600 hover:bg-red-600/90 text-white" onClick={() => setWasteOpen(true)} disabled={isBusy}>
             <Undo2 className="w-4 h-4 mr-2" /> LOG WASTE
           </Button>
-          <Button className="w-full justify-start whitespace-normal h-auto min-h-10 bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.lineItemId}>
-            <Square className="w-4 h-4 mr-2 shrink-0" /> Send to prepress
+          <Button className="w-full justify-start whitespace-normal h-auto min-h-10 bg-orange-600 hover:bg-orange-600/90 text-white" onClick={() => setSendToPrepressOpen(true)} disabled={isBusy || !job.returnToPrepressEligible} title={job.returnToPrepressBlockedReason || undefined}>
+            <Square className="w-4 h-4 mr-2 shrink-0" /> Return to Prepress
           </Button>
         </div>
 
@@ -873,56 +875,42 @@ function ActionRail({
           </AlertDialogContent>
         </AlertDialog>
 
-        <AlertDialog open={sendToPrepressOpen} onOpenChange={(open) => { setSendToPrepressOpen(open); if (!open) { setSendToPrepressNote(""); setSendToPrepressNoPrints(false); } }}>
+        <AlertDialog open={sendToPrepressOpen} onOpenChange={(open) => { setSendToPrepressOpen(open); if (!open) setSendToPrepressNote(""); }}>
           <AlertDialogContent>
             <AlertDialogHeader>
-              <AlertDialogTitle>Send to Prepress</AlertDialogTitle>
+              <AlertDialogTitle>Return to Prepress</AlertDialogTitle>
               <AlertDialogDescription>
-                This will move the job back to the Prepress queue for file edits. It will be removed from this board until prepress completes it again.
+                This will move the unstarted job back to the Prepress queue. Artwork, allocations, and the future production destination remain unchanged.
               </AlertDialogDescription>
             </AlertDialogHeader>
             <div className="space-y-3">
               <Textarea
                 value={sendToPrepressNote}
                 onChange={(e) => setSendToPrepressNote(e.target.value)}
-                placeholder="Describe what needs to change (required)..."
+                placeholder="Reason for return (required)..."
                 className="min-h-[96px] resize-none"
-                disabled={sendToPrepress.isPending}
+                disabled={returnToPrepress.isPending}
               />
-              <div className="flex items-center gap-2">
-                <input
-                  type="checkbox"
-                  id="flatbed-no-prints"
-                  checked={sendToPrepressNoPrints}
-                  onChange={(e) => setSendToPrepressNoPrints(e.target.checked)}
-                  disabled={sendToPrepress.isPending}
-                  className="h-4 w-4 rounded border-gray-300"
-                />
-                <label htmlFor="flatbed-no-prints" className="text-sm cursor-pointer select-none">
-                  No prints completed yet
-                </label>
-              </div>
             </div>
             <AlertDialogFooter>
-              <AlertDialogCancel disabled={sendToPrepress.isPending}>Cancel</AlertDialogCancel>
+              <AlertDialogCancel disabled={returnToPrepress.isPending}>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
                   const note = sendToPrepressNote.trim();
                   if (!note || !job.lineItemId) return;
-                  sendToPrepress.mutate(
-                    { lineItemId: job.lineItemId, jobId: job.id, note, noPrintsCompletedYet: sendToPrepressNoPrints },
+                  returnToPrepress.mutate(
+                    { station: job.stationKey === "roll" ? "roll" : "flatbed", jobIds: [job.id], reason: note },
                     {
                       onSuccess: () => {
                         setSendToPrepressOpen(false);
                         setSendToPrepressNote("");
-                        setSendToPrepressNoPrints(false);
                       },
                     },
                   );
                 }}
-                disabled={sendToPrepress.isPending || !sendToPrepressNote.trim()}
+                disabled={returnToPrepress.isPending || !sendToPrepressNote.trim()}
               >
-                {sendToPrepress.isPending ? "Sending..." : "Send to prepress"}
+                {returnToPrepress.isPending ? "Returning..." : "Return to Prepress"}
               </AlertDialogAction>
             </AlertDialogFooter>
           </AlertDialogContent>
@@ -1560,6 +1548,10 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
     () => sortedJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
     [props.status, sortedJobs],
   );
+  const returnToPrepressEligibleJobs = useMemo(
+    () => sortedJobs.filter((job) => !isProductionRunItem(job) && job.returnToPrepressEligible === true),
+    [sortedJobs],
+  );
 
   useEffect(() => {
     if (sortedJobs.length === 0) {
@@ -1779,6 +1771,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
             station="flatbed"
             status={props.status}
             eligibleJobs={bulkEligibleJobs}
+            returnToPrepressEligibleJobs={returnToPrepressEligibleJobs}
             selectedJobIds={bulkSelectedJobIds}
             onSelectedJobIdsChange={setBulkSelectedJobIds}
           />
@@ -1809,7 +1802,12 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                 {sortedJobs.map((job) => {
                   const selected = job.id === selectedJobId;
                   const bulkEligible = bulkEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id);
-                  const bulkSelected = bulkEligible && bulkSelectedJobIds.has(job.id);
+                  const returnToPrepressEligible = returnToPrepressEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id);
+                  const selectionEligible = bulkEligible || returnToPrepressEligible;
+                  const bulkSelected = selectionEligible && bulkSelectedJobIds.has(job.id);
+                  const selectionDisabledReason = isProductionRunItem(job)
+                    ? "Owned by active Combined Run"
+                    : (job.returnToPrepressBlockedReason || "Not eligible for production grouping in this view");
                   const li = primaryLineItem(job);
                   const qty = li?.quantity ?? job.order.lineItems?.totalQuantity ?? null;
                   const due = dueMeta(job.order.dueDate);
@@ -1837,19 +1835,22 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
                       style={{ cursor: "pointer" }}
                     >
                       <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
-                        <Checkbox
-                          checked={bulkSelected}
-                          onCheckedChange={(checked) => {
-                            setBulkSelectedJobIds((current) => {
-                              const next = new Set(current);
-                              if (checked === true) next.add(job.id);
-                              else next.delete(job.id);
-                              return next;
-                            });
-                          }}
-                          aria-label={`Select production job ${orderNumber}`}
-                          disabled={!bulkEligible}
-                        />
+                        <span title={selectionEligible ? "Selectable for the available production actions." : selectionDisabledReason}>
+                          <Checkbox
+                            checked={bulkSelected}
+                            onCheckedChange={(checked) => {
+                              setBulkSelectedJobIds((current) => {
+                                const next = new Set(current);
+                                if (checked === true) next.add(job.id);
+                                else next.delete(job.id);
+                                return next;
+                              });
+                            }}
+                            aria-label={`Select production job ${orderNumber}`}
+                            disabled={!selectionEligible}
+                          />
+                        </span>
+                        {!selectionEligible ? <div className="mt-1 text-[10px] text-titan-text-muted">{selectionDisabledReason}</div> : null}
                       </TableCell>
                       <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
                         {customerId ? (

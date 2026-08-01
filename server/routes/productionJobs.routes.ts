@@ -79,6 +79,7 @@ import {
   resolveCompletedArtworkQuantityMode,
 } from "@shared/productionCompleted";
 import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
+import { ReturnToPrepressError, getReturnToPrepressBlockedReason, returnProductionJobsToPrepressInTransaction } from "../services/productionReturnToPrepressService";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -1842,6 +1843,11 @@ export function registerProductionJobsRoutes(
         const routingReasonRaw = routingPayload?.routingReason;
         const routingSourceRaw = routingPayload?.source ?? routingPayload?.trigger ?? routingMeta?.type;
         const idempotencyNoteRaw = routingPayload?.idempotencyNote;
+        const returnToPrepressBlockedReason = getReturnToPrepressBlockedReason({
+          lineItemId: row.lineItemId,
+          status: row.status,
+          timerIsRunning: isRunning,
+        });
 
         return {
           id: row.id,
@@ -1905,6 +1911,8 @@ export function registerProductionJobsRoutes(
           // Back-compat: treat view as stationKey
           view: station ?? view ?? config.defaultView,
           status: row.status,
+          returnToPrepressEligible: !returnToPrepressBlockedReason,
+          returnToPrepressBlockedReason,
           startedAt: toIso(row.startedAt),
           completedAt: toIso(row.completedAt),
           completedByUserId: row.completedByUserId ?? null,
@@ -3320,6 +3328,9 @@ export function registerProductionJobsRoutes(
   const bulkActiveStatusSchema = bulkProductionSelectionSchema.extend({
     status: z.enum(["queued", "in_progress", "done"]),
   });
+  const returnToPrepressSchema = bulkProductionSelectionSchema.extend({
+    reason: z.string().trim().min(1).max(2000).optional(),
+  });
 
   const loadAndValidateBulkJobs = async (
     tx: any,
@@ -3355,6 +3366,40 @@ export function registerProductionJobsRoutes(
   };
 
   // Starts independent queued jobs together; no run or nesting record is created.
+  app.post("/api/production/jobs/return-to-prepress", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      if (!userId) return res.status(401).json({ error: "User ID not found" });
+      const parsed = returnToPrepressSchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+      const jobIds = dedupeProductionJobIds(parsed.data.jobIds);
+      if (jobIds.length > MAX_PRODUCTION_BULK_ITEMS) return res.status(400).json({ error: `A maximum of ${MAX_PRODUCTION_BULK_ITEMS} jobs can be returned to Prepress at once.` });
+      const jobs = await db.transaction(async (tx) => returnProductionJobsToPrepressInTransaction(tx, {
+        organizationId,
+        actorUserId: userId,
+        station: parsed.data.station,
+        jobIds,
+        reason: parsed.data.reason || "Return to Prepress requested from production board",
+      }));
+      return res.json({ success: true, data: {
+        requestedItemCount: parsed.data.jobIds.length,
+        uniqueItemCount: jobIds.length,
+        restoredItemCount: jobs.length,
+        restoredJobIds: jobs.map((job) => job.prepressJobId),
+        previousJobIds: jobs.map((job) => job.previousJobId),
+      } });
+    } catch (error: any) {
+      const status = error instanceof ReturnToPrepressError ? error.statusCode : error?.statusCode || 500;
+      return res.status(status).json({
+        error: error?.message || "Failed to return selected jobs to Prepress",
+        code: error instanceof ReturnToPrepressError ? error.code : error?.code,
+      });
+    }
+  });
+
   app.post("/api/production/jobs/bulk-start", isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       if (!assertInternalUser(req, res)) return;

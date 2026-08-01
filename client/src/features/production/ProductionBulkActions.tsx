@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
 import {
@@ -18,6 +18,7 @@ import {
   useCreateProductionRun,
   useBulkStartProductionJobs,
   useBulkUpdateProductionJobStatus,
+  useReturnProductionJobsToPrepress,
 } from "@/hooks/useProduction";
 import type { ProductionBoardTab } from "@/lib/productionBoard";
 
@@ -25,17 +26,22 @@ type Props = {
   station: BulkProductionStation;
   status: ProductionBoardTab;
   eligibleJobs: ProductionJobListItem[];
+  returnToPrepressEligibleJobs?: ProductionJobListItem[];
   selectedJobIds: Set<string>;
   onSelectedJobIdsChange: (ids: Set<string>) => void;
 };
 
-export function ProductionBulkActions({ station, status, eligibleJobs, selectedJobIds, onSelectedJobIdsChange }: Props) {
+export function ProductionBulkActions({ station, status, eligibleJobs, returnToPrepressEligibleJobs = [], selectedJobIds, onSelectedJobIdsChange }: Props) {
   const bulkStart = useBulkStartProductionJobs();
   const bulkStatus = useBulkUpdateProductionJobStatus();
   const createRun = useCreateProductionRun();
+  const returnToPrepress = useReturnProductionJobsToPrepress();
   const [targetStatus, setTargetStatus] = useState<BulkProductionStatus>("done");
   const [confirmOpen, setConfirmOpen] = useState(false);
   const [runOpen, setRunOpen] = useState(false);
+  const [returnOpen, setReturnOpen] = useState(false);
+  const [returnReason, setReturnReason] = useState("Re-nesting required");
+  const selectionScopeInitialized = useRef(false);
   const [plannedSheetCount, setPlannedSheetCount] = useState("");
   const [nominalPiecesPerSheet, setNominalPiecesPerSheet] = useState("");
   const [sheetWidth, setSheetWidth] = useState("");
@@ -43,41 +49,51 @@ export function ProductionBulkActions({ station, status, eligibleJobs, selectedJ
   const [notes, setNotes] = useState("");
   const [overrideReason, setOverrideReason] = useState("");
   const eligibleIds = useMemo(() => eligibleJobs.map((job) => job.id), [eligibleJobs]);
-  const selectedIds = useMemo(() => eligibleIds.filter((id) => selectedJobIds.has(id)), [eligibleIds, selectedJobIds]);
-  const selectedJobs = useMemo(() => eligibleJobs.filter((job) => selectedIds.includes(job.id)), [eligibleJobs, selectedIds]);
+  const selectableJobs = useMemo(() => Array.from(new Map([...eligibleJobs, ...returnToPrepressEligibleJobs].map((job) => [job.id, job])).values()), [eligibleJobs, returnToPrepressEligibleJobs]);
+  const selectableIds = useMemo(() => selectableJobs.map((job) => job.id), [selectableJobs]);
+  const selectedIds = useMemo(() => selectableIds.filter((id) => selectedJobIds.has(id)), [selectableIds, selectedJobIds]);
+  const selectedProductionJobs = useMemo(() => eligibleJobs.filter((job) => selectedIds.includes(job.id)), [eligibleJobs, selectedIds]);
+  const selectedReturnJobs = useMemo(() => returnToPrepressEligibleJobs.filter((job) => selectedIds.includes(job.id)), [returnToPrepressEligibleJobs, selectedIds]);
   const selectedOrderIds = useMemo(
-    () => Array.from(new Set(selectedJobs.map((job) => (job as any).orderId || job.order?.id).filter(Boolean))),
-    [selectedJobs],
+    () => Array.from(new Set(selectedProductionJobs.map((job) => (job as any).orderId || job.order?.id).filter(Boolean))),
+    [selectedProductionJobs],
   );
-  const canCreateRun = status === "queued" && selectedJobs.length > 1 && selectedOrderIds.length === 1;
+  const hasIncompatibleProductionSelection = selectedIds.length !== selectedProductionJobs.length;
+  const hasIncompatibleReturnSelection = selectedIds.length !== selectedReturnJobs.length;
+  const canCreateRun = status === "queued" && selectedProductionJobs.length > 1 && selectedOrderIds.length === 1 && !hasIncompatibleProductionSelection;
   const active = status === "in_progress" || status === "paused";
-  const isPending = bulkStart.isPending || bulkStatus.isPending || createRun.isPending;
-  const totalSelectedQuantity = selectedJobs.reduce((sum, job) => sum + (Number((job as any).qty ?? job.order?.lineItems?.primary?.quantity ?? 0) || 0), 0);
+  const isPending = bulkStart.isPending || bulkStatus.isPending || createRun.isPending || returnToPrepress.isPending;
+  const totalSelectedQuantity = selectedProductionJobs.reduce((sum, job) => sum + (Number((job as any).qty ?? job.order?.lineItems?.primary?.quantity ?? 0) || 0), 0);
   const expectedPlacements = (Number(plannedSheetCount) || 0) * (Number(nominalPiecesPerSheet) || 0);
 
   useEffect(() => {
+    if (!selectionScopeInitialized.current) {
+      selectionScopeInitialized.current = true;
+      return;
+    }
     onSelectedJobIdsChange(new Set());
     setConfirmOpen(false);
     setRunOpen(false);
+    setReturnOpen(false);
   }, [station, status]); // Selection never survives a station or view change.
 
   if (status !== "queued" && !active) return null;
 
-  const allSelected = eligibleIds.length > 0 && selectedIds.length === eligibleIds.length;
+  const allSelected = selectableIds.length > 0 && selectedIds.length === selectableIds.length;
   const actionLabel = status === "queued"
     ? "Put selected into production"
     : `Update selected to ${targetStatus === "done" ? "completed" : targetStatus.replace("_", " ")}`;
   const targetLabel = status === "queued" ? "in production" : targetStatus === "done" ? "completed" : targetStatus.replace("_", " ");
 
-  const toggleAll = (checked: boolean) => onSelectedJobIdsChange(checked ? new Set(eligibleIds) : new Set());
+  const toggleAll = (checked: boolean) => onSelectedJobIdsChange(checked ? new Set(selectableIds) : new Set());
 
   const confirm = async () => {
-    if (selectedIds.length === 0) return;
+    if (selectedIds.length === 0 || hasIncompatibleProductionSelection) return;
     try {
       if (status === "queued") {
-        await bulkStart.mutateAsync({ station, jobIds: selectedIds });
+        await bulkStart.mutateAsync({ station, jobIds: selectedProductionJobs.map((job) => job.id) });
       } else {
-        await bulkStatus.mutateAsync({ station, jobIds: selectedIds, status: targetStatus });
+        await bulkStatus.mutateAsync({ station, jobIds: selectedProductionJobs.map((job) => job.id), status: targetStatus });
       }
       onSelectedJobIdsChange(new Set());
       setConfirmOpen(false);
@@ -92,7 +108,7 @@ export function ProductionBulkActions({ station, status, eligibleJobs, selectedJ
       await createRun.mutateAsync({
         orderId: String(selectedOrderIds[0]),
         stationKey: station,
-        members: selectedJobs.map((job) => ({
+        members: selectedProductionJobs.map((job) => ({
           productionJobId: job.id,
           allocatedQuantity: Number((job as any).qty ?? job.order?.lineItems?.primary?.quantity ?? 0) || undefined,
         })),
@@ -116,13 +132,28 @@ export function ProductionBulkActions({ station, status, eligibleJobs, selectedJ
     }
   };
 
+  const confirmReturnToPrepress = async () => {
+    if (selectedIds.length === 0 || hasIncompatibleReturnSelection) return;
+    try {
+      await returnToPrepress.mutateAsync({
+        station,
+        jobIds: selectedReturnJobs.map((job) => job.id),
+        reason: returnReason.trim() || "Return to Prepress requested from production board",
+      });
+      onSelectedJobIdsChange(new Set());
+      setReturnOpen(false);
+    } catch {
+      // The mutation hook owns the user-facing, server-provided error message.
+    }
+  };
+
   return (
     <div className="mt-3 flex flex-wrap items-center gap-2 rounded-md border border-titan-border-subtle bg-titan-bg-card px-3 py-2">
       <Checkbox
         checked={allSelected}
         onCheckedChange={(checked) => toggleAll(checked === true)}
         aria-label="Select all eligible jobs currently visible"
-        disabled={eligibleIds.length === 0 || isPending}
+        disabled={selectableIds.length === 0 || isPending}
       />
       <span className="text-xs text-titan-text-muted">{selectedIds.length} selected</span>
       {active ? (
@@ -137,16 +168,21 @@ export function ProductionBulkActions({ station, status, eligibleJobs, selectedJ
           <option value="queued">Queued</option>
         </select>
       ) : null}
-      <Button size="sm" onClick={() => setConfirmOpen(true)} disabled={selectedIds.length === 0 || isPending}>
+      <Button size="sm" onClick={() => setConfirmOpen(true)} disabled={selectedIds.length === 0 || hasIncompatibleProductionSelection || isPending} title={hasIncompatibleProductionSelection ? "Selection includes jobs that are only eligible for Return to Prepress." : undefined}>
         {isPending ? "Updating…" : actionLabel}
       </Button>
+      {status === "queued" ? (
+        <Button size="sm" variant="secondary" onClick={() => setReturnOpen(true)} disabled={selectedIds.length === 0 || hasIncompatibleReturnSelection || isPending} title={hasIncompatibleReturnSelection ? "Selection includes jobs that cannot safely return to Prepress." : undefined}>
+          Return Selected to Prepress
+        </Button>
+      ) : null}
       {status === "queued" ? (
         <Button
           size="sm"
           variant="outline"
           onClick={() => setRunOpen(true)}
           disabled={!canCreateRun || isPending}
-          title={selectedJobs.length > 1 && selectedOrderIds.length > 1 ? "Combined runs must use one order" : undefined}
+          title={hasIncompatibleProductionSelection ? "Selection includes jobs that are only eligible for Return to Prepress." : selectedProductionJobs.length > 1 && selectedOrderIds.length > 1 ? "Combined runs must use one order" : undefined}
         >
           Create combined run
         </Button>
@@ -174,12 +210,12 @@ export function ProductionBulkActions({ station, status, eligibleJobs, selectedJ
           <AlertDialogHeader>
             <AlertDialogTitle>Create combined production run</AlertDialogTitle>
             <AlertDialogDescription>
-              Group {selectedJobs.length} same-order jobs into one physical production run. Line-item quantities, pricing, fulfillment, and invoices stay on the original items.
+              Group {selectedProductionJobs.length} same-order jobs into one physical production run. Line-item quantities, pricing, fulfillment, and invoices stay on the original items.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-4 text-sm">
             <div className="max-h-48 overflow-auto rounded-md border border-titan-border-subtle">
-              {selectedJobs.map((job) => (
+              {selectedProductionJobs.map((job) => (
                 <div key={job.id} className="flex items-center justify-between gap-3 border-b border-titan-border-subtle px-3 py-2 last:border-b-0">
                   <div className="min-w-0">
                     <div className="truncate font-medium">{(job as any).jobDescription || job.order?.lineItems?.primary?.description || job.id}</div>
@@ -225,6 +261,27 @@ export function ProductionBulkActions({ station, status, eligibleJobs, selectedJ
             <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={(event) => { event.preventDefault(); void createCombinedRun(); }} disabled={!canCreateRun || isPending}>
               {createRun.isPending ? "Creating..." : "Create draft run"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog open={returnOpen} onOpenChange={setReturnOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Return selected jobs to Prepress</AlertDialogTitle>
+            <AlertDialogDescription>
+              This will move exactly {selectedReturnJobs.length} unstarted standalone {selectedReturnJobs.length === 1 ? "job" : "jobs"} to the Prepress queue. Artwork, allocations, and the future production destination remain unchanged.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="block space-y-1 text-sm">
+            <span className="text-xs font-medium text-titan-text-muted">Reason</span>
+            <textarea className="min-h-20 w-full rounded-md border border-titan-border-subtle bg-titan-bg-card px-2 py-2" value={returnReason} onChange={(event) => setReturnReason(event.target.value)} disabled={isPending} />
+          </label>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(event) => { event.preventDefault(); void confirmReturnToPrepress(); }} disabled={isPending || !returnReason.trim()}>
+              {returnToPrepress.isPending ? "Returning..." : "Return to Prepress"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

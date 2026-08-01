@@ -159,6 +159,8 @@ export type ProductionJobListItem = {
   idempotencyNote?: string | null;
   lineItemId?: string | null;
   status: "queued" | "in_progress" | "paused" | "done";
+  returnToPrepressEligible?: boolean;
+  returnToPrepressBlockedReason?: string | null;
   startedAt: string | null;
   completedAt: string | null;
   completedByUserId?: string | null;
@@ -1219,6 +1221,33 @@ export function useBulkUpdateProductionJobStatus() {
       toast({ title: `${data.updatedItemCount} jobs updated to ${data.status.replace("_", " ")}` });
     },
     onError: (error: Error) => toast({ title: "Bulk update failed", description: error.message, variant: "destructive" }),
+  });
+}
+
+export function useReturnProductionJobsToPrepress() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { station: BulkProductionStation; jobIds: string[]; reason?: string }) => {
+      const res = await fetch("/api/production/jobs/return-to-prepress", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to return selected jobs to Prepress");
+      return json.data as { restoredItemCount: number; restoredJobIds: string[]; previousJobIds: string[] };
+    },
+    onSuccess: (data) => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      toast({ title: "Returned to Prepress", description: `${data.restoredItemCount} ${data.restoredItemCount === 1 ? "job was" : "jobs were"} returned to the Prepress queue.` });
+    },
+    onError: (error: Error) => toast({ title: "Return to Prepress failed", description: error.message, variant: "destructive" }),
   });
 }
 

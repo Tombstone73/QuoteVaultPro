@@ -5,11 +5,13 @@ import { describe, expect, jest, test, beforeAll, beforeEach } from "@jest/globa
 const startMutateAsync = jest.fn(async () => ({}));
 const statusMutateAsync = jest.fn(async () => ({}));
 const createRunMutateAsync = jest.fn(async () => ({}));
+const returnToPrepressMutateAsync = jest.fn(async () => ({ restoredItemCount: 1 }));
 
 jest.mock("@/hooks/useProduction", () => ({
   useBulkStartProductionJobs: () => ({ mutateAsync: startMutateAsync, isPending: false }),
   useBulkUpdateProductionJobStatus: () => ({ mutateAsync: statusMutateAsync, isPending: false }),
   useCreateProductionRun: () => ({ mutateAsync: createRunMutateAsync, isPending: false }),
+  useReturnProductionJobsToPrepress: () => ({ mutateAsync: returnToPrepressMutateAsync, isPending: false }),
 }));
 
 jest.mock("@/components/ui/button", () => ({
@@ -42,6 +44,7 @@ beforeEach(() => {
   startMutateAsync.mockClear();
   statusMutateAsync.mockClear();
   createRunMutateAsync.mockClear();
+  returnToPrepressMutateAsync.mockClear();
 });
 
 const jobs = [
@@ -49,13 +52,13 @@ const jobs = [
   { id: "job-2", lineItemId: "line-2", orderId: "order-1", status: "queued", qty: 8, jobDescription: "Panel B" },
 ] as any;
 
-function render(status: "queued" | "in_progress") {
+function render(status: "queued" | "in_progress", returnJobs: any[] = [], initialSelected = new Set<string>()) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
   function Harness() {
-    const [selected, setSelected] = useState(new Set<string>());
-    return <ProductionBulkActions station="flatbed" status={status} eligibleJobs={jobs} selectedJobIds={selected} onSelectedJobIdsChange={setSelected} />;
+    const [selected, setSelected] = useState(initialSelected);
+    return <ProductionBulkActions station="flatbed" status={status} eligibleJobs={jobs} returnToPrepressEligibleJobs={returnJobs} selectedJobIds={selected} onSelectedJobIdsChange={setSelected} />;
   }
   act(() => root.render(<Harness />));
   return { container, root };
@@ -124,6 +127,20 @@ describe("ProductionBulkActions", () => {
       compatibilityOverrideReason: null,
     });
     expect(view.container.textContent).toContain("0 selected");
+    cleanup(view.root, view.container);
+  });
+
+  test("allows a Return to Prepress-only selection without enabling production grouping", async () => {
+    const returnOnlyJob = { id: "job-return", lineItemId: "line-return", orderId: "order-1", status: "queued", qty: 3, jobDescription: "Corrected panel" } as any;
+    const view = render("queued", [returnOnlyJob], new Set(["job-return"]));
+    expect(view.container.textContent).toContain("1 selected");
+    const productionButton = Array.from(view.container.querySelectorAll("button")).find((candidate) => candidate.textContent?.includes("Put selected into production")) as HTMLButtonElement;
+    expect(productionButton.disabled).toBe(true);
+    click(view.container, "Return Selected to Prepress");
+    const confirmButtons = Array.from(view.container.querySelectorAll("button")).filter((candidate) => candidate.textContent?.trim() === "Return to Prepress");
+    act(() => confirmButtons[confirmButtons.length - 1].dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => undefined);
+    expect(returnToPrepressMutateAsync).toHaveBeenCalledWith({ station: "flatbed", jobIds: ["job-return"], reason: "Re-nesting required" });
     cleanup(view.root, view.container);
   });
 });
