@@ -2,7 +2,7 @@ import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, customers, lineItemFiles, localFileCopyJobs, orderLineItems, orders, prepressSessions, productionEvents, productionJobs, productionRunMembers, productionRuns, users } from "@shared/schema";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
-import { findActiveJobForLineItem, isPrepressOwnershipJob } from "./productionOwnership";
+import { findActiveJobForLineItem, isPrepressOwnershipJob, resolveActiveProductionOwners } from "./productionOwnership";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { downloadLineItemFile, enqueueFinalProductionFileCopy, queueLineItemFilePreviewRepair, uploadLineItemFile } from "../prepressFileService";
 import {
@@ -216,6 +216,8 @@ export type ProductionRunListItem = {
     outcomeSegments: Array<Record<string, unknown>>;
     previouslyCompletedQuantity: number;
     remainingAfterRun: number;
+    currentWorkflowOwner: string | null;
+    currentWorkflowStation: string | null;
   }>;
   createdAt: Date;
   updatedAt: Date;
@@ -669,6 +671,12 @@ export async function listProductionRuns(input: {
 
   const completedByJob = new Map<string, number>();
   const memberJobIds = Array.from(new Set(memberRows.map(({ member }) => member.productionJobId)));
+  const memberLineItemIds = Array.from(new Set(memberRows.map(({ member }) => member.orderLineItemId)));
+  const activeOwnerByLineItem = await resolveActiveProductionOwners(db, {
+    organizationId: input.organizationId,
+    lineItemIds: memberLineItemIds,
+    debugLabel: "listProductionRuns",
+  });
   if (memberJobIds.length > 0) {
     const completedRows = await db
       .select({
@@ -741,6 +749,7 @@ export async function listProductionRuns(input: {
 
   const membersByRunId = new Map<string, ProductionRunListItem["members"]>();
   for (const row of memberRows) {
+    const activeOwner = activeOwnerByLineItem.get(row.member.orderLineItemId);
     const previouslyCompletedQuantity = Math.max(0, (completedByJob.get(row.member.productionJobId) ?? 0) - Number(row.member.completedQuantity || 0));
     const remainingAfterRun = Math.max(0, Number(row.lineQuantity || 0) - previouslyCompletedQuantity - Number(row.member.allocatedQuantity || 0));
     const list = membersByRunId.get(row.member.productionRunId) ?? [];
@@ -767,6 +776,8 @@ export async function listProductionRuns(input: {
       outcomeSegments: Array.isArray(row.member.outcomeSegments) ? row.member.outcomeSegments as Array<Record<string, unknown>> : [],
       previouslyCompletedQuantity,
       remainingAfterRun,
+      currentWorkflowOwner: activeOwner ? (isPrepressOwnershipJob(activeOwner) ? "prepress" : activeOwner.stepKey || activeOwner.stationKey) : null,
+      currentWorkflowStation: activeOwner?.stationKey ?? null,
     });
     membersByRunId.set(row.member.productionRunId, list);
   }
@@ -1260,6 +1271,18 @@ type CanceledRunReconciliation = {
   returnedToExistingQueueMemberCount: number;
   returnedToExistingQueueMemberJobIds: string[];
   unresolvedMemberJobIds: string[];
+  reconciliationRequired: boolean;
+  memberResults: Array<{
+    productionRunMemberId: string;
+    productionJobId: string;
+    orderLineItemId: string;
+    action: "restored" | "already_restored" | "skipped";
+    reason: string;
+    finalWorkflowOwner: string | null;
+    productionDestination: string;
+    activePrepressSessionCount: number;
+    duplicateActivePrepressSession: boolean;
+  }>;
 };
 
 function isPrepressCombinedRunCreationEvent(payload: unknown): boolean {
@@ -1286,7 +1309,7 @@ async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
     ));
   const unfinishedRows = memberRows.filter(({ member }: any) => isUnfinishedProductionRunMember(member));
   if (unfinishedRows.length === 0) {
-    return { restoredMemberCount: 0, restoredMemberJobIds: [], alreadyRestoredMemberCount: 0, alreadyRestoredMemberJobIds: [], returnedToExistingQueueMemberCount: 0, returnedToExistingQueueMemberJobIds: [], unresolvedMemberJobIds: [] };
+    return { restoredMemberCount: 0, restoredMemberJobIds: [], alreadyRestoredMemberCount: 0, alreadyRestoredMemberJobIds: [], returnedToExistingQueueMemberCount: 0, returnedToExistingQueueMemberJobIds: [], unresolvedMemberJobIds: [], reconciliationRequired: false, memberResults: [] };
   }
 
   const memberJobIds: string[] = Array.from(new Set(
@@ -1338,6 +1361,8 @@ async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
     returnedToExistingQueueMemberCount: 0,
     returnedToExistingQueueMemberJobIds: [],
     unresolvedMemberJobIds: [],
+    reconciliationRequired: false,
+    memberResults: [],
   };
 
   for (const { member, line } of unfinishedRows as Array<any>) {
@@ -1352,8 +1377,32 @@ async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
       if (activeOwner) {
         result.returnedToExistingQueueMemberCount += 1;
         result.returnedToExistingQueueMemberJobIds.push(member.productionJobId);
+        result.memberResults.push({
+          productionRunMemberId: member.id,
+          productionJobId: member.productionJobId,
+          orderLineItemId: member.orderLineItemId,
+          action: "skipped",
+          reason: "No Prepress-origin transition was found; the current workflow owner was left unchanged.",
+          finalWorkflowOwner: activeOwner.stationKey ?? activeOwner.stepKey ?? null,
+          productionDestination: input.run.stationKey,
+          activePrepressSessionCount: 0,
+          duplicateActivePrepressSession: false,
+        });
       }
-      else result.unresolvedMemberJobIds.push(member.productionJobId);
+      else {
+        result.unresolvedMemberJobIds.push(member.productionJobId);
+        result.memberResults.push({
+          productionRunMemberId: member.id,
+          productionJobId: member.productionJobId,
+          orderLineItemId: member.orderLineItemId,
+          action: "skipped",
+          reason: "No safe active workflow owner was found for this member.",
+          finalWorkflowOwner: null,
+          productionDestination: input.run.stationKey,
+          activePrepressSessionCount: 0,
+          duplicateActivePrepressSession: false,
+        });
+      }
       continue;
     }
 
@@ -1361,11 +1410,33 @@ async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
       // This makes the repair endpoint retry-safe and prevents duplicate jobs.
       result.alreadyRestoredMemberCount += 1;
       result.alreadyRestoredMemberJobIds.push(member.productionJobId);
+      result.memberResults.push({
+        productionRunMemberId: member.id,
+        productionJobId: member.productionJobId,
+        orderLineItemId: member.orderLineItemId,
+        action: "already_restored",
+        reason: "Already owned by Prepress; no duplicate workflow transition was created.",
+        finalWorkflowOwner: "prepress",
+        productionDestination: input.run.stationKey,
+        activePrepressSessionCount: 0,
+        duplicateActivePrepressSession: false,
+      });
       continue;
     }
 
     if (!activeOwner || activeOwner.id !== member.productionJobId) {
       result.unresolvedMemberJobIds.push(member.productionJobId);
+      result.memberResults.push({
+        productionRunMemberId: member.id,
+        productionJobId: member.productionJobId,
+        orderLineItemId: member.orderLineItemId,
+        action: "skipped",
+        reason: "The member is no longer owned by the canceled run's job and requires manual review.",
+        finalWorkflowOwner: activeOwner?.stationKey ?? activeOwner?.stepKey ?? null,
+        productionDestination: input.run.stationKey,
+        activePrepressSessionCount: 0,
+        duplicateActivePrepressSession: false,
+      });
       continue;
     }
 
@@ -1423,8 +1494,41 @@ async function restoreCanceledPrepressRunMembersInTransaction(tx: any, input: {
     }
     result.restoredMemberCount += 1;
     result.restoredMemberJobIds.push(member.productionJobId);
+    result.memberResults.push({
+      productionRunMemberId: member.id,
+      productionJobId: member.productionJobId,
+      orderLineItemId: member.orderLineItemId,
+      action: "restored",
+      reason: "Eligible unfinished Prepress-origin member restored from the canceled run.",
+      finalWorkflowOwner: "prepress",
+      productionDestination: input.run.stationKey,
+      activePrepressSessionCount: 0,
+      duplicateActivePrepressSession: false,
+    });
   }
 
+  const unfinishedLineItemIds: string[] = Array.from(new Set<string>(
+    unfinishedRows.map(({ member }: any) => String(member.orderLineItemId)),
+  ));
+  const activePrepressSessions = unfinishedLineItemIds.length > 0
+    ? await tx.select({ lineItemId: prepressSessions.lineItemId })
+      .from(prepressSessions)
+      .where(and(
+        eq(prepressSessions.organizationId, input.organizationId),
+        inArray(prepressSessions.lineItemId, unfinishedLineItemIds),
+        eq(prepressSessions.status, "active"),
+      ))
+    : [];
+  const prepressSessionCounts = new Map<string, number>();
+  for (const session of activePrepressSessions as Array<any>) {
+    prepressSessionCounts.set(session.lineItemId, (prepressSessionCounts.get(session.lineItemId) ?? 0) + 1);
+  }
+  for (const memberResult of result.memberResults) {
+    const sessionCount = prepressSessionCounts.get(memberResult.orderLineItemId) ?? 0;
+    memberResult.activePrepressSessionCount = sessionCount;
+    memberResult.duplicateActivePrepressSession = sessionCount > 1;
+  }
+  result.reconciliationRequired = result.unresolvedMemberJobIds.length > 0;
   return result;
 }
 
@@ -1446,7 +1550,7 @@ export async function transitionProductionRun(input: { organizationId: string; r
     const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).limit(1);
     if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
     if (input.action === "cancel" && run.status === "canceled") {
-      return { ...run, restoredMemberCount: 0, restoredMemberJobIds: [], alreadyRestoredMemberCount: 0, alreadyRestoredMemberJobIds: [], returnedToExistingQueueMemberCount: 0, returnedToExistingQueueMemberJobIds: [], unresolvedMemberJobIds: [] };
+      return { ...run, restoredMemberCount: 0, restoredMemberJobIds: [], alreadyRestoredMemberCount: 0, alreadyRestoredMemberJobIds: [], returnedToExistingQueueMemberCount: 0, returnedToExistingQueueMemberJobIds: [], unresolvedMemberJobIds: [], reconciliationRequired: false, memberResults: [] };
     }
     if (input.action === "complete" && (run.status === "completed" || run.status === "completed_with_exceptions")) return run;
     if (run.status === "completed" || run.status === "completed_with_exceptions" || run.status === "canceled") throw new ProductionRunError("PRODUCTION_RUN_TERMINAL", "Completed or canceled production runs cannot be changed.", 409);

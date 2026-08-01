@@ -5226,6 +5226,19 @@ export default function PrepressProductionPageV2() {
                     queryClient.invalidateQueries({ queryKey: ["/api/production/runs"] }),
                   ]);
                 }}
+                onViewRestoredJobs={() => {
+                  setCombinedRunDetailOpen(false);
+                  setSelectedCombinedRunId(null);
+                  setFocusNestedFileUpload(false);
+                  setWorkspaceTab("queue");
+                  void Promise.all([
+                    refreshPrepressQueue(),
+                    refreshPrepressNavigationCount(),
+                    queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+                    queryClient.invalidateQueries({ queryKey: ["/api/production/runs"] }),
+                    queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
+                  ]);
+                }}
               />
             </div>
           ) : productionRunsQuery.isLoading || productionRunsQuery.isFetching ? (

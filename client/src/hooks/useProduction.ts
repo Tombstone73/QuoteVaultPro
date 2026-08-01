@@ -281,6 +281,8 @@ export type ProductionRunMemberSummary = {
   outcomeSegments: Array<Record<string, unknown>>;
   previouslyCompletedQuantity: number;
   remainingAfterRun: number;
+  currentWorkflowOwner?: string | null;
+  currentWorkflowStation?: string | null;
 };
 
 export type ProductionRunFileSummary = {
@@ -349,6 +351,30 @@ export type ProductionRunListItem = {
   members: ProductionRunMemberSummary[];
   createdAt: string;
   updatedAt: string;
+};
+
+export type CanceledProductionRunReconciliationMemberResult = {
+  productionRunMemberId: string;
+  productionJobId: string;
+  orderLineItemId: string;
+  action: "restored" | "already_restored" | "skipped";
+  reason: string;
+  finalWorkflowOwner: string | null;
+  productionDestination: string;
+  activePrepressSessionCount: number;
+  duplicateActivePrepressSession: boolean;
+};
+
+export type CanceledProductionRunReconciliationResult = {
+  restoredMemberCount: number;
+  restoredMemberJobIds: string[];
+  alreadyRestoredMemberCount: number;
+  alreadyRestoredMemberJobIds: string[];
+  returnedToExistingQueueMemberCount: number;
+  returnedToExistingQueueMemberJobIds: string[];
+  unresolvedMemberJobIds: string[];
+  reconciliationRequired: boolean;
+  memberResults: CanceledProductionRunReconciliationMemberResult[];
 };
 
 export type ProductionRunFilesResponse = {
@@ -1221,6 +1247,45 @@ export function useBulkUpdateProductionJobStatus() {
       toast({ title: `${data.updatedItemCount} jobs updated to ${data.status.replace("_", " ")}` });
     },
     onError: (error: Error) => toast({ title: "Bulk update failed", description: error.message, variant: "destructive" }),
+  });
+}
+
+export function useReconcileCanceledProductionRun() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async ({ runId }: { runId: string }) => {
+      const res = await fetch(`/api/production/runs/${runId}/reconcile-canceled-members`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({}),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to reconcile canceled production run");
+      return json.data as CanceledProductionRunReconciliationResult;
+    },
+    onSuccess: (data) => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      const restoredCount = Number(data?.restoredMemberCount) || 0;
+      const skippedCount = Array.isArray(data?.memberResults)
+        ? data.memberResults.filter((result) => result.action === "skipped").length
+        : 0;
+      toast({
+        title: restoredCount > 0 ? "Canceled run reconciled" : "Canceled run checked",
+        description: skippedCount > 0
+          ? `${restoredCount} ${restoredCount === 1 ? "job was" : "jobs were"} restored. ${skippedCount} require ${skippedCount === 1 ? "manual review" : "manual review"}.`
+          : restoredCount > 0
+            ? `${restoredCount} ${restoredCount === 1 ? "job was" : "jobs were"} restored to Prepress.`
+            : "No stranded members require reconciliation.",
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Canceled run reconciliation failed", description: error.message, variant: "destructive" });
+    },
   });
 }
 

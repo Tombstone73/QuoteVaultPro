@@ -2,8 +2,21 @@ import { useMemo, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { useAuth } from "@/hooks/useAuth";
+import {
+  useReconcileCanceledProductionRun,
   useRecordProductionRunOutcome,
   useTransitionProductionRun,
+  type CanceledProductionRunReconciliationResult,
   type ProductionRunListItem,
 } from "@/hooks/useProduction";
 import { ProductionRunFilesPanel } from "./ProductionRunFilesPanel";
@@ -21,16 +34,21 @@ function designQuantityLabel(file: ProductionRunListItem["files"][number]) {
   return Number.isInteger(quantity) && quantity > 0 ? `QTY ${quantity}` : "QTY unresolved";
 }
 
-export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNestedFileUploadFocused, onCanceled }: {
+export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNestedFileUploadFocused, onCanceled, onViewRestoredJobs }: {
   run: ProductionRunListItem;
   focusNestedFileUpload?: boolean;
   onNestedFileUploadFocused?: () => void;
   onCanceled?: (result: { restoredMemberCount?: number; alreadyRestoredMemberCount?: number; unresolvedMemberJobIds?: string[] }) => void;
+  onViewRestoredJobs?: () => void;
 }) {
+  const { user, isAdmin } = useAuth();
   const transition = useTransitionProductionRun();
   const recordOutcome = useRecordProductionRunOutcome();
+  const reconcileCanceledRun = useReconcileCanceledProductionRun();
   const action = runAction(run.runStatus);
   const [recordingResults, setRecordingResults] = useState(false);
+  const [reconcileConfirmationOpen, setReconcileConfirmationOpen] = useState(false);
+  const [reconciliationResult, setReconciliationResult] = useState<CanceledProductionRunReconciliationResult | null>(null);
   const initialDrafts = useMemo(() => Object.fromEntries(run.members.map((member) => [member.id, {
     successfulQuantity: member.successfulQuantity || member.completedQuantity || member.allocatedQuantity,
     damagedQuantity: member.damagedQuantity || 0,
@@ -42,6 +60,12 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const mismatch = placements > 0 && placements !== run.totalAllocatedQuantity;
   const activeFileCount = run.fileCount ?? run.files?.filter((file) => file.status === "active").length ?? 0;
   const replacementRequired = run.replacementRequired ?? activeFileCount === 0;
+  const unfinishedMembers = run.members.filter((member) => member.remainingQuantity > 0);
+  const isAdminOrOwner = Boolean(isAdmin || user?.isAdmin || user?.role === "admin" || user?.role === "owner");
+  const canReconcileCanceledRun = isAdminOrOwner
+    && run.runStatus === "canceled"
+    && unfinishedMembers.length > 0
+    && reconciliationResult?.reconciliationRequired !== false;
   const releaseBlockedReason = action === "release" && replacementRequired
     ? "Nested production file required before release."
     : null;
@@ -70,6 +94,14 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         };
       }),
     }, { onSuccess: () => setRecordingResults(false) });
+  };
+  const restoreCanceledRunMembers = () => {
+    reconcileCanceledRun.mutate({ runId: run.id }, {
+      onSuccess: (result) => {
+        setReconciliationResult(result);
+        setReconcileConfirmationOpen(false);
+      },
+    });
   };
 
   return (
@@ -113,6 +145,11 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
               Record Results
             </Button>
           ) : null}
+          {canReconcileCanceledRun ? (
+            <Button size="sm" variant="outline" onClick={() => setReconcileConfirmationOpen(true)} disabled={reconcileCanceledRun.isPending}>
+              {reconcileCanceledRun.isPending ? "Restoring Members…" : "Restore Members to Prepress"}
+            </Button>
+          ) : null}
         </div>
       </div>
       <div className="mt-3 grid gap-2 text-xs sm:grid-cols-4">
@@ -135,6 +172,11 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
       {replacementRequired ? (
         <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
           {releaseBlockedReason ?? "Nested production file required before this run can be completed."}
+        </div>
+      ) : null}
+      {run.runStatus === "canceled" && isAdminOrOwner && unfinishedMembers.length > 0 && reconciliationResult?.reconciliationRequired === false ? (
+        <div className="mt-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
+          No stranded members require reconciliation.
         </div>
       ) : null}
       <div className="mt-3">
@@ -238,6 +280,54 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         </div>
       ) : null}
       {run.notes ? <div className="mt-3 text-xs text-titan-text-muted">{run.notes}</div> : null}
+      {reconciliationResult ? (
+        <div className="mt-3 rounded-md border border-titan-border-subtle p-3 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <div className="font-semibold">Canceled-run reconciliation result</div>
+            {reconciliationResult.restoredMemberCount > 0 && onViewRestoredJobs ? (
+              <Button size="sm" variant="outline" onClick={onViewRestoredJobs}>View Restored Jobs in Prepress</Button>
+            ) : null}
+          </div>
+          <div className="mt-2 grid gap-1 sm:grid-cols-3">
+            <div>Restored: <span className="font-semibold">{reconciliationResult.restoredMemberJobIds.join(", ") || "None"}</span></div>
+            <div>Already in Prepress: <span className="font-semibold">{reconciliationResult.alreadyRestoredMemberJobIds.join(", ") || "None"}</span></div>
+            <div>Requires review: <span className="font-semibold">{reconciliationResult.unresolvedMemberJobIds.join(", ") || "None"}</span></div>
+          </div>
+          <div className="mt-3 space-y-2">
+            {reconciliationResult.memberResults.map((memberResult) => (
+              <div key={memberResult.productionRunMemberId} className="rounded border border-titan-border-subtle px-2 py-1.5">
+                <div className="font-medium">Job {memberResult.productionJobId} · {memberResult.action.replace(/_/g, " ")}</div>
+                <div className="text-titan-text-muted">{memberResult.reason}</div>
+                <div className="mt-1 text-titan-text-muted">Owner: {memberResult.finalWorkflowOwner ?? "unresolved"} · Destination: {memberResult.productionDestination} · Active Prepress sessions: {memberResult.activePrepressSessionCount}{memberResult.duplicateActivePrepressSession ? " (duplicate sessions require review)" : ""}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : null}
+      <AlertDialog open={reconcileConfirmationOpen} onOpenChange={setReconcileConfirmationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Restore members to Prepress?</AlertDialogTitle>
+            <AlertDialogDescription>
+              Restore eligible unfinished members from {run.displayNumber} to Prepress? The canceled run and its files will remain in History.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-2 text-sm">
+            <div><span className="font-medium">Run:</span> {run.displayNumber} · {unfinishedMembers.length} unfinished member{unfinishedMembers.length === 1 ? "" : "s"}</div>
+            <div><span className="font-medium">Current run station:</span> {run.stationKey} (the server revalidates each member's active workflow owner)</div>
+            <div><span className="font-medium">Preserved run files:</span> {run.files.filter((file) => file.status === "active").map((file) => file.fileName).join(", ") || "None"}</div>
+            <div className="rounded border border-titan-border-subtle p-2 text-xs text-titan-text-muted">
+              {unfinishedMembers.map((member) => `Job ${member.productionJobId} (Line ${member.lineNumber ?? "?"}, owner: ${member.currentWorkflowOwner ?? "unresolved"}, station: ${member.currentWorkflowStation ?? "unresolved"}, ${member.remainingQuantity} remaining)`).join(" · ")}
+            </div>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reconcileCanceledRun.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(event) => { event.preventDefault(); restoreCanceledRunMembers(); }} disabled={reconcileCanceledRun.isPending}>
+              {reconcileCanceledRun.isPending ? "Restoring…" : "Restore Members"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

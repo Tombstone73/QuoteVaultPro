@@ -45,6 +45,10 @@ describe("combined production run cancellation contract", () => {
   test("provides an admin-only, idempotent repair path for legacy canceled runs", () => {
     expect(service).toContain("export async function reconcileCanceledProductionRun");
     expect(service).toContain("alreadyRestoredMemberCount");
+    expect(service).toContain("memberResults");
+    expect(service).toContain("activePrepressSessionCount");
+    expect(service).toContain("duplicateActivePrepressSession");
+    expect(service).toContain("reconciliationRequired");
     expect(runRoute).toContain('reconcile-canceled-members');
     expect(runRoute).toContain("actorIsAdmin(req)");
   });
