@@ -1554,10 +1554,27 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   const sortedJobs = useMemo(() => {
     return [...jobsSafe];
   }, [jobsSafe]);
-  const bulkEligibleJobs = useMemo(
-    () => sortedJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
-    [props.status, sortedJobs],
+  const allBulkEligibleJobs = useMemo(
+    () => tabJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
+    [props.status, tabJobs],
   );
+  const bulkEligibleJobs = useMemo(
+    () => sortedJobs.filter((job) => allBulkEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id)),
+    [allBulkEligibleJobs, sortedJobs],
+  );
+  const allReturnToPrepressEligibleJobs = useMemo(
+    () => tabJobs.filter((job) => !isProductionRunItem(job) && job.returnToPrepressEligible === true),
+    [tabJobs],
+  );
+  const returnToPrepressEligibleJobs = useMemo(
+    () => sortedJobs.filter((job) => allReturnToPrepressEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id)),
+    [allReturnToPrepressEligibleJobs, sortedJobs],
+  );
+
+  useEffect(() => {
+    const currentIds = new Set(tabJobs.map((job) => job.id));
+    setBulkSelectedJobIds((current) => new Set(Array.from(current).filter((id) => currentIds.has(id))));
+  }, [tabJobs]);
 
   useEffect(() => {
     if (sortedJobs.length === 0) {
@@ -1767,7 +1784,11 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
           <ProductionBulkActions
             station="roll"
             status={props.status}
-            eligibleJobs={bulkEligibleJobs}
+            eligibleJobs={allBulkEligibleJobs}
+            visibleEligibleJobs={bulkEligibleJobs}
+            returnToPrepressEligibleJobs={allReturnToPrepressEligibleJobs}
+            visibleReturnToPrepressEligibleJobs={returnToPrepressEligibleJobs}
+            machineOptions={printerOptions}
             selectedJobIds={bulkSelectedJobIds}
             onSelectedJobIdsChange={setBulkSelectedJobIds}
           />
@@ -1798,7 +1819,12 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                 {sortedJobs.map((job) => {
                   const selected = job.id === selectedJobId;
                   const bulkEligible = bulkEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id);
-                  const bulkSelected = bulkEligible && bulkSelectedJobIds.has(job.id);
+                  const returnToPrepressEligible = returnToPrepressEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id);
+                  const selectionEligible = bulkEligible || returnToPrepressEligible;
+                  const bulkSelected = selectionEligible && bulkSelectedJobIds.has(job.id);
+                  const selectionDisabledReason = isProductionRunItem(job)
+                    ? "Owned by active Combined Run"
+                    : (job.returnToPrepressBlockedReason || "Not eligible for production grouping in this view");
                   const li = primaryLineItem(job);
                   const qty = li?.quantity ?? job.order.lineItems?.totalQuantity ?? null;
                   const due = dueMeta(job.order.dueDate);
@@ -1827,19 +1853,22 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                       style={{ cursor: "pointer" }}
                     >
                       <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
-                        <Checkbox
-                          checked={bulkSelected}
-                          onCheckedChange={(checked) => {
-                            setBulkSelectedJobIds((current) => {
-                              const next = new Set(current);
-                              if (checked === true) next.add(job.id);
-                              else next.delete(job.id);
-                              return next;
-                            });
-                          }}
-                          aria-label={`Select production job ${orderNumber}`}
-                          disabled={!bulkEligible}
-                        />
+                        <span title={selectionEligible ? "Selectable for the available production actions." : selectionDisabledReason}>
+                          <Checkbox
+                            checked={bulkSelected}
+                            onCheckedChange={(checked) => {
+                              setBulkSelectedJobIds((current) => {
+                                const next = new Set(current);
+                                if (checked === true) next.add(job.id);
+                                else next.delete(job.id);
+                                return next;
+                              });
+                            }}
+                            aria-label={`Select production job ${orderNumber}`}
+                            disabled={!selectionEligible}
+                          />
+                        </span>
+                        {!selectionEligible ? <div className="mt-1 text-[10px] text-titan-text-muted">{selectionDisabledReason}</div> : null}
                       </TableCell>
                       <TableCell className="py-5" onClick={(e) => e.stopPropagation()}>
                         {customerId ? (

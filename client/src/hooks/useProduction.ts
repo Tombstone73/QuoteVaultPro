@@ -1250,6 +1250,36 @@ export function useBulkUpdateProductionJobStatus() {
   });
 }
 
+export function useBulkAssignProductionPrinter() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: {
+      station: BulkProductionStation;
+      jobIds: string[];
+      assignedPrinterId?: string | null;
+      assignedPrinterName: string;
+    }) => {
+      const res = await fetch("/api/production/jobs/bulk-printer-assignment", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(json.error || "Failed to assign selected jobs");
+      return json.data as BulkProductionResult & { assignedPrinterName: string };
+    },
+    onSuccess: (data) => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+      toast({ title: "Printer / Machine assigned", description: `${data.updatedItemCount} ${data.updatedItemCount === 1 ? "job" : "jobs"} assigned to ${data.assignedPrinterName}.` });
+    },
+    onError: (error: Error) => toast({ title: "Bulk assignment failed", description: error.message, variant: "destructive" }),
+  });
+}
+
 export function useReconcileCanceledProductionRun() {
   const qc = useQueryClient();
   const { toast } = useToast();

@@ -6,12 +6,14 @@ const startMutateAsync = jest.fn(async () => ({}));
 const statusMutateAsync = jest.fn(async () => ({}));
 const createRunMutateAsync = jest.fn(async () => ({}));
 const returnToPrepressMutateAsync = jest.fn(async () => ({ restoredItemCount: 1 }));
+const assignMachineMutateAsync = jest.fn(async () => ({ updatedItemCount: 1, assignedPrinterName: "Jetson" }));
 
 jest.mock("@/hooks/useProduction", () => ({
   useBulkStartProductionJobs: () => ({ mutateAsync: startMutateAsync, isPending: false }),
   useBulkUpdateProductionJobStatus: () => ({ mutateAsync: statusMutateAsync, isPending: false }),
   useCreateProductionRun: () => ({ mutateAsync: createRunMutateAsync, isPending: false }),
   useReturnProductionJobsToPrepress: () => ({ mutateAsync: returnToPrepressMutateAsync, isPending: false }),
+  useBulkAssignProductionPrinter: () => ({ mutateAsync: assignMachineMutateAsync, isPending: false }),
 }));
 
 jest.mock("@/components/ui/button", () => ({
@@ -45,6 +47,7 @@ beforeEach(() => {
   statusMutateAsync.mockClear();
   createRunMutateAsync.mockClear();
   returnToPrepressMutateAsync.mockClear();
+  assignMachineMutateAsync.mockClear();
 });
 
 const jobs = [
@@ -141,6 +144,24 @@ describe("ProductionBulkActions", () => {
     act(() => confirmButtons[confirmButtons.length - 1].dispatchEvent(new MouseEvent("click", { bubbles: true })));
     await act(async () => undefined);
     expect(returnToPrepressMutateAsync).toHaveBeenCalledWith({ station: "flatbed", jobIds: ["job-return"], reason: "Re-nesting required" });
+    cleanup(view.root, view.container);
+  });
+
+  test("assigns one machine through the bulk mutation rather than per-row requests", async () => {
+    const view = render("queued");
+    const selectAll = view.container.querySelector('input[aria-label="Select all eligible jobs currently visible"]') as HTMLInputElement;
+    act(() => selectAll.click());
+    click(view.container, "Assign Machine");
+    const input = view.container.querySelector('input[aria-label="Printer / Machine"]') as HTMLInputElement;
+    act(() => {
+      const setValue = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set;
+      setValue?.call(input, "Jetson");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    const actions = Array.from(view.container.querySelectorAll("button")).filter((candidate) => candidate.textContent?.trim() === "Assign Machine");
+    act(() => actions[actions.length - 1].dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => undefined);
+    expect(assignMachineMutateAsync).toHaveBeenCalledWith({ station: "flatbed", jobIds: ["job-1", "job-2"], assignedPrinterId: null, assignedPrinterName: "Jetson" });
     cleanup(view.root, view.container);
   });
 });

@@ -1544,14 +1544,27 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   const sortedJobs = useMemo(() => {
     return [...jobsSafe];
   }, [jobsSafe]);
+  const allBulkEligibleJobs = useMemo(
+    () => tabJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
+    [props.status, tabJobs],
+  );
   const bulkEligibleJobs = useMemo(
-    () => sortedJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
-    [props.status, sortedJobs],
+    () => sortedJobs.filter((job) => allBulkEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id)),
+    [allBulkEligibleJobs, sortedJobs],
+  );
+  const allReturnToPrepressEligibleJobs = useMemo(
+    () => tabJobs.filter((job) => !isProductionRunItem(job) && job.returnToPrepressEligible === true),
+    [tabJobs],
   );
   const returnToPrepressEligibleJobs = useMemo(
-    () => sortedJobs.filter((job) => !isProductionRunItem(job) && job.returnToPrepressEligible === true),
-    [sortedJobs],
+    () => sortedJobs.filter((job) => allReturnToPrepressEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id)),
+    [allReturnToPrepressEligibleJobs, sortedJobs],
   );
+
+  useEffect(() => {
+    const currentIds = new Set(tabJobs.map((job) => job.id));
+    setBulkSelectedJobIds((current) => new Set(Array.from(current).filter((id) => currentIds.has(id))));
+  }, [tabJobs]);
 
   useEffect(() => {
     if (sortedJobs.length === 0) {
@@ -1770,8 +1783,11 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
           <ProductionBulkActions
             station="flatbed"
             status={props.status}
-            eligibleJobs={bulkEligibleJobs}
-            returnToPrepressEligibleJobs={returnToPrepressEligibleJobs}
+            eligibleJobs={allBulkEligibleJobs}
+            visibleEligibleJobs={bulkEligibleJobs}
+            returnToPrepressEligibleJobs={allReturnToPrepressEligibleJobs}
+            visibleReturnToPrepressEligibleJobs={returnToPrepressEligibleJobs}
+            machineOptions={printerOptions}
             selectedJobIds={bulkSelectedJobIds}
             onSelectedJobIdsChange={setBulkSelectedJobIds}
           />

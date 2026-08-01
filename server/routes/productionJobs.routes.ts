@@ -3331,6 +3331,10 @@ export function registerProductionJobsRoutes(
   const returnToPrepressSchema = bulkProductionSelectionSchema.extend({
     reason: z.string().trim().min(1).max(2000).optional(),
   });
+  const bulkPrinterAssignmentSchema = bulkProductionSelectionSchema.extend({
+    assignedPrinterId: z.string().trim().max(120).optional().nullable(),
+    assignedPrinterName: z.string().trim().max(120).optional().nullable(),
+  });
 
   const loadAndValidateBulkJobs = async (
     tx: any,
@@ -3352,6 +3356,24 @@ export function registerProductionJobsRoutes(
       throw Object.assign(new Error("One or more selected jobs are no longer eligible for this station."), {
         statusCode: 422,
         code: "invalid_bulk_selection",
+      });
+    }
+
+    const activeRunMember = await tx
+      .select({ productionJobId: productionRunMembers.productionJobId })
+      .from(productionRunMembers)
+      .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+      .where(and(
+        eq(productionRunMembers.organizationId, args.organizationId),
+        inArray(productionRunMembers.productionJobId, args.jobIds),
+        inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES]),
+        sql`coalesce(${productionRunMembers.remainingQuantity}, 0) > 0`,
+      ))
+      .limit(1);
+    if (activeRunMember.length > 0) {
+      throw Object.assign(new Error("A selected job is owned by an active Combined Run."), {
+        statusCode: 409,
+        code: "bulk_selection_owned_by_active_run",
       });
     }
 
@@ -3501,6 +3523,80 @@ export function registerProductionJobsRoutes(
     } catch (error: any) {
       return res.status(error?.statusCode || 500).json({
         error: error?.message || "Failed to update selected production jobs",
+        code: error?.code,
+      });
+    }
+  });
+
+  // Assign one printer/machine to a validated batch in a single transaction.
+  // This intentionally shares the same tenant, routing, and event guarantees as
+  // the individual assignment endpoint rather than issuing client-side loops.
+  app.patch("/api/production/jobs/bulk-printer-assignment", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+      const parsed = bulkPrinterAssignmentSchema.safeParse(req.body || {});
+      if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
+
+      const printerName = String(parsed.data.assignedPrinterName ?? "").trim();
+      const printerId = String(parsed.data.assignedPrinterId ?? "").trim();
+      if (!printerName && !printerId) return res.status(400).json({ error: "Printer / Machine is required" });
+
+      const jobIds = dedupeProductionJobIds(parsed.data.jobIds);
+      if (jobIds.length > MAX_PRODUCTION_BULK_ITEMS) return res.status(400).json({ error: `A maximum of ${MAX_PRODUCTION_BULK_ITEMS} jobs can be assigned at once.` });
+      const userId = getUserId(req.user) ?? null;
+      const assignedPrinterName = printerName || printerId;
+
+      const updated = await db.transaction(async (tx) => {
+        const jobs = await loadAndValidateBulkJobs(tx, {
+          organizationId,
+          jobIds,
+          station: parsed.data.station,
+          allowedStatuses: ["queued", "in_progress", "paused"],
+          action: "bulk assign production printer",
+        });
+        const now = new Date();
+        for (const job of jobs) {
+          await tx
+            .update(productionJobs)
+            .set({
+              assignedPrinterId: printerId || null,
+              assignedPrinterName,
+              assignedPrinterByUserId: userId,
+              assignedPrinterAt: now,
+              updatedAt: now,
+            })
+            .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, job.id)));
+          await appendEvent({
+            tx,
+            organizationId,
+            productionJobId: job.id,
+            type: "printer_assigned",
+            actorUserId: userId,
+            payload: {
+              from: {
+                assignedPrinterId: job.assignedPrinterId ?? null,
+                assignedPrinterName: job.assignedPrinterName ?? null,
+              },
+              to: { assignedPrinterId: printerId || null, assignedPrinterName },
+            },
+          });
+        }
+        return jobs;
+      });
+
+      return res.json({ success: true, data: {
+        requestedItemCount: parsed.data.jobIds.length,
+        uniqueItemCount: jobIds.length,
+        updatedItemCount: updated.length,
+        updatedJobIds: updated.map((job) => job.id),
+        assignedPrinterId: printerId || null,
+        assignedPrinterName,
+      } });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({
+        error: error?.message || "Failed to assign the selected printer / machine",
         code: error?.code,
       });
     }
