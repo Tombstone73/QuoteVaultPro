@@ -45,7 +45,7 @@ type MemberOutcomeInput = {
 };
 
 export class ProductionRunError extends Error {
-  constructor(readonly code: string, message: string, readonly statusCode = 400) { super(message); }
+  constructor(readonly code: string, message: string, readonly statusCode = 400, readonly details?: Record<string, unknown>) { super(message); }
 }
 
 const activeStatuses: RunStatus[] = [...ACTIVE_PRODUCTION_RUN_STATUSES];
@@ -61,28 +61,38 @@ const finitePositiveNumber = (value: unknown): number | null => {
   return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 };
 
-const sameNumber = (left: unknown, right: unknown) => {
-  const a = left == null ? null : Number(left);
-  const b = right == null ? null : Number(right);
-  if (a == null || b == null) return a == null && b == null;
-  return Number.isFinite(a) && Number.isFinite(b) && Math.abs(a - b) < 0.0001;
-};
+function hasMatchingCanonicalPlanInputs(
+  submitted: CombinedRunSheetPlanSubmission["calculated"] | undefined,
+  canonical: ReturnType<typeof buildCombinedRunSheetPlanRecommendation>,
+) {
+  return submitted?.calculatorVersion === canonical.calculatorVersion
+    && submitted.inputKey === canonical.inputKey;
+}
 
-const sameCalculatedPlan = (submitted: CombinedRunSheetPlanSubmission["calculated"] | undefined, canonical: ReturnType<typeof buildCombinedRunSheetPlanRecommendation>) => {
-  if (!submitted) return false;
-  return submitted.calculatorVersion === canonical.calculatorVersion
-    && submitted.inputKey === canonical.inputKey
-    && submitted.canAutoPlan === canonical.canAutoPlan
-    && submitted.reasonCode === canonical.reasonCode
-    && sameNumber(submitted.totalQuantity, canonical.totalQuantity)
-    && sameNumber(submitted.plannedSheetCount, canonical.plannedSheetCount)
-    && sameNumber(submitted.nominalPiecesPerSheet, canonical.nominalPiecesPerSheet)
-    && sameNumber(submitted.sheetWidth, canonical.sheetWidth)
-    && sameNumber(submitted.sheetHeight, canonical.sheetHeight)
-    && sameNumber(submitted.printPasses, canonical.printPasses)
-    && sameNumber(submitted.fullSheets, canonical.fullSheets)
-    && sameNumber(submitted.partialSheetPieces, canonical.partialSheetPieces);
-};
+function describeStaleSheetPlan(
+  submitted: CombinedRunSheetPlanSubmission["calculated"] | undefined,
+  canonical: ReturnType<typeof buildCombinedRunSheetPlanRecommendation>,
+) {
+  const submittedQuantities = new Map((submitted?.memberQuantities ?? []).map((member) => [member.lineItemId, Number(member.quantity)]));
+  const currentQuantities = new Map(canonical.memberQuantities.map((member) => [member.lineItemId, Number(member.quantity)]));
+  const affectedMemberIds = Array.from(new Set([...submittedQuantities.keys(), ...currentQuantities.keys()]))
+    .filter((id) => submittedQuantities.get(id) !== currentQuantities.get(id))
+    .sort();
+  const calculatorVersionChanged = submitted?.calculatorVersion !== canonical.calculatorVersion;
+  const reasonCode = calculatorVersionChanged
+    ? "calculator_version_changed"
+    : affectedMemberIds.length > 0
+      ? "member_quantity_changed"
+      : "layout_inputs_changed";
+  return {
+    reasonCode,
+    affectedMemberIds,
+    submittedInputHash: submitted?.inputKey ?? null,
+    authoritativeInputHash: canonical.inputKey,
+    currentInputs: canonical.inputs,
+    currentPlan: snapshotCombinedRunSheetPlan(canonical),
+  };
+}
 
 function buildSheetPlanPersistence(input: {
   stationKey: string;
@@ -113,19 +123,42 @@ function buildSheetPlanPersistence(input: {
   });
   const canonical = buildCombinedRunSheetPlanRecommendation(items, input.sheetPlan.inputs);
   const calculated = snapshotCombinedRunSheetPlan(canonical);
-  if (!sameCalculatedPlan(input.sheetPlan.calculated, canonical)) {
-    throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_STALE", "The submitted sheet plan is stale. Recalculate the run plan before creating the combined run.", 409);
+  const manualOverride = input.sheetPlan.manualOverride?.enabled === true ? input.sheetPlan.manualOverride : null;
+  if (!hasMatchingCanonicalPlanInputs(input.sheetPlan.calculated, canonical)) {
+    const details = describeStaleSheetPlan(input.sheetPlan.calculated, canonical);
+    console.warn("[production-run] sheet plan stale", {
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      calculatorVersion: canonical.calculatorVersion,
+      submittedCanonicalInputHash: details.submittedInputHash,
+      authoritativeCanonicalInputHash: details.authoritativeInputHash,
+      materialDifferingFields: details.reasonCode,
+      affectedMemberIds: details.affectedMemberIds,
+      manuallyOverridden: Boolean(manualOverride),
+    });
+    throw new ProductionRunError(
+      manualOverride ? "PRODUCTION_RUN_SHEET_PLAN_OVERRIDE_STALE" : "PRODUCTION_RUN_SHEET_PLAN_STALE",
+      manualOverride
+        ? "Sheet inputs changed after the manual override. Reconfirm the authorized plan before creating the run."
+        : "The submitted sheet plan is stale. Recalculate the run plan before creating the combined run.",
+      409,
+      details,
+    );
   }
   if (canonical.reasonCode === "item_too_large") {
     throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_IMPOSSIBLE", canonical.reason || "The selected item does not fit the sheet plan.", 409);
   }
 
-  const manualOverride = input.sheetPlan.manualOverride?.enabled === true ? input.sheetPlan.manualOverride : null;
   if (!canonical.canAutoPlan && !manualOverride) {
     throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_REQUIRED", canonical.reason || "Automatic layout is unavailable; provide an authorized manual plan.", 409);
   }
   if (manualOverride && manualOverride.inputKey !== canonical.inputKey) {
-    throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_OVERRIDE_STALE", "Sheet inputs changed after the manual override. Reconfirm the authorized plan before creating the run.", 409);
+    throw new ProductionRunError("PRODUCTION_RUN_SHEET_PLAN_OVERRIDE_STALE", "Sheet inputs changed after the manual override. Reconfirm the authorized plan before creating the run.", 409, {
+      reasonCode: "manual_override_input_changed",
+      affectedMemberIds: [],
+      authoritativeInputHash: canonical.inputKey,
+      currentPlan: calculated,
+    });
   }
 
   const overrideSheets = finitePositiveInteger(manualOverride?.plannedSheetCount);

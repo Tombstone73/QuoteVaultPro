@@ -90,7 +90,7 @@ const actorIsAdmin = (req: any) => {
 };
 
 function handleProductionRunError(res: any, error: unknown, fallbackCode: string, fallbackMessage: string) {
-  if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+  if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message, details: error.details ?? null });
   if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: "PRODUCTION_RUN_INVALID", message: error.issues[0]?.message ?? "Invalid production run request." });
   console.error(`[production-runs] ${fallbackCode}`, error);
   return res.status(500).json({ success: false, code: fallbackCode, message: fallbackMessage });
@@ -160,7 +160,7 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
       const result = await createProductionRun({ organizationId, actorUserId, ...createSchema.parse(req.body) });
       return res.status(201).json({ success: true, data: result });
     } catch (error) {
-      if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message, details: error.details ?? null });
       if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: "PRODUCTION_RUN_INVALID", message: error.issues[0]?.message ?? "Invalid production run." });
       console.error("[production-runs] create failed", error); return res.status(500).json({ success: false, code: "PRODUCTION_RUN_CREATE_FAILED", message: "Unable to create production run." });
     }
@@ -173,7 +173,7 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
       const result = await createPrepressProductionRun({ organizationId, actorUserId, ...createPrepressSchema.parse(req.body) });
       return res.status(201).json({ success: true, data: result });
     } catch (error) {
-      if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
+      if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message, details: error.details ?? null });
       if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: "PRODUCTION_RUN_INVALID", message: error.issues[0]?.message ?? "Invalid production run." });
       console.error("[production-runs] prepress create failed", error); return res.status(500).json({ success: false, code: "PRODUCTION_RUN_CREATE_FAILED", message: "Unable to create production run." });
     }

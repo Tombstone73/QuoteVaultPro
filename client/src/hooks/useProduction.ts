@@ -578,7 +578,13 @@ export function useCreateProductionRun() {
         body: JSON.stringify(args),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to create production run");
+      if (!res.ok || json?.success === false) {
+        const error = Object.assign(new Error(json?.message || json?.error || "Failed to create production run"), {
+          code: json?.code,
+          details: json?.details ?? null,
+        });
+        throw error;
+      }
       return json.data;
     },
     onSuccess: () => {
@@ -616,7 +622,13 @@ export function useCreatePrepressProductionRun() {
         body: JSON.stringify(args),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to create production run");
+      if (!res.ok || json?.success === false) {
+        const error = Object.assign(new Error(json?.message || json?.error || "Failed to create production run"), {
+          code: json?.code,
+          details: json?.details ?? null,
+        });
+        throw error;
+      }
       return json.data;
     },
     onSuccess: () => {

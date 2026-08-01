@@ -615,6 +615,7 @@ export default function PrepressProductionPageV2() {
   const [combinedRunNotes, setCombinedRunNotes] = useState("");
   const [combinedRunOverrideReason, setCombinedRunOverrideReason] = useState("");
   const [combinedRunMismatchAcknowledged, setCombinedRunMismatchAcknowledged] = useState(false);
+  const [combinedRunSheetPlanStaleMessage, setCombinedRunSheetPlanStaleMessage] = useState<string | null>(null);
   const [combinedRunFileStrategy, setCombinedRunFileStrategy] = useState<"rip_managed" | "manual_upload_after_create">("rip_managed");
   const [combinedRunSearchQuery, setCombinedRunSearchQuery] = useState("");
   const [combinedRunStatusFilter, setCombinedRunStatusFilter] = useState<PrepressCombinedRunStatusFilter>("attention");
@@ -2230,6 +2231,7 @@ export default function PrepressProductionPageV2() {
   };
 
   const resetCombinedRunDraft = () => {
+    setCombinedRunSheetPlanStaleMessage(null);
     setCombinedRunPlannedSheetCount("");
     setCombinedRunPiecesPerSheet("");
     setCombinedRunSheetWidth("");
@@ -2254,6 +2256,7 @@ export default function PrepressProductionPageV2() {
   const openCombinedRunWizard = () => {
     setWorkspaceTab("queue");
     setCombinedRunWizardStep(1);
+    setCombinedRunSheetPlanStaleMessage(null);
     setCombinedRunOpen(true);
   };
 
@@ -2435,7 +2438,34 @@ export default function PrepressProductionPageV2() {
       ]);
       await productionRunsQuery.refetch();
     } catch (error) {
-      const message = error instanceof Error ? error.message : "";
+      const staleError = error as Error & { code?: string; details?: { reasonCode?: string; affectedMemberIds?: string[]; currentInputs?: Partial<CombinedRunSheetPlanInputs> } | null };
+      const message = staleError instanceof Error ? staleError.message : "";
+      if (staleError.code === "PRODUCTION_RUN_SHEET_PLAN_STALE" || staleError.code === "PRODUCTION_RUN_SHEET_PLAN_OVERRIDE_STALE") {
+        const details = staleError.details;
+        const changed = details?.affectedMemberIds?.length
+          ? `Member quantities changed for ${details.affectedMemberIds.join(", ")}.`
+          : details?.reasonCode === "calculator_version_changed"
+            ? "The sheet-plan calculator version changed."
+            : "Layout inputs changed.";
+        const currentInputs = details?.currentInputs;
+        if (currentInputs) {
+          setCombinedRunSheetWidth(currentInputs.sheetWidth == null ? "" : String(currentInputs.sheetWidth));
+          setCombinedRunSheetHeight(currentInputs.sheetHeight == null ? "" : String(currentInputs.sheetHeight));
+          setCombinedRunAllowRotation(Boolean(currentInputs.allowRotation));
+          setCombinedRunBleed(String(currentInputs.bleed ?? 0));
+          setCombinedRunSpacing(String(currentInputs.spacing ?? 0));
+          setCombinedRunMarginTop(String(currentInputs.marginTop ?? 0));
+          setCombinedRunMarginRight(String(currentInputs.marginRight ?? 0));
+          setCombinedRunMarginBottom(String(currentInputs.marginBottom ?? 0));
+          setCombinedRunMarginLeft(String(currentInputs.marginLeft ?? 0));
+        }
+        setCombinedRunMismatchAcknowledged(false);
+        setCombinedRunSheetPlanStaleMessage(`${changed} Review the refreshed server-calculated plan before continuing.`);
+        setCombinedRunWizardStep(3);
+        await refreshPrepressQueue();
+        await Promise.all(selectedQueueItems.map((item) => refreshCombinedRunArtworkForLineItem(item.lineItemId)));
+        return;
+      }
       if (/artwork|production file|final file/i.test(message)) {
         setCombinedRunWizardStep(2);
         await refreshPrepressQueue();
@@ -3699,6 +3729,11 @@ export default function PrepressProductionPageV2() {
                     <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 3: Plan Run</h3>
                     <p className="mt-1 text-xs text-slate-400">Use the canonical sheet-layout recommendation for matching artwork. Enter an override only when production intentionally differs.</p>
                   </div>
+                  {combinedRunSheetPlanStaleMessage ? (
+                    <div className="rounded-lg border border-amber-400/40 bg-amber-500/10 px-4 py-3 text-xs text-amber-100" role="alert">
+                      {combinedRunSheetPlanStaleMessage}
+                    </div>
+                  ) : null}
                   <section className="overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]" data-testid="combined-run-final-members">
                     <div className="border-b border-[#2d3748] px-3 py-2 text-xs font-bold uppercase tracking-widest text-slate-400">Selected run members and artwork quantities</div>
                   <div className="divide-y divide-[#2d3748]">

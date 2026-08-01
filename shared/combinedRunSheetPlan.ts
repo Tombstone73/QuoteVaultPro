@@ -1,6 +1,8 @@
 import { calculateSheetProductionLayout } from "./productionHydration";
 
-export const COMBINED_RUN_SHEET_PLAN_CALCULATOR_VERSION = "combined-run-sheet-plan-v1";
+// v2 makes the plan identity independent of DTO order and number formatting.
+// Only physical-layout inputs are included in this key.
+export const COMBINED_RUN_SHEET_PLAN_CALCULATOR_VERSION = "combined-run-sheet-plan-v2";
 
 export type CombinedRunSheetPlanInputItem = {
   lineItemId: string;
@@ -94,6 +96,10 @@ function normalizeInputs(inputs: Partial<CombinedRunSheetPlanInputs> | null | un
   };
 }
 
+function canonicalItems(items: CombinedRunSheetPlanInputItem[]): CombinedRunSheetPlanInputItem[] {
+  return [...items].sort((left, right) => String(left.lineItemId).localeCompare(String(right.lineItemId)));
+}
+
 function inputKey(inputs: CombinedRunSheetPlanInputs, items: CombinedRunSheetPlanInputItem[]) {
   return [
     COMBINED_RUN_SHEET_PLAN_CALCULATOR_VERSION,
@@ -106,7 +112,7 @@ function inputKey(inputs: CombinedRunSheetPlanInputs, items: CombinedRunSheetPla
     stableNonNegative(inputs.marginRight),
     stableNonNegative(inputs.marginBottom),
     stableNonNegative(inputs.marginLeft),
-    ...items.map((item) => [
+    ...canonicalItems(items).map((item) => [
       item.lineItemId,
       stableNumber(item.quantity),
       stableNumber(item.width),
@@ -120,14 +126,15 @@ export function buildCombinedRunSheetPlanRecommendation(
   items: CombinedRunSheetPlanInputItem[],
   requestedInputs?: Partial<CombinedRunSheetPlanInputs> | null,
 ): CombinedRunSheetPlanRecommendation {
-  const memberQuantities = items.map((item) => ({
+  const normalizedItems = canonicalItems(items);
+  const memberQuantities = normalizedItems.map((item) => ({
     lineItemId: item.lineItemId,
     quantity: positiveNumber(item.quantity) ?? 0,
   }));
   const totalQuantity = memberQuantities.reduce((sum, item) => sum + item.quantity, 0);
-  const firstLayout = items[0]?.productionLayout ?? null;
+  const firstLayout = normalizedItems[0]?.productionLayout ?? null;
   const inputs = normalizeInputs(requestedInputs, firstLayout);
-  const key = inputKey(inputs, items);
+  const key = inputKey(inputs, normalizedItems);
   const empty = {
     calculatorVersion: COMBINED_RUN_SHEET_PLAN_CALCULATOR_VERSION,
     inputKey: key,
@@ -143,11 +150,11 @@ export function buildCombinedRunSheetPlanRecommendation(
     memberQuantities,
   };
 
-  if (items.length === 0) {
+  if (normalizedItems.length === 0) {
     return { ...empty, canAutoPlan: false, reasonCode: "empty", reason: "Select jobs before planning the run." };
   }
 
-  const notSheetJob = items.find((item) => item.productionLayoutUnavailableReason === "not_sheet_job");
+  const notSheetJob = normalizedItems.find((item) => item.productionLayoutUnavailableReason === "not_sheet_job");
   if (notSheetJob) {
     return {
       ...empty,
@@ -157,7 +164,7 @@ export function buildCombinedRunSheetPlanRecommendation(
     };
   }
 
-  const missingLayout = items.find((item) => !item.productionLayout);
+  const missingLayout = normalizedItems.find((item) => !item.productionLayout);
   if (missingLayout && (!inputs.sheetWidth || !inputs.sheetHeight)) {
     return {
       ...empty,
@@ -181,14 +188,14 @@ export function buildCombinedRunSheetPlanRecommendation(
     return { ...empty, canAutoPlan: false, reasonCode: "item_too_large", reason: "Usable sheet area must be larger than the selected margins." };
   }
 
-  const first = items[0].productionLayout ?? null;
+  const first = normalizedItems[0].productionLayout ?? null;
   const sideCount = positiveNumber(first?.sideCount) ?? 1;
   const compatibilityKey = [
-    stableNumber(items[0].width),
-    stableNumber(items[0].height),
+    stableNumber(normalizedItems[0].width),
+    stableNumber(normalizedItems[0].height),
     stableNumber(first?.sideCount ?? 1),
   ].join("|");
-  const incompatible = items.some((item) => {
+  const incompatible = normalizedItems.some((item) => {
     const layout = item.productionLayout ?? null;
     return [
       stableNumber(item.width),
@@ -205,8 +212,8 @@ export function buildCombinedRunSheetPlanRecommendation(
     };
   }
 
-  const itemWidth = positiveNumber(items[0].width);
-  const itemHeight = positiveNumber(items[0].height);
+  const itemWidth = positiveNumber(normalizedItems[0].width);
+  const itemHeight = positiveNumber(normalizedItems[0].height);
   if (!itemWidth || !itemHeight) {
     return { ...empty, canAutoPlan: false, reasonCode: "missing_inputs", reason: "The selected jobs are missing finished dimensions." };
   }
