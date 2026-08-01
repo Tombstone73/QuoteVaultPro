@@ -60,6 +60,7 @@ const createSchema = z.object({
   members: z.array(z.object({ productionJobId: z.string().min(1), allocatedQuantity: z.number().int().positive().optional() })).min(1),
   plannedSheetCount: z.number().int().positive().nullable().optional(), nominalPiecesPerSheet: z.number().int().positive().nullable().optional(),
   sheetWidth: z.number().positive().nullable().optional(), sheetHeight: z.number().positive().nullable().optional(), notes: z.string().max(10000).nullable().optional(), compatibilityOverrideReason: z.string().max(2000).nullable().optional(),
+  productionFileStrategy: z.enum(["rip_managed", "staff_prepared"]).optional(),
   sheetPlan: sheetPlanSchema,
 });
 const createPrepressSchema = createSchema.extend({

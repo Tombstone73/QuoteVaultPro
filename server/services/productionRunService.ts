@@ -398,6 +398,7 @@ export async function createProductionRun(input: {
   members: MemberInput[]; plannedSheetCount?: number | null; nominalPiecesPerSheet?: number | null;
   sheetWidth?: number | null; sheetHeight?: number | null; notes?: string | null;
   compatibilityOverrideReason?: string | null;
+  productionFileStrategy?: "rip_managed" | "staff_prepared";
 }) {
   return db.transaction(async (tx) => createProductionRunInTransaction(tx, input));
 }
@@ -407,6 +408,7 @@ async function createProductionRunInTransaction(tx: any, input: {
   members: MemberInput[]; plannedSheetCount?: number | null; nominalPiecesPerSheet?: number | null;
   sheetWidth?: number | null; sheetHeight?: number | null; notes?: string | null;
   compatibilityOverrideReason?: string | null;
+  productionFileStrategy?: "rip_managed" | "staff_prepared";
   sheetPlanPersistence?: SheetPlanPersistence | null;
 }) {
   if (!input.members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "Select at least one eligible production job.");
@@ -456,6 +458,7 @@ async function createProductionRunInTransaction(tx: any, input: {
     orderId: runOrderId,
     runNumber: Number(numberRow?.next ?? 1),
     stationKey: input.stationKey,
+    productionFileStrategy: input.productionFileStrategy ?? "staff_prepared",
     plannedSheetCount: sheetPlan?.plannedSheetCount ?? input.plannedSheetCount ?? null,
     nominalPiecesPerSheet: sheetPlan?.nominalPiecesPerSheet ?? input.nominalPiecesPerSheet ?? null,
     sheetWidth: (sheetPlan?.sheetWidth ?? input.sheetWidth)?.toString() ?? null,
@@ -480,7 +483,7 @@ async function createProductionRunInTransaction(tx: any, input: {
     entityId: run.id,
     entityName: `PR-${String(run.runNumber).padStart(4, "0")}`,
     description: "Combined production run created",
-    newValues: { orderId: runOrderId, orderIds, stationKey: input.stationKey, members: allocations },
+    newValues: { orderId: runOrderId, orderIds, stationKey: input.stationKey, productionFileStrategy: input.productionFileStrategy ?? "staff_prepared", members: allocations },
   } as any);
   return { run, members };
 }
@@ -490,6 +493,7 @@ export async function createPrepressProductionRun(input: {
   members: PrepressMemberInput[]; plannedSheetCount?: number | null; nominalPiecesPerSheet?: number | null;
   sheetWidth?: number | null; sheetHeight?: number | null; notes?: string | null;
   compatibilityOverrideReason?: string | null;
+  productionFileStrategy?: "rip_managed" | "staff_prepared";
   sheetPlan?: CombinedRunSheetPlanSubmission | null;
 }) {
   if (!input.members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "Select at least one eligible prepress item.");
@@ -786,6 +790,7 @@ export async function listProductionRuns(input: {
         customerId: customerId ?? null,
         customerName: customerName ?? (memberCustomers.length === 1 ? memberCustomers[0] : memberCustomers.length > 1 ? "Multiple customers" : "Unassigned customer"),
         stationKey: run.stationKey,
+        productionFileStrategy: run.productionFileStrategy ?? "staff_prepared",
         status: boardStatus,
         runStatus: run.status as RunStatus,
         plannedSheetCount: run.plannedSheetCount ?? null,
@@ -803,7 +808,7 @@ export async function listProductionRuns(input: {
         memberCount: members.length,
         totalAllocatedQuantity: members.reduce((sum, member) => sum + member.allocatedQuantity, 0),
         fileCount: activeFileCount,
-        replacementRequired: activeFileCount === 0,
+        replacementRequired: (run.productionFileStrategy ?? "staff_prepared") === "staff_prepared" && activeFileCount === 0,
         files,
         members,
         createdAt: run.createdAt,
@@ -818,7 +823,7 @@ export async function listProductionRunFiles(input: {
   runId: string;
   includeHistory?: boolean;
 }) {
-  await getScopedProductionRun(input);
+  const run = await getScopedProductionRun(input);
   const rows = await db
     .select({
       id: lineItemFiles.id,
@@ -857,7 +862,7 @@ export async function listProductionRunFiles(input: {
     .orderBy(desc(lineItemFiles.createdAt));
   const files = await buildProductionRunFileSummaries(rows as any);
   const activeCount = files.filter((file) => file.status === "active").length;
-  return { files, activeCount, replacementRequired: activeCount === 0 };
+  return { files, activeCount, replacementRequired: (run.productionFileStrategy ?? "staff_prepared") === "staff_prepared" && activeCount === 0 };
 }
 
 export async function uploadProductionRunFile(input: {
@@ -1257,15 +1262,15 @@ export async function transitionProductionRun(input: { organizationId: string; r
     if (input.action === "release") {
       if (run.status !== "draft") throw new ProductionRunError("PRODUCTION_RUN_NOT_RELEASABLE", "Only draft production runs can be released.", 409);
       const activeFileCount = await countActiveProductionRunFiles(tx, { organizationId: input.organizationId, runId: run.id });
-      if (activeFileCount <= 0) {
-        throw new ProductionRunError("PRODUCTION_RUN_FILE_REQUIRED", "Shared nested production file required before release.", 409);
+      if (run.productionFileStrategy !== "rip_managed" && activeFileCount <= 0) {
+        throw new ProductionRunError("PRODUCTION_RUN_FILE_REQUIRED", "Nested production file required before release.", 409);
       }
     }
     if (input.action === "complete") {
       if (run.status !== "ready_for_production" && run.status !== "in_production") throw new ProductionRunError("PRODUCTION_RUN_NOT_RELEASABLE", "Release the production run before completing it.", 409);
       const activeFileCount = await countActiveProductionRunFiles(tx, { organizationId: input.organizationId, runId: run.id });
-      if (activeFileCount <= 0) {
-        throw new ProductionRunError("PRODUCTION_RUN_FILE_REQUIRED", "Upload or replace the shared nested final production file before completing this run.", 409);
+      if (run.productionFileStrategy !== "rip_managed" && activeFileCount <= 0) {
+        throw new ProductionRunError("PRODUCTION_RUN_FILE_REQUIRED", "Upload or replace the nested final production file before completing this run.", 409);
       }
       const members = await tx.select().from(productionRunMembers).where(and(eq(productionRunMembers.productionRunId, run.id), eq(productionRunMembers.organizationId, input.organizationId)));
       if (!members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "A production run must have members.");

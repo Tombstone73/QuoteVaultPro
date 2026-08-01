@@ -21,7 +21,7 @@ function designQuantityLabel(file: ProductionRunListItem["files"][number]) {
   return Number.isInteger(quantity) && quantity > 0 ? `QTY ${quantity}` : "QTY unresolved";
 }
 
-export function ProductionRunPanel({ run }: { run: ProductionRunListItem }) {
+export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNestedFileUploadFocused }: { run: ProductionRunListItem; focusNestedFileUpload?: boolean; onNestedFileUploadFocused?: () => void }) {
   const transition = useTransitionProductionRun();
   const recordOutcome = useRecordProductionRunOutcome();
   const action = runAction(run.runStatus);
@@ -38,7 +38,7 @@ export function ProductionRunPanel({ run }: { run: ProductionRunListItem }) {
   const activeFileCount = run.fileCount ?? run.files?.filter((file) => file.status === "active").length ?? 0;
   const replacementRequired = run.replacementRequired ?? activeFileCount === 0;
   const releaseBlockedReason = action === "release" && replacementRequired
-    ? "Shared nested production file required before release."
+    ? "Nested production file required before release."
     : null;
   const updateDraft = (memberId: string, patch: Partial<typeof initialDrafts[string]>) => setDrafts((current) => ({
     ...current,
@@ -108,6 +108,7 @@ export function ProductionRunPanel({ run }: { run: ProductionRunListItem }) {
         </div>
       </div>
       <div className="mt-3 grid gap-2 text-xs sm:grid-cols-4">
+        <div className="rounded border border-violet-400/40 bg-violet-500/10 px-2 py-1"><span className="block text-[10px] font-bold tracking-wide text-violet-200">SHEETS REQUIRED</span><span className="text-lg font-black text-white">{run.plannedSheetCount ?? "Not planned"}</span></div>
         <div>Sheets: <span className="font-semibold">{run.plannedSheetCount ?? "—"}</span></div>
         <div>Pieces/sheet: <span className="font-semibold">{run.nominalPiecesPerSheet ?? "—"}</span></div>
         <div>Allocated: <span className="font-semibold">{run.totalAllocatedQuantity}</span></div>
@@ -125,11 +126,11 @@ export function ProductionRunPanel({ run }: { run: ProductionRunListItem }) {
       ) : null}
       {replacementRequired ? (
         <div className="mt-3 rounded-md border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs">
-          {releaseBlockedReason ?? "Shared nested final production file required before this run can be completed."}
+          {releaseBlockedReason ?? "Nested production file required before this run can be completed."}
         </div>
       ) : null}
       <div className="mt-3">
-        <ProductionRunFilesPanel run={run} />
+        <ProductionRunFilesPanel run={run} focusUpload={focusNestedFileUpload} onUploadFocused={onNestedFileUploadFocused} />
       </div>
       <div className="mt-3 divide-y divide-titan-border-subtle rounded-md border border-titan-border-subtle">
         {run.members.map((member) => (

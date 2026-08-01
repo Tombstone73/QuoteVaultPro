@@ -41,11 +41,17 @@ describe("production run shared file lifecycle contract", () => {
     expect(service).toContain("Shared production run file replaced");
     expect(service).toContain("Shared production run file retired");
     expect(service).toContain("PRODUCTION_RUN_FILE_REQUIRED");
-    expect(service).toContain("Shared nested production file required before release.");
-    expect(service).toContain("Upload or replace the shared nested final production file before completing this run.");
+    expect(service).toContain("Nested production file required before release.");
+    expect(service).toContain("Upload or replace the nested final production file before completing this run.");
     expect(service).toContain("countActiveProductionRunFiles");
     expect(localBridgeRoutes).toContain("Local Bridge copy completed for shared run file");
     expect(localBridgeRoutes).toContain("Local Bridge copy failed for shared run file");
+  });
+
+  test("persists file strategy and requires a run-owned file only for staff-prepared runs", () => {
+    expect(service).toContain("productionFileStrategy");
+    expect(routes).toContain("productionFileStrategy");
+    expect(service).toContain('run.productionFileStrategy !== "rip_managed"');
   });
 
   test("prepress run creation validates final artwork allocation before creating a run", () => {

@@ -13,14 +13,15 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("Combined Runs");
     expect(source).toContain("Manage shared nested production files without leaving Prepress.");
     expect(source).toContain("useProductionRuns");
-    expect(source).toContain("<ProductionRunPanel run={selectedCombinedRun}");
+    expect(source).toContain("focusNestedFileUpload={focusNestedFileUpload}");
   });
 
   test("successful Prepress run creation opens the created run detail", () => {
     expect(source).toContain("const result = await createCombinedRunMutation.mutateAsync");
     expect(source).toContain("setSelectedCombinedRunId(createdRunId)");
     expect(source).toContain("setCombinedRunDetailOpen(true)");
-    expect(source).toContain("is ready for shared file upload");
+    expect(source).toContain("setFocusNestedFileUpload(combinedRunFileStrategy === \"manual_upload_after_create\")");
+    expect(source).toContain("is open for nested-file upload");
   });
 
   test("Prepress run discovery supports search, status, history, and attention filtering", () => {
@@ -110,9 +111,26 @@ describe("mounted Prepress combined run file UI contract", () => {
     expect(source).toContain("<ArtworkProductionBreakdownList item={item} showHeader />");
     expect(source).toContain("Production File Strategy");
     expect(source).toContain("RIP will nest member artwork");
-    expect(source).toContain("Upload prepared nested file after run creation");
-    expect(source).toContain("Source member artwork remains unchanged.");
-    expect(source).toContain("Release remains blocked until an active run-owned file exists.");
+    expect(source).toContain("Staff-prepared nested file");
+    expect(source).toContain("The run cannot be released until that file is uploaded.");
+  });
+
+  test("Final Review leads with the production plan and uses compact artwork readiness badges", () => {
+    expect(source).toContain('data-testid="combined-run-final-production-plan"');
+    expect(source).toContain("Sheets required");
+    expect(source).toContain("Full sheets");
+    expect(source).toContain("No partial sheet");
+    expect(source).toContain("Manually overridden");
+    expect(source).toContain("rounded-full border px-2 py-0.5");
+    expect(source).toContain("Qty to Produce shown per artwork below");
+    expect(source.indexOf("Production Plan")).toBeLessThan(source.lastIndexOf("Selected run members and artwork quantities"));
+  });
+
+  test("strategy-specific primary actions and upload handoff remain explicit", () => {
+    expect(source).toContain('combinedRunFileStrategy === "manual_upload_after_create" ? "Create Run & Upload Nested File" : "Create Combined Run"');
+    expect(source).toContain("RIP-managed nesting uses the individual member production files");
+    expect(source).toContain("data-testid=\"combined-run-production-file-strategy\"");
+    expect(source).toContain("onNestedFileUploadFocused={() => setFocusNestedFileUpload(false)}");
   });
 
   test("mounted Nest Selected workflow includes an inline production artwork resolver", () => {

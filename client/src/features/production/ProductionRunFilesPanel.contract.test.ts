@@ -15,7 +15,8 @@ describe("ProductionRunFilesPanel contract", () => {
   });
 
   test("shows upload, open, download, replace, retire, history, and Local Bridge state", () => {
-    expect(panel).toContain("Upload shared file");
+    expect(panel).toContain("Upload Nested Production File");
+    expect(panel).toContain("Run Production Files");
     expect(panel).toContain("Open");
     expect(panel).toContain("Download");
     expect(panel).toContain("Replace");
@@ -34,6 +35,7 @@ describe("ProductionRunFilesPanel contract", () => {
 
   test("downstream ProductionRunPanel reuses the same file component", () => {
     expect(downstreamPanel).toContain("import { ProductionRunFilesPanel }");
-    expect(downstreamPanel).toContain("<ProductionRunFilesPanel run={run} />");
+    expect(downstreamPanel).toContain("focusUpload={focusNestedFileUpload}");
+    expect(downstreamPanel).toContain("SHEETS REQUIRED");
   });
 });

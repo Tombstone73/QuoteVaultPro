@@ -1,4 +1,4 @@
-import { useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState, type ChangeEvent } from "react";
 import { AlertTriangle, Download, ExternalLink, FileText, RefreshCw, Trash2, Upload } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import {
@@ -64,14 +64,17 @@ function ProductionRunFileThumbnail({ file }: { file: ProductionRunFileSummary }
 
 type ProductionRunFilesPanelProps = {
   run: ProductionRunListItem;
+  focusUpload?: boolean;
+  onUploadFocused?: () => void;
 };
 
-export function ProductionRunFilesPanel({ run }: ProductionRunFilesPanelProps) {
+export function ProductionRunFilesPanel({ run, focusUpload = false, onUploadFocused }: ProductionRunFilesPanelProps) {
   const filesQuery = useProductionRunFiles(run.id, true);
   const uploadFile = useUploadProductionRunFile();
   const replaceFile = useReplaceProductionRunFile();
   const retireFile = useRetireProductionRunFile();
   const uploadInputRef = useRef<HTMLInputElement | null>(null);
+  const uploadSectionRef = useRef<HTMLDivElement | null>(null);
   const replaceInputRef = useRef<HTMLInputElement | null>(null);
   const [replaceFileId, setReplaceFileId] = useState<string | null>(null);
   const [retireTarget, setRetireTarget] = useState<ProductionRunFileSummary | null>(null);
@@ -86,6 +89,13 @@ export function ProductionRunFilesPanel({ run }: ProductionRunFilesPanelProps) {
   const historyFiles = fileState.files.filter((file) => file.status !== "active");
   const fileMutationPending = uploadFile.isPending || replaceFile.isPending || retireFile.isPending;
   const terminalRun = run.runStatus === "completed" || run.runStatus === "canceled";
+  const staffPrepared = run.productionFileStrategy === "staff_prepared";
+
+  useEffect(() => {
+    if (!focusUpload) return;
+    uploadSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+    onUploadFocused?.();
+  }, [focusUpload, onUploadFocused]);
 
   const handleUploadSelected = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
@@ -116,15 +126,15 @@ export function ProductionRunFilesPanel({ run }: ProductionRunFilesPanelProps) {
   };
 
   return (
-    <div className="rounded-md border border-titan-border-subtle p-3">
+    <div ref={uploadSectionRef} className="rounded-md border border-titan-border-subtle p-3" data-testid="production-run-files-section">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <div>
-          <div className="text-xs font-semibold">Shared Production Files</div>
-          <div className="text-[11px] text-titan-text-muted">Stored once on the run; member line items remain listed below.</div>
+          <div className="text-xs font-semibold">Run Production Files</div>
+          <div className="text-[11px] text-titan-text-muted">{staffPrepared ? "Upload the nested file stored once on this run; member artwork remains source traceability." : "Optional run-owned output; RIP uses member production artwork as the active input."}</div>
         </div>
         <Button size="sm" variant="outline" onClick={() => uploadInputRef.current?.click()} disabled={terminalRun || fileMutationPending}>
           <Upload className="mr-1 h-3.5 w-3.5" />
-          {uploadFile.isPending ? "Uploading..." : "Upload shared file"}
+          {uploadFile.isPending ? "Uploading..." : "Upload Nested Production File"}
         </Button>
         <input ref={uploadInputRef} type="file" className="hidden" onChange={handleUploadSelected} />
         <input ref={replaceInputRef} type="file" className="hidden" onChange={handleReplaceSelected} />
@@ -139,7 +149,7 @@ export function ProductionRunFilesPanel({ run }: ProductionRunFilesPanelProps) {
       ) : filesQuery.isLoading ? (
         <div className="mt-3 text-xs text-titan-text-muted">Loading shared files...</div>
       ) : activeFiles.length === 0 ? (
-        <div className="mt-3 text-xs text-titan-text-muted">No active shared production files.</div>
+        <div className="mt-3 text-xs text-titan-text-muted">{staffPrepared ? "Nested production file required before release." : "No run-owned nested file. RIP will use source member artwork."}</div>
       ) : (
         <div className="mt-3 divide-y divide-titan-border-subtle rounded border border-titan-border-subtle">
           {activeFiles.map((file) => {

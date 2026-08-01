@@ -324,6 +324,7 @@ export type ProductionRunListItem = {
   customerId: string | null;
   customerName: string;
   stationKey: string;
+  productionFileStrategy: "rip_managed" | "staff_prepared";
   status: "queued" | "in_progress" | "done";
   runStatus: "draft" | "ready_for_production" | "in_production" | "partially_completed" | "completed" | "completed_with_exceptions" | "canceled";
   plannedSheetCount: number | null;
@@ -537,6 +538,7 @@ export function useCreateProductionRun() {
       nominalPiecesPerSheet?: number | null;
       sheetWidth?: number | null;
       sheetHeight?: number | null;
+      productionFileStrategy?: "rip_managed" | "staff_prepared";
       notes?: string | null;
       compatibilityOverrideReason?: string | null;
       sheetPlan?: import("@shared/combinedRunSheetPlan").CombinedRunSheetPlanSubmission | null;
@@ -574,6 +576,7 @@ export function useCreatePrepressProductionRun() {
       nominalPiecesPerSheet?: number | null;
       sheetWidth?: number | null;
       sheetHeight?: number | null;
+      productionFileStrategy?: "rip_managed" | "staff_prepared";
       notes?: string | null;
       compatibilityOverrideReason?: string | null;
       sheetPlan?: import("@shared/combinedRunSheetPlan").CombinedRunSheetPlanSubmission | null;

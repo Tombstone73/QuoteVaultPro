@@ -627,6 +627,7 @@ export default function PrepressProductionPageV2() {
   const [combinedRunArtworkResolverLineItemId, setCombinedRunArtworkResolverLineItemId] = useState<string | null>(null);
   const [selectedCombinedRunId, setSelectedCombinedRunId] = useState<string | null>(null);
   const [combinedRunDetailOpen, setCombinedRunDetailOpen] = useState(false);
+  const [focusNestedFileUpload, setFocusNestedFileUpload] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [destinationFilter, setDestinationFilter] = useState<PrepressDestinationFilter>(DEFAULT_PREPRESS_LIST_PREFERENCES.destination);
   const [statusFilter, setStatusFilter] = useState<PrepressStatusFilter>(DEFAULT_PREPRESS_LIST_PREFERENCES.status);
@@ -2407,6 +2408,7 @@ export default function PrepressProductionPageV2() {
         },
         notes: combinedRunNotes.trim() || null,
         compatibilityOverrideReason: combinedRunOverrideReason.trim() || null,
+        productionFileStrategy: combinedRunFileStrategy === "manual_upload_after_create" ? "staff_prepared" : "rip_managed",
       });
       setSelectedQueueLineItemIds(new Set());
       setCombinedRunOpen(false);
@@ -2417,11 +2419,14 @@ export default function PrepressProductionPageV2() {
       setWorkspaceTab("runs");
       if (createdRunId) {
         setSelectedCombinedRunId(createdRunId);
+        setFocusNestedFileUpload(combinedRunFileStrategy === "manual_upload_after_create");
         setCombinedRunDetailOpen(true);
       }
       toast({
         title: "Combined production run created",
-        description: createdRunNumber ? `Run PR-${String(createdRunNumber).padStart(4, "0")} is ready for shared file upload.` : "Open the run below to upload the shared nested production file.",
+        description: combinedRunFileStrategy === "manual_upload_after_create"
+          ? (createdRunNumber ? `Run PR-${String(createdRunNumber).padStart(4, "0")} is open for nested-file upload. Release remains blocked until upload completes.` : "The draft run is open for nested-file upload.")
+          : "The draft run is ready for RIP-managed nesting from its member artwork.",
       });
       await Promise.all([
         refreshPrepressQueue(),
@@ -3694,7 +3699,9 @@ export default function PrepressProductionPageV2() {
                     <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 3: Plan Run</h3>
                     <p className="mt-1 text-xs text-slate-400">Use the canonical sheet-layout recommendation for matching artwork. Enter an override only when production intentionally differs.</p>
                   </div>
-                  <div className="divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]">
+                  <section className="overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]" data-testid="combined-run-final-members">
+                    <div className="border-b border-[#2d3748] px-3 py-2 text-xs font-bold uppercase tracking-widest text-slate-400">Selected run members and artwork quantities</div>
+                  <div className="divide-y divide-[#2d3748]">
                     {selectedQueueItems.map((item) => (
                       <div key={item.lineItemId} className="grid gap-3 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_120px]">
                         <div className="min-w-0">
@@ -3710,6 +3717,7 @@ export default function PrepressProductionPageV2() {
                       </div>
                     ))}
                   </div>
+                  </section>
                   <div className="rounded-lg border border-[#2d3748] bg-[#0f172a] p-4">
                     <h4 className="text-xs font-bold uppercase tracking-widest text-slate-300">Sheet and Layout Inputs</h4>
                     <div className="mt-3 grid grid-cols-2 gap-3 md:grid-cols-4">
@@ -3748,12 +3756,18 @@ export default function PrepressProductionPageV2() {
                       </span>
                     </div>
                     {combinedRunSheetPlan.canAutoPlan ? (
-                      <div className="mt-3 grid gap-2 text-xs md:grid-cols-5">
+                      <div className="mt-3 space-y-3">
+                        <div className="rounded-lg border border-violet-300/60 bg-violet-500/15 px-4 py-3" data-testid="combined-run-sheets-required">
+                          <div className="text-3xl font-black leading-none text-white">{combinedRunSheetPlan.plannedSheetCount}</div>
+                          <div className="mt-1 text-xs font-bold uppercase tracking-widest text-violet-100">Sheets required</div>
+                          <div className="mt-1 text-[11px] text-slate-300">{combinedRunSheetPlan.fullSheets} full sheets{combinedRunSheetPlan.partialSheetPieces ? ` + 1 partial sheet with ${combinedRunSheetPlan.partialSheetPieces} pieces` : " · No partial sheet"}</div>
+                        </div>
+                        <div className="grid gap-2 text-xs md:grid-cols-4">
                         <div><span className="text-slate-500">Pieces/sheet:</span> {combinedRunSheetPlan.nominalPiecesPerSheet}</div>
                         <div><span className="text-slate-500">Full sheets:</span> {combinedRunSheetPlan.fullSheets}</div>
                         <div><span className="text-slate-500">Partial:</span> {combinedRunSheetPlan.partialSheetPieces ? `${combinedRunSheetPlan.partialSheetPieces} pieces` : "none"}</div>
-                        <div><span className="text-slate-500">Total sheets:</span> {combinedRunSheetPlan.plannedSheetCount}</div>
                         <div><span className="text-slate-500">Impressions:</span> {combinedRunSheetPlan.printPasses}</div>
+                        </div>
                       </div>
                     ) : null}
                   </div>
@@ -3827,48 +3841,82 @@ export default function PrepressProductionPageV2() {
                 <div className="space-y-4">
                   <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
                     <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Step 4: Final Review</h3>
+                    <section className="mt-3 rounded-lg border border-violet-400/40 bg-violet-500/10 p-4" data-testid="combined-run-final-production-plan">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div>
+                          <h4 className="text-xs font-bold uppercase tracking-widest text-violet-100">Production Plan</h4>
+                          <p className="mt-1 text-[11px] text-slate-300">{combinedRunManualSheetOverride ? "Effective plan is manually overridden." : "Canonical calculated production plan."}</p>
+                        </div>
+                        <div className="rounded border border-violet-200/60 bg-[#111921] px-4 py-3 text-right">
+                          <div className="text-3xl font-black leading-none text-white">{effectiveCombinedRunPlannedSheetCount ?? "Unable to calculate"}</div>
+                          <div className="mt-1 text-[10px] font-bold uppercase tracking-widest text-violet-100">Sheets required</div>
+                        </div>
+                      </div>
+                      {combinedRunSheetPlan.canAutoPlan ? (
+                        <div className="mt-3 grid gap-2 text-xs md:grid-cols-4">
+                          <div><span className="text-slate-400">Sheet size:</span> {formatSheetPlanNumber(combinedRunSheetPlan.sheetWidth)} x {formatSheetPlanNumber(combinedRunSheetPlan.sheetHeight)}</div>
+                          <div><span className="text-slate-400">Pieces/sheet:</span> {effectiveCombinedRunPiecesPerSheet ?? combinedRunSheetPlan.nominalPiecesPerSheet}</div>
+                          <div><span className="text-slate-400">Total pieces:</span> {combinedRunValidation.totalAllocatedQuantity}</div>
+                          <div><span className="text-slate-400">Impressions:</span> {combinedRunSheetPlan.printPasses}</div>
+                          <div><span className="text-slate-400">Partial sheet:</span> {combinedRunSheetPlan.partialSheetPieces ? `${combinedRunSheetPlan.partialSheetPieces} pieces` : "No partial sheet"}</div>
+                          <div><span className="text-slate-400">Plan status:</span> {combinedRunManualSheetOverride ? "Manually overridden" : "Calculated"}</div>
+                        </div>
+                      ) : (
+                        <div className="mt-3 text-xs text-amber-100">Unable to calculate — {combinedRunSheetPlan.reason || "Missing layout input. Manual plan required."}</div>
+                      )}
+                      {combinedRunManualSheetOverride && combinedRunSheetPlan.canAutoPlan ? <div className="mt-3 text-[11px] text-amber-100">Calculated recommendation: {combinedRunSheetPlan.plannedSheetCount} sheets. Effective run plan: {effectiveCombinedRunPlannedSheetCount} sheets. Reason: {combinedRunSheetPlanOverrideReason || "Not provided"}.</div> : null}
+                    </section>
+                    <section className="mt-4 rounded-lg border border-[#2d3748] bg-[#0f172a] p-4" data-testid="combined-run-production-file-strategy">
+                      <h4 className="text-xs font-bold uppercase tracking-widest text-slate-300">Production File Strategy</h4>
+                      <RadioGroup value={combinedRunFileStrategy} onValueChange={(value) => setCombinedRunFileStrategy(value === "manual_upload_after_create" ? "manual_upload_after_create" : "rip_managed")} className="mt-3 grid gap-3 md:grid-cols-2">
+                        <label className={cn("flex cursor-pointer gap-3 rounded border p-3 text-xs", combinedRunFileStrategy === "rip_managed" ? "border-emerald-300 bg-emerald-500/15 text-emerald-50 ring-1 ring-emerald-300/40" : "border-[#2d3748] bg-[#111921] text-slate-300")}>
+                          <RadioGroupItem value="rip_managed" id="combined-run-file-strategy-rip" />
+                          <span><span className="block font-semibold">RIP will nest member artwork</span><span className="mt-1 block text-slate-400">Use the individual member production files as the active production inputs.</span></span>
+                        </label>
+                        <label className={cn("flex cursor-pointer gap-3 rounded border p-3 text-xs", combinedRunFileStrategy === "manual_upload_after_create" ? "border-violet-300 bg-violet-500/15 text-violet-50 ring-1 ring-violet-300/40" : "border-[#2d3748] bg-[#111921] text-slate-300")}>
+                          <RadioGroupItem value="manual_upload_after_create" id="combined-run-file-strategy-manual" />
+                          <span><span className="block font-semibold">Staff-prepared nested file</span><span className="mt-1 block text-slate-400">Create the draft run, then upload the prepared nested PDF, TIFF, or supported production file on the next screen.</span></span>
+                        </label>
+                      </RadioGroup>
+                      <p className={cn("mt-3 rounded border px-3 py-2 text-xs", combinedRunFileStrategy === "manual_upload_after_create" ? "border-violet-400/40 bg-violet-500/10 text-violet-100" : "border-emerald-400/30 bg-emerald-500/10 text-emerald-100")}>
+                        {combinedRunFileStrategy === "manual_upload_after_create" ? "The run will be created as a draft. You will upload the nested production file on the next screen. The run cannot be released until that file is uploaded." : "RIP-managed nesting uses the individual member production files. A shared run file is not required before release."}
+                      </p>
+                    </section>
                     <div className="mt-3 grid gap-3 text-xs md:grid-cols-4">
                       <div><span className="text-slate-500">Target station:</span> {combinedRunValidation.stationKey || "Not resolved"}</div>
                       <div><span className="text-slate-500">Material:</span> {selectedQueueDestinationLabels.length === 1 ? selectedQueueDestinationLabels[0] : "Mixed / override required"}</div>
                       <div><span className="text-slate-500">Allocated:</span> {combinedRunValidation.totalAllocatedQuantity}</div>
                       <div><span className="text-slate-500">Sheet planning:</span> {combinedRunExpectedPlacements > 0 ? `${combinedRunExpectedPlacements} placements (${combinedRunManualSheetOverride ? "manual override" : "calculated"})` : "Not entered"}</div>
                     </div>
-                    {combinedRunSheetPlan.canAutoPlan ? (
-                      <div className="mt-3 rounded border border-[#2d3748] bg-[#0f172a] px-3 py-2 text-xs text-slate-300">
-                        Calculated recommendation: {combinedRunSheetPlan.plannedSheetCount} sheets, {combinedRunSheetPlan.nominalPiecesPerSheet} pieces per sheet, {combinedRunSheetPlan.printPasses} impressions.
-                      </div>
-                    ) : (
-                      <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
-                        Automatic layout unavailable: {combinedRunSheetPlan.reason}
-                      </div>
-                    )}
                     {!canSubmitCombinedRun && combinedRunValidation.reason ? (
                       <div className="mt-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">{combinedRunValidation.reason}</div>
                     ) : null}
                   </div>
+                  <div className="px-1 text-xs font-bold uppercase tracking-widest text-slate-400">Selected run members and artwork quantities</div>
                   <div className="divide-y divide-[#2d3748] overflow-hidden rounded-lg border border-[#2d3748] bg-[#111921]">
                     {selectedQueueItems.map((item) => {
                       const blocker = getPrepressCombinedRunItemBlocker(item);
                       const needsArtwork = Boolean(blocker);
                       return (
-                        <div key={item.lineItemId} className="grid gap-3 p-3 text-xs xl:grid-cols-[minmax(0,1fr)_160px_120px]">
+                        <div key={item.lineItemId} className="p-3 text-xs">
                           <div className="min-w-0">
-                            <div className="truncate font-semibold text-white">Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}</div>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                              <div className="truncate font-semibold text-white">Order {item.jobNumber || item.orderId}{item.lineNumber ? ` - Line ${item.lineNumber}` : ""}: {item.productName}</div>
+                              <span className={cn("shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-semibold", needsArtwork ? "border-amber-400/40 text-amber-100" : "border-emerald-400/40 text-emerald-200")}>
+                                {needsArtwork ? blocker?.message || "Artwork review required" : "Ready"}
+                              </span>
+                            </div>
                             <div className="mt-1 text-slate-400">{item.customerName || "Customer/contact not resolved"}</div>
-                            <div className="mt-1 text-slate-500">Total member quantity: {combinedRunAllocations[item.lineItemId] ?? item.quantity} of {item.quantity} ordered</div>
-                            <div className="mt-3">
+                            <div className="mt-1 text-slate-500">Total member quantity: {combinedRunAllocations[item.lineItemId] ?? item.quantity} of {item.quantity} ordered · Qty to Produce shown per artwork below</div>
+                            <div className="mt-2">
                               <ArtworkProductionBreakdownList item={item} showHeader />
                             </div>
                           </div>
-                          <span className={cn("rounded border px-2 py-1 text-center text-[11px] font-semibold", needsArtwork ? "border-amber-400/40 text-amber-100" : "border-emerald-400/40 text-emerald-200")}>
-                            {needsArtwork ? blocker?.message || "Artwork unresolved" : "Ready"}
-                          </span>
-                          <span className="font-mono text-slate-200">Qty {combinedRunAllocations[item.lineItemId] ?? item.quantity}</span>
                         </div>
                       );
                     })}
                   </div>
-                  <div className="rounded-lg border border-[#2d3748] bg-[#1a232e] p-4">
+                  <div className="hidden rounded-lg border border-[#2d3748] bg-[#1a232e] p-4" aria-hidden="true">
                     <h3 className="text-sm font-bold uppercase tracking-widest text-slate-300">Production File Strategy</h3>
                     <RadioGroup
                       value={combinedRunFileStrategy}
@@ -3953,7 +4001,7 @@ export default function PrepressProductionPageV2() {
                       className="bg-violet-600 text-white hover:bg-violet-700 disabled:bg-slate-700 disabled:text-slate-500"
                     >
                       {createCombinedRunMutation.isPending ? <Loader2 className="mr-2 h-4 w-4 animate-spin" /> : null}
-                      Create Combined Run
+                      {combinedRunFileStrategy === "manual_upload_after_create" ? "Create Run & Upload Nested File" : "Create Combined Run"}
                     </Button>
                   )}
                 </div>
@@ -5161,7 +5209,11 @@ export default function PrepressProductionPageV2() {
                   This run still needs Prepress attention. Upload or replace the shared nested production file and review any planning warnings before release.
                 </div>
               ) : null}
-              <ProductionRunPanel run={selectedCombinedRun} />
+              <ProductionRunPanel
+                run={selectedCombinedRun}
+                focusNestedFileUpload={focusNestedFileUpload}
+                onNestedFileUploadFocused={() => setFocusNestedFileUpload(false)}
+              />
             </div>
           ) : productionRunsQuery.isLoading || productionRunsQuery.isFetching ? (
             <div className="flex items-center gap-2 rounded-lg border border-[#2d3748] px-3 py-6 text-sm text-slate-300">

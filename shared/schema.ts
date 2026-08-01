@@ -4705,6 +4705,7 @@ export const productionRuns = pgTable("production_runs", {
   runNumber: integer("run_number").notNull(),
   status: varchar("status", { length: 32 }).notNull().default("draft").$type<"draft" | "ready_for_production" | "in_production" | "partially_completed" | "completed" | "completed_with_exceptions" | "canceled">(),
   stationKey: varchar("station_key", { length: 40 }).notNull(),
+  productionFileStrategy: varchar("production_file_strategy", { length: 32 }).notNull().default("staff_prepared").$type<"rip_managed" | "staff_prepared">(),
   materialId: varchar("material_id").references(() => materials.id, { onDelete: "set null" }),
   materialSnapshot: jsonb("material_snapshot").$type<Record<string, unknown>>(),
   sheetWidth: decimal("sheet_width", { precision: 10, scale: 2 }),
