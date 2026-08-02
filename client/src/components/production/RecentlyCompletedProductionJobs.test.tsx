@@ -8,14 +8,18 @@ import { TextDecoder, TextEncoder } from "util";
 jest.mock("@/hooks/useProduction", () => ({
   useRecentlyCompletedProductionJobs: jest.fn(),
   useUndoCompleteProductionJob: jest.fn(),
+  useRecoverLegacyProductionCompletion: jest.fn(),
+  useReopenCompletedProductionRun: jest.fn(),
 }));
 
 const { MemoryRouter } = require("react-router-dom") as typeof import("react-router-dom");
 const { RecentlyCompletedProductionJobs } = require("./RecentlyCompletedProductionJobs") as typeof import("./RecentlyCompletedProductionJobs");
-const { useRecentlyCompletedProductionJobs, useUndoCompleteProductionJob } = require("@/hooks/useProduction") as typeof import("@/hooks/useProduction");
+const { useRecentlyCompletedProductionJobs, useUndoCompleteProductionJob, useRecoverLegacyProductionCompletion, useReopenCompletedProductionRun } = require("@/hooks/useProduction") as typeof import("@/hooks/useProduction");
 
 const completedQuery = useRecentlyCompletedProductionJobs as jest.MockedFunction<typeof useRecentlyCompletedProductionJobs>;
 const undoMutation = useUndoCompleteProductionJob as jest.MockedFunction<typeof useUndoCompleteProductionJob>;
+const legacyRecoveryMutation = useRecoverLegacyProductionCompletion as jest.MockedFunction<typeof useRecoverLegacyProductionCompletion>;
+const runRecoveryMutation = useReopenCompletedProductionRun as jest.MockedFunction<typeof useReopenCompletedProductionRun>;
 const { renderToStaticMarkup } = require("react-dom/server") as typeof import("react-dom/server");
 
 const completedJob = (overrides: Record<string, unknown> = {}) => ({
@@ -63,6 +67,8 @@ describe("RecentlyCompletedProductionJobs", () => {
   test("defaults to seven days and shows exact artwork identity with a missing-preview placeholder", () => {
     completedQuery.mockReturnValue({ data: [completedJob()], isLoading: false, error: null } as any);
     undoMutation.mockReturnValue({ mutate: jest.fn(), isPending: false } as any);
+    legacyRecoveryMutation.mockReturnValue({ mutate: jest.fn(), isPending: false } as any);
+    runRecoveryMutation.mockReturnValue({ mutate: jest.fn(), isPending: false } as any);
 
     const html = renderCompleted();
 
@@ -78,11 +84,23 @@ describe("RecentlyCompletedProductionJobs", () => {
   test("keeps completed records visible when Undo is unavailable", () => {
     completedQuery.mockReturnValue({ data: [completedJob({ undoAllowed: false, undoUnavailableReason: "Undo is no longer available for this completed job." })], isLoading: false, error: null } as any);
     undoMutation.mockReturnValue({ mutate: jest.fn(), isPending: false } as any);
+    legacyRecoveryMutation.mockReturnValue({ mutate: jest.fn(), isPending: false } as any);
+    runRecoveryMutation.mockReturnValue({ mutate: jest.fn(), isPending: false } as any);
 
     const html = renderCompleted();
 
-    expect(html).toContain("Undo unavailable");
+    expect(html).toContain("Recovery unavailable");
     expect(html).toContain("Undo is no longer available for this completed job.");
     expect(html).toContain("design-b.pdf");
+  });
+
+  test("replaces a dead Undo control with the appropriate legacy recovery action", () => {
+    completedQuery.mockReturnValue({ data: [completedJob({ undoAllowed: false, productionRunId: "run-1", productionRunDisplayNumber: "PR-0001", productionRunStatus: "completed", legacyRecoveryAction: "reopen_combined_run" })], isLoading: false, error: null } as any);
+    undoMutation.mockReturnValue({ mutate: jest.fn(), isPending: false } as any);
+    legacyRecoveryMutation.mockReturnValue({ mutate: jest.fn(), isPending: false } as any);
+    runRecoveryMutation.mockReturnValue({ mutate: jest.fn(), isPending: false } as any);
+    const html = renderCompleted();
+    expect(html).toContain("Part of Combined Run PR-0001");
+    expect(html).toContain("Reopen Combined Run");
   });
 });

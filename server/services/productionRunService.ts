@@ -1,6 +1,6 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, customers, lineItemFiles, localFileCopyJobs, orderLineItems, orders, prepressSessions, productionEvents, productionJobs, productionRunMembers, productionRuns, productionStationSteps, users } from "@shared/schema";
+import { auditLogs, customers, lineItemFiles, localFileCopyJobs, orderLineItems, orders, prepressSessions, productionEvents, productionJobs, productionRunMembers, productionRuns, productionStationSteps, reprintRequests, users } from "@shared/schema";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 import { findActiveJobForLineItem, isPrepressOwnershipJob, resolveActiveProductionOwners } from "./productionOwnership";
 import { routeLineItemToProduction } from "./productionRoutingService";
@@ -1461,11 +1461,41 @@ export async function reopenCompletedProductionRun(input: {
       eq(productionJobs.organizationId, input.organizationId),
       inArray(productionJobs.id, memberJobIds),
     ));
-    if (memberJobs.length !== memberJobIds.length || memberJobs.some((job: any) => job.status !== "done" || !job.previousStatus)) {
-      throw new ProductionRunError("PRODUCTION_RUN_REOPEN_RECOVERY_UNAVAILABLE", "The member jobs no longer have safe completion recovery metadata.", 409);
+    if (memberJobs.length !== memberJobIds.length || memberJobs.some((job: any) => job.status !== "done")) {
+      throw new ProductionRunError("PRODUCTION_RUN_REOPEN_RECOVERY_UNAVAILABLE", "Every member must still be a completed production job before this run can be reopened.", 409);
+    }
+
+    const legacyRecovery = memberJobs.some((job: any) => !job.previousStatus);
+    const activeReprint = await tx.select({ id: reprintRequests.id, lineItemId: reprintRequests.lineItemId }).from(reprintRequests).where(and(
+      eq(reprintRequests.organizationId, input.organizationId),
+      inArray(reprintRequests.lineItemId, Array.from(new Set(members.map((member: any) => member.orderLineItemId)))),
+      inArray(reprintRequests.status, ["open", "acknowledged"]),
+    )).limit(1);
+    if (activeReprint[0]) {
+      throw new ProductionRunError("PRODUCTION_RUN_REOPEN_ACTIVE_REPRINT", "This completed run cannot be reopened while an active reprint request exists for one of its members.", 409, { reprintRequestId: activeReprint[0].id, lineItemId: activeReprint[0].lineItemId });
+    }
+
+    const activeRunConflict = await tx.select({ runId: productionRunMembers.productionRunId }).from(productionRunMembers)
+      .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+      .where(and(
+        eq(productionRunMembers.organizationId, input.organizationId),
+        inArray(productionRunMembers.orderLineItemId, Array.from(new Set(members.map((member: any) => member.orderLineItemId)))),
+        inArray(productionRuns.status, [...ACTIVE_PRODUCTION_RUN_STATUSES]),
+        sql`${productionRuns.id} <> ${run.id}`,
+      )).limit(1);
+    if (activeRunConflict[0]) {
+      throw new ProductionRunError("PRODUCTION_RUN_REOPEN_ACTIVE_RUN_CONFLICT", "This completed run cannot be reopened because a member is owned by another active combined run.", 409, { conflictingRunId: activeRunConflict[0].runId });
     }
 
     const lineItemIds = Array.from(new Set(members.map((member: any) => member.orderLineItemId)));
+    const [irreversibleOrder] = await tx.select({ id: orders.id, fulfillmentStatus: orders.fulfillmentStatus }).from(orders).where(and(
+      eq(orders.organizationId, input.organizationId),
+      inArray(orders.id, Array.from(new Set(memberJobs.map((job: any) => job.orderId).filter(Boolean)))),
+      inArray(orders.fulfillmentStatus as any, ["shipped", "delivered"]),
+    )).limit(1);
+    if (irreversibleOrder) {
+      throw new ProductionRunError("PRODUCTION_RUN_REOPEN_FULFILLMENT_IRREVERSIBLE", "This run cannot be reopened because an affected order has already been shipped or delivered.", 409, { orderId: irreversibleOrder.id, fulfillmentStatus: irreversibleOrder.fulfillmentStatus });
+    }
     const fulfillmentJobs = await tx.select({ id: productionJobs.id, status: productionJobs.status, lineItemId: productionJobs.lineItemId }).from(productionJobs).where(and(
       eq(productionJobs.organizationId, input.organizationId),
       inArray(productionJobs.lineItemId, lineItemIds),
@@ -1479,7 +1509,7 @@ export async function reopenCompletedProductionRun(input: {
       sql`${productionEvents.payload}->>'productionRunId' = ${run.id}`,
     )) : [];
     const fulfillmentIdsToCancel = new Set(createdByRunRows.map((row) => row.productionJobId));
-    const unsafeFulfillment = fulfillmentJobs.filter((job) => fulfillmentIdsToCancel.has(job.id) && !["queued", "paused"].includes(String(job.status)));
+    const unsafeFulfillment = fulfillmentJobs.filter((job) => !["queued", "paused", "canceled", "cancelled"].includes(String(job.status)));
     if (unsafeFulfillment.length) {
       throw new ProductionRunError("PRODUCTION_RUN_REOPEN_FULFILLMENT_STARTED", "This run cannot be reopened because a fulfillment successor has already started or completed.", 409, { fulfillmentJobIds: unsafeFulfillment.map((job) => job.id) });
     }
@@ -1494,7 +1524,7 @@ export async function reopenCompletedProductionRun(input: {
     for (const job of memberJobs) {
       await tx.update(productionJobs).set({
         status: String(job.previousStatus || "in_progress"),
-        stationKey: String(job.previousStation || job.stationKey),
+        stationKey: String(job.previousStation || job.stationKey || run.stationKey),
         completedAt: null,
         completedByUserId: null,
         restoreUntil: null,
@@ -1536,9 +1566,9 @@ export async function reopenCompletedProductionRun(input: {
       entityName: `PR-${String(run.runNumber).padStart(4, "0")}`,
       description: "Completed production run reopened by administrator",
       oldValues: { status: run.status, completedAt: run.completedAt },
-      newValues: { status: "in_production", reason, canceledFulfillmentJobIds: Array.from(fulfillmentIdsToCancel), restoredMemberJobIds: memberJobIds },
+      newValues: { status: "in_production", reason, legacyRecovery, canceledFulfillmentJobIds: Array.from(fulfillmentIdsToCancel), restoredMemberJobIds: memberJobIds },
     } as any);
-    return { ...updatedRun, restoredMemberJobIds: memberJobIds, canceledFulfillmentJobIds: Array.from(fulfillmentIdsToCancel) };
+    return { ...updatedRun, legacyRecovery, restoredMemberJobIds: memberJobIds, canceledFulfillmentJobIds: Array.from(fulfillmentIdsToCancel), duplicateSessionCheck: "no_active_member_owner_before_restore" };
   });
 }
 

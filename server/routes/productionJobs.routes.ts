@@ -2094,6 +2094,21 @@ export function registerProductionJobsRoutes(
       const lineItemIds = Array.from(new Set(rows
         .map((row) => row.lineItemId)
         .filter((id): id is string => typeof id === "string" && id.trim().length > 0)));
+      const completedJobIds = rows.map((row) => row.id);
+      const completedRunMembers = completedJobIds.length > 0
+        ? await db.select({
+            productionJobId: productionRunMembers.productionJobId,
+            runId: productionRuns.id,
+            runNumber: productionRuns.runNumber,
+            runStatus: productionRuns.status,
+          }).from(productionRunMembers)
+            .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+            .where(and(
+              eq(productionRunMembers.organizationId, organizationId),
+              inArray(productionRunMembers.productionJobId, completedJobIds),
+            ))
+        : [];
+      const completedRunByJobId = new Map(completedRunMembers.map((member) => [member.productionJobId, member]));
       const materialIds = Array.from(new Set(rows
         .map((row) => row.lineItemMaterialId)
         .filter((id): id is string => typeof id === "string" && id.trim().length > 0)));
@@ -2224,6 +2239,7 @@ export function registerProductionJobsRoutes(
       const productNameById = new Map(productRows.map((row) => [row.id, row.name]));
 
       const completed = rows.map((row) => {
+          const combinedRun = completedRunByJobId.get(row.id) ?? null;
           const candidates = row.lineItemId ? artworkByLineItem.get(row.lineItemId) ?? [] : [];
           const finalIds = row.lineItemId ? finalFileRecordIdsByLineItem.get(row.lineItemId) : null;
           const productionArtwork = finalIds && finalIds.size > 0
@@ -2284,6 +2300,16 @@ export function registerProductionJobsRoutes(
             restoreUntil: toIso(row.restoreUntil),
             restoredAt: toIso(row.restoredAt),
             restoreReason: row.restoreReason ?? null,
+            productionRunId: combinedRun?.runId ?? null,
+            productionRunDisplayNumber: combinedRun ? `PR-${String(combinedRun.runNumber).padStart(4, "0")}` : null,
+            productionRunStatus: combinedRun?.runStatus ?? null,
+            legacyRecoveryAction: !undoAllowed
+              ? combinedRun?.runStatus === "completed"
+                ? "reopen_combined_run"
+                : !combinedRun
+                  ? "reopen_production"
+                  : "unavailable"
+              : null,
             undoAllowed,
             undoUnavailableReason: undoAllowed
               ? null
@@ -3941,6 +3967,48 @@ export function registerProductionJobsRoutes(
         data: null,
         message: error?.message || "Failed to undo production completion",
       });
+    }
+  });
+
+  app.post("/api/production/jobs/:jobId/recover-legacy-completion", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      if (!isAdminOrOwner(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      const userId = getUserId(req.user);
+      if (!organizationId || !userId) return res.status(401).json({ success: false, message: "User is not authenticated" });
+      const parsed = z.object({ reason: z.string().trim().min(1).max(2000) }).safeParse(req.body ?? {});
+      if (!parsed.success) return res.status(400).json({ success: false, message: fromZodError(parsed.error).message });
+      const jobId = String(req.params.jobId || "");
+      const result = await db.transaction(async (tx) => {
+        const [job] = await tx.select({ job: productionJobs, order: orders }).from(productionJobs)
+          .innerJoin(orders, eq(orders.id, productionJobs.orderId))
+          .where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId))).limit(1);
+        if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
+        if (job.job.status !== "done" || !job.job.completedAt) throw Object.assign(new Error("Only completed production jobs can use legacy recovery"), { statusCode: 409 });
+        const [runMember] = await tx.select({ runId: productionRuns.id, runNumber: productionRuns.runNumber }).from(productionRunMembers)
+          .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+          .where(and(eq(productionRunMembers.organizationId, organizationId), eq(productionRunMembers.productionJobId, jobId))).limit(1);
+        if (runMember) throw Object.assign(new Error(`Job belongs to Combined Run PR-${String(runMember.runNumber).padStart(4, "0")}; recover the complete run instead.`), { statusCode: 409, code: "COMBINED_RUN_RECOVERY_REQUIRED", runId: runMember.runId });
+        if (["shipped", "delivered"].includes(String(job.order.fulfillmentStatus ?? "").toLowerCase())) throw Object.assign(new Error("Recovery is blocked because fulfillment has already been shipped or delivered."), { statusCode: 409 });
+        if (job.job.lineItemId) {
+          const [activeReprint] = await tx.select({ id: reprintRequests.id }).from(reprintRequests).where(and(eq(reprintRequests.organizationId, organizationId), eq(reprintRequests.lineItemId, job.job.lineItemId), inArray(reprintRequests.status, ["open", "acknowledged"]))).limit(1);
+          if (activeReprint) throw Object.assign(new Error("Recovery is blocked by an active reprint request."), { statusCode: 409 });
+          const [activeOwner] = await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.lineItemId, job.job.lineItemId), sql`${productionJobs.id} <> ${jobId}`, sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`)).limit(1);
+          if (activeOwner) throw Object.assign(new Error("Recovery is blocked because another active production workflow owns this line."), { statusCode: 409 });
+        }
+        const now = new Date();
+        const restoredStatus = String(job.job.previousStatus || "in_progress");
+        const restoredStation = String(job.job.previousStation || job.job.stationKey);
+        await tx.update(productionJobs).set({ status: restoredStatus, stationKey: restoredStation, completedAt: null, completedByUserId: null, restoreUntil: null, restoredAt: now, restoredByUserId: userId, restoreReason: parsed.data.reason, updatedAt: now }).where(and(eq(productionJobs.organizationId, organizationId), eq(productionJobs.id, jobId)));
+        await restoreOrderProductionStateAfterUndo(tx, { organizationId, orderId: job.job.orderId, actorUserId: userId, productionJobId: jobId });
+        await appendEvent({ tx, organizationId, productionJobId: jobId, type: "note", actorUserId: userId, payload: { eventType: "legacy_production_completion_recovered", reason: parsed.data.reason, restoredStatus, restoredStation } });
+        await tx.insert(auditLogs).values({ organizationId, userId, userName: req.user?.email || req.user?.name || null, actionType: "UPDATE", entityType: "production_job", entityId: jobId, entityName: jobId, description: "Legacy production completion recovered", oldValues: { status: job.job.status, completedAt: toIso(job.job.completedAt) }, newValues: { status: restoredStatus, stationKey: restoredStation, reason: parsed.data.reason }, ipAddress: req.ip || null, userAgent: req.headers["user-agent"] || null } as any);
+        return { restoredJobId: jobId, restoredStatus, restoredStation, duplicateSessionCheck: "no_active_line_owner_before_restore" };
+      });
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      return res.status(error?.statusCode || 500).json({ success: false, code: error?.code || "LEGACY_RECOVERY_FAILED", message: error?.message || "Unable to recover legacy production completion" });
     }
   });
 

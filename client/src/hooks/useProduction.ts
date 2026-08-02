@@ -425,6 +425,10 @@ export type RecentlyCompletedProductionJob = {
   restoreUntil: string | null;
   restoredAt: string | null;
   restoreReason: string | null;
+  productionRunId?: string | null;
+  productionRunDisplayNumber?: string | null;
+  productionRunStatus?: string | null;
+  legacyRecoveryAction?: "reopen_combined_run" | "reopen_production" | "unavailable" | null;
   undoAllowed: boolean;
   undoUnavailableReason: string | null;
 };
@@ -825,6 +829,28 @@ export function useReopenCompletedProductionRun() {
       toast({ title: "Completed run reopened", description: "Member jobs were restored to their pre-completion production state." });
     },
     onError: (error: Error) => toast({ title: "Run recovery failed", description: error.message, variant: "destructive" }),
+  });
+}
+
+export function useRecoverLegacyProductionCompletion() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { jobId: string; reason: string }) => {
+      const res = await fetch(`/api/production/jobs/${args.jobId}/recover-legacy-completion`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ reason: args.reason }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Unable to recover legacy production completion");
+      return json.data;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      qc.invalidateQueries({ queryKey: ["/api/fulfillment"] });
+      toast({ title: "Legacy production completion reopened" });
+    },
+    onError: (error: Error) => toast({ title: "Legacy recovery failed", description: error.message, variant: "destructive" }),
   });
 }
 

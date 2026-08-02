@@ -21,6 +21,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { ROUTES } from "@/config/routes";
 import {
   RecentlyCompletedProductionJob,
+  useRecoverLegacyProductionCompletion,
+  useReopenCompletedProductionRun,
   useRecentlyCompletedProductionJobs,
   useUndoCompleteProductionJob,
 } from "@/hooks/useProduction";
@@ -132,9 +134,11 @@ function CompletedArtworkDetails({ job }: { job: RecentlyCompletedProductionJob 
 function RecentlyCompletedRow({
   job,
   onUndo,
+  onRecover,
 }: {
   job: RecentlyCompletedProductionJob;
   onUndo: (job: RecentlyCompletedProductionJob) => void;
+  onRecover: (job: RecentlyCompletedProductionJob) => void;
 }) {
   const lineIdentity = [
     job.lineItemSequence ? `Item ${job.lineItemSequence}` : null,
@@ -148,7 +152,7 @@ function RecentlyCompletedRow({
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-semibold text-titan-text-primary">{job.customerName}</span>
             <Badge variant="outline" className="text-[10px] uppercase tracking-wide">{job.orderNumber}</Badge>
-            <Badge variant={job.undoAllowed ? "secondary" : "outline"} className="text-[10px] uppercase tracking-wide">{job.undoAllowed ? "Undo available" : "Undo unavailable"}</Badge>
+            <Badge variant={job.undoAllowed || job.legacyRecoveryAction ? "secondary" : "outline"} className="text-[10px] uppercase tracking-wide">{job.undoAllowed ? "Undo available" : job.legacyRecoveryAction === "reopen_combined_run" ? "Run recovery available" : job.legacyRecoveryAction === "reopen_production" ? "Recovery available" : "Recovery unavailable"}</Badge>
           </div>
           <div className="mt-1 text-sm font-medium text-titan-text-primary">{job.itemName}</div>
           {lineIdentity ? <div className="mt-0.5 text-xs text-titan-text-muted">{lineIdentity}</div> : null}
@@ -158,14 +162,15 @@ function RecentlyCompletedRow({
           <div className="mt-3 text-xs text-titan-text-muted">
             {job.stationLabel} completed {formatCompletedAt(job.completedAt)}{job.completedBy ? ` by ${job.completedBy}` : ""}
           </div>
-          <div className="mt-1 text-xs text-titan-text-muted">Undo restores this exact job to {job.restoreStatusLabel}.</div>
-          {!job.undoAllowed ? <div className="mt-1 text-xs text-titan-text-muted">{job.undoUnavailableReason || "Undo is not available."}</div> : null}
+          <div className="mt-1 text-xs text-titan-text-muted">{job.undoAllowed ? `Undo restores this exact job to ${job.restoreStatusLabel}.` : job.productionRunDisplayNumber ? `Part of Combined Run ${job.productionRunDisplayNumber}. Recovery is performed for the full run.` : "Legacy recovery restores this standalone job only after server-side safety checks."}</div>
+          {!job.undoAllowed && !job.legacyRecoveryAction ? <div className="mt-1 text-xs text-titan-text-muted">{job.undoUnavailableReason || "Recovery is not available."}</div> : null}
         </div>
         <div className="flex shrink-0 items-start gap-2">
           <Button asChild type="button" size="sm" variant="ghost"><Link to={ROUTES.orders.detail(job.orderId)}>View Order</Link></Button>
-          <Button type="button" size="sm" variant="outline" disabled={!job.undoAllowed} onClick={() => onUndo(job)}>
-            <Undo2 className="h-4 w-4" /> Undo
-          </Button>
+          {job.undoAllowed ? <Button type="button" size="sm" variant="outline" onClick={() => onUndo(job)}><Undo2 className="h-4 w-4" /> Undo</Button> : null}
+          {job.legacyRecoveryAction === "reopen_combined_run" ? <Button type="button" size="sm" variant="outline" onClick={() => onRecover(job)}>Reopen Combined Run</Button> : null}
+          {job.legacyRecoveryAction === "reopen_production" ? <Button type="button" size="sm" variant="outline" onClick={() => onRecover(job)}>Reopen Production</Button> : null}
+          {!job.undoAllowed && !job.legacyRecoveryAction ? <Button type="button" size="sm" variant="outline" disabled>Recovery unavailable</Button> : null}
         </div>
       </div>
     </div>
@@ -179,11 +184,21 @@ export function RecentlyCompletedProductionJobs({ station }: { station: string }
   const [selectedJob, setSelectedJob] = useState<RecentlyCompletedProductionJob | null>(null);
   const [reason, setReason] = useState("");
   const undo = useUndoCompleteProductionJob(selectedJob?.id ?? "");
+  const recoverLegacyJob = useRecoverLegacyProductionCompletion();
+  const recoverRun = useReopenCompletedProductionRun();
   const rows = useMemo(() => query.data ?? [], [query.data]);
 
   const handleUndo = () => {
     if (!selectedJob) return;
     undo.mutate({ reason: reason.trim() || null }, { onSuccess: () => { setSelectedJob(null); setReason(""); } });
+  };
+  const handleRecovery = () => {
+    if (!selectedJob || !reason.trim()) return;
+    if (selectedJob.legacyRecoveryAction === "reopen_combined_run" && selectedJob.productionRunId) {
+      recoverRun.mutate({ runId: selectedJob.productionRunId, reason: reason.trim() }, { onSuccess: () => { setSelectedJob(null); setReason(""); } });
+      return;
+    }
+    recoverLegacyJob.mutate({ jobId: selectedJob.id, reason: reason.trim() }, { onSuccess: () => { setSelectedJob(null); setReason(""); } });
   };
 
   return (
@@ -200,20 +215,20 @@ export function RecentlyCompletedProductionJobs({ station }: { station: string }
           </div>
         </CardHeader>
         <CardContent className="p-0">
-          {query.isLoading ? <div className="px-3 py-4 text-sm text-titan-text-muted">Loading completed jobs...</div> : query.error ? <div className="px-3 py-4 text-sm text-red-400">Failed to load completed jobs.</div> : rows.length === 0 ? <div className="px-3 py-4 text-sm text-titan-text-muted">No completed jobs in the selected range.</div> : rows.map((job) => <RecentlyCompletedRow key={job.id} job={job} onUndo={setSelectedJob} />)}
+          {query.isLoading ? <div className="px-3 py-4 text-sm text-titan-text-muted">Loading completed jobs...</div> : query.error ? <div className="px-3 py-4 text-sm text-red-400">Failed to load completed jobs.</div> : rows.length === 0 ? <div className="px-3 py-4 text-sm text-titan-text-muted">No completed jobs in the selected range.</div> : rows.map((job) => <RecentlyCompletedRow key={job.id} job={job} onUndo={setSelectedJob} onRecover={setSelectedJob} />)}
         </CardContent>
       </Card>
 
       <AlertDialog open={!!selectedJob} onOpenChange={(open) => !open && setSelectedJob(null)}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Undo this completed production job?</AlertDialogTitle>
+            <AlertDialogTitle>{selectedJob?.undoAllowed ? "Undo this completed production job?" : selectedJob?.legacyRecoveryAction === "reopen_combined_run" ? "Reopen completed Combined Run?" : "Reopen legacy production completion?"}</AlertDialogTitle>
             <AlertDialogDescription>This restores only the selected job: {selectedJob?.customerName} • {selectedJob?.orderNumber} • {selectedJob?.itemName} • {selectedJob?.artwork.map((file) => file.fileName).join(", ") || "no artwork assigned"}. Completed {formatCompletedAt(selectedJob?.completedAt)}; restore destination: {selectedJob?.restoreStatusLabel}.</AlertDialogDescription>
           </AlertDialogHeader>
-          <Textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder="Reason (optional)" className="min-h-20" />
+          <Textarea value={reason} onChange={(event) => setReason(event.target.value)} placeholder={selectedJob?.undoAllowed ? "Reason (optional)" : "Recovery reason (required)"} className="min-h-20" />
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={undo.isPending}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={(event) => { event.preventDefault(); handleUndo(); }} disabled={undo.isPending || !selectedJob?.undoAllowed}>Undo Complete</AlertDialogAction>
+            <AlertDialogCancel disabled={undo.isPending || recoverLegacyJob.isPending || recoverRun.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(event) => { event.preventDefault(); selectedJob?.undoAllowed ? handleUndo() : handleRecovery(); }} disabled={undo.isPending || recoverLegacyJob.isPending || recoverRun.isPending || (!selectedJob?.undoAllowed && !reason.trim())}>{selectedJob?.undoAllowed ? "Undo Complete" : "Reopen Production"}</AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
       </AlertDialog>
