@@ -11,6 +11,7 @@ import {
   ProductionRunError,
   recordProductionRunOutcome,
   reconcileCanceledProductionRun,
+  returnProductionRunToPrepress,
   repairCompletedProductionRunFulfillmentHandoff,
   reopenCompletedProductionRun,
   replaceProductionRunFile,
@@ -69,7 +70,8 @@ const createSchema = z.object({
 const createPrepressSchema = createSchema.extend({
   members: z.array(z.object({ lineItemId: z.string().min(1), allocatedQuantity: z.number().int().positive().optional() })).min(1),
 });
-const transitionSchema = z.object({ action: z.enum(["release", "start", "complete", "cancel"]), reason: z.string().max(2000).nullable().optional() });
+const transitionSchema = z.object({ action: z.enum(["release", "start", "pause", "complete", "cancel"]), reason: z.string().max(2000).nullable().optional() });
+const returnToPrepressSchema = z.object({ reason: z.enum(["Nesting requires revision", "Artwork correction", "Incorrect production setup", "Run reopened by mistake", "Machine/setup issue", "Other"]).or(z.string().trim().min(1).max(2000)) });
 const outcomeSchema = z.object({
   idempotencyKey: z.string().max(160).nullable().optional(),
   members: z.array(z.object({
@@ -260,6 +262,17 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
       return res.json({ success: true, data: await reconcileCanceledProductionRun({ organizationId, actorUserId, runId: req.params.runId }) });
     } catch (error) {
       return handleProductionRunError(res, error, "PRODUCTION_RUN_RECONCILE_FAILED", "Unable to reconcile the canceled production run.");
+    }
+  });
+  app.post("/api/production/runs/:runId/return-to-prepress", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const body = returnToPrepressSchema.parse(req.body ?? {});
+      return res.json({ success: true, data: await returnProductionRunToPrepress({ organizationId, actorUserId, runId: req.params.runId, reason: body.reason }) });
+    } catch (error) {
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_RETURN_FAILED", "Unable to return the production run to Prepress.");
     }
   });
   app.post("/api/production/runs/:runId/reopen-completed", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {

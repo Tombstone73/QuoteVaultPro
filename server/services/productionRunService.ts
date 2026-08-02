@@ -16,7 +16,7 @@ import {
 } from "@shared/combinedRunSheetPlan";
 import { resolveProductionSides } from "@shared/productionHydration";
 import { buildArtworkAllocationStatus, summarizeArtworkAllocationIssue } from "@shared/artworkAllocation";
-import { ACTIVE_PRODUCTION_RUN_STATUSES, isUnfinishedProductionRunMember } from "@shared/productionRunLifecycle";
+import { ACTIVE_PRODUCTION_RUN_STATUSES, isUnfinishedProductionRunMember, resolveCanonicalReopenedRunState } from "@shared/productionRunLifecycle";
 import type { Response } from "express";
 
 type MemberInput = { productionJobId: string; allocatedQuantity?: number };
@@ -232,6 +232,9 @@ export type ProductionRunListItem = {
   totalAllocatedQuantity: number;
   fileCount: number;
   replacementRequired: boolean;
+  startedAt: Date | null;
+  lifecycleState: "ready" | "in_progress" | "paused" | "results_complete";
+  nextAction: string;
   files: ProductionRunFileSummary[];
   members: Array<{
     id: string;
@@ -257,6 +260,8 @@ export type ProductionRunListItem = {
     remainingAfterRun: number;
     currentWorkflowOwner: string | null;
     currentWorkflowStation: string | null;
+    jobStatus: string;
+    jobStartedAt: Date | null;
   }>;
   createdAt: Date;
   updatedAt: Date;
@@ -690,6 +695,8 @@ export async function listProductionRuns(input: {
   const memberRows = await db
     .select({
       member: productionRunMembers,
+      jobStatus: productionJobs.status,
+      jobStartedAt: productionJobs.startedAt,
       lineDescription: orderLineItems.description,
       lineQuantity: orderLineItems.quantity,
       lineSortOrder: orderLineItems.sortOrder,
@@ -703,6 +710,7 @@ export async function listProductionRuns(input: {
     })
     .from(productionRunMembers)
     .innerJoin(orderLineItems, eq(orderLineItems.id, productionRunMembers.orderLineItemId))
+    .innerJoin(productionJobs, and(eq(productionJobs.id, productionRunMembers.productionJobId), eq(productionJobs.organizationId, input.organizationId)))
     .innerJoin(orders, and(eq(orderLineItems.orderId, orders.id), eq(orders.organizationId, input.organizationId)))
     .leftJoin(customers, and(eq(orders.customerId, customers.id), eq(customers.organizationId, input.organizationId)))
     .where(and(eq(productionRunMembers.organizationId, input.organizationId), inArray(productionRunMembers.productionRunId, runIds)))
@@ -817,16 +825,53 @@ export async function listProductionRuns(input: {
       remainingAfterRun,
       currentWorkflowOwner: activeOwner ? (isPrepressOwnershipJob(activeOwner) ? "prepress" : activeOwner.stepKey || activeOwner.stationKey) : null,
       currentWorkflowStation: activeOwner?.stationKey ?? null,
+      jobStatus: String(row.jobStatus || ""),
+      jobStartedAt: row.jobStartedAt ?? null,
     });
     membersByRunId.set(row.member.productionRunId, list);
   }
 
+  const normalizedRunsById = new Map<string, typeof productionRuns.$inferSelect>();
+  for (const { run } of runRows) {
+    const canonical = resolveCanonicalReopenedRunState({
+      status: run.status,
+      startedAt: run.startedAt,
+      members: membersByRunId.get(run.id) ?? [],
+    });
+    if (canonical.normalized) {
+      const [normalizedRun] = await db.update(productionRuns).set({
+        status: canonical.status,
+        startedAt: canonical.startedAt as Date | null,
+        updatedAt: new Date(),
+      }).where(and(eq(productionRuns.organizationId, input.organizationId), eq(productionRuns.id, run.id))).returning();
+      normalizedRunsById.set(run.id, normalizedRun ?? run);
+      await db.insert(auditLogs).values({
+        organizationId: input.organizationId,
+        userId: null,
+        actionType: "UPDATE",
+        entityType: "production_run",
+        entityId: run.id,
+        entityName: `PR-${String(run.runNumber).padStart(4, "0")}`,
+        description: "Invalid production-run lifecycle state normalized from persisted member session state",
+        oldValues: { status: run.status, startedAt: run.startedAt },
+        newValues: { status: canonical.status, startedAt: canonical.startedAt },
+      } as any);
+    }
+  }
+
   return runRows
     .map(({ run, orderNumber, orderDisplayNumber, orderNumberCore, customerId, customerName }) => {
-      const boardStatus = toBoardStatus(run.status as RunStatus);
-      const members = membersByRunId.get(run.id) ?? [];
+      const canonicalRun = normalizedRunsById.get(run.id) ?? run;
+      const boardStatus = toBoardStatus(canonicalRun.status as RunStatus);
+      const members = membersByRunId.get(canonicalRun.id) ?? [];
       const files = filesByRunId.get(run.id) ?? [];
       const activeFileCount = files.filter((file) => file.status === "active").length;
+      const resultsReconciled = members.length > 0 && members.every((member) => member.remainingQuantity === 0 && member.successfulQuantity + member.damagedQuantity === member.allocatedQuantity);
+      const lifecycleState: ProductionRunListItem["lifecycleState"] = canonicalRun.status === "in_production"
+        ? (resultsReconciled ? "results_complete" : "in_progress")
+        : canonicalRun.status === "ready_for_production" && canonicalRun.startedAt
+          ? "paused"
+          : "ready";
       const memberOrderNumbers = Array.from(new Set(members.map((member) => member.orderNumber).filter(Boolean)));
       const memberCustomers = Array.from(new Set(members.map((member) => member.customerName).filter(Boolean)));
       const representativeOrderNumber = String(orderDisplayNumber ?? orderNumberCore ?? orderNumber ?? "");
@@ -840,30 +885,33 @@ export async function listProductionRuns(input: {
         orderNumber: representativeOrderNumber || (memberOrderNumbers.length === 1 ? memberOrderNumbers[0] : memberOrderNumbers.length > 1 ? "Multiple orders" : ""),
         customerId: customerId ?? null,
         customerName: customerName ?? (memberCustomers.length === 1 ? memberCustomers[0] : memberCustomers.length > 1 ? "Multiple customers" : "Unassigned customer"),
-        stationKey: run.stationKey,
-        productionFileStrategy: run.productionFileStrategy ?? "staff_prepared",
+        stationKey: canonicalRun.stationKey,
+        productionFileStrategy: canonicalRun.productionFileStrategy ?? "staff_prepared",
         status: boardStatus,
-        runStatus: run.status as RunStatus,
-        plannedSheetCount: run.plannedSheetCount ?? null,
-        nominalPiecesPerSheet: run.nominalPiecesPerSheet ?? null,
-        sheetWidth: run.sheetWidth ? String(run.sheetWidth) : null,
-        sheetHeight: run.sheetHeight ? String(run.sheetHeight) : null,
-        sheetPlanInputSnapshot: run.sheetPlanInputSnapshot ?? null,
-        calculatedSheetPlanSnapshot: run.calculatedSheetPlanSnapshot ?? null,
-        effectiveSheetPlanSnapshot: run.effectiveSheetPlanSnapshot ?? null,
-        sheetPlanOverrideReason: run.sheetPlanOverrideReason ?? null,
-        sheetPlanOverrideByUserId: run.sheetPlanOverrideByUserId ?? null,
-        sheetPlanOverrideAt: run.sheetPlanOverrideAt ?? null,
-        sheetPlanCalculatorVersion: run.sheetPlanCalculatorVersion ?? null,
-        notes: run.notes ?? null,
+        runStatus: canonicalRun.status as RunStatus,
+        startedAt: canonicalRun.startedAt ?? null,
+        lifecycleState,
+        nextAction: lifecycleState === "results_complete" ? "Complete run" : lifecycleState === "in_progress" ? "Record production results" : lifecycleState === "paused" ? "Resume run" : "Assign machine and start run",
+        plannedSheetCount: canonicalRun.plannedSheetCount ?? null,
+        nominalPiecesPerSheet: canonicalRun.nominalPiecesPerSheet ?? null,
+        sheetWidth: canonicalRun.sheetWidth ? String(canonicalRun.sheetWidth) : null,
+        sheetHeight: canonicalRun.sheetHeight ? String(canonicalRun.sheetHeight) : null,
+        sheetPlanInputSnapshot: canonicalRun.sheetPlanInputSnapshot ?? null,
+        calculatedSheetPlanSnapshot: canonicalRun.calculatedSheetPlanSnapshot ?? null,
+        effectiveSheetPlanSnapshot: canonicalRun.effectiveSheetPlanSnapshot ?? null,
+        sheetPlanOverrideReason: canonicalRun.sheetPlanOverrideReason ?? null,
+        sheetPlanOverrideByUserId: canonicalRun.sheetPlanOverrideByUserId ?? null,
+        sheetPlanOverrideAt: canonicalRun.sheetPlanOverrideAt ?? null,
+        sheetPlanCalculatorVersion: canonicalRun.sheetPlanCalculatorVersion ?? null,
+        notes: canonicalRun.notes ?? null,
         memberCount: members.length,
         totalAllocatedQuantity: members.reduce((sum, member) => sum + member.allocatedQuantity, 0),
         fileCount: activeFileCount,
-        replacementRequired: (run.productionFileStrategy ?? "staff_prepared") === "staff_prepared" && activeFileCount === 0,
+        replacementRequired: (canonicalRun.productionFileStrategy ?? "staff_prepared") === "staff_prepared" && activeFileCount === 0,
         files,
         members,
-        createdAt: run.createdAt,
-        updatedAt: run.updatedAt,
+        createdAt: canonicalRun.createdAt,
+        updatedAt: canonicalRun.updatedAt,
       };
     })
     .filter((run) => !input.status || run.status === input.status);
@@ -1521,10 +1569,16 @@ export async function reopenCompletedProductionRun(input: {
         inArray(productionJobs.id, Array.from(fulfillmentIdsToCancel)),
       ));
     }
+    const canonicalReopenState = resolveCanonicalReopenedRunState({
+      status: "in_production",
+      startedAt: run.startedAt,
+      members: memberJobs.map((job: any) => ({ jobStartedAt: job.startedAt, jobStatus: job.previousStatus || job.status })),
+    });
     for (const job of memberJobs) {
       await tx.update(productionJobs).set({
-        status: String(job.previousStatus || "in_progress"),
+        status: canonicalReopenState.status === "in_production" ? String(job.previousStatus || "in_progress") : "queued",
         stationKey: String(job.previousStation || job.stationKey || run.stationKey),
+        startedAt: canonicalReopenState.status === "in_production" ? (job.startedAt ?? run.startedAt ?? now) : null,
         completedAt: null,
         completedByUserId: null,
         restoreUntil: null,
@@ -1546,7 +1600,8 @@ export async function reopenCompletedProductionRun(input: {
       updatedAt: now,
     }).where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionRunId, run.id)));
     const [updatedRun] = await tx.update(productionRuns).set({
-      status: "in_production",
+      status: canonicalReopenState.status,
+      startedAt: canonicalReopenState.startedAt as Date | null,
       completedAt: null,
       updatedAt: now,
     }).where(and(eq(productionRuns.organizationId, input.organizationId), eq(productionRuns.id, run.id))).returning();
@@ -1566,7 +1621,7 @@ export async function reopenCompletedProductionRun(input: {
       entityName: `PR-${String(run.runNumber).padStart(4, "0")}`,
       description: "Completed production run reopened by administrator",
       oldValues: { status: run.status, completedAt: run.completedAt },
-      newValues: { status: "in_production", reason, legacyRecovery, canceledFulfillmentJobIds: Array.from(fulfillmentIdsToCancel), restoredMemberJobIds: memberJobIds },
+      newValues: { status: canonicalReopenState.status, startedAt: canonicalReopenState.startedAt, reason, legacyRecovery, canceledFulfillmentJobIds: Array.from(fulfillmentIdsToCancel), restoredMemberJobIds: memberJobIds },
     } as any);
     return { ...updatedRun, legacyRecovery, restoredMemberJobIds: memberJobIds, canceledFulfillmentJobIds: Array.from(fulfillmentIdsToCancel), duplicateSessionCheck: "no_active_member_owner_before_restore" };
   });
@@ -1909,7 +1964,89 @@ export async function reconcileCanceledProductionRun(input: { organizationId: st
   });
 }
 
-export async function transitionProductionRun(input: { organizationId: string; runId: string; actorUserId: string; action: "release" | "start" | "complete" | "cancel"; reason?: string | null }) {
+/** Return an entirely unproduced combined run to Prepress without deleting its
+ * file, sheet-plan, member, or audit history. This is intentionally separate
+ * from cancellation: a partially produced run must use recovery instead. */
+export async function returnProductionRunToPrepress(input: {
+  organizationId: string;
+  runId: string;
+  actorUserId: string;
+  reason: string;
+}) {
+  const reason = input.reason.trim();
+  if (!reason) throw new ProductionRunError("PRODUCTION_RUN_RETURN_REASON_REQUIRED", "Choose or enter a reason before returning the run to Prepress.", 400);
+  return db.transaction(async (tx) => {
+    const [run] = await tx.select().from(productionRuns).where(and(
+      eq(productionRuns.organizationId, input.organizationId), eq(productionRuns.id, input.runId),
+    )).limit(1);
+    if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
+    if (run.status === "canceled" && String(run.cancelReason || "").startsWith("Returned to Prepress:")) {
+      return { runId: run.id, alreadyReturned: true, restoredMemberJobIds: [], preservedProductionDestination: run.stationKey };
+    }
+    if (!activeStatuses.includes(run.status as RunStatus)) {
+      throw new ProductionRunError("PRODUCTION_RUN_NOT_RETURNABLE", "Only an unfinished production run can be returned to Prepress.", 409);
+    }
+    const rows = await tx.select({ member: productionRunMembers, line: orderLineItems }).from(productionRunMembers)
+      .innerJoin(orderLineItems, eq(orderLineItems.id, productionRunMembers.orderLineItemId))
+      .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionRunId, run.id)));
+    if (!rows.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "A production run must have members.", 409);
+    const progressed = rows.filter(({ member }: any) => {
+      const allocated = Number(member.allocatedQuantity) || 0;
+      return Number(member.successfulQuantity ?? member.completedQuantity) > 0
+        || Number(member.damagedQuantity) > 0
+        || Number(member.completedQuantity) > 0
+        || Number(member.remainingQuantity) !== allocated
+        || member.outcomeStatus !== "pending";
+    });
+    if (progressed.length) {
+      throw new ProductionRunError("PRODUCTION_RUN_RETURN_RECOVERY_REQUIRED", "A run with recorded production results must use the partial-recovery workflow instead of Return Run to Prepress.", 409, { memberIds: progressed.map(({ member }) => member.id) });
+    }
+    const orderIds = Array.from(new Set(rows.map(({ line }) => line.orderId)));
+    const [irreversibleOrder] = await tx.select({ id: orders.id, fulfillmentStatus: orders.fulfillmentStatus }).from(orders).where(and(
+      eq(orders.organizationId, input.organizationId), inArray(orders.id, orderIds), inArray(orders.fulfillmentStatus as any, ["shipped", "delivered"]),
+    )).limit(1);
+    if (irreversibleOrder) throw new ProductionRunError("PRODUCTION_RUN_RETURN_FULFILLMENT_CONFLICT", "A shipped or delivered order cannot be returned to Prepress.", 409, { orderId: irreversibleOrder.id });
+
+    const now = new Date();
+    const restoredMemberJobIds: string[] = [];
+    for (const { member, line } of rows as Array<any>) {
+      const owner = await findActiveJobForLineItem(tx, { organizationId: input.organizationId, lineItemId: member.orderLineItemId });
+      if (owner && isPrepressOwnershipJob(owner)) continue;
+      if (!owner || owner.id !== member.productionJobId) {
+        throw new ProductionRunError("PRODUCTION_RUN_RETURN_OWNER_CONFLICT", "A member has another active workflow owner and cannot be returned with this run.", 409, { lineItemId: member.orderLineItemId, activeOwnerJobId: owner?.id ?? null });
+      }
+      const transition = await transitionLineItemWorkflowState(tx, {
+        organizationId: input.organizationId,
+        lineItemId: member.orderLineItemId,
+        toState: "in_prepress",
+        actorUserId: input.actorUserId,
+        note: `Combined run PR-${String(run.runNumber).padStart(4, "0")} returned to Prepress: ${reason}`,
+        metadata: { source: "combined_run_return_to_prepress", productionRunId: run.id, productionRunMemberId: member.id, productionDestination: run.stationKey },
+      });
+      if (!transition.activeOwnerJobId || !isPrepressOwnershipJob({ stationKey: transition.activeOwnerStationKey, stepKey: transition.activeOwnerStepKey })) {
+        throw new ProductionRunError("PRODUCTION_RUN_RETURN_FAILED", "Could not restore the member to canonical Prepress ownership.", 409, { lineItemId: member.orderLineItemId });
+      }
+      const note = `[COMBINED RUN RETURNED TO PREPRESS]\nPR-${String(run.runNumber).padStart(4, "0")} · ${reason}`;
+      const [session] = await tx.select({ id: prepressSessions.id, notesText: prepressSessions.notesText }).from(prepressSessions).where(and(
+        eq(prepressSessions.organizationId, input.organizationId), eq(prepressSessions.lineItemId, member.orderLineItemId), eq(prepressSessions.status, "active"),
+      )).orderBy(desc(prepressSessions.updatedAt)).limit(1);
+      if (session) {
+        const existing = String(session.notesText || "").trim();
+        await tx.update(prepressSessions).set({ lockOwnerUserId: input.actorUserId, issueFlag: true, issueType: "combined_run_returned", notesText: existing.includes(note) ? existing : [existing, note].filter(Boolean).join("\n\n"), updatedAt: now }).where(eq(prepressSessions.id, session.id));
+      } else {
+        await tx.insert(prepressSessions).values({ organizationId: input.organizationId, orderId: line.orderId, lineItemId: member.orderLineItemId, status: "active", startedByUserId: input.actorUserId, lockOwnerUserId: input.actorUserId, issueFlag: true, issueType: "combined_run_returned", notesText: note });
+      }
+      restoredMemberJobIds.push(member.productionJobId);
+    }
+    const [updated] = await tx.update(productionRuns).set({ status: "canceled", canceledAt: now, canceledByUserId: input.actorUserId, cancelReason: `Returned to Prepress: ${reason}`, updatedAt: now }).where(and(
+      eq(productionRuns.organizationId, input.organizationId), eq(productionRuns.id, run.id),
+    )).returning();
+    await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "production_run", entityId: run.id, entityName: `PR-${String(run.runNumber).padStart(4, "0")}`, description: "Entire unproduced production run returned to Prepress", oldValues: { status: run.status, startedAt: run.startedAt }, newValues: { status: updated.status, reason, restoredMemberJobIds, preservedProductionDestination: run.stationKey } } as any);
+    return { runId: run.id, alreadyReturned: false, restoredMemberJobIds, preservedProductionDestination: run.stationKey, canceledAt: updated.canceledAt };
+  });
+}
+
+export async function transitionProductionRun(input: { organizationId: string; runId: string; actorUserId: string; action: "release" | "start" | "pause" | "complete" | "cancel"; reason?: string | null }) {
   return db.transaction(async (tx) => {
     const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).limit(1);
     if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
@@ -1917,12 +2054,21 @@ export async function transitionProductionRun(input: { organizationId: string; r
       return { ...run, restoredMemberCount: 0, restoredMemberJobIds: [], alreadyRestoredMemberCount: 0, alreadyRestoredMemberJobIds: [], returnedToExistingQueueMemberCount: 0, returnedToExistingQueueMemberJobIds: [], unresolvedMemberJobIds: [], reconciliationRequired: false, memberResults: [] };
     }
     if (input.action === "complete" && (run.status === "completed" || run.status === "completed_with_exceptions")) return run;
+    if (input.action === "start" && run.status === "in_production" && run.startedAt) return run;
     if (run.status === "completed" || run.status === "completed_with_exceptions" || run.status === "canceled") throw new ProductionRunError("PRODUCTION_RUN_TERMINAL", "Completed or canceled production runs cannot be changed.", 409);
-    if (input.action === "cancel" && (run.status === "in_production" || run.status === "partially_completed")) {
+    if (input.action === "cancel" && (run.status === "in_production" || run.status === "partially_completed" || run.startedAt)) {
       throw new ProductionRunError("PRODUCTION_RUN_CANCEL_RECOVERY_REQUIRED", "Started production runs must use the partial-recovery workflow; cancellation cannot reset completed or remaining quantities.", 409);
     }
     const now = new Date();
-    const next: Partial<typeof productionRuns.$inferInsert> = input.action === "release" ? { status: "ready_for_production", releasedAt: now } : input.action === "start" ? { status: "in_production", startedAt: now } : input.action === "cancel" ? { status: "canceled", canceledAt: now, canceledByUserId: input.actorUserId, cancelReason: input.reason?.trim() || null } : { status: "completed", completedAt: now };
+    const next: Partial<typeof productionRuns.$inferInsert> = input.action === "release"
+      ? { status: "ready_for_production", releasedAt: now }
+      : input.action === "start"
+        ? { status: "in_production", startedAt: run.startedAt ?? now }
+        : input.action === "pause"
+          ? { status: "ready_for_production" }
+          : input.action === "cancel"
+            ? { status: "canceled", canceledAt: now, canceledByUserId: input.actorUserId, cancelReason: input.reason?.trim() || null }
+            : { status: "completed", completedAt: now };
     if (input.action === "release") {
       if (run.status !== "draft") throw new ProductionRunError("PRODUCTION_RUN_NOT_RELEASABLE", "Only draft production runs can be released.", 409);
       const activeFileCount = await countActiveProductionRunFiles(tx, { organizationId: input.organizationId, runId: run.id });
@@ -1981,6 +2127,33 @@ export async function transitionProductionRun(input: { organizationId: string; r
         `Cancellation could not safely restore member jobs: ${reconciliation.unresolvedMemberJobIds.join(", ")}. No changes were applied.`,
         409,
       );
+    }
+    if (input.action === "start") {
+      if (run.status !== "ready_for_production") throw new ProductionRunError("PRODUCTION_RUN_NOT_STARTABLE", "Only a ready or paused production run can be started.", 409);
+      const members = await tx.select({ productionJobId: productionRunMembers.productionJobId }).from(productionRunMembers).where(and(
+        eq(productionRunMembers.organizationId, input.organizationId),
+        eq(productionRunMembers.productionRunId, run.id),
+      ));
+      if (!members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "A production run must have members.", 409);
+      const jobIds = members.map((member) => member.productionJobId);
+      const jobs = await tx.select({ id: productionJobs.id, assignedPrinterId: productionJobs.assignedPrinterId, assignedPrinterName: productionJobs.assignedPrinterName }).from(productionJobs).where(and(
+        eq(productionJobs.organizationId, input.organizationId), inArray(productionJobs.id, jobIds),
+      ));
+      if ((run.stationKey === "flatbed" || run.stationKey === "roll") && !jobs.some((job) => job.assignedPrinterId || job.assignedPrinterName)) {
+        throw new ProductionRunError("PRODUCTION_RUN_MACHINE_REQUIRED", "Assign a compatible machine before starting this production run.", 409);
+      }
+      await tx.update(productionJobs).set({ status: "in_progress", startedAt: run.startedAt ?? now, updatedAt: now }).where(and(
+        eq(productionJobs.organizationId, input.organizationId), inArray(productionJobs.id, jobIds),
+      ));
+    }
+    if (input.action === "pause") {
+      if (run.status !== "in_production" || !run.startedAt) throw new ProductionRunError("PRODUCTION_RUN_NOT_PAUSABLE", "Only a valid started production run can be paused.", 409);
+      const members = await tx.select({ productionJobId: productionRunMembers.productionJobId }).from(productionRunMembers).where(and(
+        eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionRunId, run.id),
+      ));
+      if (members.length) await tx.update(productionJobs).set({ status: "paused", updatedAt: now }).where(and(
+        eq(productionJobs.organizationId, input.organizationId), inArray(productionJobs.id, members.map((member) => member.productionJobId)),
+      ));
     }
     await tx.insert(auditLogs).values({
       organizationId: input.organizationId,

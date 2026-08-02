@@ -331,6 +331,9 @@ export type ProductionRunListItem = {
   productionFileStrategy: "rip_managed" | "staff_prepared";
   status: "queued" | "in_progress" | "done";
   runStatus: "draft" | "ready_for_production" | "in_production" | "partially_completed" | "completed" | "completed_with_exceptions" | "canceled";
+  startedAt: string | null;
+  lifecycleState: "ready" | "in_progress" | "paused" | "results_complete";
+  nextAction: string;
   plannedSheetCount: number | null;
   nominalPiecesPerSheet: number | null;
   sheetWidth: string | null;
@@ -773,7 +776,7 @@ export function useTransitionProductionRun() {
   const qc = useQueryClient();
   const { toast } = useToast();
   return useMutation({
-    mutationFn: async (args: { runId: string; action: "release" | "start" | "complete" | "cancel"; reason?: string | null }) => {
+    mutationFn: async (args: { runId: string; action: "release" | "start" | "pause" | "complete" | "cancel"; reason?: string | null }) => {
       const res = await fetch(`/api/production/runs/${args.runId}/transition`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -792,7 +795,7 @@ export function useTransitionProductionRun() {
       const restoredMemberCount = Number((data as any)?.restoredMemberCount) || 0;
       const unresolvedMemberJobIds = Array.isArray((data as any)?.unresolvedMemberJobIds) ? (data as any).unresolvedMemberJobIds : [];
       toast({
-        title: args.action === "cancel" ? "Combined Run canceled" : args.action === "complete" ? "Production run completed" : "Production run updated",
+        title: args.action === "cancel" ? "Combined Run canceled" : args.action === "pause" ? "Production run paused" : args.action === "complete" ? "Production run completed" : "Production run updated",
         description: args.action === "cancel"
           ? unresolvedMemberJobIds.length > 0
             ? `${restoredMemberCount} unfinished ${restoredMemberCount === 1 ? "job was" : "jobs were"} returned to Prepress. Recovery required for: ${unresolvedMemberJobIds.join(", ")}.`
@@ -803,6 +806,30 @@ export function useTransitionProductionRun() {
     onError: (e: Error) => {
       toast({ title: "Run update failed", description: e.message, variant: "destructive" });
     },
+  });
+}
+
+export function useReturnProductionRunToPrepress() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; reason: string }) => {
+      const res = await fetch(`/api/production/runs/${args.runId}/return-to-prepress`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Unable to return the run to Prepress");
+      return json.data as { restoredMemberJobIds: string[]; preservedProductionDestination: string; alreadyReturned: boolean };
+    },
+    onSuccess: (data) => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
+      toast({ title: "Run returned to Prepress", description: data.alreadyReturned ? "The run was already returned safely." : `${data.restoredMemberJobIds.length} member jobs were returned to Prepress.` });
+    },
+    onError: (error: Error) => toast({ title: "Return to Prepress failed", description: error.message, variant: "destructive" }),
   });
 }
 

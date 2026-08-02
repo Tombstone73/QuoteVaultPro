@@ -17,6 +17,7 @@ import {
   useRepairCompletedProductionRunFulfillmentHandoff,
   useReopenCompletedProductionRun,
   useRecordProductionRunOutcome,
+  useReturnProductionRunToPrepress,
   useProductionJob,
   useTransitionProductionRun,
   type CanceledProductionRunReconciliationResult,
@@ -53,15 +54,21 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const reconcileCanceledRun = useReconcileCanceledProductionRun();
   const reopenCompletedRun = useReopenCompletedProductionRun();
   const repairFulfillmentHandoff = useRepairCompletedProductionRunFulfillmentHandoff();
+  const returnRunToPrepress = useReturnProductionRunToPrepress();
   const action = runAction(run.runStatus);
-  const isActiveRun = run.runStatus === "in_production" || run.runStatus === "partially_completed";
+  const isStartedRun = (run.runStatus === "in_production" || run.runStatus === "partially_completed") && Boolean(run.startedAt);
+  const isPausedRun = run.runStatus === "ready_for_production" && Boolean(run.startedAt);
+  const isOperationalRun = run.runStatus === "ready_for_production" || run.runStatus === "in_production" || run.runStatus === "partially_completed";
+  const isActiveRun = isStartedRun;
   const leadMember = run.members[0] ?? null;
-  const { data: leadJob } = useProductionJob(isActiveRun ? leadMember?.productionJobId : undefined);
+  const { data: leadJob } = useProductionJob(leadMember?.productionJobId);
   const [recordingResults, setRecordingResults] = useState(isActiveRun);
   const resultsSectionRef = useRef<HTMLDivElement | null>(null);
   const [reconcileConfirmationOpen, setReconcileConfirmationOpen] = useState(false);
   const [reopenConfirmationOpen, setReopenConfirmationOpen] = useState(false);
   const [reopenReason, setReopenReason] = useState("");
+  const [returnConfirmationOpen, setReturnConfirmationOpen] = useState(false);
+  const [returnReason, setReturnReason] = useState("Nesting requires revision");
   const [reconciliationResult, setReconciliationResult] = useState<CanceledProductionRunReconciliationResult | null>(null);
   const initialDrafts = useMemo(() => Object.fromEntries(run.members.map((member) => [member.id, {
     successfulQuantity: member.successfulQuantity || member.completedQuantity || 0,
@@ -101,7 +108,9 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const totalDamaged = resultRows.reduce((sum, row) => sum + row.damagedQuantity, 0);
   const totalRemaining = resultRows.reduce((sum, row) => sum + Math.max(0, row.remainingQuantity), 0);
   const completedSheetEstimate = run.nominalPiecesPerSheet ? Math.floor((totalGood + totalDamaged) / Number(run.nominalPiecesPerSheet)) : null;
-  const completionBlockedReason = replacementRequired
+  const completionBlockedReason = !isStartedRun
+    ? "Start the run first."
+    : replacementRequired
     ? "A required nested production file is missing."
     : invalidResultRows.length
       ? "Correct invalid good or damaged quantities before completion."
@@ -109,6 +118,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         ? `Record results for ${unresolvedResultRows.length} member${unresolvedResultRows.length === 1 ? "" : "s"}.`
         : null;
   const isAdminOrOwner = Boolean(isAdmin || user?.isAdmin || user?.role === "admin" || user?.role === "owner");
+  const canReturnEntireRun = isAdminOrOwner && isOperationalRun && run.members.length > 0 && run.members.every((member) => member.successfulQuantity === 0 && member.completedQuantity === 0 && member.damagedQuantity === 0 && member.remainingQuantity === member.allocatedQuantity && member.outcomeStatus === "pending");
   const canReconcileCanceledRun = isAdminOrOwner
     && run.runStatus === "canceled"
     && unfinishedMembers.length > 0
@@ -186,10 +196,20 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
               disabled={transition.isPending || !!releaseBlockedReason}
               title={releaseBlockedReason ?? undefined}
             >
-              {action === "release" ? "Release" : action === "start" ? "Start" : "Complete"}
+              {action === "release" ? "Release" : action === "start" ? (isPausedRun ? "Resume Run" : "Start Run") : "Complete"}
             </Button>
           ) : null}
-          {run.runStatus === "draft" || run.runStatus === "ready_for_production" ? (
+          {isStartedRun ? (
+            <Button size="sm" variant="outline" onClick={() => transition.mutate({ runId: run.id, action: "pause" })} disabled={transition.isPending}>
+              Pause Run
+            </Button>
+          ) : null}
+          {canReturnEntireRun ? (
+            <Button size="sm" variant="outline" onClick={() => setReturnConfirmationOpen(true)} disabled={returnRunToPrepress.isPending}>
+              Return Run to Prepress
+            </Button>
+          ) : null}
+          {run.runStatus === "draft" || (run.runStatus === "ready_for_production" && !run.startedAt) ? (
             <Button
               size="sm"
               variant="outline"
@@ -224,6 +244,12 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           ) : null}
         </div>
       </div>
+      {isOperationalRun ? (
+        <div className="mt-3 rounded-md border border-violet-400/40 bg-violet-500/10 px-3 py-2 text-xs">
+          <div className="font-semibold">Current state: {run.lifecycleState === "in_progress" ? `${run.stationKey} in progress` : run.lifecycleState === "paused" ? `${run.stationKey} paused` : `Ready for ${run.stationKey}`}</div>
+          <div className="mt-1 text-titan-text-muted">Next: {run.nextAction}</div>
+        </div>
+      ) : null}
       <div className="mt-3 grid gap-2 text-xs sm:grid-cols-4">
         <div className="rounded border border-violet-400/40 bg-violet-500/10 px-2 py-1"><span className="block text-[10px] font-bold tracking-wide text-violet-200">SHEETS REQUIRED</span><span className="text-lg font-black text-white">{run.plannedSheetCount ?? "Not planned"}</span></div>
         <div>Sheets: <span className="font-semibold">{run.plannedSheetCount ?? "—"}</span></div>
@@ -231,10 +257,10 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         <div>Allocated: <span className="font-semibold">{run.totalAllocatedQuantity}</span></div>
         <div>Files: <span className="font-semibold">{activeFileCount}</span></div>
         <div>Target station: <span className="font-semibold">{run.stationKey}</span></div>
-        <div>Started: <span className="font-semibold">{leadJob?.startedAt ? new Date(leadJob.startedAt).toLocaleString() : "Not recorded"}</span></div>
+        <div>Started: <span className="font-semibold">{run.startedAt ? new Date(run.startedAt).toLocaleString() : "Not recorded"}</span></div>
         <div>Progress: <span className="font-semibold">{totalGood + totalDamaged} / {run.totalAllocatedQuantity} pieces</span></div>
       </div>
-      {isActiveRun ? (
+      {isOperationalRun ? (
         <div className="mt-3 grid gap-3 rounded-md border border-titan-border-subtle bg-black/10 p-3 md:grid-cols-2">
           <div>
             <div className="text-xs font-semibold">Machine assignment</div>
@@ -396,11 +422,13 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           <div className="rounded-md border border-titan-border-subtle p-3"><div className="mb-2 text-xs font-semibold">Production alerts</div><ProductionAlertsPanel alerts={(leadJob as any)?.productionAlerts ?? []} productionJobId={leadMember.productionJobId} compact empty={<div className="text-xs text-titan-text-muted">No active production alerts.</div>} /></div>
         </div>
       ) : null}
-      {isActiveRun ? (
+      {isOperationalRun ? (
         <div className="sticky bottom-3 z-10 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-violet-400/40 bg-slate-950/95 px-3 py-2 shadow-lg backdrop-blur">
           <div className="text-xs"><span className="font-semibold">{run.displayNumber}</span> · {resultsComplete ? "Results complete" : `${unresolvedResultRows.length} results unresolved`}</div>
           <div className="flex flex-wrap gap-2">
-            <Button size="sm" variant="outline" onClick={focusResults}>Record Results</Button>
+            {isStartedRun ? <Button size="sm" variant="outline" onClick={focusResults}>Record Results</Button> : null}
+            {isStartedRun ? <Button size="sm" variant="outline" onClick={() => transition.mutate({ runId: run.id, action: "pause" })} disabled={transition.isPending}>Pause Run</Button> : null}
+            {canReturnEntireRun ? <Button size="sm" variant="outline" onClick={() => setReturnConfirmationOpen(true)} disabled={returnRunToPrepress.isPending}>Return Run to Prepress</Button> : null}
             <Button size="sm" onClick={submitResults} disabled={recordOutcome.isPending || !!completionBlockedReason} title={completionBlockedReason ?? undefined}>Complete Run</Button>
           </div>
         </div>
@@ -430,6 +458,36 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           </div>
         </div>
       ) : null}
+      <AlertDialog open={returnConfirmationOpen} onOpenChange={setReturnConfirmationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Return {run.displayNumber} and all {run.memberCount} members to Prepress?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This preserves the nested production file and run history, ends the zero-progress production session, returns unfinished members to Prepress, and keeps {run.stationKey} as their future production destination.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="grid gap-1 text-sm">
+            <span className="font-medium">Reason</span>
+            <select value={returnReason} onChange={(event) => setReturnReason(event.target.value)} className="rounded border border-titan-border-subtle bg-titan-bg-card px-2 py-1">
+              <option>Nesting requires revision</option>
+              <option>Artwork correction</option>
+              <option>Incorrect production setup</option>
+              <option>Run reopened by mistake</option>
+              <option>Machine/setup issue</option>
+              <option>Other</option>
+            </select>
+          </label>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={returnRunToPrepress.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={returnRunToPrepress.isPending || !returnReason.trim()} onClick={(event) => {
+              event.preventDefault();
+              returnRunToPrepress.mutate({ runId: run.id, reason: returnReason.trim() }, { onSuccess: () => setReturnConfirmationOpen(false) });
+            }}>
+              {returnRunToPrepress.isPending ? "Returning…" : "Return Run to Prepress"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       <AlertDialog open={reconcileConfirmationOpen} onOpenChange={setReconcileConfirmationOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>

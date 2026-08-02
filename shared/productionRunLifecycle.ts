@@ -7,6 +7,42 @@ export const ACTIVE_PRODUCTION_RUN_STATUSES = [
 
 export type ActiveProductionRunStatus = (typeof ACTIVE_PRODUCTION_RUN_STATUSES)[number];
 
+type RunLifecycleMember = {
+  successfulQuantity?: number | null;
+  completedQuantity?: number | null;
+  damagedQuantity?: number | null;
+  remainingQuantity?: number | null;
+  allocatedQuantity?: number | null;
+  jobStartedAt?: Date | string | null;
+  jobStatus?: string | null;
+};
+
+/**
+ * A recovery must not claim that a physical run is in progress without both a
+ * persisted run start and an active started member job. Legacy recoveries can
+ * use an existing job start timestamp; otherwise they return to the existing
+ * ready state and require an explicit operator start.
+ */
+export function resolveCanonicalReopenedRunState(input: {
+  status: string;
+  startedAt?: Date | string | null;
+  members: RunLifecycleMember[];
+}): { status: "ready_for_production" | "in_production"; startedAt: Date | string | null; normalized: boolean } {
+  if (String(input.status).toLowerCase() !== "in_production") {
+    return { status: "ready_for_production", startedAt: input.startedAt ?? null, normalized: false };
+  }
+  const startedMember = input.members.find((member) =>
+    Boolean(member.jobStartedAt) && ["in_progress", "in_production"].includes(String(member.jobStatus || "").toLowerCase()),
+  );
+  if (input.startedAt && startedMember) {
+    return { status: "in_production", startedAt: input.startedAt, normalized: false };
+  }
+  if (startedMember?.jobStartedAt) {
+    return { status: "in_production", startedAt: startedMember.jobStartedAt, normalized: true };
+  }
+  return { status: "ready_for_production", startedAt: null, normalized: true };
+}
+
 export function isActiveProductionRunStatus(status: unknown): status is ActiveProductionRunStatus {
   return ACTIVE_PRODUCTION_RUN_STATUSES.includes(String(status || "").trim().toLowerCase() as ActiveProductionRunStatus);
 }

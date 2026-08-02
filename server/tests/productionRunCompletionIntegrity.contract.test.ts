@@ -8,8 +8,9 @@ describe("combined production run completion integrity", () => {
 
   test("requires a started run before automatic completion", () => {
     expect(service).toContain('if (run.status !== "in_production") throw new ProductionRunError("PRODUCTION_RUN_NOT_STARTED"');
-    expect(service).toContain('action === "release" ? { status: "ready_for_production"');
-    expect(service).toContain('action === "start" ? { status: "in_production"');
+    expect(service).toContain('input.action === "release"');
+    expect(service).toContain('input.action === "start"');
+    expect(service).toContain('status: "in_production", startedAt: run.startedAt ?? now');
   });
 
   test("routes fully completed members through the configured fulfillment route", () => {

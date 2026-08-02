@@ -23,7 +23,7 @@ export function productionRunToBoardItem(run: ProductionRunListItem): any {
     view: run.stationKey,
     stationKey: run.stationKey,
     stepKey: "production_run",
-    startedAt: null,
+    startedAt: run.startedAt,
     completedAt: null,
     totalSeconds: 0,
     timer: { isRunning: false, runningSince: null, currentSeconds: 0 },
