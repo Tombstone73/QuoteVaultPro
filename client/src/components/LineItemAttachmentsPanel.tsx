@@ -547,6 +547,17 @@ export function LineItemAttachmentsPanel({
         queryClient.invalidateQueries({ queryKey: [quoteScopedFilesApiPath] });
       }
 
+      // Invalidation marks the cache stale but does not guarantee that this
+      // mounted panel has rendered the permanent attachment before the upload
+      // spinner clears. Refetch the exact line query so a confirmed backend
+      // link always replaces the transient upload state without a page reload.
+      await Promise.all([
+        filesApiPath ? queryClient.refetchQueries({ queryKey: [filesApiPath], type: "active" }) : Promise.resolve(),
+        parentType === "order" && orderId
+          ? queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] })
+          : Promise.resolve(),
+      ]);
+
       if (successCount > 0) {
         toast({
           title: "Artwork Uploaded",
