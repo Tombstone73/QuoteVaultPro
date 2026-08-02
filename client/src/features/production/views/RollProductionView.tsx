@@ -1550,6 +1550,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   const sortedJobs = useMemo(() => {
     return [...jobsSafe];
   }, [jobsSafe]);
+  const queueJobs = useMemo(() => sortedJobs.filter((job) => !isProductionRunItem(job)), [sortedJobs]);
   const allBulkEligibleJobs = useMemo(
     () => tabJobs.filter((job) => !isProductionRunItem(job) && !!job.lineItemId && job.status === props.status && ["queued", "in_progress", "paused"].includes(job.status)),
     [props.status, tabJobs],
@@ -1816,14 +1817,14 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                 </TableRow>
               </TableHeader>
               <TableBody>
-                {sortedJobs.length === 0 ? (
+                {queueJobs.length === 0 ? (
                   <TableRow>
                     <TableCell colSpan={10} className="py-8 text-center text-sm text-titan-text-muted">
                       No jobs match this printer filter.
                     </TableCell>
                   </TableRow>
                 ) : null}
-                {sortedJobs.map((job) => {
+                {queueJobs.map((job) => {
                   const selected = job.id === selectedJobId;
                   const bulkEligible = bulkEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id);
                   const returnToPrepressEligible = returnToPrepressEligibleJobs.some((eligibleJob) => eligibleJob.id === job.id);

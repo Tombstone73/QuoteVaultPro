@@ -1938,6 +1938,23 @@ export async function transitionProductionRun(input: { organizationId: string; r
       }
       const members = await tx.select().from(productionRunMembers).where(and(eq(productionRunMembers.productionRunId, run.id), eq(productionRunMembers.organizationId, input.organizationId)));
       if (!members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "A production run must have members.");
+      const unresolvedMembers = members.filter((member: any) => {
+        const allocated = Number(member.allocatedQuantity) || 0;
+        const successful = Number(member.successfulQuantity ?? member.completedQuantity) || 0;
+        const damaged = Number(member.damagedQuantity) || 0;
+        const remaining = Number(member.remainingQuantity) || 0;
+        return member.outcomeStatus !== "completed"
+          || remaining !== 0
+          || successful + damaged !== allocated;
+      });
+      if (unresolvedMembers.length) {
+        throw new ProductionRunError(
+          "PRODUCTION_RUN_RESULTS_REQUIRED",
+          `Record reconciled production results for ${unresolvedMembers.length} member${unresolvedMembers.length === 1 ? "" : "s"} before completing this run.`,
+          409,
+          { unresolvedMemberIds: unresolvedMembers.map((member: any) => member.id) },
+        );
+      }
       return recordProductionRunOutcomeInTransaction(tx, {
         organizationId: input.organizationId,
         runId: run.id,
@@ -1945,12 +1962,12 @@ export async function transitionProductionRun(input: { organizationId: string; r
         idempotencyKey: `complete:${run.id}`,
         members: members.map((member: any) => ({
           memberId: member.id,
-          successfulQuantity: Number(member.allocatedQuantity) || 0,
-          damagedQuantity: 0,
+          successfulQuantity: Number(member.successfulQuantity ?? member.completedQuantity) || 0,
+          damagedQuantity: Number(member.damagedQuantity) || 0,
           remainingQuantity: 0,
           outcomeStatus: "completed" as const,
-          recoveryDisposition: "none" as const,
-          operatorNote: input.reason ?? null,
+          recoveryDisposition: member.recoveryDisposition ?? "none",
+          operatorNote: member.operatorNote ?? input.reason ?? null,
         })),
       });
     }

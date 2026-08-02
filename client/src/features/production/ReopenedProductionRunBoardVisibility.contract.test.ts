@@ -20,6 +20,8 @@ describe("reopened Combined Run board visibility", () => {
       expect(source).toContain("const runs = props.runs.map(productionRunToBoardItem)");
       expect(source).toContain("props.runsError && tabJobs.length === 0");
       expect(source).toContain("Combined Run visibility needs attention");
+      expect(source).toContain("const queueJobs = useMemo(() => sortedJobs.filter((job) => !isProductionRunItem(job))");
+      expect(source).toContain("queueJobs.map((job)");
     });
   }
 });
