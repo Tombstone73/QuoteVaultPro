@@ -2072,6 +2072,12 @@ export async function returnProductionRunToPrepress(input: {
       }
       restoredMemberJobIds.push(member.productionJobId);
       finalOwners.push({ productionJobId: member.productionJobId, lineItemId: member.orderLineItemId, owner: "prepress" });
+      await tx.update(productionJobs).set({
+        restoredAt: now,
+        restoredByUserId: input.actorUserId,
+        restoreReason: `Completion reversed: returned to Prepress. ${reason}`,
+        updatedAt: now,
+      }).where(and(eq(productionJobs.organizationId, input.organizationId), eq(productionJobs.id, member.productionJobId)));
     }
     const [updated] = await tx.update(productionRuns).set(repairingCanceledRun
       ? { updatedAt: now }

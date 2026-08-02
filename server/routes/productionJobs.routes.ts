@@ -1,5 +1,5 @@
 import type { Express } from "express";
-import { and, asc, desc, eq, gte, inArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gte, inArray, isNull, or, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 
@@ -2042,6 +2042,7 @@ export function registerProductionJobsRoutes(
         return res.status(400).json({ success: false, message: "Invalid completed-history range" });
       }
       const range = rangeParsed.data;
+      const includeHistory = ["1", "true"].includes(String(req.query.includeHistory || "").toLowerCase());
       const search = typeof req.query.search === "string" ? req.query.search.trim().toLowerCase() : "";
       const cutoff = addHours(new Date(), -(COMPLETED_HISTORY_RANGE_DAYS[range] * 24));
       const nowMs = Date.now();
@@ -2085,6 +2086,7 @@ export function registerProductionJobsRoutes(
         .where(and(
           eq(productionJobs.organizationId, organizationId),
           eq(productionJobs.status, "done"),
+          includeHistory ? undefined : isNull(productionJobs.restoredAt),
           gte(productionJobs.completedAt, cutoff),
           stationAliases.length > 0 ? inArray(productionJobs.stationKey as any, stationAliases) : undefined,
         ))
@@ -2094,7 +2096,19 @@ export function registerProductionJobsRoutes(
       const lineItemIds = Array.from(new Set(rows
         .map((row) => row.lineItemId)
         .filter((id): id is string => typeof id === "string" && id.trim().length > 0)));
-      const completedJobIds = rows.map((row) => row.id);
+      const prepressOwnerRows = lineItemIds.length > 0
+        ? await db.select({ lineItemId: productionJobs.lineItemId }).from(productionJobs).where(and(
+          eq(productionJobs.organizationId, organizationId),
+          inArray(productionJobs.lineItemId, lineItemIds),
+          eq(productionJobs.stationKey, "prepress"),
+          inArray(productionJobs.status, ["queued", "in_progress", "paused"]),
+        ))
+        : [];
+      const prepressOwnedLineItemIds = new Set(prepressOwnerRows.map((row) => row.lineItemId));
+      // Older recoveries may predate restoredAt. Canonical active Prepress
+      // ownership supersedes that historical completion in the normal view.
+      const authoritativeRows = includeHistory ? rows : rows.filter((row) => !row.lineItemId || !prepressOwnedLineItemIds.has(row.lineItemId));
+      const completedJobIds = authoritativeRows.map((row) => row.id);
       const completedRunMembers = completedJobIds.length > 0
         ? await db.select({
             productionJobId: productionRunMembers.productionJobId,
@@ -2238,7 +2252,7 @@ export function registerProductionJobsRoutes(
       const materialNameById = new Map(materialRows.map((row) => [row.id, row.name]));
       const productNameById = new Map(productRows.map((row) => [row.id, row.name]));
 
-      const completed = rows.map((row) => {
+      const completed = authoritativeRows.map((row) => {
           const combinedRun = completedRunByJobId.get(row.id) ?? null;
           const candidates = row.lineItemId ? artworkByLineItem.get(row.lineItemId) ?? [] : [];
           const finalIds = row.lineItemId ? finalFileRecordIdsByLineItem.get(row.lineItemId) : null;

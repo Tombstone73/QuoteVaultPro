@@ -38,6 +38,11 @@ describe("combined run operator lifecycle contract", () => {
     expect(routes).toContain("complete-return-to-prepress");
   });
 
+  it("marks returned member completions reversed for the active completed view", () => {
+    expect(service).toContain("Completion reversed: returned to Prepress");
+    expect(service).toContain("restoredAt: now");
+  });
+
   it("renders an explicit operator next step, result workspace, and return action", () => {
     expect(panel).toContain("Current state:");
     expect(panel).toContain("Next:");
