@@ -6,7 +6,9 @@ export type ComplexProductOptionGroup = {
   values: Array<{ value: string; label: string }>;
 };
 export type ComplexProductMatrix = {
-  kind: "two_dimensional_per_sqft"; rowKey: string; columnKey: string;
+  /** Legacy per-square-foot envelopes remain valid; per-piece uses the same
+   * canonical option matrix and PBV2 base_price rows. */
+  kind: "two_dimensional_per_sqft" | "two_dimensional_per_piece"; rowKey: string; columnKey: string;
   rowValues: string[]; columnValues: string[]; cells: Record<string, number>;
 };
 export type ComplexProductSpecification = {
@@ -105,6 +107,10 @@ export function parseTwoDimensionalPricingMatrix(input: string, rowKey: string, 
   return { kind: "two_dimensional_per_sqft", rowKey, columnKey, rowValues, columnValues: columns, cells };
 }
 
+export function pricingUnitForComplexProductMatrix(matrix: ComplexProductMatrix): "per_piece" | "per_square_foot" {
+  return matrix.kind === "two_dimensional_per_piece" ? "per_piece" : "per_square_foot";
+}
+
 export function validateComplexProductSpecification(spec: ComplexProductSpecification): string[] {
   const errors: string[] = [];
   if (!normalize(spec.name) || !normalize(spec.category)) errors.push("Product name and category are required.");
@@ -127,5 +133,6 @@ export function buildCanonicalComplexProductTree(spec: ComplexProductSpecificati
   const nodes: Record<string, unknown> = {}; const rootNodeIds: string[] = []; const edges: Array<Record<string, unknown>> = [];
   spec.optionGroups.forEach((group, groupIndex) => { const id = `ai_${group.proposalKey}`; const groupId = `ai_group_${group.proposalKey}`; rootNodeIds.push(id); nodes[groupId] = { id: groupId, kind: "group", type: "GROUP", status: "ENABLED", key: `${group.proposalKey}_group`, label: group.name, displayOrder: groupIndex + 1, input: { type: "select", required: true } }; nodes[id] = { id, kind: "question", type: "INPUT", status: "ENABLED", key: group.proposalKey, label: group.name, ui: { sortOrder: groupIndex + 1 }, input: { type: "select", required: true, selectionKey: group.proposalKey, valueType: "ENUM", constraints: { select: { allowEmpty: false } } }, choices: group.values.map((value, index) => ({ id: `${id}_${index + 1}`, value: value.value, label: value.label, sortOrder: index + 1 })) }; edges.push({ id: `ai_edge_${group.proposalKey}`, fromNodeId: groupId, toNodeId: id, status: "DISABLED" }); });
   const matrix: ProductOptionPricingMatrix = { dimensions: [spec.pricing.rowKey, spec.pricing.columnKey], rows: spec.pricing.rowValues.flatMap((row) => spec.pricing.columnValues.map((column) => ({ id: `matrix_${row}_${column}`.replace(/[^a-z0-9_]/gi, "_"), when: { [spec.pricing.rowKey]: row, [spec.pricing.columnKey]: column }, variables: { base_price: spec.pricing.cells[complexProductMatrixCellKey(row, column)] } }))) };
-  return { schemaVersion: 2, status: "DRAFT", rootNodeIds, nodes, edges, pricingMatrix: matrix, meta: { pricingV2: { unitSystem: "imperial", tierBasis: "line_item_quantity", base: { perSqftCents: null, perPieceCents: null, minimumChargeCents: spec.minimumChargeCents } }, requiresDimensions: true, productIntake: { draftRouting: { stationName: spec.route }, sheet: { widthIn: spec.sheet.widthIn, heightIn: spec.sheet.heightIn, materialForm: spec.materialForm, allowRotation: spec.sheet.allowRotation }, complexProductReview: spec.review } } };
+  const perPiece = pricingUnitForComplexProductMatrix(spec.pricing) === "per_piece";
+  return { schemaVersion: 2, status: "DRAFT", rootNodeIds, nodes, edges, pricingMatrix: matrix, meta: { pricingV2: { unitSystem: "imperial", tierBasis: "line_item_quantity", base: { perSqftCents: null, perPieceCents: perPiece ? 0 : null, minimumChargeCents: spec.minimumChargeCents }, optionMatrixPricingUnit: perPiece ? "per_piece" : "per_square_foot" }, requiresDimensions: !perPiece, productIntake: { draftRouting: { stationName: spec.route }, sheet: { widthIn: spec.sheet.widthIn, heightIn: spec.sheet.heightIn, materialForm: spec.materialForm, allowRotation: spec.sheet.allowRotation }, complexProductReview: spec.review } } };
 }
