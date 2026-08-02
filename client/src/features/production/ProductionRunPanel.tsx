@@ -14,6 +14,8 @@ import {
 import { useAuth } from "@/hooks/useAuth";
 import {
   useReconcileCanceledProductionRun,
+  useRepairCompletedProductionRunFulfillmentHandoff,
+  useReopenCompletedProductionRun,
   useRecordProductionRunOutcome,
   useTransitionProductionRun,
   type CanceledProductionRunReconciliationResult,
@@ -45,9 +47,13 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const transition = useTransitionProductionRun();
   const recordOutcome = useRecordProductionRunOutcome();
   const reconcileCanceledRun = useReconcileCanceledProductionRun();
+  const reopenCompletedRun = useReopenCompletedProductionRun();
+  const repairFulfillmentHandoff = useRepairCompletedProductionRunFulfillmentHandoff();
   const action = runAction(run.runStatus);
   const [recordingResults, setRecordingResults] = useState(false);
   const [reconcileConfirmationOpen, setReconcileConfirmationOpen] = useState(false);
+  const [reopenConfirmationOpen, setReopenConfirmationOpen] = useState(false);
+  const [reopenReason, setReopenReason] = useState("");
   const [reconciliationResult, setReconciliationResult] = useState<CanceledProductionRunReconciliationResult | null>(null);
   const initialDrafts = useMemo(() => Object.fromEntries(run.members.map((member) => [member.id, {
     successfulQuantity: member.successfulQuantity || member.completedQuantity || member.allocatedQuantity,
@@ -66,6 +72,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
     && run.runStatus === "canceled"
     && unfinishedMembers.length > 0
     && reconciliationResult?.reconciliationRequired !== false;
+  const canReopenCompletedRun = isAdminOrOwner && run.runStatus === "completed" && run.members.every((member) => member.outcomeStatus === "completed" && member.remainingQuantity === 0);
   const releaseBlockedReason = action === "release" && replacementRequired
     ? "Nested production file required before release."
     : null;
@@ -148,6 +155,16 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           {canReconcileCanceledRun ? (
             <Button size="sm" variant="outline" onClick={() => setReconcileConfirmationOpen(true)} disabled={reconcileCanceledRun.isPending}>
               {reconcileCanceledRun.isPending ? "Restoring Members…" : "Restore Members to Prepress"}
+            </Button>
+          ) : null}
+          {canReopenCompletedRun ? (
+            <Button size="sm" variant="outline" onClick={() => setReopenConfirmationOpen(true)} disabled={reopenCompletedRun.isPending}>
+              Reopen Mistaken Completion
+            </Button>
+          ) : null}
+          {isAdminOrOwner && run.runStatus === "completed" ? (
+            <Button size="sm" variant="outline" onClick={() => repairFulfillmentHandoff.mutate({ runId: run.id })} disabled={repairFulfillmentHandoff.isPending}>
+              {repairFulfillmentHandoff.isPending ? "Repairing Handoff…" : "Repair Fulfillment Handoff"}
             </Button>
           ) : null}
         </div>
@@ -324,6 +341,34 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
             <AlertDialogCancel disabled={reconcileCanceledRun.isPending}>Cancel</AlertDialogCancel>
             <AlertDialogAction onClick={(event) => { event.preventDefault(); restoreCanceledRunMembers(); }} disabled={reconcileCanceledRun.isPending}>
               {reconcileCanceledRun.isPending ? "Restoring…" : "Restore Members"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={reopenConfirmationOpen} onOpenChange={setReopenConfirmationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Reopen completed run?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This admin recovery restores this run’s members only when its fulfillment successors have not started. It preserves the run and member audit history.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="grid gap-1 text-sm">
+            <span className="font-medium">Recovery reason</span>
+            <input value={reopenReason} onChange={(event) => setReopenReason(event.target.value)} maxLength={2000} className="rounded border border-titan-border-subtle bg-transparent px-2 py-1" />
+          </label>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={reopenCompletedRun.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={reopenCompletedRun.isPending || !reopenReason.trim()}
+              onClick={(event) => {
+                event.preventDefault();
+                reopenCompletedRun.mutate({ runId: run.id, reason: reopenReason.trim() }, {
+                  onSuccess: () => { setReopenConfirmationOpen(false); setReopenReason(""); },
+                });
+              }}
+            >
+              {reopenCompletedRun.isPending ? "Reopening…" : "Reopen Run"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

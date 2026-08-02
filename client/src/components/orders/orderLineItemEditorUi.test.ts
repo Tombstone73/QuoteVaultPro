@@ -160,7 +160,7 @@ describe("order line item editor UI policy", () => {
       activeOwnerStationKey: "flatbed",
       activeOwnerStatus: "in_progress",
     })).toEqual({
-      statusLabel: "In Production",
+      statusLabel: "Flatbed in progress",
       nextStepLabel: "Flatbed in progress",
       ownerLabel: "Flatbed",
       isProductionOwned: true,
@@ -203,7 +203,14 @@ describe("order line item editor UI policy", () => {
       activeOwnerJobId: "job-1",
       activeOwnerStationKey: "flatbed",
       activeOwnerStatus: "paused",
-    })).toMatchObject({ statusLabel: "Production on hold", nextStepLabel: "Resume production" });
+    })).toMatchObject({ statusLabel: "Flatbed on hold", nextStepLabel: "Resume production" });
+
+    expect(resolveOrderLineItemOperationalDisplay({
+      workflowState: "completed",
+      activeOwnerJobId: "fulfillment-job",
+      activeOwnerStationKey: "fulfillment",
+      activeOwnerStatus: "queued",
+    })).toMatchObject({ statusLabel: "Production complete, awaiting fulfillment", nextStepLabel: "Prepare pickup or shipment" });
 
     expect(resolveOrderLineItemOperationalDisplay({
       workflowState: "in_prepress",

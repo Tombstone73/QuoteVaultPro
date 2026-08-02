@@ -802,6 +802,53 @@ export function useTransitionProductionRun() {
   });
 }
 
+export function useReopenCompletedProductionRun() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; reason: string }) => {
+      const res = await fetch(`/api/production/runs/${args.runId}/reopen-completed`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to reopen completed production run");
+      return json.data;
+    },
+    onSuccess: () => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      qc.invalidateQueries({ queryKey: ["/api/fulfillment"] });
+      toast({ title: "Completed run reopened", description: "Member jobs were restored to their pre-completion production state." });
+    },
+    onError: (error: Error) => toast({ title: "Run recovery failed", description: error.message, variant: "destructive" }),
+  });
+}
+
+export function useRepairCompletedProductionRunFulfillmentHandoff() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async ({ runId }: { runId: string }) => {
+      const res = await fetch(`/api/production/runs/${runId}/repair-fulfillment-handoff`, { method: "POST", credentials: "include" });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to repair fulfillment handoff");
+      return json.data as { repairedLineIds: string[]; skippedLineIds: string[] };
+    },
+    onSuccess: (data) => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      qc.invalidateQueries({ queryKey: ["/api/fulfillment"] });
+      toast({ title: "Fulfillment handoff repaired", description: `${data.repairedLineIds.length} completed ${data.repairedLineIds.length === 1 ? "line was" : "lines were"} checked through the canonical handoff.` });
+    },
+    onError: (error: Error) => toast({ title: "Fulfillment repair failed", description: error.message, variant: "destructive" }),
+  });
+}
+
 export function useCreateProductionJobFromOrder() {
   const qc = useQueryClient();
   const { toast } = useToast();

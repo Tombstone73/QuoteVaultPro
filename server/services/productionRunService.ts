@@ -1,8 +1,12 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, customers, lineItemFiles, localFileCopyJobs, orderLineItems, orders, prepressSessions, productionEvents, productionJobs, productionRunMembers, productionRuns, users } from "@shared/schema";
+import { auditLogs, customers, lineItemFiles, localFileCopyJobs, orderLineItems, orders, prepressSessions, productionEvents, productionJobs, productionRunMembers, productionRuns, productionStationSteps, users } from "@shared/schema";
 import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 import { findActiveJobForLineItem, isPrepressOwnershipJob, resolveActiveProductionOwners } from "./productionOwnership";
+import { routeLineItemToProduction } from "./productionRoutingService";
+import { getProductionConfigForOrganization } from "../routes/production.shared";
+import { resolveProductionCompletionRoute } from "./productionCompletionRouting";
+import { resolveProductionCompletionLineItemState } from "./productionCompletionLineItemState";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { downloadLineItemFile, enqueueFinalProductionFileCopy, queueLineItemFilePreviewRepair, uploadLineItemFile } from "../prepressFileService";
 import {
@@ -50,6 +54,8 @@ export class ProductionRunError extends Error {
 
 const activeStatuses: RunStatus[] = [...ACTIVE_PRODUCTION_RUN_STATUSES];
 const terminalJobStatuses = new Set(["done", "void", "canceled", "cancelled"]);
+const FULFILLMENT_STATION_KEY = "fulfillment";
+const COMPLETION_RECOVERY_HOURS = 24;
 
 const finitePositiveInteger = (value: unknown): number | null => {
   const parsed = Number(value);
@@ -1157,6 +1163,99 @@ function deriveRunStatusFromMembers(members: Array<{
   return anyReported ? "partially_completed" : "in_production";
 }
 
+/**
+ * Combined runs own their member quantities, but they must use the same
+ * configured completion route as a standalone production job.  Keeping that
+ * route here prevents a completed run from stranding a line at a finished
+ * print job with no fulfillment handoff.
+ */
+async function routeCompletedRunMember(tx: any, input: {
+  organizationId: string;
+  actorUserId: string;
+  runId: string;
+  productionJobId: string;
+  orderId: string;
+  orderLineItemId: string;
+}) {
+  const [job] = await tx.select().from(productionJobs).where(and(
+    eq(productionJobs.organizationId, input.organizationId),
+    eq(productionJobs.id, input.productionJobId),
+  )).limit(1);
+  if (!job) throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "A production run member job was not found.", 404);
+
+  const [step] = await tx.select({ triggers: productionStationSteps.triggers }).from(productionStationSteps).where(and(
+    eq(productionStationSteps.organizationId, input.organizationId),
+    eq(productionStationSteps.stationKey, String(job.stationKey ?? "")),
+    eq(productionStationSteps.key, String(job.stepKey ?? "queued")),
+    eq(productionStationSteps.active, true),
+  )).limit(1);
+  const config = await getProductionConfigForOrganization(input.organizationId);
+  const completionRoute = resolveProductionCompletionRoute({
+    stationKey: job.stationKey,
+    stepKey: job.stepKey,
+    finishingMode: config.finishingMode,
+    triggers: step?.triggers ?? [],
+  });
+  if (completionRoute.kind === "missing_mapping") {
+    throw new ProductionRunError(
+      "PRODUCTION_RUN_COMPLETION_ROUTE_MISSING",
+      `Cannot complete this run member: configure an on-complete route for ${completionRoute.stationKey}/${completionRoute.stepKey}.`,
+      409,
+    );
+  }
+  if (completionRoute.kind !== "route") return;
+
+  const target = completionRoute.route;
+  await routeLineItemToProduction({
+    tx,
+    organizationId: input.organizationId,
+    orderId: input.orderId,
+    lineItemId: input.orderLineItemId,
+    stationKey: target.stationKey,
+    stepKey: target.stepKey,
+    trigger: "line_item_status",
+    actorUserId: input.actorUserId,
+    extraEventPayload: {
+      routingReason: "production_run_member_complete",
+      productionRunId: input.runId,
+      completionRouteSource: target.source,
+      previousJobId: input.productionJobId,
+    },
+  });
+
+  const completionLineItemState = resolveProductionCompletionLineItemState(target.stationKey);
+  if (completionLineItemState) {
+    await tx.update(orderLineItems).set({ ...completionLineItemState, updatedAt: new Date() }).where(and(
+      eq(orderLineItems.id, input.orderLineItemId),
+      eq(orderLineItems.orderId, input.orderId),
+    ));
+  }
+}
+
+async function markCompletedRunOrdersReadyForFulfillment(tx: any, input: {
+  organizationId: string;
+  actorUserId: string;
+  orderIds: string[];
+  productionRunId: string;
+}) {
+  for (const orderId of Array.from(new Set(input.orderIds))) {
+    const [activeJob] = await tx.select({ id: productionJobs.id }).from(productionJobs).where(and(
+      eq(productionJobs.organizationId, input.organizationId),
+      eq(productionJobs.orderId, orderId),
+      sql`lower(coalesce(${productionJobs.stationKey}, '')) <> ${FULFILLMENT_STATION_KEY}`,
+      sql`lower(coalesce(${productionJobs.status}, '')) not in ('done', 'void', 'canceled', 'cancelled')`,
+    )).limit(1);
+    if (activeJob) continue;
+    await tx.update(orders).set({
+      state: "production_complete",
+      status: "ready_for_shipment",
+      routingTarget: FULFILLMENT_STATION_KEY,
+      productionCompletedAt: sql`coalesce(${orders.productionCompletedAt}, now()::text)`,
+      updatedAt: sql`now()`,
+    } as any).where(and(eq(orders.organizationId, input.organizationId), eq(orders.id, orderId)));
+  }
+}
+
 async function recordProductionRunOutcomeInTransaction(tx: any, input: {
   organizationId: string;
   runId: string;
@@ -1235,7 +1334,31 @@ async function recordProductionRunOutcomeInTransaction(tx: any, input: {
       ));
     const totalSuccessfulQuantity = Number(previouslyCompleted?.quantity ?? 0) + successfulQuantity;
     if (remainingQuantity <= 0 && outcomeStatus === "completed" && totalSuccessfulQuantity >= Number(line.quantity ?? 0)) {
-      await tx.update(productionJobs).set({ status: "done", completedAt: now, completedByUserId: input.actorUserId, updatedAt: now }).where(and(eq(productionJobs.id, member.productionJobId), eq(productionJobs.organizationId, input.organizationId)));
+      const [memberJob] = await tx.select({ status: productionJobs.status, stationKey: productionJobs.stationKey }).from(productionJobs).where(and(
+        eq(productionJobs.id, member.productionJobId),
+        eq(productionJobs.organizationId, input.organizationId),
+      )).limit(1);
+      if (!memberJob) throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "A production run member job was not found.", 404);
+      await tx.update(productionJobs).set({
+        status: "done",
+        completedAt: now,
+        completedByUserId: input.actorUserId,
+        previousStatus: memberJob.status,
+        previousStation: memberJob.stationKey,
+        restoreUntil: new Date(now.getTime() + COMPLETION_RECOVERY_HOURS * 60 * 60 * 1000),
+        restoredAt: null,
+        restoredByUserId: null,
+        restoreReason: null,
+        updatedAt: now,
+      }).where(and(eq(productionJobs.id, member.productionJobId), eq(productionJobs.organizationId, input.organizationId)));
+      await routeCompletedRunMember(tx, {
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        runId: run.id,
+        productionJobId: member.productionJobId,
+        orderId: line.orderId,
+        orderLineItemId: member.orderLineItemId,
+      });
     } else if (successfulQuantity > 0 || damagedQuantity > 0 || remainingQuantity > 0) {
       await tx.update(productionJobs).set({ status: "in_progress", updatedAt: now }).where(and(eq(productionJobs.id, member.productionJobId), eq(productionJobs.organizationId, input.organizationId)));
     }
@@ -1267,6 +1390,14 @@ async function recordProductionRunOutcomeInTransaction(tx: any, input: {
 
   const updatedMembers = await tx.select().from(productionRunMembers).where(and(eq(productionRunMembers.productionRunId, run.id), eq(productionRunMembers.organizationId, input.organizationId)));
   const nextStatus = deriveRunStatusFromMembers(updatedMembers as any);
+  if (nextStatus === "completed") {
+    await markCompletedRunOrdersReadyForFulfillment(tx, {
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      orderIds: memberRows.map(({ line }: any) => line.orderId),
+      productionRunId: run.id,
+    });
+  }
   const [updatedRun] = await tx.update(productionRuns).set({
     status: nextStatus,
     completedAt: nextStatus === "completed" || nextStatus === "completed_with_exceptions" ? now : run.completedAt,
@@ -1294,6 +1425,176 @@ export async function recordProductionRunOutcome(input: {
   members: MemberOutcomeInput[];
 }) {
   return db.transaction(async (tx) => recordProductionRunOutcomeInTransaction(tx, input));
+}
+
+/**
+ * Administrative recovery for a mistakenly completed run.  This deliberately
+ * refuses to unwind a fulfillment job once fulfillment has started or
+ * completed; at that point an operator must use the separate reprint flow.
+ */
+export async function reopenCompletedProductionRun(input: {
+  organizationId: string;
+  actorUserId: string;
+  runId: string;
+  reason: string;
+}) {
+  const reason = input.reason.trim();
+  if (!reason) throw new ProductionRunError("PRODUCTION_RUN_REOPEN_REASON_REQUIRED", "A recovery reason is required to reopen a completed production run.", 400);
+  return db.transaction(async (tx) => {
+    const [run] = await tx.select().from(productionRuns).where(and(
+      eq(productionRuns.id, input.runId),
+      eq(productionRuns.organizationId, input.organizationId),
+    )).limit(1);
+    if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
+    if (run.status !== "completed") throw new ProductionRunError("PRODUCTION_RUN_NOT_REOPENABLE", "Only fully completed production runs can be reopened.", 409);
+
+    const members = await tx.select().from(productionRunMembers).where(and(
+      eq(productionRunMembers.productionRunId, run.id),
+      eq(productionRunMembers.organizationId, input.organizationId),
+    ));
+    if (!members.length || members.some((member: any) => member.outcomeStatus !== "completed" || Number(member.remainingQuantity) !== 0)) {
+      throw new ProductionRunError("PRODUCTION_RUN_NOT_REOPENABLE", "Only a run whose members were fully completed can be reopened.", 409);
+    }
+
+    const memberJobIds = members.map((member: any) => member.productionJobId);
+    const memberJobs = await tx.select().from(productionJobs).where(and(
+      eq(productionJobs.organizationId, input.organizationId),
+      inArray(productionJobs.id, memberJobIds),
+    ));
+    if (memberJobs.length !== memberJobIds.length || memberJobs.some((job: any) => job.status !== "done" || !job.previousStatus)) {
+      throw new ProductionRunError("PRODUCTION_RUN_REOPEN_RECOVERY_UNAVAILABLE", "The member jobs no longer have safe completion recovery metadata.", 409);
+    }
+
+    const lineItemIds = Array.from(new Set(members.map((member: any) => member.orderLineItemId)));
+    const fulfillmentJobs = await tx.select({ id: productionJobs.id, status: productionJobs.status, lineItemId: productionJobs.lineItemId }).from(productionJobs).where(and(
+      eq(productionJobs.organizationId, input.organizationId),
+      inArray(productionJobs.lineItemId, lineItemIds),
+      eq(productionJobs.stationKey, FULFILLMENT_STATION_KEY),
+    ));
+    const candidateFulfillmentIds = fulfillmentJobs.map((job) => job.id);
+    const createdByRunRows = candidateFulfillmentIds.length ? await tx.select({ productionJobId: productionEvents.productionJobId }).from(productionEvents).where(and(
+      eq(productionEvents.organizationId, input.organizationId),
+      inArray(productionEvents.productionJobId, candidateFulfillmentIds),
+      eq(productionEvents.type, "intake"),
+      sql`${productionEvents.payload}->>'productionRunId' = ${run.id}`,
+    )) : [];
+    const fulfillmentIdsToCancel = new Set(createdByRunRows.map((row) => row.productionJobId));
+    const unsafeFulfillment = fulfillmentJobs.filter((job) => fulfillmentIdsToCancel.has(job.id) && !["queued", "paused"].includes(String(job.status)));
+    if (unsafeFulfillment.length) {
+      throw new ProductionRunError("PRODUCTION_RUN_REOPEN_FULFILLMENT_STARTED", "This run cannot be reopened because a fulfillment successor has already started or completed.", 409, { fulfillmentJobIds: unsafeFulfillment.map((job) => job.id) });
+    }
+
+    const now = new Date();
+    if (fulfillmentIdsToCancel.size) {
+      await tx.update(productionJobs).set({ status: "canceled", updatedAt: now }).where(and(
+        eq(productionJobs.organizationId, input.organizationId),
+        inArray(productionJobs.id, Array.from(fulfillmentIdsToCancel)),
+      ));
+    }
+    for (const job of memberJobs) {
+      await tx.update(productionJobs).set({
+        status: String(job.previousStatus || "in_progress"),
+        stationKey: String(job.previousStation || job.stationKey),
+        completedAt: null,
+        completedByUserId: null,
+        restoreUntil: null,
+        restoredAt: now,
+        restoredByUserId: input.actorUserId,
+        restoreReason: reason,
+        updatedAt: now,
+      }).where(and(eq(productionJobs.organizationId, input.organizationId), eq(productionJobs.id, job.id)));
+    }
+    await tx.update(productionRunMembers).set({
+      successfulQuantity: 0,
+      damagedQuantity: 0,
+      remainingQuantity: sql`allocated_quantity`,
+      completedQuantity: 0,
+      outcomeStatus: "pending",
+      recoveryDisposition: "none",
+      operatorNote: `Completion reopened: ${reason}`,
+      lastOutcomeAt: now,
+      updatedAt: now,
+    }).where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionRunId, run.id)));
+    const [updatedRun] = await tx.update(productionRuns).set({
+      status: "in_production",
+      completedAt: null,
+      updatedAt: now,
+    }).where(and(eq(productionRuns.organizationId, input.organizationId), eq(productionRuns.id, run.id))).returning();
+
+    const orderIds = Array.from(new Set(memberJobs.map((job) => job.orderId).filter(Boolean))) as string[];
+    for (const orderId of orderIds) {
+      await tx.update(orders).set({ state: "open", status: "in_production", routingTarget: null, productionCompletedAt: null, updatedAt: now } as any).where(and(
+        eq(orders.organizationId, input.organizationId), eq(orders.id, orderId), eq(orders.state as any, "production_complete"),
+      ));
+    }
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId,
+      actionType: "UPDATE",
+      entityType: "production_run",
+      entityId: run.id,
+      entityName: `PR-${String(run.runNumber).padStart(4, "0")}`,
+      description: "Completed production run reopened by administrator",
+      oldValues: { status: run.status, completedAt: run.completedAt },
+      newValues: { status: "in_production", reason, canceledFulfillmentJobIds: Array.from(fulfillmentIdsToCancel), restoredMemberJobIds: memberJobIds },
+    } as any);
+    return { ...updatedRun, restoredMemberJobIds: memberJobIds, canceledFulfillmentJobIds: Array.from(fulfillmentIdsToCancel) };
+  });
+}
+
+/** Repair only the selected completed run.  This is deliberately not a tenant
+ * sweep: it replays the normal idempotent routing service for members that
+ * have production evidence but lack a fulfillment successor. */
+export async function repairCompletedProductionRunFulfillmentHandoff(input: {
+  organizationId: string;
+  actorUserId: string;
+  runId: string;
+}) {
+  return db.transaction(async (tx) => {
+    const [run] = await tx.select().from(productionRuns).where(and(
+      eq(productionRuns.organizationId, input.organizationId),
+      eq(productionRuns.id, input.runId),
+    )).limit(1);
+    if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
+    if (run.status !== "completed") throw new ProductionRunError("PRODUCTION_RUN_NOT_COMPLETED", "Only a fully completed production run can have its fulfillment handoff repaired.", 409);
+    const rows = await tx.select({ member: productionRunMembers, line: orderLineItems }).from(productionRunMembers)
+      .innerJoin(orderLineItems, eq(orderLineItems.id, productionRunMembers.orderLineItemId))
+      .where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.productionRunId, run.id)));
+    const repairedLineIds: string[] = [];
+    const skippedLineIds: string[] = [];
+    for (const { member, line } of rows) {
+      if (member.outcomeStatus !== "completed" || Number(member.remainingQuantity) !== 0) {
+        skippedLineIds.push(member.orderLineItemId);
+        continue;
+      }
+      await routeCompletedRunMember(tx, {
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        runId: run.id,
+        productionJobId: member.productionJobId,
+        orderId: line.orderId,
+        orderLineItemId: member.orderLineItemId,
+      });
+      repairedLineIds.push(member.orderLineItemId);
+    }
+    await markCompletedRunOrdersReadyForFulfillment(tx, {
+      organizationId: input.organizationId,
+      actorUserId: input.actorUserId,
+      orderIds: rows.map(({ line }) => line.orderId),
+      productionRunId: run.id,
+    });
+    await tx.insert(auditLogs).values({
+      organizationId: input.organizationId,
+      userId: input.actorUserId,
+      actionType: "UPDATE",
+      entityType: "production_run",
+      entityId: run.id,
+      entityName: `PR-${String(run.runNumber).padStart(4, "0")}`,
+      description: "Completed production run fulfillment handoff repaired",
+      newValues: { repairedLineIds, skippedLineIds },
+    } as any);
+    return { runId: run.id, repairedLineIds, skippedLineIds };
+  });
 }
 
 type CanceledRunReconciliation = {
@@ -1600,7 +1901,7 @@ export async function transitionProductionRun(input: { organizationId: string; r
       }
     }
     if (input.action === "complete") {
-      if (run.status !== "ready_for_production" && run.status !== "in_production") throw new ProductionRunError("PRODUCTION_RUN_NOT_RELEASABLE", "Release the production run before completing it.", 409);
+      if (run.status !== "in_production") throw new ProductionRunError("PRODUCTION_RUN_NOT_STARTED", "Start the production run from the production board before completing it.", 409);
       const activeFileCount = await countActiveProductionRunFiles(tx, { organizationId: input.organizationId, runId: run.id });
       if (run.productionFileStrategy !== "rip_managed" && activeFileCount <= 0) {
         throw new ProductionRunError("PRODUCTION_RUN_FILE_REQUIRED", "Upload or replace the nested final production file before completing this run.", 409);

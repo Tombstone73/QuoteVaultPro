@@ -11,6 +11,8 @@ import {
   ProductionRunError,
   recordProductionRunOutcome,
   reconcileCanceledProductionRun,
+  repairCompletedProductionRunFulfillmentHandoff,
+  reopenCompletedProductionRun,
   replaceProductionRunFile,
   retireProductionRunFile,
   transitionProductionRun,
@@ -82,6 +84,7 @@ const outcomeSchema = z.object({
   })).min(1),
 });
 const retireFileSchema = z.object({ reason: z.string().max(2000).nullable().optional() });
+const reopenCompletedRunSchema = z.object({ reason: z.string().trim().min(1).max(2000) });
 const userId = (user: any) => user?.claims?.sub ?? user?.id;
 const actorRole = (req: any) => String(req.orgRole || req.user?.role || "").toLowerCase();
 const actorIsAdmin = (req: any) => {
@@ -257,6 +260,29 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
       return res.json({ success: true, data: await reconcileCanceledProductionRun({ organizationId, actorUserId, runId: req.params.runId }) });
     } catch (error) {
       return handleProductionRunError(res, error, "PRODUCTION_RUN_RECONCILE_FAILED", "Unable to reconcile the canceled production run.");
+    }
+  });
+  app.post("/api/production/runs/:runId/reopen-completed", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      if (!actorIsAdmin(req)) return res.status(403).json({ success: false, code: "FORBIDDEN", message: "Only an administrator may reopen a completed production run." });
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const body = reopenCompletedRunSchema.parse(req.body ?? {});
+      return res.json({ success: true, data: await reopenCompletedProductionRun({ organizationId, actorUserId, runId: req.params.runId, reason: body.reason }) });
+    } catch (error) {
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_REOPEN_FAILED", "Unable to reopen the completed production run.");
+    }
+  });
+  app.post("/api/production/runs/:runId/repair-fulfillment-handoff", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      if (!actorIsAdmin(req)) return res.status(403).json({ success: false, code: "FORBIDDEN", message: "Only an administrator may repair a production run fulfillment handoff." });
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      return res.json({ success: true, data: await repairCompletedProductionRunFulfillmentHandoff({ organizationId, actorUserId, runId: req.params.runId }) });
+    } catch (error) {
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_HANDOFF_REPAIR_FAILED", "Unable to repair the production run fulfillment handoff.");
     }
   });
   app.post("/api/production/runs/:runId/outcomes", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {

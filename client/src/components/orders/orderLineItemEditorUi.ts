@@ -257,19 +257,27 @@ export function resolveOrderLineItemOperationalDisplay(input: {
   const ownerStatus = normalizedOwnerKey(input.activeOwnerStatus);
 
   if (isProductionOwned) {
+    if (ownerKey === "fulfillment") {
+      return {
+        statusLabel: ownerStatus === "in_progress" ? "Fulfillment in progress" : "Production complete, awaiting fulfillment",
+        nextStepLabel: ownerStatus === "in_progress" ? "Complete fulfillment" : "Prepare pickup or shipment",
+        ownerLabel: "Fulfillment",
+        isProductionOwned,
+      };
+    }
     if (ownerStatus === "paused") {
-      return { statusLabel: "Production on hold", nextStepLabel: "Resume production", ownerLabel, isProductionOwned };
+      return { statusLabel: ownerLabel ? `${ownerLabel} on hold` : "Production on hold", nextStepLabel: "Resume production", ownerLabel, isProductionOwned };
     }
     if (ownerStatus === "queued") {
       return {
-        statusLabel: ownerLabel ? `Scheduled for ${ownerLabel}` : "Scheduled for production",
+        statusLabel: ownerLabel ? `${ownerLabel} queue` : "Scheduled for production",
         nextStepLabel: "Start production",
         ownerLabel,
         isProductionOwned,
       };
     }
     return {
-      statusLabel: "In Production",
+      statusLabel: ownerLabel ? `${ownerLabel} in progress` : "Production in progress",
       nextStepLabel: ownerLabel ? `${ownerLabel} in progress` : "Production in progress",
       ownerLabel,
       isProductionOwned,
