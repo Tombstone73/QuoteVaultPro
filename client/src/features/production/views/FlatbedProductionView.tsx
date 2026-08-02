@@ -1480,7 +1480,10 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   );
   const { data: runData } = useProductionRuns(
     { view: props.viewKey },
-    { enabled: shouldFetchJobs },
+    // The parent page supplies standalone jobs, but Combined Runs have a
+    // separate canonical endpoint.  Do not suppress it or an active reopened
+    // run can hide every member while no run card is rendered.
+    { enabled: true },
   );
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [bulkSelectedJobIds, setBulkSelectedJobIds] = useState<Set<string>>(new Set());
@@ -1520,7 +1523,7 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   const tabJobs = useMemo(
     () => {
       const jobs = props.jobs ?? data ?? [];
-      const runs = shouldFetchJobs ? (runData ?? []).map(productionRunToBoardItem) : [];
+      const runs = (runData ?? []).map(productionRunToBoardItem);
       return filterProductionJobsForTab([...runs, ...jobs], props.status);
     },
     [data, props.jobs, props.status, runData, shouldFetchJobs],

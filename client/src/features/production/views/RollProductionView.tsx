@@ -1496,7 +1496,9 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   );
   const { data: runData } = useProductionRuns(
     { view: props.viewKey },
-    { enabled: shouldFetchJobs },
+    // Standalone jobs may be supplied by the parent, but active Combined Runs
+    // must always hydrate from their own endpoint.
+    { enabled: true },
   );
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [bulkSelectedJobIds, setBulkSelectedJobIds] = useState<Set<string>>(new Set());
@@ -1530,7 +1532,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
   const tabJobs = useMemo(
     () => {
       const jobs = props.jobs ?? data ?? [];
-      const runs = shouldFetchJobs ? (runData ?? []).map(productionRunToBoardItem) : [];
+      const runs = (runData ?? []).map(productionRunToBoardItem);
       return filterProductionJobsForTab([...runs, ...jobs], props.status);
     },
     [data, props.jobs, props.status, runData, shouldFetchJobs],

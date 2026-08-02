@@ -65,6 +65,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const placements = (Number(run.plannedSheetCount) || 0) * (Number(run.nominalPiecesPerSheet) || 0);
   const mismatch = placements > 0 && placements !== run.totalAllocatedQuantity;
   const activeFileCount = run.fileCount ?? run.files?.filter((file) => file.status === "active").length ?? 0;
+  const reopened = run.members.some((member) => String(member.operatorNote || "").startsWith("Completion reopened:"));
   const replacementRequired = run.replacementRequired ?? activeFileCount === 0;
   const unfinishedMembers = run.members.filter((member) => member.remainingQuantity > 0);
   const isAdminOrOwner = Boolean(isAdmin || user?.isAdmin || user?.role === "admin" || user?.role === "owner");
@@ -118,6 +119,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           <div className="flex items-center gap-2">
             <h3 className="text-sm font-semibold">{run.displayNumber}</h3>
             <Badge variant="secondary">{run.runStatus.replace(/_/g, " ")}</Badge>
+            {reopened ? <Badge variant="outline">Reopened</Badge> : null}
           </div>
           <div className="mt-1 text-xs text-titan-text-muted">
             Order {run.orderNumber} - {run.customerName} - {run.memberCount} line items
