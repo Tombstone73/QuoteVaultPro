@@ -40,6 +40,7 @@ export interface OrgPreferences {
     allowCompletedOrderEdits?: boolean;
     requireAllLineItemsDoneToComplete?: boolean;
     requireLineItemsDoneToComplete?: boolean;
+    saveRoutingMode?: "save_only" | "route_eligible" | "ask_each_time";
   };
   inventoryPolicy?: {
     mode?: "off" | "advisory" | "enforced";

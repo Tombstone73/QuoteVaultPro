@@ -109,6 +109,7 @@ describe("buildDirectOrderPayloadFromEditorState", () => {
         uploadId: "upload-temp-1",
         productionQuantity: 2,
         productionGroupId: "banner-a",
+        allocationSource: "manual",
       }],
     });
     expect(payload.lineItems[0]).not.toHaveProperty("quoteLineItemId");

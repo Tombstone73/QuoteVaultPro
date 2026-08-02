@@ -18,6 +18,7 @@ interface OrderDetailPrimaryActionsProps {
   isTransitioningStatus: boolean;
   hasDirtyLineItem: boolean;
   onSaveOrder: () => MaybePromise;
+  onSaveAndRoute: () => MaybePromise;
   onDiscardChanges: () => MaybePromise;
   onMarkCompleted: () => void;
 }
@@ -34,6 +35,7 @@ export function OrderDetailPrimaryActions({
   isTransitioningStatus,
   hasDirtyLineItem,
   onSaveOrder,
+  onSaveAndRoute,
   onDiscardChanges,
   onMarkCompleted,
 }: OrderDetailPrimaryActionsProps) {
@@ -50,6 +52,16 @@ export function OrderDetailPrimaryActions({
             title={hasDirtyLineItem ? "Saves open line item changes too" : undefined}
           >
             {isUpdatingOrder || isSavingOrder ? "Saving..." : "Save Order"}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => void onSaveAndRoute()}
+            disabled={isUpdatingOrder || isSavingOrder}
+            className="rounded-titan-md"
+            title="Save changes, then route each eligible line through its canonical workflow"
+          >
+            {isUpdatingOrder || isSavingOrder ? "Saving..." : "Save & Route Eligible"}
           </Button>
           <Button
             variant="outline"

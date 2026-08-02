@@ -1086,6 +1086,7 @@ export function ProductionSettings() {
 
   const prepressDefaultEnabled = (preferences as any)?.prepressDefaultEnabled ?? true;
   const proofApprovalLockEnabled = preferences.proofing?.proofApprovalLockEnabled ?? false;
+  const orderSaveRoutingMode = preferences.orders?.saveRoutingMode ?? "save_only";
 
   const handlePrepressDefaultToggle = async (enabled: boolean) => {
     await updatePreferences({
@@ -1101,6 +1102,13 @@ export function ProductionSettings() {
         ...(preferences.proofing ?? {}),
         proofApprovalLockEnabled: enabled,
       },
+    });
+  };
+
+  const handleOrderSaveRoutingModeChange = async (value: "save_only" | "route_eligible" | "ask_each_time") => {
+    await updatePreferences({
+      ...preferences,
+      orders: { ...(preferences.orders ?? {}), saveRoutingMode: value },
     });
   };
 
@@ -1232,6 +1240,25 @@ export function ProductionSettings() {
               onCheckedChange={handlePrepressDefaultToggle}
               disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}
             />
+          </div>
+        </ProductionSettingsSection>
+
+        <ProductionSettingsSection
+          title="Order Save Routing"
+          summary={orderSaveRoutingMode === "route_eligible" ? "Save and route eligible line items" : orderSaveRoutingMode === "ask_each_time" ? "Ask on every new order" : "Save only"}
+          help="Controls the default shown on new orders. Routing always checks artwork, proof, Prepress, ownership, and tenant rules after the order is saved."
+        >
+          <div className="space-y-2 rounded-titan-lg border border-titan-border-subtle p-4">
+            <Label htmlFor="order-save-routing-mode">After saving a new order</Label>
+            <Select value={orderSaveRoutingMode} onValueChange={(value) => void handleOrderSaveRoutingModeChange(value as "save_only" | "route_eligible" | "ask_each_time")} disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}>
+              <SelectTrigger id="order-save-routing-mode"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="save_only">Save only</SelectItem>
+                <SelectItem value="route_eligible">Save and route eligible line items</SelectItem>
+                <SelectItem value="ask_each_time">Ask each time</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-titan-xs text-titan-text-muted">Eligible lines route to Design, Proofing, or Prepress. Direct production handoff is not automatic.</p>
           </div>
         </ProductionSettingsSection>
 

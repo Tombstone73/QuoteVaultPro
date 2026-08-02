@@ -1580,8 +1580,11 @@ export function LineItemsSection({
                                   onTemporaryOrderAttachmentUpdate={
                                     !readOnly && createTarget === "order"
                                       ? (uploadId, patch) => {
-                                        const pendingOrderAttachments = ((item.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [])
-                                          .map((attachment) => attachment.uploadId === uploadId ? { ...attachment, ...patch } : attachment);
+                                        const pendingOrderAttachments = reconcileStagedArtworkAllocations({
+                                          lineQuantity: item.quantity,
+                                          attachments: ((item.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [])
+                                            .map((attachment) => attachment.uploadId === uploadId ? { ...attachment, ...patch } : attachment),
+                                        });
                                         onUpdateLineItem(itemKey, { pendingOrderAttachments });
                                       }
                                       : undefined

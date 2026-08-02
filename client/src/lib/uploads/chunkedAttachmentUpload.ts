@@ -152,6 +152,9 @@ export type TemporaryOrderAttachmentUpload = {
   productionQuantity?: number | null;
   productionGroupId?: string | null;
   allocationSource?: "automatic" | "manual";
+  /** The client-only staging lifecycle. Permanent attachments are returned by
+   * the Order API after promotion; this value is never persisted as a file. */
+  uploadState?: "uploaded" | "failed";
 };
 
 export async function uploadTemporaryOrderAttachmentViaChunked(

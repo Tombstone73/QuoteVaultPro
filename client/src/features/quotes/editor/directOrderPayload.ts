@@ -22,6 +22,7 @@ export type DirectOrderPayload = {
     shippingCents: number | null;
     shippingInstructions: string | null;
     idempotencyKey?: string;
+    routeAfterSave?: "save_only" | "route_eligible";
 };
 
 export type BuildDirectOrderPayloadInput = {
@@ -97,6 +98,7 @@ export function buildDirectOrderPayloadFromEditorState(input: BuildDirectOrderPa
                         uploadId: attachment.uploadId,
                         productionQuantity: attachment.productionQuantity ?? null,
                         productionGroupId: attachment.productionGroupId ?? null,
+                        allocationSource: attachment.allocationSource === "manual" ? "manual" : "automatic",
                     }))
                 : [],
         }));

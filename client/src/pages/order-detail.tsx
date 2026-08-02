@@ -1398,7 +1398,7 @@ export default function OrderDetail() {
   // first, then order-level fields, abort on line item failure) is delegated to
   // the pure `orchestrateOrderSave` helper; the step closures below perform the
   // actual mutations.
-  const handleSaveOrder = async () => {
+  const handleSaveOrder = async (routeEligible = false) => {
     if (!orderId || !order) return;
     setIsSavingOrder(true);
     try {
@@ -1448,6 +1448,37 @@ export default function OrderDetail() {
           variant: "destructive",
         });
         return;
+      }
+
+      if (routeEligible) {
+        try {
+          const response = await fetch(`/api/orders/${orderId}/route-eligible-line-items`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            credentials: "include",
+            body: JSON.stringify({ mode: "route_eligible" }),
+          });
+          const payload = await response.json().catch(() => ({}));
+          if (!response.ok) throw new Error(payload?.message || "Routing failed.");
+          const routingResult = Array.isArray(payload?.data?.routingResult) ? payload.data.routingResult : [];
+          const routed = routingResult.filter((line: any) => line.status === "routed" || line.status === "already_routed");
+          const blocked = routingResult.filter((line: any) => line.status === "blocked" || line.status === "failed");
+          toast({
+            title: "Order saved and routing evaluated",
+            description: `${routed.length} routed; ${blocked.length} need attention. Review line-item operational status for exact blockers.`,
+            variant: blocked.length > 0 ? "destructive" : undefined,
+          });
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: ["orders", "detail", orderId] }),
+            queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] }),
+            queryClient.invalidateQueries({ queryKey: ["/api/proofing/queue"] }),
+            queryClient.invalidateQueries({ queryKey: ["/api/design/queue"] }),
+            queryClient.invalidateQueries({ queryKey: ["/api/operational-summary"] }),
+          ]);
+        } catch (error: any) {
+          // The save remains valid even when a downstream route is unavailable.
+          toast({ title: "Order saved; routing needs attention", description: error?.message || "Routing could not be completed.", variant: "destructive" });
+        }
       }
 
       logOrderDirtyAudit("after-save-success-before-clear");
@@ -2164,6 +2195,7 @@ export default function OrderDetail() {
               isTransitioningStatus={transitionStatus.isPending}
               hasDirtyLineItem={hasDirtyLineItem}
               onSaveOrder={handleSaveOrder}
+              onSaveAndRoute={() => handleSaveOrder(true)}
               onDiscardChanges={handleCancelOrderEdits}
               onMarkCompleted={() => {
                 if (requireLineItemsDone && incompleteLi.length > 0) {

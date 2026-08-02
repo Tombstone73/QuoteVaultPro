@@ -43,7 +43,7 @@ import {
     type InsertOrder
 } from "@shared/schema";
 import { isPortalFileCategory, normalizePortalFileCategory } from "@shared/portalFileVisibility";
-import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
+import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation, reconcileStagedArtworkAllocations } from "@shared/artworkAllocation";
 import { synchronizeFinalArtworkForLineQuantityChange } from "../services/canonicalArtworkAllocationService";
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
@@ -60,6 +60,8 @@ import { portalContext, tenantContext, getPortalCustomer } from "../tenantContex
 import { recomputeOrderBillingStatus } from "../services/orderBillingService";
 import { listOrderDesignBillingVisibility } from "../services/designCostSummaryService";
 import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../services/lineItemWorkflowService";
+import { routeEligibleOrderLineItems } from "../services/orderSaveRoutingService";
+import { normalizeOrderSaveRoutingMode } from "@shared/orderSaveRouting";
 import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
 import { addLineItemNote, addOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
 import { findActiveJobForLineItem } from "../services/productionOwnership";
@@ -1158,6 +1160,7 @@ export async function registerOrderRoutes(
         uploadId: string;
         productionQuantity: number | null;
         productionGroupId: string | null;
+        allocationSource: "automatic" | "manual";
     }> => {
         const raw = Array.isArray(lineItem?.pendingOrderAttachmentUploadIds)
             ? lineItem.pendingOrderAttachmentUploadIds
@@ -1176,11 +1179,12 @@ export async function registerOrderRoutes(
                         productionGroupId: typeof allocation.productionGroupId === "string" && allocation.productionGroupId.trim()
                             ? allocation.productionGroupId.trim()
                             : null,
+                        allocationSource: allocation.allocationSource === "manual" ? "manual" as const : "automatic" as const,
                     },
                 ]),
         );
 
-        return Array.from(new Set(
+        const uploads = Array.from(new Set(
             raw
                 .map((uploadId: unknown) => typeof uploadId === "string" ? uploadId.trim() : "")
                 .filter((uploadId: string) => uploadId.length > 0)
@@ -1188,6 +1192,20 @@ export async function registerOrderRoutes(
             uploadId,
             productionQuantity: allocationByUploadId.get(uploadId)?.productionQuantity ?? null,
             productionGroupId: allocationByUploadId.get(uploadId)?.productionGroupId ?? null,
+            allocationSource: allocationByUploadId.get(uploadId)?.allocationSource ?? "automatic" as const,
+        }));
+
+        // The browser supplies an immediate draft default, but promotion is the
+        // authority boundary. Reapply only safe automatic defaults here so a
+        // stale client cannot leave a single artwork allocation blank.
+        return reconcileStagedArtworkAllocations({
+            lineQuantity: lineItem?.quantity,
+            attachments: uploads,
+        }).map((upload) => ({
+            ...upload,
+            productionQuantity: upload.productionQuantity ?? null,
+            productionGroupId: upload.productionGroupId ?? null,
+            allocationSource: upload.allocationSource === "manual" ? "manual" : "automatic",
         }));
     };
 
@@ -2412,6 +2430,30 @@ export async function registerOrderRoutes(
                 (order as any).attachmentPromotionWarnings = pendingArtworkWarnings;
             }
 
+            const configuredRoutingMode = normalizeOrderSaveRoutingMode((org.settings as any)?.preferences?.orders?.saveRoutingMode);
+            const requestedRoutingMode = req.body?.routeAfterSave === "route_eligible" || req.body?.routeAfterSave === "save_only"
+                ? req.body.routeAfterSave
+                : configuredRoutingMode;
+            if (requestedRoutingMode === "route_eligible") {
+                try {
+                    (order as any).routingResult = await db.transaction((tx) => routeEligibleOrderLineItems(tx, {
+                        organizationId,
+                        orderId: String(order.id),
+                        actorUserId: userId,
+                        actorName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                        mode: "route_eligible",
+                    }));
+                } catch (routingError: any) {
+                    // Commercial persistence has already succeeded. Return a structured
+                    // failure rather than undoing a valid order or hiding the failure.
+                    (order as any).routingResult = [{
+                        lineItemId: null,
+                        status: "failed",
+                        reason: routingError?.message || "Order saved, but automatic routing could not start.",
+                    }];
+                }
+            }
+
             return order;
             };
 
@@ -2438,6 +2480,7 @@ export async function registerOrderRoutes(
                 data: {
                     order: result.value,
                     ...(attachmentPromotionWarnings.length > 0 ? { attachmentPromotionWarnings } : {}),
+                    ...((result.value as any)?.routingResult ? { routingResult: (result.value as any).routingResult } : {}),
                 },
                 message: attachmentPromotionWarnings.length > 0
                     ? "Order created successfully with artwork promotion warnings"
@@ -2475,6 +2518,32 @@ export async function registerOrderRoutes(
                 error: (error as Error).message,
                 code: "ORDER_CREATE_FAILED",
             });
+        }
+    });
+
+    app.post("/api/orders/:orderId/route-eligible-line-items", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            const userId = getUserId(req.user);
+            if (!organizationId || !userId) return res.status(401).json({ success: false, message: "Authentication and organization context are required." });
+            const orderId = String(req.params.orderId);
+            const [order] = await db.select({ id: orders.id })
+                .from(orders)
+                .innerJoin(organizations, eq(organizations.id, orders.organizationId))
+                .where(and(eq(orders.id, orderId), eq(orders.organizationId, organizationId)))
+                .limit(1);
+            if (!order) return res.status(404).json({ success: false, message: "Order not found." });
+            const routingResult = await db.transaction((tx) => routeEligibleOrderLineItems(tx, {
+                organizationId,
+                orderId,
+                actorUserId: userId,
+                actorName: `${req.user.firstName || ''} ${req.user.lastName || ''}`.trim() || req.user.email,
+                mode: "route_eligible",
+            }));
+            return res.json({ success: true, data: { orderId, routingResult } });
+        } catch (error: any) {
+            console.error("[OrderSaveRouting] Failed", error);
+            return res.status(500).json({ success: false, message: "Order was saved, but routing could not be completed.", error: error?.message });
         }
     });
 

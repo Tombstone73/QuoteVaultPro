@@ -39,12 +39,14 @@ describe("Order detail action layout", () => {
         isTransitioningStatus={false}
         hasDirtyLineItem={false}
         onSaveOrder={noop}
+        onSaveAndRoute={noop}
         onDiscardChanges={noop}
         onMarkCompleted={noop}
       />,
     );
 
     expect(html).toContain("Save Order");
+    expect(html).toContain("Save &amp; Route Eligible");
     expect(html).not.toContain("Edit Order");
     expect(html).not.toContain("Cancel Order");
     expect(html).not.toContain("Bypass Proof");
@@ -84,6 +86,7 @@ describe("Order detail action layout", () => {
         isTransitioningStatus={false}
         hasDirtyLineItem={false}
         onSaveOrder={noop}
+        onSaveAndRoute={noop}
         onDiscardChanges={noop}
         onMarkCompleted={noop}
       />,

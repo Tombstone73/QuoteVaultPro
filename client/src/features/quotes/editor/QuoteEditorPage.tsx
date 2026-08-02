@@ -7,6 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Alert, AlertDescription } from "@/components/ui/alert";
 import { Label } from "@/components/ui/label";
 import { Switch } from "@/components/ui/switch";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
     AlertDialog,
     AlertDialogAction,
@@ -76,6 +77,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
     const state = useQuoteEditorState();
     const [draftShipToData, setDraftShipToData] = useState<Record<string, string | null>>({});
     const [createOrderSubmitting, setCreateOrderSubmitting] = useState(false);
+    const [orderRouteAfterSave, setOrderRouteAfterSave] = useState<"save_only" | "route_eligible" | null>(null);
     const [recipientFallbackOpen, setRecipientFallbackOpen] = useState(false);
     const [recipientFallbackDefaults, setRecipientFallbackDefaults] = useState<{
         email: string;
@@ -84,6 +86,12 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
         body: string;
     }>({ email: "", name: "", subject: "", body: "" });
     const createOrderSubmitGuardRef = useRef(createInitialOrderSubmitGuardState());
+
+    const configuredOrderSaveRouting = orgPreferences.orders?.saveRoutingMode ?? "save_only";
+    useEffect(() => {
+        if (createTarget !== "order") return;
+        setOrderRouteAfterSave(configuredOrderSaveRouting === "ask_each_time" ? null : configuredOrderSaveRouting);
+    }, [createTarget, configuredOrderSaveRouting]);
 
     const backPath = createTarget === "order" ? ROUTES.orders.list : ROUTES.quotes.list;
 
@@ -923,6 +931,10 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
      * Creates an order directly without creating or converting a quote.
      */
     const handleCreateOrder = async () => {
+        if (configuredOrderSaveRouting === "ask_each_time" && !orderRouteAfterSave) {
+            toast({ title: "Choose what happens after save", description: "Select whether to keep line items on the order or route eligible items.", variant: "destructive" });
+            return;
+        }
         const idempotencyKey = beginCreateOrderSubmit(createOrderSubmitGuardRef.current);
         if (!idempotencyKey) return;
         setCreateOrderSubmitting(true);
@@ -939,6 +951,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
             const payload = {
                 ...state.handlers.buildDirectOrderPayload(idempotencyKey),
                 ...mapShipToPayloadToQuotePatch(draftShipToData),
+                routeAfterSave: orderRouteAfterSave ?? "save_only",
             };
             await createDirectOrderMutation.mutateAsync(payload);
             markCreateOrderSubmitSucceeded(createOrderSubmitGuardRef.current);
@@ -1301,6 +1314,27 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                         />
 
                         {/* Quote Summary / Totals - Moved to left column */}
+                        {createTarget === "order" && !readOnly && (
+                            <Card className="border-primary/20 bg-primary/[0.03]">
+                                <CardContent className="space-y-2 p-4">
+                                    <Label htmlFor="order-route-after-save">After save</Label>
+                                    <Select value={orderRouteAfterSave ?? undefined} onValueChange={(value) => setOrderRouteAfterSave(value as "save_only" | "route_eligible") }>
+                                        <SelectTrigger id="order-route-after-save">
+                                            <SelectValue placeholder="Choose what happens after save" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            <SelectItem value="save_only">Keep line items on Order</SelectItem>
+                                            <SelectItem value="route_eligible">Route eligible line items</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                    <p className="text-xs text-muted-foreground">
+                                        {orderRouteAfterSave === "route_eligible"
+                                            ? "Saved lines enter Design, Proofing, or Prepress only after artwork promotion and eligibility checks pass."
+                                            : "The order is saved without starting workflow ownership."}
+                                    </p>
+                                </CardContent>
+                            </Card>
+                        )}
                         <SummaryCard
                             lineItems={state.lineItems}
                             products={state.products}
@@ -1322,7 +1356,7 @@ export function QuoteEditorPage({ mode = "edit", createTarget = "quote" }: Quote
                             onSave={createTarget === "order" ? handleCreateOrder : handleSave}
                             onSaveAndBack={createTarget === "order" ? undefined : (preferences.afterSaveNavigation === "back" ? undefined : handleSaveAndBack)}
                             afterSaveNavigation={preferences.afterSaveNavigation}
-                            primaryActionLabel={createTarget === "order" ? "Create Order" : undefined}
+                            primaryActionLabel={createTarget === "order" ? (orderRouteAfterSave === "route_eligible" ? "Create & Route Eligible Items" : "Create Order") : undefined}
                             primaryActionSavingLabel={createTarget === "order" ? "Creating Order…" : undefined}
                             onConvertToOrder={createTarget === "order" ? (() => {}) : (() => setShowConvertDialog(true))}
                             canConvertToOrder={state.canConvertToOrder}
