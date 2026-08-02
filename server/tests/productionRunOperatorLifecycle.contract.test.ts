@@ -29,6 +29,15 @@ describe("combined run operator lifecycle contract", () => {
     expect(routes).toContain("return-to-prepress");
   });
 
+  it("preflights every member before mutation and provides an atomic canceled-run repair", () => {
+    expect(service).toContain("const preflight = await Promise.all");
+    expect(service).toContain("PRODUCTION_RUN_RETURN_OWNER_CONFLICT");
+    expect(service).toContain("PRODUCTION_RUN_RETURN_DUPLICATE_PREPRESS_SESSION");
+    expect(service).toContain("PRODUCTION_RUN_RETURN_MEMBER_BLOCKED");
+    expect(service).toContain("completeCanceledProductionRunReturnToPrepress");
+    expect(routes).toContain("complete-return-to-prepress");
+  });
+
   it("renders an explicit operator next step, result workspace, and return action", () => {
     expect(panel).toContain("Current state:");
     expect(panel).toContain("Next:");

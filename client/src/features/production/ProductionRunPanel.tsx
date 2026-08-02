@@ -13,7 +13,7 @@ import {
 } from "@/components/ui/alert-dialog";
 import { useAuth } from "@/hooks/useAuth";
 import {
-  useReconcileCanceledProductionRun,
+  useCompleteProductionRunReturnToPrepress,
   useRepairCompletedProductionRunFulfillmentHandoff,
   useReopenCompletedProductionRun,
   useRecordProductionRunOutcome,
@@ -51,7 +51,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const { user, isAdmin } = useAuth();
   const transition = useTransitionProductionRun();
   const recordOutcome = useRecordProductionRunOutcome();
-  const reconcileCanceledRun = useReconcileCanceledProductionRun();
+  const completeCanceledReturn = useCompleteProductionRunReturnToPrepress();
   const reopenCompletedRun = useReopenCompletedProductionRun();
   const repairFulfillmentHandoff = useRepairCompletedProductionRunFulfillmentHandoff();
   const returnRunToPrepress = useReturnProductionRunToPrepress();
@@ -119,10 +119,13 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         : null;
   const isAdminOrOwner = Boolean(isAdmin || user?.isAdmin || user?.role === "admin" || user?.role === "owner");
   const canReturnEntireRun = isAdminOrOwner && isOperationalRun && run.members.length > 0 && run.members.every((member) => member.successfulQuantity === 0 && member.completedQuantity === 0 && member.damagedQuantity === 0 && member.remainingQuantity === member.allocatedQuantity && member.outcomeStatus === "pending");
+  const strandedCanceledMembers = unfinishedMembers.filter((member) => member.currentWorkflowOwner !== "prepress");
   const canReconcileCanceledRun = isAdminOrOwner
     && run.runStatus === "canceled"
     && unfinishedMembers.length > 0
-    && reconciliationResult?.reconciliationRequired !== false;
+    && strandedCanceledMembers.length > 0;
+  const canceledRunFullyRestored = isAdminOrOwner && run.runStatus === "canceled" && unfinishedMembers.length > 0 && strandedCanceledMembers.length === 0;
+  const returnError = (returnRunToPrepress.error || completeCanceledReturn.error) as (Error & { code?: string | null; details?: { memberId?: string; productionJobId?: string; lineItemId?: string; members?: Array<{ productionJobId?: string }> } | null }) | null;
   const canReopenCompletedRun = isAdminOrOwner && run.runStatus === "completed" && run.members.every((member) => member.outcomeStatus === "completed" && member.remainingQuantity === 0);
   const releaseBlockedReason = action === "release" && replacementRequired
     ? "Nested production file required before release."
@@ -166,9 +169,19 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
     requestAnimationFrame(() => resultsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
   };
   const restoreCanceledRunMembers = () => {
-    reconcileCanceledRun.mutate({ runId: run.id }, {
+    completeCanceledReturn.mutate({ runId: run.id }, {
       onSuccess: (result) => {
-        setReconciliationResult(result);
+        setReconciliationResult({
+          restoredMemberCount: result.restoredMemberJobIds.length,
+          restoredMemberJobIds: result.restoredMemberJobIds,
+          alreadyRestoredMemberCount: result.alreadyReturned ? run.members.length : 0,
+          alreadyRestoredMemberJobIds: [],
+          returnedToExistingQueueMemberCount: 0,
+          returnedToExistingQueueMemberJobIds: [],
+          unresolvedMemberJobIds: [],
+          reconciliationRequired: false,
+          memberResults: result.finalOwners.map((owner) => ({ productionRunMemberId: owner.lineItemId, productionJobId: owner.productionJobId, orderLineItemId: owner.lineItemId, action: "restored" as const, reason: "Completed return to Prepress.", finalWorkflowOwner: owner.owner, productionDestination: run.stationKey, activePrepressSessionCount: 1, duplicateActivePrepressSession: false })),
+        });
         setReconcileConfirmationOpen(false);
       },
     });
@@ -228,8 +241,8 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
             </Button>
           ) : null}
           {canReconcileCanceledRun ? (
-            <Button size="sm" variant="outline" onClick={() => setReconcileConfirmationOpen(true)} disabled={reconcileCanceledRun.isPending}>
-              {reconcileCanceledRun.isPending ? "Restoring Members…" : "Restore Members to Prepress"}
+            <Button size="sm" variant="outline" onClick={() => setReconcileConfirmationOpen(true)} disabled={completeCanceledReturn.isPending}>
+              {completeCanceledReturn.isPending ? "Completing Return…" : "Complete Return to Prepress"}
             </Button>
           ) : null}
           {canReopenCompletedRun ? (
@@ -289,9 +302,17 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           {releaseBlockedReason ?? "Nested production file required before this run can be completed."}
         </div>
       ) : null}
-      {run.runStatus === "canceled" && isAdminOrOwner && unfinishedMembers.length > 0 && reconciliationResult?.reconciliationRequired === false ? (
+      {canceledRunFullyRestored ? (
         <div className="mt-3 rounded-md border border-emerald-500/30 bg-emerald-500/10 px-3 py-2 text-xs text-emerald-100">
-          No stranded members require reconciliation.
+          No stranded members. All unfinished work is already owned by Prepress.
+        </div>
+      ) : null}
+      {returnError ? (
+        <div className="mt-3 rounded-md border border-red-500/40 bg-red-500/10 px-3 py-2 text-xs text-red-100">
+          <div className="font-semibold">Return to Prepress blocked{returnError.code ? ` (${returnError.code})` : ""}</div>
+          <div className="mt-1">{returnError.message}</div>
+          {returnError.details?.productionJobId ? <div className="mt-1">Affected job: {returnError.details.productionJobId}</div> : null}
+          {returnError.details?.members?.length ? <div className="mt-1">Affected jobs: {returnError.details.members.map((member) => member.productionJobId).filter(Boolean).join(", ")}</div> : null}
         </div>
       ) : null}
       <div className="mt-3">
@@ -491,9 +512,9 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
       <AlertDialog open={reconcileConfirmationOpen} onOpenChange={setReconcileConfirmationOpen}>
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Restore members to Prepress?</AlertDialogTitle>
+            <AlertDialogTitle>Complete return of {run.displayNumber} to Prepress?</AlertDialogTitle>
             <AlertDialogDescription>
-              Restore eligible unfinished members from {run.displayNumber} to Prepress? The canceled run and its files will remain in History.
+              This repairs a previously canceled run only after every unfinished member passes ownership and session validation. The run and its files remain in History.
             </AlertDialogDescription>
           </AlertDialogHeader>
           <div className="space-y-2 text-sm">
@@ -505,9 +526,9 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
             </div>
           </div>
           <AlertDialogFooter>
-            <AlertDialogCancel disabled={reconcileCanceledRun.isPending}>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={(event) => { event.preventDefault(); restoreCanceledRunMembers(); }} disabled={reconcileCanceledRun.isPending}>
-              {reconcileCanceledRun.isPending ? "Restoring…" : "Restore Members"}
+            <AlertDialogCancel disabled={completeCanceledReturn.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction onClick={(event) => { event.preventDefault(); restoreCanceledRunMembers(); }} disabled={completeCanceledReturn.isPending}>
+              {completeCanceledReturn.isPending ? "Completing…" : "Complete Return to Prepress"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

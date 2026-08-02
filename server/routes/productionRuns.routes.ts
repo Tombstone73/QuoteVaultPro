@@ -9,6 +9,7 @@ import {
   listProductionRunFiles,
   listProductionRuns,
   ProductionRunError,
+  completeCanceledProductionRunReturnToPrepress,
   recordProductionRunOutcome,
   reconcileCanceledProductionRun,
   returnProductionRunToPrepress,
@@ -72,6 +73,7 @@ const createPrepressSchema = createSchema.extend({
 });
 const transitionSchema = z.object({ action: z.enum(["release", "start", "pause", "complete", "cancel"]), reason: z.string().max(2000).nullable().optional() });
 const returnToPrepressSchema = z.object({ reason: z.enum(["Nesting requires revision", "Artwork correction", "Incorrect production setup", "Run reopened by mistake", "Machine/setup issue", "Other"]).or(z.string().trim().min(1).max(2000)) });
+const completeReturnToPrepressSchema = z.object({ reason: z.string().trim().min(1).max(2000).default("Complete previously failed return to Prepress") });
 const outcomeSchema = z.object({
   idempotencyKey: z.string().max(160).nullable().optional(),
   members: z.array(z.object({
@@ -273,6 +275,18 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
       return res.json({ success: true, data: await returnProductionRunToPrepress({ organizationId, actorUserId, runId: req.params.runId, reason: body.reason }) });
     } catch (error) {
       return handleProductionRunError(res, error, "PRODUCTION_RUN_RETURN_FAILED", "Unable to return the production run to Prepress.");
+    }
+  });
+  app.post("/api/production/runs/:runId/complete-return-to-prepress", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      if (!actorIsAdmin(req)) return res.status(403).json({ success: false, code: "FORBIDDEN", message: "Only an administrator may complete a canceled run return to Prepress." });
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const body = completeReturnToPrepressSchema.parse(req.body ?? {});
+      return res.json({ success: true, data: await completeCanceledProductionRunReturnToPrepress({ organizationId, actorUserId, runId: req.params.runId, reason: body.reason }) });
+    } catch (error) {
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_RETURN_REPAIR_FAILED", "Unable to complete the production run return to Prepress.");
     }
   });
   app.post("/api/production/runs/:runId/reopen-completed", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {

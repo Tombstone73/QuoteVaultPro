@@ -50,7 +50,10 @@ const VALID_TRANSITIONS: Record<LineItemWorkflowState, LineItemWorkflowState[]> 
   ready_for_prepress: ["needs_design", "awaiting_proof_approval", "in_prepress", "ready_for_production", "on_hold", "canceled"],
   in_prepress: ["awaiting_proof_approval", "ready_for_production", "in_design", "needs_design", "on_hold", "canceled"],
   ready_for_production: ["awaiting_proof_approval", "in_production", "in_prepress", "on_hold", "canceled"],
-  in_production: ["completed", "on_hold", "canceled"],
+  // A zero-progress production job may be returned to Prepress by the guarded
+  // production recovery services. Those services perform their own ownership,
+  // fulfillment, and quantity preflight before using this canonical transition.
+  in_production: ["completed", "in_prepress", "on_hold", "canceled"],
   completed: [],
   on_hold: [],
   canceled: [],

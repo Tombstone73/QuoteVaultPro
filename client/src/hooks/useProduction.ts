@@ -818,18 +818,45 @@ export function useReturnProductionRunToPrepress() {
         method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(args),
       });
       const json = await res.json().catch(() => ({}));
-      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Unable to return the run to Prepress");
-      return json.data as { restoredMemberJobIds: string[]; preservedProductionDestination: string; alreadyReturned: boolean };
+      if (!res.ok || json?.success === false) {
+        const error = Object.assign(new Error(json?.message || json?.error || "Unable to return the run to Prepress"), { code: json?.code ?? null, details: json?.details ?? null });
+        throw error;
+      }
+      return json.data as { restoredMemberJobIds: string[]; preservedProductionDestination: string; alreadyReturned: boolean; finalOwners?: Array<{ productionJobId: string; lineItemId: string; owner: string }> };
     },
     onSuccess: (data) => {
       invalidateProduction(qc);
       qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
       qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/fulfillment"] });
       qc.invalidateQueries({ queryKey: ["/api/orders"] });
       qc.invalidateQueries({ queryKey: ["/api/operational-summary"] });
       toast({ title: "Run returned to Prepress", description: data.alreadyReturned ? "The run was already returned safely." : `${data.restoredMemberJobIds.length} member jobs were returned to Prepress.` });
     },
     onError: (error: Error) => toast({ title: "Return to Prepress failed", description: error.message, variant: "destructive" }),
+  });
+}
+
+export function useCompleteProductionRunReturnToPrepress() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; reason?: string }) => {
+      const res = await fetch(`/api/production/runs/${args.runId}/complete-return-to-prepress`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify({ reason: args.reason || "Complete previously failed return to Prepress" }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw Object.assign(new Error(json?.message || json?.error || "Unable to complete the return to Prepress"), { code: json?.code ?? null, details: json?.details ?? null });
+      return json.data as { restoredMemberJobIds: string[]; finalOwners: Array<{ productionJobId: string; lineItemId: string; owner: string }>; alreadyReturned: boolean };
+    },
+    onSuccess: (data) => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/fulfillment"] });
+      toast({ title: "Return to Prepress completed", description: data.alreadyReturned ? "All members were already restored safely." : `${data.restoredMemberJobIds.length} member jobs were restored to Prepress.` });
+    },
+    onError: (error: Error) => toast({ title: "Complete return failed", description: error.message, variant: "destructive" }),
   });
 }
 

@@ -1,3 +1,5 @@
+import fs from "node:fs";
+import path from "node:path";
 import { productionRunToBoardItem } from "@/lib/productionRuns";
 import { filterProductionJobsForTab, getProductionTabCounts } from "@/lib/productionBoard";
 import type { ProductionRunListItem } from "@/hooks/useProduction";
@@ -118,5 +120,18 @@ describe("productionRunToBoardItem", () => {
     const reopenedBoardItem = productionRunToBoardItem({ ...run, status: "in_progress", runStatus: "in_production" });
     expect(filterProductionJobsForTab([reopenedBoardItem], "in_progress")).toHaveLength(1);
     expect(getProductionTabCounts([reopenedBoardItem]).in_progress).toBe(1);
+  });
+});
+
+describe("combined run return repair presentation", () => {
+  const root = process.cwd();
+  const panel = fs.readFileSync(path.join(root, "client/src/features/production/ProductionRunPanel.tsx"), "utf8");
+  const hooks = fs.readFileSync(path.join(root, "client/src/hooks/useProduction.ts"), "utf8");
+
+  it("offers the explicit canceled-run repair and renders exact return blockers", () => {
+    expect(panel).toContain("Complete Return to Prepress");
+    expect(panel).toContain("Return to Prepress blocked");
+    expect(panel).toContain("Affected jobs:");
+    expect(hooks).toContain("complete-return-to-prepress");
   });
 });
