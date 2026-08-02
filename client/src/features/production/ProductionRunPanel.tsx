@@ -76,6 +76,9 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const mismatch = placements > 0 && placements !== run.totalAllocatedQuantity;
   const activeFileCount = run.fileCount ?? run.files?.filter((file) => file.status === "active").length ?? 0;
   const reopened = run.members.some((member) => String(member.operatorNote || "").startsWith("Completion reopened:"));
+  const recoveryReasons = Array.from(new Set(run.members
+    .map((member) => String(member.operatorNote || "").replace(/^Completion reopened:\s*/, "").trim())
+    .filter(Boolean)));
   const replacementRequired = run.replacementRequired ?? activeFileCount === 0;
   const unfinishedMembers = run.members.filter((member) => member.remainingQuantity > 0);
   const resultRows = run.members.map((member) => {
@@ -173,6 +176,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           <div className="mt-1 text-xs text-titan-text-muted">
             Order {run.orderNumber} - {run.customerName} - {run.memberCount} line items
           </div>
+          {reopened && recoveryReasons.length ? <div className="mt-1 text-xs text-amber-200">Recovery reason: {recoveryReasons.join(" · ")}</div> : null}
         </div>
         <div className="flex flex-wrap gap-2">
           {action && action !== "complete" ? (

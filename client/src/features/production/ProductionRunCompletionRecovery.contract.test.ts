@@ -10,6 +10,7 @@ describe("combined run completion recovery UI contract", () => {
     expect(source).toContain('if (runStatus === "ready_for_production") return "start"');
     expect(source).toContain('if (runStatus === "in_production") return "complete"');
     expect(source).toContain("Reopen Mistaken Completion");
+    expect(source).toContain("Recovery reason:");
     expect(source).toContain("Recovery reason");
     expect(hooks).toContain("useReopenCompletedProductionRun");
     expect(hooks).toContain("reopen-completed");
