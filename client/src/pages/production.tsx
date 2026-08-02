@@ -6,8 +6,9 @@ import { Input } from "@/components/ui/input";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ROUTES } from "@/config/routes";
-import { useProductionConfig, useProductionJobs, useRecentlyCompletedProductionJobs } from "@/hooks/useProduction";
+import { useProductionConfig, useProductionJobs, useProductionRuns, useRecentlyCompletedProductionJobs } from "@/hooks/useProduction";
 import ProductionViewRenderer from "@/features/production/ProductionViewRenderer";
+import { productionRunToBoardItem } from "@/lib/productionRuns";
 import ProductionOverviewPage from "@/features/production/views/ProductionOverviewPage";
 import {
   getProductionTabCountsWithRecentlyCompleted,
@@ -127,9 +128,25 @@ export default function ProductionBoard() {
     { enabled: !!activeStation && !isLoading && !error && hasImplementedEnabledView },
   );
 
+  // Combined Runs are the canonical board containers for their member jobs.
+  // Keep their query at the same level as the tab counters so a suppressed
+  // member set cannot make the active board look empty.
+  const { data: stationRuns, isLoading: runsLoading, error: runsError } = useProductionRuns(
+    activeStation ? { station: activeStation } : undefined,
+    { enabled: !!activeStation && !isLoading && !error && hasImplementedEnabledView },
+  );
+
+  const stationBoardItems = useMemo(
+    () => [
+      ...(stationRuns ?? []).map(productionRunToBoardItem),
+      ...(stationJobs ?? []),
+    ],
+    [stationJobs, stationRuns],
+  );
+
   const tabCounts = useMemo(
-    () => getProductionTabCountsWithRecentlyCompleted(stationJobs ?? [], recentlyCompletedJobs?.length ?? 0),
-    [recentlyCompletedJobs?.length, stationJobs],
+    () => getProductionTabCountsWithRecentlyCompleted(stationBoardItems, recentlyCompletedJobs?.length ?? 0),
+    [recentlyCompletedJobs?.length, stationBoardItems],
   );
 
   const stationToolbar = activeStation ? (
@@ -281,7 +298,7 @@ export default function ProductionBoard() {
                 {stationToolbar}
 
                 {/* Production view content */}
-                {jobsLoading ? (
+                {jobsLoading || runsLoading ? (
                   <Card className="bg-titan-bg-card border-titan-border-subtle">
                     <CardContent className="p-4 text-sm text-titan-text-muted">Loading production jobs…</CardContent>
                   </Card>
@@ -290,7 +307,7 @@ export default function ProductionBoard() {
                     <CardContent className="p-4 text-sm text-titan-text-muted">Failed to load production jobs.</CardContent>
                   </Card>
                 ) : (
-                  <ProductionViewRenderer viewKey="flatbed" status={status} jobs={stationJobs ?? []} />
+                  <ProductionViewRenderer viewKey="flatbed" status={status} jobs={stationJobs ?? []} runs={stationRuns ?? []} runsError={runsError} />
                 )}
               </div>
             )}
@@ -364,7 +381,7 @@ export default function ProductionBoard() {
                 {stationToolbar}
 
                 {/* Production view content */}
-                {jobsLoading ? (
+                {jobsLoading || runsLoading ? (
                   <Card className="bg-titan-bg-card border-titan-border-subtle">
                     <CardContent className="p-4 text-sm text-titan-text-muted">Loading production jobs…</CardContent>
                   </Card>
@@ -373,7 +390,7 @@ export default function ProductionBoard() {
                     <CardContent className="p-4 text-sm text-titan-text-muted">Failed to load production jobs.</CardContent>
                   </Card>
                 ) : (
-                  <ProductionViewRenderer viewKey="roll" status={status} jobs={stationJobs ?? []} />
+                  <ProductionViewRenderer viewKey="roll" status={status} jobs={stationJobs ?? []} runs={stationRuns ?? []} runsError={runsError} />
                 )}
               </div>
             )}

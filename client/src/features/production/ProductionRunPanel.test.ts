@@ -1,4 +1,5 @@
 import { productionRunToBoardItem } from "@/lib/productionRuns";
+import { filterProductionJobsForTab, getProductionTabCounts } from "@/lib/productionBoard";
 import type { ProductionRunListItem } from "@/hooks/useProduction";
 
 describe("productionRunToBoardItem", () => {
@@ -111,5 +112,8 @@ describe("productionRunToBoardItem", () => {
     expect(boardItem.media).toBe("2 line items");
     expect(boardItem.productionFiles).toHaveLength(1);
     expect(boardItem.order.productionFiles[0].fileName).toBe("nested-final.pdf");
+    const reopenedBoardItem = productionRunToBoardItem({ ...run, status: "in_progress", runStatus: "in_production" });
+    expect(filterProductionJobsForTab([reopenedBoardItem], "in_progress")).toHaveLength(1);
+    expect(getProductionTabCounts([reopenedBoardItem]).in_progress).toBe(1);
   });
 });

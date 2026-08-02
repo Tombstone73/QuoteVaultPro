@@ -33,11 +33,11 @@ import {
   ProductionFileSummary,
   ProductionOrderArtworkSummary,
   ProductionOrderLineItemSummary,
+  type ProductionRunListItem,
   useAddProductionNote,
   useCompleteProductionJob,
   useProductionJob,
   useProductionJobs,
-  useProductionRuns,
   useReopenProductionJob,
   useSubmitReprintRequest,
   useSetProductionMediaUsed,
@@ -1465,7 +1465,7 @@ function PreviewDisabledHint() {
   );
 }
 
-export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus; jobs?: ProductionJobListItem[] }) {
+export default function FlatbedProductionView(props: { viewKey: string; status: ProductionStatus; jobs?: ProductionJobListItem[]; runs: ProductionRunListItem[]; runsError?: Error | null }) {
   const { toast } = useToast();
   const { preferences } = useOrgPreferences();
   const productionNumberDisplayMode = preferences.production?.documentNumberDisplayMode ?? "full";
@@ -1477,13 +1477,6 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   const { data, isLoading, error } = useProductionJobs(
     { view: props.viewKey },
     { enabled: shouldFetchJobs },
-  );
-  const { data: runData } = useProductionRuns(
-    { view: props.viewKey },
-    // The parent page supplies standalone jobs, but Combined Runs have a
-    // separate canonical endpoint.  Do not suppress it or an active reopened
-    // run can hide every member while no run card is rendered.
-    { enabled: true },
   );
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [bulkSelectedJobIds, setBulkSelectedJobIds] = useState<Set<string>>(new Set());
@@ -1523,10 +1516,10 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
   const tabJobs = useMemo(
     () => {
       const jobs = props.jobs ?? data ?? [];
-      const runs = (runData ?? []).map(productionRunToBoardItem);
+      const runs = props.runs.map(productionRunToBoardItem);
       return filterProductionJobsForTab([...runs, ...jobs], props.status);
     },
-    [data, props.jobs, props.status, runData, shouldFetchJobs],
+    [data, props.jobs, props.runs, props.status],
   );
   const printerOptions = useMemo(() => {
     const names = new Set<string>();
@@ -1675,6 +1668,17 @@ export default function FlatbedProductionView(props: { viewKey: string; status: 
       <Card className="bg-titan-bg-card border-titan-border-subtle">
         <CardContent className="p-4 text-sm text-titan-text-muted">
           Failed to load production jobs.
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (props.runsError && tabJobs.length === 0) {
+    return (
+      <Card className="border-amber-400/50 bg-amber-400/10">
+        <CardContent className="p-4 text-sm text-titan-text-primary">
+          <div className="font-medium">Combined Run visibility needs attention</div>
+          <div className="mt-1 text-titan-text-muted">Active run containers could not be loaded, so grouped member work is not shown as standalone jobs. Refresh the board or contact an administrator if this persists.</div>
         </CardContent>
       </Card>
     );
