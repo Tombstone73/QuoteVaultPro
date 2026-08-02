@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect, useMemo } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { usePageVisible } from "@/hooks/usePageVisible";
+import { useAuth } from "@/hooks/useAuth";
 import { Button } from "@/components/ui/button";
 import { useToast } from "@/hooks/use-toast";
 import { Paperclip, Upload, Download, X, Loader2, Image, FileText, File, ChevronDown, ChevronUp, Sparkles, Eye } from "lucide-react";
@@ -138,6 +139,7 @@ export function LineItemAttachmentsPanel({
   lineQuantity,
 }: LineItemAttachmentsPanelProps) {
   const { toast } = useToast();
+  const { user } = useAuth();
   const queryClient = useQueryClient();
   const isPageVisible = usePageVisible();
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -148,6 +150,7 @@ export function LineItemAttachmentsPanel({
   const [userClosed, setUserClosed] = useState(false); // Track if user explicitly closed the panel
   const [isCreatingQuote, setIsCreatingQuote] = useState(false);
   const [isPersistingLineItem, setIsPersistingLineItem] = useState(false);
+  const [isRepairingRelationships, setIsRepairingRelationships] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [uncontrolledUseSameArtworkBothSides, setUncontrolledUseSameArtworkBothSides] = useState(false);
   const useSameArtworkBothSides = controlledUseSameArtworkBothSides ?? uncontrolledUseSameArtworkBothSides;
@@ -656,6 +659,31 @@ export function LineItemAttachmentsPanel({
     }
   };
 
+  const canRepairArtworkRelationships = parentType === "order" && Boolean(orderId && lineItemId) && ["owner", "admin"].includes(String(user?.role ?? "").toLowerCase());
+  const handleRepairArtworkRelationships = async () => {
+    if (!orderId || !lineItemId) return;
+    setIsRepairingRelationships(true);
+    try {
+      const response = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/repair-artwork-relationships`, {
+        method: "POST", credentials: "include",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Failed to repair artwork relationships.");
+      const result = payload?.data ?? {};
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: [filesApiPath] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/orders", orderId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/prepress/queue"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+      ]);
+      toast({ title: "Artwork relationships repaired", description: `${result.retiredRelationshipIds?.length ?? 0} duplicate mirror${(result.retiredRelationshipIds?.length ?? 0) === 1 ? "" : "s"} retired.` });
+    } catch (error: any) {
+      toast({ title: "Artwork relationship repair failed", description: error?.message || "Please review the relationships manually.", variant: "destructive" });
+    } finally {
+      setIsRepairingRelationships(false);
+    }
+  };
+
   // Handle file download - downloads the ORIGINAL file via proxy endpoint
   // The proxy endpoint uses attachment.fileUrl (original storage key), not thumbKey/previewKey
   const handleDownloadFile = async (fileId: string, fileName: string) => {
@@ -848,6 +876,12 @@ export function LineItemAttachmentsPanel({
               </span>
             )}
           </div>
+          <div className="flex items-center gap-1">
+          {canRepairArtworkRelationships && (
+            <Button type="button" variant="ghost" size="sm" className="h-7 px-2 text-xs" onClick={() => void handleRepairArtworkRelationships()} disabled={isRepairingRelationships}>
+              {isRepairingRelationships ? "Repairing…" : "Repair artwork relationships"}
+            </Button>
+          )}
           {fileCount > 0 && (
             <Button 
               variant="ghost" 
@@ -870,6 +904,7 @@ export function LineItemAttachmentsPanel({
               )}
             </Button>
           )}
+          </div>
         </div>
 
         {/* Upload button - always visible when no files, or when expanded */}

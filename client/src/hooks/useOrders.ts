@@ -298,6 +298,7 @@ export type PrepressQueueItem = {
     requiredQuantity: number | null;
     valid: boolean;
     issue: string | null;
+    relationshipInconsistency?: string | null;
     designs: Array<{
       id: string;
       source: "final_production" | "customer_artwork";

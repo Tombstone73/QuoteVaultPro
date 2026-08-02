@@ -1152,6 +1152,7 @@ export async function registerOrderRoutes(
             mimeType: args.attachment.mimeType,
             sizeBytes: args.attachment.sizeBytes ?? args.attachment.fileSize,
             fileRecordId: args.attachment.fileRecordId ?? null,
+            sourceOrderAttachmentId: args.attachment.id ?? null,
             uploadedByUserId: args.userId,
         });
     };

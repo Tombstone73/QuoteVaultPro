@@ -1111,24 +1111,6 @@ export function registerPrepressQueueRoutes(
             .groupBy(lineItemFiles.lineItemId, lineItemFiles.role)
         : [];
 
-      // Bridge counts from order_attachments so the badge reflects artwork uploaded
-      // before the order entered prepress (e.g. customer checkout uploads).
-      const bridgedCounts: { lineItemId: string | null; count: number }[] =
-        lineItemIdsForQueue.length > 0
-          ? await db
-              .select({
-                lineItemId: orderAttachments.orderLineItemId,
-                count: sql<number>`count(*)::int`,
-              })
-              .from(orderAttachments)
-              .where(and(
-                inArray(orderAttachments.orderLineItemId as any, lineItemIdsForQueue),
-                sql`coalesce(${orderAttachments.role}::text, 'other') <> 'proof'`,
-                sql`coalesce(${orderAttachments.description}, '') not like ${`%${GENERATED_PROOF_DESCRIPTION_MARKER}%`}`,
-              ))
-              .groupBy(orderAttachments.orderLineItemId)
-          : [];
-
       const previewFiles = lineItemIdsForQueue.length > 0
         ? await db
             .select({
@@ -1162,6 +1144,7 @@ export function registerPrepressQueueRoutes(
               side: lineItemFiles.sourceArtworkSide,
               productionQuantity: lineItemFiles.productionQuantity,
               productionGroupId: lineItemFiles.productionGroupId,
+              sourceOrderAttachmentId: lineItemFiles.sourceOrderAttachmentId,
             })
             .from(lineItemFiles)
             .where(and(
@@ -1233,6 +1216,7 @@ export function registerPrepressQueueRoutes(
               side: lineItemFiles.sourceArtworkSide,
               productionQuantity: lineItemFiles.productionQuantity,
               productionGroupId: lineItemFiles.productionGroupId,
+              sourceOrderAttachmentId: lineItemFiles.sourceOrderAttachmentId,
             })
             .from(lineItemFiles)
             .where(and(
@@ -1246,7 +1230,45 @@ export function registerPrepressQueueRoutes(
       const customerLogOnce = createRequestLogOnce();
       const enrichedCustomerArtworkRows = await Promise.all(customerArtworkRows.map((row) => enrichAttachmentWithUrls(row, { logOnce: customerLogOnce })));
       const customerArtworkByLineItem = new Map<string, any[]>();
+      const activeOrderAttachmentIds = new Set(enrichedCustomerArtworkRows.map((row) => String(row.id)));
+      const activeOrderAttachmentsByFileRecord = new Map<string, any[]>();
+      const artworkRelationshipIssueByLineItem = new Map<string, string>();
+      for (const row of enrichedCustomerArtworkRows) {
+        if (!row.lineItemId || !row.fileRecordId) continue;
+        const relationshipKey = `${String(row.lineItemId)}:${String(row.fileRecordId)}`;
+        activeOrderAttachmentsByFileRecord.set(relationshipKey, [
+          ...(activeOrderAttachmentsByFileRecord.get(relationshipKey) ?? []),
+          row,
+        ]);
+      }
       for (const row of originalArtworkRows) {
+        // Direct-order promotion creates a line_item_files original as a
+        // traceability mirror of order_attachments.  It is not a second source
+        // artwork relationship. Prefer the Order attachment, and retain an
+        // old mirror only when no active canonical attachment identifies it.
+        const matchingAttachments = row.fileRecordId
+          ? activeOrderAttachmentsByFileRecord.get(`${String(row.lineItemId)}:${String(row.fileRecordId)}`) ?? []
+          : [];
+        const mirroredByProvenance = Boolean(row.sourceOrderAttachmentId && activeOrderAttachmentIds.has(String(row.sourceOrderAttachmentId)));
+        // A legacy mirror without provenance can only be inferred when exactly
+        // one active Order attachment has the same canonical file record.
+        // Multiple matches are intentionally left visible and blocking so an
+        // admin can repair them without the server guessing which is canonical.
+        const safelyInferredLegacyMirror = !row.sourceOrderAttachmentId && matchingAttachments.length === 1;
+        if (mirroredByProvenance) continue;
+        if (safelyInferredLegacyMirror) {
+          artworkRelationshipIssueByLineItem.set(
+            row.lineItemId,
+            "Artwork relationship inconsistency detected. A duplicate source-art mirror was excluded; an admin can repair it permanently.",
+          );
+          continue;
+        }
+        if (!row.sourceOrderAttachmentId && matchingAttachments.length > 1) {
+          artworkRelationshipIssueByLineItem.set(
+            row.lineItemId,
+            "Artwork relationship inconsistency detected. Multiple active attachments share a legacy mirror and require admin review.",
+          );
+        }
         const thumbnail = row.fileRecordId
           ? await resolveDerivativeFileAccess({ id: row.id, fileRecordId: row.fileRecordId }, "thumbnail")
           : { url: null };
@@ -1513,8 +1535,7 @@ export function registerPrepressQueueRoutes(
       // Map to flat QueueItem shape the frontend expects
       const queue = queueItems.map((item, index) => {
         const counts = fileCounts.filter((fc) => fc.lineItemId === item.lineItemId);
-        const originals = (counts.find((c) => c.role === "original")?.count || 0)
-          + (bridgedCounts.find((bc) => bc.lineItemId === item.lineItemId)?.count || 0);
+        const originals = customerArtworkByLineItem.get(item.lineItemId)?.length ?? 0;
         const finals = counts.find((c) => c.role === "final")?.count || 0;
         const latestSession = latestSessionByLineItem.get(item.lineItemId);
         const computedSqFt = computeTotalSqFt({
@@ -1598,6 +1619,7 @@ export function registerPrepressQueueRoutes(
             : null;
         const finalArtwork = finalArtworkByLineItem.get(item.lineItemId) ?? [];
         const customerArtwork = customerArtworkByLineItem.get(item.lineItemId) ?? [];
+        const artworkRelationshipIssue = artworkRelationshipIssueByLineItem.get(item.lineItemId) ?? null;
         const artworkBreakdownDesigns = finalArtwork.length > 0 ? finalArtwork : customerArtwork;
         const artworkAllocation = buildArtworkAllocationStatus({
           lineQuantity: item.quantity,
@@ -1691,10 +1713,11 @@ export function registerPrepressQueueRoutes(
             productionArtStatus: finalArtwork.length > 0 ? "Production art" : customerArtwork.length > 0 ? "Needs production-art assignment" : "No artwork",
             allocatedTotal: artworkAllocation.allocatedTotal,
             requiredQuantity: artworkAllocation.requiredQuantity,
-            valid: artworkAllocation.valid && finalArtwork.length > 0,
-            issue: finalArtwork.length === 0 && customerArtwork.length > 0
+            valid: artworkAllocation.valid && finalArtwork.length > 0 && !artworkRelationshipIssue,
+            issue: artworkRelationshipIssue ?? (finalArtwork.length === 0 && customerArtwork.length > 0
               ? "Production artwork is not assigned yet."
-              : artworkAllocation.issue,
+              : artworkAllocation.issue),
+            relationshipInconsistency: artworkRelationshipIssue,
             designs: artworkBreakdownDesigns,
           },
           useSameArtworkBothSides: artworkSideIntent.useSameArtworkBothSides,

@@ -586,6 +586,7 @@ export default function PrepressProductionPageV2() {
   const userId = user?.id ?? null;
   const normalizedUserRole = String((user as any)?.orgRole || user?.role || "").toLowerCase();
   const canRemoveProductionFiles = ["owner", "admin", "manager"].includes(normalizedUserRole) || (user as any)?.isAdmin === true;
+  const canRepairArtworkRelationships = ["owner", "admin"].includes(normalizedUserRole) || (user as any)?.isAdmin === true;
   
   // UI State
   const [selectedLineItemId, setSelectedLineItemId] = useState<string | null>(null);
@@ -775,6 +776,34 @@ export default function PrepressProductionPageV2() {
     await queryClient.invalidateQueries({ queryKey });
     await queryClient.refetchQueries({ queryKey, type: "active" });
   }, [queryClient]);
+
+  const repairArtworkRelationshipsMutation = useMutation({
+    mutationFn: async ({ orderId, lineItemId }: { orderId: string; lineItemId: string }) => {
+      const response = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/repair-artwork-relationships`, {
+        method: "POST",
+        credentials: "include",
+      });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload?.error || "Unable to repair artwork relationships.");
+      return payload?.data ?? {};
+    },
+    onSuccess: async (result, variables) => {
+      await Promise.all([
+        refreshPrepressQueue(),
+        refreshLineItemQueries(variables.lineItemId),
+        queryClient.invalidateQueries({ queryKey: ["/api/orders", variables.orderId] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/jobs"] }),
+        queryClient.invalidateQueries({ queryKey: ["/api/production/runs"] }),
+      ]);
+      toast({
+        title: "Artwork relationships repaired",
+        description: `${result?.retiredRelationshipIds?.length ?? 0} duplicate mirror${(result?.retiredRelationshipIds?.length ?? 0) === 1 ? "" : "s"} retired.`,
+      });
+    },
+    onError: (error: Error) => {
+      toast({ title: "Artwork relationship repair failed", description: error.message, variant: "destructive" });
+    },
+  });
 
   const refreshCombinedRunArtworkForLineItem = React.useCallback(async (lineItemId: string | null) => {
     if (!lineItemId) return;
@@ -4613,6 +4642,27 @@ export default function PrepressProductionPageV2() {
             <h3 className="text-xs font-bold uppercase tracking-widest text-slate-500 mb-4 flex items-center gap-2">
               <CheckCircle className="w-4 h-4" /> {selectedItem?.hasCompletedSession ? "Final Production Files" : "Production Art Candidate"}
             </h3>
+
+            {selectedItem?.artworkProductionBreakdown?.relationshipInconsistency ? (
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                <div>
+                  <div className="font-semibold">Artwork relationship inconsistency detected</div>
+                  <div className="mt-1 text-amber-100/80">{selectedItem.artworkProductionBreakdown.relationshipInconsistency}</div>
+                </div>
+                {canRepairArtworkRelationships ? (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    className="border-amber-400/50 bg-transparent text-amber-100 hover:bg-amber-500/20"
+                    disabled={repairArtworkRelationshipsMutation.isPending}
+                    onClick={() => repairArtworkRelationshipsMutation.mutate({ orderId: selectedItem.orderId, lineItemId: selectedItem.lineItemId })}
+                  >
+                    {repairArtworkRelationshipsMutation.isPending ? "Repairing…" : "Repair automatically"}
+                  </Button>
+                ) : null}
+              </div>
+            ) : null}
 
             {visibleFinalFiles.length === 0 && selectedItem?.artworkProductionBreakdown?.designs?.length ? (
               <div className="mb-4">

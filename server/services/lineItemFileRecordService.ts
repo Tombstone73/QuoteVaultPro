@@ -16,6 +16,7 @@ type CreateLineItemFileRecordInput = {
   storageBucket?: string | null;
   storageKey?: string | null;
   tag?: string | null;
+  sourceOrderAttachmentId?: string | null;
 };
 
 export async function createLineItemFileRecord(input: CreateLineItemFileRecordInput) {
@@ -33,6 +34,7 @@ export async function createLineItemFileRecord(input: CreateLineItemFileRecordIn
     storageBucket,
     storageKey,
     tag,
+    sourceOrderAttachmentId,
   } = input;
 
   const conditions = [
@@ -79,6 +81,16 @@ export async function createLineItemFileRecord(input: CreateLineItemFileRecordIn
     .limit(1);
 
   if (existing) {
+    // Backfill provenance only when this is the same canonical source record.
+    // It lets downstream reads distinguish an Order relationship from its
+    // prepress mirror without treating a filename as an identity.
+    if (sourceOrderAttachmentId && !existing.sourceOrderAttachmentId) {
+      const [updated] = await db.update(lineItemFiles)
+        .set({ sourceOrderAttachmentId })
+        .where(eq(lineItemFiles.id, existing.id))
+        .returning();
+      return updated ?? existing;
+    }
     return existing;
   }
 
@@ -100,6 +112,7 @@ export async function createLineItemFileRecord(input: CreateLineItemFileRecordIn
       mimeType: mimeType || "application/octet-stream",
       sizeBytes: Math.max(0, Number(sizeBytes || 0)),
       supersedesFileId: null,
+      sourceOrderAttachmentId: sourceOrderAttachmentId ?? null,
       createdByUserId: uploadedByUserId,
     })
     .returning();

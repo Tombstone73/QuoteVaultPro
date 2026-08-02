@@ -51,6 +51,7 @@ import {
   removeArtworkFileReferencesFromSpecs,
 } from "@shared/artworkSideAssignment";
 import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
+import { repairArtworkRelationshipsForLineItem } from "../services/artworkRelationshipRepairService";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -99,6 +100,28 @@ export function registerOrderLineItemFileRoutes(
   const { isAuthenticated, tenantContext } = middleware;
 
   // ===== ORDER LINE ITEM FILE ROUTES =====
+
+  app.post("/api/orders/:orderId/line-items/:lineItemId/repair-artwork-relationships", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      const actorUserId = getUserId(req.user);
+      const role = String(req.user?.role ?? req.user?.claims?.role ?? "").toLowerCase();
+      if (!organizationId || !actorUserId) return res.status(401).json({ error: "Authentication and organization context are required." });
+      if (role !== "owner" && role !== "admin") return res.status(403).json({ error: "Only owners and admins can repair artwork relationships." });
+      const result = await repairArtworkRelationshipsForLineItem({
+        organizationId,
+        orderId: String(req.params.orderId),
+        lineItemId: String(req.params.lineItemId),
+        actorUserId,
+        actorName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+      });
+      return res.json({ success: true, data: result });
+    } catch (error: any) {
+      if (error?.statusCode === 404) return res.status(404).json({ error: error.message });
+      console.error("[OrderLineItemFiles:REPAIR_ARTWORK_RELATIONSHIPS] Failed", error);
+      return res.status(500).json({ error: "Failed to repair artwork relationships." });
+    }
+  });
 
   // Get files for an order line item (mirroring quote line item pattern)
   app.get("/api/orders/:orderId/line-items/:lineItemId/files", isAuthenticated, tenantContext, async (req: any, res) => {
@@ -968,23 +991,39 @@ export function registerOrderLineItemFileRoutes(
       if (!li) return res.status(404).json({ error: 'Line item not found' });
 
       // First try: DB-backed order attachments (some legacy/alternate UIs store these here)
-      const deletedAttachment = await db.delete(orderAttachments)
-        .where(and(
-          eq(orderAttachments.id, fileId),
-          eq(orderAttachments.orderId, orderId),
-          eq(orderAttachments.orderLineItemId, lineItemId)
-        ))
-        .returning({
-          id: orderAttachments.id,
-          fileRecordId: orderAttachments.fileRecordId,
-          storageProvider: orderAttachments.storageProvider,
-          fileUrl: orderAttachments.fileUrl,
-          relativePath: orderAttachments.relativePath,
-          thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
-          thumbKey: orderAttachments.thumbKey,
-          previewKey: orderAttachments.previewKey,
-          side: orderAttachments.side,
-        });
+      const deletedAttachment = await db.transaction(async (tx) => {
+        // Do this before deleting the attachment: the foreign key deliberately
+        // nulls sourceOrderAttachmentId on delete, which would otherwise erase
+        // the only safe identity for the original-file mirror.
+        await tx.update(lineItemFiles)
+          .set({ status: "retired" })
+          .where(and(
+            eq(lineItemFiles.organizationId, organizationId),
+            eq(lineItemFiles.orderId, orderId),
+            eq(lineItemFiles.lineItemId, lineItemId),
+            eq(lineItemFiles.role, "original"),
+            eq(lineItemFiles.status, "active"),
+            eq(lineItemFiles.sourceOrderAttachmentId, fileId),
+          ));
+        const removed = await tx.delete(orderAttachments)
+          .where(and(
+            eq(orderAttachments.id, fileId),
+            eq(orderAttachments.orderId, orderId),
+            eq(orderAttachments.orderLineItemId, lineItemId)
+          ))
+          .returning({
+            id: orderAttachments.id,
+            fileRecordId: orderAttachments.fileRecordId,
+            storageProvider: orderAttachments.storageProvider,
+            fileUrl: orderAttachments.fileUrl,
+            relativePath: orderAttachments.relativePath,
+            thumbnailRelativePath: orderAttachments.thumbnailRelativePath,
+            thumbKey: orderAttachments.thumbKey,
+            previewKey: orderAttachments.previewKey,
+            side: orderAttachments.side,
+          });
+        return removed;
+      });
 
       if (deletedAttachment.length) {
         const record = deletedAttachment[0];

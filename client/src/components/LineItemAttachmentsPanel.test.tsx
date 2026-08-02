@@ -11,6 +11,10 @@ jest.mock("@/lib/apiConfig", () => ({
   resolveObjectsPublicUrl: (value: string) => value,
 }));
 
+jest.mock("@/hooks/useAuth", () => ({
+  useAuth: () => ({ user: { role: "staff" } }),
+}));
+
 jest.mock("@/lib/getThumbSrc", () => ({ getThumbSrc: () => null }));
 
 jest.mock("@/components/AttachmentViewerDialog", () => ({
