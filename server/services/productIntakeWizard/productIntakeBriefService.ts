@@ -19,6 +19,7 @@ import { createConfiguredAiProvider } from "../ai/providers/configuredProvider";
 import { AiProviderTimeoutError, AiProviderUnavailableError, type AiProviderAdapter } from "../ai/providers/AiProviderAdapter";
 import type { ProductIntakeAiDiagnosticsStore } from "./productIntakeDiagnosticsService";
 import { normalizeChoiceLabels, stripDefaultChoiceAnnotation } from "./productIntakeOptionHelpers";
+import { hasCompleteNaturalLanguageQuantityTiers, parseNaturalLanguageQuantityTiers } from "./quantityTierParsing";
 
 export type ProductIntakeTemplateReference = {
   id: string;
@@ -159,10 +160,11 @@ type TextDescriptionSignals = {
 function extractTextDescriptionSignals(description: string): TextDescriptionSignals {
   const normalized = normalizeText(description);
   const lines = description.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const calledProductName = description.match(/\b(?:new\s+)?product\s+called\s+["“]?(.+?)["”]?(?=[.!?]|$)/i)?.[1]?.trim() ?? null;
   const explicitProductName = description.match(/\b(?:product\s+draft|product)\s+named\s+["“]?(.+?)["”]?(?=(?:[.!?]\s*(?:sell|use|allow|route|with|add)\b)|$)/i)?.[1]?.trim() ?? null;
   const materialReferences: string[] = [];
   const customSize = /custom\s+(?:width\s+and\s+height|size)|width\s+and\s+height/i.test(description);
-  const quantityBasedPricing = /quantity[\s-]*(?:based|tier|break|pricing)|qty[\s-]*(?:based|tier|break|pricing)/i.test(description);
+  const quantityBasedPricing = /quantity[\s-]*(?:based|tier|break|pricing)|qty[\s-]*(?:based|tier|break|pricing)/i.test(description) || hasCompleteNaturalLanguageQuantityTiers(description);
   const sizeMatches = Array.from(description.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*(?:[xX]|\u00D7)\s*(\d{1,3}(?:\.\d+)?)\b/gi))
     .map((match) => `${match[1]}x${match[2]}`);
 
@@ -254,6 +256,7 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const acrylicName = isAcrylicSign ? titleCaseProductName(`${acrylicMm ? `${acrylicMm}mm ` : ""}Acrylic Signs`) : null;
   const pvcName = isPvcSign ? titleCaseProductName(`${pvcMm ? `${pvcMm}mm ` : ""}PVC Signs`) : null;
   const productName = explicitProductName
+    ?? calledProductName
     ?? styreneName
     ?? (isBanner ? (bannerOz ? `${bannerOz}oz Banner` : "Banner") : null)
     ?? coroplastName
@@ -851,6 +854,8 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       : analyzerBehaviors.pricingAnalysis,
   } : analyzerBehaviors;
   const missingDecisions: ProductIntakeBrief["missingDecisions"] = [];
+  const parsedQuantityTiers = textSignals ? parseNaturalLanguageQuantityTiers(text) : null;
+  const completeQuantityTierProduct = Boolean(textSignals && hasCompleteNaturalLanguageQuantityTiers(text) && /\bquantity[-\s]?only\b/i.test(text));
 
   if (!categoryValue) {
     missingDecisions.push({
@@ -861,7 +866,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: [evidence(product?.sourcePath ?? "$.source", "category", null, "Category evidence was missing or weak.")],
     });
   }
-  if (materialMatches.length === 0) {
+  if (materialMatches.length === 0 && !completeQuantityTierProduct) {
     missingDecisions.push({
       id: "select-material",
       question: "Which material should this product use?",
@@ -869,7 +874,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       severity: "review",
       evidence: [evidence(product?.sourcePath ?? "$.description", "material", textSignals?.materialReferences.join(", ") || null, "Material evidence was missing or could not be matched.")],
     });
-  } else if (Math.max(...materialMatches.map((match) => match.confidence)) < 85) {
+  } else if (materialMatches.length > 0 && Math.max(...materialMatches.map((match) => match.confidence)) < 85) {
     missingDecisions.push({
       id: "select-material",
       question: "Which material should this product use?",
@@ -885,6 +890,23 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       reason: "Pricing evidence is missing or ambiguous.",
       severity: "blocker",
       evidence: behaviors.pricingAnalysis.evidence,
+    });
+  }
+  if (parsedQuantityTiers?.missingRateQuestions.length) {
+    missingDecisions.push({
+      id: "complete-quantity-tier-pricing",
+      question: parsedQuantityTiers.missingRateQuestions[0]!,
+      reason: "A quantity range was supplied without a corresponding per-piece rate.",
+      severity: "blocker",
+      evidence: [evidence("$.description.pricing", "Quantity tiers", null, "A complete tier family requires a rate for every quantity range.")],
+    });
+  } else if (parsedQuantityTiers?.errors.length) {
+    missingDecisions.push({
+      id: "correct-quantity-tier-pricing",
+      question: parsedQuantityTiers.errors[0]!,
+      reason: "Quantity tiers must be a complete, non-overlapping ordered family.",
+      severity: "blocker",
+      evidence: [evidence("$.description.pricing", "Quantity tiers", null, "The supplied quantity-tier ranges could not be normalized safely.")],
     });
   }
 
@@ -919,9 +941,9 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
   const evidenceBackedConfidence = [
     product?.name || descriptionName ? 75 : 20,
     categoryValue ? categoryConfidence : 20,
-    materialMatches.length ? Math.max(...materialMatches.map((match) => match.confidence)) : 20,
+    materialMatches.length ? Math.max(...materialMatches.map((match) => match.confidence)) : completeQuantityTierProduct ? 75 : 20,
     behaviors.pricingAnalysis.confidence,
-    requiredOptions.length + optionalOptions.length > 0 ? 75 : 35,
+    requiredOptions.length + optionalOptions.length > 0 ? 75 : completeQuantityTierProduct ? 75 : 35,
   ];
   const matrixReadiness = fallbackMatrixReadiness({
     text,

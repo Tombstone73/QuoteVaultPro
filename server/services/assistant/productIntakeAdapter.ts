@@ -75,6 +75,7 @@ export type AssistantProductIntakeProposedFields = {
   perSqftCents: number | null;
   perPieceCents: number | null;
   minimumChargeCents: number | null;
+  quantityTiers: Array<{ label: string; minQty: number; perPieceCents: number }>;
   material: string | null;
   productionRoute: string | null;
   sheetOrRollConstraints: string | null;
@@ -167,6 +168,13 @@ export class AssistantProductIntakeAdapter {
       : null;
     const intake = previewTree?.meta?.productIntake as Record<string, any> | undefined;
     const base = previewTree?.meta?.pricingV2?.base as Record<string, unknown> | undefined;
+    const quantityTiers = Array.isArray(previewTree?.meta?.pricingV2?.qtyTiers)
+      ? previewTree!.meta!.pricingV2!.qtyTiers!.flatMap((tier) =>
+        typeof tier?.minQty === "number" && typeof tier?.perPieceCents === "number"
+          ? [{ label: typeof tier.label === "string" ? tier.label : `${tier.minQty}+`, minQty: tier.minQty, perPieceCents: tier.perPieceCents }]
+          : [],
+      )
+      : [];
     const fixed = intake?.fixedDimensions as { label?: unknown } | undefined;
     const material = intake?.materialMatch as { name?: unknown } | null | undefined;
     const route = /\bflatbed\b/i.test(sourceText) ? "Flatbed" : /\broll\b/i.test(sourceText) ? "Roll printer" : /\brouter\b/i.test(sourceText) ? "Router" : null;
@@ -185,6 +193,7 @@ export class AssistantProductIntakeAdapter {
       perSqftCents: typeof base?.perSqftCents === "number" ? base.perSqftCents : null,
       perPieceCents: typeof base?.perPieceCents === "number" ? base.perPieceCents : null,
       minimumChargeCents: typeof base?.minimumChargeCents === "number" ? base.minimumChargeCents : null,
+      quantityTiers,
       material: typeof material?.name === "string" ? material.name : null,
       productionRoute: route,
       sheetOrRollConstraints: constraint,

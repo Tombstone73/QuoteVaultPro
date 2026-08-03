@@ -101,8 +101,14 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
   const perSqftCents = typeof base.perSqftCents === "number" ? base.perSqftCents : 0;
   const perPieceCents = typeof base.perPieceCents === "number" ? base.perPieceCents : 0;
   const minimumChargeCents = typeof base.minimumChargeCents === "number" ? base.minimumChargeCents : 0;
+  const quantityTierRates = Array.isArray((pricingV2 as any).qtyTiers)
+    ? (pricingV2 as any).qtyTiers.filter((tier: unknown) => {
+      const value = asRecord(tier)?.perPieceCents;
+      return typeof value === "number" && Number.isFinite(value) && value > 0;
+    })
+    : [];
 
-  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0) {
+  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && quantityTierRates.length === 0) {
     findings.push(
       errorFinding({
         code: "PBV2_E_BASE_PRICE_MISSING",
@@ -112,6 +118,7 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
           perSqftCents,
           perPieceCents,
           minimumChargeCents,
+          quantityTierRateCount: quantityTierRates.length,
         },
       })
     );

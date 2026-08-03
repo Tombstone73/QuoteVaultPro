@@ -309,6 +309,7 @@ export type OptionTreeV2 = {
         notes: string | null;
         lineItemQuantitySource: boolean;
         customerFacingOptionGenerated: boolean;
+        quantityOnly?: boolean;
         sourceOptions: Array<{
           label: string;
           normalizedGroup: string;
@@ -727,6 +728,7 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
           notes: z.string().nullable(),
           lineItemQuantitySource: z.boolean(),
           customerFacingOptionGenerated: z.boolean(),
+          quantityOnly: z.boolean().optional(),
           sourceOptions: z.array(z.object({
             label: z.string(),
             normalizedGroup: z.string(),

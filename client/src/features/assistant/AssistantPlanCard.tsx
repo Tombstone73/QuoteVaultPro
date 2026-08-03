@@ -47,6 +47,7 @@ export type AssistantPlanCardModel = {
     perSqftCents: number | null;
     perPieceCents: number | null;
     minimumChargeCents: number | null;
+    quantityTiers: Array<{ label: string; minQty: number; perPieceCents: number }>;
     material: string | null;
     productionRoute: string | null;
     sheetOrRollConstraints: string | null;
@@ -252,6 +253,10 @@ function toProductDraftCreate(action: string | null, preview: UnknownRecord | nu
     perSqftCents: toCents(fields.perSqftCents),
     perPieceCents: toCents(fields.perPieceCents),
     minimumChargeCents: toCents(fields.minimumChargeCents),
+    quantityTiers: Array.isArray(fields.quantityTiers) ? fields.quantityTiers.slice(0, 30).flatMap((tier) => {
+      const entry = asRecord(tier); const label = asText(entry?.label); const minQty = asPositiveInteger(entry?.minQty); const perPieceCents = toCents(entry?.perPieceCents);
+      return label && minQty && perPieceCents !== null ? [{ label, minQty, perPieceCents }] : [];
+    }) : [],
     material: asText(fields.material),
     productionRoute: asText(fields.productionRoute),
     sheetOrRollConstraints: asText(fields.sheetOrRollConstraints),
@@ -593,6 +598,7 @@ function ProductDraftCreatePreview({ draft }: { draft: NonNullable<AssistantPlan
     <p className="mt-1 text-muted-foreground">These server-derived fields will create one inactive product and PBV2 DRAFT only.</p>
     <dl className="mt-2 grid gap-1 sm:grid-cols-2">{fields.map(([label, value]) => <div key={label}><dt className="inline font-medium">{label}: </dt><dd className="inline">{value}</dd></div>)}</dl>
     {draft.commonOptions.length ? <p className="mt-2"><span className="font-medium">Options: </span>{draft.commonOptions.join(", ")}</p> : null}
+    {draft.quantityTiers.length ? <div className="mt-3 overflow-x-auto"><p className="font-medium">Quantity tiers · per piece</p><table className="mt-1 w-full max-w-sm border-collapse text-left"><thead className="text-muted-foreground"><tr><th className="border-b p-1 font-medium">Quantity</th><th className="border-b p-1 font-medium">Price each</th></tr></thead><tbody>{draft.quantityTiers.map((tier) => <tr key={`${tier.minQty}-${tier.label}`}><td className="border-b p-1">{tier.label}</td><td className="border-b p-1">{moneyFromCents(tier.perPieceCents)}</td></tr>)}</tbody></table></div> : null}
     {draft.warnings.length ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2"><p className="font-medium">Review warnings</p><ul className="mt-1 list-disc pl-4">{draft.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div> : null}
   </div>;
 }
