@@ -132,9 +132,9 @@ export type PricingV2Tier = {
 };
 
 export type PricingV2Base = {
-  perSqftCents?: number;
-  perPieceCents?: number;
-  minimumChargeCents?: number;
+  perSqftCents?: number | null;
+  perPieceCents?: number | null;
+  minimumChargeCents?: number | null;
 };
 
 export type Pbv2TierBasis = "line_item_quantity" | "computed_sheet_usage";
@@ -145,6 +145,9 @@ export type PricingV2 = {
   base?: PricingV2Base;
   qtyTiers?: PricingV2Tier[];
   sqftTiers?: PricingV2Tier[];
+  /** The selected option-matrix rate is authoritative. This prevents a
+   * per-piece matrix from being interpreted as a square-foot rate. */
+  optionMatrixPricingUnit?: "per_piece" | "per_square_foot";
 };
 
 export type Effect =
@@ -265,9 +268,11 @@ export type OptionTreeV2 = {
       confidence?: number;
     };
     productIntake?: {
-      sessionId: string;
-      productName: string;
-      confidence: number;
+      /** Product Intake provenance is optional for legacy/manual PBV2 trees.
+       * When supplied, these fields are canonical evidence, not price inputs. */
+      sessionId?: string;
+      productName?: string;
+      confidence?: number;
       sizeMode?: "fixed_dropdown" | "custom_dimension" | "none";
       fixedDimensions?: {
         widthIn: number;
@@ -513,9 +518,9 @@ export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
 });
 
 export const pricingV2BaseSchema: z.ZodType<PricingV2Base> = z.object({
-  perSqftCents: z.number().finite().min(0).optional(),
-  perPieceCents: z.number().finite().min(0).optional(),
-  minimumChargeCents: z.number().finite().min(0).optional(),
+  perSqftCents: z.number().finite().min(0).nullable().optional(),
+  perPieceCents: z.number().finite().min(0).nullable().optional(),
+  minimumChargeCents: z.number().finite().min(0).nullable().optional(),
 });
 
 export const pbv2TierBasisSchema: z.ZodType<Pbv2TierBasis> = z.enum(["line_item_quantity", "computed_sheet_usage"]);
@@ -526,6 +531,7 @@ export const pricingV2Schema: z.ZodType<PricingV2> = z.object({
   base: pricingV2BaseSchema.optional(),
   qtyTiers: z.array(pricingV2TierSchema).optional(),
   sqftTiers: z.array(pricingV2TierSchema).optional(),
+  optionMatrixPricingUnit: z.enum(["per_piece", "per_square_foot"]).optional(),
 });
 
 export const effectSchema: z.ZodType<Effect> = z.discriminatedUnion("type", [
@@ -682,9 +688,9 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
         confidence: z.number().min(0).max(100).optional(),
       }).optional(),
       productIntake: z.object({
-        sessionId: z.string(),
-        productName: z.string(),
-        confidence: z.number().min(0).max(100),
+        sessionId: z.string().optional(),
+        productName: z.string().optional(),
+        confidence: z.number().min(0).max(100).optional(),
         sizeMode: z.enum(["fixed_dropdown", "custom_dimension", "none"]).optional(),
         fixedDimensions: z.object({
           widthIn: z.number().positive(),

@@ -19,6 +19,9 @@ export type ComplexProductSpecification = {
   sheet?: { widthIn: number; heightIn: number; allowRotation?: boolean };
   route?: string; minimumChargeCents?: number; minimumChargeSource?: "explicit" | "inferred"; optionGroups: [ComplexProductOptionGroup, ComplexProductOptionGroup];
   pricing: ComplexProductMatrix; review: { assumptions: string[]; warnings: string[]; blockers: string[]; unsupportedRelationships: string[] };
+  /** Present only when this proposal was created from a persisted Product Intake
+   * session. Do not synthesize provenance for a conversation-created draft. */
+  productIntakeProvenance?: { sessionId: string; productName: string; confidence: number };
   proposalVersion?: number;
 };
 
@@ -153,9 +156,10 @@ export function buildCanonicalComplexProductTree(spec: ComplexProductSpecificati
   const perPiece = pricingUnit === "per_piece";
   const hasSheet = Boolean(spec.sheet);
   const productIntake = {
+    ...(spec.productIntakeProvenance ?? {}),
     ...(spec.route ? { draftRouting: { stationName: spec.route } } : {}),
     ...(hasSheet ? { sheet: { widthIn: spec.sheet!.widthIn, heightIn: spec.sheet!.heightIn, materialForm: spec.materialForm ?? "sheet", allowRotation: spec.sheet!.allowRotation ?? false } } : {}),
     complexProductReview: spec.review,
   };
-  return { schemaVersion: 2, status: "DRAFT", rootNodeIds, nodes, edges, pricingMatrix: matrix, meta: { pricingProfileKey: perPiece ? "qty_only" : "default", pricingV2: { unitSystem: "imperial", tierBasis: "line_item_quantity", base: { perSqftCents: null, perPieceCents: perPiece ? 0 : null, minimumChargeCents: spec.minimumChargeCents ?? 0 }, optionMatrixPricingUnit: pricingUnit }, requiresDimensions: measurementModeForComplexProductSpecification(spec) === "dimensions_required", productIntake } };
+  return { schemaVersion: 2, status: "DRAFT", rootNodeIds, nodes, edges, pricingMatrix: matrix, meta: { pricingProfileKey: perPiece ? "qty_only" : "default", pricingV2: { unitSystem: "imperial", tierBasis: "line_item_quantity", base: { perSqftCents: null, perPieceCents: null, ...(spec.minimumChargeCents === undefined ? {} : { minimumChargeCents: spec.minimumChargeCents }) }, optionMatrixPricingUnit: pricingUnit }, requiresDimensions: measurementModeForComplexProductSpecification(spec) === "dimensions_required", productIntake } };
 }

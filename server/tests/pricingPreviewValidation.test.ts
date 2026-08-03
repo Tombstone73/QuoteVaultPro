@@ -122,6 +122,34 @@ describe('validatePricingPreviewRequest', () => {
       expect(result.normalized.quantityNum).toBe(25);
     }
   });
+
+  test('accepts a per-piece matrix preview with no dimensions and no square-foot base rate', () => {
+    const result = validatePricingPreviewRequest({
+      treeJson: {
+        ...validTree,
+        meta: {
+          pricingProfileKey: "qty_only",
+          pricingV2: { optionMatrixPricingUnit: "per_piece", base: { perSqftCents: null } },
+        },
+      },
+      quantity: 2,
+      optionSelectionsJson: { thickness: { value: "3mm" }, printed_sides: { value: "Single-sided" } },
+    });
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.normalized.widthNum).toBe(0);
+      expect(result.normalized.heightNum).toBe(0);
+    }
+  });
+
+  test('continues to require dimensions for a square-foot preview', () => {
+    const result = validatePricingPreviewRequest({
+      treeJson: { ...validTree, meta: { pricingV2: { optionMatrixPricingUnit: "per_square_foot", base: { perSqftCents: 500 } } } },
+      quantity: 1,
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.envelope.details.map((detail) => detail.path)).toEqual(expect.arrayContaining(["width", "height"]));
+  });
 });
 
 describe('zodIssuesToPreviewDetails', () => {
