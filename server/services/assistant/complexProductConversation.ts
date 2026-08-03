@@ -38,7 +38,7 @@ function productNameFromMessage(message: string): string | null {
 function namedThicknessPrices(message: string): Array<{ row: string; single: number; double: number }> | null {
   const values: Array<{ row: string; single: number; double: number }> = [];
   const expression = /\$(\d+(?:\.\d{1,2})?)\s*single[-\s]?sided\s+and\s*\$(\d+(?:\.\d{1,2})?)\s*double[-\s]?sided\s+for\s+(\d+(?:\.\d+)?)\s*mm/gi;
-  for (const match of message.matchAll(expression)) values.push({ row: `${match[3]}mm`, single: Math.round(Number(match[1]) * 100), double: Math.round(Number(match[2]) * 100) });
+  values.push(...Array.from(message.matchAll(expression), (match) => ({ row: `${match[3]}mm`, single: Math.round(Number(match[1]) * 100), double: Math.round(Number(match[2]) * 100) })));
   return values.length >= 2 ? values : null;
 }
 
@@ -86,7 +86,7 @@ export function applyComplexProductConversationEdit(current: ComplexProductSpeci
     if (/\bper\s+(?:square\s*(?:foot|feet)|sq\.?\s*ft\.?|sqft)\b/i.test(source)) next.pricing.kind = "two_dimensional_per_sqft";
     next.review.blockers = next.review.blockers.filter((blocker) => blocker !== pricingUnitQuestion);
   }
-  const sheet = source.match(/\b(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\b/i); if (sheet) { next.sheet.widthIn = Number(sheet[1]); next.sheet.heightIn = Number(sheet[2]); }
+  const sheet = source.match(/\b(\d+(?:\.\d+)?)\s*[x×]\s*(\d+(?:\.\d+)?)\b/i); if (sheet) { const suppliedSheet = next.sheet ?? { widthIn: 1, heightIn: 1 }; suppliedSheet.widthIn = Number(sheet[1]); suppliedSheet.heightIn = Number(sheet[2]); next.sheet = suppliedSheet; next.materialForm = "sheet"; }
   if (/\brotation\s+(?:allowed|enabled)\b|\ballow\s+rotation\b/i.test(source) && !clearProductionConfiguration && next.sheet) next.sheet.allowRotation = true;
   if (/\brotation\s+(?:disabled|not allowed)\b|\bdo not allow rotation\b/i.test(source) && !clearProductionConfiguration && next.sheet) next.sheet.allowRotation = false;
   if (/\bflatbed\b/i.test(source) && !clearProductionConfiguration) next.route = "Flatbed";
