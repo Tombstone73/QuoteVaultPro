@@ -565,9 +565,12 @@ function analyzeDraftPricing(args: {
       perPieceCents: tier.perPieceCents,
     }))
     : [];
+  // A complete tier family is authoritative. Do not retain its first rate as a
+  // misleading scalar base price merely because the phrase contains "each".
+  const base = qtyTiers.length > 0 ? {} : answered.base;
   const matrix = detectMatrixPricing(args.brief, text);
   const warnings: string[] = [];
-  if (!hasConfiguredPricing(answered.base, qtyTiers)) {
+  if (!hasConfiguredPricing(base, qtyTiers)) {
     warnings.push("Base pricing was not found in the intake source. PBV2 publish will remain blocked until per sqft, per piece, or minimum charge pricing is configured.");
   }
   warnings.push(...parsedTiers.errors, ...parsedTiers.missingRateQuestions);
@@ -575,7 +578,7 @@ function analyzeDraftPricing(args: {
     warnings.push("Likely matrix pricing detected. Product Intake will generate matrix rows only when explicit dimensions, tiers, and prices meet the confidence threshold.");
   }
   return {
-    base: answered.base,
+    base,
     qtyTiers,
     sources: [...detected.sources, ...answered.sources],
     warnings,
