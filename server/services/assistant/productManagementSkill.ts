@@ -44,6 +44,7 @@ import { createDrizzleInactivePbv2QuantityTierEditStore } from "./inactivePbv2Qu
 import { inactivePbv2QuantityTierEditCommandName } from "./execution/inactivePbv2QuantityTierEditCommand";
 import { ProductCandidateSelectionContinuationError, ProductCandidateSelectionContinuationService, type ProductCandidateSelectionCandidate } from "./productCandidateSelectionContinuation";
 import { createDrizzleProductCandidateSelectionContinuationStore } from "./productCandidateSelectionContinuationPersistence";
+import { hasCompleteNaturalLanguageQuantityTiers } from "../productIntakeWizard/quantityTierParsing";
 
 export const productManagementSkill = Object.freeze({
   name: "product_management",
@@ -664,7 +665,7 @@ export class ProductManagementSkillService {
         ] };
       } catch (error) { return { handled: true, response: error instanceof Error ? error.message : "The pricing change-set proposal could not be prepared.", cards: [] }; }
     }
-    if (/\b(?:increase|raise|decrease|reduce|subtract|add|set|clear)\b/i.test(input.message) && /\b(?:price|pricing|rate|charge|square|sq\.?\s*ft|piece)\b/i.test(input.message)) {
+    if (!input.activeSessionId && !explicitCreation && !hasCompleteNaturalLanguageQuantityTiers(input.message) && /\b(?:increase|raise|decrease|reduce|subtract|add|set|clear)\b/i.test(input.message) && /\b(?:price|pricing|rate|charge|square|sq\.?\s*ft|piece)\b/i.test(input.message)) {
       return { handled: true, response: "I could not safely determine one scalar pricing component and one amount. Specify square-foot rate, per-piece rate, or minimum charge and use either a percent, dollar amount, or exact value. No pricing proposal was created.", cards: [{ kind: "product_validation_errors", title: "Pricing request needs clarification", summary: "No product was changed.", sourceLinks: [], details: { errors: ["Ambiguous pricing component or amount."] } }] };
     }
     if (isUnsupportedProductMutation(input.message)) return { handled: true, response: "Product activation and publication are not available through the assistant. Controlled pricing changes require a supported pricing request and persisted confirmation.", cards: [{ kind: "product_validation_errors", title: "Unsupported product lifecycle action", summary: "Lifecycle and visibility changes remain disabled.", sourceLinks: [], details: { errors: ["Activation, deactivation, publication, archival, and visibility changes are disabled."] } }] };

@@ -35,6 +35,7 @@ import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
 import { db as defaultDb } from "../../db";
 import { normalizeChoicePricingAnswer, stripDefaultChoiceAnnotation } from "./productIntakeOptionHelpers";
 import { ProductIntakeSessionError } from "./productIntakeSessionService";
+import { parseNaturalLanguageQuantityTiers } from "./quantityTierParsing";
 
 export type ProductIntakeDraftTemplateRow = {
   id: string;
@@ -73,6 +74,7 @@ type IntakePricingBase = {
 
 type IntakePricingAnalysis = {
   base: IntakePricingBase;
+  qtyTiers: PricingV2Tier[];
   sources: string[];
   warnings: string[];
   likelyMatrixPricing: boolean;
@@ -264,6 +266,10 @@ function mergeAnswerPricing(base: IntakePricingBase, answers: ProductIntakeAnswe
 
 function hasBasePricing(base: IntakePricingBase): boolean {
   return Number(base.perSqftCents) > 0 || Number(base.perPieceCents) > 0 || Number(base.minimumChargeCents) > 0;
+}
+
+function hasConfiguredPricing(base: IntakePricingBase, qtyTiers: PricingV2Tier[]): boolean {
+  return hasBasePricing(base) || qtyTiers.some((tier) => Number(tier.perPieceCents) > 0);
 }
 
 const NO_MATRIX_READINESS: ProductIntakeMatrixReadiness = {
@@ -550,16 +556,27 @@ function analyzeDraftPricing(args: {
   const text = collectBriefText(args.brief, args.sourceText, args.sourceJson);
   const detected = extractPricingFromText(text);
   const answered = mergeAnswerPricing(detected.base, args.answers);
+  const parsedTiers = parseNaturalLanguageQuantityTiers(text);
+  const qtyTiers: PricingV2Tier[] = parsedTiers.errors.length === 0 && parsedTiers.missingRateQuestions.length === 0
+    ? parsedTiers.tiers.map((tier) => ({
+      id: `qty_${tier.minQty}`,
+      label: tier.label,
+      minQty: tier.minQty,
+      perPieceCents: tier.perPieceCents,
+    }))
+    : [];
   const matrix = detectMatrixPricing(args.brief, text);
   const warnings: string[] = [];
-  if (!hasBasePricing(answered.base)) {
+  if (!hasConfiguredPricing(answered.base, qtyTiers)) {
     warnings.push("Base pricing was not found in the intake source. PBV2 publish will remain blocked until per sqft, per piece, or minimum charge pricing is configured.");
   }
+  warnings.push(...parsedTiers.errors, ...parsedTiers.missingRateQuestions);
   if (matrix.likelyMatrixPricing) {
     warnings.push("Likely matrix pricing detected. Product Intake will generate matrix rows only when explicit dimensions, tiers, and prices meet the confidence threshold.");
   }
   return {
     base: answered.base,
+    qtyTiers,
     sources: [...detected.sources, ...answered.sources],
     warnings,
     ...matrix,
@@ -1643,7 +1660,7 @@ function assessDraftQuality(args: {
     score -= 15;
     warnings.push("Pricing setup required.");
   }
-  if (!hasBasePricing(args.pricingReadiness.base)) {
+  if (!hasConfiguredPricing(args.pricingReadiness.base, args.pricingReadiness.qtyTiers)) {
     score -= 25;
     warnings.push("Base pricing is missing and must be configured before publish.");
   }
@@ -1746,7 +1763,7 @@ export function buildProductIntakeDraftTree(args: {
         unitSystem: "imperial",
         tierBasis: "line_item_quantity",
         base: pricingReadiness.base,
-        qtyTiers: [],
+        qtyTiers: pricingReadiness.qtyTiers,
       },
       requiresDimensions: !quantityOnly && sizeMode === "custom_dimension",
       ...(fixedDimensions ? { fixedDimensions } : {}),
@@ -1762,7 +1779,7 @@ export function buildProductIntakeDraftTree(args: {
           base: pricingReadiness.base,
           sources: pricingReadiness.sources,
           warnings: pricingReadiness.warnings,
-          basePricingConfigured: hasBasePricing(pricingReadiness.base),
+          basePricingConfigured: hasConfiguredPricing(pricingReadiness.base, pricingReadiness.qtyTiers),
           likelyMatrixPricing: pricingReadiness.likelyMatrixPricing,
           candidateDimensions: pricingReadiness.candidateDimensions,
           matrixEvidence: pricingReadiness.matrixEvidence,
@@ -1932,7 +1949,7 @@ export function buildProductIntakeDraftTree(args: {
           base: pricingReadiness.base,
           sources: pricingReadiness.sources,
           warnings: pricingReadiness.warnings,
-          basePricingConfigured: hasBasePricing(pricingReadiness.base),
+          basePricingConfigured: hasConfiguredPricing(pricingReadiness.base, pricingReadiness.qtyTiers),
           likelyMatrixPricing: true,
           candidateDimensions: generatedMatrix.readiness.matrixDimensions,
           matrixEvidence: generatedMatrix.readiness.reasoning,
