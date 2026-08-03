@@ -796,7 +796,14 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
     .filter(Boolean);
   const analyzerBehaviors = behaviorFromAnalyzer(product, input.analyzer);
   const behaviors = textSignals ? {
-    sizeBehavior: textSignals.sizes.length > 0
+    sizeBehavior: /\bquantity[-\s]?only\b/i.test(text)
+      ? {
+          behavior: "none",
+          confidence: 96,
+          notes: "Quantity-only product; width and height are not collected.",
+          evidence: [evidence("$.description.measurement", "Measurement", "Quantity only", "The description explicitly excludes width and height.")],
+        }
+      : textSignals.sizes.length > 0
       ? {
           behavior: "fixed_size",
           confidence: 90,
