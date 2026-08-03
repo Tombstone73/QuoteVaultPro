@@ -418,6 +418,22 @@ function formulaAssignmentForBrief(brief: ProductIntakeBrief, text: string): Pro
   return STICKER_ADJUSTED_ROUNDED_SQFT_FORMULA;
 }
 
+/**
+ * Quantity-only is a product measurement contract, not merely a presentation
+ * hint.  Prefer the normalized brief when it is available so an AI-derived
+ * brief and its source text cannot disagree about whether dimensions apply.
+ */
+function isQuantityOnlyIntake(brief: ProductIntakeBrief, sourceText: string): boolean {
+  return brief.sizeBehavior.behavior === "none"
+    || /\b(?:quantity[-\s]?only|service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
+}
+
+function explicitlyRequiresProductionJob(sourceText: string): boolean {
+  const explicitRequirement = /\b(?:(?:requires?|needs?)\s+(?:a\s+)?production\s+job|production\s+job\s+(?:is\s+)?required)\b/i;
+  const explicitExclusion = /\b(?:does\s+not|doesn't|do\s+not|no)\s+(?:require|need|have)\s+(?:a\s+)?production\s+job\b/i;
+  return explicitRequirement.test(sourceText) && !explicitExclusion.test(sourceText);
+}
+
 function optionTextForMatrix(brief: ProductIntakeBrief): string {
   return [...brief.requiredOptions, ...brief.optionalOptions]
     .map((option) => `${option.label} ${option.normalizedGroup} ${option.sampleValues.join(" ")}`)
@@ -1244,6 +1260,29 @@ function addQuestionNode(args: {
   });
 }
 
+/**
+ * PBV2 requires an enabled runtime root even when a product has no
+ * customer-selectable options. Quantity is supplied by the line item, so a
+ * no-op compute root preserves that graph invariant without inventing a
+ * customer-facing "Review Required" option.
+ */
+function addQuantityOnlyPricingRoot(tree: OptionTreeV2, usedNodeIds: Set<string>) {
+  const nodeId = uniqueKey("intake_quantity_pricing", usedNodeIds);
+  tree.nodes[nodeId] = {
+    id: nodeId,
+    kind: "computed",
+    type: "COMPUTE",
+    status: "ENABLED",
+    key: "quantity_pricing",
+    label: "Quantity pricing",
+    compute: {
+      outputs: { value: { type: "NUMBER" } },
+      expression: { op: "literal", value: 0 },
+    },
+  } as any;
+  tree.rootNodeIds.push(nodeId);
+}
+
 function selectionKeyForInputNode(node: any): string | null {
   const key = String(node?.input?.selectionKey ?? node?.key ?? "").trim();
   return key.length > 0 ? key : null;
@@ -1735,7 +1774,7 @@ export function buildProductIntakeDraftTree(args: {
   const usedNodeIds = new Set<string>();
   const usedEdgeIds = new Set<string>();
   const sourceText = collectBriefText(args.brief, args.sourceText, args.sourceJson);
-  const quantityOnly = /\b(?:quantity[-\s]?only|service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
+  const quantityOnly = isQuantityOnlyIntake(args.brief, sourceText);
   const fixedDimensionsRequested = Boolean(parseFixedDimensionText(sourceText)) && /\b(?:fixed(?:[-\s]?size|\s+dimensions?)?|does\s+not\s+(?:ask\s+for|require)\s+dimensions)\b/i.test(sourceText);
   const sizeOption = [...args.brief.requiredOptions, ...args.brief.optionalOptions].find(isSizeOption) ?? null;
   const sizeMode = quantityOnly ? "none" as const : fixedDimensionsRequested ? "fixed_dropdown" as const : resolveSizeMode(args.brief, sizeOption);
@@ -1749,7 +1788,11 @@ export function buildProductIntakeDraftTree(args: {
     sourceJson: args.sourceJson,
     answers: args.answers,
   });
-  const formulaAssignment = args.formulaAssignment ?? formulaAssignmentForBrief(args.brief, sourceText);
+  // A quantity-only product is priced by line-item quantity and its selected
+  // tier. Never carry a category-derived square-foot formula into that tree.
+  const formulaAssignment = quantityOnly
+    ? null
+    : args.formulaAssignment ?? formulaAssignmentForBrief(args.brief, sourceText);
   let tree: OptionTreeV2 = {
     schemaVersion: 2,
     status: "DRAFT",
@@ -1761,7 +1804,7 @@ export function buildProductIntakeDraftTree(args: {
       updatedAt: now.toISOString(),
       updatedByUserId: args.userId ?? undefined,
       notes: `Generated from Product Intake session ${args.sessionId}. Product remains inactive until the normal publish flow is completed.`,
-      pricingProfileKey: "default",
+      pricingProfileKey: quantityOnly ? "qty_only" : "default",
       pricingV2: {
         unitSystem: "imperial",
         tierBasis: "line_item_quantity",
@@ -1904,7 +1947,9 @@ export function buildProductIntakeDraftTree(args: {
     });
   }
 
-  if (tree.rootNodeIds.length === 0) {
+  if (tree.rootNodeIds.length === 0 && quantityOnly) {
+    addQuantityOnlyPricingRoot(tree, usedNodeIds);
+  } else if (tree.rootNodeIds.length === 0) {
     addQuestionNode({
       tree,
       key: "review_required",
@@ -2025,9 +2070,12 @@ export function buildProductIntakeProductValues(args: {
   // generated from the same explicit intake text. The assistant must not turn a
   // service/quantity-only request into a dimensioned production product.
   const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
-  const quantityOnly = serviceFee || /\bquantity[-\s]?only\b/i.test(sourceText);
+  const quantityOnly = isQuantityOnlyIntake(args.brief, sourceText);
   const proofRequired = /\b(?:proof\s+(?:required|needed|mandatory)|requires?\s+proof)\b/i.test(sourceText);
-  const formulaConfig = args.formulaAssignment?.config ?? {};
+  // The tree and product record must agree: quantity-only pricing uses the
+  // canonical PBV2 quantity profile and cannot retain an area formula.
+  const formulaAssignment = quantityOnly ? null : args.formulaAssignment;
+  const formulaConfig = formulaAssignment?.config ?? {};
   const pricingProfileConfig = Object.keys({ ...formulaConfig, ...sheetOrRollConfig }).length > 0 || allowRotation !== null
     ? { ...formulaConfig, ...sheetOrRollConfig, ...(allowRotation === null ? {} : { allowRotation }) }
     : null;
@@ -2040,17 +2088,17 @@ export function buildProductIntakeProductValues(args: {
     productTypeId: args.productTypeId,
     category: args.brief.productIdentity.category.value,
     pricingMode: pricingModeForBrief(args.brief),
-    pricingEngine: args.formulaAssignment
-      ? (args.formulaAssignment.pricingFormulaId ? "formulaLibrary" as const : "pricingFormula" as const)
+    pricingEngine: formulaAssignment
+      ? (formulaAssignment.pricingFormulaId ? "formulaLibrary" as const : "pricingFormula" as const)
       : "pricingProfile" as const,
-    pricingFormulaId: args.formulaAssignment?.pricingFormulaId ?? null,
-    pricingFormula: args.formulaAssignment?.expression ?? null,
-    pricingProfileKey: args.formulaAssignment?.pricingProfileKey ?? "default",
+    pricingFormulaId: formulaAssignment?.pricingFormulaId ?? null,
+    pricingFormula: formulaAssignment?.expression ?? null,
+    pricingProfileKey: quantityOnly ? "qty_only" : formulaAssignment?.pricingProfileKey ?? "default",
     pricingProfileConfig,
     primaryMaterialId: material?.materialId ?? null,
     measurementMode: quantityOnly ? "quantity_only" as const : "dimensions_required" as const,
     workflowIntent: serviceFee ? "service_fee" as const : "standard_production" as const,
-    requiresProductionJob: !serviceFee,
+    requiresProductionJob: quantityOnly ? explicitlyRequiresProductionJob(sourceText) : !serviceFee,
     requiresProofApproval: proofRequired,
     isTaxable: true,
     isService: serviceFee,
@@ -2131,7 +2179,9 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
           .where(eq(productTypes.organizationId, organizationId));
         const productTypeId = resolveProductTypeId(brief, typeRows);
         const formulaSourceText = collectBriefText(brief, sessionRow.sourceText, sessionRow.sourceJson);
-        let formulaAssignment = formulaAssignmentForBrief(brief, formulaSourceText);
+        let formulaAssignment = isQuantityOnlyIntake(brief, formulaSourceText)
+          ? null
+          : formulaAssignmentForBrief(brief, formulaSourceText);
         if (formulaAssignment) {
           const requestedFormulaAssignment = formulaAssignment;
           const formulaRows = await tx

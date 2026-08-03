@@ -201,6 +201,83 @@ describe("Product Intake draft service", () => {
     expect(tree.meta?.productIntake?.quantity).toMatchObject({ quantityOnly: true });
   });
 
+  test("builds a quantity-only per-piece tier draft without dimension, formula, production, or review defaults", () => {
+    const quantityTierBrief = brief({
+      productIdentity: {
+        likelyProductName: { value: "Sticker Packs", confidence: 95, evidence: [] },
+        category: { value: "Stickers", confidence: 90, evidence: [] },
+        productType: { value: "Sticker", confidence: 88, evidence: [] },
+      },
+      sizeBehavior: { behavior: "none", confidence: 96, notes: "Quantity only", evidence: [] },
+      quantityBehavior: { behavior: "quantity_tiers", confidence: 94, evidence: [] },
+      pricingAnalysis: { behavior: "per_piece", confidence: 94, evidence: [] },
+      requiredOptions: [],
+      optionalOptions: [],
+    });
+    const sourceText = [
+      "Create an inactive quantity-only Sticker Packs product.",
+      "1-24 stickers are $3 each; 25-49 are $2.50 each; 50+ are $2 each.",
+    ].join(" ");
+    const tree = buildProductIntakeDraftTree({
+      brief: quantityTierBrief, sessionId: "sess_quantity_tiers", productName: "Sticker Packs", userId: "user_1", sourceText,
+    });
+    const values = buildProductIntakeProductValues({
+      organizationId: "org_1", productId: "prod_quantity_tiers", brief: quantityTierBrief, productTypeId: null, sourceText,
+      formulaAssignment: {
+        code: "STALE_SQFT", name: "Stale square foot formula", pricingProfileKey: "default", expression: "total_sqft * p", config: {},
+      },
+    });
+
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expect(tree.meta).toMatchObject({ pricingProfileKey: "qty_only", requiresDimensions: false });
+    expect(tree.meta?.pricingFormula).toBeUndefined();
+    expect(tree.meta?.pricingV2).toMatchObject({ tierBasis: "line_item_quantity", base: {} });
+    expect(tree.meta?.pricingV2?.qtyTiers).toEqual([
+      { id: "qty_1", label: "1-24", minQty: 1, perPieceCents: 300 },
+      { id: "qty_25", label: "25-49", minQty: 25, perPieceCents: 250 },
+      { id: "qty_50", label: "50+", minQty: 50, perPieceCents: 200 },
+    ]);
+    expect(tree.meta?.pricingV2?.qtyTiers?.every((tier) => tier.perSqftCents === undefined)).toBe(true);
+    expect(nodes(tree).filter((node) => node.type === "INPUT")).toEqual([]);
+    expect(nodes(tree).some((node) => /review required/i.test(String(node.label)))).toBe(false);
+    expect(values).toMatchObject({
+      measurementMode: "quantity_only", pricingEngine: "pricingProfile", pricingProfileKey: "qty_only",
+      pricingFormula: null, pricingFormulaId: null, requiresProductionJob: false, isActive: false,
+    });
+    expect(values.pricingProfileConfig).toBeNull();
+  });
+
+  test.each([
+    [1, 3], [24, 72], [25, 62.5], [49, 122.5], [50, 100], [100, 200],
+  ])("evaluates quantity-only tier pricing for quantity %i without dimensions", (quantity, expectedTotal) => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        sizeBehavior: { behavior: "none", confidence: 96, notes: "Quantity only", evidence: [] },
+        quantityBehavior: { behavior: "quantity_tiers", confidence: 94, evidence: [] },
+        pricingAnalysis: { behavior: "per_piece", confidence: 94, evidence: [] },
+        requiredOptions: [], optionalOptions: [],
+      }),
+      sessionId: "sess_quantity_preview", productName: "Sticker Packs", userId: "user_1",
+      sourceText: "Quantity-only product: 1-24 at $3 each, 25-49 at $2.50 each, and 50+ at $2 each.",
+    });
+    const preview = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: undefined as unknown as number,
+      heightIn: undefined as unknown as number,
+      quantity,
+    });
+    expect(preview.totalPrice).toBeCloseTo(expectedTotal, 2);
+  });
+
+  test("honors an explicit production-job request for a quantity-only product", () => {
+    const values = buildProductIntakeProductValues({
+      organizationId: "org_1", productId: "prod_quantity_production", productTypeId: null,
+      brief: brief({ sizeBehavior: { behavior: "none", confidence: 96, evidence: [] } }),
+      sourceText: "Create a quantity-only product that requires a production job.",
+    });
+    expect(values.requiresProductionJob).toBe(true);
+  });
+
   test("stores an explicit fixed-size request as fixed PBV2 metadata", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief(), sessionId: "sess_fixed", productName: "Yard Sign", userId: "user_1",
