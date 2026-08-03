@@ -2,6 +2,7 @@ import { buildCanonicalComplexProductTree, complexProductMatrixCellKey, parseTwo
 import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrix } from "../../shared/productOptionPricingMatrix";
 import { resolvePricingV2BaseRates } from "../../shared/pbv2/pricingAdapter";
 import { configurableProductConfirmationDto, configurableProductResultDto } from "../services/assistant/complexProductPresentation";
+import { optionTreeV2Schema } from "../../shared/optionTreeV2";
 
 const source = `| Thickness | Single-sided | Double-sided |
 | --- | --- | --- |
@@ -20,14 +21,30 @@ describe("complex product specification", () => {
   it("fails completeness validation and fingerprints exact specifications", () => { const value = spec(); delete value.pricing.cells[complexProductMatrixCellKey("3mm", "Single-sided")]; expect(validateComplexProductSpecification(value)).toContain("Missing or invalid matrix cell: 3mm × Single-sided."); const complete = spec(); expect(specificationFingerprint(complete)).not.toBe(specificationFingerprint({ ...complete, minimumChargeCents: 2600 })); });
   it("preserves complete typed confirmation and result DTOs", () => { const value = spec(); const confirmation = configurableProductConfirmationDto({ proposalId: "proposal", fingerprint: specificationFingerprint(value), specification: value }); expect(confirmation.goEligible).toBe(true); expect(confirmation.matrix.cells[complexProductMatrixCellKey("3mm", "Double-sided")]).toBe(575); expect(confirmation.product.minimumChargeCents).toBe(2500); expect(configurableProductResultDto({ proposalId: "proposal", specification: value, productId: "product", pbv2TreeVersionId: "tree", reused: false })).toMatchObject({ optionGroupCount: 2, optionValueCount: 6, matrixCellCount: 8, inactive: true, pbv2Status: "DRAFT" }); });
   it("builds a quantity-only per-piece matrix without production configuration", () => {
-    const value = spec(); value.name = "DEV Test Yard Signs 073126"; value.requiresDimensions = false; value.sheet = undefined; value.route = undefined; value.materialForm = undefined;
+    const value = spec(); value.name = "DEV Test Yard Signs 073126"; value.requiresDimensions = false; value.minimumChargeCents = undefined; value.sheet = undefined; value.route = undefined; value.materialForm = undefined;
     value.pricing = { ...value.pricing, kind: "two_dimensional_per_piece", rowValues: ["3mm", "6mm"], columnValues: ["Single-sided", "Double-sided"], cells: { [complexProductMatrixCellKey("3mm", "Single-sided")]: 1200, [complexProductMatrixCellKey("3mm", "Double-sided")]: 1800, [complexProductMatrixCellKey("6mm", "Single-sided")]: 1600, [complexProductMatrixCellKey("6mm", "Double-sided")]: 2200 } };
     value.optionGroups[0].values = ["3mm", "6mm"].map((item) => ({ value: item, label: item }));
     const tree = buildCanonicalComplexProductTree(value); const matrix = extractProductOptionPricingMatrix(tree)!;
     expect(validateComplexProductSpecification(value)).toEqual([]);
-    expect((tree.meta as any).pricingV2.optionMatrixPricingUnit).toBe("per_piece"); expect((tree.meta as any).pricingProfileKey).toBe("qty_only");
+    expect((tree.meta as any).pricingV2.optionMatrixPricingUnit).toBe("per_piece"); expect((tree.meta as any).pricingV2.base.perSqftCents).toBeNull(); expect((tree.meta as any).pricingV2.base.perPieceCents).toBeNull(); expect((tree.meta as any).pricingV2.base.minimumChargeCents).toBeUndefined(); expect((tree.meta as any).pricingProfileKey).toBe("qty_only");
     expect((tree.meta as any).productIntake.sheet).toBeUndefined(); expect((tree.meta as any).productIntake.draftRouting).toBeUndefined();
     expect(resolveProductOptionPricingMatrix({ pricingMatrix: matrix, selections: { thickness: "6mm", printed_sides: "Double-sided" } }).variables.base_price).toBe(22);
     expect(configurableProductConfirmationDto({ proposalId: "proposal", fingerprint: specificationFingerprint(value), specification: value }).product).toMatchObject({ name: "DEV Test Yard Signs 073126", requiresDimensions: false });
+  });
+
+  it.each([["3mm", "Single-sided", 1, 12], ["3mm", "Double-sided", 1, 18], ["6mm", "Single-sided", 1, 16], ["6mm", "Double-sided", 1, 22], ["3mm", "Single-sided", 2, 24], ["6mm", "Double-sided", 3, 66]])("prices the per-piece matrix selection %s / %s at quantity %i", (thickness, printedSides, quantity, expected) => {
+    const value = spec(); value.requiresDimensions = false; value.measurementMode = "quantity_only"; value.sheet = undefined; value.route = undefined; value.materialForm = undefined;
+    value.optionGroups[0].values = ["3mm", "6mm"].map((item) => ({ value: item, label: item }));
+    value.pricing = { kind: "two_dimensional_per_piece", rowKey: "thickness", columnKey: "printed_sides", rowValues: ["3mm", "6mm"], columnValues: ["Single-sided", "Double-sided"], cells: { [complexProductMatrixCellKey("3mm", "Single-sided")]: 1200, [complexProductMatrixCellKey("3mm", "Double-sided")]: 1800, [complexProductMatrixCellKey("6mm", "Single-sided")]: 1600, [complexProductMatrixCellKey("6mm", "Double-sided")]: 2200 } };
+    const tree = buildCanonicalComplexProductTree(value);
+    expect(optionTreeV2Schema.parse(tree)).toMatchObject({ meta: { pricingV2: { optionMatrixPricingUnit: "per_piece", base: { perSqftCents: null } } } });
+    const selected = resolveProductOptionPricingMatrix({ pricingMatrix: (tree as any).pricingMatrix, selections: { thickness, printed_sides: printedSides } });
+    expect(selected.errors).toEqual([]);
+    expect(selected.variables.base_price * quantity).toBe(expected);
+  });
+
+  it("persists exact Product Intake provenance only when canonical evidence is supplied", () => {
+    const value = spec(); value.productIntakeProvenance = { sessionId: "session_1", productName: "AI VALIDATION 19K PVC", confidence: 97 };
+    expect((buildCanonicalComplexProductTree(value).meta as any).productIntake).toMatchObject(value.productIntakeProvenance!);
   });
 });

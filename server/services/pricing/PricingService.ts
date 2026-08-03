@@ -2610,7 +2610,8 @@ function calculateBasePriceDetails(
     ?? (meta as any)?.pricingProfileKey
     ?? "default",
   );
-  if (Object.keys(base).length === 0 && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee") {
+  const hasConfiguredBasePrice = Object.values(base).some((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
+  if (!hasConfiguredBasePrice && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee") {
     throw new Error(
       'PBV2 tree base pricing (meta.pricingV2.base) not configured. Set at least one of: $/sqft, $/piece, or minimum charge.'
     );
