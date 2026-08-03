@@ -1,5 +1,5 @@
 import { applyComplexProductConversationEdit, createInitialComplexProductSpecification, routeComplexProductMessage } from "../services/assistant/complexProductConversation";
-import { specificationFingerprint } from "../services/assistant/complexProductSpecification";
+import { measurementModeQuestion, specificationFingerprint, validateComplexProductSpecification } from "../services/assistant/complexProductSpecification";
 
 const matrix = `| Thickness | Single-sided | Double-sided |
 | --- | --- | --- |
@@ -69,7 +69,16 @@ describe("configurable-product conversation integration helpers", () => {
     const corrected = applyComplexProductConversationEdit(initial, "Use per-piece pricing for this matrix. Do not assign a sheet size, production route, or rotation setting unless I explicitly provide them.");
     expect(corrected.pricing.kind).toBe("two_dimensional_per_piece");
     expect(corrected.pricing.cells).toEqual(initial.pricing.cells);
-    expect(corrected.sheet).toBeUndefined(); expect(corrected.route).toBeUndefined(); expect(corrected.requiresDimensions).toBe(false);
+    expect(corrected.sheet).toBeUndefined(); expect(corrected.route).toBeUndefined(); expect(corrected.requiresDimensions).toBeUndefined();
     expect(corrected.review.blockers).toEqual([]);
+  });
+
+  it("makes the newest explicit DEV correction authoritative over inferred proposal defaults", () => {
+    const initial = createInitialComplexProductSpecification("I want to add a new product called DEV Test Yard Signs 073126. It has two thicknesses, 3mm and 6mm, and each thickness is available single-sided or double-sided. The prices are $12 single-sided and $18 double-sided for 3mm, and $16 single-sided and $22 double-sided for 6mm.");
+    const inferred = { ...initial, pricing: { ...initial.pricing, kind: "two_dimensional_per_sqft" as const }, sheet: { widthIn: 48, heightIn: 96, allowRotation: false }, route: "Flatbed", materialForm: "sheet" as const, requiresDimensions: true, minimumChargeCents: 0 };
+    const corrected = applyComplexProductConversationEdit(inferred, "Per piece. Do not set a sheet size, production route, or rotation setting.");
+    expect(corrected.pricing.kind).toBe("two_dimensional_per_piece"); expect(corrected.pricing.cells).toEqual(initial.pricing.cells);
+    expect(corrected.sheet).toBeUndefined(); expect(corrected.route).toBeUndefined(); expect(corrected.materialForm).toBeUndefined(); expect(corrected.requiresDimensions).toBeUndefined(); expect(corrected.minimumChargeCents).toBeUndefined();
+    expect(validateComplexProductSpecification(corrected)).toEqual([measurementModeQuestion]);
   });
 });

@@ -1,7 +1,7 @@
 import { and, desc, eq } from "drizzle-orm";
 import { aiConfigurableProductProposals, pbv2TreeVersions, products } from "@shared/schema";
 import { db } from "../../db";
-import { buildCanonicalComplexProductTree, pricingUnitForComplexProductMatrix, specificationFingerprint, validateComplexProductSpecification, type ComplexProductSpecification } from "./complexProductSpecification";
+import { buildCanonicalComplexProductTree, measurementModeQuestion, pricingUnitForComplexProductMatrix, specificationFingerprint, validateComplexProductSpecification, type ComplexProductSpecification } from "./complexProductSpecification";
 import { configurableProductConfirmationDto, configurableProductResultDto } from "./complexProductPresentation";
 import { ComplexProductContinuationPolicyError, selectConfigurableProductContinuation } from "./complexProductContinuationPolicy";
 
@@ -51,7 +51,7 @@ export async function getComplexProductConfirmation(organizationId: string, prop
 export async function persistComplexProductProposal(input: { organizationId: string; conversationId?: string; actorUserId?: string | null; specification: ComplexProductSpecification }) {
   if (!input.conversationId) { const specification = nextProposalVersion(input.specification); const blockers = validateComplexProductSpecification(specification); if (blockers.length) throw new ComplexProductDraftError(blockers.join(" ")); return { id: null, fingerprint: specificationFingerprint(specification), specification }; }
   const [existing] = await db.select().from(aiConfigurableProductProposals).where(and(eq(aiConfigurableProductProposals.orgId, input.organizationId), eq(aiConfigurableProductProposals.conversationId, input.conversationId))).limit(1);
-  const specification = nextProposalVersion(input.specification, existing?.specification); const blockers = validateComplexProductSpecification(specification); if (blockers.length && !blockers.every((blocker) => blocker === "Are these prices per piece or per square foot?" || /pricing matrix/i.test(blocker))) throw new ComplexProductDraftError(blockers.join(" "));
+  const specification = nextProposalVersion(input.specification, existing?.specification); const blockers = validateComplexProductSpecification(specification); if (blockers.length && !blockers.every((blocker) => blocker === "Are these prices per piece or per square foot?" || blocker === measurementModeQuestion || /pricing matrix/i.test(blocker))) throw new ComplexProductDraftError(blockers.join(" "));
   const fingerprint = specificationFingerprint(specification);
   if (existing) { const [updated] = await db.update(aiConfigurableProductProposals).set({ specification, fingerprint, status: "proposed", idempotencyKey: null, updatedAt: new Date() }).where(and(eq(aiConfigurableProductProposals.orgId, input.organizationId), eq(aiConfigurableProductProposals.id, existing.id))).returning(); return { id: updated!.id, fingerprint, specification }; }
   const [created] = await db.insert(aiConfigurableProductProposals).values({ orgId: input.organizationId, conversationId: input.conversationId, actorUserId: input.actorUserId ?? null, specification, fingerprint }).returning(); return { id: created!.id, fingerprint, specification };

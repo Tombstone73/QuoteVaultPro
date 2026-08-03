@@ -15,9 +15,9 @@ export type ComplexProductSpecification = {
   kind: "configurable_product"; name: string; category: string; description: string;
   /** Production choices are intentionally independent of product definition.
    * Their absence must remain visible rather than being replaced with defaults. */
-  taxable: boolean; requiresDimensions: boolean; materialForm?: "sheet";
+  taxable: boolean; requiresDimensions?: boolean; measurementMode?: "dimensions_required" | "fixed_size" | "quantity_only"; measurementModeSource?: "explicit" | "inferred"; materialForm?: "sheet";
   sheet?: { widthIn: number; heightIn: number; allowRotation?: boolean };
-  route?: string; minimumChargeCents: number; optionGroups: [ComplexProductOptionGroup, ComplexProductOptionGroup];
+  route?: string; minimumChargeCents?: number; minimumChargeSource?: "explicit" | "inferred"; optionGroups: [ComplexProductOptionGroup, ComplexProductOptionGroup];
   pricing: ComplexProductMatrix; review: { assumptions: string[]; warnings: string[]; blockers: string[]; unsupportedRelationships: string[] };
   proposalVersion?: number;
 };
@@ -115,13 +115,22 @@ export function pricingUnitForComplexProductMatrix(matrix: ComplexProductMatrix)
   return matrix.kind === "two_dimensional_per_piece" ? "per_piece" : "per_square_foot";
 }
 
+export const measurementModeQuestion = "Should customers enter width and height, use a fixed size, or only enter a quantity?";
+
+export function measurementModeForComplexProductSpecification(spec: ComplexProductSpecification): "dimensions_required" | "fixed_size" | "quantity_only" | "unresolved" {
+  if (spec.measurementMode) return spec.measurementMode;
+  if (spec.requiresDimensions === true) return "dimensions_required";
+  if (spec.requiresDimensions === false) return "quantity_only";
+  return "unresolved";
+}
+
 export function validateComplexProductSpecification(spec: ComplexProductSpecification): string[] {
   const errors: string[] = [];
   if (!normalize(spec.name) || !normalize(spec.category)) errors.push("Product name and category are required.");
-  if (!Number.isInteger(spec.minimumChargeCents) || spec.minimumChargeCents < 0) errors.push("Minimum charge must be integer cents.");
+  if (spec.minimumChargeCents !== undefined && (!Number.isInteger(spec.minimumChargeCents) || spec.minimumChargeCents < 0)) errors.push("Minimum charge must be integer cents.");
   if (spec.sheet && (spec.sheet.widthIn <= 0 || spec.sheet.heightIn <= 0)) errors.push("Sheet dimensions must be positive.");
-  if (spec.requiresDimensions && !spec.sheet) errors.push("Dimensions are required but no dimensions were provided.");
   if (spec.pricing.kind === "two_dimensional_unresolved") errors.push("Are these prices per piece or per square foot?");
+  else if (measurementModeForComplexProductSpecification(spec) === "unresolved") errors.push(measurementModeQuestion);
   const keys = new Set<string>();
   for (const group of spec.optionGroups) { if (!group.proposalKey || keys.has(group.proposalKey)) errors.push("Option group keys must be unique."); keys.add(group.proposalKey); const values = group.values.map((value) => normalize(value.value).toLowerCase()); if (!group.values.length || new Set(values).size !== values.length) errors.push(`Option values for ${group.name} must be non-empty and unique.`); }
   const [rowGroup, columnGroup] = spec.optionGroups;
@@ -148,5 +157,5 @@ export function buildCanonicalComplexProductTree(spec: ComplexProductSpecificati
     ...(hasSheet ? { sheet: { widthIn: spec.sheet!.widthIn, heightIn: spec.sheet!.heightIn, materialForm: spec.materialForm ?? "sheet", allowRotation: spec.sheet!.allowRotation ?? false } } : {}),
     complexProductReview: spec.review,
   };
-  return { schemaVersion: 2, status: "DRAFT", rootNodeIds, nodes, edges, pricingMatrix: matrix, meta: { pricingProfileKey: perPiece ? "qty_only" : "default", pricingV2: { unitSystem: "imperial", tierBasis: "line_item_quantity", base: { perSqftCents: null, perPieceCents: perPiece ? 0 : null, minimumChargeCents: spec.minimumChargeCents }, optionMatrixPricingUnit: pricingUnit }, requiresDimensions: spec.requiresDimensions, productIntake } };
+  return { schemaVersion: 2, status: "DRAFT", rootNodeIds, nodes, edges, pricingMatrix: matrix, meta: { pricingProfileKey: perPiece ? "qty_only" : "default", pricingV2: { unitSystem: "imperial", tierBasis: "line_item_quantity", base: { perSqftCents: null, perPieceCents: perPiece ? 0 : null, minimumChargeCents: spec.minimumChargeCents ?? 0 }, optionMatrixPricingUnit: pricingUnit }, requiresDimensions: measurementModeForComplexProductSpecification(spec) === "dimensions_required", productIntake } };
 }

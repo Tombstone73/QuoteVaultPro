@@ -20,6 +20,11 @@ describe("configurable product assistant cards", () => {
     act(() => root.render(<ConfigurableProductConfirmationCardView confirmation={dto} />));
     expect(container.textContent).toContain("DEV Test Yard Signs 073126"); expect(container.textContent).toContain("Per piece pricing matrix"); expect(container.textContent).toContain("Not set"); expect(container.textContent).toContain("$22.00"); expect(container.textContent).not.toContain("$0.00");
   });
+  it("blocks an unresolved measurement correction and displays all cleared values as Not set", () => {
+    const dto = toConfigurableProductConfirmation(confirmation({ product: { name: "DEV Test Yard Signs 073126", category: "Rigid Signs", inactive: true, pbv2Status: "DRAFT", unpublished: true, nonLiveQuotable: true, measurementMode: "unresolved" }, matrix: { pricingComponent: "per_piece", rowValues: ["3mm", "6mm"], columnValues: ["single", "double"], cells: { "3mm:single": 1200, "3mm:double": 1800, "6mm:single": 1600, "6mm:double": 2200 } }, blockers: ["Should customers enter width and height, use a fixed size, or only enter a quantity?"], readiness: { ready: false }, goEligible: false }))!;
+    act(() => root.render(<ConfigurableProductConfirmationCardView confirmation={dto} onCreatePlan={jest.fn()} />));
+    expect(container.textContent).toContain("Measurement: Not set"); expect(container.textContent).toContain("Minimum charge: Not set"); expect(container.textContent).toContain("$12.00"); expect(container.querySelector("button")).toBeNull();
+  });
   it("recognizes the route's turn-bound configurable proposal without losing numeric or boolean fields", () => {
     const dto = confirmation({
       product: { name: "PVC Panel", category: "Rigid Signs", inactive: true, pbv2Status: "DRAFT", unpublished: true, nonLiveQuotable: true, sheetWidthIn: 48, sheetHeightIn: 96, allowRotation: true, route: "Flatbed", minimumChargeCents: 2500 },
