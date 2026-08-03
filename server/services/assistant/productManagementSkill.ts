@@ -30,6 +30,7 @@ import { pricingChangeRequestFromMessage } from "./productPricingChangeSetParsin
 import { productPricingChangeSetStore } from "./productPricingChangeSetDb";
 import { configurableProductDraftCommandName } from "./execution/configurableProductDraftCommand";
 import { applyComplexProductConversationEdit, createInitialComplexProductSpecification, pricingUnitQuestion, routeComplexProductMessage } from "./complexProductConversation";
+import { measurementModeQuestion } from "./complexProductSpecification";
 import { getComplexProductConfirmation, persistComplexProductProposal, resolveConfigurableProductContinuation, updateComplexProductProposal } from "./complexProductDraftPersistence";
 import { CloneInactiveProductDraftError, CloneInactiveProductDraftService } from "./cloneInactiveProductDraftService";
 import { createDrizzleCloneInactiveProductDraftStore } from "./cloneInactiveProductDraftPersistence";
@@ -608,7 +609,7 @@ export class ProductManagementSkillService {
         if (!confirmation) throw new Error("The configurable-product proposal could not be hydrated.");
         const cards: ProductManagementCard[] = [{ kind: "product_batch_preview", title: "Configurable product draft", summary: confirmation.goEligible ? "The persisted configurable-product proposal is ready for a dedicated confirmation plan." : "The persisted configurable-product proposal needs the listed blockers resolved before it can be confirmed.", sourceLinks: [], details: { configurableProduct: confirmation } }];
         if (confirmation.goEligible) cards.push({ kind: "action_proposal", title: "Create configurable inactive product draft", summary: "GO creates exactly this persisted inactive product with a PBV2 DRAFT tree. It cannot activate or publish the product.", sourceLinks: [], plan: { action: configurableProductDraftCommandName, proposalId: confirmation.proposalId, fingerprint: confirmation.fingerprint, configurableProduct: confirmation } });
-        return { handled: true, response: confirmation.goEligible ? "I updated the configurable-product proposal and prepared its bound confirmation action." : confirmation.blockers.length === 1 && confirmation.blockers[0] === pricingUnitQuestion ? pricingUnitQuestion : `I updated the configurable-product proposal. Resolve ${confirmation.blockers.length} blocker(s) before confirmation can be created.`, cards };
+        return { handled: true, response: confirmation.goEligible ? "I updated the configurable-product proposal and prepared its bound confirmation action." : confirmation.blockers.length === 1 && (confirmation.blockers[0] === pricingUnitQuestion || confirmation.blockers[0] === measurementModeQuestion) ? confirmation.blockers[0] : `I updated the configurable-product proposal. Resolve ${confirmation.blockers.length} blocker(s) before confirmation can be created.`, cards };
       } catch (error) {
         const message = error instanceof Error ? error.message : "The configurable-product proposal could not be updated.";
         return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Configurable product needs correction", summary: "No executable action was created.", sourceLinks: [], details: { errors: [message] } }] };

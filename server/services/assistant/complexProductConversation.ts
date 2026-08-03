@@ -56,8 +56,7 @@ export function createInitialComplexProductSpecification(message: string): Compl
     ?? ( /\bPVC\b/i.test(message) ? "PVC Configurable Product" : "Configurable Product Draft" );
   const specification: ComplexProductSpecification = {
     kind: "configurable_product", name, category: categoryFromMessage(message) ?? (/\bPVC|coroplast\b/i.test(message) ? "Rigid Signs" : "Print Products"),
-    description: "Configurable product draft assembled from this conversation.", taxable: true, requiresDimensions: false,
-    minimumChargeCents: 0,
+    description: "Configurable product draft assembled from this conversation.", taxable: true,
     optionGroups: [
       { proposalKey: "thickness", name: "Thickness", required: true, selectionMode: "single", values: rows.map((value) => ({ value, label: value })) },
       { proposalKey: "printed_sides", name: "Printed sides", required: true, selectionMode: "single", values: columns.map((value) => ({ value, label: value === "single_sided" ? "Single sided" : "Double sided" })) },
@@ -74,9 +73,13 @@ export function applyComplexProductConversationEdit(current: ComplexProductSpeci
   const category = categoryFromMessage(source); if (category) next.category = category;
   const minimum = source.match(/\bminimum(?:\s+charge)?\s*(?:to|of)?\s*\$?(\d+(?:\.\d{1,2})?)|\$?(\d+(?:\.\d{1,2})?)\s+minimum(?:\s+charge)?\b/i);
   const minimumAmount = minimum?.[1] ?? minimum?.[2];
-  if (minimumAmount) next.minimumChargeCents = Math.round(Number(minimumAmount) * 100);
+  if (minimumAmount) { next.minimumChargeCents = Math.round(Number(minimumAmount) * 100); next.minimumChargeSource = "explicit"; }
   const clearProductionConfiguration = /\b(?:do not|don't|without)\b[\s\S]{0,120}\b(?:sheet\s+size|production\s+route|rotation)\b/i.test(source);
-  if (clearProductionConfiguration) { next.sheet = undefined; next.route = undefined; next.materialForm = undefined; next.requiresDimensions = false; }
+  if (clearProductionConfiguration) {
+    next.sheet = undefined; next.route = undefined; next.materialForm = undefined;
+    if (next.measurementModeSource !== "explicit") { next.measurementMode = undefined; next.requiresDimensions = undefined; }
+    if (next.minimumChargeSource !== "explicit") next.minimumChargeCents = undefined;
+  }
   // Legacy parsers below may receive explicit production settings. Allocate a
   // temporary shell only when such a setting is actually supplied; no default
   // is emitted in the persisted specification otherwise.
@@ -90,8 +93,11 @@ export function applyComplexProductConversationEdit(current: ComplexProductSpeci
   if (/\brotation\s+(?:allowed|enabled)\b|\ballow\s+rotation\b/i.test(source) && !clearProductionConfiguration && next.sheet) next.sheet.allowRotation = true;
   if (/\brotation\s+(?:disabled|not allowed)\b|\bdo not allow rotation\b/i.test(source) && !clearProductionConfiguration && next.sheet) next.sheet.allowRotation = false;
   if (/\bflatbed\b/i.test(source) && !clearProductionConfiguration) next.route = "Flatbed";
-  if (/\bper[- ]?piece\b/i.test(source)) { next.pricing.kind = "two_dimensional_per_piece"; next.requiresDimensions = false; next.review.blockers = next.review.blockers.filter((blocker) => blocker !== pricingUnitQuestion); }
+  if (/\bper[- ]?piece\b/i.test(source)) { next.pricing.kind = "two_dimensional_per_piece"; next.review.blockers = next.review.blockers.filter((blocker) => blocker !== pricingUnitQuestion); }
   if (/\bper\s+(?:square\s*(?:foot|feet)|sq\.?\s*ft\.?|sqft)\b/i.test(source)) { next.pricing.kind = "two_dimensional_per_sqft"; next.review.blockers = next.review.blockers.filter((blocker) => blocker !== pricingUnitQuestion); }
+  if (/\b(?:customers?\s+)?(?:enter|supply|provide)\b[\s\S]{0,50}\b(?:width|dimensions?)\b[\s\S]{0,50}\bheight\b|\bdimensions?\s+(?:required|only)\b/i.test(source)) { next.measurementMode = "dimensions_required"; next.measurementModeSource = "explicit"; next.requiresDimensions = true; }
+  if (/\bfixed\s+(?:size|dimensions?)\b/i.test(source)) { next.measurementMode = "fixed_size"; next.measurementModeSource = "explicit"; next.requiresDimensions = false; }
+  if (/\b(?:quantity[- ]?only|only\s+(?:enter|use)\s+(?:a\s+)?quantity)\b/i.test(source)) { next.measurementMode = "quantity_only"; next.measurementModeSource = "explicit"; next.requiresDimensions = false; }
   // A paired price list such as "$12/$18 for 3mm and $16/$22 for 6mm"
   // is a two-dimensional product matrix, never quantity-tier pricing.
   const pairedPrices = Array.from(source.matchAll(/\$?(\d+(?:\.\d{1,2})?)\s*\/\s*\$?(\d+(?:\.\d{1,2})?)\s+for\s+(\d+(?:\.\d+)?)\s*mm/gi));
