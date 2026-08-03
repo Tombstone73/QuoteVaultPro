@@ -2600,6 +2600,11 @@ function calculateBasePriceDetails(
     : null;
   const hasMatrixBasePrice = matrixBasePriceRaw !== null && matrixBasePriceRaw > 0;
   const base = pricingV2.base && typeof pricingV2.base === 'object' ? pricingV2.base : {};
+  // Configurable-product option matrices are authoritative rates.  Their unit
+  // is explicit in the PBV2 tree, so a per-piece matrix cannot accidentally be
+  // multiplied by square footage at this downstream pricing boundary.
+  const optionMatrixPricingUnit = (pricingV2 as any)?.optionMatrixPricingUnit === "per_piece"
+    ? "per_piece" : "per_square_foot";
   const requestedPricingProfileKey = String(
     pricingContext?.pricingProfileKey
     ?? (meta as any)?.pricingProfileKey
@@ -2807,7 +2812,8 @@ function calculateBasePriceDetails(
       }];
 
       if (hasMatrixBasePrice) {
-        perSqftCents = matrixBasePrice * 100;
+        if (optionMatrixPricingUnit === "per_piece") perPieceCents = matrixBasePrice * 100;
+        else perSqftCents = matrixBasePrice * 100;
         basePriceSource = "pricing_matrix.base_price_fallback";
         rateUsedSource = "pricing_matrix.base_price_fallback";
         warnings.push({
@@ -2948,7 +2954,8 @@ function calculateBasePriceDetails(
     };
 
     if (hasMatrixBasePrice) {
-      perSqftCents = matrixBasePrice * 100;
+      if (optionMatrixPricingUnit === "per_piece") perPieceCents = matrixBasePrice * 100;
+      else perSqftCents = matrixBasePrice * 100;
       tierResolution = {
         ...tierResolution,
         matrixBasePriceOverride: true,

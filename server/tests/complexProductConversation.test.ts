@@ -20,7 +20,7 @@ describe("configurable-product conversation integration helpers", () => {
     const before = specificationFingerprint(first);
     const complete = applyComplexProductConversationEdit(first, `Use this matrix:\n${matrix}`);
     expect(complete.sheet).toEqual(first.sheet);
-    expect(complete.review.blockers).toEqual([]);
+    expect(complete.review.blockers).toEqual(["Are these prices per piece or per square foot?"]);
     expect(complete.pricing.cells["3mm:Double-sided"]).toBe(575);
     expect(specificationFingerprint(complete)).not.toBe(before);
   });
@@ -54,10 +54,22 @@ describe("configurable-product conversation integration helpers", () => {
 
   it("treats paired thickness and printed-side prices as a two-dimensional product matrix", () => {
     const initial = createInitialComplexProductSpecification("I want to add a new product called Yard Signs. It has two thicknesses, 3mm and 6mm, and each thickness is available single-sided or double-sided. The prices are $12/$18 for 3mm and $16/$22 for 6mm.");
-    expect(initial.pricing.kind).toBe("two_dimensional_per_sqft");
+    expect(initial.pricing.kind).toBe("two_dimensional_unresolved");
     expect(initial.pricing.rowValues).toEqual(["3mm", "6mm"]);
     expect(initial.pricing.columnValues).toEqual(["single_sided", "double_sided"]);
     expect(initial.pricing.cells).toMatchObject({ "3mm:single_sided": 1200, "3mm:double_sided": 1800, "6mm:single_sided": 1600, "6mm:double_sided": 2200 });
-    expect(initial.review.blockers).toEqual([]);
+    expect(initial.review.blockers).toEqual(["Are these prices per piece or per square foot?"]);
+  });
+
+  it("binds prose matrix prices, then applies an explicit per-piece correction without inventing production settings", () => {
+    const initial = createInitialComplexProductSpecification("I want to add a new product called DEV Test Yard Signs 073126. It has two thicknesses, 3mm and 6mm, and each thickness is available single-sided or double-sided. The prices are $12 single-sided and $18 double-sided for 3mm, and $16 single-sided and $22 double-sided for 6mm.");
+    expect(initial.name).toBe("DEV Test Yard Signs 073126");
+    expect(initial.pricing.cells).toMatchObject({ "3mm:single_sided": 1200, "3mm:double_sided": 1800, "6mm:single_sided": 1600, "6mm:double_sided": 2200 });
+    expect(initial.review.blockers).toEqual(["Are these prices per piece or per square foot?"]);
+    const corrected = applyComplexProductConversationEdit(initial, "Use per-piece pricing for this matrix. Do not assign a sheet size, production route, or rotation setting unless I explicitly provide them.");
+    expect(corrected.pricing.kind).toBe("two_dimensional_per_piece");
+    expect(corrected.pricing.cells).toEqual(initial.pricing.cells);
+    expect(corrected.sheet).toBeUndefined(); expect(corrected.route).toBeUndefined(); expect(corrected.requiresDimensions).toBe(false);
+    expect(corrected.review.blockers).toEqual([]);
   });
 });
