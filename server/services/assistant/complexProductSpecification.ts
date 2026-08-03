@@ -8,15 +8,18 @@ export type ComplexProductOptionGroup = {
 export type ComplexProductMatrix = {
   /** Legacy per-square-foot envelopes remain valid; per-piece uses the same
    * canonical option matrix and PBV2 base_price rows. */
-  kind: "two_dimensional_per_sqft" | "two_dimensional_per_piece"; rowKey: string; columnKey: string;
+  kind: "two_dimensional_per_sqft" | "two_dimensional_per_piece" | "two_dimensional_unresolved"; rowKey: string; columnKey: string;
   rowValues: string[]; columnValues: string[]; cells: Record<string, number>;
 };
 export type ComplexProductSpecification = {
   kind: "configurable_product"; name: string; category: string; description: string;
-  taxable: boolean; requiresDimensions: true; materialForm: "sheet";
-  sheet: { widthIn: number; heightIn: number; allowRotation: boolean };
-  route: string; minimumChargeCents: number; optionGroups: [ComplexProductOptionGroup, ComplexProductOptionGroup];
+  /** Production choices are intentionally independent of product definition.
+   * Their absence must remain visible rather than being replaced with defaults. */
+  taxable: boolean; requiresDimensions: boolean; materialForm?: "sheet";
+  sheet?: { widthIn: number; heightIn: number; allowRotation?: boolean };
+  route?: string; minimumChargeCents: number; optionGroups: [ComplexProductOptionGroup, ComplexProductOptionGroup];
   pricing: ComplexProductMatrix; review: { assumptions: string[]; warnings: string[]; blockers: string[]; unsupportedRelationships: string[] };
+  proposalVersion?: number;
 };
 
 const normalize = (value: string) => value.trim().replace(/\s+/g, " ");
@@ -107,7 +110,8 @@ export function parseTwoDimensionalPricingMatrix(input: string, rowKey: string, 
   return { kind: "two_dimensional_per_sqft", rowKey, columnKey, rowValues, columnValues: columns, cells };
 }
 
-export function pricingUnitForComplexProductMatrix(matrix: ComplexProductMatrix): "per_piece" | "per_square_foot" {
+export function pricingUnitForComplexProductMatrix(matrix: ComplexProductMatrix): "per_piece" | "per_square_foot" | null {
+  if (matrix.kind === "two_dimensional_unresolved") return null;
   return matrix.kind === "two_dimensional_per_piece" ? "per_piece" : "per_square_foot";
 }
 
@@ -115,7 +119,9 @@ export function validateComplexProductSpecification(spec: ComplexProductSpecific
   const errors: string[] = [];
   if (!normalize(spec.name) || !normalize(spec.category)) errors.push("Product name and category are required.");
   if (!Number.isInteger(spec.minimumChargeCents) || spec.minimumChargeCents < 0) errors.push("Minimum charge must be integer cents.");
-  if (spec.sheet.widthIn <= 0 || spec.sheet.heightIn <= 0) errors.push("Sheet dimensions must be positive.");
+  if (spec.sheet && (spec.sheet.widthIn <= 0 || spec.sheet.heightIn <= 0)) errors.push("Sheet dimensions must be positive.");
+  if (spec.requiresDimensions && !spec.sheet) errors.push("Dimensions are required but no dimensions were provided.");
+  if (spec.pricing.kind === "two_dimensional_unresolved") errors.push("Are these prices per piece or per square foot?");
   const keys = new Set<string>();
   for (const group of spec.optionGroups) { if (!group.proposalKey || keys.has(group.proposalKey)) errors.push("Option group keys must be unique."); keys.add(group.proposalKey); const values = group.values.map((value) => normalize(value.value).toLowerCase()); if (!group.values.length || new Set(values).size !== values.length) errors.push(`Option values for ${group.name} must be non-empty and unique.`); }
   const [rowGroup, columnGroup] = spec.optionGroups;
@@ -133,6 +139,14 @@ export function buildCanonicalComplexProductTree(spec: ComplexProductSpecificati
   const nodes: Record<string, unknown> = {}; const rootNodeIds: string[] = []; const edges: Array<Record<string, unknown>> = [];
   spec.optionGroups.forEach((group, groupIndex) => { const id = `ai_${group.proposalKey}`; const groupId = `ai_group_${group.proposalKey}`; rootNodeIds.push(id); nodes[groupId] = { id: groupId, kind: "group", type: "GROUP", status: "ENABLED", key: `${group.proposalKey}_group`, label: group.name, displayOrder: groupIndex + 1, input: { type: "select", required: true } }; nodes[id] = { id, kind: "question", type: "INPUT", status: "ENABLED", key: group.proposalKey, label: group.name, ui: { sortOrder: groupIndex + 1 }, input: { type: "select", required: true, selectionKey: group.proposalKey, valueType: "ENUM", constraints: { select: { allowEmpty: false } } }, choices: group.values.map((value, index) => ({ id: `${id}_${index + 1}`, value: value.value, label: value.label, sortOrder: index + 1 })) }; edges.push({ id: `ai_edge_${group.proposalKey}`, fromNodeId: groupId, toNodeId: id, status: "DISABLED" }); });
   const matrix: ProductOptionPricingMatrix = { dimensions: [spec.pricing.rowKey, spec.pricing.columnKey], rows: spec.pricing.rowValues.flatMap((row) => spec.pricing.columnValues.map((column) => ({ id: `matrix_${row}_${column}`.replace(/[^a-z0-9_]/gi, "_"), when: { [spec.pricing.rowKey]: row, [spec.pricing.columnKey]: column }, variables: { base_price: spec.pricing.cells[complexProductMatrixCellKey(row, column)] } }))) };
-  const perPiece = pricingUnitForComplexProductMatrix(spec.pricing) === "per_piece";
-  return { schemaVersion: 2, status: "DRAFT", rootNodeIds, nodes, edges, pricingMatrix: matrix, meta: { pricingV2: { unitSystem: "imperial", tierBasis: "line_item_quantity", base: { perSqftCents: null, perPieceCents: perPiece ? 0 : null, minimumChargeCents: spec.minimumChargeCents }, optionMatrixPricingUnit: perPiece ? "per_piece" : "per_square_foot" }, requiresDimensions: !perPiece, productIntake: { draftRouting: { stationName: spec.route }, sheet: { widthIn: spec.sheet.widthIn, heightIn: spec.sheet.heightIn, materialForm: spec.materialForm, allowRotation: spec.sheet.allowRotation }, complexProductReview: spec.review } } };
+  const pricingUnit = pricingUnitForComplexProductMatrix(spec.pricing);
+  if (!pricingUnit) throw new Error("Are these prices per piece or per square foot?");
+  const perPiece = pricingUnit === "per_piece";
+  const hasSheet = Boolean(spec.sheet);
+  const productIntake = {
+    ...(spec.route ? { draftRouting: { stationName: spec.route } } : {}),
+    ...(hasSheet ? { sheet: { widthIn: spec.sheet!.widthIn, heightIn: spec.sheet!.heightIn, materialForm: spec.materialForm ?? "sheet", allowRotation: spec.sheet!.allowRotation ?? false } } : {}),
+    complexProductReview: spec.review,
+  };
+  return { schemaVersion: 2, status: "DRAFT", rootNodeIds, nodes, edges, pricingMatrix: matrix, meta: { pricingProfileKey: perPiece ? "qty_only" : "default", pricingV2: { unitSystem: "imperial", tierBasis: "line_item_quantity", base: { perSqftCents: null, perPieceCents: perPiece ? 0 : null, minimumChargeCents: spec.minimumChargeCents }, optionMatrixPricingUnit: pricingUnit }, requiresDimensions: spec.requiresDimensions, productIntake } };
 }
