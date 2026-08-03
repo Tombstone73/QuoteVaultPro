@@ -125,6 +125,7 @@ export type PricingV2Tier = {
   id?: string;
   label?: string;
   minQty?: number;
+  maxQty?: number | null;
   minSqft?: number;
   perSqftCents?: number;
   perPieceCents?: number;
@@ -512,6 +513,7 @@ export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
   id: z.string().optional(),
   label: z.string().optional(),
   minQty: z.number().int().min(1).optional(),
+  maxQty: z.number().int().min(1).nullable().optional(),
   minSqft: z.number().positive().optional(),
   perSqftCents: z.number().finite().min(0).optional(),
   perPieceCents: z.number().finite().min(0).optional(),

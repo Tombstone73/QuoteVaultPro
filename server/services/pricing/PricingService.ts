@@ -25,6 +25,7 @@ import {
   type ProductOptionRuleEvaluationResult,
 } from '../../../shared/productOptionRules';
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from '../../../shared/pbv2/validator';
+import { validateQuantityOnlyPerPieceTierFamily } from '../../../shared/pbv2/validator/validateBasePrice';
 import type { Finding } from '../../../shared/pbv2/findings';
 import {
   extractProductOptionPricingMatrix,
@@ -2611,7 +2612,19 @@ function calculateBasePriceDetails(
     ?? "default",
   );
   const hasConfiguredBasePrice = Object.values(base).some((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
-  if (!hasConfiguredBasePrice && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee") {
+  const declaresProductQuantityTiers = Array.isArray((pricingV2 as any).qtyTiers);
+  const quantityOnlyTierValidation = requestedPricingProfileKey === "qty_only"
+    && !hasConfiguredBasePrice
+    && !hasMatrixBasePrice
+    && !hasMatrixRowQtyTiers
+    && declaresProductQuantityTiers
+    ? validateQuantityOnlyPerPieceTierFamily(pricingV2)
+    : null;
+  if (quantityOnlyTierValidation && !quantityOnlyTierValidation.ok) {
+    const finding = quantityOnlyTierValidation.errors[0]!;
+    throw Object.assign(new Error(finding.message), { code: finding.code, details: quantityOnlyTierValidation.errors });
+  }
+  if (!hasConfiguredBasePrice && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee" && !quantityOnlyTierValidation?.ok) {
     throw new Error(
       'PBV2 tree base pricing (meta.pricingV2.base) not configured. Set at least one of: $/sqft, $/piece, or minimum charge.'
     );
