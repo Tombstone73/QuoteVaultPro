@@ -97,6 +97,15 @@ export type AssistantProductIntakeProposedFields = {
   status: "inactive_draft";
 };
 
+function confirmationQuantityBehavior(behavior: unknown, quantityOnly: boolean): string {
+  if (quantityOnly) return "customer_enters_quantity";
+  const value = typeof behavior === "string" ? behavior.trim().toLowerCase() : "";
+  if (/^(?:per_piece|quantity_tiers?|tiered|quantity)$/.test(value)) return "customer_enters_quantity";
+  if (/^fixed(?:_quantity)?$/.test(value)) return "fixed_quantity_1";
+  if (/^(?:none|quantity_only)$/.test(value)) return "quantity_only";
+  return value || "review_required";
+}
+
 /** Optional durable bridge supplied by execution-plan integration. It is not a fallback cache. */
 export interface AssistantProductIntakePlanResultStore {
   get(input: { organizationId: string; planId: string }): Promise<AssistantProductIntakeDraftResult | null>;
@@ -220,7 +229,7 @@ export class AssistantProductIntakeAdapter {
       productionRoute: workflowIntent === "service_fee" ? null : route,
       sheetOrRollConstraints: workflowIntent === "service_fee" ? null : constraint,
       allowRotation: workflowIntent === "service_fee" ? null : rotation,
-      quantityBehavior: quantityOnly ? "customer_enters_quantity" : detail.brief.quantityBehavior?.behavior ?? "review_required",
+      quantityBehavior: confirmationQuantityBehavior(detail.brief.quantityBehavior?.behavior, quantityOnly),
       workflowIntent,
       requiresProductionJob,
       requiresProofApproval: detail.brief.requiresProofApproval ?? null,

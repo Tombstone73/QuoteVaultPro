@@ -73,7 +73,11 @@ describe("AssistantProductIntakeAdapter", () => {
     };
     const adapter = new AssistantProductIntakeAdapter(dependencies({ sessionStore }) as any);
     const proposal = await adapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" });
-    expect(proposal.preview.proposedFields).toMatchObject({ material: null, productionRoute: "Flatbed", requiresProofApproval: true, requiresProductionJob: true });
+    expect(proposal.preview.proposedFields).toMatchObject({ material: null, productionRoute: "Flatbed", requiresProofApproval: true, requiresProductionJob: true, quantityBehavior: "customer_enters_quantity" });
+    sessionStore.getSessionDetail.mockResolvedValue(detail({ brief: { ...correctedBrief, requiresProofApproval: false } }));
+    const proofRemoved = await adapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" });
+    expect(proofRemoved.preview.proposedFields.requiresProofApproval).toBe(false);
+    expect(proofRemoved.fingerprint).not.toBe(proposal.fingerprint);
   });
 
   test("loads tenant-scoped authoritative readiness and redacts raw diagnostics", async () => {

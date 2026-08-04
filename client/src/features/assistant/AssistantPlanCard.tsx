@@ -57,6 +57,7 @@ export type AssistantPlanCardModel = {
     quantityBehavior: string | null;
     workflowIntent: "standard_production" | "fulfillment_only" | "service_fee" | null;
     requiresProductionJob: boolean | null;
+    requiresProofApproval: boolean | null;
     commonOptions: string[];
     optionGroups: Array<{ label: string; required: boolean; selectionMode: "single" | "multi"; choices: string[]; defaultChoice: string | null }>;
     warnings: string[];
@@ -269,6 +270,7 @@ function toProductDraftCreate(action: string | null, preview: UnknownRecord | nu
     quantityBehavior: asText(fields.quantityBehavior),
     workflowIntent: fields.workflowIntent === "standard_production" || fields.workflowIntent === "fulfillment_only" || fields.workflowIntent === "service_fee" ? fields.workflowIntent : null,
     requiresProductionJob: typeof fields.requiresProductionJob === "boolean" ? fields.requiresProductionJob : null,
+    requiresProofApproval: typeof fields.requiresProofApproval === "boolean" ? fields.requiresProofApproval : null,
     commonOptions: asTextList(fields.commonOptions),
     optionGroups: Array.isArray(fields.optionGroups) ? fields.optionGroups.slice(0, 30).flatMap((entry) => {
       const option = asRecord(entry); const label = asText(option?.label);
@@ -604,7 +606,7 @@ function moneyFromCents(value: number | null): string {
 function ProductDraftCreatePreview({ draft }: { draft: NonNullable<AssistantPlanCardModel["productDraftCreate"]> }) {
   const measurement = draft.measurementMode === "quantity_only" || draft.measurementMode === "none" ? "Quantity only" : draft.measurementMode;
   const pricing = draft.pricingModel === "per_piece" && draft.perPieceCents != null ? `${moneyFromCents(draft.perPieceCents)} per piece` : draft.pricingModel === "per_piece" ? "Per piece" : draft.pricingModel;
-  const quantity = draft.quantityBehavior === "customer_enters_quantity" ? "Customer enters quantity" : draft.quantityBehavior;
+  const quantity = draft.quantityBehavior === "customer_enters_quantity" ? "Customer enters quantity" : draft.quantityBehavior === "fixed_quantity_1" ? "Fixed quantity: 1" : draft.quantityBehavior === "quantity_only" ? "Quantity only" : draft.quantityBehavior;
   const workflow = draft.workflowIntent === "service_fee" ? "Service fee" : draft.workflowIntent === "fulfillment_only" ? "Fulfillment only" : draft.workflowIntent === "standard_production" ? "Standard production" : null;
   const fields = [
     ["Name", draft.productName],
@@ -616,12 +618,13 @@ function ProductDraftCreatePreview({ draft }: { draft: NonNullable<AssistantPlan
     ["Square-foot price", draft.perSqftCents == null ? null : moneyFromCents(draft.perSqftCents)],
     ["Per-piece price", draft.pricingModel === "per_piece" || draft.perPieceCents == null ? null : moneyFromCents(draft.perPieceCents)],
     ["Minimum charge", moneyFromCents(draft.minimumChargeCents)],
-    ["Material", draft.material],
+    ["Material", draft.material ?? "Not set"],
     ["Route", draft.productionRoute ?? "Not set"],
     ["Sheet settings", draft.sheetOrRollConstraints ?? "Not set"],
     ["Rotation", draft.allowRotation == null ? "Not set" : draft.allowRotation ? "Allowed" : "Not allowed"],
     ["Workflow", workflow],
     ["Production job required", draft.requiresProductionJob == null ? null : draft.requiresProductionJob ? "Yes" : "No"],
+    ["Customer proof approval required", draft.requiresProofApproval == null ? "Not set" : draft.requiresProofApproval ? "Yes" : "No"],
     ["Quantity", quantity],
     ["Lifecycle", draft.status === "inactive_draft" ? "Inactive PBV2 DRAFT · Unpublished" : draft.status],
   ].filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1]));
@@ -629,7 +632,7 @@ function ProductDraftCreatePreview({ draft }: { draft: NonNullable<AssistantPlan
     <p className="font-semibold">Inactive product draft to create</p>
     <p className="mt-1 text-muted-foreground">These server-derived fields will create one inactive product and PBV2 DRAFT only.</p>
     <dl className="mt-2 grid gap-1 sm:grid-cols-2">{fields.map(([label, value]) => <div key={label}><dt className="inline font-medium">{label}: </dt><dd className="inline">{value}</dd></div>)}</dl>
-    {draft.optionGroups.length ? <div className="mt-2"><p className="font-medium">Options</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{draft.optionGroups.map((option) => <li key={option.label}><span className="font-medium">{option.label}</span> · Type: {option.selectionMode === "multi" ? "Multi-select" : "Single select"} · Required: {option.required ? "Yes" : "No"} · Default: {option.defaultChoice ?? "Not set"} · Choices: {option.choices.join(", ") || "Not set"}</li>)}</ul></div> : draft.commonOptions.length ? <p className="mt-2"><span className="font-medium">Options: </span>{draft.commonOptions.join(", ")}</p> : null}
+    {draft.optionGroups.length ? <div className="mt-2"><p className="font-medium">Options</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{draft.optionGroups.map((option) => <li key={option.label}><span className="font-medium">{option.label}</span> · Type: {option.selectionMode === "multi" ? "Multi-select" : "Single select"} · Required: {option.required ? "Yes" : "No"} · Default: {option.defaultChoice ?? "Not set"} · Choices: {option.choices.join(", ") || "Not set"}</li>)}</ul></div> : draft.commonOptions.length ? <p className="mt-2"><span className="font-medium">Options: </span>{draft.commonOptions.join(", ")}</p> : <p className="mt-2"><span className="font-medium">Options: </span>None</p>}
     {draft.quantityTiers.length ? <div className="mt-3 overflow-x-auto"><p className="font-medium">Quantity tiers · per piece</p><table className="mt-1 w-full max-w-sm border-collapse text-left"><thead className="text-muted-foreground"><tr><th className="border-b p-1 font-medium">Quantity</th><th className="border-b p-1 font-medium">Price each</th></tr></thead><tbody>{draft.quantityTiers.map((tier) => <tr key={`${tier.minQty}-${tier.label}`}><td className="border-b p-1">{tier.label}</td><td className="border-b p-1">{moneyFromCents(tier.perPieceCents)}</td></tr>)}</tbody></table></div> : null}
     {draft.warnings.length ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2"><p className="font-medium">Review warnings</p><ul className="mt-1 list-disc pl-4">{draft.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div> : null}
   </div>;

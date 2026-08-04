@@ -195,7 +195,7 @@ describe("AssistantPlanCard", () => {
             category: "Banners", measurementMode: "custom_dimensions", requiresDimensions: true, fixedDimensions: null,
             pricingModel: "square_foot", perSqftCents: 450, perPieceCents: null, minimumChargeCents: 2500,
             material: "13 oz Banner", productionRoute: "Roll printer", sheetOrRollConstraints: "54in roll", allowRotation: true,
-            quantityBehavior: "per_piece", taxable: true, commonOptions: ["Lamination", "Grommets"], optionGroups: [{ key: "lamination", label: "Lamination", required: true, selectionMode: "single", choices: ["None", "Gloss", "Matte"], defaultChoice: "None" }], status: "inactive_draft",
+            quantityBehavior: "customer_enters_quantity", workflowIntent: "standard_production", requiresProductionJob: true, requiresProofApproval: true, taxable: true, commonOptions: ["Lamination", "Grommets"], optionGroups: [{ key: "lamination", label: "Lamination", required: true, selectionMode: "single", choices: ["None", "Gloss", "Matte"], defaultChoice: "None" }], status: "inactive_draft",
           },
         } }, missingInformation: [], cancellationAvailable: true, steps: [],
       },
@@ -211,6 +211,9 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).toContain("Inactive PBV2 DRAFT");
     expect(container.textContent).toContain("Default: None");
     expect(container.textContent).toContain("Choices: None, Gloss, Matte");
+    expect(container.textContent).toContain("Customer proof approval required: Yes");
+    expect(container.textContent).toContain("Quantity: Customer enters quantity");
+    expect(container.textContent).not.toContain("[object Object]");
     expect(container.textContent).not.toMatch(/Activate|Publish/);
     const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: create inactive product draft']");
     expect(go).not.toBeNull();
@@ -224,7 +227,7 @@ describe("AssistantPlanCard", () => {
       plan: {
         id: "plan-service-1", action: "products.create_inactive_draft", status: "awaiting_confirmation", planVersion: 1, riskLevel: "high", confirmationAvailable: true, confirmationToken: "service-token", expiresAt: "2030-01-01T00:10:00.000Z", missingInformation: [], cancellationAvailable: true, steps: [],
         preview: { summary: "Create one inactive service-fee draft.", productInactiveDraft: { productName: "DEV Test Service 080426", warnings: [], proposedFields: {
-          category: "Print Products", measurementMode: "quantity_only", requiresDimensions: false, fixedDimensions: null, pricingModel: "per_piece", perSqftCents: null, perPieceCents: 2000, minimumChargeCents: null, material: null, productionRoute: null, sheetOrRollConstraints: null, allowRotation: null, quantityBehavior: "customer_enters_quantity", workflowIntent: "service_fee", requiresProductionJob: false, taxable: true, commonOptions: [], optionGroups: [], status: "inactive_draft",
+          category: "Print Products", measurementMode: "quantity_only", requiresDimensions: false, fixedDimensions: null, pricingModel: "per_piece", perSqftCents: null, perPieceCents: 2000, minimumChargeCents: null, material: null, productionRoute: null, sheetOrRollConstraints: null, allowRotation: null, quantityBehavior: "customer_enters_quantity", workflowIntent: "service_fee", requiresProductionJob: false, requiresProofApproval: false, taxable: true, commonOptions: [], optionGroups: [], status: "inactive_draft",
         } } },
       },
     };
