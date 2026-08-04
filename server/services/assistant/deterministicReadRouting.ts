@@ -227,6 +227,15 @@ function exactLookup(message: string): { kind: DeterministicLookupKind; value: s
   return { kind, value };
 }
 
+/** A deliberately bounded natural-language form for one order summary.  This
+ * must not become a generic number extractor: it requires both an order noun
+ * and a summary/lookup verb, accepts one numeric identifier, and permits only
+ * the short trailing summary clauses we can execute without provider planning. */
+function explicitOrderSummaryLookup(message: string): string | null {
+  const match = /^(?:please\s+)?(?:show(?:\s+me)?|find|look\s*up|get|search\s+for|summari[sz]e|tell\s+me\s+about|give\s+me\s+(?:(?:a|an)\s+)?(?:summary|overview)\s+of|what\s+is)\s+(?:the\s+)?order(?:\s+number)?\s*(?:[:#]\s*)?((?:ord[-\s]?)?\d{1,18})(?:\s+and\s+(?:summari[sz]e(?:\s+it)?|tell\s+me\s+about\s+it|give\s+me\s+(?:a\s+)?summary(?:\s+of\s+it)?))?[.?!]*$/i.exec(message.trim());
+  return match?.[1] ?? null;
+}
+
 /**
  * Lets the service apply an exact-match response policy after the registered
  * bounded search tool returns. The tool remains responsible for tenant
@@ -291,6 +300,29 @@ export function resolveDeterministicReadPlan(message: string, rawContext?: Assis
       intent: "navigation",
       selectedSkill: "deterministic_navigation",
       toolCalls: [{ toolName: "navigation.get_current_context", arguments: {} }],
+      clarificationRequired: false,
+      clarificationQuestion: null,
+      responseStyle: "concise",
+    });
+  }
+
+  const explicitOrderNumber = explicitOrderSummaryLookup(normalized);
+  if (explicitOrderNumber) {
+    const orderNumber = canonicalOrderNumberLookup(explicitOrderNumber);
+    if (!orderNumber) {
+      return plan({
+        intent: "clarification",
+        selectedSkill: "deterministic_invalid_order_lookup",
+        toolCalls: [],
+        clarificationRequired: true,
+        clarificationQuestion: "I couldn't recognize that order number. Try something like ORD-20002.",
+        responseStyle: "concise",
+      });
+    }
+    return plan({
+      intent: "lookup",
+      selectedSkill: "deterministic_order_lookup",
+      toolCalls: [{ toolName: "orders.get_summary", arguments: { orderNumber: orderNumber.lookupValue } }],
       clarificationRequired: false,
       clarificationQuestion: null,
       responseStyle: "concise",

@@ -71,6 +71,15 @@ export interface AssistantToolExecutionAudit {
   failureCategory?: AssistantToolFailureCategory;
   failingStep?: string;
   coreResultSucceeded?: boolean;
+  /** Safe request-schema metadata for authorized server diagnostics only. It
+   * deliberately contains no argument values, message, tenant, or provider output. */
+  validationDiagnostic?: {
+    stage: "request_validation";
+    fieldPath: string;
+    issueCode: string;
+    expectedPrimitiveType?: string;
+    receivedPrimitiveType?: string;
+  };
 }
 
 export interface AssistantToolExecution {
@@ -90,6 +99,44 @@ export interface AssistantOrchestrationResult {
 }
 
 export type AssistantToolAuditWriter = (event: AssistantToolExecutionAudit) => Promise<void> | void;
+
+/** Keep compatibility coercion at the one provider-boundary field that needs
+ * it.  Shared tool schemas remain strict and no other assistant argument gains
+ * number-to-string coercion. */
+export function normalizeAssistantToolArguments(toolName: AssistantToolName, value: unknown): unknown {
+  if (toolName !== "orders.get_summary" || !value || typeof value !== "object" || Array.isArray(value)) return value;
+  const args = value as Record<string, unknown>;
+  if (typeof args.orderNumber !== "number") return args;
+  const orderNumber = args.orderNumber;
+  if (!Number.isFinite(orderNumber) || !Number.isSafeInteger(orderNumber) || orderNumber < 0) return args;
+  return { ...args, orderNumber: String(orderNumber) };
+}
+
+function primitiveType(value: unknown): string {
+  if (value === null) return "null";
+  if (Array.isArray(value)) return "array";
+  return typeof value;
+}
+
+function reportedPrimitiveType(value: unknown): string {
+  // Zod reports primitive names (for example "number") as metadata strings.
+  // Preserve that metadata rather than describing the metadata value itself as
+  // a string.
+  return typeof value === "string" && /^(?:string|number|boolean|undefined|null|object|array|bigint|symbol|function)$/i.test(value)
+    ? value.toLowerCase()
+    : primitiveType(value);
+}
+
+function safeValidationDiagnostic(error: { issues: Array<{ path: Array<string | number>; code: string; expected?: unknown; received?: unknown }> }): NonNullable<AssistantToolExecutionAudit["validationDiagnostic"]> {
+  const issue = error.issues[0];
+  return {
+    stage: "request_validation",
+    fieldPath: issue?.path.map(String).join(".") || "root",
+    issueCode: issue?.code ?? "invalid_input",
+    ...(typeof issue?.expected === "string" ? { expectedPrimitiveType: issue.expected } : {}),
+    ...(issue && "received" in issue ? { receivedPrimitiveType: reportedPrimitiveType(issue.received) } : {}),
+  };
+}
 
 export class AssistantOrchestrationService {
   private readonly registry: ReadonlyMap<AssistantToolName, AssistantToolDefinition>;
@@ -148,9 +195,10 @@ export class AssistantOrchestrationService {
     }
     // Identity-shaped model arguments are discarded rather than accepted; the
     // adapter sees only server-derived scope, actor, and permission context.
-    const parsedInput = tool.inputSchema.safeParse(stripUntrustedModelIdentity(args));
+    const normalizedArgs = normalizeAssistantToolArguments(tool.name, stripUntrustedModelIdentity(args));
+    const parsedInput = tool.inputSchema.safeParse(normalizedArgs);
     if (!parsedInput.success) {
-      return this.reject(tool, trustedContext, started, "invalid_arguments", "The tool request could not be validated.");
+      return this.reject(tool, trustedContext, started, "invalid_arguments", "The tool request could not be validated.", "rejected", safeValidationDiagnostic(parsedInput.error));
     }
     if (!isAuthorizedForAssistantTool(tool.requiredPermission, trustedContext)) {
       return this.reject(tool, trustedContext, started, "unauthorized", "You do not have permission to view that information.", "permission_denied");
@@ -255,6 +303,7 @@ export class AssistantOrchestrationService {
     failureCode: AssistantToolExecutionAudit["failureCode"],
     warning: string,
     status: AssistantToolExecutionAudit["status"] = "rejected",
+    validationDiagnostic?: AssistantToolExecutionAudit["validationDiagnostic"],
   ): Promise<AssistantToolExecution> {
     await this.audit({
       correlationId: trustedContext.correlationId,
@@ -264,6 +313,7 @@ export class AssistantOrchestrationService {
       status,
       durationMs: Date.now() - started,
       failureCode,
+      ...(validationDiagnostic ? { validationDiagnostic } : {}),
       failureCategory: failureCode === "invalid_arguments" ? "invalid_input" : failureCode === "unauthorized" ? "permission_denied" : "adapter_failed",
       failingStep: "request_validation",
       coreResultSucceeded: false,

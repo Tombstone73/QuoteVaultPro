@@ -76,6 +76,7 @@ describe("assistant provider planning", () => {
       timeoutUseCase: "assistant_planning",
       providerConfig: expect.any(Object),
     }));
+    expect(provider.generateJson.mock.calls[0]?.[0]?.system).toContain('"orderNumber":"1112"');
   });
 
   test("passes a safely bounded assistant planning timeout override to the provider", async () => {

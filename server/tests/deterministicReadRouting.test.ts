@@ -23,6 +23,30 @@ describe("resolveDeterministicReadPlan", () => {
   });
 
   test.each([
+    "show order 1112",
+    "show me order 1112",
+    "show me order 1112 and summarize it",
+    "summarize order 1112",
+    "summarize order ORD-1112",
+    "tell me about order 1112",
+    "give me a summary of order 1112",
+    "give me an overview of order 1112",
+    "what is order 1112",
+    "look up order 1112 and tell me about it",
+  ])("routes natural order summary wording without provider planning: %s", (message) => {
+    expect(resolveDeterministicReadPlan(message)).toMatchObject({
+      selectedSkill: "deterministic_order_lookup",
+      toolCalls: [{ toolName: "orders.get_summary", arguments: { orderNumber: "1112" } }],
+    });
+  });
+
+  test("does not extract arbitrary numbers or misroute another business entity", () => {
+    expect(resolveDeterministicReadPlan("summarize invoice 1112")).toBeNull();
+    expect(resolveDeterministicReadPlan("summarize order 1112 and customer 3333")).toBeNull();
+    expect(resolveDeterministicReadPlan("summarize order ORD-1112-TEST")).toBeNull();
+  });
+
+  test.each([
     ["Find quote 4402", "4402", undefined],
     ["Find product Business Cards", "Business Cards", "product"],
     ["Find customer Acme Print", "Acme Print", "customer"],

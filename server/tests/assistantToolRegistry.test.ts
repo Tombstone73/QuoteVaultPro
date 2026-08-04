@@ -5,7 +5,7 @@ import {
   createAssistantToolRegistry,
   validateAssistantToolResult,
 } from "../services/assistant/toolRegistry";
-import { AssistantOrchestrationService, AssistantToolExecutionError } from "../services/assistant/orchestration";
+import { AssistantOrchestrationService, AssistantToolExecutionError, normalizeAssistantToolArguments } from "../services/assistant/orchestration";
 
 const capturedAt = "2026-07-21T12:00:00.000Z";
 const trustedContext = {
@@ -65,6 +65,50 @@ describe("assistant tool registry", () => {
     const orderSummary = createAssistantToolRegistry().get("orders.get_summary")!;
     expect(orderSummary.timeoutMs).toBe(5_000);
     expect(orderSummary.timeoutMs).toBeLessThanOrEqual(ASSISTANT_PLATFORM_MAX_TOOL_TIMEOUT_MS);
+  });
+
+  test("normalizes only a safe numeric order summary number at the registered-tool boundary", () => {
+    expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: 1112 })).toEqual({ orderNumber: "1112" });
+    expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: "ORD-1112" })).toEqual({ orderNumber: "ORD-1112" });
+    for (const orderNumber of [-1, 11.12, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, true, null, {}, []]) {
+      expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber })).toEqual({ orderNumber });
+    }
+    expect(normalizeAssistantToolArguments("search.global", { query: 1112 })).toEqual({ query: 1112 });
+  });
+
+  test("passes the normalized order number as a string and records value-free validation diagnostics", async () => {
+    const execute = jest.fn(async () => ({
+      status: "not_found" as const,
+      data: { reason: "not_found" },
+      provenance: { sourceLinks: [], freshness: { capturedAt } },
+    }));
+    const audit = jest.fn();
+    const service = new AssistantOrchestrationService({ "orders.get_summary": { execute } }, audit);
+    await service.executePlan({
+      intent: "lookup", selectedSkill: "order", clarificationRequired: false, clarificationQuestion: null, responseStyle: "concise",
+      toolCalls: [{ toolName: "orders.get_summary", arguments: { orderNumber: 1112, organizationId: "other_org", roles: ["owner"] } }],
+    }, trustedContext);
+    expect(execute).toHaveBeenCalledWith({ orderNumber: "1112" }, expect.objectContaining({ scope: { organizationId: "org_1", userId: "user_1" } }));
+
+    const invalid = await service.executePlan({
+      intent: "lookup", selectedSkill: "order", clarificationRequired: false, clarificationQuestion: null, responseStyle: "concise",
+      toolCalls: [{ toolName: "orders.get_summary", arguments: { number: 1112 } }],
+    }, trustedContext);
+    expect(invalid.executions).toEqual([expect.objectContaining({ status: "rejected", warning: "The tool request could not be validated." })]);
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(audit).toHaveBeenLastCalledWith(expect.objectContaining({
+      failureCode: "invalid_arguments",
+      validationDiagnostic: expect.objectContaining({ stage: "request_validation", fieldPath: "root" }),
+    }));
+    expect(JSON.stringify(audit.mock.calls)).not.toContain("1112");
+
+    await service.executePlan({
+      intent: "lookup", selectedSkill: "order", clarificationRequired: false, clarificationQuestion: null, responseStyle: "concise",
+      toolCalls: [{ toolName: "orders.get_summary", arguments: { orderNumber: true } }],
+    }, trustedContext);
+    expect(audit).toHaveBeenLastCalledWith(expect.objectContaining({
+      validationDiagnostic: expect.objectContaining({ fieldPath: "orderNumber", expectedPrimitiveType: "string", receivedPrimitiveType: "boolean" }),
+    }));
   });
 
   test("rejects provider plans with unknown tools or more than five calls", () => {
