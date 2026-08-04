@@ -136,14 +136,24 @@ function compactText(value: string | null | undefined, fallback: string): string
 }
 
 /** Only persist a nesting setting when the intake source stated it explicitly. */
+function latestExplicitCorrection(sourceText: string): string {
+  const marker = "Explicit Product Intake correction (new explicit values override all prior assumptions):";
+  const markerIndex = sourceText.lastIndexOf(marker);
+  return markerIndex >= 0 ? sourceText.slice(markerIndex) : sourceText;
+}
+
 function explicitAllowRotation(sourceText: string): boolean | null {
-  if (/\b(?:allow|allows|allowed)\s+rotation\b|\brotation\s+(?:allowed|enabled)\b/i.test(sourceText)) return true;
-  if (/\b(?:do not allow|no)\s+rotation\b|\brotation\s+(?:not allowed|disabled)\b/i.test(sourceText)) return false;
+  const explicit = latestExplicitCorrection(sourceText);
+  if (/\b(?:leave|clear|unset)\b[\s\S]{0,100}\brotation\b[\s\S]{0,40}\b(?:unset|clear|not set)\b|\bleave\s+rotation\s+unset\b/i.test(explicit)) return null;
+  if (/\b(?:allow|allows|allowed)\s+rotation\b|\brotation\s+(?:allowed|enabled)\b/i.test(explicit)) return true;
+  if (/\b(?:do not allow|no)\s+rotation\b|\brotation\s+(?:not allowed|disabled)\b/i.test(explicit)) return false;
   return null;
 }
 
 function explicitSheetOrRollConfig(sourceText: string): Record<string, unknown> {
-  const match = sourceText.match(/\b(\d{1,3}(?:\.\d+)?)\s*[x×]\s*(\d{1,3}(?:\.\d+)?)\s*(sheets?|sheet|rolls?|roll)\b/i);
+  const explicit = latestExplicitCorrection(sourceText);
+  if (/\b(?:leave|clear|unset)\b[\s\S]{0,100}\bsheet(?:\s+settings?)?\b[\s\S]{0,40}\b(?:unset|clear|not set)\b|\bleave\s+sheet(?:\s+settings?)?\s+unset\b/i.test(explicit)) return {};
+  const match = explicit.match(/\b(\d{1,3}(?:\.\d+)?)\s*[x×]\s*(\d{1,3}(?:\.\d+)?)\s*(sheets?|sheet|rolls?|roll)\b/i);
   if (!match) return {};
   const width = Number(match[1]);
   const height = Number(match[2]);
@@ -200,9 +210,10 @@ function positiveCentsFromAnswer(value: unknown): number | null {
 }
 
 function firstPriceMatch(text: string, patterns: RegExp[]): { cents: number; source: string } | null {
+  const authoritativeText = latestExplicitCorrection(text);
   for (const pattern of patterns) {
     pattern.lastIndex = 0;
-    const match = pattern.exec(text);
+    const match = pattern.exec(authoritativeText);
     const amount = match?.[1];
     if (!amount) continue;
     const cents = dollarsToCents(amount);

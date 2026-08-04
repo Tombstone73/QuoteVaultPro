@@ -96,7 +96,7 @@ function isProductIntent(message: string): boolean {
   return /\b(create|build|add|clone|configure|continue|update|change|set)\b[\s\S]{0,80}\b(product|banner|sign|print|draft)\b/i.test(message) || draftLookupFromMessage(message) !== null;
 }
 
-function isExplicitProductCreation(message: string): boolean {
+export function isExplicitProductCreation(message: string): boolean {
   return /\b(?:create|add|build|make|start)\b[\s\S]{0,100}\b(?:new|brand-new)?\s*(?:inactive\s+)?(?:service\s+)?(?:product|banner|sign|print)\b/i.test(message)
     || /\b(?:new|brand-new)\s+(?:inactive\s+)?(?:service\s+)?product\b/i.test(message);
 }
@@ -113,15 +113,22 @@ function isProductIntakeContinuationAnswer(message: string): boolean {
 /** A correction changes the canonical intake proposal itself, rather than
  * answering one of its previously generated questions. Keep this deliberately
  * narrow so ordinary product lookups and draft edits retain their routes. */
-function isExplicitProductIntakeCorrection(message: string): boolean {
+export function isExplicitProductIntakeCorrection(message: string): boolean {
   return /\b(?:use|set)\s+.+?\s+as\s+(?:the\s+)?category\b/i.test(message)
     || /\b(?:single|multi)[\s-]*select\b[\s\S]{0,80}\b(?:option|choices?|default)\b/i.test(message)
     || /\b(?:required\s+)?(?:custom\s+)?option(?:\s+group)?\b[\s\S]{0,100}\b(?:choices?|default)\b/i.test(message)
     || /\b(?:require|requires)\s+(?:width\s+and\s+height|dimensions)\b/i.test(message)
-    || /\bremove\s+(?:the\s+)?size\s+option\b/i.test(message)
+    || /\b(?:remove|delete|replace|rename|modify|add|clear)\s+(?:the\s+)?[a-z][a-z0-9 &/\-]{1,80}?\s+option(?:\s+group)?\b/i.test(message)
     || /\b(?:keep|preserve)\s+(?:the\s+)?[a-z][a-z0-9 &/\-]{1,80}?(?:\s+exactly\s+as\s+shown|\s+unchanged|\s+as\s+is)\b/i.test(message)
+    || /\b(?:keep|leave)\s+(?:the\s+)?(?:measurement|category|production\s+route|routing|sheet(?:\s+settings?)?|rotation)\b/i.test(message)
     || /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet)\b/i.test(message)
-    || /\b(?:no|without|clear)\s+(?:production\s+)?(?:route|routing|minimum(?:\s+charge)?)\b/i.test(message);
+    || /\b(?:minimum\s+charge|leave|clear|unset)\b[\s\S]{0,80}\b(?:production\s+)?(?:route|routing|sheet|rotation|minimum\s+charge)\b/i.test(message);
+}
+
+/** New-product creation deliberately outranks an unrelated active session.
+ * All other explicit correction wording stays bound to the active session. */
+export function isActiveProductIntakeCorrectionRequest(message: string): boolean {
+  return !isExplicitProductCreation(message) && isExplicitProductIntakeCorrection(message);
 }
 
 export type ProductIntakeCorrectionOperation = "add" | "remove" | "replace" | "rename" | "preserve" | "modify" | "clear";
@@ -148,7 +155,15 @@ export function parseProductIntakeCorrectionOperations(message: string): ParsedP
 
 function isNarrowCanonicalCorrection(message: string): boolean {
   return /\bdo\s+not\s+change\s+anything\s+else\b/i.test(message)
-    || parseProductIntakeCorrectionOperations(message).some((operation) => operation.operation === "preserve");
+    || parseProductIntakeCorrectionOperations(message).some((operation) => operation.operation === "preserve")
+    || /\b(?:keep|leave)\s+(?:the\s+)?(?:measurement|category|production\s+route|routing|sheet(?:\s+settings?)?|rotation)\b/i.test(message);
+}
+
+function correctionPricing(message: string): { perSqftCents: number | null; minimumChargeCents: number | null } {
+  const cents = (value: string | undefined) => value ? Math.round(Number(value.replace(/,/g, "")) * 100) : null;
+  const perSqft = message.match(/\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet)\b/i)?.[1];
+  const minimum = message.match(/\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:minimum|min(?:imum)?\s*charge)\b|(?:minimum|min(?:imum)?\s*charge)\s*(?:is|of|:)?\s*\$(\d[\d,]*(?:\.\d{1,2})?)/i);
+  return { perSqftCents: cents(perSqft), minimumChargeCents: cents(minimum?.[1] ?? minimum?.[2]) };
 }
 
 export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, message: string): { brief: ProductIntakeBrief; errors: string[] } {
@@ -181,6 +196,17 @@ export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, me
     }
   }
   if (errors.length) return { brief, errors };
+  const pricing = correctionPricing(message);
+  const correctedPricing = pricing.perSqftCents != null || pricing.minimumChargeCents != null
+    ? {
+      ...brief.pricingAnalysis,
+      ...(pricing.perSqftCents != null ? { behavior: "square_foot" as const, confidence: 100 } : {}),
+      notes: [
+        pricing.perSqftCents != null ? `${money(pricing.perSqftCents)} per square foot` : null,
+        pricing.minimumChargeCents != null ? `minimum charge ${money(pricing.minimumChargeCents)}` : null,
+      ].filter(Boolean).join("; "),
+    }
+    : brief.pricingAnalysis;
   return {
     brief: {
       ...brief,
@@ -188,6 +214,7 @@ export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, me
       // remains the separately authoritative sizeBehavior field.
       requiredOptions: brief.requiredOptions.filter((option) => !removedKeys.has(optionIdentity(option.normalizedGroup || option.label))),
       optionalOptions: brief.optionalOptions.filter((option) => !removedKeys.has(optionIdentity(option.normalizedGroup || option.label))),
+      pricingAnalysis: correctedPricing,
     },
     errors: [],
   };
@@ -479,7 +506,13 @@ function continuationAnswers(detail: ProductIntakeSessionDetail, message: string
 async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductManagementCard[]> {
   const missing = unresolvedQuestions(detail);
   const productName = detail.brief.productIdentity.likelyProductName.value || "New product";
-  const common = { productName, category: detail.brief.productIdentity.category.value, draftStatus: detail.session.status };
+  const pricingNotes = detail.brief.pricingAnalysis.notes ?? "";
+  const pricing = correctionPricing(pricingNotes);
+  const measurement = detail.brief.sizeBehavior.behavior === "custom_size" ? "Width and height required"
+    : detail.brief.sizeBehavior.behavior === "fixed_size" ? "Fixed size"
+      : detail.brief.sizeBehavior.behavior === "quantity_only" ? "No dimensions required"
+        : "Unresolved";
+  const common = { productName, category: detail.brief.productIdentity.category.value, measurement, draftStatus: detail.session.status };
   const cards: ProductManagementCard[] = [{
     kind: "product_intake_summary", title: "Product Intake", summary: `Structured Product Intake session for ${productName}.`, sourceLinks: [{ label: "Open existing Product Intake review", href: `/admin/catalog-migration-lab/${detail.session.id}` }],
     details: { ...common, sessionId: detail.session.id, assumptions: detail.brief.draftWarnings.map((warning) => warning.message).slice(0, 10) },
@@ -498,9 +531,12 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
       `Choices: ${choices.join(", ") || "Not set"}`,
     ];
   });
-  if (optionSummaryItems.length) cards.push({ kind: "product_options_summary", title: "Options", summary: "Existing Product Intake and PBV2 validation remain authoritative.", sourceLinks: [], details: { items: optionSummaryItems } });
-  cards.push({ kind: "product_pricing_summary", title: "Pricing basis", summary: "Pricing is server-validated. High-impact pricing assumptions are never silently inferred.", sourceLinks: [], details: { pricingBasis: detail.brief.pricingAnalysis.behavior || "Unresolved" } });
-  cards.push({ kind: "product_routing_summary", title: "Production routing", summary: "Existing routing is reused only after Product Intake validation.", sourceLinks: [], details: { routing: "Not set" } });
+  cards.push({ kind: "product_options_summary", title: "Options", summary: "Existing Product Intake and PBV2 validation remain authoritative.", sourceLinks: [], details: { items: optionSummaryItems.length ? optionSummaryItems : ["None"] } });
+  cards.push({ kind: "product_pricing_summary", title: "Pricing basis", summary: "Pricing is server-validated. High-impact pricing assumptions are never silently inferred.", sourceLinks: [], details: {
+    pricingBasis: pricing.perSqftCents != null ? `${money(pricing.perSqftCents)} per square foot` : detail.brief.pricingAnalysis.behavior || "Unresolved",
+    minimumCharge: pricing.minimumChargeCents != null ? money(pricing.minimumChargeCents) : "Not set",
+  } });
+  cards.push({ kind: "product_routing_summary", title: "Production routing", summary: "Existing routing is reused only after Product Intake validation.", sourceLinks: [], details: { routing: "Not set", fields: { "Sheet or roll constraints": "Not set", Rotation: "Not set" } } });
   const blockers = (detail.readiness.penalties ?? []).filter((penalty) => penalty.severity === "blocker").map((penalty) => penalty.label);
   if (blockers.length) cards.push({ kind: "product_validation_errors", title: "Validation blocks draft creation", summary: "Resolve these server-derived checks before confirmation is available.", sourceLinks: [], details: { errors: blockers } });
   const warnings = detail.brief.draftWarnings.map((warning) => warning.message);
@@ -599,7 +635,7 @@ export class ProductManagementSkillService {
     // This must precede candidate lookup, pricing, and informational routes:
     // the conversation-bound session is authoritative for explicit changes to
     // category, dimensions, price, custom options, or defaults.
-    if (input.activeSessionId && isExplicitProductIntakeCorrection(input.message)) {
+    if (input.activeSessionId && isActiveProductIntakeCorrectionRequest(input.message)) {
       const corrected = await this.continueExplicitIntakeCorrection({ organizationId: input.organizationId, userId: input.userId, message: input.message, sessionId: input.activeSessionId });
       if (corrected.handled) return corrected;
     }

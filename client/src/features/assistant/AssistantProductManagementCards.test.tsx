@@ -113,4 +113,16 @@ describe("AssistantProductManagementCards", () => {
     const card = toAssistantProductManagementCard({ kind: "product_draft_preview", title: "Inactive product draft preview", details: { category: "Print Products", proposedFields: { category: "Print Products" } } })!;
     expect(card.fields.filter((field) => field.label === "Category")).toEqual([{ label: "Category", value: "Print Products" }]);
   });
+
+  it("renders a complete corrected intake proposal without inferred production settings", () => {
+    const intake = toAssistantProductManagementCard({ kind: "product_intake_summary", title: "Product Intake", details: { productName: "Corrected Banner", category: "Print Products", measurement: "Width and height required", draftStatus: "ready_for_draft" } })!;
+    const pricing = toAssistantProductManagementCard({ kind: "product_pricing_summary", title: "Pricing basis", details: { pricingBasis: "$2.00 per square foot", minimumCharge: "$25.00" } })!;
+    const routing = toAssistantProductManagementCard({ kind: "product_routing_summary", title: "Production routing", details: { routing: "Not set", fields: { "Sheet or roll constraints": "Not set", Rotation: "Not set" } } })!;
+    const options = toAssistantProductManagementCard({ kind: "product_options_summary", title: "Options", details: { items: ["None"] } })!;
+
+    expect(intake.fields).toEqual(expect.arrayContaining([{ label: "Measurement", value: "Width and height required" }, { label: "Category", value: "Print Products" }]));
+    expect(pricing.fields).toEqual(expect.arrayContaining([{ label: "Pricing", value: "$2.00 per square foot" }, { label: "Minimum charge", value: "$25.00" }]));
+    expect(routing.fields).toEqual(expect.arrayContaining([{ label: "Routing", value: "Not set" }, { label: "Sheet or roll constraints", value: "Not set" }, { label: "Rotation", value: "Not set" }]));
+    expect(options.items).toEqual(["None"]);
+  });
 });

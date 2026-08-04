@@ -92,7 +92,7 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
   const proposedFields = record(details.proposedFields);
   const namedFields = [
     ["Product", details.productName ?? details.name], ["Category", details.category], ["Sell unit", details.sellUnit],
-    ["Dimensions", details.dimensions], ["Pricing", details.pricingMethod ?? details.pricingBasis], ["Routing", details.routing],
+    ["Measurement", details.measurement], ["Dimensions", details.dimensions], ["Pricing", details.pricingMethod ?? details.pricingBasis], ["Minimum charge", details.minimumCharge], ["Routing", details.routing],
     ["Material", details.material], ["Intake status", draftStatus(details.draftStatus ?? details.status)],
   ].flatMap(([label, value]) => {
     const rendered = text(value);

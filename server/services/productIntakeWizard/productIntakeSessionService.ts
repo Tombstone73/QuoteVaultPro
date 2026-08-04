@@ -767,6 +767,9 @@ type CorrectedStateOptionContract = {
 
 type CorrectedStateContract = {
   category: string | null;
+  measurementBehavior: ProductIntakeBrief["sizeBehavior"]["behavior"] | null;
+  perSqftCents: number | null;
+  minimumChargeCents: number | null;
   requiredOptions: CorrectedStateOptionContract[];
   removedOptionKeys: string[];
 };
@@ -795,8 +798,29 @@ function correctedStateContractFromConfidence(value: unknown): CorrectedStateCon
   }) : [];
   return {
     category: typeof source.category === "string" && source.category.trim() ? source.category : null,
+    measurementBehavior: typeof source.measurementBehavior === "string" ? source.measurementBehavior as ProductIntakeBrief["sizeBehavior"]["behavior"] : null,
+    perSqftCents: typeof source.perSqftCents === "number" && Number.isInteger(source.perSqftCents) && source.perSqftCents > 0 ? source.perSqftCents : null,
+    minimumChargeCents: typeof source.minimumChargeCents === "number" && Number.isInteger(source.minimumChargeCents) && source.minimumChargeCents > 0 ? source.minimumChargeCents : null,
     requiredOptions,
     removedOptionKeys: Array.isArray(source.removedOptionKeys) ? source.removedOptionKeys.filter((key): key is string => typeof key === "string") : [],
+  };
+}
+
+function centsFromText(text: string, pattern: RegExp): number | null {
+  const match = pattern.exec(text);
+  const amount = match?.[1] ?? match?.[2];
+  if (!amount) return null;
+  const dollars = Number(amount.replace(/,/g, ""));
+  return Number.isFinite(dollars) && dollars > 0 ? Math.round(dollars * 100) : null;
+}
+
+function correctedPricingContract(brief: ProductIntakeBrief, sourceText: string | null, prior: CorrectedStateContract | null) {
+  const marker = "Explicit Product Intake correction (new explicit values override all prior assumptions):";
+  const correction = sourceText?.includes(marker) ? sourceText.slice(sourceText.lastIndexOf(marker)) : null;
+  const priceText = correction ?? brief.pricingAnalysis.notes ?? "";
+  return {
+    perSqftCents: centsFromText(priceText, /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet)\b/i) ?? prior?.perSqftCents ?? null,
+    minimumChargeCents: centsFromText(priceText, /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:minimum|min(?:imum)?\s*charge)\b|(?:minimum|min(?:imum)?\s*charge)\s*(?:is|of|:)?\s*\$(\d[\d,]*(?:\.\d{1,2})?)/i) ?? prior?.minimumChargeCents ?? null,
   };
 }
 
@@ -822,8 +846,11 @@ export function buildCorrectedStateContract(
   const prior = correctedStateContractFromConfidence(previous);
   const removed = new Set(prior?.removedOptionKeys ?? []);
   if (sourceText && /\bremove\s+(?:the\s+)?size\s+option\b/i.test(sourceText)) removed.add("size");
+  const pricing = correctedPricingContract(brief, sourceText, prior);
   return {
     category: brief.productIdentity.category.value?.trim() || prior?.category || null,
+    measurementBehavior: brief.sizeBehavior.behavior ?? prior?.measurementBehavior ?? null,
+    ...pricing,
     requiredOptions: brief.requiredOptions.map(optionContract),
     removedOptionKeys: Array.from(removed),
   };
@@ -839,6 +866,18 @@ export function correctedStateBlockers(brief: ProductIntakeBrief, contractValue:
   if (!contract) return blockers;
   if (contract.category && normalizeKey(brief.productIdentity.category.value ?? "") !== normalizeKey(contract.category)) {
     blockers.push(`Corrected category ${contract.category} is missing from the current intake revision.`);
+  }
+  if (contract.measurementBehavior && brief.sizeBehavior.behavior !== contract.measurementBehavior) {
+    blockers.push("Corrected measurement behavior was not preserved in the current intake revision.");
+  }
+  const pricingText = brief.pricingAnalysis.notes ?? "";
+  const perSqftCents = centsFromText(pricingText, /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet)\b/i);
+  const minimumChargeCents = centsFromText(pricingText, /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:minimum|min(?:imum)?\s*charge)\b|(?:minimum|min(?:imum)?\s*charge)\s*(?:is|of|:)?\s*\$(\d[\d,]*(?:\.\d{1,2})?)/i);
+  if (contract.perSqftCents != null && perSqftCents !== contract.perSqftCents) {
+    blockers.push("Corrected per-square-foot price was not preserved in the current intake revision.");
+  }
+  if (contract.minimumChargeCents != null && minimumChargeCents !== contract.minimumChargeCents) {
+    blockers.push("Corrected minimum charge was not preserved in the current intake revision.");
   }
   for (const expected of contract.requiredOptions) {
     const option = allOptions.find((candidate) => normalizeKey(candidate.normalizedGroup || candidate.label) === expected.key);

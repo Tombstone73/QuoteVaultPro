@@ -179,6 +179,28 @@ describe("Product Intake corrected-state readiness", () => {
     ]));
     expect(computeProductIntakeReadiness({ session: { ...session("ready_for_draft"), brief: reduced, confidence: { correctedStateContract: contract } }, questions: [], answers: [] })).toMatchObject({ status: "needs_answers", canCreateDraft: false });
   });
+
+  test("blocks readiness if a later revision drops a corrected measurement mode or base pricing", () => {
+    const corrected = brief({
+      productIdentity: { ...brief().productIdentity, category: { value: "Print Products", confidence: 100, evidence: [] } },
+      sizeBehavior: { behavior: "custom_size", confidence: 100, evidence: [] },
+      pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$2.00 per square foot; minimum charge $25.00", evidence: [] },
+      requiredOptions: [], optionalOptions: [],
+    });
+    const sourceText = "Explicit Product Intake correction (new explicit values override all prior assumptions):\nRemove the Size option group. Keep the measurement mode as width and height required. Set the price to $2.00 per square foot with a $25.00 minimum charge.";
+    const contract = buildCorrectedStateContract(corrected, sourceText);
+    const reduced = brief({
+      productIdentity: corrected.productIdentity,
+      sizeBehavior: { behavior: "none", confidence: 100, evidence: [] },
+      pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$3.00 per square foot; minimum charge $10.00", evidence: [] },
+    });
+
+    expect(correctedStateBlockers(reduced, contract)).toEqual(expect.arrayContaining([
+      expect.stringContaining("measurement"),
+      expect.stringContaining("per-square-foot"),
+      expect.stringContaining("minimum charge"),
+    ]));
+  });
 });
 
 describe("Product Intake question generation", () => {

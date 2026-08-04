@@ -176,6 +176,20 @@ describe("Product Intake draft service", () => {
     expect(values.pbv2ActiveTreeVersionId).toBeNull();
   });
 
+  test("lets an explicit Product Intake correction clear earlier sheet and rotation settings", () => {
+    const sourceText = [
+      "3mm PVC, 48x96 sheets, allow rotation, flatbed route, $3.00 per square foot with $10 minimum charge.",
+      "Explicit Product Intake correction (new explicit values override all prior assumptions):",
+      "Set the price to $2.00 per square foot with a $25.00 minimum charge. Leave production routing, sheet settings, and rotation unset.",
+    ].join("\n\n");
+    const correctedBrief = brief({ pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$2.00 per square foot; minimum charge $25.00", evidence: [] } });
+    const values = buildProductIntakeProductValues({ organizationId: "org_1", productId: "prod_correction", brief: correctedBrief, productTypeId: "ptype_rigid", sourceText });
+    const tree = buildProductIntakeDraftTree({ brief: correctedBrief, sessionId: "sess_correction", productName: "13oz Banner", userId: "user_1", sourceText });
+
+    expect(values.pricingProfileConfig).toBeNull();
+    expect(tree.meta?.pricingV2?.base).toMatchObject({ perSqftCents: 200, minimumChargeCents: 2500 });
+  });
+
   test("keeps explicit quantity-only service requests out of dimensioned production", () => {
     const values = buildProductIntakeProductValues({
       organizationId: "org_1", productId: "prod_service", brief: brief(), productTypeId: null,

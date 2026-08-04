@@ -16,7 +16,7 @@ import { AssistantPlanningError, ConfiguredAssistantPlanner, type AssistantPlann
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { resolveQuoteInternalNoteIntent } from "./execution/quoteInternalNoteIntent";
-import { productManagementSkillService } from "./productManagementSkill";
+import { isActiveProductIntakeCorrectionRequest, productManagementSkillService } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
 import { pendingOrderIntakeRequest } from "./orderIntakeContinuation";
@@ -251,6 +251,12 @@ function activeProductIntakeSession(messages: AssistantMessageRecord[]): string 
     }
   }
   return null;
+}
+
+/** An active Product Intake owns explicit corrections, even when a correction
+ * contains words that would ordinarily be answered by the read-only guide. */
+export function shouldDeferSystemGuideForActiveProductIntake(messages: AssistantMessageRecord[], message: string): boolean {
+  return Boolean(activeProductIntakeSession(messages) && isActiveProductIntakeCorrectionRequest(message));
 }
 
 function activeConfigurableProductProposalId(messages: AssistantMessageRecord[]): string | null {
@@ -503,18 +509,20 @@ export class AssistantService {
     if (systemGuide) {
       preloadedConversation = await this.repo.getConversation({ ...scope, conversationId });
       if (!preloadedConversation) throw this.notFound();
-      let deferSystemGuide = false;
-      try {
-        deferSystemGuide = Boolean(await resolveConfigurableProductContinuation({
-          organizationId: scope.organizationId,
-          actorUserId: actor.userId,
-          conversationId: preloadedConversation.id,
-          priorProposalId: activeConfigurableProductProposalId(preloadedConversation.messages),
-        }));
-      } catch {
-        // Ambiguous, stale, or cross-actor continuation state must fail closed
-        // through Product Management rather than falling through to a guide.
-        deferSystemGuide = true;
+      let deferSystemGuide = shouldDeferSystemGuideForActiveProductIntake(preloadedConversation.messages, request.message);
+      if (!deferSystemGuide) {
+        try {
+          deferSystemGuide = Boolean(await resolveConfigurableProductContinuation({
+            organizationId: scope.organizationId,
+            actorUserId: actor.userId,
+            conversationId: preloadedConversation.id,
+            priorProposalId: activeConfigurableProductProposalId(preloadedConversation.messages),
+          }));
+        } catch {
+          // Ambiguous, stale, or cross-actor continuation state must fail closed
+          // through Product Management rather than falling through to a guide.
+          deferSystemGuide = true;
+        }
       }
       if (!deferSystemGuide) {
         return this.persistResponse({
