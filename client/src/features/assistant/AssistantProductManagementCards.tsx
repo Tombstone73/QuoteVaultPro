@@ -16,6 +16,16 @@ function pricingModel(value: unknown) {
   const model = text(value);
   return model === "square_foot" ? "Per square foot" : model === "per_piece" ? "Per piece" : model;
 }
+function measurementMode(value: unknown) {
+  const mode = text(value);
+  return mode === "custom_size" || mode === "custom_dimension" || mode === "custom_dimensions"
+    ? "Width and height required"
+    : mode === "fixed_size" || mode === "fixed_dropdown"
+      ? "Fixed size"
+      : mode === "none" || mode === "quantity_only"
+        ? "No dimensions required"
+        : mode;
+}
 function draftStatus(value: unknown) {
   const status = text(value);
   return status === "inactive_draft" ? "Inactive PBV2 DRAFT" : status === "ready_for_draft" ? "Ready for draft" : status;
@@ -94,14 +104,14 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
   }) : [];
   const proposedDraftFields = proposedFields ? [
     ["Category", proposedFields.category],
-    ["Measurement", proposedFields.measurementMode],
+    ["Measurement", measurementMode(proposedFields.measurementMode)],
     ["Pricing model", pricingModel(proposedFields.pricingModel)],
     ["Square-foot price", cents(proposedFields.perSqftCents)],
     ["Per-piece price", cents(proposedFields.perPieceCents)],
-    ["Minimum charge", cents(proposedFields.minimumChargeCents)],
+    ["Minimum charge", cents(proposedFields.minimumChargeCents) ?? "Not set"],
     ["Material", proposedFields.material],
-    ["Route", proposedFields.productionRoute],
-    ["Sheet / roll constraints", proposedFields.sheetOrRollConstraints],
+    ["Route", text(proposedFields.productionRoute) ?? "Not set"],
+    ["Sheet / roll constraints", text(proposedFields.sheetOrRollConstraints) ?? "Not set"],
     ["Allow rotation", proposedFields.allowRotation === true ? "Allowed" : proposedFields.allowRotation === false ? "Not allowed" : null],
     ["Status to create", draftStatus(proposedFields.status)],
   ].flatMap(([label, value]) => {
@@ -120,11 +130,14 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
       return [`${name} (${status}; ${mode}; product ${productId}; DRAFT ${tree}) — select ${candidateId}${blocking ? `; ${blocking}` : ""}`];
     }) : [];
   const proposedOptionItems = proposedFields ? optionSummaryItems(proposedFields.optionGroups) : [];
+  const fields = [...namedFields, ...objectFields, ...proposedDraftFields].filter((field, index, all) =>
+    all.findIndex((candidate) => candidate.label === field.label) === index,
+  );
   return {
     kind,
     title: text(source.title) ?? "Product Management",
     summary: text(source.summary),
-    fields: [...namedFields, ...objectFields, ...proposedDraftFields].slice(0, 16),
+    fields: fields.slice(0, 16),
     items: candidateItems.length ? candidateItems : [...list(details.items ?? details.questions ?? details.errors ?? details.warnings ?? details.options ?? details.reusedRecords), ...proposedOptionItems],
     assumptions: list(details.assumptions ?? details.inheritedAssumptions),
     changes: toChanges(details.changes ?? details.beforeAfter ?? details.patchChanges ?? details.fieldChanges),

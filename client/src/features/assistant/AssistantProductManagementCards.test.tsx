@@ -101,8 +101,16 @@ describe("AssistantProductManagementCards", () => {
     const card = toAssistantProductManagementCard({ kind: "product_draft_preview", title: "Inactive product draft preview", details: { proposedFields: { category: "Print Products", measurementMode: "custom_size", pricingModel: "square_foot", perSqftCents: 300, perPieceCents: null, minimumChargeCents: null, material: null, productionRoute: null, sheetOrRollConstraints: null, allowRotation: null, status: "inactive_draft", optionGroups: [{ key: "lamination", label: "Lamination", required: true, selectionMode: "single", choices: ["None", "Gloss", "Matte"], defaultChoice: "None" }] } } })!;
     act(() => root.render(<AssistantProductManagementCardView card={card} />));
     expect(container.textContent).toContain("Category: Print Products");
+    expect(container.textContent).toContain("Measurement: Width and height required");
+    expect(container.textContent).toContain("Minimum charge: Not set");
+    expect(container.textContent).toContain("Route: Not set");
     expect(container.textContent).toContain("Lamination");
     expect(container.textContent).toContain("Default: None");
     expect(container.textContent).toContain("Choices: None, Gloss, Matte");
+  });
+
+  it("renders category once when both intake and proposed fields supply it", () => {
+    const card = toAssistantProductManagementCard({ kind: "product_draft_preview", title: "Inactive product draft preview", details: { category: "Print Products", proposedFields: { category: "Print Products" } } })!;
+    expect(card.fields.filter((field) => field.label === "Category")).toEqual([{ label: "Category", value: "Print Products" }]);
   });
 });
