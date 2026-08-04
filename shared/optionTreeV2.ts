@@ -413,6 +413,10 @@ export type OptionTreeV2 = {
         confidence: number;
       }>;
       materialWarnings?: string[];
+      materialSelection?: "auto" | "unset";
+      requiresProofApproval?: boolean;
+      requiresProductionJob?: boolean | null;
+      productionRoute?: string | null;
       missingDecisions?: Array<{
         id: string;
         question: string;
@@ -833,6 +837,10 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
           confidence: z.number().min(0).max(100),
         })).optional(),
         materialWarnings: z.array(z.string()).optional(),
+        materialSelection: z.enum(["auto", "unset"]).optional(),
+        requiresProofApproval: z.boolean().optional(),
+        requiresProductionJob: z.boolean().nullable().optional(),
+        productionRoute: z.string().nullable().optional(),
         missingDecisions: z.array(z.object({
           id: z.string(),
           question: z.string(),

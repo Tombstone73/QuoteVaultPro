@@ -60,6 +60,22 @@ describe("AssistantProductIntakeAdapter", () => {
     expect(proposal.preview.proposedFields).toMatchObject({ measurementMode: "quantity_only", quantityBehavior: "customer_enters_quantity", workflowIntent: "service_fee", requiresProductionJob: false, productionRoute: null, sheetOrRollConstraints: null, allowRotation: null });
   });
 
+  test("uses explicit corrected workflow decisions rather than stale source inference", async () => {
+    const correctedBrief: any = {
+      productIdentity: { likelyProductName: { value: "Flatbed Proof Product" }, category: { value: "Print Products" } },
+      sizeBehavior: { behavior: "custom_size" }, quantityBehavior: { behavior: "per_piece" }, pricingAnalysis: { behavior: "square_foot" },
+      materialSelection: "unset", requiresProofApproval: true, workflowIntent: "standard_production", requiresProductionJob: true, productionRoute: "Flatbed",
+      requiredOptions: [], optionalOptions: [],
+    };
+    const sessionStore = {
+      getSessionDetail: jest.fn(async () => detail({ brief: correctedBrief })),
+      getSessionSource: jest.fn(async () => ({ sourceText: "Old request routes to Roll and selects material.", sourceJson: null })),
+    };
+    const adapter = new AssistantProductIntakeAdapter(dependencies({ sessionStore }) as any);
+    const proposal = await adapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" });
+    expect(proposal.preview.proposedFields).toMatchObject({ material: null, productionRoute: "Flatbed", requiresProofApproval: true, requiresProductionJob: true });
+  });
+
   test("loads tenant-scoped authoritative readiness and redacts raw diagnostics", async () => {
     const deps = dependencies();
     const adapter = new AssistantProductIntakeAdapter(deps as any);

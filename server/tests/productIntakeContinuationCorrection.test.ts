@@ -30,6 +30,28 @@ function detail(overrides: Partial<ProductIntakeSessionDetail> = {}): ProductInt
 }
 
 describe("Product Intake explicit correction continuation", () => {
+  test("persists an explicit standard-production correction without selecting a candidate material", () => {
+    const initial = {
+      ...detail().brief,
+      requiredOptions: [{ label: "Size", normalizedGroup: "Size", required: true, selectionMode: "single", sampleValues: ["Custom"], defaultChoice: null, confidence: 90, sourcePaths: [], templateMatches: [], evidence: [] }],
+      materialAnalysis: { detectedMaterialReferences: ["Foamboard"], likelyMaterialMatches: [{ materialId: "material_1", name: "Foamboard", confidence: 99, evidence: [] }], confidence: 99, evidence: [] },
+    } as any;
+    const applied = applyExplicitIntakeCorrectionState(initial, "Remove the Size option group. Do not select a material. Leave material unset. Require customer proof approval. Require a production job and route it to Flatbed. Keep measurement as width and height required and pricing at $5.00 per square foot. Leave sheet settings, rotation, and minimum charge unset.");
+
+    expect(applied.errors).toEqual([]);
+    expect(applied.brief).toMatchObject({
+      materialSelection: "unset",
+      requiresProofApproval: true,
+      workflowIntent: "standard_production",
+      requiresProductionJob: true,
+      productionRoute: "Flatbed",
+      minimumChargeExplicitlyUnset: true,
+      sizeBehavior: { behavior: "custom_size" },
+      pricingAnalysis: { behavior: "square_foot", notes: "$5.00 per square foot" },
+    });
+    expect(applied.brief.requiredOptions).toEqual([]);
+  });
+
   test("persists a quantity-only service-fee correction as one canonical operational contract", () => {
     const initial = detail().brief;
     const applied = applyExplicitIntakeCorrectionState(initial, "It is quantity-only, costs $20 per piece, is a service fee, and must not create production work.");

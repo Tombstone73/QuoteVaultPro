@@ -383,6 +383,32 @@ describe("Product Intake draft service", () => {
     expect(tree.meta?.productIntake?.draftQuality?.warnings).toEqual(expect.arrayContaining(["Material match needs review."]));
   });
 
+  test("preserves explicit unset material and workflow gates in the inactive draft", () => {
+    const correctedBrief = brief({
+      materialSelection: "unset",
+      requiresProofApproval: true,
+      requiresProductionJob: true,
+      productionRoute: "Flatbed",
+      minimumChargeExplicitlyUnset: true,
+      requiredOptions: [],
+      optionalOptions: [],
+      pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$5.00 per square foot", evidence: [] },
+    });
+    const tree = buildProductIntakeDraftTree({
+      brief: correctedBrief,
+      sessionId: "sess_explicit_workflow",
+      productName: "Flatbed Proof Product",
+      userId: "user_1",
+      sourceText: "Original request had a $25 minimum. Explicit Product Intake correction (new explicit values override all prior assumptions): Do not select a material. Leave material unset. Require customer proof approval. Require a production job and route it to Flatbed. Leave sheet settings, rotation, and minimum charge unset. Keep pricing at $5 per square foot.",
+    });
+    const productValues = buildProductIntakeProductValues({ organizationId: "org_1", productId: "prod_explicit_workflow", brief: correctedBrief, productTypeId: "ptype_banner" });
+
+    expect(productValues).toMatchObject({ primaryMaterialId: null, requiresProofApproval: true, requiresProductionJob: true, isActive: false });
+    expect(tree.meta?.pricingV2?.base).toEqual({ perSqftCents: 500 });
+    expect(tree.meta?.productIntake).toMatchObject({ materialSelection: "unset", materialMatch: null, materialAssociationRequired: false, requiresProofApproval: true, requiresProductionJob: true, productionRoute: "Flatbed" });
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+  });
+
   test("extracts explicit source pricing into PBV2 base pricing metadata", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief({

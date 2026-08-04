@@ -773,6 +773,10 @@ type CorrectedStateContract = {
   minimumChargeCents: number | null;
   workflowIntent: "standard_production" | "fulfillment_only" | "service_fee" | null;
   requiresProductionJob: boolean | null;
+  materialSelection: "auto" | "unset" | null;
+  requiresProofApproval: boolean | null;
+  productionRoute: string | null;
+  minimumChargeExplicitlyUnset: boolean;
   requiredOptions: CorrectedStateOptionContract[];
   removedOptionKeys: string[];
 };
@@ -807,6 +811,10 @@ function correctedStateContractFromConfidence(value: unknown): CorrectedStateCon
     minimumChargeCents: typeof source.minimumChargeCents === "number" && Number.isInteger(source.minimumChargeCents) && source.minimumChargeCents > 0 ? source.minimumChargeCents : null,
     workflowIntent: source.workflowIntent === "standard_production" || source.workflowIntent === "fulfillment_only" || source.workflowIntent === "service_fee" ? source.workflowIntent : null,
     requiresProductionJob: typeof source.requiresProductionJob === "boolean" ? source.requiresProductionJob : null,
+    materialSelection: source.materialSelection === "auto" || source.materialSelection === "unset" ? source.materialSelection : null,
+    requiresProofApproval: typeof source.requiresProofApproval === "boolean" ? source.requiresProofApproval : null,
+    productionRoute: typeof source.productionRoute === "string" && source.productionRoute.trim() ? source.productionRoute : null,
+    minimumChargeExplicitlyUnset: source.minimumChargeExplicitlyUnset === true,
     requiredOptions,
     removedOptionKeys: Array.isArray(source.removedOptionKeys) ? source.removedOptionKeys.filter((key): key is string => typeof key === "string") : [],
   };
@@ -860,6 +868,10 @@ export function buildCorrectedStateContract(
     ...pricing,
     workflowIntent: brief.workflowIntent ?? prior?.workflowIntent ?? null,
     requiresProductionJob: brief.requiresProductionJob ?? prior?.requiresProductionJob ?? null,
+    materialSelection: brief.materialSelection ?? prior?.materialSelection ?? null,
+    requiresProofApproval: brief.requiresProofApproval ?? prior?.requiresProofApproval ?? null,
+    productionRoute: brief.productionRoute ?? prior?.productionRoute ?? null,
+    minimumChargeExplicitlyUnset: brief.minimumChargeExplicitlyUnset === true || prior?.minimumChargeExplicitlyUnset === true,
     requiredOptions: brief.requiredOptions.map(optionContract),
     removedOptionKeys: Array.from(removed),
   };
@@ -897,6 +909,18 @@ export function correctedStateBlockers(brief: ProductIntakeBrief, contractValue:
   }
   if (contract.requiresProductionJob != null && brief.requiresProductionJob !== contract.requiresProductionJob) {
     blockers.push("Corrected production-job requirement was not preserved in the current intake revision.");
+  }
+  if (contract.materialSelection === "unset" && brief.materialSelection !== "unset") {
+    blockers.push("Corrected unset material state was not preserved in the current intake revision.");
+  }
+  if (contract.requiresProofApproval != null && brief.requiresProofApproval !== contract.requiresProofApproval) {
+    blockers.push("Corrected proof-approval requirement was not preserved in the current intake revision.");
+  }
+  if (contract.productionRoute != null && brief.productionRoute !== contract.productionRoute) {
+    blockers.push("Corrected production route was not preserved in the current intake revision.");
+  }
+  if (contract.minimumChargeExplicitlyUnset && brief.minimumChargeExplicitlyUnset !== true) {
+    blockers.push("Corrected unset minimum charge was not preserved in the current intake revision.");
   }
   for (const expected of contract.requiredOptions) {
     const option = allOptions.find((candidate) => normalizeKey(candidate.normalizedGroup || candidate.label) === expected.key);
@@ -966,7 +990,7 @@ export function computeProductIntakeReadiness(args: {
   if (unansweredRequiredCount > 0) {
     penalties.push({ code: "required_answers_open", label: `${unansweredRequiredCount} required answer(s) still open`, severity: "blocker" });
   }
-  if (brief.workflowIntent !== "service_fee" && !materialAnswered && (materialConfidence < 65 || brief.materialAnalysis.likelyMaterialMatches.length === 0)) {
+  if (brief.workflowIntent !== "service_fee" && brief.materialSelection !== "unset" && !materialAnswered && (materialConfidence < 65 || brief.materialAnalysis.likelyMaterialMatches.length === 0)) {
     penalties.push({ code: "material_unresolved", label: "Material association required.", severity: "review" });
   }
   if (!pricingAnswered && (brief.pricingAnalysis.behavior === "unknown" || brief.pricingAnalysis.confidence < 65)) {

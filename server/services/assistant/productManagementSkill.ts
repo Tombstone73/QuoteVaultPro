@@ -201,6 +201,11 @@ export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, me
   const quantityOnly = /\bquantity[-\s]?only\b/i.test(message);
   const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(message);
   const excludesProduction = /\b(?:must\s+not|does\s+not|doesn't|do\s+not)\s+(?:create|require|need|have)\s+(?:a\s+)?production(?:\s+work|\s+job)?\b/i.test(message);
+  const materialUnset = /\b(?:do\s+not\s+select\s+(?:a\s+)?material|leave\s+material\s+unset|clear\s+(?:the\s+)?material)\b/i.test(message);
+  const requiresProofApproval = /\b(?:require|requires?)\s+(?:customer\s+)?proof\s+approval\b/i.test(message);
+  const requiresProductionJob = /\b(?:require|requires?)\s+(?:a\s+)?production(?:\s+work|\s+job)\b/i.test(message) && !excludesProduction;
+  const productionRoute = /\b(?:route\s+(?:it\s+)?to\s+|production\s+route\s*(?:is|:)?\s*)flatbed\b/i.test(message) ? "Flatbed" : null;
+  const minimumChargeExplicitlyUnset = /\b(?:leave|clear|unset)\b[\s\S]{0,100}\bminimum\s+charge\b[\s\S]{0,40}\b(?:unset|clear|not\s+set)\b|\bleave\s+minimum\s+charge\s+unset\b/i.test(message);
   const correctedPricing = pricing.perSqftCents != null || pricing.perPieceCents != null || pricing.minimumChargeCents != null
     ? {
       ...brief.pricingAnalysis,
@@ -223,7 +228,11 @@ export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, me
       pricingAnalysis: correctedPricing,
       ...(quantityOnly || serviceFee ? { sizeBehavior: { ...brief.sizeBehavior, behavior: "none", confidence: 100, notes: "Quantity-only product; width and height are not collected." } } : {}),
       ...(pricing.perPieceCents != null || quantityOnly || serviceFee ? { quantityBehavior: { ...brief.quantityBehavior, behavior: "per_piece", confidence: 100, notes: "Customers enter any positive quantity." } } : {}),
-      ...(serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : excludesProduction ? { requiresProductionJob: false } : {}),
+      ...(materialUnset ? { materialSelection: "unset" as const } : {}),
+      ...(requiresProofApproval ? { requiresProofApproval: true } : {}),
+      ...(productionRoute ? { productionRoute } : {}),
+      ...(minimumChargeExplicitlyUnset ? { minimumChargeExplicitlyUnset: true } : {}),
+      ...(serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : excludesProduction ? { requiresProductionJob: false } : requiresProductionJob || productionRoute ? { workflowIntent: "standard_production" as const, requiresProductionJob: true } : {}),
     },
     errors: [],
   };
@@ -529,7 +538,8 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
   if (missing.length) {
     cards.push({ kind: "product_missing_information", title: "Information needed", summary: `${missing.length} ${missing.length === 1 ? "question remains" : "questions remain"}.`, sourceLinks: [], details: { questionCount: missing.length, questions: missing.map(plainQuestion) } });
   }
-  if (detail.brief.materialAnalysis.likelyMaterialMatches.length) cards.push({ kind: "product_material_selection", title: "Material references", summary: "Existing materials are only proposed for reuse; no material record will be created.", sourceLinks: [], details: { items: detail.brief.materialAnalysis.likelyMaterialMatches.map((material) => material.name) } });
+  if (detail.brief.materialSelection === "unset") cards.push({ kind: "product_material_selection", title: "Material", summary: "Material is explicitly unset; candidate matches are not selected.", sourceLinks: [], details: { items: ["Not set"] } });
+  else if (detail.brief.materialAnalysis.likelyMaterialMatches.length) cards.push({ kind: "product_material_selection", title: "Material references", summary: "Existing materials are only proposed for reuse; no material record will be created.", sourceLinks: [], details: { items: detail.brief.materialAnalysis.likelyMaterialMatches.map((material) => material.name) } });
   const optionSummaryItems = [...detail.brief.requiredOptions, ...detail.brief.optionalOptions].flatMap((option) => {
     const choices = option.choices?.map((choice) => choice.label).filter(Boolean) ?? option.sampleValues;
     return [
@@ -545,7 +555,7 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
     pricingBasis: pricing.perSqftCents != null ? `${money(pricing.perSqftCents)} per square foot` : detail.brief.pricingAnalysis.behavior || "Unresolved",
     minimumCharge: pricing.minimumChargeCents != null ? money(pricing.minimumChargeCents) : "Not set",
   } });
-  cards.push({ kind: "product_routing_summary", title: "Production routing", summary: "Existing routing is reused only after Product Intake validation.", sourceLinks: [], details: { routing: "Not set", fields: { "Sheet or roll constraints": "Not set", Rotation: "Not set" } } });
+  cards.push({ kind: "product_routing_summary", title: "Production routing", summary: "Existing routing is reused only after Product Intake validation.", sourceLinks: [], details: { routing: detail.brief.productionRoute ?? "Not set", fields: { "Requires production job": detail.brief.requiresProductionJob === true ? "Yes" : detail.brief.requiresProductionJob === false ? "No" : "Not set", "Proof approval": detail.brief.requiresProofApproval === true ? "Required" : "Not set", "Sheet or roll constraints": "Not set", Rotation: "Not set" } } });
   const blockers = (detail.readiness.penalties ?? []).filter((penalty) => penalty.severity === "blocker").map((penalty) => penalty.label);
   if (blockers.length) cards.push({ kind: "product_validation_errors", title: "Validation blocks draft creation", summary: "Resolve these server-derived checks before confirmation is available.", sourceLinks: [], details: { errors: blockers } });
   const warnings = detail.brief.draftWarnings.map((warning) => warning.message);

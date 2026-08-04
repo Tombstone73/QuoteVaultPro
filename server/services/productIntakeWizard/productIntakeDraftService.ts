@@ -1629,12 +1629,23 @@ function collectTreeConcepts(tree: OptionTreeV2): Set<string> {
 }
 
 function bestMaterialMatch(brief: ProductIntakeBrief) {
+  if (brief.materialSelection === "unset") return null;
   return brief.materialAnalysis.likelyMaterialMatches
     .filter((match) => match.materialId)
     .sort((a, b) => b.confidence - a.confidence)[0] ?? null;
 }
 
 function materialReviewMetadata(brief: ProductIntakeBrief, materialMatch: ReturnType<typeof bestMaterialMatch>) {
+  if (brief.materialSelection === "unset") {
+    return {
+      materialMatchStatus: "resolved" as const,
+      materialAssociationRequired: false,
+      sourceMaterialText: null,
+      candidateMatches: [],
+      confidence: 100,
+      warnings: [],
+    };
+  }
   const sourceMaterialText = unique(brief.materialAnalysis.detectedMaterialReferences.map((value) => value.trim()).filter(Boolean)).join(", ") || null;
   const candidateMatches = brief.materialAnalysis.likelyMaterialMatches
     .slice(0, 10)
@@ -1800,6 +1811,10 @@ export function buildProductIntakeDraftTree(args: {
     sourceJson: args.sourceJson,
     answers: args.answers,
   });
+  if (args.brief.minimumChargeExplicitlyUnset) {
+    delete pricingReadiness.base.minimumChargeCents;
+    pricingReadiness.warnings = pricingReadiness.warnings.filter((warning) => !/minimum charge/i.test(warning));
+  }
   // A quantity-only product is priced by line-item quantity and its selected
   // tier. Never carry a category-derived square-foot formula into that tree.
   const formulaAssignment = quantityOnly
@@ -1861,6 +1876,10 @@ export function buildProductIntakeDraftTree(args: {
         sourceMaterialText: materialReview.sourceMaterialText,
         materialCandidateMatches: materialReview.candidateMatches,
         materialWarnings: materialReview.warnings,
+        materialSelection: args.brief.materialSelection ?? "auto",
+        requiresProofApproval: args.brief.requiresProofApproval === true,
+        requiresProductionJob: args.brief.requiresProductionJob ?? null,
+        productionRoute: args.brief.productionRoute ?? null,
         missingDecisions: args.brief.missingDecisions.map((decision) => ({
           id: decision.id,
           question: decision.question,
@@ -2067,9 +2086,12 @@ export function buildProductIntakeProductValues(args: {
   sourceJson?: unknown;
 }) {
   const productName = compactText(args.brief.productIdentity.likelyProductName.value, "Product Intake Draft");
-  const material = args.brief.materialAnalysis.likelyMaterialMatches
+  // A candidate can be retained as review metadata, but it is never a product
+  // association until both confidence thresholds are met (or when an explicit
+  // correction deliberately leaves material unset).
+  const material = args.brief.materialSelection === "unset" ? null : args.brief.materialAnalysis.likelyMaterialMatches
     .filter((match) => match.materialId && args.brief.materialAnalysis.confidence >= 65 && match.confidence >= 65)
-    .sort((a, b) => b.confidence - a.confidence)[0];
+    .sort((a, b) => b.confidence - a.confidence)[0] ?? null;
   const summaryEvidence = args.brief.sourceEvidence
     .map((evidence) => `${evidence.label}: ${evidence.value ?? ""}`.trim())
     .filter(Boolean)
@@ -2083,7 +2105,7 @@ export function buildProductIntakeProductValues(args: {
   // service/quantity-only request into a dimensioned production product.
   const serviceFee = args.brief.workflowIntent === "service_fee" || /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
   const quantityOnly = isQuantityOnlyIntake(args.brief, sourceText);
-  const proofRequired = /\b(?:proof\s+(?:required|needed|mandatory)|requires?\s+proof)\b/i.test(sourceText);
+  const proofRequired = args.brief.requiresProofApproval ?? /\b(?:proof\s+(?:required|needed|mandatory)|requires?\s+proof)\b/i.test(sourceText);
   // The tree and product record must agree: quantity-only pricing uses the
   // canonical PBV2 quantity profile and cannot retain an area formula.
   const formulaAssignment = quantityOnly ? null : args.formulaAssignment;
@@ -2107,7 +2129,7 @@ export function buildProductIntakeProductValues(args: {
     pricingFormula: formulaAssignment?.expression ?? null,
     pricingProfileKey: quantityOnly ? "qty_only" : formulaAssignment?.pricingProfileKey ?? "default",
     pricingProfileConfig: serviceFee ? null : pricingProfileConfig,
-    primaryMaterialId: serviceFee ? null : material?.materialId ?? null,
+    primaryMaterialId: serviceFee || args.brief.materialSelection === "unset" ? null : material?.materialId ?? null,
     measurementMode: quantityOnly ? "quantity_only" as const : "dimensions_required" as const,
     workflowIntent: serviceFee ? "service_fee" as const : args.brief.workflowIntent ?? "standard_production" as const,
     requiresProductionJob: serviceFee ? false : args.brief.requiresProductionJob ?? (quantityOnly ? explicitlyRequiresProductionJob(sourceText) : true),

@@ -83,6 +83,7 @@ export type AssistantProductIntakeProposedFields = {
   quantityBehavior: string;
   workflowIntent: "standard_production" | "fulfillment_only" | "service_fee" | null;
   requiresProductionJob: boolean | null;
+  requiresProofApproval: boolean | null;
   taxable: true;
   commonOptions: string[];
   optionGroups: Array<{
@@ -187,7 +188,7 @@ export class AssistantProductIntakeAdapter {
       : [];
     const fixed = intake?.fixedDimensions as { label?: unknown } | undefined;
     const material = intake?.materialMatch as { name?: unknown } | null | undefined;
-    const route = /\bflatbed\b/i.test(sourceText) ? "Flatbed" : /\broll\b/i.test(sourceText) ? "Roll printer" : /\brouter\b/i.test(sourceText) ? "Router" : null;
+    const route = detail.brief.productionRoute ?? (/\bflatbed\b/i.test(sourceText) ? "Flatbed" : /\broll\b/i.test(sourceText) ? "Roll printer" : /\brouter\b/i.test(sourceText) ? "Router" : null);
     const constraint = sourceText.match(/\b\d{1,3}(?:\.\d+)?\s*[x×]\s*\d{1,3}(?:\.\d+)?\s*(?:sheets?|sheet|rolls?|roll)\b/i)?.[0] ?? null;
     const rotation = /\b(?:allow|allows|allowed)\s+rotation\b|\brotation\s+(?:allowed|enabled)\b/i.test(sourceText)
       ? true
@@ -222,6 +223,7 @@ export class AssistantProductIntakeAdapter {
       quantityBehavior: quantityOnly ? "customer_enters_quantity" : detail.brief.quantityBehavior?.behavior ?? "review_required",
       workflowIntent,
       requiresProductionJob,
+      requiresProofApproval: detail.brief.requiresProofApproval ?? null,
       taxable: true,
       commonOptions: optionGroups.map((option) => option.label).filter(Boolean).slice(0, 12),
       optionGroups,
