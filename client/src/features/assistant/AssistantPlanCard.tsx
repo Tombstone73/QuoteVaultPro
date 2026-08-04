@@ -99,6 +99,20 @@ function asText(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
+function quantityBehaviorLabel(value: unknown): string | null {
+  const record = asRecord(value);
+  const behavior = asText(value) ?? asText(record?.behavior) ?? asText(record?.mode) ?? asText(record?.kind);
+  if (!behavior) return null;
+  const normalized = behavior.toLowerCase().replace(/[\s-]+/g, "_");
+  if (["customer_enters_quantity", "per_piece", "quantity_tier", "quantity_tiers", "tiered", "variable_quantity"].includes(normalized)) return "Customer enters quantity";
+  if (["quantity_only", "none"].includes(normalized)) return "Customer enters quantity";
+  if (["fixed", "fixed_quantity"].includes(normalized)) {
+    const fixed = typeof record?.quantity === "number" ? record.quantity : typeof record?.value === "number" ? record.value : 1;
+    return `Fixed quantity: ${fixed}`;
+  }
+  return behavior.replaceAll("_", " ");
+}
+
 function asDisplayText(value: unknown): string | null {
   const text = asText(value);
   if (text) return text;
@@ -267,7 +281,7 @@ function toProductDraftCreate(action: string | null, preview: UnknownRecord | nu
     allowRotation: typeof fields.allowRotation === "boolean" ? fields.allowRotation : null,
     fixedDimensions: asText(fields.fixedDimensions),
     requiresDimensions: typeof fields.requiresDimensions === "boolean" ? fields.requiresDimensions : null,
-    quantityBehavior: asText(fields.quantityBehavior),
+    quantityBehavior: quantityBehaviorLabel(fields.quantityBehavior),
     workflowIntent: fields.workflowIntent === "standard_production" || fields.workflowIntent === "fulfillment_only" || fields.workflowIntent === "service_fee" ? fields.workflowIntent : null,
     requiresProductionJob: typeof fields.requiresProductionJob === "boolean" ? fields.requiresProductionJob : null,
     requiresProofApproval: typeof fields.requiresProofApproval === "boolean" ? fields.requiresProofApproval : null,
@@ -606,7 +620,7 @@ function moneyFromCents(value: number | null): string {
 function ProductDraftCreatePreview({ draft }: { draft: NonNullable<AssistantPlanCardModel["productDraftCreate"]> }) {
   const measurement = draft.measurementMode === "quantity_only" || draft.measurementMode === "none" ? "Quantity only" : draft.measurementMode;
   const pricing = draft.pricingModel === "per_piece" && draft.perPieceCents != null ? `${moneyFromCents(draft.perPieceCents)} per piece` : draft.pricingModel === "per_piece" ? "Per piece" : draft.pricingModel;
-  const quantity = draft.quantityBehavior === "customer_enters_quantity" ? "Customer enters quantity" : draft.quantityBehavior === "fixed_quantity_1" ? "Fixed quantity: 1" : draft.quantityBehavior === "quantity_only" ? "Quantity only" : draft.quantityBehavior;
+  const quantity = draft.quantityBehavior;
   const workflow = draft.workflowIntent === "service_fee" ? "Service fee" : draft.workflowIntent === "fulfillment_only" ? "Fulfillment only" : draft.workflowIntent === "standard_production" ? "Standard production" : null;
   const fields = [
     ["Name", draft.productName],

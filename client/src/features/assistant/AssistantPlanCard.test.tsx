@@ -195,7 +195,7 @@ describe("AssistantPlanCard", () => {
             category: "Banners", measurementMode: "custom_dimensions", requiresDimensions: true, fixedDimensions: null,
             pricingModel: "square_foot", perSqftCents: 450, perPieceCents: null, minimumChargeCents: 2500,
             material: "13 oz Banner", productionRoute: "Roll printer", sheetOrRollConstraints: "54in roll", allowRotation: true,
-            quantityBehavior: "customer_enters_quantity", workflowIntent: "standard_production", requiresProductionJob: true, requiresProofApproval: true, taxable: true, commonOptions: ["Lamination", "Grommets"], optionGroups: [{ key: "lamination", label: "Lamination", required: true, selectionMode: "single", choices: ["None", "Gloss", "Matte"], defaultChoice: "None" }], status: "inactive_draft",
+            quantityBehavior: { behavior: "per_piece", confidence: 100 }, workflowIntent: "standard_production", requiresProductionJob: true, requiresProofApproval: true, taxable: true, commonOptions: ["Lamination", "Grommets"], optionGroups: [{ key: "lamination", label: "Lamination", required: true, selectionMode: "single", choices: ["None", "Gloss", "Matte"], defaultChoice: "None" }], status: "inactive_draft",
           },
         } }, missingInformation: [], cancellationAvailable: true, steps: [],
       },

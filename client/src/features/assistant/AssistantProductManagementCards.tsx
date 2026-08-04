@@ -7,6 +7,18 @@ function record(value: unknown): RecordValue | null {
   return value && typeof value === "object" && !Array.isArray(value) ? value as RecordValue : null;
 }
 function text(value: unknown) { return typeof value === "string" && value.trim() ? value.trim() : null; }
+function quantityLabel(value: unknown) {
+  const configured = record(value);
+  const behavior = text(value) ?? text(configured?.behavior) ?? text(configured?.mode) ?? text(configured?.kind);
+  if (!behavior) return null;
+  const normalized = behavior.toLowerCase().replace(/[\s-]+/g, "_");
+  if (["customer_enters_quantity", "per_piece", "quantity_tier", "quantity_tiers", "tiered", "variable_quantity", "quantity_only", "none"].includes(normalized)) return "Customer enters quantity";
+  if (["fixed", "fixed_quantity"].includes(normalized)) {
+    const fixed = typeof configured?.quantity === "number" ? configured.quantity : typeof configured?.value === "number" ? configured.value : 1;
+    return `Fixed quantity: ${fixed}`;
+  }
+  return behavior.replaceAll("_", " ");
+}
 function list(value: unknown): string[] {
   return Array.isArray(value) ? value.map(text).filter((item): item is string => Boolean(item)).slice(0, 30) : [];
 }
@@ -110,7 +122,7 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
     ["Per-piece price", cents(proposedFields.perPieceCents)],
     ["Workflow", text(proposedFields.workflowIntent) === "service_fee" ? "Service fee" : text(proposedFields.workflowIntent)],
     ["Production job required", proposedFields.requiresProductionJob === true ? "Yes" : proposedFields.requiresProductionJob === false ? "No" : null],
-    ["Quantity", text(proposedFields.quantityBehavior) === "customer_enters_quantity" ? "Customer enters quantity" : text(proposedFields.quantityBehavior)],
+    ["Quantity", quantityLabel(proposedFields.quantityBehavior)],
     ["Minimum charge", cents(proposedFields.minimumChargeCents) ?? "Not set"],
     ["Material", proposedFields.material],
     ["Route", text(proposedFields.productionRoute) ?? "Not set"],

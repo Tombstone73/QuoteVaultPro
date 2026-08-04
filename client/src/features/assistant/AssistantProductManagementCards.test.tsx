@@ -114,6 +114,14 @@ describe("AssistantProductManagementCards", () => {
     expect(card.fields.filter((field) => field.label === "Category")).toEqual([{ label: "Category", value: "Print Products" }]);
   });
 
+  it("normalizes structured quantity behavior without rendering an object", () => {
+    const variable = toAssistantProductManagementCard({ kind: "product_draft_preview", title: "Draft", details: { proposedFields: { quantityBehavior: { behavior: "per_piece", confidence: 100 } } } })!;
+    const fixed = toAssistantProductManagementCard({ kind: "product_draft_preview", title: "Draft", details: { proposedFields: { quantityBehavior: { behavior: "fixed_quantity", quantity: 12 } } } })!;
+    expect(variable.fields).toEqual(expect.arrayContaining([{ label: "Quantity", value: "Customer enters quantity" }]));
+    expect(fixed.fields).toEqual(expect.arrayContaining([{ label: "Quantity", value: "Fixed quantity: 12" }]));
+    expect(JSON.stringify([...variable.fields, ...fixed.fields])).not.toContain("[object Object]");
+  });
+
   it("renders a complete corrected intake proposal without inferred production settings", () => {
     const intake = toAssistantProductManagementCard({ kind: "product_intake_summary", title: "Product Intake", details: { productName: "Corrected Banner", category: "Print Products", measurement: "Width and height required", draftStatus: "ready_for_draft" } })!;
     const pricing = toAssistantProductManagementCard({ kind: "product_pricing_summary", title: "Pricing basis", details: { pricingBasis: "$2.00 per square foot", minimumCharge: "$25.00" } })!;
