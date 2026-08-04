@@ -18,7 +18,7 @@ import { assistantProductIntakeAdapter } from "./productIntakeAdapter";
 import { inactiveProductDraftUpdateService, InactiveProductDraftUpdateError, type InactiveProductDraftPatch } from "./inactiveProductDraftUpdateService";
 import { pricingPatchFromMessage } from "./productManagementPricingParsing";
 import { productIntakeDraftReadinessService } from "../productIntakeWizard/productIntakeDraftReadinessService";
-import { applyProductDraftBatchCollisions, fingerprintProductInactiveDraftBatch, parseProductInactiveDraftBatch } from "./productInactiveDraftBatchService";
+import { applyProductDraftBatchCollisions, classifyProductIntakeRouting, fingerprintProductInactiveDraftBatch, parseProductInactiveDraftBatch } from "./productInactiveDraftBatchService";
 import { productInactiveDraftBatchCommandName } from "./execution/productInactiveDraftBatchCommand";
 import { productInactiveDraftBulkUpdateCommandName } from "./execution/productInactiveDraftBulkUpdateCommand";
 import { productInactiveDraftBulkUpdateProposalService } from "./productInactiveDraftBulkUpdateProposalService";
@@ -135,11 +135,6 @@ function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, message: 
 
 function isExplicitExistingProductUpdate(message: string): boolean {
   return /\b(?:update|edit|change|replace)\b[\s\S]{0,120}\b(?:existing|inactive|draft|product|matrix|tiers?|breaks?)\b/i.test(message);
-}
-
-function isBatchProductIntent(message: string): boolean {
-  const rowCount = (message.match(/^\s*(?:[-*]|\d+[.)])\s+/gm) ?? []).length;
-  return /\b(?:batch|multiple|several|list of)\s+(?:new\s+)?products?\b/i.test(message) || message.includes("|") || (rowCount >= 2 && /\b(?:product|draft|banner|sign)\b/i.test(message));
 }
 
 function isUnsupportedProductMutation(message: string): boolean {
@@ -535,7 +530,7 @@ export class ProductManagementSkillService {
       if (corrected.handled) return corrected;
     }
     const selectedCandidateReference = selectionReferenceFromMessage(input.message);
-    if (input.conversationId && selectedCandidateReference) {
+    if (input.conversationId && selectedCandidateReference && !input.activeConfigurableProposalId) {
       const continuations = new ProductCandidateSelectionContinuationService(createDrizzleProductCandidateSelectionContinuationStore());
       const pending = await continuations.get({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
       if (pending) {
@@ -848,7 +843,11 @@ export class ProductManagementSkillService {
         if (detail) return { handled: true, response: detail.readiness.canCreateDraft ? "The Product Intake proposal is ready for a dedicated inactive-draft plan review." : "I saved that answer. I will ask only the next required Product Intake question.", cards: await cardsFor(detail) };
       }
     }
-    if (isBatchProductIntent(input.message)) {
+    const intakeRouting = classifyProductIntakeRouting(input.message);
+    if (intakeRouting === "ambiguous") {
+      return { handled: true, response: "Are you creating one product with these settings, or several separate products?", cards: [] };
+    }
+    if (intakeRouting === "batch") {
       const batch = await this.prepareBatch(input);
       return { handled: true, ...batch };
     }

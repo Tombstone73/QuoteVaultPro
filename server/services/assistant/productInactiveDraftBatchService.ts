@@ -18,6 +18,48 @@ export type ProductDraftBatchParseResult = {
   errors: string[];
 };
 
+export type ProductIntakeRoutingDecision = "single" | "batch" | "ambiguous";
+
+function hasDelimitedBatchRows(source: string): boolean {
+  const lines = source.replace(/\r/g, "").split("\n").map((line) => line.trim()).filter(Boolean);
+  const tableRows = lines.filter((line) => line.includes("|"));
+  if (tableRows.length >= 3 && /(?:^|\|)\s*(?:product\s+)?name\s*(?:\||$)/i.test(tableRows[0]!)) return true;
+  const csvRows = lines.filter((line) => line.includes(","));
+  return csvRows.length >= 3 && /(?:^|,)\s*(?:product\s+)?name\s*(?:,|$)/i.test(csvRows[0]!);
+}
+
+function explicitProductNames(source: string): string[] {
+  return Array.from(source.matchAll(/\b(?:product\s+(?:called|named)|(?:create|add|make)\s+(?:a\s+)?(?:new\s+)?(?:inactive\s+)?product\s+(?:called|named))\s+["']?([^\n."']{2,255})/gi))
+    .map((match) => match[1]!.trim())
+    .filter(Boolean);
+}
+
+function structuredListRowCount(source: string): number {
+  return source.replace(/\r/g, "").split("\n").filter((line) =>
+    /^\s*(?:[-*]|\d+[.)])\s+\S.+\s[-:]\s+\S/.test(line),
+  ).length;
+}
+
+/** Routes before any intake session is created. Newlines and option-value
+ * bullets are intentionally not evidence of multiple products. */
+export function classifyProductIntakeRouting(source: string): ProductIntakeRoutingDecision {
+  const explicitNames = explicitProductNames(source);
+  if (explicitNames.length === 1) return "single";
+  if (explicitNames.length > 1 || hasDelimitedBatchRows(source)) return "batch";
+  const numberedProductRecords = (source.match(/^\s*\d+[.)]\s*(?:product\s*(?:name)?\s*[:=-]|(?:create|add)\s+(?:a\s+)?(?:new\s+)?(?:inactive\s+)?product\s+(?:called|named)\b)/gim) ?? []).length;
+  if (numberedProductRecords >= 2) return "batch";
+  const productsHeading = /^\s*products?\s*:\s*$/im.test(source);
+  const routingRowCount = structuredListRowCount(source);
+  const explicitBatch = /\b(?:create|build|add|make)\s+(?:these\s+)?(?:\d+|multiple|several|a\s+list\s+of)\s+(?:new\s+)?products?\b|\bbatch\s+(?:of\s+)?products?\b/i.test(source);
+  if (explicitBatch && routingRowCount >= 2) return "batch";
+  if (explicitBatch) return "ambiguous";
+  return productsHeading && routingRowCount >= 2 ? "batch" : "single";
+}
+
+function looksLikeConfigurationProse(value: string): boolean {
+  return /^(?:use|set|add|remove|price|customers?|customer|do\s+not|don't|show|confirm|none|gloss|matte|single[-\s]?select|required|optional|category|routing|route|sheet|rotation|minimum|width|height)\b/i.test(value.trim());
+}
+
 function sharedDefaultsFrom(lines: string[]): Record<string, { value: string | boolean | number; source: "shared_default" }> {
   const source = lines.join("\n"); const found: Record<string, { value: string | boolean | number; source: "shared_default" }> = {};
   const set = (key: string, value: string | boolean | number) => { found[key] = { value, source: "shared_default" }; };
@@ -92,6 +134,7 @@ export function parseProductInactiveDraftBatch(source: string): ProductDraftBatc
     const cleanName = name.trim().slice(0, 255); const reasons: string[] = [];
     let status: ProductDraftBatchRowStatus = "ready";
     if (!cleanName) { status = "clarification"; reasons.push("Product name is required."); }
+    else if (looksLikeConfigurationProse(cleanName)) { status = "clarification"; reasons.push("Each batch row needs a product identity, not a configuration instruction or option value."); }
     else if (!description.trim()) { status = "clarification"; reasons.push("A product description or specification is required."); }
     else if (/\b(?:activate|publish|replace existing|overwrite)\b/i.test(description)) { status = "unsupported"; reasons.push("Activation, publication, and overwrite instructions are not supported in batch intake."); }
     const normalized = normalizeProductDraftBatchName(cleanName);
