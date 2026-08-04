@@ -4,7 +4,7 @@ import { AssistantProductIntakeAdapter, formatProductIntakeQuantityBehavior } fr
 function detail(overrides: Record<string, unknown> = {}) {
   return {
     session: { id: "session_1", status: "ready_for_draft", sourceType: "text_description", sourceFingerprint: "source_1", updatedAt: "2026-07-21T12:00:00.000Z", createdProductId: null, createdPbv2TreeVersionId: null },
-    brief: { productIdentity: { likelyProductName: { value: "Window Decal" } }, quantityBehavior: { behavior: "per_piece", confidence: 100 } },
+    brief: { productIdentity: { likelyProductName: { value: "Window Decal" }, category: { value: "Print Products" } }, quantityBehavior: { behavior: "per_piece", confidence: 100 } },
     readiness: { canCreateDraft: true, unansweredRequiredCount: 0, reviewState: "ready_for_draft", penalties: [] },
     ...overrides,
   };
@@ -87,6 +87,59 @@ describe("AssistantProductIntakeAdapter", () => {
     expect(proofRemoved.fingerprint).not.toBe(proposal.fingerprint);
   });
 
+  test("keeps a resolved Print Products category and explicit no-options configuration executable after refresh", async () => {
+    const routedAcrylicBrief: any = {
+      productIdentity: { likelyProductName: { value: "DEV Test Routed Acrylic 080426H" }, category: { value: "Print Products", confidence: 100 } },
+      sizeBehavior: { behavior: "custom_size" }, quantityBehavior: { behavior: "per_piece", confidence: 100 }, pricingAnalysis: { behavior: "square_foot", notes: "$5.00 per square foot" },
+      materialSelection: "unset", requiresProofApproval: true, workflowIntent: "standard_production", requiresProductionJob: true, productionRoute: "Flatbed",
+      minimumChargeExplicitlyUnset: true, requiredOptions: [], optionalOptions: [],
+    };
+    const latest = detail({ brief: routedAcrylicBrief });
+    const stale = detail({
+      session: { ...latest.session, status: "analyzed", updatedAt: "2026-07-21T11:59:00.000Z" },
+      readiness: { ...latest.readiness, canCreateDraft: false, reviewState: "needs_review" },
+    });
+    const sessionStore = {
+      // The proposal must not perform a second read that can pick up this older revision.
+      getSessionDetail: jest.fn().mockResolvedValueOnce(latest).mockResolvedValueOnce(stale),
+      getSessionSource: jest.fn(async () => ({ sourceText: "Customers enter width and height at $5 per square foot. No options.", sourceJson: null })),
+    };
+    const adapter = new AssistantProductIntakeAdapter(dependencies({ sessionStore }) as any);
+    const proposal = await adapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" });
+
+    expect(sessionStore.getSessionDetail).toHaveBeenCalledTimes(1);
+    expect(proposal).toMatchObject({ executable: true, blockers: [] });
+    expect(proposal.preview.proposedFields).toMatchObject({
+      category: "Print Products", optionGroups: [], commonOptions: [], material: null,
+      measurementMode: "custom_size", pricingModel: "square_foot", productionRoute: "Flatbed",
+      requiresProofApproval: true, requiresProductionJob: true, quantityBehavior: "Customer enters quantity",
+    });
+  });
+
+  test("returns named blockers for a missing category or an incomplete requested option group", async () => {
+    const missingCategory: any = {
+      productIdentity: { likelyProductName: { value: "Missing Category" }, category: { value: "" } },
+      sizeBehavior: { behavior: "custom_size" }, quantityBehavior: { behavior: "per_piece" }, pricingAnalysis: { behavior: "square_foot" },
+      requiredOptions: [], optionalOptions: [],
+    };
+    const categoryAdapter = new AssistantProductIntakeAdapter(dependencies({ sessionStore: { getSessionDetail: jest.fn(async () => detail({ brief: missingCategory })) } }) as any);
+    await expect(categoryAdapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" })).resolves.toMatchObject({
+      executable: false,
+      blockers: ["Category is required before an inactive draft can be reviewed."],
+    });
+
+    const incompleteOption: any = {
+      productIdentity: { likelyProductName: { value: "Incomplete Option" }, category: { value: "Print Products" } },
+      sizeBehavior: { behavior: "custom_size" }, quantityBehavior: { behavior: "per_piece" }, pricingAnalysis: { behavior: "square_foot" },
+      requiredOptions: [{ label: "Lamination", normalizedGroup: "Lamination", required: true, selectionMode: "single", sampleValues: [], choices: [] }], optionalOptions: [],
+    };
+    const optionAdapter = new AssistantProductIntakeAdapter(dependencies({ sessionStore: { getSessionDetail: jest.fn(async () => detail({ brief: incompleteOption })) } }) as any);
+    await expect(optionAdapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" })).resolves.toMatchObject({
+      executable: false,
+      blockers: ["Lamination: add at least one choice."],
+    });
+  });
+
   test("blocks an unrecognized live quantity object instead of serializing it", async () => {
     const malformedBrief: any = {
       productIdentity: { likelyProductName: { value: "Malformed Quantity" }, category: { value: "Print Products" } },
@@ -117,12 +170,12 @@ describe("AssistantProductIntakeAdapter", () => {
   });
 
   test("builds a reduced inactive-only proposal and detects a changed session fingerprint", async () => {
-    const sessionStore = { getSessionDetail: jest.fn(async () => detail({ session: { id: "session_1", status: "ready_for_draft", sourceType: "text_description", sourceFingerprint: "source_1", updatedAt: "2026-07-21T12:00:00.000Z", createdProductId: null, createdPbv2TreeVersionId: null }, brief: { productIdentity: { likelyProductName: { value: "Window Decal" } }, quantityBehavior: { behavior: "per_piece", confidence: 100 } } })) };
+    const sessionStore = { getSessionDetail: jest.fn(async () => detail({ session: { id: "session_1", status: "ready_for_draft", sourceType: "text_description", sourceFingerprint: "source_1", updatedAt: "2026-07-21T12:00:00.000Z", createdProductId: null, createdPbv2TreeVersionId: null }, brief: { productIdentity: { likelyProductName: { value: "Window Decal" }, category: { value: "Print Products" } }, quantityBehavior: { behavior: "per_piece", confidence: 100 } } })) };
     const adapter = new AssistantProductIntakeAdapter(dependencies({ sessionStore }) as any);
     const proposal = await adapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" });
     expect(proposal).toEqual(expect.objectContaining({ productName: "Window Decal", executable: true, fingerprint: expect.stringMatching(/^[a-f0-9]{64}$/), sourceLink: { label: "Open Product Intake review", href: "/admin/product-intake/sessions/session_1/review" } }));
     expect(proposal.preview.summary).toContain("activation remain separate");
-    sessionStore.getSessionDetail.mockResolvedValue(detail({ session: { id: "session_1", status: "ready_for_draft", sourceType: "text_description", sourceFingerprint: "source_1", updatedAt: "2026-07-21T12:01:00.000Z", createdProductId: null, createdPbv2TreeVersionId: null }, brief: { productIdentity: { likelyProductName: { value: "Window Decal" } }, quantityBehavior: { behavior: "per_piece", confidence: 100 } } }));
+    sessionStore.getSessionDetail.mockResolvedValue(detail({ session: { id: "session_1", status: "ready_for_draft", sourceType: "text_description", sourceFingerprint: "source_1", updatedAt: "2026-07-21T12:01:00.000Z", createdProductId: null, createdPbv2TreeVersionId: null }, brief: { productIdentity: { likelyProductName: { value: "Window Decal" }, category: { value: "Print Products" } }, quantityBehavior: { behavior: "per_piece", confidence: 100 } } }));
     await expect(adapter.revalidateProposal({ organizationId: "org_1", sessionId: "session_1", expectedFingerprint: proposal.fingerprint })).resolves.toMatchObject({ valid: false, code: "PRODUCT_INTAKE_SESSION_CHANGED" });
   });
 

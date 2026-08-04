@@ -6,6 +6,7 @@ import {
 import {
   createDbProductIntakeDraftCreator,
   buildProductIntakeDraftTree,
+  validateProductIntakeCustomOptions,
   type ProductIntakeDraftCreationResult,
   type ProductIntakeDraftCreator,
 } from "../productIntakeWizard/productIntakeDraftService";
@@ -19,6 +20,7 @@ import {
   type ProductIntakeSessionStore,
 } from "../productIntakeWizard/productIntakeSessionService";
 import { productIntakeBriefSchema } from "@shared/productIntakeWizardSchemas";
+import type { ProductIntakeSessionDetail } from "@shared/productIntakeWizardSchemas";
 
 /** Reduced, provider-safe diagnostic information. Raw AI responses stay in the Product Intake diagnostics store. */
 export type AssistantProductIntakeDiagnosticsSummary = {
@@ -64,6 +66,8 @@ export type AssistantProductIntakeProposal = {
   };
   fingerprint: string;
   executable: boolean;
+  /** Server-derived, presentation-safe reasons confirmation is unavailable. */
+  blockers: string[];
 };
 
 export type AssistantProductIntakeProposedFields = {
@@ -148,9 +152,10 @@ export class AssistantProductIntakeAdapter {
     draftReviewService: createDbProductIntakeDraftReviewService(),
   }) {}
 
-  async loadSession(args: { organizationId: string; sessionId: string }): Promise<AssistantProductIntakeSessionSnapshot> {
-    const detail = await this.deps.sessionStore.getSessionDetail(args.organizationId, args.sessionId);
-    if (!detail) throw new ProductIntakeSessionError(404, "Product Intake session not found.", "SESSION_NOT_FOUND");
+  private async snapshotFromDetail(
+    args: { organizationId: string; sessionId: string },
+    detail: ProductIntakeSessionDetail,
+  ): Promise<AssistantProductIntakeSessionSnapshot> {
     const diagnostics = await this.deps.diagnosticsStore.listRecent(args.organizationId, { sessionId: args.sessionId });
     return {
       sessionId: detail.session.id,
@@ -175,6 +180,12 @@ export class AssistantProductIntakeAdapter {
     };
   }
 
+  async loadSession(args: { organizationId: string; sessionId: string }): Promise<AssistantProductIntakeSessionSnapshot> {
+    const detail = await this.deps.sessionStore.getSessionDetail(args.organizationId, args.sessionId);
+    if (!detail) throw new ProductIntakeSessionError(404, "Product Intake session not found.", "SESSION_NOT_FOUND");
+    return this.snapshotFromDetail(args, detail);
+  }
+
   /**
  * Builds a server-authoritative confirmation preview. It never returns raw
  * source text/JSON or diagnostics; it only exposes the bounded fields staff
@@ -183,7 +194,10 @@ export class AssistantProductIntakeAdapter {
   async buildProposal(args: { organizationId: string; sessionId: string }): Promise<AssistantProductIntakeProposal> {
     const detail = await this.deps.sessionStore.getSessionDetail(args.organizationId, args.sessionId);
     if (!detail) throw new ProductIntakeSessionError(404, "Product Intake session not found.", "SESSION_NOT_FOUND");
-    const snapshot = await this.loadSession(args);
+    // Build the refresh from this exact authoritative revision. A second read
+    // could otherwise observe the preceding `analyzed` revision and make a
+    // ready card contradict its own confirmation plan.
+    const snapshot = await this.snapshotFromDetail(args, detail);
     const productName = String(detail.brief.productIdentity.likelyProductName.value ?? "Product Intake Draft").trim() || "Product Intake Draft";
     const penalties = snapshot.readiness.penalties.map((penalty) => penalty.label);
     const source = await this.deps.sessionStore.getSessionSource?.(args.organizationId, args.sessionId) ?? null;
@@ -253,6 +267,24 @@ export class AssistantProductIntakeAdapter {
       optionGroups,
       status: "inactive_draft",
     };
+    const category = typeof proposedFields.category === "string" ? proposedFields.category.trim() : "";
+    // Empty option arrays are an explicit, complete "no options" decision.
+    // Validate only option groups that actually exist, using the same
+    // canonical validator used by the draft builder.
+    const optionErrors = validateProductIntakeCustomOptions(
+      {
+        ...detail.brief,
+        requiredOptions: detail.brief.requiredOptions ?? [],
+        optionalOptions: detail.brief.optionalOptions ?? [],
+      },
+      (detail.answers ?? []).map((answer) => ({ questionKey: answer.questionKey, answer: answer.answer })),
+    );
+    const blockers = [
+      ...(category ? [] : ["Category is required before an inactive draft can be reviewed."]),
+      ...optionErrors,
+      ...(quantityPresentation.resolved ? [] : ["Quantity behavior is unresolved. Specify whether customers enter a quantity or use a fixed quantity."]),
+      ...snapshot.readiness.penalties.filter((penalty) => penalty.severity === "blocker").map((penalty) => penalty.label),
+    ];
     const fingerprint = createHash("sha256").update(JSON.stringify({
       organizationId: args.organizationId,
       sessionId: detail.session.id,
@@ -277,7 +309,8 @@ export class AssistantProductIntakeAdapter {
         proposedFields,
       },
       fingerprint,
-      executable: snapshot.status === "ready_for_draft" && snapshot.readiness.canCreateDraft && quantityPresentation.resolved,
+      executable: snapshot.status === "ready_for_draft" && snapshot.readiness.canCreateDraft && blockers.length === 0,
+      blockers,
     };
   }
 

@@ -563,7 +563,7 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
   if (!missing.length && detail.readiness.canCreateDraft && detail.session.status === "ready_for_draft") {
     const proposal = await assistantProductIntakeAdapter.buildProposal({ organizationId: detail.session.organizationId, sessionId: detail.session.id });
     if (!proposal.executable) {
-      cards.push({ kind: "product_validation_errors", title: "Validation blocks draft creation", summary: "The current Product Intake plan is incomplete and cannot be confirmed.", sourceLinks: [], details: { errors: ["The refreshed server proposal is not executable. Review category and option configuration."] } });
+      cards.push({ kind: "product_validation_errors", title: "Validation blocks draft creation", summary: "The current Product Intake plan is incomplete and cannot be confirmed.", sourceLinks: [], details: { errors: proposal.blockers.length ? proposal.blockers : ["The Product Intake session is not ready for draft review."] } });
       return cards;
     }
     cards.push({ kind: "product_draft_preview", title: "Inactive product draft preview", summary: proposal.preview.summary, sourceLinks: [proposal.sourceLink], details: { ...common, proposedFields: proposal.preview.proposedFields, statusToCreate: "inactive_draft", reusedRecords: ["validated materials", "validated routing"], assumptions: warnings } });
