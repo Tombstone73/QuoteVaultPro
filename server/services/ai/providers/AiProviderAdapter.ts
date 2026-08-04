@@ -9,6 +9,7 @@ export interface AiProviderRequest {
   repairAttempt?: boolean;
   timeoutMs?: number;
   timeoutUseCase?: string;
+  maxTokens?: number;
   providerConfig?: {
     enabled: boolean;
     provider: string | null;
@@ -61,5 +62,38 @@ export class AiProviderTimeoutError extends Error {
     this.provider = args.provider;
     this.model = args.model;
     this.useCase = args.useCase;
+  }
+}
+
+export type AiProviderFailureKind =
+  | "http_failure"
+  | "authentication_failure"
+  | "rate_limit"
+  | "malformed_response"
+  | "empty_response"
+  | "truncated_output";
+
+export class AiProviderResponseError extends Error {
+  kind: AiProviderFailureKind;
+  status: number | null;
+  provider: string | null;
+  model: string | null;
+  providerRequestId: string | null;
+
+  constructor(args: {
+    kind: AiProviderFailureKind;
+    message: string;
+    status?: number | null;
+    provider?: string | null;
+    model?: string | null;
+    providerRequestId?: string | null;
+  }) {
+    super(args.message);
+    this.name = "AiProviderResponseError";
+    this.kind = args.kind;
+    this.status = args.status ?? null;
+    this.provider = args.provider ?? null;
+    this.model = args.model ?? null;
+    this.providerRequestId = args.providerRequestId ?? null;
   }
 }

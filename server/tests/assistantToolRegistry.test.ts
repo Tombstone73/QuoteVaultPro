@@ -115,7 +115,18 @@ describe("assistant tool registry", () => {
 
     const output = await service.executePlan({
       intent: "lookup", selectedSkill: "search", clarificationRequired: false, clarificationQuestion: null, responseStyle: "standard",
-      toolCalls: [{ toolName: "search.global", arguments: { query: "OTB", organizationId: "other_org" } }],
+      toolCalls: [{
+        toolName: "search.global",
+        arguments: {
+          query: "OTB",
+          organizationId: "other_org",
+          orgId: "other_org",
+          tenantId: "other_tenant",
+          userId: "other_user",
+          permissions: ["admin"],
+          roles: ["owner"],
+        },
+      }],
     }, trustedContext);
 
     expect(output.executions).toEqual([expect.objectContaining({ status: "succeeded" })]);

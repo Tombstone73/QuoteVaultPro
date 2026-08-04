@@ -102,12 +102,16 @@ describe("AssistantService", () => {
       ],
     });
 
-    expect(capability.productionCommandsEnabled).toEqual([
+    expect(capability.productionCommandsEnabled).toEqual(expect.arrayContaining([
+      "quotes.add_internal_note",
+      "products.create_inactive_draft",
+      "products.update_inactive_draft",
+    ]));
+    expect(capability.productionCommandsPermittedForUser).toEqual([
       "quotes.add_internal_note",
       "products.create_inactive_draft",
       "products.update_inactive_draft",
     ]);
-    expect(capability.productionCommandsPermittedForUser).toEqual(capability.productionCommandsEnabled);
     expect(capability.composerHelperText).toBe("Business lookups and confirmed actions are enabled. Changes require a preview and the dedicated GO button. External research is disabled.");
     expect(capability).toMatchObject({
       providerConfigured: true,

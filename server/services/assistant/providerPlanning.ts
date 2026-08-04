@@ -29,6 +29,18 @@ export interface AssistantProviderResolver {
   resolveProvider(input: { orgId: string; feature: "assistant" }): Promise<ResolvedAiProvider>;
 }
 
+const DEFAULT_ASSISTANT_PLANNING_TIMEOUT_MS = 20_000;
+const MIN_ASSISTANT_PLANNING_TIMEOUT_MS = 5_000;
+const MAX_ASSISTANT_PLANNING_TIMEOUT_MS = 60_000;
+
+export function resolveAssistantPlanningTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.AI_ASSISTANT_PLANNING_TIMEOUT_MS;
+  if (raw == null || raw.trim() === "") return DEFAULT_ASSISTANT_PLANNING_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_ASSISTANT_PLANNING_TIMEOUT_MS;
+  return Math.min(MAX_ASSISTANT_PLANNING_TIMEOUT_MS, Math.max(MIN_ASSISTANT_PLANNING_TIMEOUT_MS, Math.floor(parsed)));
+}
+
 const PLANNER_SYSTEM_PROMPT = `You are the PrintersHero read-only assistant planner. Return one strict JSON object only, with no markdown or prose.
 You may choose only these read-only tools: search.global, customers.get_summary, orders.get_summary, orders.get_due_summary, production.get_completed_jobs, products.get_summary, reports.operational_summary, navigation.get_current_context, production.get_queue_summary, operations.get_attention_summary, analytics.resolve_customer, analytics.customer_product_sales, analytics.customer_uninvoiced_orders.
 Allowed arguments only: search.global {query,limit?}; customers.get_summary {customerId?,query?}; orders.get_summary {orderId?,orderNumber?}; orders.get_due_summary {due?,dueWithinDays?,dateRange?,customer?:{id?,name?},status?,limit?,includeOperationalSummary?}; production.get_completed_jobs {completed:"last_week_through_current_week",customer:{id?,name?},limit?}; products.get_summary {productId?,query?}; reports.operational_summary {timezone?,date?}; navigation.get_current_context {}; production.get_queue_summary {stationKey?,status?,due?,includeOverdue?,limit?}; operations.get_attention_summary {filter?,dueWithinDays?,stationKey?,limit?}; analytics.resolve_customer {query}; analytics.customer_product_sales {customer:{id?,name?},dateRange:{start,end},rankingMetric?,limit?,grouping?,includeQuantities?,includeInvoiceCounts?,includeOrderCounts?,includeAverageUnitPrice?}; analytics.customer_uninvoiced_orders {customer:{id?,name?},dateRange:{start,end},limit?}.
@@ -154,7 +166,7 @@ export class ConfiguredAssistantPlanner implements AssistantPlanner {
           currentContext: contextForPlanner(input.context),
         }),
         promptVersion: "assistant-stage-2-planner-v1",
-        timeoutMs: 12_000,
+        timeoutMs: resolveAssistantPlanningTimeoutMs(),
         timeoutUseCase: "assistant_planning",
         providerConfig: config,
       });

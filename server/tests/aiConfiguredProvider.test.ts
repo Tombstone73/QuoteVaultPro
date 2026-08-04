@@ -1,9 +1,12 @@
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
+import { AiProviderResponseError, AiProviderTimeoutError } from "../services/ai/providers/AiProviderAdapter";
 import {
   composeOpenAiChatCompletionsEndpoint,
   OpenAiCompatibleBugReviewProvider,
+  resolveAiJsonMaxTokens,
   resolveAiProviderTimeoutMs,
 } from "../services/ai/providers/configuredProvider";
+import { resolveOpenAiCompatibleRequestPolicy } from "../services/ai/providers/providerRequestPolicy";
 
 const originalFetch = global.fetch;
 
@@ -16,6 +19,45 @@ afterEach(() => {
   global.fetch = originalFetch;
   jest.restoreAllMocks();
 });
+
+function managedConfig(overrides: Partial<Parameters<OpenAiCompatibleBugReviewProvider["generateJson"]>[0]["providerConfig"]> = {}) {
+  return {
+    enabled: true,
+    provider: "openai_compatible",
+    model: "deepseek-v4-flash",
+    endpoint: "https://api.deepseek.com/chat/completions",
+    apiKey: "secret-test-key",
+    mode: "printershero_managed",
+    source: "printershero_managed_env",
+    ...overrides,
+  } as const;
+}
+
+function jsonResponse(body: unknown, init: { ok?: boolean; status?: number; headers?: Record<string, string> } = {}) {
+  return {
+    ok: init.ok ?? true,
+    status: init.status ?? 200,
+    headers: {
+      get: (name: string) => init.headers?.[name.toLowerCase()] ?? init.headers?.[name] ?? null,
+    },
+    json: async () => body,
+    clone() {
+      return jsonResponse(body, init);
+    },
+  } as any;
+}
+
+function baseRequest(overrides: Partial<Parameters<OpenAiCompatibleBugReviewProvider["generateJson"]>[0]> = {}) {
+  return {
+    orgId: "org_1",
+    feature: "assistant" as const,
+    system: "system",
+    user: "user",
+    promptVersion: "assistant-stage-2-planner-v1",
+    providerConfig: managedConfig(),
+    ...overrides,
+  };
+}
 
 describe("configured AI provider", () => {
   test("keeps existing default timeout for non-overridden provider calls", () => {
@@ -48,6 +90,27 @@ describe("configured AI provider", () => {
       .toBe("https://api.openai.com/v1/chat/completions");
     expect(composeOpenAiChatCompletionsEndpoint("https://api.openai.com/v1/chat/completions", "openai"))
       .toBe("https://api.openai.com/v1/chat/completions");
+  });
+
+  test("preserves the configured DeepSeek chat completions endpoint", () => {
+    expect(composeOpenAiChatCompletionsEndpoint("https://api.deepseek.com/chat/completions", "openai_compatible"))
+      .toBe("https://api.deepseek.com/chat/completions");
+  });
+
+  test("detects only the official DeepSeek API hostname", () => {
+    expect(resolveOpenAiCompatibleRequestPolicy("https://api.deepseek.com/chat/completions")).toMatchObject({
+      family: "deepseek",
+      disableThinking: true,
+    });
+    expect(resolveOpenAiCompatibleRequestPolicy("https://proxy.example.test/api.deepseek.com/chat/completions").disableThinking).toBe(false);
+    expect(resolveOpenAiCompatibleRequestPolicy("not a url").disableThinking).toBe(false);
+  });
+
+  test("uses bounded JSON max tokens with safe fallbacks", () => {
+    expect(resolveAiJsonMaxTokens(undefined, {} as NodeJS.ProcessEnv)).toBe(2048);
+    expect(resolveAiJsonMaxTokens(undefined, { AI_PROVIDER_JSON_MAX_TOKENS: "not-a-number" } as NodeJS.ProcessEnv)).toBe(2048);
+    expect(resolveAiJsonMaxTokens(undefined, { AI_PROVIDER_JSON_MAX_TOKENS: "-1" } as NodeJS.ProcessEnv)).toBe(2048);
+    expect(resolveAiJsonMaxTokens(undefined, { AI_PROVIDER_JSON_MAX_TOKENS: "999999" } as NodeJS.ProcessEnv)).toBe(4096);
   });
 
   test("posts OpenAI requests to composed chat completions endpoint", async () => {
@@ -83,6 +146,153 @@ describe("configured AI provider", () => {
       "https://api.openai.com/v1/chat/completions",
       expect.objectContaining({ method: "POST" }),
     );
+  });
+
+  test("DeepSeek requests disable thinking and keep JSON mode with bounded output", async () => {
+    const fetchMock = jest.fn(async () => jsonResponse({
+      id: "chatcmpl_deepseek",
+      choices: [{ finish_reason: "stop", message: { content: "{\"intent\":\"lookup\"}" } }],
+      usage: { prompt_tokens: 7, completion_tokens: 11, total_tokens: 18 },
+    }, { headers: { "x-request-id": "req_deepseek_1" } }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = new OpenAiCompatibleBugReviewProvider();
+    const result = await provider.generateJson(baseRequest());
+
+    const [endpoint, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(endpoint).toBe("https://api.deepseek.com/chat/completions");
+    expect(body.thinking).toEqual({ type: "disabled" });
+    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.max_tokens).toBe(2048);
+    expect(result).toMatchObject({
+      rawText: "{\"intent\":\"lookup\"}",
+      provider: "openai_compatible",
+      model: "deepseek-v4-flash",
+      requestMetadata: {
+        providerRequestId: "req_deepseek_1",
+        usage: { prompt_tokens: 7, completion_tokens: 11, total_tokens: 18 },
+        maxTokens: 2048,
+        providerFamily: "deepseek",
+      },
+    });
+    expect(result.requestMetadata.latencyMs).toEqual(expect.any(Number));
+  });
+
+  test("non-DeepSeek OpenAI-compatible requests do not include thinking", async () => {
+    const fetchMock = jest.fn(async () => jsonResponse({
+      id: "chatcmpl_generic",
+      choices: [{ finish_reason: "stop", message: { content: "{\"summary\":\"ok\"}" } }],
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = new OpenAiCompatibleBugReviewProvider();
+    await provider.generateJson(baseRequest({
+      providerConfig: managedConfig({
+        endpoint: "https://compatible.example.test/v1/chat/completions",
+        model: "compatible-model",
+      }),
+    }));
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const body = JSON.parse(String(init.body));
+    expect(body.thinking).toBeUndefined();
+    expect(body.response_format).toEqual({ type: "json_object" });
+    expect(body.max_tokens).toBe(2048);
+  });
+
+  test.each([
+    ["missing", {}],
+    ["null", { choices: [{ finish_reason: "stop", message: { content: null } }] }],
+    ["whitespace", { choices: [{ finish_reason: "stop", message: { content: "   \n\t" } }] }],
+  ])("fails safely when provider content is %s", async (_case, responseBody) => {
+    global.fetch = jest.fn(async () => jsonResponse(responseBody, { headers: { "x-request-id": "req_empty" } })) as unknown as typeof fetch;
+    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const provider = new OpenAiCompatibleBugReviewProvider();
+    await expect(provider.generateJson(baseRequest())).rejects.toMatchObject({
+      name: "AiProviderResponseError",
+      kind: "empty_response",
+      providerRequestId: "req_empty",
+    });
+  });
+
+  test("treats finish_reason length as truncated output", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({
+      id: "chatcmpl_truncated",
+      choices: [{ finish_reason: "length", message: { content: "{\"intent\":\"lookup\"" } }],
+    })) as unknown as typeof fetch;
+    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const provider = new OpenAiCompatibleBugReviewProvider();
+    await expect(provider.generateJson(baseRequest())).rejects.toMatchObject({
+      name: "AiProviderResponseError",
+      kind: "truncated_output",
+    });
+  });
+
+  test.each([
+    [400, "http_failure"],
+    [401, "authentication_failure"],
+    [429, "rate_limit"],
+    [500, "http_failure"],
+  ])("classifies HTTP %s provider failures safely", async (status, kind) => {
+    global.fetch = jest.fn(async () => jsonResponse({
+      id: `err_${status}`,
+      error: {
+        type: "invalid_request_error",
+        code: `status_${status}`,
+        message: "RAW_PROVIDER_BODY_WITH_SECRET secret-test-key FULL_PROMPT_TEXT",
+      },
+    }, { ok: false, status, headers: { "x-request-id": `req_${status}` } })) as unknown as typeof fetch;
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    const provider = new OpenAiCompatibleBugReviewProvider();
+    let thrown: unknown;
+    try {
+      await provider.generateJson(baseRequest({
+        system: "FULL_PROMPT_TEXT",
+        user: "USER_PROMPT_TEXT",
+      }));
+    } catch (error) {
+      thrown = error;
+    }
+
+    expect(thrown).toBeInstanceOf(AiProviderResponseError);
+    expect(thrown).toMatchObject({ kind, status, providerRequestId: `req_${status}` });
+    const diagnosticText = JSON.stringify({ warn: warn.mock.calls, message: thrown instanceof Error ? thrown.message : "" });
+    expect(diagnosticText).not.toContain("secret-test-key");
+    expect(diagnosticText).not.toContain("Authorization");
+    expect(diagnosticText).not.toContain("FULL_PROMPT_TEXT");
+    expect(diagnosticText).not.toContain("USER_PROMPT_TEXT");
+    expect(diagnosticText).not.toContain("RAW_PROVIDER_BODY_WITH_SECRET");
+    expect(diagnosticText).toContain(`status_${status}`);
+  });
+
+  test("timeout behavior produces the typed timeout failure with safe metadata", async () => {
+    jest.useFakeTimers();
+    try {
+      global.fetch = jest.fn((_endpoint: string, init: RequestInit) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })) as unknown as typeof fetch;
+      jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+      const provider = new OpenAiCompatibleBugReviewProvider();
+      const request = provider.generateJson(baseRequest({ timeoutMs: 5 })).catch((error) => error);
+      await jest.advanceTimersByTimeAsync(5);
+
+      const error = await request;
+      expect(error).toBeInstanceOf(AiProviderTimeoutError);
+      expect(error).toMatchObject({
+        name: "AiProviderTimeoutError",
+        timeoutMs: 5,
+        provider: "openai_compatible",
+        model: "deepseek-v4-flash",
+        useCase: "assistant",
+      });
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   test("provider HTTP errors include safe diagnostics without API key", async () => {
