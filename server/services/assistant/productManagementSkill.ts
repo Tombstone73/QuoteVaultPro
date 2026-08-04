@@ -16,7 +16,7 @@ import {
 import { createDbProductIntakeSessionStore, type ProductIntakeSessionStore } from "../productIntakeWizard/productIntakeSessionService";
 import { assistantProductIntakeAdapter } from "./productIntakeAdapter";
 import { inactiveProductDraftUpdateService, InactiveProductDraftUpdateError, type InactiveProductDraftPatch } from "./inactiveProductDraftUpdateService";
-import { pricingPatchFromMessage } from "./productManagementPricingParsing";
+import { clonePricingPatchFromMessage, pricingPatchFromMessage } from "./productManagementPricingParsing";
 import { productIntakeDraftReadinessService } from "../productIntakeWizard/productIntakeDraftReadinessService";
 import { applyProductDraftBatchCollisions, classifyProductIntakeRouting, fingerprintProductInactiveDraftBatch, parseProductInactiveDraftBatch } from "./productInactiveDraftBatchService";
 import { productInactiveDraftBatchCommandName } from "./execution/productInactiveDraftBatchCommand";
@@ -724,8 +724,11 @@ export class ProductManagementSkillService {
       try {
         const sourceProductId = cloneRequest.sourceProductId ?? (() => undefined)();
         const candidates = sourceProductId ? [] : (await db.select({ id: products.id, name: products.name, isActive: products.isActive, pricingMode: products.pricingMode, updatedAt: products.updatedAt }).from(products).where(eq(products.organizationId, input.organizationId))).filter((product) => normalizeProductReference(product.name) === normalizeProductReference(cloneRequest.sourceProductName ?? ""));
-        const parsedPricing = pricingPatchFromMessage(input.message)?.basePricing;
-        const clonePricing = parsedPricing ? Object.fromEntries(Object.entries(parsedPricing).filter((entry): entry is [string, number] => typeof entry[1] === "number")) : undefined;
+        const parsedClonePricing = clonePricingPatchFromMessage(input.message);
+        if (parsedClonePricing?.error) throw new CloneInactiveProductDraftError("CLONE_PRICING_AMBIGUOUS", parsedClonePricing.error);
+        const clonePricing = parsedClonePricing?.basePricing
+          ? Object.fromEntries(Object.entries(parsedClonePricing.basePricing).filter((entry): entry is [string, number] => typeof entry[1] === "number"))
+          : undefined;
         const requestedChanges = { newName: cloneRequest.newName, ...(clonePricing && Object.keys(clonePricing).length ? { basePricing: clonePricing } : {}) };
         if (!sourceProductId && candidates.length !== 1) {
           if (candidates.length && input.conversationId) {

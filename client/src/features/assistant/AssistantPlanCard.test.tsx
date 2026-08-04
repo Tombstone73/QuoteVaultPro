@@ -218,6 +218,30 @@ describe("AssistantPlanCard", () => {
     expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan-product-1", expectedPlanVersion: 1, confirmationToken: "server-token" }));
   });
 
+  it("renders a clone's typed pricing before-and-after table without raw JSON", () => {
+    const clonePlan = {
+      kind: "action_plan", title: "Clone inactive product draft",
+      plan: {
+        id: "plan-clone-1", action: "products.clone_to_inactive_draft", status: "awaiting_confirmation", planVersion: 1, riskLevel: "high", confirmationAvailable: true, confirmationToken: "clone-token", expiresAt: "2030-01-01T00:10:00.000Z", missingInformation: [], cancellationAvailable: true, steps: [],
+        preview: { summary: "Clone one inactive product draft.", cloneInactiveDraft: { preview: {
+          source: { product: { name: "DEV Test Minimum Charge 080426", category: "Print Products", measurementMode: "dimensions_required", configuration: {} }, pbv2Tree: { treeJson: { meta: { optionGroups: [] } } } },
+          result: { product: { name: "DEV Test Minimum Charge Clone 080426" } },
+          basePricing: { before: { perSqftCents: 200, perPieceCents: null, minimumChargeCents: 2500 }, after: { perSqftCents: 250, perPieceCents: null, minimumChargeCents: 3000 } },
+        } } },
+      },
+    };
+    act(() => root.render(<AssistantPlanCard card={clonePlan} context={buildSafeAssistantContext("/products", "Products")} onConfirm={() => undefined} />));
+    expect(container.textContent).toContain("Source product: DEV Test Minimum Charge 080426");
+    expect(container.textContent).toContain("New product: DEV Test Minimum Charge Clone 080426");
+    expect(container.textContent).toContain("Price per square foot");
+    expect(container.textContent).toContain("$2.00");
+    expect(container.textContent).toContain("$2.50");
+    expect(container.textContent).toContain("$25.00");
+    expect(container.textContent).toContain("$30.00");
+    expect(container.textContent).toContain("Lifecycle: Inactive PBV2 DRAFT");
+    expect(container.textContent).not.toContain('"minimumChargeCents"');
+  });
+
   it("renders an exact inactive-draft update preview and blocks GO for server validation errors", () => {
     const updatePlan = {
       kind: "action_plan",

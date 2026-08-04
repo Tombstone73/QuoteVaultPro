@@ -80,6 +80,19 @@ describe("CloneInactiveProductDraftService", () => {
     expect((proposal.preview.source.pbv2Tree.treeJson.meta as any).pricingV2.base).toEqual({ minimumChargeCents: 2500 });
   });
 
+  test("keeps both explicitly normalized clone pricing changes in the fingerprinted inactive DRAFT preview", async () => {
+    const store = new FakeStore();
+    (store.current.pbv2Tree.treeJson.meta as any).pricingV2.base.perSqftCents = 200;
+    const service = new CloneInactiveProductDraftService(store);
+    const proposal = await service.prepareProposal({ organizationId: "org_1", actorUserId: "user_1", sourceProductId: "source_1", requestedChanges: { newName: "DEV Test Minimum Charge Clone 080426", basePricing: { perSqftCents: 250, minimumChargeCents: 3000 } } });
+
+    expect(proposal.preview.requestedChanges.basePricing).toEqual({ perSqftCents: 250, minimumChargeCents: 3000 });
+    expect(proposal.preview.basePricing).toEqual({ before: { perSqftCents: 200, perPieceCents: null, minimumChargeCents: 2500 }, after: { perSqftCents: 250, perPieceCents: null, minimumChargeCents: 3000 } });
+    expect(proposal.preview.result).toMatchObject({ product: { inactive: true, name: "DEV Test Minimum Charge Clone 080426" }, pbv2Tree: { status: "DRAFT" } });
+    expect(proposal.preview.source.pbv2Tree.treeJson).toMatchObject({ meta: { pricingV2: { base: { perSqftCents: 200, minimumChargeCents: 2500 } } } });
+    expect(proposal.fingerprint).toBe(proposal.preview.proposalFingerprint);
+  });
+
   test("does not invent a base-pricing path for an explicit rate change", async () => {
     const store = new FakeStore(); delete (store.current.pbv2Tree.treeJson as any).meta.pricingV2;
     const service = new CloneInactiveProductDraftService(store);
