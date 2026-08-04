@@ -156,6 +156,11 @@ type TextDescriptionSignals = {
   quantityOnly: boolean;
   serviceFee: boolean;
   excludesProduction: boolean;
+  noOptions: boolean;
+  materialUnset: boolean;
+  requiresProofApproval: boolean;
+  requiresProductionJob: boolean;
+  productionRoute: string | null;
   proofSignals: string[];
   routingSignals: string[];
   evidence: ProductIntakeEvidence[];
@@ -173,6 +178,11 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const quantityOnly = /\bquantity[-\s]?only\b/i.test(description);
   const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(description);
   const excludesProduction = /\b(?:must\s+not|does\s+not|doesn't|do\s+not)\s+(?:create|require|need|have)\s+(?:a\s+)?production(?:\s+work|\s+job)?\b/i.test(description);
+  const noOptions = /\b(?:do\s+not\s+set|leave)\s+(?:any\s+)?options?\b/i.test(description);
+  const materialUnset = /\b(?:do\s+not\s+select\s+(?:a\s+)?material|leave\s+material\s+unset)\b/i.test(description);
+  const requiresProofApproval = /\b(?:require|requires?)\s+(?:customer\s+)?proof\s+approval\b|\bproof\s+(?:required|needed|mandatory)\b/i.test(description);
+  const requiresProductionJob = /\b(?:require|requires?)\s+(?:a\s+)?production(?:\s+work|\s+job)\b/i.test(description) && !excludesProduction;
+  const productionRoute = /\b(?:route(?:d)?\s+(?:it\s+)?to\s+|production\s+route\s*(?:is|:)?\s*)flatbed\b/i.test(description) ? "Flatbed" : null;
   const sizeMatches = Array.from(description.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*(?:[xX]|\u00D7)\s*(\d{1,3}(?:\.\d+)?)\b/gi))
     .map((match) => `${match[1]}x${match[2]}`);
 
@@ -322,6 +332,11 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
     quantityOnly,
     serviceFee,
     excludesProduction,
+    noOptions,
+    materialUnset,
+    requiresProofApproval,
+    requiresProductionJob,
+    productionRoute,
     proofSignals,
     routingSignals,
     evidence: [
@@ -851,8 +866,14 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       defaultChoice: custom.defaultChoice,
       selectionMode: custom.selectionMode,
     })) : [];
-  const requiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions, ...requiredCustomOptions];
-  const optionalOptions = [...analyzerOptionalOptions, ...textOptionalOptions];
+  // Measurement fields are canonical PBV2 inputs, not customer-selectable
+  // option groups. An explicit no-options instruction also wins over inferred
+  // analyzer/template suggestions while preserving the separate size behavior.
+  const inferredRequiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions, ...requiredCustomOptions];
+  const inferredOptionalOptions = [...analyzerOptionalOptions, ...textOptionalOptions];
+  const measurementArtifact = (option: ProductIntakeBrief["requiredOptions"][number]) => /^(?:size|width|height|custom\s+width|custom\s+height)$/i.test(option.normalizedGroup || option.label);
+  const requiredOptions = textSignals?.noOptions ? [] : inferredRequiredOptions.filter((option) => !(textSignals?.customSize && measurementArtifact(option)));
+  const optionalOptions = textSignals?.noOptions ? [] : inferredOptionalOptions.filter((option) => !(textSignals?.customSize && measurementArtifact(option)));
   const templateMatches = unique([...requiredOptions, ...optionalOptions].flatMap((option) => option.templateMatches.map((match) => match.templateId)))
     .map((templateId) => [...requiredOptions, ...optionalOptions].flatMap((option) => option.templateMatches).find((match) => match.templateId === templateId)!)
     .filter(Boolean);
@@ -943,7 +964,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: [evidence(product?.sourcePath ?? "$.source", "category", null, "Category evidence was missing or weak.")],
     });
   }
-  if (materialMatches.length === 0 && !completeQuantityTierProduct && !textSignals?.serviceFee) {
+  if (materialMatches.length === 0 && !completeQuantityTierProduct && !textSignals?.serviceFee && !textSignals?.materialUnset) {
     missingDecisions.push({
       id: "select-material",
       question: "Which material should this product use?",
@@ -951,7 +972,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       severity: "review",
       evidence: [evidence(product?.sourcePath ?? "$.description", "material", textSignals?.materialReferences.join(", ") || null, "Material evidence was missing or could not be matched.")],
     });
-  } else if (materialMatches.length > 0 && Math.max(...materialMatches.map((match) => match.confidence)) < 85) {
+  } else if (materialMatches.length > 0 && Math.max(...materialMatches.map((match) => match.confidence)) < 85 && !textSignals?.materialUnset) {
     missingDecisions.push({
       id: "select-material",
       question: "Which material should this product use?",
@@ -998,7 +1019,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
     severity: warning.severity === "blocker" ? "warning" as const : warning.severity === "warning" ? "warning" as const : "info" as const,
     evidence: [evidence(warning.path ?? product?.sourcePath ?? "$.warnings", warning.fieldLabel ?? warning.code, warning.productName ?? null, "Analyzer warning retained for human review.")],
   }));
-  if (textSignals?.proofSignals.length) {
+  if (textSignals?.proofSignals.length && !textSignals.requiresProofApproval) {
     draftWarnings.push({
       code: "proof_required",
       message: "Source mentions proof required.",
@@ -1006,7 +1027,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: [evidence("$.description.proof", "Proof", textSignals.proofSignals.join(", "), "Proof workflow signal parsed from the description.")],
     });
   }
-  if (textSignals?.routingSignals.length) {
+  if (textSignals?.routingSignals.length && !textSignals.productionRoute) {
     draftWarnings.push({
       code: "routing_signal",
       message: `Source mentions routing signals: ${textSignals.routingSignals.join(", ")}.`,
@@ -1062,7 +1083,10 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: materialMatches.flatMap((match) => match.evidence),
     },
     ...behaviors,
-    ...(textSignals?.serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : textSignals?.excludesProduction ? { requiresProductionJob: false } : {}),
+    ...(textSignals?.serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : textSignals?.excludesProduction ? { requiresProductionJob: false } : textSignals?.requiresProductionJob || textSignals?.productionRoute ? { workflowIntent: "standard_production" as const, requiresProductionJob: true } : {}),
+    ...(textSignals?.materialUnset ? { materialSelection: "unset" as const } : {}),
+    ...(textSignals?.requiresProofApproval ? { requiresProofApproval: true } : {}),
+    ...(textSignals?.productionRoute ? { productionRoute: textSignals.productionRoute } : {}),
     matrixReadiness,
     requiredOptions,
     optionalOptions,
@@ -1082,7 +1106,15 @@ function normalizeExplicitOperationalSemantics(brief: ProductIntakeBrief, source
   const quantityOnly = /\bquantity[-\s]?only\b/i.test(sourceText);
   const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
   const perPiece = sourceText.match(/\$\s*(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i)?.[0] ?? null;
-  if (!quantityOnly && !serviceFee && !perPiece) return brief;
+  const materialUnset = /\b(?:do\s+not\s+select\s+(?:a\s+)?material|leave\s+material\s+unset)\b/i.test(sourceText);
+  const noOptions = /\b(?:do\s+not\s+set|leave)\s+(?:any\s+)?options?\b/i.test(sourceText);
+  const requiresProofApproval = /\b(?:require|requires?)\s+(?:customer\s+)?proof\s+approval\b|\bproof\s+(?:required|needed|mandatory)\b/i.test(sourceText);
+  const requiresProductionJob = /\b(?:require|requires?)\s+(?:a\s+)?production(?:\s+work|\s+job)\b/i.test(sourceText);
+  const productionRoute = /\b(?:route(?:d)?\s+(?:it\s+)?to\s+|production\s+route\s*(?:is|:)?\s*)flatbed\b/i.test(sourceText) ? "Flatbed" : null;
+  if (!quantityOnly && !serviceFee && !perPiece && !materialUnset && !noOptions && !requiresProofApproval && !requiresProductionJob && !productionRoute) return brief;
+  const draftWarnings = brief.draftWarnings
+    .filter((warning) => !(requiresProofApproval && warning.code === "proof_required"))
+    .filter((warning) => !(productionRoute && warning.code === "routing_signal"));
   return productIntakeBriefSchema.parse({
     ...brief,
     ...(quantityOnly || serviceFee ? {
@@ -1090,7 +1122,12 @@ function normalizeExplicitOperationalSemantics(brief: ProductIntakeBrief, source
       quantityBehavior: { ...brief.quantityBehavior, behavior: "per_piece", confidence: 100, notes: "Customers enter any positive quantity." },
     } : {}),
     ...(perPiece ? { pricingAnalysis: { ...brief.pricingAnalysis, behavior: "per_piece", confidence: 100, notes: perPiece } } : {}),
-    ...(serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : {}),
+    ...(serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : requiresProductionJob || productionRoute ? { workflowIntent: "standard_production" as const, requiresProductionJob: true } : {}),
+    ...(materialUnset ? { materialSelection: "unset" as const, missingDecisions: brief.missingDecisions.filter((decision) => decision.id !== "select-material") } : {}),
+    ...(requiresProofApproval ? { requiresProofApproval: true } : {}),
+    ...(productionRoute ? { productionRoute } : {}),
+    ...(noOptions ? { requiredOptions: [], optionalOptions: [], templateMatches: [] } : {}),
+    draftWarnings: Array.from(new Map(draftWarnings.map((warning) => [`${warning.code}:${warning.message}`, warning])).values()),
   });
 }
 

@@ -113,6 +113,30 @@ describe("Product Intake Wizard schemas", () => {
     expect(readiness.canCreateDraft).toBe(true);
   });
 
+  test("persists an initial dimensions-required workflow without measurement options or material questions", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_routed_acrylic",
+      request: productIntakeWizardAnalyzeRequestSchema.parse({
+        sourceType: "text_description",
+        description: "Create a new inactive product called DEV Test Routed Acrylic 080426B. Customers must enter width and height. Price it at $5.00 per square foot. Use the Print Products category. Require customer proof approval and require a production job routed to Flatbed. Do not select a material. Do not set sheet settings, rotation, options, or a minimum charge. Show me the complete product before GO.",
+      }),
+      analyzer: null,
+      templates: [],
+      materials: [{ id: "mat_acrylic", sku: "ACR", name: "Acrylic" }],
+      provider: null,
+    });
+
+    expect(brief).toMatchObject({
+      productIdentity: { likelyProductName: { value: "DEV Test Routed Acrylic 080426B" }, category: { value: "Print Products" } },
+      sizeBehavior: { behavior: "custom_size" }, pricingAnalysis: { behavior: "square_foot" },
+      materialSelection: "unset", requiresProofApproval: true, requiresProductionJob: true, productionRoute: "Flatbed",
+      requiredOptions: [], optionalOptions: [],
+    });
+    expect(brief.missingDecisions.some((decision) => decision.id === "select-material")).toBe(false);
+    expect(brief.draftWarnings.map((warning) => warning.code)).not.toEqual(expect.arrayContaining(["proof_required", "routing_signal"]));
+    expect(generateProductIntakeQuestions(brief).map((question) => question.questionKey)).not.toEqual(expect.arrayContaining(["select-material"]));
+  });
+
   test("accepts JSON and text-description requests", () => {
     expect(productIntakeWizardAnalyzeRequestSchema.parse({
       sourceType: "pasted_json",
