@@ -96,4 +96,13 @@ describe("AssistantProductManagementCards", () => {
     const card = toAssistantProductManagementCard({ kind: "product_options_summary", title: "Options", summary: "Product Intake is authoritative.", sourceLinks: [], details: { items: ["Lamination", "Type: Single select", "Required: Yes", "Default: None", "Choices: None, Gloss, Matte"] } });
     expect(card?.items).toEqual(["Lamination", "Type: Single select", "Required: Yes", "Default: None", "Choices: None, Gloss, Matte"]);
   });
+
+  it("renders the corrected category and complete option group in an inactive-draft preview", () => {
+    const card = toAssistantProductManagementCard({ kind: "product_draft_preview", title: "Inactive product draft preview", details: { proposedFields: { category: "Print Products", measurementMode: "custom_size", pricingModel: "square_foot", perSqftCents: 300, perPieceCents: null, minimumChargeCents: null, material: null, productionRoute: null, sheetOrRollConstraints: null, allowRotation: null, status: "inactive_draft", optionGroups: [{ key: "lamination", label: "Lamination", required: true, selectionMode: "single", choices: ["None", "Gloss", "Matte"], defaultChoice: "None" }] } } })!;
+    act(() => root.render(<AssistantProductManagementCardView card={card} />));
+    expect(container.textContent).toContain("Category: Print Products");
+    expect(container.textContent).toContain("Lamination");
+    expect(container.textContent).toContain("Default: None");
+    expect(container.textContent).toContain("Choices: None, Gloss, Matte");
+  });
 });

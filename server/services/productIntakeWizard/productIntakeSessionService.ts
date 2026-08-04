@@ -756,6 +756,117 @@ export function resolveProductIntakeAnswersForPersistence(args: {
   return resolved;
 }
 
+type CorrectedStateOptionContract = {
+  key: string;
+  label: string;
+  required: boolean;
+  selectionMode: "single" | "multi";
+  choices: string[];
+  defaultChoice: string | null;
+};
+
+type CorrectedStateContract = {
+  category: string | null;
+  requiredOptions: CorrectedStateOptionContract[];
+  removedOptionKeys: string[];
+};
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+}
+
+function correctedStateContractFromConfidence(value: unknown): CorrectedStateContract | null {
+  const source = asRecord(value);
+  if (!source) return null;
+  const requiredOptions = Array.isArray(source.requiredOptions) ? source.requiredOptions.flatMap((item) => {
+    const option = asRecord(item);
+    if (!option) return [];
+    const key = typeof option?.key === "string" ? option.key : "";
+    const label = typeof option?.label === "string" ? option.label : "";
+    if (!key || !label) return [];
+    return [{
+      key,
+      label,
+      required: option.required === true,
+      selectionMode: option.selectionMode === "multi" ? "multi" as const : "single" as const,
+      choices: Array.isArray(option.choices) ? option.choices.filter((choice): choice is string => typeof choice === "string") : [],
+      defaultChoice: typeof option.defaultChoice === "string" ? option.defaultChoice : null,
+    }];
+  }) : [];
+  return {
+    category: typeof source.category === "string" && source.category.trim() ? source.category : null,
+    requiredOptions,
+    removedOptionKeys: Array.isArray(source.removedOptionKeys) ? source.removedOptionKeys.filter((key): key is string => typeof key === "string") : [],
+  };
+}
+
+function optionContract(option: ProductIntakeBrief["requiredOptions"][number]): CorrectedStateOptionContract {
+  const choices = option.choices?.map((choice) => choice.label).filter(Boolean) ?? option.sampleValues;
+  return {
+    key: normalizeKey(option.normalizedGroup || option.label),
+    label: option.label,
+    required: option.required,
+    selectionMode: option.selectionMode === "multi" ? "multi" : "single",
+    choices,
+    defaultChoice: option.defaultChoice ?? null,
+  };
+}
+
+/** Captures an explicit correction's complete state in existing session JSON so
+ * later question answers cannot silently rebuild a reduced proposal. */
+export function buildCorrectedStateContract(
+  brief: ProductIntakeBrief,
+  sourceText: string | null,
+  previous: unknown = null,
+): CorrectedStateContract {
+  const prior = correctedStateContractFromConfidence(previous);
+  const removed = new Set(prior?.removedOptionKeys ?? []);
+  if (sourceText && /\bremove\s+(?:the\s+)?size\s+option\b/i.test(sourceText)) removed.add("size");
+  return {
+    category: brief.productIdentity.category.value?.trim() || prior?.category || null,
+    requiredOptions: brief.requiredOptions.map(optionContract),
+    removedOptionKeys: Array.from(removed),
+  };
+}
+
+/** Returns blockers for a reduced or malformed corrected state before it can
+ * be presented as ready or used to create a PBV2 DRAFT. */
+export function correctedStateBlockers(brief: ProductIntakeBrief, contractValue: unknown = null): string[] {
+  const blockers: string[] = [];
+  const allOptions = [...brief.requiredOptions, ...brief.optionalOptions];
+  if (!brief.productIdentity.category.value?.trim()) blockers.push("Product category is required before creating a draft.");
+  const contract = correctedStateContractFromConfidence(contractValue);
+  if (!contract) return blockers;
+  if (contract.category && normalizeKey(brief.productIdentity.category.value ?? "") !== normalizeKey(contract.category)) {
+    blockers.push(`Corrected category ${contract.category} is missing from the current intake revision.`);
+  }
+  for (const expected of contract.requiredOptions) {
+    const option = allOptions.find((candidate) => normalizeKey(candidate.normalizedGroup || candidate.label) === expected.key);
+    if (!option) {
+      blockers.push(`Required corrected option ${expected.label} is missing from the current intake revision.`);
+      continue;
+    }
+    const choices = option.choices?.map((choice) => choice.label).filter(Boolean) ?? option.sampleValues;
+    if (expected.required && !option.required) blockers.push(`Required state for ${expected.label} was not preserved.`);
+    if (option.selectionMode !== expected.selectionMode) blockers.push(`Selection mode for ${expected.label} was not preserved.`);
+    if (expected.choices.some((choice) => !choices.some((candidate) => normalizeKey(candidate) === normalizeKey(choice)))) {
+      blockers.push(`Choices for ${expected.label} were not preserved.`);
+    }
+    const expectedDefault = expected.defaultChoice;
+    if (expectedDefault && !choices.some((choice) => normalizeKey(choice) === normalizeKey(expectedDefault))) {
+      blockers.push(`Default ${expectedDefault} for ${expected.label} is not a valid choice.`);
+    } else if (expectedDefault && normalizeKey(option.defaultChoice ?? "") !== normalizeKey(expectedDefault)) {
+      blockers.push(`Default ${expectedDefault} for ${expected.label} was not preserved.`);
+    }
+  }
+  for (const removedKey of contract.removedOptionKeys) {
+    if (allOptions.some((option) => normalizeKey(option.normalizedGroup || option.label) === removedKey)) {
+      blockers.push(`Removed option ${removedKey} reappeared in the current intake revision.`);
+    }
+  }
+  return blockers;
+}
+
 export function computeProductIntakeReadiness(args: {
   session: ProductIntakeSession;
   questions: ProductIntakeQuestion[];
@@ -809,6 +920,9 @@ export function computeProductIntakeReadiness(args: {
   if (bestTemplateReviewCount >= 3) {
     penalties.push({ code: "template_ambiguity", label: "Several option template matches still require review", severity: "review" });
   }
+  for (const label of correctedStateBlockers(brief, args.session.confidence?.correctedStateContract)) {
+    penalties.push({ code: "corrected_state_incomplete", label, severity: "blocker" });
+  }
 
   const currentConfidence = typeof args.session.confidence?.currentConfidence === "number" ? args.session.confidence.currentConfidence : brief.overallConfidence;
   const reviewScore = clampConfidence(currentConfidence
@@ -821,8 +935,13 @@ export function computeProductIntakeReadiness(args: {
       : penalties.length > 0 || reviewScore < 75
         ? "needs_review"
         : "ready_for_draft";
+  const resolvedStatus = args.session.status === "abandoned" || args.session.status === "draft_created"
+    ? args.session.status
+    : penalties.some((penalty) => penalty.severity === "blocker")
+      ? "needs_answers"
+      : status;
   const canCreateDraft =
-    args.session.status === "ready_for_draft" &&
+    resolvedStatus === "ready_for_draft" &&
     unansweredRequiredCount === 0 &&
     !penalties.some((penalty) => penalty.severity === "blocker") &&
     !args.session.createdProductId &&
@@ -832,7 +951,7 @@ export function computeProductIntakeReadiness(args: {
     unansweredRequiredCount,
     answeredCount,
     canCreateDraft,
-    status,
+    status: resolvedStatus,
     reviewState,
     reviewScore,
     penalties,
@@ -841,6 +960,7 @@ export function computeProductIntakeReadiness(args: {
 
 export function resolveProductIntakeSessionStatus(brief: ProductIntakeBrief, questions: Array<Pick<NewQuestion, "required">>): ProductIntakeSessionStatus {
   if (questions.some((question) => question.required)) return "needs_answers";
+  if (correctedStateBlockers(brief).length > 0) return "needs_answers";
   return brief.overallConfidence >= 75 ? "ready_for_draft" : "analyzed";
 }
 
@@ -1156,6 +1276,7 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
       const nextStatus = nextDetail.readiness.status;
       const confidenceJson = {
         ...recalculateProductIntakeConfidence(nextDetail),
+        correctedStateContract: buildCorrectedStateContract(canonicalBrief, null, answeredDetail.session.confidence?.correctedStateContract),
         revision: typeof answeredDetail.session.confidence?.revision === "number" ? answeredDetail.session.confidence.revision + 1 : 1,
       };
       const [updatedSession] = await database.update(productIntakeSessions)
@@ -1175,6 +1296,7 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
       const now = new Date();
       const nextQuestions = generateProductIntakeQuestions(args.brief);
       const priorAnswers = detail.answers.map((answer) => ({ questionKey: answer.questionKey, answer: answer.answer }));
+      const correctedStateContract = buildCorrectedStateContract(args.brief, args.sourceText, detail.session.confidence?.correctedStateContract);
       await database.delete(productIntakeAnswers)
         .where(and(eq(productIntakeAnswers.organizationId, args.organizationId), eq(productIntakeAnswers.sessionId, args.sessionId)));
       await database.delete(productIntakeQuestions)
@@ -1187,7 +1309,7 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
           sourceFingerprint: createHash("sha256").update(args.sourceText).digest("hex"),
           missingDecisionsJson: args.brief.missingDecisions as any,
           status: resolveProductIntakeSessionStatus(args.brief, nextQuestions),
-          confidenceJson: { originalConfidence: detail.session.confidence?.overallConfidence ?? detail.brief.overallConfidence, currentConfidence: args.brief.overallConfidence, overallConfidence: args.brief.overallConfidence, revision: typeof detail.session.confidence?.revision === "number" ? detail.session.confidence.revision + 1 : 1 },
+          confidenceJson: { originalConfidence: detail.session.confidence?.overallConfidence ?? detail.brief.overallConfidence, currentConfidence: args.brief.overallConfidence, overallConfidence: args.brief.overallConfidence, correctedStateContract, revision: typeof detail.session.confidence?.revision === "number" ? detail.session.confidence.revision + 1 : 1 },
           updatedByUserId: args.userId,
           updatedAt: now,
         })
@@ -1229,7 +1351,7 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
       const corrected = await getDetail(args.organizationId, args.sessionId);
       if (!corrected) return null;
       const [finalSession] = await database.update(productIntakeSessions)
-        .set({ status: corrected.readiness.status, confidenceJson: { ...recalculateProductIntakeConfidence(corrected), revision: typeof detail.session.confidence?.revision === "number" ? detail.session.confidence.revision + 1 : 1 }, updatedByUserId: args.userId, updatedAt: new Date() })
+        .set({ status: corrected.readiness.status, confidenceJson: { ...recalculateProductIntakeConfidence(corrected), correctedStateContract, revision: typeof detail.session.confidence?.revision === "number" ? detail.session.confidence.revision + 1 : 1 }, updatedByUserId: args.userId, updatedAt: new Date() })
         .where(and(eq(productIntakeSessions.id, args.sessionId), eq(productIntakeSessions.organizationId, args.organizationId)))
         .returning();
       return finalSession ? await getDetail(args.organizationId, args.sessionId) : null;

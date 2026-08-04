@@ -30,6 +30,21 @@ function dependencies(overrides: Record<string, unknown> = {}) {
 }
 
 describe("AssistantProductIntakeAdapter", () => {
+  test("carries the complete corrected category and Lamination contract into the proposal fingerprint", async () => {
+    const correctedBrief: any = {
+      productIdentity: { likelyProductName: { value: "DEV Test Vinyl Options 080326" }, category: { value: "Print Products" } },
+      sizeBehavior: { behavior: "custom_size" }, quantityBehavior: { behavior: "per_piece" }, pricingAnalysis: { behavior: "square_foot" },
+      requiredOptions: [{ label: "Lamination", normalizedGroup: "Lamination", required: true, selectionMode: "single", sampleValues: ["None", "Gloss", "Matte"], defaultChoice: "None" }], optionalOptions: [],
+    };
+    const sessionStore = { getSessionDetail: jest.fn(async () => detail({ brief: correctedBrief })) };
+    const adapter = new AssistantProductIntakeAdapter(dependencies({ sessionStore }) as any);
+    const proposal = await adapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" });
+    expect(proposal.preview.proposedFields).toMatchObject({ category: "Print Products", measurementMode: "custom_size", pricingModel: "square_foot", perSqftCents: null, productionRoute: null, minimumChargeCents: null, optionGroups: [{ label: "Lamination", required: true, selectionMode: "single", choices: ["None", "Gloss", "Matte"], defaultChoice: "None" }] });
+    sessionStore.getSessionDetail.mockResolvedValue(detail({ brief: { ...correctedBrief, productIdentity: { ...correctedBrief.productIdentity, category: { value: "Vinyl Options" } } } }));
+    const changed = await adapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" });
+    expect(changed.fingerprint).not.toBe(proposal.fingerprint);
+  });
+
   test("loads tenant-scoped authoritative readiness and redacts raw diagnostics", async () => {
     const deps = dependencies();
     const adapter = new AssistantProductIntakeAdapter(deps as any);

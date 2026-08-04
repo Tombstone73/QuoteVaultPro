@@ -20,6 +20,18 @@ function draftStatus(value: unknown) {
   const status = text(value);
   return status === "inactive_draft" ? "Inactive PBV2 DRAFT" : status === "ready_for_draft" ? "Ready for draft" : status;
 }
+function optionSummaryItems(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 30).flatMap((item) => {
+    const option = record(item);
+    const label = text(option?.label);
+    if (!label) return [];
+    const choices = list(option?.choices);
+    const selection = option?.selectionMode === "multi" ? "Multi-select" : "Single select";
+    const defaultChoice = text(option?.defaultChoice) ?? "Not set";
+    return [label, `Type: ${selection}`, `Required: ${option?.required === true ? "Yes" : "No"}`, `Default: ${defaultChoice}`, `Choices: ${choices.join(", ") || "Not set"}`];
+  });
+}
 
 const PRODUCT_CARD_KINDS = new Set([
   "product_intake_summary", "product_missing_information", "product_comparison", "product_material_selection",
@@ -81,6 +93,8 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
     return rendered ? [{ label: String(label), value: rendered }] : [];
   }) : [];
   const proposedDraftFields = proposedFields ? [
+    ["Category", proposedFields.category],
+    ["Measurement", proposedFields.measurementMode],
     ["Pricing model", pricingModel(proposedFields.pricingModel)],
     ["Square-foot price", cents(proposedFields.perSqftCents)],
     ["Per-piece price", cents(proposedFields.perPieceCents)],
@@ -105,12 +119,13 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
       const blocking = text(item.blockingReason);
       return [`${name} (${status}; ${mode}; product ${productId}; DRAFT ${tree}) — select ${candidateId}${blocking ? `; ${blocking}` : ""}`];
     }) : [];
+  const proposedOptionItems = proposedFields ? optionSummaryItems(proposedFields.optionGroups) : [];
   return {
     kind,
     title: text(source.title) ?? "Product Management",
     summary: text(source.summary),
     fields: [...namedFields, ...objectFields, ...proposedDraftFields].slice(0, 16),
-    items: candidateItems.length ? candidateItems : list(details.items ?? details.questions ?? details.errors ?? details.warnings ?? details.options ?? details.reusedRecords),
+    items: candidateItems.length ? candidateItems : [...list(details.items ?? details.questions ?? details.errors ?? details.warnings ?? details.options ?? details.reusedRecords), ...proposedOptionItems],
     assumptions: list(details.assumptions ?? details.inheritedAssumptions),
     changes: toChanges(details.changes ?? details.beforeAfter ?? details.patchChanges ?? details.fieldChanges),
     validationErrors: list(details.validationErrors ?? details.errors),

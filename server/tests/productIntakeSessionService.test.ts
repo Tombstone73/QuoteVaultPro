@@ -13,6 +13,8 @@ import {
   computeProductIntakeReadiness,
   generateProductIntakeQuestions,
   applyProductIntakeAnswersToBrief,
+  buildCorrectedStateContract,
+  correctedStateBlockers,
   parseProductIntakeChoiceAnswer,
   recalculateProductIntakeConfidence,
   resolveProductIntakeAnswersForPersistence,
@@ -160,6 +162,22 @@ describe("Product Intake pending option answers", () => {
     expect(parseProductIntakeChoiceAnswer("None / Gloss / Matte")).toEqual(["None", "Gloss", "Matte"]);
     expect(parseProductIntakeChoiceAnswer("- none\n- gloss\n- matte")).toEqual(["None", "Gloss", "Matte"]);
     expect(parseProductIntakeChoiceAnswer("1. None\n2. Gloss\n3. Matte")).toEqual(["None", "Gloss", "Matte"]);
+  });
+});
+
+describe("Product Intake corrected-state readiness", () => {
+  test("blocks a ready-looking session when its corrected category or Lamination group is missing", () => {
+    const corrected = brief({
+      productIdentity: { ...brief().productIdentity, category: { value: "Print Products", confidence: 100, evidence: [] } },
+      requiredOptions: [{ label: "Lamination", normalizedGroup: "Lamination", required: true, confidence: 95, sampleValues: ["None", "Gloss", "Matte"], sourcePaths: [], templateMatches: [], evidence: [], source: "product_specific", selectionMode: "single", defaultChoice: "None" }],
+    });
+    const contract = buildCorrectedStateContract(corrected, "Replace category with Print Products. Remove the Size option.");
+    const reduced = brief({ productIdentity: { ...brief().productIdentity, category: { value: "", confidence: 0, evidence: [] } } });
+    expect(correctedStateBlockers(reduced, contract)).toEqual(expect.arrayContaining([
+      expect.stringContaining("category"),
+      expect.stringContaining("Lamination"),
+    ]));
+    expect(computeProductIntakeReadiness({ session: { ...session("ready_for_draft"), brief: reduced, confidence: { correctedStateContract: contract } }, questions: [], answers: [] })).toMatchObject({ status: "needs_answers", canCreateDraft: false });
   });
 });
 

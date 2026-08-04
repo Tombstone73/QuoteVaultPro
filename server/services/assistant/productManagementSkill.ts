@@ -433,7 +433,7 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
     cards.push({ kind: "product_missing_information", title: "Information needed", summary: `${missing.length} ${missing.length === 1 ? "question remains" : "questions remain"}.`, sourceLinks: [], details: { questionCount: missing.length, questions: missing.map(plainQuestion) } });
   }
   if (detail.brief.materialAnalysis.likelyMaterialMatches.length) cards.push({ kind: "product_material_selection", title: "Material references", summary: "Existing materials are only proposed for reuse; no material record will be created.", sourceLinks: [], details: { items: detail.brief.materialAnalysis.likelyMaterialMatches.map((material) => material.name) } });
-  const optionSummaryItems = detail.brief.requiredOptions.flatMap((option) => {
+  const optionSummaryItems = [...detail.brief.requiredOptions, ...detail.brief.optionalOptions].flatMap((option) => {
     const choices = option.choices?.map((choice) => choice.label).filter(Boolean) ?? option.sampleValues;
     return [
       option.label,
@@ -452,6 +452,10 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
   if (warnings.length) cards.push({ kind: "product_validation_warnings", title: "Draft warnings", summary: "Review these assumptions before creating an inactive draft.", sourceLinks: [], details: { warnings } });
   if (!missing.length && detail.readiness.canCreateDraft && detail.session.status === "ready_for_draft") {
     const proposal = await assistantProductIntakeAdapter.buildProposal({ organizationId: detail.session.organizationId, sessionId: detail.session.id });
+    if (!proposal.executable) {
+      cards.push({ kind: "product_validation_errors", title: "Validation blocks draft creation", summary: "The current Product Intake plan is incomplete and cannot be confirmed.", sourceLinks: [], details: { errors: ["The refreshed server proposal is not executable. Review category and option configuration."] } });
+      return cards;
+    }
     cards.push({ kind: "product_draft_preview", title: "Inactive product draft preview", summary: proposal.preview.summary, sourceLinks: [proposal.sourceLink], details: { ...common, proposedFields: proposal.preview.proposedFields, statusToCreate: "inactive_draft", reusedRecords: ["validated materials", "validated routing"], assumptions: warnings } });
     cards.push({ kind: "action_proposal", title: "Create inactive product draft", summary: "Review the server-generated plan and use its dedicated GO control to create one inactive draft.", sourceLinks: [], plan: { action: "products.create_inactive_draft", intakeSessionId: detail.session.id, proposalFingerprint: proposal.fingerprint } });
   }

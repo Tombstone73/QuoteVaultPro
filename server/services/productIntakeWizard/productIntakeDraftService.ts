@@ -34,7 +34,7 @@ import type { ProductOptionRule } from "@shared/productOptionRules";
 import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
 import { db as defaultDb } from "../../db";
 import { normalizeChoicePricingAnswer, stripDefaultChoiceAnnotation } from "./productIntakeOptionHelpers";
-import { ProductIntakeSessionError } from "./productIntakeSessionService";
+import { correctedStateBlockers, ProductIntakeSessionError } from "./productIntakeSessionService";
 import { parseNaturalLanguageQuantityTiers } from "./quantityTierParsing";
 
 export type ProductIntakeDraftTemplateRow = {
@@ -2137,6 +2137,14 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
         }
 
         const brief = productIntakeBriefSchema.parse(sessionRow.aiBriefJson);
+        const correctedStateErrors = correctedStateBlockers(brief, sessionRow.confidenceJson?.correctedStateContract);
+        if (correctedStateErrors.length > 0) {
+          throw new ProductIntakeSessionError(
+            409,
+            `The corrected Product Intake configuration is incomplete: ${correctedStateErrors.join(" ")}`,
+            "INCOMPLETE_CORRECTED_STATE",
+          );
+        }
         const productName = compactText(brief.productIdentity.likelyProductName.value, "Product Intake Draft");
         const productId = randomUUID();
         const pbv2TreeVersionId = randomUUID();

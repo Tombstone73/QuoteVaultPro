@@ -195,7 +195,7 @@ describe("AssistantPlanCard", () => {
             category: "Banners", measurementMode: "custom_dimensions", requiresDimensions: true, fixedDimensions: null,
             pricingModel: "square_foot", perSqftCents: 450, perPieceCents: null, minimumChargeCents: 2500,
             material: "13 oz Banner", productionRoute: "Roll printer", sheetOrRollConstraints: "54in roll", allowRotation: true,
-            quantityBehavior: "per_piece", taxable: true, commonOptions: ["Lamination", "Grommets"], status: "inactive_draft",
+            quantityBehavior: "per_piece", taxable: true, commonOptions: ["Lamination", "Grommets"], optionGroups: [{ key: "lamination", label: "Lamination", required: true, selectionMode: "single", choices: ["None", "Gloss", "Matte"], defaultChoice: "None" }], status: "inactive_draft",
           },
         } }, missingInformation: [], cancellationAvailable: true, steps: [],
       },
@@ -209,6 +209,8 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).toContain("$25.00");
     expect(container.textContent).toContain("Allowed");
     expect(container.textContent).toContain("Inactive draft");
+    expect(container.textContent).toContain("Default: None");
+    expect(container.textContent).toContain("Choices: None, Gloss, Matte");
     expect(container.textContent).not.toMatch(/Activate|Publish/);
     const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: create inactive product draft']");
     expect(go).not.toBeNull();

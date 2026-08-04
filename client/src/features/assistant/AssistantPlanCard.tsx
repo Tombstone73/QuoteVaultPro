@@ -56,6 +56,7 @@ export type AssistantPlanCardModel = {
     requiresDimensions: boolean | null;
     quantityBehavior: string | null;
     commonOptions: string[];
+    optionGroups: Array<{ label: string; required: boolean; selectionMode: "single" | "multi"; choices: string[]; defaultChoice: string | null }>;
     warnings: string[];
     status: string | null;
   } | null;
@@ -265,6 +266,11 @@ function toProductDraftCreate(action: string | null, preview: UnknownRecord | nu
     requiresDimensions: typeof fields.requiresDimensions === "boolean" ? fields.requiresDimensions : null,
     quantityBehavior: asText(fields.quantityBehavior),
     commonOptions: asTextList(fields.commonOptions),
+    optionGroups: Array.isArray(fields.optionGroups) ? fields.optionGroups.slice(0, 30).flatMap((entry) => {
+      const option = asRecord(entry); const label = asText(option?.label);
+      if (!label) return [];
+      return [{ label, required: option?.required === true, selectionMode: option?.selectionMode === "multi" ? "multi" as const : "single" as const, choices: asTextList(option?.choices), defaultChoice: asText(option?.defaultChoice) }];
+    }) : [],
     warnings: asTextList(value.warnings),
     status: asText(fields.status),
   };
@@ -597,7 +603,7 @@ function ProductDraftCreatePreview({ draft }: { draft: NonNullable<AssistantPlan
     <p className="font-semibold">Inactive product draft to create</p>
     <p className="mt-1 text-muted-foreground">These server-derived fields will create one inactive product and PBV2 DRAFT only.</p>
     <dl className="mt-2 grid gap-1 sm:grid-cols-2">{fields.map(([label, value]) => <div key={label}><dt className="inline font-medium">{label}: </dt><dd className="inline">{value}</dd></div>)}</dl>
-    {draft.commonOptions.length ? <p className="mt-2"><span className="font-medium">Options: </span>{draft.commonOptions.join(", ")}</p> : null}
+    {draft.optionGroups.length ? <div className="mt-2"><p className="font-medium">Options</p><ul className="mt-1 list-disc space-y-0.5 pl-4">{draft.optionGroups.map((option) => <li key={option.label}><span className="font-medium">{option.label}</span> · Type: {option.selectionMode === "multi" ? "Multi-select" : "Single select"} · Required: {option.required ? "Yes" : "No"} · Default: {option.defaultChoice ?? "Not set"} · Choices: {option.choices.join(", ") || "Not set"}</li>)}</ul></div> : draft.commonOptions.length ? <p className="mt-2"><span className="font-medium">Options: </span>{draft.commonOptions.join(", ")}</p> : null}
     {draft.quantityTiers.length ? <div className="mt-3 overflow-x-auto"><p className="font-medium">Quantity tiers · per piece</p><table className="mt-1 w-full max-w-sm border-collapse text-left"><thead className="text-muted-foreground"><tr><th className="border-b p-1 font-medium">Quantity</th><th className="border-b p-1 font-medium">Price each</th></tr></thead><tbody>{draft.quantityTiers.map((tier) => <tr key={`${tier.minQty}-${tier.label}`}><td className="border-b p-1">{tier.label}</td><td className="border-b p-1">{moneyFromCents(tier.perPieceCents)}</td></tr>)}</tbody></table></div> : null}
     {draft.warnings.length ? <div className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2"><p className="font-medium">Review warnings</p><ul className="mt-1 list-disc pl-4">{draft.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul></div> : null}
   </div>;

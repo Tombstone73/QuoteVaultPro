@@ -83,6 +83,14 @@ export type AssistantProductIntakeProposedFields = {
   quantityBehavior: string;
   taxable: true;
   commonOptions: string[];
+  optionGroups: Array<{
+    key: string;
+    label: string;
+    required: boolean;
+    selectionMode: "single" | "multi";
+    choices: string[];
+    defaultChoice: string | null;
+  }>;
   status: "inactive_draft";
 };
 
@@ -184,6 +192,14 @@ export class AssistantProductIntakeAdapter {
       : /\b(?:do not allow|no)\s+rotation\b|\brotation\s+(?:not allowed|disabled)\b/i.test(sourceText)
         ? false
         : null;
+    const optionGroups = [...(detail.brief.requiredOptions ?? []), ...(detail.brief.optionalOptions ?? [])].slice(0, 30).map((option) => ({
+      key: option.normalizedGroup || option.label,
+      label: option.label,
+      required: option.required,
+      selectionMode: option.selectionMode === "multi" ? "multi" as const : "single" as const,
+      choices: option.choices?.map((choice) => choice.label).filter(Boolean) ?? option.sampleValues,
+      defaultChoice: option.defaultChoice ?? null,
+    }));
     const proposedFields: AssistantProductIntakeProposedFields = {
       category: detail.brief.productIdentity.category?.value ?? null,
       measurementMode: String(intake?.sizeMode ?? detail.brief.sizeBehavior?.behavior ?? "review_required"),
@@ -200,7 +216,8 @@ export class AssistantProductIntakeAdapter {
       allowRotation: rotation,
       quantityBehavior: detail.brief.quantityBehavior?.behavior ?? "review_required",
       taxable: true,
-      commonOptions: [...(detail.brief.requiredOptions ?? []), ...(detail.brief.optionalOptions ?? [])].map((option) => option.label).filter(Boolean).slice(0, 12),
+      commonOptions: optionGroups.map((option) => option.label).filter(Boolean).slice(0, 12),
+      optionGroups,
       status: "inactive_draft",
     };
     const fingerprint = createHash("sha256").update(JSON.stringify({
@@ -212,6 +229,7 @@ export class AssistantProductIntakeAdapter {
       createdProductId: detail.session.createdProductId,
       createdPbv2TreeVersionId: detail.session.createdPbv2TreeVersionId,
       readiness: snapshot.readiness,
+      proposedFields,
     })).digest("hex");
     return {
       sessionId: detail.session.id,
