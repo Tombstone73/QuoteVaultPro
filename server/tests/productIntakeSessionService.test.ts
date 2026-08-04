@@ -201,6 +201,28 @@ describe("Product Intake corrected-state readiness", () => {
       expect.stringContaining("minimum charge"),
     ]));
   });
+
+  test("blocks readiness when an explicit proof, production-job, material, or Flatbed route decision is lost", () => {
+    const corrected = brief({
+      materialSelection: "unset",
+      requiresProofApproval: true,
+      requiresProductionJob: true,
+      productionRoute: "Flatbed",
+      minimumChargeExplicitlyUnset: true,
+      requiredOptions: [], optionalOptions: [],
+    });
+    const contract = buildCorrectedStateContract(corrected, "Explicit Product Intake correction (new explicit values override all prior assumptions): Leave material unset. Require customer proof approval. Require a production job and route it to Flatbed. Leave minimum charge unset.");
+    const reduced = brief({ ...corrected, materialSelection: "auto", requiresProofApproval: false, requiresProductionJob: false, productionRoute: "Roll printer", minimumChargeExplicitlyUnset: false });
+
+    expect(correctedStateBlockers(reduced, contract)).toEqual(expect.arrayContaining([
+      expect.stringContaining("unset material"),
+      expect.stringContaining("proof-approval"),
+      expect.stringContaining("production-job"),
+      expect.stringContaining("production route"),
+      expect.stringContaining("unset minimum charge"),
+    ]));
+    expect(computeProductIntakeReadiness({ session: { ...session("ready_for_draft"), brief: reduced, confidence: { correctedStateContract: contract } }, questions: [], answers: [] })).toMatchObject({ status: "needs_answers", canCreateDraft: false });
+  });
 });
 
 describe("Product Intake question generation", () => {
