@@ -119,17 +119,77 @@ function isExplicitProductIntakeCorrection(message: string): boolean {
     || /\b(?:required\s+)?(?:custom\s+)?option(?:\s+group)?\b[\s\S]{0,100}\b(?:choices?|default)\b/i.test(message)
     || /\b(?:require|requires)\s+(?:width\s+and\s+height|dimensions)\b/i.test(message)
     || /\bremove\s+(?:the\s+)?size\s+option\b/i.test(message)
+    || /\b(?:keep|preserve)\s+(?:the\s+)?[a-z][a-z0-9 &/\-]{1,80}?(?:\s+exactly\s+as\s+shown|\s+unchanged|\s+as\s+is)\b/i.test(message)
     || /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet)\b/i.test(message)
     || /\b(?:no|without|clear)\s+(?:production\s+)?(?:route|routing|minimum(?:\s+charge)?)\b/i.test(message);
 }
 
-function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, message: string): ProductIntakeBrief {
-  if (!/\bremove\s+(?:the\s+)?size\s+option\b/i.test(message)) return brief;
-  const isSize = (option: ProductIntakeBrief["requiredOptions"][number]) => /^(?:size|dimensions?)$/i.test(option.normalizedGroup) || /^(?:size|dimensions?)$/i.test(option.label);
+export type ProductIntakeCorrectionOperation = "add" | "remove" | "replace" | "rename" | "preserve" | "modify" | "clear";
+type ParsedProductIntakeCorrectionOperation = { operation: ProductIntakeCorrectionOperation; optionLabel: string | null };
+
+function optionIdentity(value: string): string {
+  return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+/** Correction labels use exact normalized identity only. Stemming is not a
+ * canonicalization rule and therefore cannot create or rename an option. */
+export function parseProductIntakeCorrectionOperations(message: string): ParsedProductIntakeCorrectionOperation[] {
+  const operations: ParsedProductIntakeCorrectionOperation[] = [];
+  for (const match of Array.from(message.matchAll(/\b(?:keep|preserve)\s+(?:the\s+)?([a-z][a-z0-9 &/\-]{1,80}?)(?:\s+exactly\s+as\s+shown|\s+unchanged|\s+as\s+is)\b/gi))) {
+    operations.push({ operation: "preserve", optionLabel: match[1]!.trim().replace(/\s+option(?:\s+group)?$/i, "") });
+  }
+  for (const match of Array.from(message.matchAll(/\b(remove|delete|replace|rename|modify|add|clear)\s+(?:the\s+)?([a-z][a-z0-9 &/\-]{1,80}?)(?:\s+option(?:\s+group)?)\b/gi))) {
+    const verb = match[1]!.toLowerCase();
+    const operation: ProductIntakeCorrectionOperation = verb === "delete" ? "remove" : verb as Exclude<ProductIntakeCorrectionOperation, "preserve">;
+    operations.push({ operation, optionLabel: match[2]!.trim() });
+  }
+  return operations;
+}
+
+function isNarrowCanonicalCorrection(message: string): boolean {
+  return /\bdo\s+not\s+change\s+anything\s+else\b/i.test(message)
+    || parseProductIntakeCorrectionOperations(message).some((operation) => operation.operation === "preserve");
+}
+
+export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, message: string): { brief: ProductIntakeBrief; errors: string[] } {
+  const operations = parseProductIntakeCorrectionOperations(message);
+  const allOptions = [...brief.requiredOptions, ...brief.optionalOptions];
+  const byIdentity = new Map<string, ProductIntakeBrief["requiredOptions"]>();
+  for (const option of allOptions) {
+    const key = optionIdentity(option.normalizedGroup || option.label);
+    const existing = byIdentity.get(key) ?? [];
+    existing.push(option);
+    byIdentity.set(key, existing);
+  }
+  const errors = Array.from(byIdentity.entries()).flatMap(([key, options]) => options.length > 1
+    ? [`More than one canonical option group matches "${options[0]!.label}" (${key}). Resolve the duplicate before applying this correction.`]
+    : []);
+  if (errors.length) return { brief, errors };
+
+  const removedKeys = new Set<string>();
+  for (const operation of operations) {
+    if (!operation.optionLabel) continue;
+    const key = optionIdentity(operation.optionLabel);
+    const matches = byIdentity.get(key) ?? [];
+    if (operation.operation === "preserve") {
+      if (matches.length === 0) errors.push(`No exact canonical option group matches "${operation.optionLabel}" to preserve.`);
+      continue;
+    }
+    if (operation.operation === "remove") {
+      if (matches.length === 0) errors.push(`No exact canonical option group matches "${operation.optionLabel}" to remove.`);
+      else removedKeys.add(key);
+    }
+  }
+  if (errors.length) return { brief, errors };
   return {
-    ...brief,
-    requiredOptions: brief.requiredOptions.filter((option) => !isSize(option)),
-    optionalOptions: brief.optionalOptions.filter((option) => !isSize(option)),
+    brief: {
+      ...brief,
+      // Removal concerns a customer-facing option group only; measurement mode
+      // remains the separately authoritative sizeBehavior field.
+      requiredOptions: brief.requiredOptions.filter((option) => !removedKeys.has(optionIdentity(option.normalizedGroup || option.label))),
+      optionalOptions: brief.optionalOptions.filter((option) => !removedKeys.has(optionIdentity(option.normalizedGroup || option.label))),
+    },
+    errors: [],
   };
 }
 
@@ -471,11 +531,25 @@ export class ProductManagementSkillService {
       "Explicit Product Intake correction (new explicit values override all prior assumptions):",
       input.message,
     ].filter(Boolean).join("\n\n");
-    const request = productIntakeWizardAnalyzeRequestSchema.parse({ sourceType: "text_description", description: sourceText });
-    // Corrections must be deterministic and immediately versioned; a live AI
-    // retry may not recreate or delay an explicit staff correction.
-    const generatedBrief = await generateProductIntakeBrief({ orgId: input.organizationId, request, analyzer: null, templates: references.templates, materials: references.materials, provider: null });
-    const brief = applyExplicitIntakeCorrectionState(generatedBrief, input.message);
+    const narrowCorrection = isNarrowCanonicalCorrection(input.message);
+    const initialBrief = narrowCorrection
+      ? existing.brief
+      : await generateProductIntakeBrief({
+        orgId: input.organizationId,
+        request: productIntakeWizardAnalyzeRequestSchema.parse({ sourceType: "text_description", description: sourceText }),
+        analyzer: null,
+        templates: references.templates,
+        materials: references.materials,
+        provider: null,
+      });
+    // Explicit narrow corrections start from the current canonical revision.
+    // Other explicit correction forms keep the established deterministic
+    // reconstruction path, then apply only typed removals.
+    const applied = applyExplicitIntakeCorrectionState(initialBrief, input.message);
+    if (applied.errors.length) {
+      return { handled: true, response: applied.errors.join(" "), cards: [{ kind: "product_validation_errors", title: "Product Intake correction needs an exact option group", summary: "No Product Intake revision was created.", sourceLinks: [], details: { errors: applied.errors } }] };
+    }
+    const brief = applied.brief;
     const corrected = await this.deps.sessions.replaceBrief({ organizationId: input.organizationId, sessionId: existing.session.id, userId: input.userId, brief, sourceText });
     if (!corrected) return { handled: true, response: "The active Product Intake session no longer exists. No proposal was changed.", cards: [] };
     return {
