@@ -17,6 +17,7 @@ import {
   correctedStateBlockers,
   parseProductIntakeChoiceAnswer,
   recalculateProductIntakeConfidence,
+  productIntakeReadinessTransition,
   resolveProductIntakeAnswersForPersistence,
   resolveProductIntakeSessionStatus,
 } from "../services/productIntakeWizard/productIntakeSessionService";
@@ -557,6 +558,38 @@ describe("Product Intake question generation", () => {
     expect(resolveProductIntakeSessionStatus(brief({ overallConfidence: 90 }), [])).toBe("ready_for_draft");
     expect(resolveProductIntakeSessionStatus(brief({ overallConfidence: 60 }), [])).toBe("analyzed");
     expect(resolveProductIntakeSessionStatus(brief({ overallConfidence: 90 }), [{ required: true }])).toBe("needs_answers");
+  });
+
+  test("persists the newest ready-for-draft transition when a complete analyzed session has no blockers", () => {
+    const routedAcrylic = brief({
+      overallConfidence: 60,
+      productIdentity: { likelyProductName: { value: "DEV Test Routed Acrylic 080426D", confidence: 100, evidence: [] }, category: { value: "Print Products", confidence: 100, evidence: [] }, productType: { value: null, confidence: 100, evidence: [] } },
+      sizeBehavior: { behavior: "custom_size", confidence: 100, evidence: [] },
+      pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$5.00 per square foot", evidence: [] },
+      materialSelection: "unset",
+      requiresProofApproval: true,
+      requiresProductionJob: true,
+      productionRoute: "Flatbed",
+      requiredOptions: [], optionalOptions: [], missingDecisions: [], draftWarnings: [],
+    } as any);
+    const analyzed = { ...session("analyzed"), brief: routedAcrylic, confidence: { revision: 4, currentConfidence: 60 } };
+    const detail = { session: analyzed, brief: routedAcrylic, questions: [], answers: [], readiness: computeProductIntakeReadiness({ session: analyzed, questions: [], answers: [] }) } as ProductIntakeSessionDetail;
+    const transition = productIntakeReadinessTransition(detail);
+
+    expect(detail.readiness).toMatchObject({ status: "ready_for_draft", canCreateDraft: true });
+    expect(transition).toMatchObject({ status: "ready_for_draft", confidence: { revision: 5 } });
+    expect(transition?.confidence).toEqual(expect.objectContaining({ currentConfidence: expect.any(Number) }));
+    expect(detail.brief).toMatchObject({ materialSelection: "unset", requiresProofApproval: true, requiresProductionJob: true, productionRoute: "Flatbed", sizeBehavior: { behavior: "custom_size" }, pricingAnalysis: { behavior: "square_foot", notes: "$5.00 per square foot" } });
+  });
+
+  test("does not transition incomplete or terminal sessions to ready for draft", () => {
+    const incomplete = { ...session("analyzed"), brief: brief({ pricingAnalysis: { behavior: "unknown", confidence: 20, evidence: [] } as any }) };
+    const incompleteDetail = { session: incomplete, brief: incomplete.brief, questions: [], answers: [], readiness: computeProductIntakeReadiness({ session: incomplete, questions: [], answers: [] }) } as ProductIntakeSessionDetail;
+    expect(incompleteDetail.readiness.canCreateDraft).toBe(false);
+    expect(productIntakeReadinessTransition(incompleteDetail)?.status).toBe("needs_answers");
+    const terminal = { ...session("draft_created"), createdProductId: "product_1", createdPbv2TreeVersionId: "tree_1" };
+    const terminalDetail = { session: terminal, brief: terminal.brief, questions: [], answers: [], readiness: computeProductIntakeReadiness({ session: terminal, questions: [], answers: [] }) } as ProductIntakeSessionDetail;
+    expect(productIntakeReadinessTransition(terminalDetail)).toBeNull();
   });
 
   test("readiness updates after required answers are present", () => {

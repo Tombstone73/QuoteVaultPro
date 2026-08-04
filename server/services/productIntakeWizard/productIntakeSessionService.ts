@@ -1046,6 +1046,20 @@ export function computeProductIntakeReadiness(args: {
   });
 }
 
+/** Produces the only persisted transition permitted from an unfinished intake
+ * session. Terminal states are left untouched by computeProductIntakeReadiness.
+ */
+export function productIntakeReadinessTransition(detail: ProductIntakeSessionDetail): { status: ProductIntakeSessionStatus; confidence: Record<string, unknown> } | null {
+  if (detail.session.status === detail.readiness.status) return null;
+  return {
+    status: detail.readiness.status,
+    confidence: {
+      ...recalculateProductIntakeConfidence(detail),
+      revision: typeof detail.session.confidence?.revision === "number" ? detail.session.confidence.revision + 1 : 1,
+    },
+  };
+}
+
 export function resolveProductIntakeSessionStatus(brief: ProductIntakeBrief, questions: Array<Pick<NewQuestion, "required">>): ProductIntakeSessionStatus {
   if (questions.some((question) => question.required)) return "needs_answers";
   if (brief.workflowIntent === "service_fee" && (brief.sizeBehavior.behavior !== "none" || brief.requiresProductionJob !== false)) return "needs_answers";
@@ -1264,7 +1278,26 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
 
       const detail = await getDetail(input.organizationId, sessionRow.id);
       if (!detail) throw new ProductIntakeSessionError(500, "Created session could not be reloaded.", "SESSION_RELOAD_FAILED");
-      return detail;
+      // Question generation can resolve every blocker even when the initial
+      // confidence-only status was "analyzed". Persist that authoritative
+      // readiness transition before any assistant card or proposal is built.
+      // Updating updatedAt also invalidates a proposal fingerprint that could
+      // have been calculated from the provisional creation row.
+      const transition = productIntakeReadinessTransition(detail);
+      if (!transition) return detail;
+      const [transitioned] = await database.update(productIntakeSessions)
+        .set({
+          status: transition.status,
+          confidenceJson: transition.confidence,
+          updatedByUserId: input.userId,
+          updatedAt: new Date(),
+        })
+        .where(and(eq(productIntakeSessions.id, sessionRow.id), eq(productIntakeSessions.organizationId, input.organizationId)))
+        .returning();
+      if (!transitioned) throw new ProductIntakeSessionError(500, "Created session readiness could not be persisted.", "SESSION_READINESS_PERSIST_FAILED");
+      const persisted = await getDetail(input.organizationId, sessionRow.id);
+      if (!persisted) throw new ProductIntakeSessionError(500, "Created session readiness could not be reloaded.", "SESSION_RELOAD_FAILED");
+      return persisted;
     },
 
     async listSessions(organizationId, filters = {}) {
