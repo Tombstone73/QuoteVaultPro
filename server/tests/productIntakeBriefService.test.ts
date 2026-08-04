@@ -135,6 +135,58 @@ describe("Product Intake Wizard schemas", () => {
     expect(brief.missingDecisions.some((decision) => decision.id === "select-material")).toBe(false);
     expect(brief.draftWarnings.map((warning) => warning.code)).not.toEqual(expect.arrayContaining(["proof_required", "routing_signal"]));
     expect(generateProductIntakeQuestions(brief).map((question) => question.questionKey)).not.toEqual(expect.arrayContaining(["select-material"]));
+    const readiness = computeProductIntakeReadiness({
+      session: { id: "session-routed-acrylic", organizationId: "org_routed_acrylic", sourceType: "text_description", sourceFingerprint: "routed-acrylic", brief, confidence: null, missingDecisions: brief.missingDecisions, status: "ready_for_draft", createdProductId: null, createdPbv2TreeVersionId: null, createdByUserId: null, updatedByUserId: null, createdAt: "2026-08-04T00:00:00.000Z", updatedAt: "2026-08-04T00:00:00.000Z", abandonedAt: null },
+      questions: generateProductIntakeQuestions(brief).map((question, index) => ({ ...question, id: `question-${index}`, organizationId: "org_routed_acrylic", sessionId: "session-routed-acrylic", createdAt: "2026-08-04T00:00:00.000Z" })),
+      answers: [],
+    });
+    expect(readiness.canCreateDraft).toBe(true);
+  });
+
+  test.each(["Custom dimensions.", "Width and height required."])("normalizes %s as dimensions-required without selectable measurement options", async (measurementInstruction) => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_dimensions",
+      request: productIntakeWizardAnalyzeRequestSchema.parse({
+        sourceType: "text_description",
+        description: `Create a product called Dimension Test. ${measurementInstruction} Price it at $5 per square foot. Use Print Products category.`,
+      }),
+      analyzer: null,
+      templates: [],
+      materials: [],
+      provider: null,
+    });
+
+    expect(brief.sizeBehavior.behavior).toBe("custom_size");
+    expect([...brief.requiredOptions, ...brief.optionalOptions].map((option) => option.normalizedGroup)).not.toEqual(expect.arrayContaining(["Dimensions", "Width", "Height", "Size"]));
+    expect(generateProductIntakeQuestions(brief).map((question) => question.question)).not.toEqual(expect.arrayContaining([expect.stringMatching(/what choices should (?:dimensions|width|height|size) have/i)]));
+  });
+
+  test("removes a live-AI Dimensions option after canonical measurement normalization", async () => {
+    const request = productIntakeWizardAnalyzeRequestSchema.parse({
+      sourceType: "text_description",
+      description: "Create a product called Live Dimension Test. Customers must enter width and height. Price it at $5 per square foot. Use Print Products category.",
+    });
+    const fallback = await generateProductIntakeBrief({ orgId: "org_live_dimensions", request, analyzer: null, templates: [], materials: [], provider: null });
+    const optionSource = await generateProductIntakeBrief({
+      orgId: "org_live_dimensions",
+      request: { sourceType: "text_description", description: "Create a vinyl product with lamination choices None, Gloss, and Matte." },
+      analyzer: null,
+      templates: [],
+      materials: [],
+      provider: null,
+    });
+    const dimensionsOption = { ...optionSource.optionalOptions[0], label: "Dimensions", normalizedGroup: "Dimensions", required: true };
+    const provider = {
+      generateJson: async () => ({ rawText: JSON.stringify({ ...fallback, requiredOptions: [dimensionsOption], optionalOptions: [], templateMatches: [] }), provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+    const brief = await generateProductIntakeBrief({ orgId: "org_live_dimensions", request, analyzer: null, templates: [], materials: [], provider });
+
+    expect(brief.source).toBe("live_ai");
+    expect(brief.sizeBehavior.behavior).toBe("custom_size");
+    expect([...brief.requiredOptions, ...brief.optionalOptions]).toEqual([]);
+    expect(generateProductIntakeQuestions(brief).map((question) => question.question)).not.toEqual(expect.arrayContaining([expect.stringMatching(/what choices should dimensions have/i)]));
   });
 
   test("accepts JSON and text-description requests", () => {
@@ -347,7 +399,9 @@ describe("Product Intake Brief service", () => {
     expect(brief.pricingAnalysis.behavior).toBe("quantity_tiers");
     expect(brief.requiredOptions.find((option) => option.normalizedGroup === "Printed Sides")?.sampleValues).toContain("Single sided");
     expect(brief.optionalOptions.map((option) => option.normalizedGroup)).toEqual(expect.arrayContaining(["Hemming", "Grommets", "Pole pockets"]));
-    expect(brief.draftWarnings.map((warning) => warning.code)).toEqual(expect.arrayContaining(["proof_required", "routing_signal"]));
+    expect(brief.requiresProofApproval).toBe(true);
+    expect(brief.draftWarnings.map((warning) => warning.code)).toEqual(expect.arrayContaining(["routing_signal"]));
+    expect(brief.draftWarnings.map((warning) => warning.code)).not.toContain("proof_required");
     expect(generateProductIntakeQuestions(brief).some((question) => question.questionKey === "confirm-routing-proof-prepress")).toBe(false);
   });
 
@@ -401,7 +455,7 @@ describe("Product Intake Brief service", () => {
       materials: [{ id: "mat_banner", sku: "BAN13", name: "13oz Scrim Banner" }],
       expectedName: "13oz Banner",
       expectedMaterialId: "mat_banner",
-      expectedRequired: ["Size", "Printed Sides"],
+      expectedRequired: ["Printed Sides"],
       expectedOptional: ["Grommets", "Pole pockets"],
     },
     {
@@ -419,7 +473,7 @@ describe("Product Intake Brief service", () => {
       materials: [{ id: "mat_vinyl", sku: "VINYL", name: "White Print Vinyl" }],
       expectedName: "Contour-Cut Stickers",
       expectedMaterialId: "mat_vinyl",
-      expectedRequired: ["Size"],
+      expectedRequired: [],
       expectedOptional: ["Printing", "Laminate"],
     },
     {

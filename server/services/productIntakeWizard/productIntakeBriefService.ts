@@ -166,13 +166,28 @@ type TextDescriptionSignals = {
   evidence: ProductIntakeEvidence[];
 };
 
+/** Width and height are PBV2 measurement inputs, never option groups, unless
+ * the source explicitly asks for a selectable group with those names. */
+function isMeasurementInstructionOption(option: { normalizedGroup?: string | null; label?: string | null }): boolean {
+  return /^(?:size|width|height|dimensions?|custom\s+(?:width|height|dimensions?))$/i
+    .test(String(option.normalizedGroup ?? option.label ?? "").trim());
+}
+
+function hasExplicitSelectableMeasurementOption(sourceText: string): boolean {
+  return /\b(?:add|include|use)\s+(?:a\s+)?(?:size|width|height|dimensions?)\s+(?:single[\s-]*select|multi[\s-]*select)\s+(?:required\s+)?(?:custom\s+)?option(?:\s+group)?\b/i.test(sourceText);
+}
+
+function hasDimensionsRequiredInstruction(sourceText: string): boolean {
+  return /\bcustom\s+(?:width\s+and\s+height|dimensions?|size)\b|\b(?:customers?\s+)?(?:must\s+)?enter\s+width\s+and\s+height\b|\bwidth\s+and\s+height\s+required\b/i.test(sourceText);
+}
+
 function extractTextDescriptionSignals(description: string): TextDescriptionSignals {
   const normalized = normalizeText(description);
   const lines = description.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
   const calledProductName = description.match(/\b(?:new\s+)?product\s+called\s+["“]?(.+?)["”]?(?=[.!?]|$)/i)?.[1]?.trim() ?? null;
   const explicitProductName = description.match(/\b(?:product\s+draft|product)\s+named\s+["“]?(.+?)["”]?(?=(?:[.!?]\s*(?:sell|use|allow|route|with|add)\b)|$)/i)?.[1]?.trim() ?? null;
   const materialReferences: string[] = [];
-  const customSize = /custom\s+(?:width\s+and\s+height|size)|width\s+and\s+height/i.test(description);
+  const customSize = hasDimensionsRequiredInstruction(description);
   const quantityBasedPricing = /quantity[\s-]*(?:based|tier|break|pricing)|qty[\s-]*(?:based|tier|break|pricing)/i.test(description) || hasCompleteNaturalLanguageQuantityTiers(description);
   const perPiecePricing = /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i.test(description);
   const quantityOnly = /\bquantity[-\s]?only\b/i.test(description);
@@ -762,15 +777,15 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
   const analyzerRequiredOptions = buildOptions(product, input.templates, true);
   const analyzerOptionalOptions = buildOptions(product, input.templates, false);
   const textRequiredOptions = textSignals ? [
-    textSignals.sizes.length > 0 || textSignals.customSize ? textOptionGroup({
+    textSignals.sizes.length > 0 ? textOptionGroup({
       label: "Size",
       normalizedGroup: "Size",
       required: true,
-      sampleValues: textSignals.sizes.length > 0 ? textSignals.sizes : ["Custom width", "Custom height"],
+      sampleValues: textSignals.sizes,
       sourcePath: "$.description.sizes",
-      confidence: textSignals.sizes.length > 0 ? 90 : 84,
+      confidence: 90,
       templates: input.templates,
-      reason: textSignals.sizes.length > 0 ? "Fixed size options were listed in the text description." : "Custom width and height were stated in the text description.",
+      reason: "Fixed size options were listed in the text description.",
     }) : null,
     textSignals.sides.length > 0 ? textOptionGroup({
       label: "Printed Sides",
@@ -871,9 +886,9 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
   // analyzer/template suggestions while preserving the separate size behavior.
   const inferredRequiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions, ...requiredCustomOptions];
   const inferredOptionalOptions = [...analyzerOptionalOptions, ...textOptionalOptions];
-  const measurementArtifact = (option: ProductIntakeBrief["requiredOptions"][number]) => /^(?:size|width|height|custom\s+width|custom\s+height)$/i.test(option.normalizedGroup || option.label);
-  const requiredOptions = textSignals?.noOptions ? [] : inferredRequiredOptions.filter((option) => !(textSignals?.customSize && measurementArtifact(option)));
-  const optionalOptions = textSignals?.noOptions ? [] : inferredOptionalOptions.filter((option) => !(textSignals?.customSize && measurementArtifact(option)));
+  const ignoreMeasurementInstructions = Boolean(textSignals?.customSize && !hasExplicitSelectableMeasurementOption(text));
+  const requiredOptions = textSignals?.noOptions ? [] : inferredRequiredOptions.filter((option) => !(ignoreMeasurementInstructions && isMeasurementInstructionOption(option)));
+  const optionalOptions = textSignals?.noOptions ? [] : inferredOptionalOptions.filter((option) => !(ignoreMeasurementInstructions && isMeasurementInstructionOption(option)));
   const templateMatches = unique([...requiredOptions, ...optionalOptions].flatMap((option) => option.templateMatches.map((match) => match.templateId)))
     .map((templateId) => [...requiredOptions, ...optionalOptions].flatMap((option) => option.templateMatches).find((match) => match.templateId === templateId)!)
     .filter(Boolean);
@@ -1111,7 +1126,9 @@ function normalizeExplicitOperationalSemantics(brief: ProductIntakeBrief, source
   const requiresProofApproval = /\b(?:require|requires?)\s+(?:customer\s+)?proof\s+approval\b|\bproof\s+(?:required|needed|mandatory)\b/i.test(sourceText);
   const requiresProductionJob = /\b(?:require|requires?)\s+(?:a\s+)?production(?:\s+work|\s+job)\b/i.test(sourceText);
   const productionRoute = /\b(?:route(?:d)?\s+(?:it\s+)?to\s+|production\s+route\s*(?:is|:)?\s*)flatbed\b/i.test(sourceText) ? "Flatbed" : null;
-  if (!quantityOnly && !serviceFee && !perPiece && !materialUnset && !noOptions && !requiresProofApproval && !requiresProductionJob && !productionRoute) return brief;
+  const dimensionsRequired = hasDimensionsRequiredInstruction(sourceText);
+  const ignoreMeasurementInstructions = dimensionsRequired && !hasExplicitSelectableMeasurementOption(sourceText);
+  if (!quantityOnly && !serviceFee && !perPiece && !materialUnset && !noOptions && !requiresProofApproval && !requiresProductionJob && !productionRoute && !dimensionsRequired) return brief;
   const draftWarnings = brief.draftWarnings
     .filter((warning) => !(requiresProofApproval && warning.code === "proof_required"))
     .filter((warning) => !(productionRoute && warning.code === "routing_signal"));
@@ -1121,12 +1138,19 @@ function normalizeExplicitOperationalSemantics(brief: ProductIntakeBrief, source
       sizeBehavior: { ...brief.sizeBehavior, behavior: "none", confidence: 100, notes: "Quantity-only product; width and height are not collected." },
       quantityBehavior: { ...brief.quantityBehavior, behavior: "per_piece", confidence: 100, notes: "Customers enter any positive quantity." },
     } : {}),
+    ...(dimensionsRequired ? {
+      sizeBehavior: { ...brief.sizeBehavior, behavior: "custom_size", confidence: 100, notes: "Customers enter width and height." },
+    } : {}),
     ...(perPiece ? { pricingAnalysis: { ...brief.pricingAnalysis, behavior: "per_piece", confidence: 100, notes: perPiece } } : {}),
     ...(serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : requiresProductionJob || productionRoute ? { workflowIntent: "standard_production" as const, requiresProductionJob: true } : {}),
     ...(materialUnset ? { materialSelection: "unset" as const, missingDecisions: brief.missingDecisions.filter((decision) => decision.id !== "select-material") } : {}),
     ...(requiresProofApproval ? { requiresProofApproval: true } : {}),
     ...(productionRoute ? { productionRoute } : {}),
-    ...(noOptions ? { requiredOptions: [], optionalOptions: [], templateMatches: [] } : {}),
+    ...(noOptions ? { requiredOptions: [], optionalOptions: [], templateMatches: [] } : ignoreMeasurementInstructions ? {
+      requiredOptions: brief.requiredOptions.filter((option) => !isMeasurementInstructionOption(option)),
+      optionalOptions: brief.optionalOptions.filter((option) => !isMeasurementInstructionOption(option)),
+      templateMatches: brief.templateMatches.filter((template) => !isMeasurementInstructionOption({ label: template.name })),
+    } : {}),
     draftWarnings: Array.from(new Map(draftWarnings.map((warning) => [`${warning.code}:${warning.message}`, warning])).values()),
   });
 }
