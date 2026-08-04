@@ -97,13 +97,27 @@ export type AssistantProductIntakeProposedFields = {
   status: "inactive_draft";
 };
 
-function confirmationQuantityBehavior(behavior: unknown, quantityOnly: boolean): string {
-  if (quantityOnly) return "customer_enters_quantity";
-  const value = typeof behavior === "string" ? behavior.trim().toLowerCase() : "";
-  if (/^(?:per_piece|quantity_tiers?|tiered|quantity)$/.test(value)) return "customer_enters_quantity";
-  if (/^fixed(?:_quantity)?$/.test(value)) return "fixed_quantity_1";
-  if (/^(?:none|quantity_only)$/.test(value)) return "quantity_only";
-  return value || "review_required";
+/** Converts the canonical behavior object into the only quantity value that
+ * may cross the server presentation boundary. Structured input never reaches
+ * a card or confirmation plan. */
+export function formatProductIntakeQuantityBehavior(value: unknown, quantityOnly: boolean): { label: string; resolved: boolean } {
+  if (quantityOnly) return { label: "Customer enters quantity", resolved: true };
+  const configuration = value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
+  const behavior = typeof value === "string" ? value : typeof configuration?.behavior === "string" ? configuration.behavior : null;
+  if (!behavior?.trim()) return { label: "Unresolved", resolved: false };
+  const normalized = behavior.trim().toLowerCase().replace(/[\s-]+/g, "_");
+  if (["per_piece", "quantity_tier", "quantity_tiers", "tiered", "quantity", "variable_quantity", "quantity_only", "none"].includes(normalized)) {
+    return { label: "Customer enters quantity", resolved: true };
+  }
+  if (["fixed", "fixed_quantity"].includes(normalized)) {
+    const fixed = typeof configuration?.quantity === "number" && Number.isFinite(configuration.quantity) && configuration.quantity > 0
+      ? configuration.quantity
+      : typeof configuration?.value === "number" && Number.isFinite(configuration.value) && configuration.value > 0
+        ? configuration.value
+        : null;
+    return fixed == null ? { label: "Unresolved", resolved: false } : { label: `Fixed quantity: ${fixed}`, resolved: true };
+  }
+  return { label: "Unresolved", resolved: false };
 }
 
 /** Optional durable bridge supplied by execution-plan integration. It is not a fallback cache. */
@@ -213,6 +227,7 @@ export class AssistantProductIntakeAdapter {
       defaultChoice: option.defaultChoice ?? null,
     }));
     const quantityOnly = intake?.quantity?.quantityOnly === true || detail.brief.sizeBehavior?.behavior === "none";
+    const quantityPresentation = formatProductIntakeQuantityBehavior(detail.brief.quantityBehavior, quantityOnly);
     const workflowIntent = detail.brief.workflowIntent ?? (/\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText) ? "service_fee" as const : null);
     const requiresProductionJob = workflowIntent === "service_fee" ? false : detail.brief.requiresProductionJob ?? null;
     const proposedFields: AssistantProductIntakeProposedFields = {
@@ -229,7 +244,7 @@ export class AssistantProductIntakeAdapter {
       productionRoute: workflowIntent === "service_fee" ? null : route,
       sheetOrRollConstraints: workflowIntent === "service_fee" ? null : constraint,
       allowRotation: workflowIntent === "service_fee" ? null : rotation,
-      quantityBehavior: confirmationQuantityBehavior(detail.brief.quantityBehavior?.behavior, quantityOnly),
+      quantityBehavior: quantityPresentation.label,
       workflowIntent,
       requiresProductionJob,
       requiresProofApproval: detail.brief.requiresProofApproval ?? null,
@@ -262,7 +277,7 @@ export class AssistantProductIntakeAdapter {
         proposedFields,
       },
       fingerprint,
-      executable: snapshot.status === "ready_for_draft" && snapshot.readiness.canCreateDraft,
+      executable: snapshot.status === "ready_for_draft" && snapshot.readiness.canCreateDraft && quantityPresentation.resolved,
     };
   }
 
