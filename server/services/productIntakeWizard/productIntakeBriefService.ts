@@ -200,7 +200,9 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const printOptions: string[] = [];
   if (/full\s*color|4\s*color|cmyk/i.test(description)) printOptions.push("Full color printing");
 
-  const explicitCategory = description.match(/\b(?:use|set)\s+([a-z][a-z0-9 &/\-]{1,100}?)\s+as\s+(?:the\s+)?category\b/i)?.[1]?.trim() ?? null;
+  const explicitCategory = description.match(/\b(?:use|set)\s+([a-z][a-z0-9 &/\-]{1,100}?)\s+as\s+(?:the\s+)?category\b/i)?.[1]?.trim()
+    ?? description.match(/\buse\s+(?:the\s+)?([a-z][a-z0-9 &/\-]{1,100}?)\s+category\b/i)?.[1]?.trim()
+    ?? null;
   const explicitCustomOptionGroups = Array.from(description.matchAll(/\b(?:add|include|use)\s+(?:a\s+)?([a-z][a-z0-9 &/\-]{1,60}?)\s+(?:single[\s-]*select|multi[\s-]*select)\s+(?:required\s+)?(?:custom\s+)?option(?:\s+group)?\s+(?:with\s+)?(?:choices?|values?)\s*[:=]?\s*([^\.\n]+?)(?:,?\s*(?:with\s+)?default(?:ing)?\s*(?:to)?\s*([a-z][a-z0-9 &/\-]{0,60}))?(?:[\.\n]|$)/gi))
     .map((match) => {
       const label = titleCaseProductName(String(match[1] ?? "").trim());
@@ -215,6 +217,17 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
         required: /\brequired\b/i.test(source),
         selectionMode: /\bmulti[\s-]*select\b/i.test(source) ? "multi" as const : "single" as const,
       } : null;
+    })
+    .filter(Boolean) as Array<{ label: string; choices: string[]; defaultChoice: string | null; required: boolean; selectionMode: "single" | "multi" }>;
+  const multilineCustomOptionGroups = Array.from(description.matchAll(/\b(?:add|include|use)\s+(?:one\s+)?(?:(required)\s+)?(?:(single|multi)[\s-]*select)\s+(?:custom\s+)?option(?:\s+group)?\s+named\s+([a-z][a-z0-9 &/\-]{1,60}?)(?:\s+with\s+(?:these\s+)?(?:choices?|values?))?\s*:\s*((?:\s*(?:[-*]|\d+[.)])\s*[^\n]+\n?)+)/gi))
+    .map((match) => {
+      const label = titleCaseProductName(String(match[3] ?? "").trim());
+      const choices = String(match[4] ?? "").split(/\r?\n/)
+        .map((line) => line.replace(/^\s*(?:[-*]|\d+[.)])\s*/, "").trim())
+        .filter(Boolean);
+      const trailingText = description.slice((match.index ?? 0) + String(match[0] ?? "").length, (match.index ?? 0) + String(match[0] ?? "").length + 180);
+      const defaultChoice = trailingText.match(/\b(?:set\s+)?([a-z][a-z0-9 &/\-]{0,60})\s+as\s+the\s+default\b|\bdefault(?:ing)?\s+(?:to\s+)?([a-z][a-z0-9 &/\-]{0,60})\b/i)?.slice(1).find(Boolean) ?? null;
+      return label && choices.length ? { label, choices, defaultChoice, required: Boolean(match[1]), selectionMode: match[2] === "multi" ? "multi" as const : "single" as const } : null;
     })
     .filter(Boolean) as Array<{ label: string; choices: string[]; defaultChoice: string | null; required: boolean; selectionMode: "single" | "multi" }>;
   const hasExplicitLaminationGroup = explicitCustomOptionGroups.some((option) => normalizeText(option.label) === "lamination") || /\blamination\s+choices?\b/i.test(description);
@@ -295,7 +308,7 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
     sides: unique(sides),
     printOptions: unique(printOptions),
     finishingOptions: unique(finishingOptions),
-    customOptions: [...explicitCustomOptionGroups, ...customOptions, ...explicitChoiceOptions].filter((entry, index, all) => all.findIndex((candidate) => normalizeText(candidate.label) === normalizeText(entry.label)) === index),
+    customOptions: [...explicitCustomOptionGroups, ...multilineCustomOptionGroups, ...customOptions, ...explicitChoiceOptions].filter((entry, index, all) => all.findIndex((candidate) => normalizeText(candidate.label) === normalizeText(entry.label)) === index),
     quantityBasedPricing,
     proofSignals,
     routingSignals,
