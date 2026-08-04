@@ -30,6 +30,17 @@ function detail(overrides: Partial<ProductIntakeSessionDetail> = {}): ProductInt
 }
 
 describe("Product Intake explicit correction continuation", () => {
+  test("persists a quantity-only service-fee correction as one canonical operational contract", () => {
+    const initial = detail().brief;
+    const applied = applyExplicitIntakeCorrectionState(initial, "It is quantity-only, costs $20 per piece, is a service fee, and must not create production work.");
+
+    expect(applied.errors).toEqual([]);
+    expect(applied.brief.sizeBehavior.behavior).toBe("none");
+    expect(applied.brief.quantityBehavior).toMatchObject({ behavior: "per_piece", notes: "Customers enter any positive quantity." });
+    expect(applied.brief.pricingAnalysis).toMatchObject({ behavior: "per_piece", notes: "$20.00 per piece" });
+    expect(applied.brief).toMatchObject({ workflowIntent: "service_fee", requiresProductionJob: false });
+  });
+
   test("rebuilds the active session before pricing or product lookup and exposes the required option contract", async () => {
     const initial = detail();
     let replacement: any = null;

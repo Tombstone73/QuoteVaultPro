@@ -232,6 +232,10 @@ export const productIntakeBriefSchema = z.object({
   sizeBehavior: productIntakeBehaviorSchema,
   quantityBehavior: productIntakeBehaviorSchema,
   pricingAnalysis: productIntakeBehaviorSchema,
+  // These optional fields are the normalized operational intent used by the
+  // inactive-draft builder. Older stored briefs deliberately remain readable.
+  workflowIntent: z.enum(["standard_production", "fulfillment_only", "service_fee"]).optional(),
+  requiresProductionJob: z.boolean().optional(),
   matrixReadiness: productIntakeMatrixReadinessSchema.optional(),
   requiredOptions: z.array(productIntakeOptionSchema),
   optionalOptions: z.array(productIntakeOptionSchema),

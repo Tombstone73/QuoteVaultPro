@@ -32,6 +32,13 @@ describe("inactive draft readiness", () => {
     expect(result.blockers.map((item) => item.code)).not.toEqual(expect.arrayContaining(["MATERIAL_MISSING", "ROUTING_MISSING"]));
   });
 
+  test("blocks a service fee until its quantity-only and non-production contract agree", () => {
+    const measurement = evaluateInactiveDraftReadiness(review({ product: { workflowIntent: "service_fee", measurementMode: "dimensions_required", requiresProductionJob: false } }), healthy);
+    const production = evaluateInactiveDraftReadiness(review({ product: { workflowIntent: "service_fee", measurementMode: "quantity_only", requiresProductionJob: true } }), healthy);
+    expect(measurement.blockers.map((item) => item.code)).toContain("SERVICE_FEE_MEASUREMENT_INCOMPATIBLE");
+    expect(production.blockers.map((item) => item.code)).toContain("SERVICE_FEE_PRODUCTION_JOB_INCOMPATIBLE");
+  });
+
   test("reports disabled station, inactive option templates, and stored review warnings", () => {
     const result = evaluateInactiveDraftReadiness(review({ pbv2Tree: { relationships: { routing: { stationId: "station-1", stationKey: "flatbed", stationName: "Flatbed" }, optionTemplates: [{ templateId: "option-1", name: "White ink", importInstanceId: "import-1" }], setupNote: "Test ink", reviewWarnings: ["Pricing review required"], missingFieldWarnings: [] } } }), { material: healthy.material, station: { exists: true, active: false }, optionTemplates: { "option-1": { exists: true, active: false, priceBearing: false } } });
     expect(result.blockers.map((item) => item.code)).toEqual(expect.arrayContaining(["ROUTING_STATION_INACTIVE", "OPTION_TEMPLATE_INACTIVE"]));

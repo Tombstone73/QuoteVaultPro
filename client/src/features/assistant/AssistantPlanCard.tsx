@@ -55,6 +55,8 @@ export type AssistantPlanCardModel = {
     fixedDimensions: string | null;
     requiresDimensions: boolean | null;
     quantityBehavior: string | null;
+    workflowIntent: "standard_production" | "fulfillment_only" | "service_fee" | null;
+    requiresProductionJob: boolean | null;
     commonOptions: string[];
     optionGroups: Array<{ label: string; required: boolean; selectionMode: "single" | "multi"; choices: string[]; defaultChoice: string | null }>;
     warnings: string[];
@@ -265,6 +267,8 @@ function toProductDraftCreate(action: string | null, preview: UnknownRecord | nu
     fixedDimensions: asText(fields.fixedDimensions),
     requiresDimensions: typeof fields.requiresDimensions === "boolean" ? fields.requiresDimensions : null,
     quantityBehavior: asText(fields.quantityBehavior),
+    workflowIntent: fields.workflowIntent === "standard_production" || fields.workflowIntent === "fulfillment_only" || fields.workflowIntent === "service_fee" ? fields.workflowIntent : null,
+    requiresProductionJob: typeof fields.requiresProductionJob === "boolean" ? fields.requiresProductionJob : null,
     commonOptions: asTextList(fields.commonOptions),
     optionGroups: Array.isArray(fields.optionGroups) ? fields.optionGroups.slice(0, 30).flatMap((entry) => {
       const option = asRecord(entry); const label = asText(option?.label);
@@ -598,22 +602,28 @@ function moneyFromCents(value: number | null): string {
 }
 
 function ProductDraftCreatePreview({ draft }: { draft: NonNullable<AssistantPlanCardModel["productDraftCreate"]> }) {
+  const measurement = draft.measurementMode === "quantity_only" || draft.measurementMode === "none" ? "Quantity only" : draft.measurementMode;
+  const pricing = draft.pricingModel === "per_piece" && draft.perPieceCents != null ? `${moneyFromCents(draft.perPieceCents)} per piece` : draft.pricingModel === "per_piece" ? "Per piece" : draft.pricingModel;
+  const quantity = draft.quantityBehavior === "customer_enters_quantity" ? "Customer enters quantity" : draft.quantityBehavior;
+  const workflow = draft.workflowIntent === "service_fee" ? "Service fee" : draft.workflowIntent === "fulfillment_only" ? "Fulfillment only" : draft.workflowIntent === "standard_production" ? "Standard production" : null;
   const fields = [
     ["Name", draft.productName],
     ["Category", draft.category],
-    ["Measurement", draft.measurementMode],
+    ["Measurement", measurement],
     ["Fixed dimensions", draft.fixedDimensions],
     ["Requires dimensions", draft.requiresDimensions == null ? null : draft.requiresDimensions ? "Yes" : "No"],
-    ["Pricing model", draft.pricingModel],
-    ["Square-foot price", moneyFromCents(draft.perSqftCents)],
-    ["Per-piece price", moneyFromCents(draft.perPieceCents)],
+    ["Pricing", pricing],
+    ["Square-foot price", draft.perSqftCents == null ? null : moneyFromCents(draft.perSqftCents)],
+    ["Per-piece price", draft.pricingModel === "per_piece" || draft.perPieceCents == null ? null : moneyFromCents(draft.perPieceCents)],
     ["Minimum charge", moneyFromCents(draft.minimumChargeCents)],
     ["Material", draft.material],
-    ["Route", draft.productionRoute],
-    ["Sheet / roll constraints", draft.sheetOrRollConstraints],
-    ["Allow rotation", draft.allowRotation == null ? null : draft.allowRotation ? "Allowed" : "Not allowed"],
-    ["Quantity behavior", draft.quantityBehavior],
-    ["Status", draft.status === "inactive_draft" ? "Inactive draft" : draft.status],
+    ["Route", draft.productionRoute ?? "Not set"],
+    ["Sheet settings", draft.sheetOrRollConstraints ?? "Not set"],
+    ["Rotation", draft.allowRotation == null ? "Not set" : draft.allowRotation ? "Allowed" : "Not allowed"],
+    ["Workflow", workflow],
+    ["Production job required", draft.requiresProductionJob == null ? null : draft.requiresProductionJob ? "Yes" : "No"],
+    ["Quantity", quantity],
+    ["Lifecycle", draft.status === "inactive_draft" ? "Inactive PBV2 DRAFT · Unpublished" : draft.status],
   ].filter((entry): entry is [string, string] => typeof entry[1] === "string" && Boolean(entry[1]));
   return <div className="mt-3 rounded border border-primary/20 bg-primary/5 p-3">
     <p className="font-semibold">Inactive product draft to create</p>

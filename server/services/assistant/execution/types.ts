@@ -73,6 +73,8 @@ export interface ExecutionPlanPreview {
       sheetOrRollConstraints: string | null;
       allowRotation: boolean | null;
       quantityBehavior: string;
+      workflowIntent: "standard_production" | "fulfillment_only" | "service_fee" | null;
+      requiresProductionJob: boolean | null;
       taxable: true;
       commonOptions: string[];
       status: "inactive_draft";

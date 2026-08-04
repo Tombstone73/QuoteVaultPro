@@ -81,6 +81,8 @@ export type AssistantProductIntakeProposedFields = {
   sheetOrRollConstraints: string | null;
   allowRotation: boolean | null;
   quantityBehavior: string;
+  workflowIntent: "standard_production" | "fulfillment_only" | "service_fee" | null;
+  requiresProductionJob: boolean | null;
   taxable: true;
   commonOptions: string[];
   optionGroups: Array<{
@@ -200,9 +202,12 @@ export class AssistantProductIntakeAdapter {
       choices: option.choices?.map((choice) => choice.label).filter(Boolean) ?? option.sampleValues,
       defaultChoice: option.defaultChoice ?? null,
     }));
+    const quantityOnly = intake?.quantity?.quantityOnly === true || detail.brief.sizeBehavior?.behavior === "none";
+    const workflowIntent = detail.brief.workflowIntent ?? (/\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText) ? "service_fee" as const : null);
+    const requiresProductionJob = workflowIntent === "service_fee" ? false : detail.brief.requiresProductionJob ?? null;
     const proposedFields: AssistantProductIntakeProposedFields = {
       category: detail.brief.productIdentity.category?.value ?? null,
-      measurementMode: String(intake?.sizeMode ?? detail.brief.sizeBehavior?.behavior ?? "review_required"),
+      measurementMode: quantityOnly ? "quantity_only" : String(intake?.sizeMode ?? detail.brief.sizeBehavior?.behavior ?? "review_required"),
       requiresDimensions: previewTree?.meta?.requiresDimensions === true,
       fixedDimensions: typeof fixed?.label === "string" ? fixed.label : null,
       pricingModel: detail.brief.pricingAnalysis?.behavior ?? "review_required",
@@ -211,10 +216,12 @@ export class AssistantProductIntakeAdapter {
       minimumChargeCents: typeof base?.minimumChargeCents === "number" ? base.minimumChargeCents : null,
       quantityTiers,
       material: typeof material?.name === "string" ? material.name : null,
-      productionRoute: route,
-      sheetOrRollConstraints: constraint,
-      allowRotation: rotation,
-      quantityBehavior: detail.brief.quantityBehavior?.behavior ?? "review_required",
+      productionRoute: workflowIntent === "service_fee" ? null : route,
+      sheetOrRollConstraints: workflowIntent === "service_fee" ? null : constraint,
+      allowRotation: workflowIntent === "service_fee" ? null : rotation,
+      quantityBehavior: quantityOnly ? "customer_enters_quantity" : detail.brief.quantityBehavior?.behavior ?? "review_required",
+      workflowIntent,
+      requiresProductionJob,
       taxable: true,
       commonOptions: optionGroups.map((option) => option.label).filter(Boolean).slice(0, 12),
       optionGroups,

@@ -23,7 +23,7 @@ function measurementMode(value: unknown) {
     : mode === "fixed_size" || mode === "fixed_dropdown"
       ? "Fixed size"
       : mode === "none" || mode === "quantity_only"
-        ? "No dimensions required"
+        ? "Quantity only"
         : mode;
 }
 function draftStatus(value: unknown) {
@@ -108,6 +108,9 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
     ["Pricing model", pricingModel(proposedFields.pricingModel)],
     ["Square-foot price", cents(proposedFields.perSqftCents)],
     ["Per-piece price", cents(proposedFields.perPieceCents)],
+    ["Workflow", text(proposedFields.workflowIntent) === "service_fee" ? "Service fee" : text(proposedFields.workflowIntent)],
+    ["Production job required", proposedFields.requiresProductionJob === true ? "Yes" : proposedFields.requiresProductionJob === false ? "No" : null],
+    ["Quantity", text(proposedFields.quantityBehavior) === "customer_enters_quantity" ? "Customer enters quantity" : text(proposedFields.quantityBehavior)],
     ["Minimum charge", cents(proposedFields.minimumChargeCents) ?? "Not set"],
     ["Material", proposedFields.material],
     ["Route", text(proposedFields.productionRoute) ?? "Not set"],

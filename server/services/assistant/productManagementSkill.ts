@@ -159,11 +159,12 @@ function isNarrowCanonicalCorrection(message: string): boolean {
     || /\b(?:keep|leave)\s+(?:the\s+)?(?:measurement|category|production\s+route|routing|sheet(?:\s+settings?)?|rotation)\b/i.test(message);
 }
 
-function correctionPricing(message: string): { perSqftCents: number | null; minimumChargeCents: number | null } {
+function correctionPricing(message: string): { perSqftCents: number | null; perPieceCents: number | null; minimumChargeCents: number | null } {
   const cents = (value: string | undefined) => value ? Math.round(Number(value.replace(/,/g, "")) * 100) : null;
   const perSqft = message.match(/\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet)\b/i)?.[1];
+  const perPiece = message.match(/\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i)?.[1];
   const minimum = message.match(/\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:minimum|min(?:imum)?\s*charge)\b|(?:minimum|min(?:imum)?\s*charge)\s*(?:is|of|:)?\s*\$(\d[\d,]*(?:\.\d{1,2})?)/i);
-  return { perSqftCents: cents(perSqft), minimumChargeCents: cents(minimum?.[1] ?? minimum?.[2]) };
+  return { perSqftCents: cents(perSqft), perPieceCents: cents(perPiece), minimumChargeCents: cents(minimum?.[1] ?? minimum?.[2]) };
 }
 
 export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, message: string): { brief: ProductIntakeBrief; errors: string[] } {
@@ -197,12 +198,17 @@ export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, me
   }
   if (errors.length) return { brief, errors };
   const pricing = correctionPricing(message);
-  const correctedPricing = pricing.perSqftCents != null || pricing.minimumChargeCents != null
+  const quantityOnly = /\bquantity[-\s]?only\b/i.test(message);
+  const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(message);
+  const excludesProduction = /\b(?:must\s+not|does\s+not|doesn't|do\s+not)\s+(?:create|require|need|have)\s+(?:a\s+)?production(?:\s+work|\s+job)?\b/i.test(message);
+  const correctedPricing = pricing.perSqftCents != null || pricing.perPieceCents != null || pricing.minimumChargeCents != null
     ? {
       ...brief.pricingAnalysis,
       ...(pricing.perSqftCents != null ? { behavior: "square_foot" as const, confidence: 100 } : {}),
+      ...(pricing.perPieceCents != null ? { behavior: "per_piece" as const, confidence: 100 } : {}),
       notes: [
         pricing.perSqftCents != null ? `${money(pricing.perSqftCents)} per square foot` : null,
+        pricing.perPieceCents != null ? `${money(pricing.perPieceCents)} per piece` : null,
         pricing.minimumChargeCents != null ? `minimum charge ${money(pricing.minimumChargeCents)}` : null,
       ].filter(Boolean).join("; "),
     }
@@ -215,6 +221,9 @@ export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, me
       requiredOptions: brief.requiredOptions.filter((option) => !removedKeys.has(optionIdentity(option.normalizedGroup || option.label))),
       optionalOptions: brief.optionalOptions.filter((option) => !removedKeys.has(optionIdentity(option.normalizedGroup || option.label))),
       pricingAnalysis: correctedPricing,
+      ...(quantityOnly || serviceFee ? { sizeBehavior: { ...brief.sizeBehavior, behavior: "none", confidence: 100, notes: "Quantity-only product; width and height are not collected." } } : {}),
+      ...(pricing.perPieceCents != null || quantityOnly || serviceFee ? { quantityBehavior: { ...brief.quantityBehavior, behavior: "per_piece", confidence: 100, notes: "Customers enter any positive quantity." } } : {}),
+      ...(serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : excludesProduction ? { requiresProductionJob: false } : {}),
     },
     errors: [],
   };
@@ -510,9 +519,9 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
   const pricing = correctionPricing(pricingNotes);
   const measurement = detail.brief.sizeBehavior.behavior === "custom_size" ? "Width and height required"
     : detail.brief.sizeBehavior.behavior === "fixed_size" ? "Fixed size"
-      : detail.brief.sizeBehavior.behavior === "quantity_only" ? "No dimensions required"
+      : detail.brief.sizeBehavior.behavior === "quantity_only" || detail.brief.sizeBehavior.behavior === "none" ? "Quantity only"
         : "Unresolved";
-  const common = { productName, category: detail.brief.productIdentity.category.value, measurement, draftStatus: detail.session.status };
+  const common = { productName, category: detail.brief.productIdentity.category.value, measurement, workflow: detail.brief.workflowIntent === "service_fee" ? "Service fee" : detail.brief.workflowIntent ?? "Unresolved", requiresProductionJob: detail.brief.requiresProductionJob === false ? "No" : detail.brief.requiresProductionJob === true ? "Yes" : "Unresolved", draftStatus: detail.session.status };
   const cards: ProductManagementCard[] = [{
     kind: "product_intake_summary", title: "Product Intake", summary: `Structured Product Intake session for ${productName}.`, sourceLinks: [{ label: "Open existing Product Intake review", href: `/admin/catalog-migration-lab/${detail.session.id}` }],
     details: { ...common, sessionId: detail.session.id, assumptions: detail.brief.draftWarnings.map((warning) => warning.message).slice(0, 10) },

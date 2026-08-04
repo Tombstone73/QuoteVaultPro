@@ -208,7 +208,7 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).toContain("$4.50");
     expect(container.textContent).toContain("$25.00");
     expect(container.textContent).toContain("Allowed");
-    expect(container.textContent).toContain("Inactive draft");
+    expect(container.textContent).toContain("Inactive PBV2 DRAFT");
     expect(container.textContent).toContain("Default: None");
     expect(container.textContent).toContain("Choices: None, Gloss, Matte");
     expect(container.textContent).not.toMatch(/Activate|Publish/);
@@ -216,6 +216,25 @@ describe("AssistantPlanCard", () => {
     expect(go).not.toBeNull();
     act(() => go?.click());
     expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan-product-1", expectedPlanVersion: 1, confirmationToken: "server-token" }));
+  });
+
+  it("renders service-fee workflow and non-production quantities in plain language", () => {
+    const servicePlan = {
+      kind: "action_plan", title: "Create service draft",
+      plan: {
+        id: "plan-service-1", action: "products.create_inactive_draft", status: "awaiting_confirmation", planVersion: 1, riskLevel: "high", confirmationAvailable: true, confirmationToken: "service-token", expiresAt: "2030-01-01T00:10:00.000Z", missingInformation: [], cancellationAvailable: true, steps: [],
+        preview: { summary: "Create one inactive service-fee draft.", productInactiveDraft: { productName: "DEV Test Service 080426", warnings: [], proposedFields: {
+          category: "Print Products", measurementMode: "quantity_only", requiresDimensions: false, fixedDimensions: null, pricingModel: "per_piece", perSqftCents: null, perPieceCents: 2000, minimumChargeCents: null, material: null, productionRoute: null, sheetOrRollConstraints: null, allowRotation: null, quantityBehavior: "customer_enters_quantity", workflowIntent: "service_fee", requiresProductionJob: false, taxable: true, commonOptions: [], optionGroups: [], status: "inactive_draft",
+        } } },
+      },
+    };
+    act(() => root.render(<AssistantPlanCard card={servicePlan} context={buildSafeAssistantContext("/products", "Products")} onConfirm={() => undefined} />));
+    expect(container.textContent).toContain("Measurement: Quantity only");
+    expect(container.textContent).toContain("Pricing: $20.00 per piece");
+    expect(container.textContent).toContain("Workflow: Service fee");
+    expect(container.textContent).toContain("Production job required: No");
+    expect(container.textContent).toContain("Quantity: Customer enters quantity");
+    expect(container.textContent).not.toContain("fixed_quantity");
   });
 
   it("renders a clone's typed pricing before-and-after table without raw JSON", () => {

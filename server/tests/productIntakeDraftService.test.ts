@@ -206,6 +206,25 @@ describe("Product Intake draft service", () => {
     });
   });
 
+  test("builds a quantity-only service fee with arbitrary line-item quantities at the stated per-piece rate", () => {
+    const sourceText = "Create an inactive quantity-only service fee at $20 per piece. It must not create production work.";
+    const canonicalBrief = brief({
+      sizeBehavior: { behavior: "none", confidence: 100, evidence: [] },
+      quantityBehavior: { behavior: "per_piece", confidence: 100, evidence: [] },
+      pricingAnalysis: { behavior: "per_piece", confidence: 100, notes: "$20 per piece", evidence: [] },
+      workflowIntent: "service_fee",
+      requiresProductionJob: false,
+    } as any);
+    const tree = buildProductIntakeDraftTree({ brief: canonicalBrief, sessionId: "sess_service_fee", productName: "Service Fee", userId: "user_1", sourceText });
+    const values = buildProductIntakeProductValues({ organizationId: "org_1", productId: "prod_service_fee", brief: canonicalBrief, productTypeId: null, sourceText });
+    expect(tree.meta).toMatchObject({ pricingProfileKey: "qty_only", requiresDimensions: false, pricingV2: { tierBasis: "line_item_quantity", base: { perPieceCents: 2000 } } });
+    expect(values).toMatchObject({ measurementMode: "quantity_only", workflowIntent: "service_fee", requiresProductionJob: false, pricingProfileKey: "qty_only", pricingFormula: null, pricingFormulaId: null, pricingProfileConfig: null, primaryMaterialId: null, isActive: false });
+    expect(nodes(tree).some((node) => /review required/i.test(String(node.label)))).toBe(false);
+    for (const [quantity, total] of [[1, 20], [2, 40], [10, 200]] as const) {
+      expect(evaluatePricingPreviewFromTree({ treeJson: tree, widthIn: undefined as unknown as number, heightIn: undefined as unknown as number, quantity }).totalPrice).toBeCloseTo(total, 2);
+    }
+  });
+
   test("does not add dimension requirements to an explicit quantity-only service PBV2 draft", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief(), sessionId: "sess_service", productName: "Service Fee", userId: "user_1",

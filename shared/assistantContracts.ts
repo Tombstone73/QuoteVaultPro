@@ -1024,6 +1024,8 @@ export const assistantExecutionPreviewSchema = z.object({
       sheetOrRollConstraints: z.string().trim().min(1).max(160).nullable(),
       allowRotation: z.boolean().nullable(),
       quantityBehavior: z.string().trim().min(1).max(120),
+      workflowIntent: z.enum(["standard_production", "fulfillment_only", "service_fee"]).nullable(),
+      requiresProductionJob: z.boolean().nullable(),
       taxable: z.literal(true),
       commonOptions: z.array(z.string().trim().min(1).max(160)).max(12),
       status: z.literal("inactive_draft"),

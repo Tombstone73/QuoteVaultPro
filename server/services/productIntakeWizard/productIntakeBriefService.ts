@@ -152,6 +152,10 @@ type TextDescriptionSignals = {
   finishingOptions: string[];
   customOptions: Array<{ label: string; choices: string[]; defaultChoice?: string | null; required?: boolean; selectionMode?: "single" | "multi" }>;
   quantityBasedPricing: boolean;
+  perPiecePricing: boolean;
+  quantityOnly: boolean;
+  serviceFee: boolean;
+  excludesProduction: boolean;
   proofSignals: string[];
   routingSignals: string[];
   evidence: ProductIntakeEvidence[];
@@ -165,6 +169,10 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const materialReferences: string[] = [];
   const customSize = /custom\s+(?:width\s+and\s+height|size)|width\s+and\s+height/i.test(description);
   const quantityBasedPricing = /quantity[\s-]*(?:based|tier|break|pricing)|qty[\s-]*(?:based|tier|break|pricing)/i.test(description) || hasCompleteNaturalLanguageQuantityTiers(description);
+  const perPiecePricing = /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i.test(description);
+  const quantityOnly = /\bquantity[-\s]?only\b/i.test(description);
+  const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(description);
+  const excludesProduction = /\b(?:must\s+not|does\s+not|doesn't|do\s+not)\s+(?:create|require|need|have)\s+(?:a\s+)?production(?:\s+work|\s+job)?\b/i.test(description);
   const sizeMatches = Array.from(description.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*(?:[xX]|\u00D7)\s*(\d{1,3}(?:\.\d+)?)\b/gi))
     .map((match) => `${match[1]}x${match[2]}`);
 
@@ -310,6 +318,10 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
     finishingOptions: unique(finishingOptions),
     customOptions: [...explicitCustomOptionGroups, ...multilineCustomOptionGroups, ...customOptions, ...explicitChoiceOptions].filter((entry, index, all) => all.findIndex((candidate) => normalizeText(candidate.label) === normalizeText(entry.label)) === index),
     quantityBasedPricing,
+    perPiecePricing,
+    quantityOnly,
+    serviceFee,
+    excludesProduction,
     proofSignals,
     routingSignals,
     evidence: [
@@ -846,7 +858,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
     .filter(Boolean);
   const analyzerBehaviors = behaviorFromAnalyzer(product, input.analyzer);
   const behaviors = textSignals ? {
-    sizeBehavior: /\bquantity[-\s]?only\b/i.test(text)
+    sizeBehavior: (textSignals.quantityOnly || textSignals.serviceFee)
       ? {
           behavior: "none",
           confidence: 96,
@@ -874,11 +886,12 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
           confidence: 84,
           evidence: [evidence("$.description.pricing", "Quantity", "Quantity based pricing", "Quantity-based pricing was stated in the text description.")],
         }
-      : textSignals.sizes.length > 0 || textSignals.customSize
+      : textSignals.perPiecePricing || textSignals.quantityOnly || textSignals.serviceFee || textSignals.sizes.length > 0 || textSignals.customSize
       ? {
           behavior: "per_piece",
-          confidence: 68,
-          evidence: [evidence("$.description.sizes", "Quantity", textSignals.sizes.join(", ") || "Custom size", "Product appears to be ordered per piece; confirm if needed.")],
+          confidence: textSignals.perPiecePricing || textSignals.quantityOnly || textSignals.serviceFee ? 100 : 68,
+          notes: textSignals.perPiecePricing || textSignals.quantityOnly || textSignals.serviceFee ? "Customers enter any positive quantity; pricing is per piece." : undefined,
+          evidence: [evidence("$.description.pricing", "Quantity", textSignals.perPiecePricing ? "Per piece" : textSignals.sizes.join(", ") || "Custom size", "Product quantity behavior was parsed from the text description.")],
         }
       : analyzerBehaviors.quantityBehavior,
     pricingAnalysis: /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet|sf)\b/i.test(text)
@@ -895,6 +908,13 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
           confidence: 92,
           notes: "Sticker-style adjusted rounded square-foot formula",
           evidence: [evidence("$.description.pricing_formula", "Pricing formula", "Adjusted rounded square footage", "Formula pricing instructions were stated in the text description.")],
+        }
+      : textSignals.perPiecePricing
+      ? {
+          behavior: "per_piece",
+          confidence: 100,
+          notes: text.match(/\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i)?.[0] ?? "Explicit per-piece price",
+          evidence: [evidence("$.description.pricing", "Per-piece price", text.match(/\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i)?.[0] ?? null, "An explicit per-piece rate was stated in the text description.")],
         }
       : textSignals.quantityBasedPricing
       ? {
@@ -923,7 +943,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: [evidence(product?.sourcePath ?? "$.source", "category", null, "Category evidence was missing or weak.")],
     });
   }
-  if (materialMatches.length === 0 && !completeQuantityTierProduct) {
+  if (materialMatches.length === 0 && !completeQuantityTierProduct && !textSignals?.serviceFee) {
     missingDecisions.push({
       id: "select-material",
       question: "Which material should this product use?",
@@ -998,9 +1018,9 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
   const evidenceBackedConfidence = [
     product?.name || descriptionName ? 75 : 20,
     categoryValue ? categoryConfidence : 20,
-    materialMatches.length ? Math.max(...materialMatches.map((match) => match.confidence)) : completeQuantityTierProduct ? 75 : 20,
+    materialMatches.length ? Math.max(...materialMatches.map((match) => match.confidence)) : completeQuantityTierProduct || textSignals?.serviceFee ? 75 : 20,
     behaviors.pricingAnalysis.confidence,
-    requiredOptions.length + optionalOptions.length > 0 ? 75 : completeQuantityTierProduct ? 75 : 35,
+    requiredOptions.length + optionalOptions.length > 0 ? 75 : completeQuantityTierProduct || textSignals?.serviceFee ? 75 : 35,
   ];
   const matrixReadiness = fallbackMatrixReadiness({
     text,
@@ -1042,6 +1062,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: materialMatches.flatMap((match) => match.evidence),
     },
     ...behaviors,
+    ...(textSignals?.serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : textSignals?.excludesProduction ? { requiresProductionJob: false } : {}),
     matrixReadiness,
     requiredOptions,
     optionalOptions,
@@ -1051,6 +1072,25 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
     draftWarnings,
     sourceEvidence,
     overallConfidence: clampConfidence(evidenceBackedConfidence.reduce((sum, value) => sum + value, 0) / evidenceBackedConfidence.length),
+  });
+}
+
+/** Explicit operational wording is authoritative over an AI's incomplete
+ * descriptive classification. This keeps the persisted brief, readiness, and
+ * PBV2 builder aligned for service-fee requests. */
+function normalizeExplicitOperationalSemantics(brief: ProductIntakeBrief, sourceText: string): ProductIntakeBrief {
+  const quantityOnly = /\bquantity[-\s]?only\b/i.test(sourceText);
+  const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
+  const perPiece = sourceText.match(/\$\s*(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i)?.[0] ?? null;
+  if (!quantityOnly && !serviceFee && !perPiece) return brief;
+  return productIntakeBriefSchema.parse({
+    ...brief,
+    ...(quantityOnly || serviceFee ? {
+      sizeBehavior: { ...brief.sizeBehavior, behavior: "none", confidence: 100, notes: "Quantity-only product; width and height are not collected." },
+      quantityBehavior: { ...brief.quantityBehavior, behavior: "per_piece", confidence: 100, notes: "Customers enter any positive quantity." },
+    } : {}),
+    ...(perPiece ? { pricingAnalysis: { ...brief.pricingAnalysis, behavior: "per_piece", confidence: 100, notes: perPiece } } : {}),
+    ...(serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : {}),
   });
 }
 
@@ -1724,12 +1764,12 @@ export async function generateProductIntakeBriefWithRun(input: ProductIntakeBrie
           repairActions: repair.actions,
         });
         return {
-          brief: {
+          brief: normalizeExplicitOperationalSemantics({
             ...repairedParsed.data,
             workflowState: "REVIEW_READY",
             source: "live_ai",
             fallbackReason: null,
-          },
+          }, input.request.description ?? input.request.jsonText ?? ""),
           aiRun: aiRun({
             attempted: true,
             reachedProvider: true,
@@ -1763,12 +1803,12 @@ export async function generateProductIntakeBriefWithRun(input: ProductIntakeBrie
       };
     }
     return {
-      brief: {
+      brief: normalizeExplicitOperationalSemantics({
         ...parsed.data,
         workflowState: "REVIEW_READY",
         source: "live_ai",
         fallbackReason: null,
-      },
+      }, input.request.description ?? input.request.jsonText ?? ""),
       aiRun: aiRun({
         attempted: true,
         reachedProvider: true,

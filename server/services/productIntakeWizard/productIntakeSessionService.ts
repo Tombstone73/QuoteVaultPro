@@ -769,7 +769,10 @@ type CorrectedStateContract = {
   category: string | null;
   measurementBehavior: ProductIntakeBrief["sizeBehavior"]["behavior"] | null;
   perSqftCents: number | null;
+  perPieceCents: number | null;
   minimumChargeCents: number | null;
+  workflowIntent: "standard_production" | "fulfillment_only" | "service_fee" | null;
+  requiresProductionJob: boolean | null;
   requiredOptions: CorrectedStateOptionContract[];
   removedOptionKeys: string[];
 };
@@ -800,7 +803,10 @@ function correctedStateContractFromConfidence(value: unknown): CorrectedStateCon
     category: typeof source.category === "string" && source.category.trim() ? source.category : null,
     measurementBehavior: typeof source.measurementBehavior === "string" ? source.measurementBehavior as ProductIntakeBrief["sizeBehavior"]["behavior"] : null,
     perSqftCents: typeof source.perSqftCents === "number" && Number.isInteger(source.perSqftCents) && source.perSqftCents > 0 ? source.perSqftCents : null,
+    perPieceCents: typeof source.perPieceCents === "number" && Number.isInteger(source.perPieceCents) && source.perPieceCents > 0 ? source.perPieceCents : null,
     minimumChargeCents: typeof source.minimumChargeCents === "number" && Number.isInteger(source.minimumChargeCents) && source.minimumChargeCents > 0 ? source.minimumChargeCents : null,
+    workflowIntent: source.workflowIntent === "standard_production" || source.workflowIntent === "fulfillment_only" || source.workflowIntent === "service_fee" ? source.workflowIntent : null,
+    requiresProductionJob: typeof source.requiresProductionJob === "boolean" ? source.requiresProductionJob : null,
     requiredOptions,
     removedOptionKeys: Array.isArray(source.removedOptionKeys) ? source.removedOptionKeys.filter((key): key is string => typeof key === "string") : [],
   };
@@ -820,6 +826,7 @@ function correctedPricingContract(brief: ProductIntakeBrief, sourceText: string 
   const priceText = correction ?? brief.pricingAnalysis.notes ?? "";
   return {
     perSqftCents: centsFromText(priceText, /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet)\b/i) ?? prior?.perSqftCents ?? null,
+    perPieceCents: centsFromText(priceText, /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i) ?? prior?.perPieceCents ?? null,
     minimumChargeCents: centsFromText(priceText, /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:minimum|min(?:imum)?\s*charge)\b|(?:minimum|min(?:imum)?\s*charge)\s*(?:is|of|:)?\s*\$(\d[\d,]*(?:\.\d{1,2})?)/i) ?? prior?.minimumChargeCents ?? null,
   };
 }
@@ -851,6 +858,8 @@ export function buildCorrectedStateContract(
     category: brief.productIdentity.category.value?.trim() || prior?.category || null,
     measurementBehavior: brief.sizeBehavior.behavior ?? prior?.measurementBehavior ?? null,
     ...pricing,
+    workflowIntent: brief.workflowIntent ?? prior?.workflowIntent ?? null,
+    requiresProductionJob: brief.requiresProductionJob ?? prior?.requiresProductionJob ?? null,
     requiredOptions: brief.requiredOptions.map(optionContract),
     removedOptionKeys: Array.from(removed),
   };
@@ -876,8 +885,18 @@ export function correctedStateBlockers(brief: ProductIntakeBrief, contractValue:
   if (contract.perSqftCents != null && perSqftCents !== contract.perSqftCents) {
     blockers.push("Corrected per-square-foot price was not preserved in the current intake revision.");
   }
+  const perPieceCents = centsFromText(pricingText, /\$(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i);
+  if (contract.perPieceCents != null && perPieceCents !== contract.perPieceCents) {
+    blockers.push("Corrected per-piece price was not preserved in the current intake revision.");
+  }
   if (contract.minimumChargeCents != null && minimumChargeCents !== contract.minimumChargeCents) {
     blockers.push("Corrected minimum charge was not preserved in the current intake revision.");
+  }
+  if (contract.workflowIntent != null && brief.workflowIntent !== contract.workflowIntent) {
+    blockers.push("Corrected workflow intent was not preserved in the current intake revision.");
+  }
+  if (contract.requiresProductionJob != null && brief.requiresProductionJob !== contract.requiresProductionJob) {
+    blockers.push("Corrected production-job requirement was not preserved in the current intake revision.");
   }
   for (const expected of contract.requiredOptions) {
     const option = allOptions.find((candidate) => normalizeKey(candidate.normalizedGroup || candidate.label) === expected.key);
@@ -947,11 +966,17 @@ export function computeProductIntakeReadiness(args: {
   if (unansweredRequiredCount > 0) {
     penalties.push({ code: "required_answers_open", label: `${unansweredRequiredCount} required answer(s) still open`, severity: "blocker" });
   }
-  if (!materialAnswered && (materialConfidence < 65 || brief.materialAnalysis.likelyMaterialMatches.length === 0)) {
+  if (brief.workflowIntent !== "service_fee" && !materialAnswered && (materialConfidence < 65 || brief.materialAnalysis.likelyMaterialMatches.length === 0)) {
     penalties.push({ code: "material_unresolved", label: "Material association required.", severity: "review" });
   }
   if (!pricingAnswered && (brief.pricingAnalysis.behavior === "unknown" || brief.pricingAnalysis.confidence < 65)) {
     penalties.push({ code: "pricing_unresolved", label: "Pricing behavior is unresolved or below confidence threshold", severity: "blocker" });
+  }
+  if (brief.workflowIntent === "service_fee" && brief.sizeBehavior.behavior !== "none") {
+    penalties.push({ code: "service_fee_measurement_unresolved", label: "Service-fee products must use quantity-only measurement.", severity: "blocker" });
+  }
+  if (brief.workflowIntent === "service_fee" && brief.requiresProductionJob !== false) {
+    penalties.push({ code: "service_fee_production_job_unresolved", label: "Service-fee products must explicitly not require a production job.", severity: "blocker" });
   }
   if (workflowNeedsReview) {
     penalties.push({ code: "workflow_unresolved", label: "Routing, proofing, or prepress workflow still needs review", severity: "review" });
@@ -999,6 +1024,7 @@ export function computeProductIntakeReadiness(args: {
 
 export function resolveProductIntakeSessionStatus(brief: ProductIntakeBrief, questions: Array<Pick<NewQuestion, "required">>): ProductIntakeSessionStatus {
   if (questions.some((question) => question.required)) return "needs_answers";
+  if (brief.workflowIntent === "service_fee" && (brief.sizeBehavior.behavior !== "none" || brief.requiresProductionJob !== false)) return "needs_answers";
   if (correctedStateBlockers(brief).length > 0) return "needs_answers";
   return brief.overallConfidence >= 75 ? "ready_for_draft" : "analyzed";
 }

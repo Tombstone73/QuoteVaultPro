@@ -90,6 +90,29 @@ const sourceJson = {
 };
 
 describe("Product Intake Wizard schemas", () => {
+  test("normalizes an explicit quantity-only service fee before readiness is calculated", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org-service-fee",
+      request: productIntakeWizardAnalyzeRequestSchema.parse({
+        sourceType: "text_description",
+        description: "Create a new inactive product called DEV Test Service 080426. It is quantity-only and costs $20 per piece. It is a service fee and must not create production work. Use the Print Products category.",
+      }),
+      analyzer: null,
+      templates: [],
+      materials: [],
+      provider: null,
+    });
+    const questions = generateProductIntakeQuestions(brief);
+    const readiness = computeProductIntakeReadiness({
+      session: { id: "session-service-fee", organizationId: "org-service-fee", sourceType: "text_description", sourceFingerprint: "service-fee", brief, confidence: null, missingDecisions: brief.missingDecisions, status: "ready_for_draft", createdProductId: null, createdPbv2TreeVersionId: null, createdByUserId: null, updatedByUserId: null, createdAt: "2026-08-04T00:00:00.000Z", updatedAt: "2026-08-04T00:00:00.000Z", abandonedAt: null },
+      questions: questions.map((question, index) => ({ ...question, id: `question-${index}`, organizationId: "org-service-fee", sessionId: "session-service-fee", createdAt: "2026-08-04T00:00:00.000Z" })),
+      answers: [],
+    });
+    expect(brief).toMatchObject({ sizeBehavior: { behavior: "none" }, quantityBehavior: { behavior: "per_piece" }, pricingAnalysis: { behavior: "per_piece" }, workflowIntent: "service_fee", requiresProductionJob: false });
+    expect(questions.filter((question) => question.required)).toEqual([]);
+    expect(readiness.canCreateDraft).toBe(true);
+  });
+
   test("accepts JSON and text-description requests", () => {
     expect(productIntakeWizardAnalyzeRequestSchema.parse({
       sourceType: "pasted_json",

@@ -47,6 +47,8 @@ export const productInactiveDraftPreviewSchema = z.object({
     sheetOrRollConstraints: z.string().min(1).max(160).nullable(),
     allowRotation: z.boolean().nullable(),
     quantityBehavior: z.string().min(1).max(120),
+    workflowIntent: z.enum(["standard_production", "fulfillment_only", "service_fee"]).nullable(),
+    requiresProductionJob: z.boolean().nullable(),
     taxable: z.literal(true),
     commonOptions: z.array(z.string().min(1).max(160)).max(12),
     optionGroups: z.array(z.object({

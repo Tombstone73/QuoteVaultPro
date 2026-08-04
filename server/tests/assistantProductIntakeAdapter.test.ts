@@ -45,6 +45,21 @@ describe("AssistantProductIntakeAdapter", () => {
     expect(changed.fingerprint).not.toBe(proposal.fingerprint);
   });
 
+  test("exposes canonical quantity-only service-fee values in the confirmation proposal", async () => {
+    const serviceBrief: any = {
+      productIdentity: { likelyProductName: { value: "DEV Test Service 080426" }, category: { value: "Print Products" } },
+      sizeBehavior: { behavior: "none" }, quantityBehavior: { behavior: "per_piece" }, pricingAnalysis: { behavior: "per_piece" },
+      workflowIntent: "service_fee", requiresProductionJob: false, requiredOptions: [], optionalOptions: [],
+    };
+    const sessionStore = {
+      getSessionDetail: jest.fn(async () => detail({ brief: serviceBrief })),
+      getSessionSource: jest.fn(async () => ({ sourceText: "Create a quantity-only service fee at $20 per piece. It must not create production work.", sourceJson: null })),
+    };
+    const adapter = new AssistantProductIntakeAdapter(dependencies({ sessionStore }) as any);
+    const proposal = await adapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" });
+    expect(proposal.preview.proposedFields).toMatchObject({ measurementMode: "quantity_only", quantityBehavior: "customer_enters_quantity", workflowIntent: "service_fee", requiresProductionJob: false, productionRoute: null, sheetOrRollConstraints: null, allowRotation: null });
+  });
+
   test("loads tenant-scoped authoritative readiness and redacts raw diagnostics", async () => {
     const deps = dependencies();
     const adapter = new AssistantProductIntakeAdapter(deps as any);

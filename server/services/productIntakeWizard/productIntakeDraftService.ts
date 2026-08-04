@@ -435,7 +435,8 @@ function formulaAssignmentForBrief(brief: ProductIntakeBrief, text: string): Pro
  * brief and its source text cannot disagree about whether dimensions apply.
  */
 function isQuantityOnlyIntake(brief: ProductIntakeBrief, sourceText: string): boolean {
-  return brief.sizeBehavior.behavior === "none"
+  return brief.workflowIntent === "service_fee"
+    || brief.sizeBehavior.behavior === "none"
     || /\b(?:quantity[-\s]?only|service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
 }
 
@@ -2080,7 +2081,7 @@ export function buildProductIntakeProductValues(args: {
   // Keep the persisted product lifecycle semantics aligned with the PBV2 DRAFT
   // generated from the same explicit intake text. The assistant must not turn a
   // service/quantity-only request into a dimensioned production product.
-  const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
+  const serviceFee = args.brief.workflowIntent === "service_fee" || /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
   const quantityOnly = isQuantityOnlyIntake(args.brief, sourceText);
   const proofRequired = /\b(?:proof\s+(?:required|needed|mandatory)|requires?\s+proof)\b/i.test(sourceText);
   // The tree and product record must agree: quantity-only pricing uses the
@@ -2105,11 +2106,11 @@ export function buildProductIntakeProductValues(args: {
     pricingFormulaId: formulaAssignment?.pricingFormulaId ?? null,
     pricingFormula: formulaAssignment?.expression ?? null,
     pricingProfileKey: quantityOnly ? "qty_only" : formulaAssignment?.pricingProfileKey ?? "default",
-    pricingProfileConfig,
-    primaryMaterialId: material?.materialId ?? null,
+    pricingProfileConfig: serviceFee ? null : pricingProfileConfig,
+    primaryMaterialId: serviceFee ? null : material?.materialId ?? null,
     measurementMode: quantityOnly ? "quantity_only" as const : "dimensions_required" as const,
-    workflowIntent: serviceFee ? "service_fee" as const : "standard_production" as const,
-    requiresProductionJob: quantityOnly ? explicitlyRequiresProductionJob(sourceText) : !serviceFee,
+    workflowIntent: serviceFee ? "service_fee" as const : args.brief.workflowIntent ?? "standard_production" as const,
+    requiresProductionJob: serviceFee ? false : args.brief.requiresProductionJob ?? (quantityOnly ? explicitlyRequiresProductionJob(sourceText) : true),
     requiresProofApproval: proofRequired,
     isTaxable: true,
     isService: serviceFee,
