@@ -91,4 +91,9 @@ describe("AssistantProductManagementCards", () => {
     expect(container.querySelector("button")).toBeNull();
     expect(container.querySelector<HTMLAnchorElement>("a[href='/admin/products/live-banner']")?.textContent).toContain("existing editor");
   });
+
+  it("keeps a required product-local option's selection, default, and choices visible", () => {
+    const card = toAssistantProductManagementCard({ kind: "product_options_summary", title: "Options", summary: "Product Intake is authoritative.", sourceLinks: [], details: { items: ["Lamination", "Type: Single select", "Required: Yes", "Default: None", "Choices: None, Gloss, Matte"] } });
+    expect(card?.items).toEqual(["Lamination", "Type: Single select", "Required: Yes", "Default: None", "Choices: None, Gloss, Matte"]);
+  });
 });

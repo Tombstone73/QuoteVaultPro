@@ -73,6 +73,17 @@ export interface ProductIntakeSessionStore {
     userId: string | null;
     answers: ProductIntakeAnswerPatchItem[];
   }): Promise<ProductIntakeSessionDetail | null>;
+  /** Replaces a not-yet-created session's derived brief after an explicit
+   * conversation correction. Matching valid answers survive; stale questions
+   * and answers are replaced so readiness and confirmation fingerprints cannot
+   * describe the previous proposal. */
+  replaceBrief(args: {
+    organizationId: string;
+    sessionId: string;
+    userId: string | null;
+    brief: ProductIntakeBrief;
+    sourceText: string;
+  }): Promise<ProductIntakeSessionDetail | null>;
   abandonSession(args: {
     organizationId: string;
     sessionId: string;
@@ -1059,6 +1070,76 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
         .where(and(eq(productIntakeSessions.id, args.sessionId), eq(productIntakeSessions.organizationId, args.organizationId)))
         .returning();
       return updatedSession ? await getDetail(args.organizationId, args.sessionId) : null;
+    },
+
+    async replaceBrief(args) {
+      const detail = await getDetail(args.organizationId, args.sessionId);
+      if (!detail) return null;
+      if (detail.session.status === "abandoned" || detail.session.status === "draft_created") {
+        throw new ProductIntakeSessionError(409, "Only an unfinished Product Intake session can be corrected.", "SESSION_NOT_CORRECTABLE");
+      }
+
+      const now = new Date();
+      const nextQuestions = generateProductIntakeQuestions(args.brief);
+      const priorAnswers = detail.answers.map((answer) => ({ questionKey: answer.questionKey, answer: answer.answer }));
+      await database.delete(productIntakeAnswers)
+        .where(and(eq(productIntakeAnswers.organizationId, args.organizationId), eq(productIntakeAnswers.sessionId, args.sessionId)));
+      await database.delete(productIntakeQuestions)
+        .where(and(eq(productIntakeQuestions.organizationId, args.organizationId), eq(productIntakeQuestions.sessionId, args.sessionId)));
+
+      const [updated] = await database.update(productIntakeSessions)
+        .set({
+          aiBriefJson: args.brief as any,
+          sourceText: args.sourceText,
+          sourceFingerprint: createHash("sha256").update(args.sourceText).digest("hex"),
+          missingDecisionsJson: args.brief.missingDecisions as any,
+          status: resolveProductIntakeSessionStatus(args.brief, nextQuestions),
+          confidenceJson: { originalConfidence: detail.session.confidence?.overallConfidence ?? detail.brief.overallConfidence, currentConfidence: args.brief.overallConfidence, overallConfidence: args.brief.overallConfidence },
+          updatedByUserId: args.userId,
+          updatedAt: now,
+        })
+        .where(and(eq(productIntakeSessions.id, args.sessionId), eq(productIntakeSessions.organizationId, args.organizationId)))
+        .returning();
+      if (!updated) return null;
+
+      if (nextQuestions.length) {
+        await database.insert(productIntakeQuestions).values(nextQuestions.map((question) => ({
+          organizationId: args.organizationId,
+          sessionId: args.sessionId,
+          questionKey: question.questionKey,
+          questionType: question.questionType,
+          label: question.label,
+          helpText: question.helpText ?? null,
+          required: question.required,
+          optionsJson: question.options as any,
+          defaultValueJson: question.defaultValue as any,
+          sourcePath: question.sourcePath ?? null,
+          confidence: String(question.confidence ?? 0),
+          sortOrder: question.sortOrder,
+        })));
+      }
+
+      const refreshed = await getDetail(args.organizationId, args.sessionId);
+      if (!refreshed) return null;
+      const retained = resolveProductIntakeAnswersForPersistence({ questions: refreshed.questions, answers: priorAnswers });
+      for (const { question, answer } of retained) {
+        await database.insert(productIntakeAnswers).values({
+          organizationId: args.organizationId,
+          sessionId: args.sessionId,
+          questionId: question.id,
+          questionKey: question.questionKey,
+          answerJson: answer as any,
+          answeredByUserId: args.userId,
+          answeredAt: now,
+        });
+      }
+      const corrected = await getDetail(args.organizationId, args.sessionId);
+      if (!corrected) return null;
+      const [finalSession] = await database.update(productIntakeSessions)
+        .set({ status: corrected.readiness.status, confidenceJson: recalculateProductIntakeConfidence(corrected), updatedByUserId: args.userId, updatedAt: new Date() })
+        .where(and(eq(productIntakeSessions.id, args.sessionId), eq(productIntakeSessions.organizationId, args.organizationId)))
+        .returning();
+      return finalSession ? await getDetail(args.organizationId, args.sessionId) : null;
     },
 
     async abandonSession(args) {

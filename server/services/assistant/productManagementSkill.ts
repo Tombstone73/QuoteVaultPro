@@ -7,6 +7,7 @@ import {
 } from "@shared/productIntakeWizardSchemas";
 import { db } from "../../db";
 import {
+  generateProductIntakeBrief,
   generateProductIntakeBriefWithRun,
   type ProductIntakeMaterialReference,
   type ProductIntakeTemplateReference,
@@ -106,6 +107,18 @@ function isMatrixCreationRequest(message: string): boolean {
 function isProductIntakeContinuationAnswer(message: string): boolean {
   return /\b(?:matrix\s+rows?|matrix\s+columns?|pricing\s+matrix|width\s+and\s+height|requires?\s+dimensions)\b/i.test(message)
     && !/\b(?:update|edit|change|replace)\b[\s\S]{0,80}\b(?:existing|inactive|draft|product)\b/i.test(message);
+}
+
+/** A correction changes the canonical intake proposal itself, rather than
+ * answering one of its previously generated questions. Keep this deliberately
+ * narrow so ordinary product lookups and draft edits retain their routes. */
+function isExplicitProductIntakeCorrection(message: string): boolean {
+  return /\b(?:use|set)\s+.+?\s+as\s+(?:the\s+)?category\b/i.test(message)
+    || /\b(?:single|multi)[\s-]*select\b[\s\S]{0,80}\b(?:option|choices?|default)\b/i.test(message)
+    || /\b(?:required\s+)?(?:custom\s+)?option(?:\s+group)?\b[\s\S]{0,100}\b(?:choices?|default)\b/i.test(message)
+    || /\b(?:require|requires)\s+(?:width\s+and\s+height|dimensions)\b/i.test(message)
+    || /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet)\b/i.test(message)
+    || /\b(?:no|without|clear)\s+(?:production\s+)?(?:route|routing|minimum(?:\s+charge)?)\b/i.test(message);
 }
 
 function isExplicitExistingProductUpdate(message: string): boolean {
@@ -408,7 +421,17 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
     cards.push({ kind: "product_missing_information", title: "Information needed", summary: `${missing.length} ${missing.length === 1 ? "question remains" : "questions remain"}.`, sourceLinks: [], details: { questionCount: missing.length, questions: missing.map(plainQuestion) } });
   }
   if (detail.brief.materialAnalysis.likelyMaterialMatches.length) cards.push({ kind: "product_material_selection", title: "Material references", summary: "Existing materials are only proposed for reuse; no material record will be created.", sourceLinks: [], details: { items: detail.brief.materialAnalysis.likelyMaterialMatches.map((material) => material.name) } });
-  if (detail.brief.requiredOptions.length) cards.push({ kind: "product_options_summary", title: "Options", summary: "Existing Product Intake and PBV2 validation remain authoritative.", sourceLinks: [], details: { items: detail.brief.requiredOptions.map((option) => option.label) } });
+  const optionSummaryItems = detail.brief.requiredOptions.flatMap((option) => {
+    const choices = option.choices?.map((choice) => choice.label).filter(Boolean) ?? option.sampleValues;
+    return [
+      option.label,
+      `Type: ${option.selectionMode === "multi" ? "Multi-select" : "Single select"}`,
+      `Required: ${option.required ? "Yes" : "No"}`,
+      `Default: ${option.defaultChoice ?? "Not set"}`,
+      `Choices: ${choices.join(", ") || "Not set"}`,
+    ];
+  });
+  if (optionSummaryItems.length) cards.push({ kind: "product_options_summary", title: "Options", summary: "Existing Product Intake and PBV2 validation remain authoritative.", sourceLinks: [], details: { items: optionSummaryItems } });
   cards.push({ kind: "product_pricing_summary", title: "Pricing basis", summary: "Pricing is server-validated. High-impact pricing assumptions are never silently inferred.", sourceLinks: [], details: { pricingBasis: detail.brief.pricingAnalysis.behavior || "Unresolved" } });
   cards.push({ kind: "product_routing_summary", title: "Production routing", summary: "Existing routing is reused only after Product Intake validation.", sourceLinks: [], details: { routing: "Not set" } });
   const blockers = (detail.readiness.penalties ?? []).filter((penalty) => penalty.severity === "blocker").map((penalty) => penalty.label);
@@ -425,6 +448,30 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
 
 export class ProductManagementSkillService {
   constructor(private readonly deps: ProductManagementSkillDependencies = { sessions: createDbProductIntakeSessionStore(), references: loadReferences }) {}
+
+  private async continueExplicitIntakeCorrection(input: { organizationId: string; userId: string; message: string; sessionId: string }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    const existing = await this.deps.sessions.getSessionDetail(input.organizationId, input.sessionId);
+    if (!existing || ["draft_created", "abandoned"].includes(existing.session.status)) return { handled: false, response: "", cards: [] };
+    if (!this.deps.sessions.replaceBrief) return { handled: true, response: "This Product Intake session cannot safely apply a structural correction yet. No proposal was changed.", cards: await cardsFor(existing) };
+    const references = await this.deps.references(input.organizationId);
+    const source = await this.deps.sessions.getSessionSource?.(input.organizationId, existing.session.id);
+    const sourceText = [
+      source?.sourceText ?? `Product name: ${existing.brief.productIdentity.likelyProductName.value ?? "Untitled Product"}\nCategory: ${existing.brief.productIdentity.category.value ?? "Unresolved"}`,
+      "Explicit Product Intake correction (new explicit values override all prior assumptions):",
+      input.message,
+    ].filter(Boolean).join("\n\n");
+    const request = productIntakeWizardAnalyzeRequestSchema.parse({ sourceType: "text_description", description: sourceText });
+    // Corrections must be deterministic and immediately versioned; a live AI
+    // retry may not recreate or delay an explicit staff correction.
+    const brief = await generateProductIntakeBrief({ orgId: input.organizationId, request, analyzer: null, templates: references.templates, materials: references.materials, provider: null });
+    const corrected = await this.deps.sessions.replaceBrief({ organizationId: input.organizationId, sessionId: existing.session.id, userId: input.userId, brief, sourceText });
+    if (!corrected) return { handled: true, response: "The active Product Intake session no longer exists. No proposal was changed.", cards: [] };
+    return {
+      handled: true,
+      response: corrected.readiness.canCreateDraft ? "I applied the explicit Product Intake correction and prepared the updated inactive-draft proposal." : "I applied the explicit Product Intake correction and recomputed the remaining required questions.",
+      cards: await cardsFor(corrected),
+    };
+  }
 
   private async prepareBatch(input: { organizationId: string; userId: string; conversationId?: string; message: string }): Promise<{ response: string; cards: ProductManagementCard[] }> {
     const parsed = parseProductInactiveDraftBatch(input.message);
@@ -463,6 +510,13 @@ export class ProductManagementSkillService {
   }
 
   async respond(input: { organizationId: string; userId: string; conversationId?: string; message: string; activeSessionId?: string | null; activeConfigurableProposalId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    // This must precede candidate lookup, pricing, and informational routes:
+    // the conversation-bound session is authoritative for explicit changes to
+    // category, dimensions, price, custom options, or defaults.
+    if (input.activeSessionId && isExplicitProductIntakeCorrection(input.message)) {
+      const corrected = await this.continueExplicitIntakeCorrection({ organizationId: input.organizationId, userId: input.userId, message: input.message, sessionId: input.activeSessionId });
+      if (corrected.handled) return corrected;
+    }
     const selectedCandidateReference = selectionReferenceFromMessage(input.message);
     if (input.conversationId && selectedCandidateReference) {
       const continuations = new ProductCandidateSelectionContinuationService(createDrizzleProductCandidateSelectionContinuationStore());

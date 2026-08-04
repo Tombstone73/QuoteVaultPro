@@ -131,6 +131,23 @@ describe("Product Intake Brief service", () => {
     expect(lamination).toMatchObject({ sampleValues: ["None", "Gloss", "Matte"], defaultChoice: "None" });
   });
 
+  test("gives an explicit continuation correction precedence over inferred category and generic finishing", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "Create product named DEV Test Vinyl Options 080326. Vinyl product with custom width and height at $3 per square foot.\n\nExplicit Product Intake correction: Use Print Products as category. Add Lamination single-select required custom option group with choices None, Gloss, Matte, defaulting to None. No production route and no minimum charge." },
+      analyzer: null,
+      templates,
+      provider: null,
+    });
+
+    const lamination = brief.requiredOptions.find((option) => option.normalizedGroup === "Lamination");
+    expect(brief.productIdentity.category).toMatchObject({ value: "Print Products", confidence: 100 });
+    expect(brief.sizeBehavior.behavior).toBe("custom_size");
+    expect(brief.pricingAnalysis.behavior).toBe("square_foot");
+    expect(lamination).toMatchObject({ required: true, selectionMode: "single", sampleValues: ["None", "Gloss", "Matte"], defaultChoice: "None", source: "product_specific" });
+    expect(brief.optionalOptions.some((option) => /laminat/i.test(option.label))).toBe(false);
+  });
+
   test("matches existing option templates with threshold recommendations", () => {
     const matches = matchOptionTemplates({
       optionLabel: "Grommets",

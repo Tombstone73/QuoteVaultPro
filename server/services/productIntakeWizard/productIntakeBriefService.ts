@@ -150,7 +150,7 @@ type TextDescriptionSignals = {
   sides: string[];
   printOptions: string[];
   finishingOptions: string[];
-  customOptions: Array<{ label: string; choices: string[]; defaultChoice?: string | null }>;
+  customOptions: Array<{ label: string; choices: string[]; defaultChoice?: string | null; required?: boolean; selectionMode?: "single" | "multi" }>;
   quantityBasedPricing: boolean;
   proofSignals: string[];
   routingSignals: string[];
@@ -200,12 +200,30 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const printOptions: string[] = [];
   if (/full\s*color|4\s*color|cmyk/i.test(description)) printOptions.push("Full color printing");
 
+  const explicitCategory = description.match(/\b(?:use|set)\s+([a-z][a-z0-9 &/\-]{1,100}?)\s+as\s+(?:the\s+)?category\b/i)?.[1]?.trim() ?? null;
+  const explicitCustomOptionGroups = Array.from(description.matchAll(/\b(?:add|include|use)\s+(?:a\s+)?([a-z][a-z0-9 &/\-]{1,60}?)\s+(?:single[\s-]*select|multi[\s-]*select)\s+(?:required\s+)?(?:custom\s+)?option(?:\s+group)?\s+(?:with\s+)?(?:choices?|values?)\s*[:=]?\s*([^\.\n]+?)(?:,?\s*(?:with\s+)?default(?:ing)?\s*(?:to)?\s*([a-z][a-z0-9 &/\-]{0,60}))?(?:[\.\n]|$)/gi))
+    .map((match) => {
+      const label = titleCaseProductName(String(match[1] ?? "").trim());
+      const choices = String(match[2] ?? "").replace(/,?\s*(?:with\s+)?default(?:ing)?\s*(?:to)?\s+.*$/i, "")
+        .split(/\s*,\s*|\s+and\s+/i).map((choice) => stripDefaultChoiceAnnotation(choice).label).filter(Boolean);
+      const defaultChoice = stripDefaultChoiceAnnotation(match[3] ?? "").label || null;
+      const source = String(match[0] ?? "");
+      return label && choices.length ? {
+        label,
+        choices,
+        defaultChoice,
+        required: /\brequired\b/i.test(source),
+        selectionMode: /\bmulti[\s-]*select\b/i.test(source) ? "multi" as const : "single" as const,
+      } : null;
+    })
+    .filter(Boolean) as Array<{ label: string; choices: string[]; defaultChoice: string | null; required: boolean; selectionMode: "single" | "multi" }>;
+  const hasExplicitLaminationGroup = explicitCustomOptionGroups.some((option) => normalizeText(option.label) === "lamination") || /\blamination\s+choices?\b/i.test(description);
   const finishingOptions: string[] = [];
   if (/rounded\s+corners?/i.test(description)) finishingOptions.push("Rounded corners");
   if (/\bhemm?ing\b/i.test(description)) finishingOptions.push("Hemming");
   if (/\bgrommets?\b/i.test(description)) finishingOptions.push("Grommets");
   if (/pole\s+pockets?/i.test(description)) finishingOptions.push("Pole pockets");
-  if (/\blaminate|lamination\b/i.test(description) && !/glossy[\s\S]{0,80}matte|matte[\s\S]{0,80}glossy/i.test(description)) finishingOptions.push("Laminate");
+  if (/\blaminate|lamination\b/i.test(description) && !hasExplicitLaminationGroup && !/glossy[\s\S]{0,80}matte|matte[\s\S]{0,80}glossy/i.test(description)) finishingOptions.push("Laminate");
   if (/\bh[\s-]?wire\b|\bstakes?\b/i.test(description)) finishingOptions.push("H-wire Stakes");
   if (/white\s+ink/i.test(description)) finishingOptions.push("White Ink");
   if (/contour[\s-]?cut/i.test(description) && !/\bcontour\s+cutting\b[\s\S]{0,120}\b(?:no|yes)\b/i.test(description)) finishingOptions.push("Contour Cut");
@@ -223,16 +241,17 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
       const booleanModifier = /contour|grommet|rounded|laminat|installation|mount|hem|pocket|corner/i.test(label);
       return { label, choices: colonChoices.length > 0 ? colonChoices : booleanModifier ? ["No", "Yes"] : [] };
     })
-    .filter(Boolean) as Array<{ label: string; choices: string[] }>;
+    .filter((entry): entry is { label: string; choices: string[] } => entry !== null && !/\b(?:single|multi)[\s-]*select\b|\brequired\b|\bcustom\b/i.test(entry.label));
   const explicitChoiceOptions = Array.from(description.matchAll(/\b([a-z][a-z0-9 &\/-]{1,60}?)\s+choices?\s+(?:of\s+)?([^\.\n]+?)(?:,\s*default(?:ing)?\s+to\s+([^\.\n]+))?(?:[\.\n]|$)/gi))
     .map((match) => {
-      const label = titleCaseProductName(String(match[1] ?? "").trim());
+      const rawLabel = String(match[1] ?? "").trim();
+      const label = titleCaseProductName(rawLabel.split(/\b(?:with|add|include)\b/i).pop() ?? rawLabel);
       const choicesText = String(match[2] ?? "").replace(/,\s*default(?:ing)?\s+to\s+.*$/i, "");
       const choices = choicesText.split(/,\s*(?:and\s+)?|\s+and\s+/i).map((value) => stripDefaultChoiceAnnotation(value).label).filter(Boolean);
       const defaultChoice = stripDefaultChoiceAnnotation(match[3] ?? "").label || null;
       return label && choices.length ? { label, choices, defaultChoice } : null;
     })
-    .filter(Boolean) as Array<{ label: string; choices: string[]; defaultChoice: string | null }>;
+    .filter((entry): entry is { label: string; choices: string[]; defaultChoice: string | null } => entry !== null && !/\boption\s+group\b/i.test(entry.label));
 
   const proofSignals: string[] = [];
   if (/proof\s+(required|needed|mandatory)|requires?\s+proof/i.test(description)) proofSignals.push("Proof required");
@@ -263,12 +282,12 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
     ?? (isContourCutSticker ? "Contour-Cut Stickers" : isSticker ? "Stickers" : null)
     ?? acrylicName
     ?? pvcName;
-  const category = isStyreneRigid || isAcrylicSign || isPvcSign ? "Rigid Signs" : isBanner ? "Banners" : isCoroplastYardSign ? "Coroplast / Yard Signs" : isSticker ? "Stickers" : null;
+  const category = explicitCategory || (isStyreneRigid || isAcrylicSign || isPvcSign ? "Rigid Signs" : isBanner ? "Banners" : isCoroplastYardSign ? "Coroplast / Yard Signs" : isSticker ? "Stickers" : null);
 
   return {
     productName,
     category,
-    categoryConfidence: category ? 86 : 20,
+    categoryConfidence: explicitCategory ? 100 : category ? 86 : 20,
     productType: isStyreneRigid || isCoroplastYardSign || isAcrylicSign || isPvcSign ? "rigid_signage" : isBanner ? "banner" : isSticker ? "stickers" : null,
     materialReferences: unique(materialReferences),
     sizes: unique(sizeMatches),
@@ -276,7 +295,7 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
     sides: unique(sides),
     printOptions: unique(printOptions),
     finishingOptions: unique(finishingOptions),
-    customOptions: [...customOptions, ...explicitChoiceOptions].filter((entry, index, all) => all.findIndex((candidate) => normalizeText(candidate.label) === normalizeText(entry.label)) === index),
+    customOptions: [...explicitCustomOptionGroups, ...customOptions, ...explicitChoiceOptions].filter((entry, index, all) => all.findIndex((candidate) => normalizeText(candidate.label) === normalizeText(entry.label)) === index),
     quantityBasedPricing,
     proofSignals,
     routingSignals,
@@ -334,6 +353,7 @@ function textOptionGroup(args: {
   templates: ProductIntakeTemplateReference[];
   reason: string;
   defaultChoice?: string | null;
+  selectionMode?: "single" | "multi";
 }) {
   const normalizedChoices = normalizeChoiceLabels(args.sampleValues);
   const explicitDefaultChoice = args.defaultChoice ? stripDefaultChoiceAnnotation(args.defaultChoice).label : null;
@@ -353,7 +373,7 @@ function textOptionGroup(args: {
     templateMatches,
     evidence: [evidence(args.sourcePath, args.label, args.sampleValues.join(", "), args.reason)],
     source: "product_specific" as const,
-    selectionMode: "single" as const,
+    selectionMode: args.selectionMode ?? "single",
     ...(explicitDefaultChoice || normalizedChoices.defaultChoice ? { defaultChoice: explicitDefaultChoice ?? normalizedChoices.defaultChoice } : {}),
   };
 }
@@ -775,6 +795,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       reason: "An optional finishing choice was stated in the text description.",
     })),
     ...textSignals.customOptions
+      .filter((custom) => !custom.required)
       .filter((custom) => ![...textRequiredOptions, ...textSignals.finishingOptions.map((label) => ({ label }))]
         .some((existing) => normalizeText(existing.label) === normalizeText(custom.label)))
       .map((custom) => textOptionGroup({
@@ -787,9 +808,25 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
         templates: input.templates,
         reason: "The description explicitly asked Product Intake to add this product-specific option.",
         defaultChoice: custom.defaultChoice,
+        selectionMode: custom.selectionMode,
       })),
   ].filter(Boolean) as ReturnType<typeof textOptionGroup>[] : [];
-  const requiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions];
+  const requiredCustomOptions = textSignals ? textSignals.customOptions
+    .filter((custom) => custom.required)
+    .filter((custom) => !textRequiredOptions.some((existing) => normalizeText(existing.label) === normalizeText(custom.label)))
+    .map((custom) => textOptionGroup({
+      label: custom.label,
+      normalizedGroup: custom.label,
+      required: true,
+      sampleValues: custom.choices,
+      sourcePath: `$.description.custom_options.${normalizeText(custom.label).replace(/\s+/g, "_")}`,
+      confidence: custom.choices.length > 0 ? 95 : 68,
+      templates: input.templates,
+      reason: "The description explicitly required this product-specific option.",
+      defaultChoice: custom.defaultChoice,
+      selectionMode: custom.selectionMode,
+    })) : [];
+  const requiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions, ...requiredCustomOptions];
   const optionalOptions = [...analyzerOptionalOptions, ...textOptionalOptions];
   const templateMatches = unique([...requiredOptions, ...optionalOptions].flatMap((option) => option.templateMatches.map((match) => match.templateId)))
     .map((templateId) => [...requiredOptions, ...optionalOptions].flatMap((option) => option.templateMatches).find((match) => match.templateId === templateId)!)
