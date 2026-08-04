@@ -1,7 +1,8 @@
-import { describe, expect, jest, test } from "@jest/globals";
+import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import {
   ConfiguredAssistantPlanner,
   isExplicitAssistantWriteRequest,
+  resolveAssistantPlanningTimeoutMs,
 } from "../services/assistant/providerPlanning";
 
 const context = {
@@ -28,7 +29,25 @@ function resolver() {
   } as any;
 }
 
+function restoreEnv(name: string, value: string | undefined) {
+  if (value === undefined) delete process.env[name];
+  else process.env[name] = value;
+}
+
+afterEach(() => {
+  jest.restoreAllMocks();
+});
+
 describe("assistant provider planning", () => {
+  test("resolves a bounded assistant-planning timeout from the environment", () => {
+    expect(resolveAssistantPlanningTimeoutMs({} as NodeJS.ProcessEnv)).toBe(20_000);
+    expect(resolveAssistantPlanningTimeoutMs({ AI_ASSISTANT_PLANNING_TIMEOUT_MS: "not-a-number" } as NodeJS.ProcessEnv)).toBe(20_000);
+    expect(resolveAssistantPlanningTimeoutMs({ AI_ASSISTANT_PLANNING_TIMEOUT_MS: "-1" } as NodeJS.ProcessEnv)).toBe(20_000);
+    expect(resolveAssistantPlanningTimeoutMs({ AI_ASSISTANT_PLANNING_TIMEOUT_MS: "1000" } as NodeJS.ProcessEnv)).toBe(5_000);
+    expect(resolveAssistantPlanningTimeoutMs({ AI_ASSISTANT_PLANNING_TIMEOUT_MS: "999999" } as NodeJS.ProcessEnv)).toBe(60_000);
+    expect(resolveAssistantPlanningTimeoutMs({ AI_ASSISTANT_PLANNING_TIMEOUT_MS: "22000" } as NodeJS.ProcessEnv)).toBe(22_000);
+  });
+
   test("locally refuses GO and mutation requests without invoking the provider", async () => {
     const provider = { generateJson: jest.fn() } as any;
     const planner = new ConfiguredAssistantPlanner(provider, resolver());
@@ -51,7 +70,33 @@ describe("assistant provider planning", () => {
     const planner = new ConfiguredAssistantPlanner(provider, resolver());
     const result = await planner.plan({ organizationId: "org_1", message: "Show order 16309", context });
     expect(result.plan.toolCalls).toHaveLength(1);
-    expect(provider.generateJson).toHaveBeenCalledWith(expect.objectContaining({ feature: "assistant", providerConfig: expect.any(Object) }));
+    expect(provider.generateJson).toHaveBeenCalledWith(expect.objectContaining({
+      feature: "assistant",
+      timeoutMs: 20_000,
+      timeoutUseCase: "assistant_planning",
+      providerConfig: expect.any(Object),
+    }));
+  });
+
+  test("passes a safely bounded assistant planning timeout override to the provider", async () => {
+    const previous = process.env.AI_ASSISTANT_PLANNING_TIMEOUT_MS;
+    process.env.AI_ASSISTANT_PLANNING_TIMEOUT_MS = "45000";
+    try {
+      const provider = {
+        generateJson: jest.fn(async () => ({
+          rawText: JSON.stringify({
+            intent: "lookup", selectedSkill: "customers", clarificationRequired: false, clarificationQuestion: null, responseStyle: "concise",
+            toolCalls: [{ toolName: "customers.get_summary", arguments: { query: "Titan Graphics" } }],
+          }),
+          provider: "openai", model: "test-model", requestMetadata: {},
+        })),
+      } as any;
+      const planner = new ConfiguredAssistantPlanner(provider, resolver());
+      await planner.plan({ organizationId: "org_1", message: "find customer Titan Graphics", context });
+      expect(provider.generateJson).toHaveBeenCalledWith(expect.objectContaining({ timeoutMs: 45_000 }));
+    } finally {
+      restoreEnv("AI_ASSISTANT_PLANNING_TIMEOUT_MS", previous);
+    }
   });
 
   test("pairs a bounded uninvoiced-order read with customer posted-revenue reporting", async () => {
@@ -78,5 +123,18 @@ describe("assistant provider planning", () => {
     } as any;
     const planner = new ConfiguredAssistantPlanner(provider, resolver());
     await expect(planner.plan({ organizationId: "org_1", message: "Show order", context })).rejects.toMatchObject({ code: "provider_invalid_response" });
+  });
+
+  test("rejects truncated provider JSON before returning any executable plan", async () => {
+    const provider = {
+      generateJson: jest.fn(async () => ({
+        rawText: "{\"intent\":\"lookup\",\"selectedSkill\":\"customers\"",
+        provider: "openai", model: "test", requestMetadata: { finishReason: "length" },
+      })),
+    } as any;
+    const planner = new ConfiguredAssistantPlanner(provider, resolver());
+    await expect(planner.plan({ organizationId: "org_1", message: "find customer Titan Graphics", context })).rejects.toMatchObject({
+      code: "provider_invalid_response",
+    });
   });
 });

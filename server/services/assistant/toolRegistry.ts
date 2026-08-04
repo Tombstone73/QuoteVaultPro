@@ -284,7 +284,7 @@ export function createAssistantToolRegistry(adapters: AssistantToolAdapters = {}
 export const assistantToolRegistry = createAssistantToolRegistry();
 
 const ignoredIdentityArgumentKeys = new Set([
-  "organizationid", "orgid", "tenantid", "userid", "permissions", "permission", "role",
+  "organizationid", "orgid", "tenantid", "userid", "permissions", "permission", "role", "roles",
 ]);
 const forbiddenArgumentKeys = new Set(["url", "href", "sql", "querysql", "servicename"]);
 

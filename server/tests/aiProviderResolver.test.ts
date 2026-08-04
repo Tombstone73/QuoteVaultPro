@@ -66,6 +66,41 @@ describe("AI provider resolver", () => {
     expect(resolved.model).toBe("managed-model");
   });
 
+  test("resolves managed OpenAI-compatible DeepSeek endpoint without rewriting secrets", async () => {
+    process.env.PRINTERSHERO_MANAGED_AI_PROVIDER = "openai_compatible";
+    process.env.PRINTERSHERO_MANAGED_AI_ENDPOINT = "https://api.deepseek.com/chat/completions";
+    process.env.PRINTERSHERO_MANAGED_AI_MODEL = "deepseek-v4-flash";
+    process.env.PRINTERSHERO_MANAGED_AI_API_KEY = "managed-deepseek-key";
+    const resolver = new AiProviderResolver(makeRepo({
+      id: "settings_deepseek",
+      orgId: "org_1",
+      mode: "printershero_managed",
+      provider: null,
+      model: null,
+      encryptedApiKey: null,
+      isEnabled: true,
+      bugReviewEnabled: true,
+      triageBriefEnabled: true,
+      assistantEnabled: true,
+      featureReviewEnabled: false,
+      duplicateDetectionEnabled: false,
+      orderParsingEnabled: false,
+      emailProcessingEnabled: false,
+      customerSupportEnabled: false,
+      inventoryRecommendationsEnabled: false,
+      productionAssistanceEnabled: false,
+      monthlyUsageLimit: null,
+    }) as any);
+
+    const resolved = await resolver.resolveProvider({ orgId: "org_1", feature: "assistant" });
+
+    expect(resolved.enabled).toBe(true);
+    expect(resolved.provider).toBe("openai_compatible");
+    expect(resolved.endpoint).toBe("https://api.deepseek.com/chat/completions");
+    expect(resolved.model).toBe("deepseek-v4-flash");
+    expect(resolved.apiKey).toBe("managed-deepseek-key");
+  });
+
   test("normalizes legacy managed settings rows to Printers Hero managed mode", async () => {
     const resolver = new AiProviderResolver(makeRepo({
       id: "settings_legacy",
