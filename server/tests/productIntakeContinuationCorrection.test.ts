@@ -45,13 +45,14 @@ describe("Product Intake explicit correction continuation", () => {
 
     const result = await service.respond({
       organizationId: "org_1", userId: "user_1", conversationId: "conversation_1", activeSessionId: "session_1",
-      message: "Use Print Products as category. Add Lamination single-select required custom option group with choices None, Gloss, Matte, defaulting to None. No production route and no minimum charge.",
+      message: "Use Print Products as category. Remove the Size option. Add Lamination single-select required custom option group with choices None, Gloss, Matte, defaulting to None. No production route and no minimum charge.",
     });
 
     expect(result.handled).toBe(true);
     expect(sessions.replaceBrief).toHaveBeenCalledWith(expect.objectContaining({ sessionId: "session_1", sourceText: expect.stringContaining("Explicit Product Intake correction") }));
     expect(replacement.brief.productIdentity.category).toMatchObject({ value: "Print Products", confidence: 100 });
     expect(replacement.brief.requiredOptions).toEqual(expect.arrayContaining([expect.objectContaining({ label: "Lamination", required: true, selectionMode: "single", sampleValues: ["None", "Gloss", "Matte"], defaultChoice: "None" })]));
+    expect([...replacement.brief.requiredOptions, ...replacement.brief.optionalOptions].some((option: any) => /^size$/i.test(option.label) || /^size$/i.test(option.normalizedGroup))).toBe(false);
     expect(result.cards.some((card) => card.kind === "action_proposal")).toBe(false);
     expect(result.cards.find((card) => card.kind === "product_options_summary")?.details?.items).toEqual(expect.arrayContaining(["Lamination", "Type: Single select", "Required: Yes", "Default: None", "Choices: None, Gloss, Matte"]));
   });

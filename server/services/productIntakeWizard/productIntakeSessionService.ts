@@ -651,6 +651,55 @@ function hasAnswerValue(question: ProductIntakeQuestion, value: unknown): boolea
   return typeof value === "string" && value.trim().length > 0;
 }
 
+function canonicalChoiceLabel(value: string): string {
+  const trimmed = value.trim().replace(/^[-*•\s]+|^\d+[.)]\s*/g, "");
+  if (!trimmed) return "";
+  return trimmed.split(/\s+/).map((part) => part ? `${part.slice(0, 1).toUpperCase()}${part.slice(1).toLowerCase()}` : part).join(" ");
+}
+
+/** "None" is an ordinary option value, never a blank pending answer. */
+export function parseProductIntakeChoiceAnswer(value: unknown): string[] {
+  const source = Array.isArray(value) ? value.map(String).join("\n") : typeof value === "string" ? value : "";
+  const seen = new Set<string>();
+  return source.replace(/\r/g, "\n").split(/[\n,;/|]+/).map(canonicalChoiceLabel).filter((choice) => {
+    const key = normalizeKey(choice);
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+/** Applies canonical question targets to the authoritative brief before
+ * rebuilding questions/readiness; it never infers a second option group. */
+export function applyProductIntakeAnswersToBrief(
+  brief: ProductIntakeBrief,
+  answers: Array<Pick<ProductIntakeAnswer, "questionKey" | "answer">>,
+): ProductIntakeBrief {
+  const answerByKey = new Map(answers.map((answer) => [answer.questionKey, answer.answer]));
+  const updated = [...brief.requiredOptions, ...brief.optionalOptions].map((optionGroup) => {
+    const optionKey = normalizeKey(optionGroup.normalizedGroup || optionGroup.label);
+    const prefix = `custom-option-${optionKey}`;
+    const choiceAnswer = answerByKey.get(`${prefix}-choices`);
+    const defaultAnswer = answerByKey.get(`${prefix}-default-choice`);
+    const requiredAnswer = answerByKey.get(`${prefix}-required`) ?? answerByKey.get(`confirm-option-required-${optionKey}`);
+    const selectionAnswer = answerByKey.get(`${prefix}-selection-mode`);
+    const parsedChoices = choiceAnswer === undefined ? [] : parseProductIntakeChoiceAnswer(choiceAnswer);
+    const choiceLabels = parsedChoices.length ? parsedChoices : optionGroup.choices?.map((choice) => choice.label) ?? optionGroup.sampleValues;
+    const requestedDefault = typeof defaultAnswer === "string" && defaultAnswer.trim()
+      ? canonicalChoiceLabel(defaultAnswer)
+      : optionGroup.defaultChoice ? canonicalChoiceLabel(optionGroup.defaultChoice) : null;
+    const boundDefault = requestedDefault ? choiceLabels.find((choice) => normalizeKey(choice) === normalizeKey(requestedDefault)) ?? null : null;
+    return {
+      ...optionGroup,
+      ...(typeof requiredAnswer === "boolean" ? { required: requiredAnswer } : {}),
+      ...(selectionAnswer === "single" || selectionAnswer === "multi" ? { selectionMode: selectionAnswer as "single" | "multi" } : {}),
+      ...(parsedChoices.length ? { sampleValues: parsedChoices, choices: parsedChoices.map((label) => ({ value: normalizeKey(label), label })) } : {}),
+      ...(boundDefault ? { defaultChoice: boundDefault } : {}),
+    };
+  });
+  return { ...brief, requiredOptions: updated.filter((option) => option.required), optionalOptions: updated.filter((option) => !option.required) };
+}
+
 function validateAnswerValue(question: ProductIntakeQuestion, value: unknown) {
   if (value == null) return;
   if (question.questionType === "boolean" && typeof value !== "boolean") {
@@ -1040,6 +1089,26 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
 
       const now = new Date();
       const resolvedAnswers = resolveProductIntakeAnswersForPersistence({ questions: detail.questions, answers: args.answers });
+      const incomingByKey = new Map(resolvedAnswers.map(({ question, answer }) => [question.questionKey, answer]));
+      const prospectiveAnswers = detail.answers.map((answer) => ({
+        questionKey: answer.questionKey,
+        answer: incomingByKey.has(answer.questionKey) ? incomingByKey.get(answer.questionKey) : answer.answer,
+      }));
+      for (const { question, answer } of resolvedAnswers) {
+        if (!detail.answers.some((existing) => existing.questionKey === question.questionKey)) {
+          prospectiveAnswers.push({ questionKey: question.questionKey, answer });
+        }
+      }
+      // Calculate against the proposed answer set first. This makes a replay of
+      // an already-applied answer a true no-op rather than a new revision.
+      const canonicalBrief = applyProductIntakeAnswersToBrief(detail.brief, prospectiveAnswers);
+      const briefChanged = JSON.stringify(canonicalBrief) !== JSON.stringify(detail.brief);
+      const answerChanged = resolvedAnswers.some(({ question, answer }) => {
+        const existing = detail.answers.find((candidate) => candidate.questionKey === question.questionKey);
+        return JSON.stringify(existing?.answer) !== JSON.stringify(answer);
+      });
+      if (!briefChanged && !answerChanged) return detail;
+
       for (const { question, answer } of resolvedAnswers) {
         await database.insert(productIntakeAnswers).values({
           organizationId: args.organizationId,
@@ -1061,10 +1130,34 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
         });
       }
 
+      const answeredDetail = await getDetail(args.organizationId, args.sessionId);
+      if (!answeredDetail) return null;
+      // The answer row is audit evidence, not the source of truth. Apply its
+      // canonical question target to the current corrected brief before any
+      // readiness or proposal fingerprint is calculated.
+      if (briefChanged) {
+        await database.update(productIntakeSessions)
+          .set({ aiBriefJson: canonicalBrief as any, missingDecisionsJson: canonicalBrief.missingDecisions as any, updatedByUserId: args.userId, updatedAt: new Date() })
+          .where(and(eq(productIntakeSessions.id, args.sessionId), eq(productIntakeSessions.organizationId, args.organizationId)));
+      }
+      const resolvedDefaultQuestionKeys = [...canonicalBrief.requiredOptions, ...canonicalBrief.optionalOptions]
+        .filter((optionGroup) => Boolean(optionGroup.defaultChoice) && (optionGroup.choices?.length ?? optionGroup.sampleValues.length) > 0)
+        .map((optionGroup) => `custom-option-${normalizeKey(optionGroup.normalizedGroup || optionGroup.label)}-default-choice`);
+      if (resolvedDefaultQuestionKeys.length > 0) {
+        await database.delete(productIntakeQuestions)
+          .where(and(
+            eq(productIntakeQuestions.organizationId, args.organizationId),
+            eq(productIntakeQuestions.sessionId, args.sessionId),
+            inArray(productIntakeQuestions.questionKey, resolvedDefaultQuestionKeys),
+          ));
+      }
       const nextDetail = await getDetail(args.organizationId, args.sessionId);
       if (!nextDetail) return null;
       const nextStatus = nextDetail.readiness.status;
-      const confidenceJson = recalculateProductIntakeConfidence(nextDetail);
+      const confidenceJson = {
+        ...recalculateProductIntakeConfidence(nextDetail),
+        revision: typeof answeredDetail.session.confidence?.revision === "number" ? answeredDetail.session.confidence.revision + 1 : 1,
+      };
       const [updatedSession] = await database.update(productIntakeSessions)
         .set({ status: nextStatus, confidenceJson, updatedByUserId: args.userId, updatedAt: new Date() })
         .where(and(eq(productIntakeSessions.id, args.sessionId), eq(productIntakeSessions.organizationId, args.organizationId)))
@@ -1094,7 +1187,7 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
           sourceFingerprint: createHash("sha256").update(args.sourceText).digest("hex"),
           missingDecisionsJson: args.brief.missingDecisions as any,
           status: resolveProductIntakeSessionStatus(args.brief, nextQuestions),
-          confidenceJson: { originalConfidence: detail.session.confidence?.overallConfidence ?? detail.brief.overallConfidence, currentConfidence: args.brief.overallConfidence, overallConfidence: args.brief.overallConfidence },
+          confidenceJson: { originalConfidence: detail.session.confidence?.overallConfidence ?? detail.brief.overallConfidence, currentConfidence: args.brief.overallConfidence, overallConfidence: args.brief.overallConfidence, revision: typeof detail.session.confidence?.revision === "number" ? detail.session.confidence.revision + 1 : 1 },
           updatedByUserId: args.userId,
           updatedAt: now,
         })
@@ -1136,7 +1229,7 @@ export function createDbProductIntakeSessionStore(database: any = defaultDb): Pr
       const corrected = await getDetail(args.organizationId, args.sessionId);
       if (!corrected) return null;
       const [finalSession] = await database.update(productIntakeSessions)
-        .set({ status: corrected.readiness.status, confidenceJson: recalculateProductIntakeConfidence(corrected), updatedByUserId: args.userId, updatedAt: new Date() })
+        .set({ status: corrected.readiness.status, confidenceJson: { ...recalculateProductIntakeConfidence(corrected), revision: typeof detail.session.confidence?.revision === "number" ? detail.session.confidence.revision + 1 : 1 }, updatedByUserId: args.userId, updatedAt: new Date() })
         .where(and(eq(productIntakeSessions.id, args.sessionId), eq(productIntakeSessions.organizationId, args.organizationId)))
         .returning();
       return finalSession ? await getDetail(args.organizationId, args.sessionId) : null;

@@ -4,6 +4,7 @@ import {
   productIntakeWizardAnalyzeRequestSchema,
   type ProductIntakeSessionDetail,
   type ProductIntakeAnswerPatchItem,
+  type ProductIntakeBrief,
 } from "@shared/productIntakeWizardSchemas";
 import { db } from "../../db";
 import {
@@ -117,8 +118,19 @@ function isExplicitProductIntakeCorrection(message: string): boolean {
     || /\b(?:single|multi)[\s-]*select\b[\s\S]{0,80}\b(?:option|choices?|default)\b/i.test(message)
     || /\b(?:required\s+)?(?:custom\s+)?option(?:\s+group)?\b[\s\S]{0,100}\b(?:choices?|default)\b/i.test(message)
     || /\b(?:require|requires)\s+(?:width\s+and\s+height|dimensions)\b/i.test(message)
+    || /\bremove\s+(?:the\s+)?size\s+option\b/i.test(message)
     || /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet)\b/i.test(message)
     || /\b(?:no|without|clear)\s+(?:production\s+)?(?:route|routing|minimum(?:\s+charge)?)\b/i.test(message);
+}
+
+function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, message: string): ProductIntakeBrief {
+  if (!/\bremove\s+(?:the\s+)?size\s+option\b/i.test(message)) return brief;
+  const isSize = (option: ProductIntakeBrief["requiredOptions"][number]) => /^(?:size|dimensions?)$/i.test(option.normalizedGroup) || /^(?:size|dimensions?)$/i.test(option.label);
+  return {
+    ...brief,
+    requiredOptions: brief.requiredOptions.filter((option) => !isSize(option)),
+    optionalOptions: brief.optionalOptions.filter((option) => !isSize(option)),
+  };
 }
 
 function isExplicitExistingProductUpdate(message: string): boolean {
@@ -463,7 +475,8 @@ export class ProductManagementSkillService {
     const request = productIntakeWizardAnalyzeRequestSchema.parse({ sourceType: "text_description", description: sourceText });
     // Corrections must be deterministic and immediately versioned; a live AI
     // retry may not recreate or delay an explicit staff correction.
-    const brief = await generateProductIntakeBrief({ orgId: input.organizationId, request, analyzer: null, templates: references.templates, materials: references.materials, provider: null });
+    const generatedBrief = await generateProductIntakeBrief({ orgId: input.organizationId, request, analyzer: null, templates: references.templates, materials: references.materials, provider: null });
+    const brief = applyExplicitIntakeCorrectionState(generatedBrief, input.message);
     const corrected = await this.deps.sessions.replaceBrief({ organizationId: input.organizationId, sessionId: existing.session.id, userId: input.userId, brief, sourceText });
     if (!corrected) return { handled: true, response: "The active Product Intake session no longer exists. No proposal was changed.", cards: [] };
     return {
