@@ -6,7 +6,6 @@ import {
   type AiProviderRequest,
   type AiProviderResponse,
 } from "./AiProviderAdapter";
-import { aiProviderResolver } from "../aiProviderResolver";
 import { resolveOpenAiCompatibleRequestPolicy } from "./providerRequestPolicy";
 
 const DEFAULT_AI_JSON_MAX_TOKENS = 2048;
@@ -182,10 +181,12 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
   }
 
   async generateJson(request: AiProviderRequest): Promise<AiProviderResponse> {
-    const config = request.providerConfig ?? await aiProviderResolver.resolveProvider({
-      orgId: request.orgId,
-      feature: request.feature,
-    });
+    const config = request.providerConfig ?? await (async () => {
+      // Direct adapter tests and explicitly supplied provider configs must not
+      // initialize the database-backed resolver.
+      const { aiProviderResolver } = await import("../aiProviderResolver");
+      return aiProviderResolver.resolveProvider({ orgId: request.orgId, feature: request.feature });
+    })();
 
     if (!config.enabled || !config.endpoint || !config.apiKey || !config.model || !config.provider) {
       throw new AiProviderUnavailableError("AI provider is not configured.");

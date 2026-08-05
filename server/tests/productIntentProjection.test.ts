@@ -57,4 +57,28 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
   it("rejects unresolved operational state before returning any draft", () => {
     expect(() => projectProductDraftIntentToProductBuilderDraft(intent({ material: { state: "unresolved", label: "Acrylic" } }))).toThrow(ProductIntentProjectionError);
   });
+
+  it("preserves an unresolved matrix unit in the contract but blocks PBV2 projection", () => {
+    const source = intent({
+      state: "needs_answers",
+      pricing: { model: "two_dimensional_matrix", unit: "unresolved", rowOptionKey: "thickness", columnOptionKey: "sides", cells: [{ row: "3mm", column: "single", priceCents: 1200 }] },
+      optionGroups: [
+        { key: "thickness", label: "Thickness", required: true, selectionMode: "single", values: [{ key: "3mm", label: "3mm", isDefault: true }] },
+        { key: "sides", label: "Sides", required: true, selectionMode: "single", values: [{ key: "single", label: "Single-sided", isDefault: true }] },
+      ],
+      unresolvedFields: [{ path: "pricing.unit", code: "PRICING_UNIT_UNRESOLVED", question: "Are these matrix prices per piece or per square foot?" }],
+    });
+    try {
+      projectProductDraftIntentToProductBuilderDraft(source);
+      throw new Error("Expected projection to reject an unresolved intent.");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "INTENT_NOT_READY" });
+    }
+    try {
+      projectProductDraftIntentToProductBuilderDraft({ ...source, state: "ready_for_review", unresolvedFields: [] });
+      throw new Error("Expected projection to reject an unresolved pricing unit.");
+    } catch (error) {
+      expect(error).toMatchObject({ code: "PRICING_UNIT_UNRESOLVED" });
+    }
+  });
 });

@@ -17,6 +17,30 @@ const compilerInput = {
   serverConstraints: ["lifecycle must remain inactive"],
 };
 
+const yardSignsPayload = {
+  kind: "complete_intent",
+  intent: {
+    operation: "new_product",
+    identity: { name: "Yard Signs Test", description: "", category: { state: "unresolved", label: "Signs" } },
+    lifecycle: { productStatus: "inactive", published: false }, measurement: { mode: "quantity_only" }, quantity: { behavior: "customer_entered", minimum: 1 },
+    pricing: {
+      model: "two_dimensional_matrix", unit: "unresolved", rowOptionKey: "thickness", columnOptionKey: "sides",
+      cells: [{ row: "3mm", column: "single", priceCents: 1200 }, { row: "3mm", column: "double", priceCents: 1800 }, { row: "6mm", column: "single", priceCents: 1600 }, { row: "6mm", column: "double", priceCents: 2200 }],
+    },
+    material: { state: "explicitly_unset" },
+    optionGroups: [
+      { key: "thickness", label: "Thickness", required: true, selectionMode: "single", values: [{ key: "3mm", label: "3mm", isDefault: true }, { key: "6mm", label: "6mm", isDefault: false }] },
+      { key: "sides", label: "Sides", required: true, selectionMode: "single", values: [{ key: "single", label: "Single-sided", isDefault: true }, { key: "double", label: "Double-sided", isDefault: false }] },
+    ],
+    workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true }, production: { route: { state: "explicitly_unset" }, configuration: {} }, visibility: { catalogVisible: false },
+    unresolvedFields: [{ path: "pricing.unit", code: "PRICING_UNIT_UNRESOLVED", question: "Are these matrix prices per piece or per square foot?" }], fieldMetadata: { "pricing.unit": { source: "unresolved" } },
+  },
+};
+
+function providerResponse(rawText: string) {
+  return { rawText, provider: "openai_compatible", model: "deepseek-test", requestMetadata: { providerRequestId: "req_1" } };
+}
+
 describe("ProductIntentCompiler", () => {
   test("uses one bounded repair attempt after malformed provider JSON without interpreting prose", async () => {
     const requests: any[] = [];
@@ -56,5 +80,51 @@ describe("ProductIntentCompiler", () => {
       ok: false,
       error: { code: "provider_unavailable", retryable: false },
     });
+  });
+
+  test.each([
+    ["plain JSON", JSON.stringify(yardSignsPayload)],
+    ["a Markdown fence", `\`\`\`json\n${JSON.stringify(yardSignsPayload)}\n\`\`\``],
+    ["prose before and after JSON", `Result follows: ${JSON.stringify(yardSignsPayload)} Thank you.`],
+  ])("accepts valid Yard Signs compiler JSON inside %s and applies server-owned fields", async (_case, rawText) => {
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(rawText)) });
+    const result = await compiler.compile({ ...compilerInput, request: "I want to add a new product called Yard Signs Test. It has 3mm and 6mm thicknesses, each available single-sided or double-sided. Prices are $12/$18 for 3mm and $16/$22 for 6mm." });
+
+    expect(result).toMatchObject({ ok: true, result: { kind: "complete_intent", intent: { organizationId: "org_test", revision: 0, state: "compiling", pricing: { model: "two_dimensional_matrix", unit: "unresolved", cells: expect.arrayContaining([{ row: "3mm", column: "single", priceCents: 1200 }, { row: "6mm", column: "double", priceCents: 2200 }]) } } } });
+    if (result.ok && result.result.kind === "complete_intent") expect(result.result.intent.intentId).toEqual(expect.any(String));
+  });
+
+  test("repairs invalid JSON once with issue paths and preserves the Yard Signs matrix", async () => {
+    const requests: any[] = [];
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async (request) => {
+      requests.push(request);
+      return providerResponse(requests.length === 1 ? "not JSON" : JSON.stringify(yardSignsPayload));
+    }) });
+    const result = await compiler.compile(compilerInput);
+
+    expect(result).toMatchObject({ ok: true, result: { kind: "complete_intent", intent: { pricing: { unit: "unresolved", cells: expect.arrayContaining([{ row: "3mm", column: "double", priceCents: 1800 }]) } } } });
+    expect(requests).toHaveLength(2);
+    expect(requests[1].user).toContain("validationIssuePaths");
+    expect(requests[1].user).toContain("json_extraction_failure");
+    expect(requests[1].system).toContain("Do not add commentary, Markdown, or code fences");
+  });
+
+  test.each([
+    ["unknown fields", { ...yardSignsPayload, intent: { ...yardSignsPayload.intent, unexpected: true } }, "intent.unexpected"],
+    ["missing operation", (() => { const { operation: _operation, ...intent } = yardSignsPayload.intent; return { ...yardSignsPayload, intent }; })(), "intent.operation"],
+  ])("rejects %s with safe schema diagnostics after one repair", async (_case, payload, expectedPath) => {
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(JSON.stringify(payload))) });
+    const result = await compiler.compile(compilerInput);
+
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid_contract", diagnosticCode: expect.stringMatching(/^pic-/) }, diagnostics: { stage: "repair_response_schema_rejection", schemaIssuePaths: expect.arrayContaining([expectedPath]) } });
+  });
+
+  test.each([
+    ["HTTP failure", Object.assign(new Error("HTTP 400"), { kind: "http_failure", status: 400, providerRequestId: "req_http" }), "provider_http_failure"],
+    ["empty response", Object.assign(new Error("empty"), { kind: "empty_response", status: 200, providerRequestId: "req_empty" }), "provider_empty_response"],
+  ])("returns a safe diagnostic reference for provider %s", async (_case, error, stage) => {
+    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => { throw error; }) });
+    await expect(compiler.compile(compilerInput)).resolves.toMatchObject({ ok: false, error: { code: "provider_failure", diagnosticCode: expect.stringMatching(/^pic-/) }, diagnostics: { stage } });
   });
 });
