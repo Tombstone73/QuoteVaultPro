@@ -39,6 +39,7 @@ export const assistantProductionCommandAllowlist = [
   "products.adjust_pricing",
   "products.rollback_pricing_change_set",
   "products.create_configurable_draft",
+  "products.create_from_canonical_intent",
   "products.clone_to_inactive_draft",
   "products.replace_inactive_matrix",
   "products.replace_inactive_quantity_tiers",
