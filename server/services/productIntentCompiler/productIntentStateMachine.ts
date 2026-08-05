@@ -60,12 +60,12 @@ export function currentProductIntent(envelope: ProductIntentSessionEnvelope): Pr
 
 /** Applies an optimistic-concurrency patch and invalidates any older GO token by
  * clearing confirmationRevision. Executed sessions are immutable. */
-export function applyProductIntentSessionPatch(input: { envelope: ProductIntentSessionEnvelope; patch: unknown; reason: "answer" | "correction" | "server_resolution"; now?: Date }): ProductIntentSessionEnvelope {
+export function applyProductIntentSessionPatch(input: { envelope: ProductIntentSessionEnvelope; patch: unknown; reason: "answer" | "correction" | "server_resolution"; actorUserId?: string | null; now?: Date }): ProductIntentSessionEnvelope {
   const envelope = productIntentSessionEnvelopeSchema.parse(input.envelope);
   if (envelope.state === "executed") throw new Error("PRODUCT_INTENT_SESSION_EXECUTED");
   const patch = productDraftIntentPatchSchema.parse(input.patch);
   if (patch.baseRevision !== envelope.currentRevision) throw new Error("PRODUCT_INTENT_STALE_REVISION");
-  const intent = applyProductDraftIntentPatch(currentProductIntent(envelope), patch);
+  const intent = applyProductDraftIntentPatch(currentProductIntent(envelope), patch, { actorUserId: input.actorUserId });
   const revision = { revision: intent.revision, intent, fingerprint: productDraftIntentFingerprint(intent), createdAt: (input.now ?? new Date()).toISOString(), reason: input.reason } as const;
   return productIntentSessionEnvelopeSchema.parse({ ...envelope, state: deriveState(intent), currentRevision: intent.revision, revisions: [...envelope.revisions, revision], confirmationRevision: null });
 }
