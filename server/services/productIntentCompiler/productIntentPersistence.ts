@@ -15,6 +15,7 @@ import {
   createProductIntentSession,
   currentProductIntent,
   markProductIntentExecuted,
+  abandonProductIntent,
   productIntentSessionEnvelopeSchema,
   type ProductIntentSessionEnvelope,
 } from "./productIntentStateMachine";
@@ -191,11 +192,25 @@ export class ProductIntentPersistenceService {
     return this.persistTransition({ current, expectedRevision: input.expectedRevision, expectedFingerprint: input.expectedFingerprint, session: bindProductIntentConfirmation(session, input.expectedFingerprint), actorUserId: input.actorUserId });
   }
 
+  /** Presentation-only state uses the same CAS binding but does not append a
+   * product revision or alter confirmation readiness. */
+  async updateResolutionMetadata(input: { organizationId: string; actorUserId: string; proposalId: string; expectedRevision: number; expectedFingerprint: string; resolutionMetadata: Record<string, unknown> }): Promise<CanonicalProductIntentSession> {
+    const current = await this.load(input);
+    if (current.specification.session.currentRevision !== input.expectedRevision || current.fingerprint !== input.expectedFingerprint) throw new ProductIntentPersistenceError("PRODUCT_INTENT_STALE_REVISION", "The product intent changed; review the latest revision.");
+    return this.persistTransition({ current, expectedRevision: input.expectedRevision, expectedFingerprint: input.expectedFingerprint, session: current.specification.session, actorUserId: input.actorUserId, resolutionMetadata: input.resolutionMetadata });
+  }
+
   async markExecuted(input: { organizationId: string; actorUserId: string; proposalId: string; expectedRevision: number; expectedFingerprint: string }): Promise<CanonicalProductIntentSession> {
     const current = await this.load(input);
     const session = current.specification.session;
     if (session.currentRevision !== input.expectedRevision || current.fingerprint !== input.expectedFingerprint) throw new ProductIntentPersistenceError("PRODUCT_INTENT_STALE_REVISION", "The product intent changed; review the latest revision.");
     return this.persistTransition({ current, expectedRevision: input.expectedRevision, expectedFingerprint: input.expectedFingerprint, session: markProductIntentExecuted(session, input.expectedRevision), actorUserId: input.actorUserId });
+  }
+
+  async abandon(input: { organizationId: string; actorUserId: string; proposalId: string; expectedRevision: number; expectedFingerprint: string }): Promise<CanonicalProductIntentSession> {
+    const current = await this.load(input);
+    if (current.specification.session.currentRevision !== input.expectedRevision || current.fingerprint !== input.expectedFingerprint) throw new ProductIntentPersistenceError("PRODUCT_INTENT_STALE_REVISION", "The product intent changed; review the latest revision.");
+    return this.persistTransition({ current, expectedRevision: input.expectedRevision, expectedFingerprint: input.expectedFingerprint, session: abandonProductIntent(current.specification.session), actorUserId: input.actorUserId });
   }
 
   private async persistTransition(input: {
@@ -272,4 +287,3 @@ export class DrizzleCanonicalProductIntentProposalStore implements CanonicalProd
 function toRow(row: any): CanonicalProductIntentProposalRow {
   return { id: row.id, organizationId: row.orgId, actorUserId: row.actorUserId, conversationId: row.conversationId, specification: row.specification, fingerprint: row.fingerprint, status: row.status, createdAt: row.createdAt, updatedAt: row.updatedAt };
 }
-

@@ -25,6 +25,11 @@ import { DrizzleAssistantRepository } from "../storage/assistant.repo";
 import { AnalyticalCustomerResolutionService } from "../services/assistant/analyticalCustomerResolution";
 import { AssistantAnalyticsReportingRepository } from "../storage/assistantAnalyticsReporting.repo";
 import { assistantReportEntityResolutionsRepository } from "../storage/assistantReportEntityResolutions.repo";
+import { ConfiguredCanonicalProductIntentRouter } from "../services/assistant/productManagementSkill";
+
+const canonicalInteractionRequestSchema = z.object({
+  proposalId: z.string().uuid(), action: z.enum(["accept_recommendation", "dismiss_recommendation", "apply_candidate"]), actionId: z.string().min(3).max(128), newProductName: z.string().trim().min(1).max(160).optional(),
+}).strict();
 
 function getUserId(user: unknown): string | null {
   const candidate = user as { id?: unknown; claims?: { sub?: unknown } } | null;
@@ -363,6 +368,18 @@ export function registerAssistantRoutes(
     } catch (error) {
       return sendOrderOptionSelectionError(res, error);
     }
+  });
+
+  /** Opaque canonical interaction IDs are resolved only against the latest
+   * tenant/actor-bound session. No browser-supplied patch is accepted. */
+  app.post("/api/assistant/conversations/:conversationId/product-intent-interactions", ...guarded, async (req, res) => {
+    try {
+      const scope = resolveScope(req); const input = canonicalInteractionRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
+      const router = new ConfiguredCanonicalProductIntentRouter(); const result = await router.interact!({ organizationId: scope.organizationId, actorUserId: scope.userId, ...input });
+      if ("navigation" in result) return res.json({ success: true, data: result });
+      if (!result.ok) return res.status(409).json({ error: { code: result.code, message: result.message, retryable: false } });
+      return res.json({ success: true, data: { proposalId: result.session.proposalId, card: result.card } });
+    } catch (error) { return sendError(res, error); }
   });
 
   app.post("/api/assistant/report-resolutions/:resolutionId/select", ...guarded, async (req, res) => {

@@ -92,6 +92,7 @@ export interface CanonicalProductIntentRouter {
   loadForConversation(input: { organizationId: string; actorUserId: string; conversationId: string }): Promise<CanonicalProductIntentSession | null>;
   create(input: { organizationId: string; actorUserId: string; conversationId: string; request: string }): Promise<CanonicalProductIntentOutcome>;
   continue(input: { organizationId: string; actorUserId: string; proposalId: string; request: string }): Promise<CanonicalProductIntentOutcome>;
+  interact?(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; cloneProductId?: string } }>;
 }
 
 function compilerInput(orgId: string, request: string, candidates: { categories: Array<{ label: string }>; materials: Array<{ label: string }>; productionRoutes: Array<{ label: string }> }): ProductIntentCompilerInput {
@@ -109,17 +110,21 @@ function compilerInput(orgId: string, request: string, candidates: { categories:
  * initialize a provider or a database connection. */
 export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductIntentRouter {
   private readonly persistence = new ProductIntentPersistenceService(new DrizzleCanonicalProductIntentProposalStore());
-  private async service(organizationId: string): Promise<{ service: CanonicalProductIntentService; candidates: { categories: Array<{ id: string; label: string }>; materials: Array<{ id: string; label: string }>; productionRoutes: Array<{ id: string; label: string }> } } | null> {
+  private async service(organizationId: string): Promise<{ service: CanonicalProductIntentService; candidates: { categories: Array<{ id: string; label: string }>; materials: Array<{ id: string; label: string }>; productionRoutes: Array<{ id: string; label: string }>; existingProducts: Array<{ id: string; name: string; isActive: boolean; cloneSupported: boolean }> } } | null> {
     const compiler = await createConfiguredProductIntentCompiler();
     if (!compiler) return null;
-    const [categoryRows, materialRows, routeRows] = await Promise.all([
+    const [categoryRows, materialRows, routeRows, existingProducts] = await Promise.all([
       db.select({ id: productTypes.id, label: productTypes.name }).from(productTypes).where(eq(productTypes.organizationId, organizationId)),
       db.select({ id: materials.id, label: materials.name }).from(materials).where(eq(materials.organizationId, organizationId)),
       db.select({ id: stations.id, label: stations.name }).from(stations).where(and(eq(stations.organizationId, organizationId), eq(stations.active, true))),
+      db.select({ id: products.id, name: products.name, isActive: products.isActive }).from(products).where(eq(products.organizationId, organizationId)),
     ]);
-    const candidates = { categories: categoryRows, materials: materialRows, productionRoutes: routeRows };
+    // Canonical duplicate resolution only advertises cloning after a dedicated
+    // clone proposal has been prepared. This listing has not done that work,
+    // so it must not imply that a source can be cloned yet.
+    const candidates = { categories: categoryRows, materials: materialRows, productionRoutes: routeRows, existingProducts: existingProducts.map((product) => ({ ...product, cloneSupported: false })) };
     return { candidates, service: new CanonicalProductIntentService(compiler, this.persistence, candidates, {
-      duplicateName: async (name) => (await db.select({ id: products.id, name: products.name }).from(products).where(eq(products.organizationId, organizationId))).some((product) => normalizeProductReference(product.name) === normalizeProductReference(name)),
+      duplicateName: async (name) => candidates.existingProducts.some((product) => normalizeProductReference(product.name) === normalizeProductReference(name)),
     }) };
   }
   loadForConversation(input: { organizationId: string; actorUserId: string; conversationId: string }) { return this.persistence.loadForConversation(input); }
@@ -132,6 +137,14 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
     const configured = await this.service(input.organizationId);
     if (!configured) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interpretation is unavailable until a compatible AI provider is configured." };
     return configured.service.continue({ ...input, compilerInput: compilerInput(input.organizationId, input.request, configured.candidates) });
+  }
+  async interact(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; cloneProductId?: string } }> {
+    const configured = await this.service(input.organizationId);
+    if (!configured) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interactions are unavailable until the canonical service is configured." };
+    if (input.action === "accept_recommendation") return configured.service.acceptRecommendation({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, recommendationId: input.actionId });
+    if (input.action === "dismiss_recommendation") return configured.service.dismissRecommendation({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, recommendationId: input.actionId });
+    const result = await configured.service.applyCandidateAction(input);
+    return result.outcome ?? { navigation: result.navigation! };
   }
 }
 
@@ -688,7 +701,7 @@ export class ProductManagementSkillService {
     }
     const explicitCreation = isExplicitProductCreation(input.message);
     if (current) {
-      if (explicitCreation) return { handled: true, response: "This conversation already has a canonical product intent. Finish, abandon, or start the new product in a separate conversation; the two requests were not merged.", cards: canonicalCards({ ok: true, session: current, issues: [], card: { kind: "canonical_product_intent_proposal", revision: current.specification.session.currentRevision, fingerprint: current.fingerprint, title: "Current canonical product intent", readiness: { ready: false, blockers: [], questions: [] }, fields: {} } }) };
+      if (explicitCreation) return { handled: true, response: "This conversation already has a canonical product intent. Finish, abandon, or start the new product in a separate conversation; the two requests were not merged.", cards: canonicalCards({ ok: true, session: current, issues: [], card: { kind: "canonical_product_intent_proposal", revision: current.specification.session.currentRevision, fingerprint: current.fingerprint, title: "Current canonical product intent", readiness: { ready: false, blockers: [], questions: [] }, requiredQuestions: [], candidateResolutions: [], optionalRecommendations: [], fields: {} } }) };
       const state = current.specification.session.state;
       if (["executed", "expired", "abandoned"].includes(state)) return { handled: true, response: `This canonical product-intent session is ${state} and cannot be changed.`, cards: [] };
       try {

@@ -1,5 +1,6 @@
 import { productDraftIntentFingerprint, type ProductDraftIntent } from "@shared/productDraftIntent";
 import type { ProductIntentIssue } from "./productIntentResolver";
+import type { ProductIntentCandidateAction, ProductIntentRecommendation } from "./productIntentInteractions";
 
 export type CanonicalProductIntentProposalDto = {
   kind: "canonical_product_intent_proposal";
@@ -7,6 +8,9 @@ export type CanonicalProductIntentProposalDto = {
   fingerprint: string;
   title: string;
   readiness: { ready: boolean; blockers: string[]; questions: string[] };
+  requiredQuestions: Array<{ id: string; question: string; path: string }>;
+  candidateResolutions: ProductIntentCandidateAction[];
+  optionalRecommendations: ProductIntentRecommendation[];
   fields: Record<string, string | string[]>;
 };
 
@@ -22,13 +26,15 @@ function pricing(intent: ProductDraftIntent): string {
 
 /** Presentation is intentionally a pure projection of the canonical revision;
  * it never sees source text, legacy briefs, or a PBV2 tree. */
-export function presentProductDraftIntent(intent: ProductDraftIntent, issues: readonly ProductIntentIssue[]): CanonicalProductIntentProposalDto {
+export function presentProductDraftIntent(intent: ProductDraftIntent, issues: readonly ProductIntentIssue[], interactions: { candidateResolutions?: ProductIntentCandidateAction[]; optionalRecommendations?: ProductIntentRecommendation[] } = {}): CanonicalProductIntentProposalDto {
   const questions = issues.filter((issue) => issue.severity === "question").map((issue) => issue.message);
   const blockers = issues.filter((issue) => issue.severity === "blocker").map((issue) => issue.message);
   const optionGroups = intent.optionGroups.map((group) => `${group.label}: ${group.values.map((value) => `${value.label}${value.isDefault ? " (default)" : ""}`).join(", ")}`);
   return {
     kind: "canonical_product_intent_proposal", revision: intent.revision, fingerprint: productDraftIntentFingerprint(intent), title: `Create inactive draft: ${intent.identity.name}`,
     readiness: { ready: blockers.length === 0 && questions.length === 0 && intent.state === "ready_for_review", blockers, questions },
+    requiredQuestions: issues.filter((issue) => issue.severity === "question").map((issue) => ({ id: issue.code, question: issue.message, path: issue.path })),
+    candidateResolutions: interactions.candidateResolutions ?? [], optionalRecommendations: interactions.optionalRecommendations ?? [],
     fields: {
       Product: intent.identity.name, Category: intent.identity.category.label,
       Measurement: intent.measurement.mode === "fixed_size" ? `Fixed size: ${intent.measurement.dimensions.widthIn} × ${intent.measurement.dimensions.heightIn} in` : intent.measurement.mode === "dimensions_required" ? "Width and height required" : "Quantity only",

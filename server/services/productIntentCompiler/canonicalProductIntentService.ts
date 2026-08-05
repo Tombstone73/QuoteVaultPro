@@ -16,11 +16,13 @@ import {
   type ProductIntentResolutionContext,
   type TenantIntentReference,
 } from "./productIntentResolver";
+import { generateProductIntentCandidateActions, generateProductIntentRecommendations, parseProductIntentCandidateAction, parseProductIntentRecommendation, type ExistingProductCandidate } from "./productIntentInteractions";
 
 export type CanonicalProductIntentCandidates = {
   categories: readonly TenantIntentReference[];
   materials: readonly TenantIntentReference[];
   productionRoutes: readonly TenantIntentReference[];
+  existingProducts?: readonly ExistingProductCandidate[];
 };
 
 export type CanonicalProductIntentOutcome =
@@ -73,13 +75,22 @@ export class CanonicalProductIntentService {
     return { intent, issues: validation.issues };
   }
 
+  private async presentation(intent: ProductDraftIntent, issues: ProductIntentIssue[], dismissed: readonly string[] = []) {
+    const fingerprint = (await import("@shared/productDraftIntent")).productDraftIntentFingerprint(intent);
+    return presentProductDraftIntent(intent, issues, {
+      candidateResolutions: generateProductIntentCandidateActions(intent, fingerprint, issues, this.candidates),
+      optionalRecommendations: generateProductIntentRecommendations(intent, fingerprint, dismissed),
+    });
+  }
+
   async create(input: { organizationId: string; actorUserId: string; conversationId: string; compilerInput: ProductIntentCompilerInput }): Promise<CanonicalProductIntentOutcome> {
     const compiled = await this.compiler.compile(input.compilerInput);
     if (!compiled.ok) return { ok: false, code: compiled.error.code, message: compiled.error.message };
     if (compiled.result.kind !== "complete_intent") return { ok: false, code: "PRODUCT_INTENT_INITIAL_RESULT_INVALID", message: "The product request needs a complete structured intent before it can be saved." };
     const { intent, issues } = await this.validate(compiled.result.intent);
-    const session = await this.persistence.create({ organizationId: input.organizationId, actorUserId: input.actorUserId, conversationId: input.conversationId, intent, compilerResult: compiled.result, unresolvedQuestions: questionsFrom(issues), resolutionMetadata: { architecture: "canonical_product_intent" } });
-    return { ok: true, session, issues, card: presentProductDraftIntent(intent, issues) };
+    const card = await this.presentation(intent, issues);
+    const session = await this.persistence.create({ organizationId: input.organizationId, actorUserId: input.actorUserId, conversationId: input.conversationId, intent, compilerResult: compiled.result, unresolvedQuestions: questionsFrom(issues), resolutionMetadata: { architecture: "canonical_product_intent", dismissedRecommendationIds: [] } });
+    return { ok: true, session, issues, card };
   }
 
   async continue(input: { organizationId: string; actorUserId: string; proposalId: string; request: string; compilerInput: ProductIntentCompilerInput }): Promise<CanonicalProductIntentOutcome> {
@@ -93,6 +104,46 @@ export class CanonicalProductIntentService {
     const { intent, issues } = await this.validate(applyProductDraftIntentPatch(draft, compiled.result.patch, { actorUserId: input.actorUserId }));
     const patch = replacementPatch(intent, current.specification.session.currentRevision);
     const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: current.specification.session.currentRevision, expectedFingerprint: current.fingerprint, patch, reason: "correction", compilerResult: compiled.result, unresolvedQuestions: questionsFrom(issues) });
-    return { ok: true, session, issues, card: presentProductDraftIntent(intent, issues) };
+    return { ok: true, session, issues, card: await this.presentation(intent, issues) };
+  }
+
+  async acceptRecommendation(input: { organizationId: string; actorUserId: string; proposalId: string; recommendationId: string }): Promise<CanonicalProductIntentOutcome> {
+    const current = await this.persistence.load(input); const intent = current.specification.session.revisions.at(-1)!.intent;
+    const dismissed = Array.isArray(current.specification.resolutionMetadata.dismissedRecommendationIds) ? current.specification.resolutionMetadata.dismissedRecommendationIds.filter((value): value is string => typeof value === "string") : [];
+    const currentValidation = await this.validate(intent); const card = await this.presentation(intent, currentValidation.issues, dismissed); const recommendation = card.optionalRecommendations.find((item) => item.id === input.recommendationId);
+    if (!recommendation) return { ok: false, code: "PRODUCT_INTENT_INTERACTION_STALE", message: "That product suggestion is no longer available; review the latest revision." };
+    const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
+    const validation = await this.validate(applyProductDraftIntentPatch(intent, parseProductIntentRecommendation(recommendation).patch, { actorUserId: input.actorUserId }));
+    const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: intent.revision, expectedFingerprint: current.fingerprint, patch: replacementPatch(validation.intent, intent.revision), reason: "server_resolution", unresolvedQuestions: questionsFrom(validation.issues), resolutionMetadata: { ...current.specification.resolutionMetadata, dismissedRecommendationIds: [] } });
+    return { ok: true, session, issues: validation.issues, card: await this.presentation(validation.intent, validation.issues) };
+  }
+
+  async dismissRecommendation(input: { organizationId: string; actorUserId: string; proposalId: string; recommendationId: string }): Promise<CanonicalProductIntentOutcome> {
+    const current = await this.persistence.load(input); const intent = current.specification.session.revisions.at(-1)!.intent;
+    const dismissed = Array.isArray(current.specification.resolutionMetadata.dismissedRecommendationIds) ? current.specification.resolutionMetadata.dismissedRecommendationIds.filter((value): value is string => typeof value === "string") : [];
+    const validation = await this.validate(intent); const card = await this.presentation(intent, validation.issues, dismissed);
+    if (!card.optionalRecommendations.some((item) => item.id === input.recommendationId)) return { ok: false, code: "PRODUCT_INTENT_INTERACTION_STALE", message: "That product suggestion is no longer available; review the latest revision." };
+    const session = await this.persistence.updateResolutionMetadata({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: intent.revision, expectedFingerprint: current.fingerprint, resolutionMetadata: { ...current.specification.resolutionMetadata, dismissedRecommendationIds: [...dismissed, input.recommendationId].sort() } });
+    return { ok: true, session, issues: validation.issues, card: await this.presentation(intent, validation.issues, [...dismissed, input.recommendationId]) };
+  }
+
+  async applyCandidateAction(input: { organizationId: string; actorUserId: string; proposalId: string; actionId: string; newProductName?: string }): Promise<{ outcome?: CanonicalProductIntentOutcome; navigation?: { href: string; abandon: boolean; cloneProductId?: string } }> {
+    const current = await this.persistence.load(input); const intent = current.specification.session.revisions.at(-1)!.intent;
+    const validation = await this.validate(intent); const card = await this.presentation(intent, validation.issues);
+    const action = card.candidateResolutions.find((item) => item.id === input.actionId);
+    if (!action) throw new Error("PRODUCT_INTENT_INTERACTION_STALE");
+    const parsed = parseProductIntentCandidateAction(action);
+    if (parsed.navigationOnly) {
+      if (parsed.kind === "open_existing_product") await this.persistence.abandon({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: intent.revision, expectedFingerprint: current.fingerprint });
+      return { navigation: { href: parsed.candidate?.href ?? `/products/${parsed.candidate?.id}`, abandon: parsed.kind === "open_existing_product", ...(parsed.kind === "clone_existing_product_to_inactive_draft" && parsed.candidate ? { cloneProductId: parsed.candidate.id } : {}) } };
+    }
+    const candidatePatch = parsed.input === "new_product_name"
+      ? replacementPatch({ ...intent, identity: { ...intent.identity, name: String(input.newProductName ?? "").trim() } }, intent.revision)
+      : parsed.patch;
+    if (!candidatePatch || (parsed.input === "new_product_name" && !String(input.newProductName ?? "").trim())) throw new Error("PRODUCT_INTENT_ACTION_INPUT_INVALID");
+    const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
+    const next = await this.validate(applyProductDraftIntentPatch(intent, candidatePatch, { actorUserId: input.actorUserId }));
+    const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: intent.revision, expectedFingerprint: current.fingerprint, patch: replacementPatch(next.intent, intent.revision), reason: "server_resolution", unresolvedQuestions: questionsFrom(next.issues) });
+    return { outcome: { ok: true, session, issues: next.issues, card: await this.presentation(next.intent, next.issues) } };
   }
 }

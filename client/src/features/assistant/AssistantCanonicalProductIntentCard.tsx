@@ -14,6 +14,8 @@ export type CanonicalProductIntentCard = {
   ready: boolean;
   blockers: string[];
   questions: string[];
+  recommendations: Array<{ id: string; title: string; description: string }>;
+  candidates: Array<{ id: string; label: string; description: string; blocksConfirmation: boolean; kind: string; input: string | null; href: string | null }>;
   fields: Array<{ label: string; value: string }>;
 };
 
@@ -34,6 +36,10 @@ function displayValue(value: unknown): string | null {
   if (single) return single;
   const values = strings(value);
   return values.length ? values.join(" · ") : null;
+}
+function actions(value: unknown, requireBlocking = false) {
+  if (!Array.isArray(value)) return [];
+  return value.slice(0, 20).flatMap((item) => { const action = record(item); const id = text(action?.id); const label = text(action?.title) ?? text(action?.label); const description = text(action?.description); const blocksConfirmation = action?.blocksConfirmation === true; const kind = text(action?.kind) ?? "recommendation"; return id && label && description && (!requireBlocking || blocksConfirmation) ? [{ id, label, description, blocksConfirmation, kind, input: text(action?.input), href: text(record(action?.candidate)?.href) }] : []; });
 }
 
 /**
@@ -77,6 +83,7 @@ export function toCanonicalProductIntentCard(value: unknown): CanonicalProductIn
     ready: readiness.ready,
     blockers: strings(readiness.blockers),
     questions: strings(readiness.questions),
+    recommendations: actions(dto.optionalRecommendations).map(({ id, label, description }) => ({ id, title: label, description })), candidates: actions(dto.candidateResolutions, true),
     fields: rendered,
   };
 }
@@ -108,18 +115,25 @@ function IssueList({ title, values, tone }: { title: string; values: string[]; t
   </div>;
 }
 
-export function CanonicalProductIntentCardView({ card }: { card: CanonicalProductIntentCard }) {
-  const needsInput = card.questions.length > 0 || card.blockers.length > 0;
-  return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Canonical product intent: ${card.title}`}>
+export function CanonicalProductIntentCardView({ card, onInteraction }: { card: CanonicalProductIntentCard; onInteraction?: (input: { proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }) => Promise<unknown> }) {
+  const [override, setOverride] = React.useState<CanonicalProductIntentCard | null>(null);
+  React.useEffect(() => setOverride(null), [card.fingerprint]);
+  const currentCard = override ?? card;
+  const needsInput = currentCard.questions.length > 0 || currentCard.blockers.length > 0;
+  const [rename, setRename] = React.useState(""); const [busy, setBusy] = React.useState<string | null>(null);
+  const interact = async (action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate", actionId: string, newProductName?: string) => { if (!onInteraction || !currentCard.proposalId) return; setBusy(actionId); try { const result = await onInteraction({ proposalId: currentCard.proposalId, action, actionId, newProductName }); const raw = record(result); const next = raw?.card ? toCanonicalProductIntentCard({ kind: "canonical_product_intent_proposal", details: { canonicalProductIntent: raw.card, proposalId: currentCard.proposalId } }) : null; if (next) setOverride(next); } finally { setBusy(null); } };
+  return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Canonical product intent: ${currentCard.title}`}>
     <div className="flex items-start justify-between gap-3">
-      <div><p className="font-semibold">{card.title}</p><p className="mt-0.5 text-muted-foreground">Canonical product configuration</p></div>
-      <span className="shrink-0 rounded bg-muted px-2 py-1 font-medium text-muted-foreground">Revision {card.revision}</span>
+      <div><p className="font-semibold">{currentCard.title}</p><p className="mt-0.5 text-muted-foreground">Canonical product configuration</p></div>
+      <span className="shrink-0 rounded bg-muted px-2 py-1 font-medium text-muted-foreground">Revision {currentCard.revision}</span>
     </div>
-    {card.fields.length ? <dl className="mt-3 grid gap-1 sm:grid-cols-2">{card.fields.map((field) => <div key={field.label}><dt className="inline font-medium">{field.label}: </dt><dd className="inline">{field.value}</dd></div>)}</dl> : <p className="mt-3 text-muted-foreground">The latest canonical revision is still being prepared.</p>}
-    <IssueList title="Required decisions" values={card.questions} tone="question" />
-    <IssueList title="Blocking validation" values={card.blockers} tone="blocker" />
+    {currentCard.fields.length ? <dl className="mt-3 grid gap-1 sm:grid-cols-2">{currentCard.fields.map((field) => <div key={field.label}><dt className="inline font-medium">{field.label}: </dt><dd className="inline">{field.value}</dd></div>)}</dl> : <p className="mt-3 text-muted-foreground">The latest canonical revision is still being prepared.</p>}
+    <IssueList title="Required decisions" values={currentCard.questions} tone="question" />
+    {currentCard.candidates.length ? <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/10 p-2"><p className="font-medium">Required to continue</p><ul className="mt-1 list-disc space-y-1 pl-4">{currentCard.candidates.map((action) => <li key={action.id}><span className="font-medium">{action.label}:</span> {action.description}{action.input === "new_product_name" ? <span className="mt-1 flex gap-1"><input className="rounded border bg-background px-1" value={rename} onChange={(event) => setRename(event.target.value)} placeholder="New product name" /><Button size="sm" disabled={!rename.trim() || busy === action.id} onClick={() => void interact("apply_candidate", action.id, rename)}>Rename</Button></span> : onInteraction ? <Button className="ml-1" size="sm" disabled={busy === action.id} onClick={() => void interact("apply_candidate", action.id)}>{busy === action.id ? "Applying…" : action.href ? "Open existing" : "Select"}</Button> : action.href ? <a className="ml-1 text-primary underline" href={action.href}>Open existing</a> : null}</li>)}</ul></div> : null}
+    <IssueList title="Blocking validation" values={currentCard.blockers} tone="blocker" />
+    {currentCard.recommendations.length ? <div className="mt-3 rounded border border-primary/25 bg-primary/5 p-2"><p className="font-medium">Product suggestions</p><p className="mt-1 text-muted-foreground">Optional improvements; they do not block review or GO.</p><ul className="mt-1 list-disc space-y-1 pl-4">{currentCard.recommendations.map((recommendation) => <li key={recommendation.id}><span className="font-medium">{recommendation.title}:</span> {recommendation.description}{onInteraction && currentCard.proposalId ? <span className="ml-2 inline-flex gap-1"><Button size="sm" disabled={busy === recommendation.id} onClick={() => void interact("accept_recommendation", recommendation.id)}>Add</Button><Button size="sm" variant="outline" disabled={busy === recommendation.id} onClick={() => void interact("dismiss_recommendation", recommendation.id)}>Dismiss</Button></span> : null}</li>)}</ul></div> : null}
     <p className="mt-3 rounded bg-muted/60 p-2 text-muted-foreground">
-      {needsInput ? "This revision cannot be confirmed until the required decisions are resolved." : card.ready ? "Ready for server-side review and confirmation. Any later correction creates a new revision." : "This revision is not yet ready for review."}
+      {needsInput ? "This revision cannot be confirmed until the required decisions are resolved." : currentCard.ready ? "Ready for server-side review and confirmation. Any later correction creates a new revision." : "This revision is not yet ready for review."}
     </p>
   </section>;
 }

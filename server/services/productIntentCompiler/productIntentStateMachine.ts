@@ -82,3 +82,9 @@ export function markProductIntentExecuted(envelope: ProductIntentSessionEnvelope
   if (parsed.state !== "awaiting_confirmation" || parsed.confirmationRevision !== revision || parsed.currentRevision !== revision) throw new Error("PRODUCT_INTENT_EXECUTION_STALE");
   return productIntentSessionEnvelopeSchema.parse({ ...parsed, state: "executed", executedRevision: revision });
 }
+
+export function abandonProductIntent(envelope: ProductIntentSessionEnvelope): ProductIntentSessionEnvelope {
+  const parsed = productIntentSessionEnvelopeSchema.parse(envelope);
+  if (parsed.state === "executed") throw new Error("PRODUCT_INTENT_SESSION_EXECUTED");
+  return productIntentSessionEnvelopeSchema.parse({ ...parsed, state: "abandoned", confirmationRevision: null });
+}
