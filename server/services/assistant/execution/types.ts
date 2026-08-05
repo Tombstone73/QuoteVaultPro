@@ -239,7 +239,7 @@ export interface ExecutionCommandResult {
   steps: readonly ExecutionStepResult[];
   /** Bounded post-execution presentation data. This never feeds another command. */
   details?: {
-    productDraft?: { id: string; name: string; sourceLink: string };
+    productDraft?: { id: string; name: string; sourceLink: string; pbv2TreeVersionId?: string; inactive?: boolean; published?: boolean };
     configurableProduct?: Record<string, unknown>;
     cloneInactiveDraft?: {
       action: "products.clone_to_inactive_draft";

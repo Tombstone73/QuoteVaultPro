@@ -1,5 +1,8 @@
 import { and, eq } from "drizzle-orm";
-import { materials, pbv2OptionGroupTemplates, pbv2TreeVersions, products } from "@shared/schema";
+import { materials, pbv2OptionGroupTemplates, pbv2TreeVersions, products, productTypes, stations } from "@shared/schema";
+import { CanonicalProductIntentService, type CanonicalProductIntentOutcome } from "../productIntentCompiler/canonicalProductIntentService";
+import { createConfiguredProductIntentCompiler, type ProductIntentCompilerInput } from "../productIntentCompiler/productIntentCompiler";
+import { DrizzleCanonicalProductIntentProposalStore, ProductIntentPersistenceError, ProductIntentPersistenceService, type CanonicalProductIntentSession } from "../productIntentCompiler/productIntentPersistence";
 import {
   productIntakeWizardAnalyzeRequestSchema,
   type ProductIntakeSessionDetail,
@@ -31,6 +34,7 @@ import { productPricingChangeSetService } from "./execution/productPricingChange
 import { pricingChangeRequestFromMessage } from "./productPricingChangeSetParsing";
 import { productPricingChangeSetStore } from "./productPricingChangeSetDb";
 import { configurableProductDraftCommandName } from "./execution/configurableProductDraftCommand";
+import { canonicalProductIntentDraftCommandName } from "./execution/canonicalProductIntentDraftCommand";
 import { applyComplexProductConversationEdit, createInitialComplexProductSpecification, pricingUnitQuestion, routeComplexProductMessage } from "./complexProductConversation";
 import { measurementModeQuestion } from "./complexProductSpecification";
 import { getComplexProductConfirmation, persistComplexProductProposal, resolveConfigurableProductContinuation, updateComplexProductProposal } from "./complexProductDraftPersistence";
@@ -53,7 +57,7 @@ export const productManagementSkill = Object.freeze({
   version: "v1",
   purpose: "Conversationally create or continue validated inactive product drafts using the existing Product Intake workflow.",
   allowedReadDomains: ["products", "product_categories", "pbv2_definitions", "pricing_methods", "materials", "production_routing", "option_definitions", "formula_library_metadata"],
-  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1", "products.create_configurable_draft@v1", "products.clone_to_inactive_draft@v1", "products.replace_inactive_matrix@v1", "products.replace_inactive_quantity_tiers@v1"],
+  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1", "products.create_configurable_draft@v1", "products.create_from_canonical_intent@v1", "products.clone_to_inactive_draft@v1", "products.replace_inactive_matrix@v1", "products.replace_inactive_quantity_tiers@v1"],
   requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch", "assistant.products.adjust_pricing"],
   requiredContext: ["organization", "authenticated_internal_actor", "conversation"],
   confirmationPolicy: "dedicated_plan_confirmation",
@@ -67,7 +71,7 @@ export const productManagementSkill = Object.freeze({
 });
 
 export type ProductManagementCard = {
-  kind: "product_intake_summary" | "product_missing_information" | "product_material_selection" | "product_options_summary" | "product_pricing_summary" | "product_routing_summary" | "product_validation_errors" | "product_validation_warnings" | "product_draft_preview" | "product_draft_snapshot" | "product_draft_readiness" | "product_draft_update_preview" | "product_draft_update_unsupported" | "product_active_product_unsupported" | "product_batch_preview" | "product_candidate_selection" | "action_proposal";
+  kind: "product_intake_summary" | "product_missing_information" | "product_material_selection" | "product_options_summary" | "product_pricing_summary" | "product_routing_summary" | "product_validation_errors" | "product_validation_warnings" | "product_draft_preview" | "product_draft_snapshot" | "product_draft_readiness" | "product_draft_update_preview" | "product_draft_update_unsupported" | "product_active_product_unsupported" | "product_batch_preview" | "product_candidate_selection" | "canonical_product_intent_proposal" | "action_proposal";
   title: string;
   summary: string;
   sourceLinks: Array<{ label: string; href: string }>;
@@ -79,6 +83,79 @@ export interface ProductManagementSkillDependencies {
   sessions: ProductIntakeSessionStore;
   references: (organizationId: string) => Promise<{ materials: ProductIntakeMaterialReference[]; templates: ProductIntakeTemplateReference[] }>;
   findProductsByNormalizedName?: (organizationId: string, normalizedName: string) => Promise<Array<{ id: string; name: string; isActive: boolean }>>;
+  canonicalProductIntent?: CanonicalProductIntentRouter;
+}
+
+/** Small routing boundary: canonical compiler/persistence stays independently
+ * testable, while this skill only selects it after operation classification. */
+export interface CanonicalProductIntentRouter {
+  loadForConversation(input: { organizationId: string; actorUserId: string; conversationId: string }): Promise<CanonicalProductIntentSession | null>;
+  create(input: { organizationId: string; actorUserId: string; conversationId: string; request: string }): Promise<CanonicalProductIntentOutcome>;
+  continue(input: { organizationId: string; actorUserId: string; proposalId: string; request: string }): Promise<CanonicalProductIntentOutcome>;
+  interact?(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; cloneProductId?: string } }>;
+}
+
+function compilerInput(orgId: string, request: string, candidates: { categories: Array<{ label: string }>; materials: Array<{ label: string }>; productionRoutes: Array<{ label: string }> }): ProductIntentCompilerInput {
+  return {
+    orgId, request, operationContext: { operation: "new_product" },
+    schemaDescription: "Strict ProductIntentCompilerResult JSON for ProductDraftIntent contract version 1.",
+    allowedEnums: { operation: ["new_product"], lifecycleStatus: ["inactive"], pricingUnit: ["per_piece", "per_square_foot", "flat_fee"], workflow: ["standard_production", "fulfillment_only", "service_fee"] },
+    supportedArchetypes: ["standard_production", "fulfillment_only", "service_fee"],
+    candidateLabels: { categories: candidates.categories.map((item) => item.label), materials: candidates.materials.map((item) => item.label), productionRoutes: candidates.productionRoutes.map((item) => item.label) },
+    serverConstraints: ["Create one inactive, unpublished product only.", "Do not invent tenant IDs; use supplied labels only."],
+  };
+}
+
+/** Production composition is deliberately lazy so pure routing tests never
+ * initialize a provider or a database connection. */
+export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductIntentRouter {
+  private readonly persistence = new ProductIntentPersistenceService(new DrizzleCanonicalProductIntentProposalStore());
+  private async service(organizationId: string): Promise<{ service: CanonicalProductIntentService; candidates: { categories: Array<{ id: string; label: string }>; materials: Array<{ id: string; label: string }>; productionRoutes: Array<{ id: string; label: string }>; existingProducts: Array<{ id: string; name: string; isActive: boolean; cloneSupported: boolean }> } } | null> {
+    const compiler = await createConfiguredProductIntentCompiler();
+    if (!compiler) return null;
+    const [categoryRows, materialRows, routeRows, existingProducts] = await Promise.all([
+      db.select({ id: productTypes.id, label: productTypes.name }).from(productTypes).where(eq(productTypes.organizationId, organizationId)),
+      db.select({ id: materials.id, label: materials.name }).from(materials).where(eq(materials.organizationId, organizationId)),
+      db.select({ id: stations.id, label: stations.name }).from(stations).where(and(eq(stations.organizationId, organizationId), eq(stations.active, true))),
+      db.select({ id: products.id, name: products.name, isActive: products.isActive }).from(products).where(eq(products.organizationId, organizationId)),
+    ]);
+    // Canonical duplicate resolution only advertises cloning after a dedicated
+    // clone proposal has been prepared. This listing has not done that work,
+    // so it must not imply that a source can be cloned yet.
+    const candidates = { categories: categoryRows, materials: materialRows, productionRoutes: routeRows, existingProducts: existingProducts.map((product) => ({ ...product, cloneSupported: false })) };
+    return { candidates, service: new CanonicalProductIntentService(compiler, this.persistence, candidates, {
+      duplicateName: async (name) => candidates.existingProducts.some((product) => normalizeProductReference(product.name) === normalizeProductReference(name)),
+    }) };
+  }
+  loadForConversation(input: { organizationId: string; actorUserId: string; conversationId: string }) { return this.persistence.loadForConversation(input); }
+  async create(input: { organizationId: string; actorUserId: string; conversationId: string; request: string }): Promise<CanonicalProductIntentOutcome> {
+    const configured = await this.service(input.organizationId);
+    if (!configured) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interpretation is unavailable until a compatible AI provider is configured." };
+    return configured.service.create({ ...input, compilerInput: compilerInput(input.organizationId, input.request, configured.candidates) });
+  }
+  async continue(input: { organizationId: string; actorUserId: string; proposalId: string; request: string }): Promise<CanonicalProductIntentOutcome> {
+    const configured = await this.service(input.organizationId);
+    if (!configured) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interpretation is unavailable until a compatible AI provider is configured." };
+    return configured.service.continue({ ...input, compilerInput: compilerInput(input.organizationId, input.request, configured.candidates) });
+  }
+  async interact(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; cloneProductId?: string } }> {
+    const configured = await this.service(input.organizationId);
+    if (!configured) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interactions are unavailable until the canonical service is configured." };
+    if (input.action === "accept_recommendation") return configured.service.acceptRecommendation({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, recommendationId: input.actionId });
+    if (input.action === "dismiss_recommendation") return configured.service.dismissRecommendation({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, recommendationId: input.actionId });
+    const result = await configured.service.applyCandidateAction(input);
+    return result.outcome ?? { navigation: result.navigation! };
+  }
+}
+
+function canonicalCards(outcome: Extract<CanonicalProductIntentOutcome, { ok: true }>): ProductManagementCard[] {
+  const proposal = { proposalId: outcome.session.proposalId, revision: outcome.card.revision, fingerprint: outcome.card.fingerprint };
+  const cards: ProductManagementCard[] = [{ kind: "canonical_product_intent_proposal", title: outcome.card.title, summary: outcome.card.readiness.ready ? "Canonical product intent is ready for review." : "Canonical product intent needs the remaining decisions.", sourceLinks: [], details: { canonicalProductIntent: outcome.card, ...proposal } }];
+  // The action payload is server-authored and intentionally contains only the
+  // persisted proposal identity. The browser can request a plan by turn id,
+  // but never selects an operation or reconstructs a product from this card.
+  if (outcome.card.readiness.ready) cards.push({ kind: "action_proposal", title: outcome.card.title, summary: "Review the canonical intent, then use the dedicated GO control to create exactly one inactive PBV2 DRAFT.", sourceLinks: [], plan: { action: canonicalProductIntentDraftCommandName, ...proposal } });
+  return cards;
 }
 
 async function loadReferences(organizationId: string) {
@@ -604,7 +681,45 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
 }
 
 export class ProductManagementSkillService {
-  constructor(private readonly deps: ProductManagementSkillDependencies = { sessions: createDbProductIntakeSessionStore(), references: loadReferences }) {}
+  constructor(private readonly deps: ProductManagementSkillDependencies = { sessions: createDbProductIntakeSessionStore(), references: loadReferences, canonicalProductIntent: new ConfiguredCanonicalProductIntentRouter() }) {}
+
+  /** Canonical sessions are selected entirely by the persisted discriminator.
+   * This runs before every legacy brief/configurable parser, so a new product
+   * request is interpreted once by the provider and never has parallel state. */
+  private async respondCanonicalProductIntent(input: { organizationId: string; userId: string; conversationId?: string; message: string }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    const router = this.deps.canonicalProductIntent;
+    if (!router || !input.conversationId) return { handled: false, response: "", cards: [] };
+    let current: CanonicalProductIntentSession | null;
+    try {
+      current = await router.loadForConversation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
+    } catch (error) {
+      // A row that lacks the canonical discriminator is a legacy proposal;
+      // leave it to the exact compatibility route rather than converting it.
+      if (error instanceof ProductIntentPersistenceError && error.code === "PRODUCT_INTENT_LEGACY_SESSION") return { handled: false, response: "", cards: [] };
+      const message = error instanceof Error ? error.message : "The canonical product-intent session could not be loaded safely.";
+      return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent unavailable", summary: "No product intent was changed.", sourceLinks: [], details: { errors: [message] } }] };
+    }
+    const explicitCreation = isExplicitProductCreation(input.message);
+    if (current) {
+      if (explicitCreation) return { handled: true, response: "This conversation already has a canonical product intent. Finish, abandon, or start the new product in a separate conversation; the two requests were not merged.", cards: canonicalCards({ ok: true, session: current, issues: [], card: { kind: "canonical_product_intent_proposal", revision: current.specification.session.currentRevision, fingerprint: current.fingerprint, title: "Current canonical product intent", readiness: { ready: false, blockers: [], questions: [] }, requiredQuestions: [], candidateResolutions: [], optionalRecommendations: [], fields: {} } }) };
+      const state = current.specification.session.state;
+      if (["executed", "expired", "abandoned"].includes(state)) return { handled: true, response: `This canonical product-intent session is ${state} and cannot be changed.`, cards: [] };
+      try {
+        const outcome = await router.continue({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: current.proposalId, request: input.message });
+        return outcome.ok
+          ? { handled: true, response: outcome.card.readiness.ready ? "I saved the canonical revision. It is ready for review." : "I saved the canonical revision and kept only its remaining questions.", cards: canonicalCards(outcome) }
+          : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "The canonical product intent could not be updated safely.";
+        return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: [message] } }] };
+      }
+    }
+    if (!explicitCreation) return { handled: false, response: "", cards: [] };
+    const outcome = await router.create({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId, request: input.message });
+    return outcome.ok
+      ? { handled: true, response: outcome.card.readiness.ready ? "I created a canonical product intent ready for review. No product has been created." : "I created a canonical product intent and will ask only its remaining questions.", cards: canonicalCards(outcome) }
+      : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent could not be created", summary: "No legacy Product Intake session or product was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
+  }
 
   private async continueExplicitIntakeCorrection(input: { organizationId: string; userId: string; message: string; sessionId: string }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
     const existing = await this.deps.sessions.getSessionDetail(input.organizationId, input.sessionId);
@@ -682,6 +797,8 @@ export class ProductManagementSkillService {
   }
 
   async respond(input: { organizationId: string; userId: string; conversationId?: string; message: string; activeSessionId?: string | null; activeConfigurableProposalId?: string | null }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    const canonical = await this.respondCanonicalProductIntent(input);
+    if (canonical.handled) return canonical;
     // This must precede candidate lookup, pricing, and informational routes:
     // the conversation-bound session is authoritative for explicit changes to
     // category, dimensions, price, custom options, or defaults.

@@ -33,6 +33,8 @@ import { productPricingChangeSetCommandService } from "../services/assistant/exe
 import { productPricingChangeSetStore } from "../services/assistant/productPricingChangeSetDb";
 import { configurableProductDraftCommandName, createConfigurableProductDraftCommandDefinition } from "../services/assistant/execution/configurableProductDraftCommand";
 import { createConfigurableProductDraftExecutionCommand } from "../services/assistant/execution/configurableProductDraftExecutionCommand";
+import { canonicalProductIntentDraftCommandName, createCanonicalProductIntentDraftCommandDefinition } from "../services/assistant/execution/canonicalProductIntentDraftCommand";
+import { createCanonicalProductIntentDraftExecutionCommand, createCanonicalProductIntentDraftService } from "../services/assistant/execution/canonicalProductIntentDraftExecutionCommand";
 import { cloneInactiveProductDraftCommandName, createCloneInactiveProductDraftCommandDefinition } from "../services/assistant/execution/cloneInactiveProductDraftCommand";
 import { createCloneInactiveProductDraftExecutionCommand } from "../services/assistant/execution/cloneInactiveProductDraftExecutionCommand";
 import { createInactivePbv2PricingMatrixEditCommandDefinition, inactivePbv2PricingMatrixEditCommandName } from "../services/assistant/execution/inactivePbv2PricingMatrixEditCommand";
@@ -148,6 +150,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
   const productBatchService = createProductInactiveDraftBatchCanonicalService(productService);
   const productUpdateService = createProductInactiveDraftUpdateCanonicalService();
   const productBulkUpdateService = createProductInactiveDraftBulkUpdateCanonicalService(productUpdateService, productInactiveDraftBulkUpdateHistoryService);
+  const canonicalProductIntentService = createCanonicalProductIntentDraftService();
   const metadataRegistry = createProductionAssistantCommandRegistry(
     createQuoteInternalNoteCommandDefinition(quoteInternalNotesService),
     createProductInactiveDraftCommandDefinition(productService),
@@ -157,6 +160,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
     createProductPricingChangeSetCommandDefinition(productPricingChangeSetCommandService),
     createProductPricingRollbackCommandDefinition(productPricingChangeSetCommandService),
     createConfigurableProductDraftCommandDefinition(),
+    createCanonicalProductIntentDraftCommandDefinition(canonicalProductIntentService),
     createCloneInactiveProductDraftCommandDefinition(),
     createInactivePbv2PricingMatrixEditCommandDefinition(),
     createInactivePbv2QuantityTierEditCommandDefinition(),
@@ -180,6 +184,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
     [productPricingChangeSetCommandName, createProductPricingChangeSetExecutionCommand(productPricingChangeSetCommandService, productPricingChangeSetStore)],
     [productPricingRollbackCommandName, createProductPricingRollbackExecutionCommand(productPricingChangeSetCommandService, productPricingChangeSetStore)],
     [configurableProductDraftCommandName, createConfigurableProductDraftExecutionCommand()],
+    [canonicalProductIntentDraftCommandName, createCanonicalProductIntentDraftExecutionCommand(canonicalProductIntentService)],
     [cloneInactiveProductDraftCommandName, createCloneInactiveProductDraftExecutionCommand()],
     [inactivePbv2PricingMatrixEditCommandName, createInactivePbv2PricingMatrixEditExecutionCommand()],
     [inactivePbv2QuantityTierEditCommandName, createInactivePbv2QuantityTierEditExecutionCommand()],
@@ -248,6 +253,9 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
         : null;
       const configurableProductProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === configurableProductDraftCommandName)?.plan
+        : null;
+      const canonicalProductIntentProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === canonicalProductIntentDraftCommandName)?.plan
         : null;
       const cloneInactiveDraftProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === cloneInactiveProductDraftCommandName)?.plan
@@ -347,6 +355,10 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       }
       if (configurableProductProposal && typeof configurableProductProposal.proposalId === "string" && typeof configurableProductProposal.fingerprint === "string") {
         const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: configurableProductDraftCommandName, arguments: { proposalId: configurableProductProposal.proposalId, fingerprint: configurableProductProposal.fingerprint }, context: input.context, reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: configurableProductProposal.proposalId, fingerprint: configurableProductProposal.fingerprint } });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
+      if (canonicalProductIntentProposal && typeof canonicalProductIntentProposal.proposalId === "string" && typeof canonicalProductIntentProposal.revision === "number" && typeof canonicalProductIntentProposal.fingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: canonicalProductIntentDraftCommandName, arguments: { proposalId: canonicalProductIntentProposal.proposalId, revision: canonicalProductIntentProposal.revision, fingerprint: canonicalProductIntentProposal.fingerprint }, context: input.context, reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: canonicalProductIntentProposal.proposalId, fingerprint: canonicalProductIntentProposal.fingerprint } });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }
       if (cloneInactiveDraftProposal && typeof cloneInactiveDraftProposal.proposalId === "string" && typeof cloneInactiveDraftProposal.proposalFingerprint === "string") {
