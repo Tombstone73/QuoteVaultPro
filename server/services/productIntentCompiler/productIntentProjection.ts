@@ -40,6 +40,9 @@ function assertReady(intent: ProductDraftIntent): void {
   assert(intent.material.state !== "unresolved", "MATERIAL_UNRESOLVED", "Material must be resolved or explicitly unset before projection.", "material");
   assert(intent.production.route.state !== "unresolved", "ROUTE_UNRESOLVED", "Production route must be resolved or explicitly unset before projection.", "production.route");
   assert(intent.pricing.model !== "unresolved", "PRICING_UNRESOLVED", "Pricing must be resolved before projection.", "pricing");
+  if (intent.pricing.model === "two_dimensional_matrix") {
+    assert(intent.pricing.unit !== "unresolved", "PRICING_UNIT_UNRESOLVED", "Matrix pricing must be per piece or per square foot before projection.", "pricing.unit");
+  }
   assert(intent.unresolvedFields.length === 0, "UNRESOLVED_FIELDS", "All unresolved fields must be resolved before projection.", "unresolvedFields");
   assert(intent.workflow.kind !== "service_fee" || !intent.workflow.requiresProductionJob, "SERVICE_FEE_PRODUCTION_JOB", "Service fees cannot create production jobs.", "workflow.requiresProductionJob");
   assert(intent.production.route.state === "explicitly_unset" || intent.workflow.requiresProductionJob, "ROUTE_WITHOUT_PRODUCTION_JOB", "A production route requires a production job.", "production.route");

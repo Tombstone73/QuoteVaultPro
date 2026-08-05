@@ -65,6 +65,7 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
   if (intent.production.route.state === "unresolved") issues.push({ code: "ROUTE_UNRESOLVED", path: "production.route", severity: "question", message: "Which production route should this product use?" });
   if (intent.production.route.state === "resolved" && !includesLabel(context.productionRouteLabels, intent.production.route.label)) issues.push({ code: "ROUTE_NOT_FOUND", path: "production.route", severity: "question", message: `The production route ${intent.production.route.label} is not available for this tenant.` });
   if (intent.pricing.model === "unresolved") issues.push({ code: "PRICING_UNRESOLVED", path: "pricing.model", severity: "question", message: "Should pricing be per piece, per square foot, a matrix, or quantity tiers?" });
+  if (intent.pricing.model === "two_dimensional_matrix" && intent.pricing.unit === "unresolved") issues.push({ code: "PRICING_UNIT_UNRESOLVED", path: "pricing.unit", severity: "question", message: "Are these matrix prices per piece or per square foot?" });
   for (const field of intent.unresolvedFields) issues.push({ code: field.code || "UNRESOLVED_FIELD", path: field.path, severity: "question", message: field.question ?? "This field needs a decision." });
   validateTiers(intent, issues);
   if (await context.duplicateName?.(intent.identity.name)) issues.push({ code: "DUPLICATE_PRODUCT_NAME", path: "identity.name", severity: "blocker", message: "A product with this name already exists; select it or explicitly request a clone." });
