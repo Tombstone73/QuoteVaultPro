@@ -20,6 +20,6 @@ describe("Product Intent resolver", () => {
     const result = await resolveAndValidateProductDraftIntent(yardSignsIntent(), { categoryLabels: ["Signs"] });
     expect(result.ready).toBe(false);
     expect(result.intent.pricing).toMatchObject({ model: "two_dimensional_matrix", unit: "unresolved", cells: expect.arrayContaining([{ row: "3mm", column: "single", priceCents: 1200 }, { row: "6mm", column: "double", priceCents: 2200 }]) });
-    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "PRICING_UNIT_UNRESOLVED", path: "pricing.unit", severity: "question" })]));
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "PRICING_UNIT_UNRESOLVED", id: "0:pricing.matrix.unit:required", path: "pricing.matrix.unit", severity: "question" })]));
   });
 });
