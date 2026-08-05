@@ -150,6 +150,7 @@ const providerPayloadGuide = {
     visibility: { catalogVisible: false },
     unresolvedFields: "For an unknown matrix unit, preserve every matrix cell and add { path: 'pricing.unit', code: 'PRICING_UNIT_UNRESOLVED', question: 'Are these matrix prices per piece or per square foot?' }.",
     fieldMetadata: "object keyed by field path with { source: 'explicit_user'|'ai_interpreted'|'selected_template'|'canonical_default'|'unresolved', confidence?: number }",
+    tenantReferenceRules: "For category, material, and production.route: use an exact tenant label only when the user explicitly selected it, an explicit selected tenant template supplies it, or a high-confidence interpretation has direct evidence. Never infer a material or route from option-group names, option values, product names, dimensions, or fuzzy similarity. Generic placeholders such as 'Product category', 'Material', or 'Route' must remain unresolved. If material or route is not supported by evidence, return { state: 'explicitly_unset' } and fieldMetadata source 'unresolved'.",
   },
   example: {
     kind: "complete_intent",
