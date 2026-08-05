@@ -15,7 +15,6 @@ export type ProjectedProductBuilderDraft = {
     measurementMode: "dimensions_required" | "quantity_only"; pricingEngine: "pricingProfile";
     pricingProfileKey: "default" | "qty_only" | "fee"; requiresProductionJob: boolean;
     requiresProofApproval: boolean; isService: boolean; isTaxable: boolean; isActive: false;
-    customerVisible: boolean;
   };
   treeJson: Record<string, unknown>;
   relationships: {
@@ -132,7 +131,7 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
   const route = intent.production.route.state === "resolved" ? { id: intent.production.route.id, label: intent.production.route.label } : null;
   const material = intent.material.state === "resolved" ? { state: "resolved" as const, id: intent.material.id, label: intent.material.label } : { state: "explicitly_unset" as const };
   return {
-    product: { name: intent.identity.name, category: intent.identity.category.label, description: intent.identity.description, pricingMode: pricing.model === "scalar" && pricing.unit === "per_square_foot" || pricing.model === "two_dimensional_matrix" && pricing.unit === "per_square_foot" || pricing.model === "quantity_tiers" && pricing.unit === "per_square_foot" ? "area" : "quantity", measurementMode: intent.measurement.mode === "dimensions_required" ? "dimensions_required" : "quantity_only", pricingEngine: "pricingProfile", pricingProfileKey: isFee ? "fee" : pricing.model === "quantity_tiers" ? "qty_only" : "default", requiresProductionJob: intent.workflow.requiresProductionJob, requiresProofApproval: intent.workflow.requiresProofApproval, isService: intent.workflow.kind === "service_fee", isTaxable: true, isActive: false, customerVisible: intent.visibility.catalogVisible },
+    product: { name: intent.identity.name, category: intent.identity.category.label, description: intent.identity.description, pricingMode: pricing.model === "scalar" && pricing.unit === "per_square_foot" || pricing.model === "two_dimensional_matrix" && pricing.unit === "per_square_foot" || pricing.model === "quantity_tiers" && pricing.unit === "per_square_foot" ? "area" : "quantity", measurementMode: intent.measurement.mode === "quantity_only" ? "quantity_only" : "dimensions_required", pricingEngine: "pricingProfile", pricingProfileKey: isFee ? "fee" : pricing.model === "quantity_tiers" ? "qty_only" : "default", requiresProductionJob: intent.workflow.requiresProductionJob, requiresProofApproval: intent.workflow.requiresProofApproval, isService: intent.workflow.kind === "service_fee", isTaxable: true, isActive: false },
     treeJson, relationships: { productionRoute: route, material }, audit: { contractVersion: 1, intentId: intent.intentId, revision: intent.revision, fingerprint, fieldMetadata: intent.fieldMetadata },
   };
 }
