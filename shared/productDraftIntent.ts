@@ -88,7 +88,15 @@ const patchOperationSchema = z.discriminatedUnion("op", [
 export const productDraftIntentPatchSchema = z.object({ contractVersion: z.literal(PRODUCT_DRAFT_INTENT_VERSION), baseRevision: z.number().int().nonnegative(), preserveUnchanged: z.literal(true).default(true), operations: z.array(patchOperationSchema).min(1) }).strict();
 export type ProductDraftIntentPatch = z.infer<typeof productDraftIntentPatchSchema>;
 
-export const unresolvedQuestionSchema = z.object({ id: nonEmpty, path: nonEmpty, question: nonEmpty, required: z.boolean(), options: z.array(z.object({ label: nonEmpty, value: z.union([z.string(), z.number(), z.boolean()]) }).strict()).optional() }).strict();
+export const unresolvedQuestionAnswerSchema = z.object({
+  issueId: nonEmpty,
+  canonicalPath: nonEmpty,
+  answerType: z.literal("choice"),
+  allowedChoices: z.array(z.object({ displayLabel: nonEmpty, canonicalValue: nonEmpty, safeAliases: z.array(nonEmpty).min(1) }).strict()).min(1),
+  baseRevision: z.number().int().nonnegative(),
+}).strict();
+export type UnresolvedQuestionAnswer = z.infer<typeof unresolvedQuestionAnswerSchema>;
+export const unresolvedQuestionSchema = z.object({ id: nonEmpty, path: nonEmpty, question: nonEmpty, required: z.boolean(), options: z.array(z.object({ label: nonEmpty, value: z.union([z.string(), z.number(), z.boolean()]) }).strict()).optional(), answer: unresolvedQuestionAnswerSchema.optional() }).strict();
 export const unresolvedQuestionSetSchema = z.object({ baseRevision: z.number().int().nonnegative().optional(), questions: z.array(unresolvedQuestionSchema).min(1) }).strict();
 export const structuredCompilerErrorSchema = z.object({ code: nonEmpty, message: nonEmpty, retryable: z.boolean(), details: z.array(nonEmpty).default([]) }).strict();
 export const productIntentCompilerResultSchema = z.discriminatedUnion("kind", [
