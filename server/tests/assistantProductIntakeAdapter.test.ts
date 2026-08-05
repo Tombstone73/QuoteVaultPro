@@ -153,6 +153,23 @@ describe("AssistantProductIntakeAdapter", () => {
     expect(JSON.stringify(proposal)).not.toContain("[object");
   });
 
+  test("changes the confirmation fingerprint when canonical quantity behavior changes", async () => {
+    const baseBrief: any = {
+      productIdentity: { likelyProductName: { value: "Quantity Fingerprint" }, category: { value: "Print Products" } },
+      sizeBehavior: { behavior: "custom_size" }, quantityBehavior: { behavior: "per_piece", confidence: 100 }, pricingAnalysis: { behavior: "square_foot" },
+      requiredOptions: [], optionalOptions: [],
+    };
+    const sessionStore = { getSessionDetail: jest.fn(async () => detail({ brief: baseBrief })) };
+    const adapter = new AssistantProductIntakeAdapter(dependencies({ sessionStore }) as any);
+    const before = await adapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" });
+    sessionStore.getSessionDetail.mockResolvedValue(detail({ brief: { ...baseBrief, quantityBehavior: { behavior: "quantity_tiers", confidence: 100 } } }));
+    const after = await adapter.buildProposal({ organizationId: "org_1", sessionId: "session_1" });
+
+    expect(before.preview.proposedFields.quantityBehavior).toBe("Customer enters quantity");
+    expect(after.preview.proposedFields.quantityBehavior).toBe("Customer enters quantity");
+    expect(after.fingerprint).not.toBe(before.fingerprint);
+  });
+
   test("loads tenant-scoped authoritative readiness and redacts raw diagnostics", async () => {
     const deps = dependencies();
     const adapter = new AssistantProductIntakeAdapter(deps as any);

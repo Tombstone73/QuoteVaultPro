@@ -294,6 +294,10 @@ export class AssistantProductIntakeAdapter {
       createdProductId: detail.session.createdProductId,
       createdPbv2TreeVersionId: detail.session.createdPbv2TreeVersionId,
       readiness: snapshot.readiness,
+      // The presentation label intentionally collapses several valid quantity
+      // modes to "Customer enters quantity". Bind the canonical value as well
+      // so a quantity correction always invalidates an older GO token.
+      canonicalQuantityBehavior: detail.brief.quantityBehavior,
       proposedFields,
     })).digest("hex");
     return {

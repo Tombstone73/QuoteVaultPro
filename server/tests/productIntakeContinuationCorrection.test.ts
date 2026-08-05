@@ -2,7 +2,7 @@ import { jest } from "@jest/globals";
 
 jest.mock("../db", () => ({ db: {} }));
 
-import { applyExplicitIntakeCorrectionState, isActiveProductIntakeCorrectionRequest, parseProductIntakeCorrectionOperations, ProductManagementSkillService } from "../services/assistant/productManagementSkill";
+import { applyExplicitIntakeCorrectionState, isActiveProductIntakeCorrectionRequest, isExplicitProductIntakeCorrection, parseProductIntakeCorrectionOperations, ProductManagementSkillService, uniqueValidationMessages } from "../services/assistant/productManagementSkill";
 import type { ProductIntakeSessionDetail } from "../../shared/productIntakeWizardSchemas";
 
 function detail(overrides: Partial<ProductIntakeSessionDetail> = {}): ProductIntakeSessionDetail {
@@ -61,6 +61,89 @@ describe("Product Intake explicit correction continuation", () => {
     expect(applied.brief.quantityBehavior).toMatchObject({ behavior: "per_piece", notes: "Customers enter any positive quantity." });
     expect(applied.brief.pricingAnalysis).toMatchObject({ behavior: "per_piece", notes: "$20.00 per piece" });
     expect(applied.brief).toMatchObject({ workflowIntent: "service_fee", requiresProductionJob: false });
+  });
+
+  test.each([
+    "Customers enter the quantity.",
+    "Customers enter quantity.",
+    "Customer enters quantity.",
+    "Do not use a fixed quantity.",
+    "Variable quantity.",
+    "Quantity is entered on the line item.",
+  ])("treats %p as an atomic customer-entered quantity correction", (message) => {
+    const initial = {
+      ...detail().brief,
+      quantityBehavior: { behavior: "unknown", confidence: 20, evidence: [] },
+      materialSelection: "unset",
+      requiresProofApproval: true,
+      workflowIntent: "standard_production",
+      requiresProductionJob: true,
+      productionRoute: "Flatbed",
+    } as any;
+    const applied = applyExplicitIntakeCorrectionState(initial, `${message} Keep everything else unchanged.`);
+
+    expect(isExplicitProductIntakeCorrection(message)).toBe(true);
+    expect(applied.errors).toEqual([]);
+    expect(applied.brief.quantityBehavior).toMatchObject({ behavior: "per_piece", confidence: 100, notes: "Customers enter quantity on the line item." });
+    expect(applied.brief).toMatchObject({ materialSelection: "unset", requiresProofApproval: true, requiresProductionJob: true, productionRoute: "Flatbed" });
+  });
+
+  test("treats generic preservation wording as a no-change constraint rather than an option lookup", () => {
+    for (const message of [
+      "Customers enter quantity. Keep everything else unchanged.",
+      "Customers enter quantity. Do not change anything else.",
+      "Customers enter quantity. Leave everything else alone.",
+      "Customers enter quantity. Preserve all other settings.",
+      "Customers enter quantity. Keep the rest as-is.",
+    ]) {
+      expect(parseProductIntakeCorrectionOperations(message)).toEqual([]);
+      const applied = applyExplicitIntakeCorrectionState(detail().brief as any, message);
+      expect(applied.errors).toEqual([]);
+      expect([...applied.brief.requiredOptions, ...applied.brief.optionalOptions]).not.toEqual(expect.arrayContaining([expect.objectContaining({ label: expect.stringMatching(/everything else/i) })]));
+    }
+  });
+
+  test("collapses repeated validation messages before they reach Product Intake cards", () => {
+    expect(uniqueValidationMessages([
+      "Quantity behavior is unresolved.",
+      " quantity behavior is unresolved. ",
+      "Category is required.",
+    ])).toEqual(["Quantity behavior is unresolved.", "Category is required."]);
+  });
+
+  test("persists a newest canonical revision for a quantity correction without rebuilding the original request", async () => {
+    const initialBrief = {
+      ...detail().brief,
+      productIdentity: { ...detail().brief.productIdentity, likelyProductName: { value: "DEV Test Routed Acrylic 080426I", confidence: 100, evidence: [] }, category: { value: "Print Products", confidence: 100, evidence: [] } },
+      sizeBehavior: { behavior: "custom_size", confidence: 100, evidence: [] },
+      quantityBehavior: { behavior: "unknown", confidence: 20, evidence: [] },
+      pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$5.00 per square foot", evidence: [] },
+      materialSelection: "unset", requiredOptions: [], optionalOptions: [], requiresProofApproval: true,
+      workflowIntent: "standard_production", requiresProductionJob: true, productionRoute: "Flatbed", minimumChargeExplicitlyUnset: true,
+    } as any;
+    const initial = detail({ brief: initialBrief, session: { ...detail().session, status: "analyzed", brief: initialBrief, confidence: { revision: 4 } } as any });
+    let replacement: any = null;
+    const sessions = {
+      getSessionDetail: jest.fn().mockResolvedValue(initial),
+      getSessionSource: jest.fn().mockResolvedValue({ sourceText: "Original Acrylic source", sourceJson: null }),
+      replaceBrief: jest.fn().mockImplementation(async (input) => {
+        replacement = input;
+        return detail({
+          brief: input.brief,
+          session: { ...initial.session, brief: input.brief, status: "needs_answers", confidence: { revision: 5 } } as any,
+          readiness: { ...initial.readiness, canCreateDraft: false, status: "needs_answers" } as any,
+        });
+      }),
+    };
+    const service = new ProductManagementSkillService({ sessions: sessions as any, references: jest.fn().mockResolvedValue({ materials: [], templates: [] }) });
+    const result = await service.respond({ organizationId: "org_1", userId: "user_1", activeSessionId: "session_1", message: "Customers enter the quantity. Do not use a fixed quantity. Keep everything else unchanged." });
+
+    expect(result.handled).toBe(true);
+    expect(sessions.replaceBrief).toHaveBeenCalledTimes(1);
+    expect(replacement.brief.quantityBehavior).toMatchObject({ behavior: "per_piece", confidence: 100 });
+    expect(replacement.brief).toMatchObject({ materialSelection: "unset", requiresProofApproval: true, requiresProductionJob: true, productionRoute: "Flatbed" });
+    expect(replacement.sourceText).toContain("Explicit Product Intake correction");
+    expect(replacement.sourceText).not.toContain("everything else option");
   });
 
   test("rebuilds the active session before pricing or product lookup and exposes the required option contract", async () => {

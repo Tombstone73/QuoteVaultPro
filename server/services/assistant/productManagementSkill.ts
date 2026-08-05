@@ -121,8 +121,19 @@ export function isExplicitProductIntakeCorrection(message: string): boolean {
     || /\b(?:remove|delete|replace|rename|modify|add|clear)\s+(?:the\s+)?[a-z][a-z0-9 &/\-]{1,80}?\s+option(?:\s+group)?\b/i.test(message)
     || /\b(?:keep|preserve)\s+(?:the\s+)?[a-z][a-z0-9 &/\-]{1,80}?(?:\s+exactly\s+as\s+shown|\s+unchanged|\s+as\s+is)\b/i.test(message)
     || /\b(?:keep|leave)\s+(?:the\s+)?(?:measurement|category|production\s+route|routing|sheet(?:\s+settings?)?|rotation)\b/i.test(message)
+    || isCustomerEnteredQuantityCorrection(message)
     || /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet)\b/i.test(message)
     || /\b(?:minimum\s+charge|leave|clear|unset)\b[\s\S]{0,80}\b(?:production\s+)?(?:route|routing|sheet|rotation|minimum\s+charge)\b/i.test(message);
+}
+
+/** Product Intake stores ordinary customer-entered quantity as `per_piece`.
+ * These are correction instructions, not option names or pending-question
+ * answers, and must therefore update the canonical brief atomically. */
+function isCustomerEnteredQuantityCorrection(message: string): boolean {
+  return /\b(?:customers?|customer)\s+enter(?:s)?\s+(?:the\s+)?quantity\b/i.test(message)
+    || /\bdo\s+not\s+use\s+(?:a\s+)?fixed\s+quantity\b/i.test(message)
+    || /\bvariable\s+quantity\b/i.test(message)
+    || /\bquantity\s+is\s+entered\s+on\s+the\s+line\s+item\b/i.test(message);
 }
 
 /** New-product creation deliberately outranks an unrelated active session.
@@ -138,12 +149,19 @@ function optionIdentity(value: string): string {
   return value.normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
 }
 
+function isGenericPreservationTarget(value: string): boolean {
+  return ["everything else", "anything else", "the rest", "all other settings"].includes(optionIdentity(value));
+}
+
 /** Correction labels use exact normalized identity only. Stemming is not a
  * canonicalization rule and therefore cannot create or rename an option. */
 export function parseProductIntakeCorrectionOperations(message: string): ParsedProductIntakeCorrectionOperation[] {
   const operations: ParsedProductIntakeCorrectionOperation[] = [];
   for (const match of Array.from(message.matchAll(/\b(?:keep|preserve)\s+(?:the\s+)?([a-z][a-z0-9 &/\-]{1,80}?)(?:\s+exactly\s+as\s+shown|\s+unchanged|\s+as\s+is)\b/gi))) {
-    operations.push({ operation: "preserve", optionLabel: match[1]!.trim().replace(/\s+option(?:\s+group)?$/i, "") });
+    const optionLabel = match[1]!.trim().replace(/\s+option(?:\s+group)?$/i, "");
+    // Broad preservation wording constrains the correction to explicit fields;
+    // it never requests a lookup of an option group named "everything else".
+    if (!isGenericPreservationTarget(optionLabel)) operations.push({ operation: "preserve", optionLabel });
   }
   for (const match of Array.from(message.matchAll(/\b(remove|delete|replace|rename|modify|add|clear)\s+(?:the\s+)?([a-z][a-z0-9 &/\-]{1,80}?)(?:\s+option(?:\s+group)?)\b/gi))) {
     const verb = match[1]!.toLowerCase();
@@ -154,7 +172,8 @@ export function parseProductIntakeCorrectionOperations(message: string): ParsedP
 }
 
 function isNarrowCanonicalCorrection(message: string): boolean {
-  return /\bdo\s+not\s+change\s+anything\s+else\b/i.test(message)
+  return /\b(?:keep\s+everything\s+else\s+unchanged|do\s+not\s+change\s+anything\s+else|leave\s+everything\s+else\s+alone|preserve\s+all\s+other\s+settings|keep\s+the\s+rest\s+as[-\s]is)\b/i.test(message)
+    || isCustomerEnteredQuantityCorrection(message)
     || parseProductIntakeCorrectionOperations(message).some((operation) => operation.operation === "preserve")
     || /\b(?:keep|leave)\s+(?:the\s+)?(?:measurement|category|production\s+route|routing|sheet(?:\s+settings?)?|rotation)\b/i.test(message);
 }
@@ -199,6 +218,7 @@ export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, me
   if (errors.length) return { brief, errors };
   const pricing = correctionPricing(message);
   const quantityOnly = /\bquantity[-\s]?only\b/i.test(message);
+  const customerEnteredQuantity = isCustomerEnteredQuantityCorrection(message);
   const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(message);
   const excludesProduction = /\b(?:must\s+not|does\s+not|doesn't|do\s+not)\s+(?:create|require|need|have)\s+(?:a\s+)?production(?:\s+work|\s+job)?\b/i.test(message);
   const materialUnset = /\b(?:do\s+not\s+select\s+(?:a\s+)?material|leave\s+material\s+unset|clear\s+(?:the\s+)?material)\b/i.test(message);
@@ -227,7 +247,7 @@ export function applyExplicitIntakeCorrectionState(brief: ProductIntakeBrief, me
       optionalOptions: brief.optionalOptions.filter((option) => !removedKeys.has(optionIdentity(option.normalizedGroup || option.label))),
       pricingAnalysis: correctedPricing,
       ...(quantityOnly || serviceFee ? { sizeBehavior: { ...brief.sizeBehavior, behavior: "none", confidence: 100, notes: "Quantity-only product; width and height are not collected." } } : {}),
-      ...(pricing.perPieceCents != null || quantityOnly || serviceFee ? { quantityBehavior: { ...brief.quantityBehavior, behavior: "per_piece", confidence: 100, notes: "Customers enter any positive quantity." } } : {}),
+      ...(pricing.perPieceCents != null || quantityOnly || serviceFee || customerEnteredQuantity ? { quantityBehavior: { ...brief.quantityBehavior, behavior: "per_piece", confidence: 100, notes: customerEnteredQuantity ? "Customers enter quantity on the line item." : "Customers enter any positive quantity." } } : {}),
       ...(materialUnset ? { materialSelection: "unset" as const } : {}),
       ...(requiresProofApproval ? { requiresProofApproval: true } : {}),
       ...(productionRoute ? { productionRoute } : {}),
@@ -489,6 +509,16 @@ function unresolvedQuestions(detail: ProductIntakeSessionDetail) {
   return detail.questions.filter((question) => question.required && !detail.answers.some((answer) => answer.questionKey === question.questionKey && answer.answer !== null));
 }
 
+export function uniqueValidationMessages(messages: string[]): string[] {
+  const seen = new Set<string>();
+  return messages.filter((message) => {
+    const key = message.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
 function asksForOpenQuestions(message: string): boolean {
   return /\b(?:what|which|show|repeat)\b[\s\S]{0,40}\b(?:open|remaining|required|unresolved|two|questions?)\b/i.test(message);
 }
@@ -556,14 +586,15 @@ async function cardsFor(detail: ProductIntakeSessionDetail): Promise<ProductMana
     minimumCharge: pricing.minimumChargeCents != null ? money(pricing.minimumChargeCents) : "Not set",
   } });
   cards.push({ kind: "product_routing_summary", title: "Production routing", summary: "Existing routing is reused only after Product Intake validation.", sourceLinks: [], details: { routing: detail.brief.productionRoute ?? "Not set", fields: { "Requires production job": detail.brief.requiresProductionJob === true ? "Yes" : detail.brief.requiresProductionJob === false ? "No" : "Not set", "Proof approval": detail.brief.requiresProofApproval === true ? "Required" : "Not set", "Sheet or roll constraints": "Not set", Rotation: "Not set" } } });
-  const blockers = (detail.readiness.penalties ?? []).filter((penalty) => penalty.severity === "blocker").map((penalty) => penalty.label);
+  const blockers = uniqueValidationMessages((detail.readiness.penalties ?? []).filter((penalty) => penalty.severity === "blocker").map((penalty) => penalty.label));
   if (blockers.length) cards.push({ kind: "product_validation_errors", title: "Validation blocks draft creation", summary: "Resolve these server-derived checks before confirmation is available.", sourceLinks: [], details: { errors: blockers } });
   const warnings = detail.brief.draftWarnings.map((warning) => warning.message);
   if (warnings.length) cards.push({ kind: "product_validation_warnings", title: "Draft warnings", summary: "Review these assumptions before creating an inactive draft.", sourceLinks: [], details: { warnings } });
   if (!missing.length && detail.readiness.canCreateDraft && detail.session.status === "ready_for_draft") {
     const proposal = await assistantProductIntakeAdapter.buildProposal({ organizationId: detail.session.organizationId, sessionId: detail.session.id });
     if (!proposal.executable) {
-      cards.push({ kind: "product_validation_errors", title: "Validation blocks draft creation", summary: "The current Product Intake plan is incomplete and cannot be confirmed.", sourceLinks: [], details: { errors: proposal.blockers.length ? proposal.blockers : ["The Product Intake session is not ready for draft review."] } });
+      const refreshedBlockers = uniqueValidationMessages(proposal.blockers).filter((blocker) => !blockers.some((existing) => existing.trim().toLocaleLowerCase() === blocker.trim().toLocaleLowerCase()));
+      if (refreshedBlockers.length) cards.push({ kind: "product_validation_errors", title: "Validation blocks draft creation", summary: "The current Product Intake plan is incomplete and cannot be confirmed.", sourceLinks: [], details: { errors: refreshedBlockers } });
       return cards;
     }
     cards.push({ kind: "product_draft_preview", title: "Inactive product draft preview", summary: proposal.preview.summary, sourceLinks: [proposal.sourceLink], details: { ...common, proposedFields: proposal.preview.proposedFields, statusToCreate: "inactive_draft", reusedRecords: ["validated materials", "validated routing"], assumptions: warnings } });
