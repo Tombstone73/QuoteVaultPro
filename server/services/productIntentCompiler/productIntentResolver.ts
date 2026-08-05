@@ -1,5 +1,26 @@
 import { productDraftIntentSchema, type ProductDraftIntent } from "@shared/productDraftIntent";
 
+export type TenantIntentReference = { id: string; label: string };
+
+/** Converts provider-returned labels into tenant-owned IDs. Ambiguous/missing
+ * labels remain unresolved; this function never guesses and never parses prose. */
+export function resolveProductDraftIntentReferences(rawIntent: unknown, candidates: {
+  categories: readonly TenantIntentReference[];
+  materials: readonly TenantIntentReference[];
+  productionRoutes: readonly TenantIntentReference[];
+}): ProductDraftIntent {
+  const intent = structuredClone(productDraftIntentSchema.parse(rawIntent));
+  const resolve = (reference: any, values: readonly TenantIntentReference[]) => {
+    if (reference.state !== "unresolved") return reference;
+    const matches = values.filter((value) => value.label.localeCompare(reference.label, undefined, { sensitivity: "accent" }) === 0);
+    return matches.length === 1 ? { state: "resolved", id: matches[0]!.id, label: matches[0]!.label } : reference;
+  };
+  intent.identity.category = resolve(intent.identity.category, candidates.categories);
+  intent.material = resolve(intent.material, candidates.materials);
+  intent.production.route = resolve(intent.production.route, candidates.productionRoutes);
+  return productDraftIntentSchema.parse(intent);
+}
+
 export type ProductIntentIssue = {
   code: string;
   path: string;
