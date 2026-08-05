@@ -1,7 +1,4 @@
 import type { z } from "zod";
-import type { AiProviderAdapter, AiProviderResponse } from "../ai/providers/AiProviderAdapter";
-import { AiProviderUnavailableError } from "../ai/providers/AiProviderAdapter";
-import { createConfiguredAiProvider } from "../ai/providers/configuredProvider";
 import {
   productIntentCompilerResultSchema,
   type ProductDraftIntent,
@@ -73,7 +70,20 @@ export type ProductIntentCompilerFailure = {
 export type ProductIntentCompilerOutcome = ProductIntentCompilerSuccess | ProductIntentCompilerFailure;
 
 export interface ProductIntentCompilerProvider {
-  generateJson(request: Parameters<AiProviderAdapter["generateJson"]>[0]): Promise<AiProviderResponse>;
+  generateJson(request: {
+    orgId: string;
+    feature: "feature_review";
+    system: string;
+    user: string;
+    promptVersion: string;
+    repairAttempt: boolean;
+    timeoutMs: number;
+    timeoutUseCase: string;
+  }): Promise<{ rawText: string; provider: string; model: string; requestMetadata: Record<string, unknown> }>;
+}
+
+function isProviderUnavailable(error: unknown): boolean {
+  return error instanceof Error && error.name === "AiProviderUnavailableError";
 }
 
 function clampTimeout(timeoutMs?: number): number {
@@ -172,7 +182,7 @@ export class ProductIntentCompiler {
 
     for (let attempt = 0; attempt <= PRODUCT_INTENT_COMPILER_MAX_REPAIR_ATTEMPTS; attempt += 1) {
       const prompt = attempt === 0 ? promptForCompilation(input) : repairPrompt(input, invalidOutput);
-      let response: AiProviderResponse;
+      let response: Awaited<ReturnType<ProductIntentCompilerProvider["generateJson"]>>;
       try {
         response = await this.provider.generateJson({
           orgId: input.orgId,
@@ -185,7 +195,7 @@ export class ProductIntentCompiler {
           timeoutUseCase: "product_intent_compiler",
         });
       } catch (error) {
-        const unavailable = error instanceof AiProviderUnavailableError;
+        const unavailable = isProviderUnavailable(error);
         return {
           ok: false,
           error: {
@@ -248,7 +258,10 @@ export class ProductIntentCompiler {
 /** Uses the single existing OpenAI-compatible adapter. That adapter owns
  * provider request formatting for both OpenAI and DeepSeek, while this class
  * owns the provider-neutral compiler result boundary. */
-export function createConfiguredProductIntentCompiler(): ProductIntentCompiler | null {
+export async function createConfiguredProductIntentCompiler(): Promise<ProductIntentCompiler | null> {
+  // Keep the compiler module pure-testable: the configured provider imports
+  // tenant AI persistence, which must not be loaded by contract tests.
+  const { createConfiguredAiProvider } = await import("../ai/providers/configuredProvider");
   const provider = createConfiguredAiProvider();
   return provider ? new ProductIntentCompiler(provider) : null;
 }

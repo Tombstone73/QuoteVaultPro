@@ -1,146 +1,115 @@
-import { createHash } from "crypto";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 
-/**
- * Provider-neutral product state. This deliberately describes business intent,
- * not PBV2 persistence nodes. IDs are resolved by the tenant-aware server.
- */
-export const productIntentFieldSourceSchema = z.enum([
-  "explicit_user", "ai_interpreted", "selected_template", "canonical_default", "unresolved",
+/** Provider-neutral, server-owned contract for an inactive Product Builder draft. */
+export const PRODUCT_DRAFT_INTENT_VERSION = 1 as const;
+
+const nonEmpty = z.string().trim().min(1);
+const centsSchema = z.number().int().min(0);
+const positiveNumber = z.number().finite().positive();
+export const fieldSourceSchema = z.enum(["explicit_user", "ai_interpreted", "selected_template", "canonical_default", "unresolved"]);
+export const fieldMetadataSchema = z.object({ source: fieldSourceSchema, confidence: z.number().min(0).max(1).optional() }).strict();
+export const unresolvedFieldSchema = z.object({ path: nonEmpty, code: nonEmpty, question: nonEmpty.optional() }).strict();
+
+const resolvedReferenceSchema = z.object({ state: z.literal("resolved"), id: nonEmpty, label: nonEmpty }).strict();
+const unresolvedReferenceSchema = z.object({ state: z.literal("unresolved"), label: nonEmpty }).strict();
+export const tenantReferenceSchema = z.union([resolvedReferenceSchema, unresolvedReferenceSchema]);
+export const explicitlyUnsetSchema = z.object({ state: z.literal("explicitly_unset") }).strict();
+
+const materialSchema = z.union([resolvedReferenceSchema, unresolvedReferenceSchema, explicitlyUnsetSchema]);
+const productionRouteSchema = z.union([resolvedReferenceSchema, unresolvedReferenceSchema, explicitlyUnsetSchema]);
+const dimensionsSchema = z.object({ widthIn: positiveNumber, heightIn: positiveNumber, allowRotation: z.boolean().default(false) }).strict();
+const measurementSchema = z.discriminatedUnion("mode", [
+  z.object({ mode: z.literal("dimensions_required"), dimensions: z.undefined().optional() }).strict(),
+  z.object({ mode: z.literal("fixed_size"), dimensions: dimensionsSchema }).strict(),
+  z.object({ mode: z.literal("quantity_only"), dimensions: z.undefined().optional() }).strict(),
 ]);
-
-const confidenceSchema = z.number().min(0).max(1).nullable().default(null);
-const sourceSchema = z.object({ source: productIntentFieldSourceSchema, confidence: confidenceSchema }).strict();
-const labelRefSchema = z.object({ label: z.string().trim().min(1).max(160), ...sourceSchema.shape }).strict();
-
-const unresolvedFieldSchema = z.object({
-  path: z.string().trim().min(1).max(160),
-  reason: z.string().trim().min(1).max(500),
-  operationallySignificant: z.boolean().default(false),
-}).strict();
-
-const lifecycleSchema = z.object({ inactive: z.literal(true), published: z.literal(false) }).strict();
-const dimensionsSchema = z.object({ widthIn: z.number().positive(), heightIn: z.number().positive() }).strict();
-const measurementSchema = z.object({
-  mode: z.enum(["dimensions_required", "fixed_size", "quantity_only", "unresolved"]),
-  fixedDimensions: dimensionsSchema.nullable().default(null),
-  source: productIntentFieldSourceSchema,
-  confidence: confidenceSchema,
-}).strict().superRefine((value, context) => {
-  if (value.mode === "fixed_size" && !value.fixedDimensions) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "fixed_size requires fixedDimensions", path: ["fixedDimensions"] });
-  }
-  if (value.mode !== "fixed_size" && value.fixedDimensions) {
-    context.addIssue({ code: z.ZodIssueCode.custom, message: "fixedDimensions only applies to fixed_size", path: ["fixedDimensions"] });
-  }
-});
-
-const quantitySchema = z.object({
-  behavior: z.enum(["customer_entered", "fixed", "unresolved"]),
-  fixedQuantity: z.number().int().positive().nullable().default(null),
-  source: productIntentFieldSourceSchema,
-  confidence: confidenceSchema,
-}).strict().superRefine((value, context) => {
-  if (value.behavior === "fixed" && value.fixedQuantity == null) context.addIssue({ code: z.ZodIssueCode.custom, message: "fixed quantity behavior requires fixedQuantity", path: ["fixedQuantity"] });
-  if (value.behavior !== "fixed" && value.fixedQuantity != null) context.addIssue({ code: z.ZodIssueCode.custom, message: "fixedQuantity only applies to fixed behavior", path: ["fixedQuantity"] });
-});
-
-const moneySchema = z.number().int().nonnegative();
-const matrixAxisSchema = z.object({ key: z.string().trim().min(1).max(80), label: z.string().trim().min(1).max(120), values: z.array(z.string().trim().min(1).max(120)).min(1).max(50) }).strict();
-const pricingSchema = z.object({
-  model: z.enum(["per_piece", "per_square_foot", "matrix", "quantity_tiers", "unresolved"]),
-  perPieceCents: moneySchema.nullable().default(null),
-  perSquareFootCents: moneySchema.nullable().default(null),
-  minimumChargeCents: moneySchema.nullable().default(null),
-  matrix: z.object({ axes: z.array(matrixAxisSchema).length(2), cells: z.record(moneySchema) }).strict().nullable().default(null),
-  tiers: z.array(z.object({ minQuantity: z.number().int().positive(), maxQuantity: z.number().int().positive().nullable(), perPieceCents: moneySchema }).strict()).default([]),
-  source: productIntentFieldSourceSchema,
-  confidence: confidenceSchema,
-}).strict().superRefine((value, context) => {
-  if (value.model === "per_piece" && value.perPieceCents == null) context.addIssue({ code: z.ZodIssueCode.custom, message: "per_piece requires perPieceCents", path: ["perPieceCents"] });
-  if (value.model === "per_square_foot" && value.perSquareFootCents == null) context.addIssue({ code: z.ZodIssueCode.custom, message: "per_square_foot requires perSquareFootCents", path: ["perSquareFootCents"] });
-  if (value.model === "matrix" && !value.matrix) context.addIssue({ code: z.ZodIssueCode.custom, message: "matrix pricing requires matrix data", path: ["matrix"] });
-  if (value.model !== "matrix" && value.matrix) context.addIssue({ code: z.ZodIssueCode.custom, message: "matrix data only applies to matrix pricing", path: ["matrix"] });
-  if (value.model === "quantity_tiers" && value.tiers.length === 0) context.addIssue({ code: z.ZodIssueCode.custom, message: "quantity_tiers requires tiers", path: ["tiers"] });
-  if (value.model !== "quantity_tiers" && value.tiers.length) context.addIssue({ code: z.ZodIssueCode.custom, message: "tiers only apply to quantity_tiers", path: ["tiers"] });
-});
-
-const materialSchema = z.discriminatedUnion("state", [
-  z.object({ state: z.literal("resolved"), material: labelRefSchema }).strict(),
-  z.object({ state: z.literal("explicitly_unset"), source: z.literal("explicit_user"), confidence: z.null().default(null) }).strict(),
-  z.object({ state: z.literal("unresolved"), source: z.literal("unresolved"), confidence: z.null().default(null) }).strict(),
+const quantitySchema = z.discriminatedUnion("behavior", [
+  z.object({ behavior: z.literal("customer_entered"), minimum: z.number().int().positive().default(1), maximum: z.number().int().positive().optional() }).strict(),
+  z.object({ behavior: z.literal("fixed"), quantity: z.number().int().positive() }).strict(),
+  z.object({ behavior: z.literal("not_applicable") }).strict(),
 ]);
-const optionGroupSchema = z.object({ key: z.string().trim().min(1).max(80), label: z.string().trim().min(1).max(120), required: z.boolean(), selectionMode: z.enum(["single", "multiple"]), values: z.array(z.string().trim().min(1).max(120)).min(1).max(100), defaultValue: z.string().trim().min(1).nullable().default(null), source: productIntentFieldSourceSchema, confidence: confidenceSchema }).strict();
-const workflowSchema = z.object({ proofRequired: z.boolean(), productionJobRequired: z.boolean(), productionRoute: z.union([labelRefSchema, z.null()]), source: productIntentFieldSourceSchema, confidence: confidenceSchema }).strict().superRefine((value, context) => {
-  if (!value.productionJobRequired && value.productionRoute) context.addIssue({ code: z.ZodIssueCode.custom, message: "productionRoute requires productionJobRequired", path: ["productionRoute"] });
+const optionValueSchema = z.object({ key: nonEmpty, label: nonEmpty, isDefault: z.boolean().default(false) }).strict();
+const optionGroupSchema = z.object({ key: nonEmpty, label: nonEmpty, required: z.boolean(), selectionMode: z.enum(["single", "multiple"]), values: z.array(optionValueSchema).min(1) }).strict().superRefine((group, ctx) => {
+  if (new Set(group.values.map((value) => value.key.toLocaleLowerCase())).size !== group.values.length) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Option value keys must be unique.", path: ["values"] });
+  if (group.selectionMode === "single" && group.values.filter((value) => value.isDefault).length > 1) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Single-select groups may have one default.", path: ["values"] });
+  if (group.required && group.values.every((value) => !value.isDefault)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Required option groups need a default.", path: ["values"] });
 });
+const matrixCellSchema = z.object({ row: nonEmpty, column: nonEmpty, priceCents: centsSchema }).strict();
+const pricingSchema = z.discriminatedUnion("model", [
+  z.object({ model: z.literal("scalar"), unit: z.enum(["per_piece", "per_square_foot", "flat_fee"]), priceCents: centsSchema, minimumChargeCents: centsSchema.optional() }).strict(),
+  z.object({ model: z.literal("two_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot"]), rowOptionKey: nonEmpty, columnOptionKey: nonEmpty, cells: z.array(matrixCellSchema).min(1), minimumChargeCents: centsSchema.optional() }).strict(),
+  z.object({ model: z.literal("quantity_tiers"), unit: z.enum(["per_piece", "per_square_foot"]), tiers: z.array(z.object({ minimumQuantity: z.number().int().positive(), maximumQuantity: z.number().int().positive().nullable(), priceCents: centsSchema }).strict()).min(1), minimumChargeCents: centsSchema.optional() }).strict(),
+  z.object({ model: z.literal("unresolved") }).strict(),
+]).superRefine((pricing, ctx) => {
+  if (pricing.model === "two_dimensional_matrix" && pricing.rowOptionKey === pricing.columnOptionKey) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Matrix axes must use different option groups.", path: ["columnOptionKey"] });
+  if (pricing.model === "quantity_tiers") pricing.tiers.forEach((tier, index) => { if (tier.maximumQuantity !== null && tier.maximumQuantity < tier.minimumQuantity) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Tier maximum cannot precede its minimum.", path: ["tiers", index, "maximumQuantity"] }); });
+});
+const workflowSchema = z.object({ kind: z.enum(["standard_production", "fulfillment_only", "service_fee"]), requiresProofApproval: z.boolean(), requiresProductionJob: z.boolean() }).strict().superRefine((workflow, ctx) => {
+  if (workflow.kind === "service_fee" && workflow.requiresProductionJob) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Service-fee products cannot require a production job.", path: ["requiresProductionJob"] });
+});
+const revisionMetadataSchema = z.object({ parentRevision: z.number().int().nonnegative().nullable(), createdAt: z.string().datetime().optional(), actorUserId: nonEmpty.nullable().optional() }).strict();
+const identitySchema = z.object({ name: nonEmpty, description: z.string().trim().max(10000).default(""), category: tenantReferenceSchema }).strict();
+const productionSchema = z.object({ route: productionRouteSchema, configuration: z.record(z.unknown()).default({}) }).strict();
+const visibilitySchema = z.object({ catalogVisible: z.boolean().default(false) }).strict();
 
 export const productDraftIntentSchema = z.object({
-  contractVersion: z.literal(1),
-  operation: z.enum(["create", "clone", "edit"]),
-  revision: z.number().int().positive(),
-  identity: z.object({ name: labelRefSchema, category: z.union([labelRefSchema, z.null()]) }).strict(),
-  lifecycle: lifecycleSchema,
-  measurement: measurementSchema,
-  quantity: quantitySchema,
-  pricing: pricingSchema,
-  material: materialSchema,
-  optionGroups: z.array(optionGroupSchema).max(100),
-  workflow: workflowSchema,
-  visibility: z.object({ customerVisible: z.boolean(), source: productIntentFieldSourceSchema }).strict(),
-  unresolvedFields: z.array(unresolvedFieldSchema).max(100),
-  explicitConstraints: z.array(z.string().trim().min(1).max(500)).max(100).default([]),
-  compatibility: z.object({ productBuilder: z.literal("pbv2"), archetype: z.string().trim().min(1).max(80) }).strict(),
-}).strict().superRefine((value, context) => {
-  const duplicate = value.optionGroups.find((group, index) => value.optionGroups.findIndex((other) => other.key.toLowerCase() === group.key.toLowerCase()) !== index);
-  if (duplicate) context.addIssue({ code: z.ZodIssueCode.custom, message: "Option group keys must be unique", path: ["optionGroups"] });
+  contractVersion: z.literal(PRODUCT_DRAFT_INTENT_VERSION), intentId: nonEmpty, organizationId: nonEmpty, revision: z.number().int().nonnegative(),
+  state: z.enum(["compiling", "needs_resolution", "needs_answers", "ready_for_review", "awaiting_confirmation", "executed", "expired", "abandoned"]),
+  operation: z.enum(["new_product", "clone_to_inactive_draft", "edit_inactive_draft"]),
+  identity: identitySchema,
+  lifecycle: z.object({ productStatus: z.literal("inactive"), published: z.literal(false) }).strict(),
+  measurement: measurementSchema, quantity: quantitySchema, pricing: pricingSchema, material: materialSchema,
+  optionGroups: z.array(optionGroupSchema), workflow: workflowSchema,
+  production: productionSchema,
+  visibility: visibilitySchema,
+  unresolvedFields: z.array(unresolvedFieldSchema).default([]), fieldMetadata: z.record(fieldMetadataSchema).default({}),
+  revisionMetadata: revisionMetadataSchema, operationContext: z.object({ sourceProductId: nonEmpty.optional(), requestId: nonEmpty.optional() }).strict().default({}),
+}).strict().superRefine((intent, ctx) => {
+  if (new Set(intent.optionGroups.map((group) => group.key.toLocaleLowerCase())).size !== intent.optionGroups.length) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Option group keys must be unique.", path: ["optionGroups"] });
+  if (new Set(intent.unresolvedFields.map((field) => field.path)).size !== intent.unresolvedFields.length) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Unresolved fields must use unique paths.", path: ["unresolvedFields"] });
+  if (intent.operation === "new_product" && intent.operationContext.sourceProductId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "New products cannot declare a source product.", path: ["operationContext", "sourceProductId"] });
+  if (intent.operation !== "new_product" && !intent.operationContext.sourceProductId) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Clone and edit operations require a source product.", path: ["operationContext", "sourceProductId"] });
 });
-
 export type ProductDraftIntent = z.infer<typeof productDraftIntentSchema>;
 
-const patchValueSchema = z.object({ set: z.unknown().optional(), clear: z.literal(true).optional() }).strict().superRefine((value, context) => {
-  if (("set" in value) === (value.clear === true)) context.addIssue({ code: z.ZodIssueCode.custom, message: "patch must have exactly one of set or clear" });
-});
-export const productDraftIntentPatchSchema = z.object({
-  baseRevision: z.number().int().positive(),
-  preserveUnspecifiedFields: z.literal(true).default(true),
-  changes: z.record(patchValueSchema).refine((changes) => Object.keys(changes).length > 0, "A patch must change at least one field"),
-}).strict();
+const patchOperationSchema = z.discriminatedUnion("op", [
+  z.object({ op: z.literal("set_identity"), value: identitySchema }).strict(),
+  z.object({ op: z.literal("set_measurement"), value: measurementSchema }).strict(), z.object({ op: z.literal("set_quantity"), value: quantitySchema }).strict(),
+  z.object({ op: z.literal("set_pricing"), value: pricingSchema }).strict(), z.object({ op: z.literal("set_material"), value: materialSchema }).strict(),
+  z.object({ op: z.literal("replace_option_groups"), value: z.array(optionGroupSchema) }).strict(), z.object({ op: z.literal("set_workflow"), value: workflowSchema }).strict(),
+  z.object({ op: z.literal("set_production"), value: productionSchema }).strict(), z.object({ op: z.literal("set_visibility"), value: visibilitySchema }).strict(),
+  z.object({ op: z.literal("set_unresolved_fields"), value: z.array(unresolvedFieldSchema) }).strict(), z.object({ op: z.literal("merge_field_metadata"), value: z.record(fieldMetadataSchema) }).strict(),
+  z.object({ op: z.literal("set_state"), value: z.enum(["compiling", "needs_resolution", "needs_answers", "ready_for_review", "awaiting_confirmation", "expired", "abandoned"]) }).strict(),
+]);
+export const productDraftIntentPatchSchema = z.object({ contractVersion: z.literal(PRODUCT_DRAFT_INTENT_VERSION), baseRevision: z.number().int().nonnegative(), preserveUnchanged: z.literal(true).default(true), operations: z.array(patchOperationSchema).min(1) }).strict();
 export type ProductDraftIntentPatch = z.infer<typeof productDraftIntentPatchSchema>;
 
-export const unresolvedQuestionSetSchema = z.object({ kind: z.literal("unresolved_questions"), questions: z.array(z.object({ field: z.string().min(1), question: z.string().min(1), reason: z.string().min(1) }).strict()).min(1) }).strict();
-export const structuredCompilerErrorSchema = z.object({ kind: z.literal("compiler_error"), code: z.string().min(1), message: z.string().min(1), retryable: z.boolean() }).strict();
+export const unresolvedQuestionSchema = z.object({ id: nonEmpty, path: nonEmpty, question: nonEmpty, required: z.boolean(), options: z.array(z.object({ label: nonEmpty, value: z.union([z.string(), z.number(), z.boolean()]) }).strict()).optional() }).strict();
+export const unresolvedQuestionSetSchema = z.object({ baseRevision: z.number().int().nonnegative().optional(), questions: z.array(unresolvedQuestionSchema).min(1) }).strict();
+export const structuredCompilerErrorSchema = z.object({ code: nonEmpty, message: nonEmpty, retryable: z.boolean(), details: z.array(nonEmpty).default([]) }).strict();
 export const productIntentCompilerResultSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("complete_intent"), intent: productDraftIntentSchema }).strict(),
-  z.object({ kind: z.literal("intent_patch"), patch: productDraftIntentPatchSchema }).strict(),
-  unresolvedQuestionSetSchema,
-  structuredCompilerErrorSchema,
+  z.object({ kind: z.literal("complete_intent"), intent: productDraftIntentSchema }).strict(), z.object({ kind: z.literal("intent_patch"), patch: productDraftIntentPatchSchema }).strict(),
+  z.object({ kind: z.literal("unresolved_questions"), unresolved: unresolvedQuestionSetSchema }).strict(), z.object({ kind: z.literal("compiler_error"), error: structuredCompilerErrorSchema }).strict(),
 ]);
 export type ProductIntentCompilerResult = z.infer<typeof productIntentCompilerResultSchema>;
 
-export function parseProductDraftIntent(value: unknown): ProductDraftIntent { return productDraftIntentSchema.parse(value); }
-
-/** Only known top-level intent paths are patchable; unknown paths are rejected. */
-const patchableFields = new Set(["identity", "measurement", "quantity", "pricing", "material", "optionGroups", "workflow", "visibility", "unresolvedFields", "explicitConstraints", "compatibility"]);
-export function applyProductDraftIntentPatch(intent: ProductDraftIntent, rawPatch: unknown): ProductDraftIntent {
-  const patch = productDraftIntentPatchSchema.parse(rawPatch);
-  if (patch.baseRevision !== intent.revision) throw new Error("PRODUCT_INTENT_STALE_REVISION");
-  const next: Record<string, unknown> = { ...intent, revision: intent.revision + 1 };
-  for (const [path, operation] of Object.entries(patch.changes)) {
-    if (!patchableFields.has(path)) throw new Error(`PRODUCT_INTENT_PATCH_PATH_FORBIDDEN:${path}`);
-    if (operation.clear) {
-      if (path === "optionGroups" || path === "unresolvedFields" || path === "explicitConstraints") next[path] = [];
-      else if (path === "material") next[path] = { state: "explicitly_unset", source: "explicit_user", confidence: null };
-      else throw new Error(`PRODUCT_INTENT_PATCH_CLEAR_FORBIDDEN:${path}`);
-    } else next[path] = operation.set;
-  }
+export function parseProductDraftIntent(input: unknown): ProductDraftIntent { return productDraftIntentSchema.parse(input); }
+export function applyProductDraftIntentPatch(intentInput: unknown, patchInput: unknown, metadata: Partial<z.infer<typeof revisionMetadataSchema>> = {}): ProductDraftIntent {
+  const intent = productDraftIntentSchema.parse(intentInput); const patch = productDraftIntentPatchSchema.parse(patchInput);
+  if (patch.baseRevision !== intent.revision) throw new Error(`Product intent patch is stale (expected revision ${intent.revision}, got ${patch.baseRevision}).`);
+  const next: ProductDraftIntent = JSON.parse(JSON.stringify(intent));
+  for (const operation of patch.operations) { switch (operation.op) {
+    case "set_identity": next.identity = operation.value; break; case "set_measurement": next.measurement = operation.value; break; case "set_quantity": next.quantity = operation.value; break;
+    case "set_pricing": next.pricing = operation.value; break; case "set_material": next.material = operation.value; break; case "replace_option_groups": next.optionGroups = operation.value; break;
+    case "set_workflow": next.workflow = operation.value; break; case "set_production": next.production = operation.value; break; case "set_visibility": next.visibility = operation.value; break;
+    case "set_unresolved_fields": next.unresolvedFields = operation.value; break; case "merge_field_metadata": next.fieldMetadata = { ...next.fieldMetadata, ...operation.value }; break; case "set_state": next.state = operation.value; break;
+  } }
+  next.revision = intent.revision + 1; next.revisionMetadata = { parentRevision: intent.revision, ...metadata };
   return productDraftIntentSchema.parse(next);
 }
 
-function canonicalize(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonicalize);
-  if (value && typeof value === "object") return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)).map(([key, child]) => [key, canonicalize(child)]));
-  return value;
-}
-export function normalizeProductDraftIntent(intent: ProductDraftIntent): string { return JSON.stringify(canonicalize(productDraftIntentSchema.parse(intent))); }
-export function productDraftIntentFingerprint(intent: ProductDraftIntent): string { return createHash("sha256").update(normalizeProductDraftIntent(intent)).digest("hex"); }
+function canonical(value: unknown, omit = new Set<string>()): unknown { if (value === null || value === undefined) return null; if (Array.isArray(value)) return value.map((item) => canonical(item, omit)); if (typeof value !== "object") return value; const record = value as Record<string, unknown>; return Object.fromEntries(Object.keys(record).filter((key) => !omit.has(key) && record[key] !== undefined).sort().map((key) => [key, canonical(record[key], omit)])); }
+/** Deterministic semantic representation. Revision identifiers and timestamps bind persistence, not product meaning. */
+export function normalizeProductDraftIntent(input: unknown): Record<string, unknown> { const intent = productDraftIntentSchema.parse(input); const { intentId: _intentId, revision: _revision, revisionMetadata, ...semantic } = intent; const { createdAt: _createdAt, actorUserId: _actorUserId, parentRevision: _parentRevision } = revisionMetadata; return canonical(semantic) as Record<string, unknown>; }
+export function productDraftIntentFingerprint(input: unknown): string { return createHash("sha256").update(JSON.stringify(normalizeProductDraftIntent(input))).digest("hex"); }

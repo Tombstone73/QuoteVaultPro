@@ -1,8 +1,8 @@
-import { AiProviderUnavailableError } from "../services/ai/providers/AiProviderAdapter";
 import {
   PRODUCT_INTENT_COMPILER_MAX_REPAIR_ATTEMPTS,
   ProductIntentCompiler,
 } from "../services/productIntentCompiler/productIntentCompiler";
+import { jest } from "@jest/globals";
 
 const compilerInput = {
   orgId: "org_test",
@@ -46,7 +46,9 @@ describe("ProductIntentCompiler", () => {
   test("fails safely when no compatible provider is configured", async () => {
     const compiler = new ProductIntentCompiler({
       generateJson: jest.fn(async () => {
-        throw new AiProviderUnavailableError("disabled");
+        const error = new Error("disabled");
+        error.name = "AiProviderUnavailableError";
+        throw error;
       }),
     });
 

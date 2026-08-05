@@ -14,7 +14,7 @@ export const productIntentSessionStateSchema = z.enum([
 export type ProductIntentSessionState = z.infer<typeof productIntentSessionStateSchema>;
 
 const revisionSchema = z.object({
-  revision: z.number().int().positive(),
+  revision: z.number().int().nonnegative(),
   intent: productDraftIntentSchema,
   fingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   createdAt: z.string().datetime(),
@@ -30,10 +30,10 @@ export const productIntentSessionEnvelopeSchema = z.object({
   organizationId: z.string().min(1),
   sessionId: z.string().min(1),
   state: productIntentSessionStateSchema,
-  currentRevision: z.number().int().positive(),
+  currentRevision: z.number().int().nonnegative(),
   revisions: z.array(revisionSchema).min(1),
-  confirmationRevision: z.number().int().positive().nullable(),
-  executedRevision: z.number().int().positive().nullable(),
+  confirmationRevision: z.number().int().nonnegative().nullable(),
+  executedRevision: z.number().int().nonnegative().nullable(),
 }).strict().superRefine((value, context) => {
   const current = value.revisions.at(-1);
   if (!current || current.revision !== value.currentRevision) context.addIssue({ code: z.ZodIssueCode.custom, message: "currentRevision must match the latest immutable revision", path: ["currentRevision"] });
@@ -41,9 +41,7 @@ export const productIntentSessionEnvelopeSchema = z.object({
 });
 export type ProductIntentSessionEnvelope = z.infer<typeof productIntentSessionEnvelopeSchema>;
 
-function deriveState(intent: ProductDraftIntent): ProductIntentSessionState {
-  return intent.unresolvedFields.length ? "needs_answers" : "ready_for_review";
-}
+function deriveState(intent: ProductDraftIntent): ProductIntentSessionState { return intent.state; }
 
 export function createProductIntentSession(input: { organizationId: string; sessionId: string; intent: ProductDraftIntent; now?: Date }): ProductIntentSessionEnvelope {
   const intent = productDraftIntentSchema.parse(input.intent);
