@@ -32,4 +32,21 @@ describe("canonical Product Intent interactions", () => {
     expect(actions.every((item) => productIntentCandidateActionSchema.safeParse(item).success)).toBe(true);
     expect(actions.find((item) => item.kind === "select_material")?.patch?.operations[0]).toMatchObject({ op: "set_material", value: { id: "mat-1" } });
   });
+
+  test("marks a category candidate as an explicit structured user selection", () => {
+    const unresolved = intent({
+      identity: { name: "Yard signs", description: "", category: { state: "unresolved", label: "Product category" } },
+      fieldMetadata: { "identity.category": { source: "ai_interpreted", confidence: 0.5 } },
+    });
+    const actions = generateProductIntentCandidateActions(unresolved, fingerprint, [
+      { id: "2:identity.category:candidate", code: "CATEGORY_UNRESOLVED", path: "identity.category", severity: "question", message: "Which category?" },
+    ], { categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [], productionRoutes: [] });
+
+    const action = actions.find((item) => item.kind === "select_category");
+    expect(action?.candidate).toEqual({ id: "flatbed-printing", label: "Flatbed Printing" });
+    expect(action?.patch?.operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ op: "set_identity", value: expect.objectContaining({ category: { state: "resolved", id: "flatbed-printing", label: "Flatbed Printing" } }) }),
+      { op: "merge_field_metadata", value: { "identity.category": { source: "explicit_user" } } },
+    ]));
+  });
 });

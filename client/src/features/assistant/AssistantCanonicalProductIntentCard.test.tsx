@@ -49,6 +49,35 @@ describe("canonical Product Intent assistant card", () => {
     expect(container.textContent).toContain("cannot be confirmed");
   });
 
+  it("submits only the opaque candidate action once and replaces the card after the server reply", async () => {
+    const proposalId = "11111111-1111-4111-8111-111111111111";
+    const actionId = "cand_flatbed_printing";
+    const payload = canonicalCard({ details: { proposalId, canonicalProductIntent: {
+      ...canonicalCard().details.canonicalProductIntent,
+      candidateResolutions: [
+        { id: actionId, issueId: "4:identity.category:candidate", revision: 4, fingerprint, kind: "select_category", label: "Use Flatbed Printing", description: "Use the tenant category.", blocksConfirmation: true, candidate: { id: "flatbed-printing", label: "Flatbed Printing" }, navigationOnly: false },
+        { id: "cand_roll_printing", issueId: "4:identity.category:candidate", revision: 4, fingerprint, kind: "select_category", label: "Use Roll Printing", description: "Use the tenant category.", blocksConfirmation: true, candidate: { id: "roll-printing", label: "Roll Printing" }, navigationOnly: false },
+      ],
+    } } });
+    const card = toCanonicalProductIntentCard(payload)!;
+    let resolveInteraction: ((value: unknown) => void) | undefined;
+    const onInteraction = jest.fn(() => new Promise<unknown>((resolve) => { resolveInteraction = resolve; }));
+    act(() => root.render(<CanonicalProductIntentCardView card={card} onInteraction={onInteraction} />));
+
+    const buttons = Array.from(container.querySelectorAll("button"));
+    act(() => buttons[0]?.click());
+    expect(onInteraction).toHaveBeenCalledWith({ proposalId, action: "apply_candidate", actionId, newProductName: undefined });
+    expect(buttons.every((button) => button.hasAttribute("disabled"))).toBe(true);
+
+    await act(async () => resolveInteraction?.({ card: {
+      ...payload.details.canonicalProductIntent,
+      revision: 5, fingerprint: "b".repeat(64), readiness: { ready: false, blockers: [], questions: ["How should the matrix prices be charged?"] },
+      fields: { ...(payload.details.canonicalProductIntent.fields as Record<string, unknown>), Category: "Flatbed Printing" }, candidateResolutions: [],
+    } }));
+    expect(container.textContent).toContain("Category: Flatbed Printing");
+    expect(container.textContent).not.toContain("Use Flatbed Printing");
+  });
+
   it("fails closed for object-valued product facts and reports a ready revision without a GO control", () => {
     const payload = canonicalCard();
     (payload.details.canonicalProductIntent.fields as Record<string, unknown>).Pricing = { cents: 1200 };
