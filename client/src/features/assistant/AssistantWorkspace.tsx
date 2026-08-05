@@ -14,6 +14,7 @@ import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantProductPricingProposalCard, AssistantQuoteDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantProductPricingProposal, toAssistantQuoteDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
 import { ConfigurableProductConfirmationCardView, toConfigurableProductConfirmation, toConfigurableProductProposal } from "./AssistantConfigurableProductCards";
+import { CanonicalProductIntentCardView, CanonicalProductIntentReviewProposalCard, toCanonicalProductIntentCard, toCanonicalProductIntentProposal } from "./AssistantCanonicalProductIntentCard";
 import { AssistantGenericActionProposalCard, toGenericActionProposal } from "./AssistantGenericActionProposalCard";
 import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
@@ -419,6 +420,13 @@ export function ResultCards({
   const presentation = responsePresentationForCards(serverPresentation);
   // Defense in depth for turns persisted before the response-contract fix.
   const visibleCards = cards.filter((card) => (card as { kind: string }).kind !== "response_presentation");
+  const latestCanonicalRevision = new Map<string, { revision: number; fingerprint: string }>();
+  for (const card of visibleCards) {
+    const canonical = toCanonicalProductIntentCard(card);
+    if (!canonical?.proposalId) continue;
+    const current = latestCanonicalRevision.get(canonical.proposalId);
+    if (!current || canonical.revision > current.revision) latestCanonicalRevision.set(canonical.proposalId, { revision: canonical.revision, fingerprint: canonical.fingerprint });
+  }
   if (!visibleCards.length) return null;
   const diagnosticCards = visibleCards.filter((card) => ["tool_warning", "provider_unavailable", "permission_denied", "not_found", "partial_result"].includes(card.kind));
   const createGenericPlan = async (turnId: string) => {
@@ -452,6 +460,20 @@ export function ResultCards({
     }
     const configurableBlocked = toConfigurableProductConfirmation((card as any)?.details?.configurableProduct);
     if (configurableBlocked && !configurableBlocked.ready) return <ConfigurableProductConfirmationCardView key={`configurable-blocked-${index}`} confirmation={configurableBlocked} />;
+    const canonicalProductIntent = toCanonicalProductIntentCard(card);
+    if (canonicalProductIntent) return <CanonicalProductIntentCardView key={`canonical-product-intent-${canonicalProductIntent.revision}-${index}`} card={canonicalProductIntent} />;
+    const canonicalProductIntentProposal = toCanonicalProductIntentProposal(card);
+    if (canonicalProductIntentProposal) {
+      const created = executionPlans[canonicalProductIntentProposal.turnId];
+      if (created) {
+        const planCard = { kind: "action_plan", title: canonicalProductIntentProposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
+        const plan = toAssistantPlanCardModel(planCard);
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
+      }
+      const current = latestCanonicalRevision.get(canonicalProductIntentProposal.proposalId);
+      const stale = Boolean(current && (current.revision !== canonicalProductIntentProposal.revision || current.fingerprint !== canonicalProductIntentProposal.fingerprint));
+      return <CanonicalProductIntentReviewProposalCard key={`canonical-product-intent-proposal-${canonicalProductIntentProposal.turnId}-${index}`} proposal={canonicalProductIntentProposal} onCreatePlan={onCreatePlan} stale={stale} />;
+    }
     const productCard = toAssistantProductManagementCard(card);
     if (productCard) return <AssistantProductManagementCardView key={`product-${productCard.kind}-${index}`} card={productCard} />;
     const pricingProposal = toAssistantProductPricingProposal(card);

@@ -32,14 +32,14 @@ export function createCanonicalProductIntentDraftService(
       const bound = await persistence.bindConfirmation({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: input.revision, expectedFingerprint: input.fingerprint });
       const intent = bound.specification.session.revisions.at(-1)!.intent;
       const [{ db }] = await Promise.all([import("../../../db")]);
-      const issues = await resolveAndValidateProductDraftIntent(intent, {
+      const validation = await resolveAndValidateProductDraftIntent(intent, {
         categoryLabels: intent.identity.category.state === "resolved" ? [intent.identity.category.label] : [],
         materialLabels: intent.material.state === "resolved" ? [intent.material.label] : [],
         productionRouteLabels: intent.production.route.state === "resolved" ? [intent.production.route.label] : [],
         duplicateName: async (name) => Boolean((await db.select({ id: products.id }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.name, name))).limit(1))[0]),
         validatePbv2Compatibility: (candidate) => { try { projectProductDraftIntentToProductBuilderDraft(candidate); return []; } catch (error) { return [{ code: "PBV2_INCOMPATIBLE", path: "", severity: "blocker" as const, message: error instanceof Error ? error.message : "The intent is not compatible with Product Builder." }]; } },
       });
-      if (issues.length) throw new ExecutionPlanError("PRODUCT_INTENT_NOT_READY", issues.map((issue) => issue.message).join(" "));
+      if (validation.issues.length) throw new ExecutionPlanError("PRODUCT_INTENT_NOT_READY", validation.issues.map((issue) => issue.message).join(" "));
       const writer = createCanonicalProductDraftExecutionWriter(db);
       const result = await writer.execute({ intent, organizationId: input.organizationId, actorUserId: input.actorUserId, idempotencyKey: input.idempotencyKey, sessionId: input.proposalId, assistantPlanId: input.planId, correlationId: input.correlationId });
       await persistence.markExecuted({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: input.revision, expectedFingerprint: input.fingerprint });
@@ -60,6 +60,13 @@ export function createCanonicalProductIntentDraftExecutionCommand(service = crea
       return { arguments: input, preview };
     },
     async revalidate({ plan, scope }) { try { const loaded = await load(scope, plan.sanitizedArguments); return loaded.session.specification.session.state === "ready_for_review" ? { valid: true as const } : { valid: false as const, code: "PRODUCT_INTENT_NOT_READY", summary: "The canonical product intent is no longer ready." }; } catch (error) { return { valid: false as const, code: "PRODUCT_INTENT_CHANGED", summary: error instanceof Error ? error.message : "The canonical product intent changed." }; } },
-    async execute({ plan, scope }): Promise<ExecutionCommandResult> { const result = await command.adapter.execute(canonicalProductIntentDraftInputSchema.parse(plan.sanitizedArguments), { organizationId: scope.organizationId, actorUserId: scope.userId, planId: plan.id, idempotencyKey: plan.idempotencyKey, correlationId: plan.correlationId, signal: new AbortController().signal }); return { status: "succeeded", summary: result.reused ? "The canonical inactive draft already existed; returning the exact draft." : "The canonical inactive product draft was created.", details: { productDraft: { id: result.productId, name: "Inactive product draft", sourceLink: result.sourceLink } }, steps: [{ commandName: `${canonicalProductIntentDraftCommandName}@v1`, status: "succeeded", summary: `Product ${result.productId}; PBV2 DRAFT ${result.pbv2TreeVersionId}.` }] }; },
+    async execute({ plan, scope }): Promise<ExecutionCommandResult> {
+      const input = canonicalProductIntentDraftInputSchema.parse(plan.sanitizedArguments);
+      // Capture the exact reviewed name before the service binds and executes
+      // the revision, so the result card never substitutes a generic label.
+      const loaded = await load(scope, input);
+      const result = await command.adapter.execute(input, { organizationId: scope.organizationId, actorUserId: scope.userId, planId: plan.id, idempotencyKey: plan.idempotencyKey, correlationId: plan.correlationId, signal: new AbortController().signal });
+      return { status: "succeeded", summary: result.reused ? "The canonical inactive draft already existed; returning the exact draft." : "The canonical inactive product draft was created.", details: { productDraft: { id: result.productId, name: loaded.intent.identity.name, sourceLink: result.sourceLink, pbv2TreeVersionId: result.pbv2TreeVersionId, inactive: true, published: false } }, steps: [{ commandName: `${canonicalProductIntentDraftCommandName}@v1`, status: "succeeded", summary: `Product ${result.productId}; PBV2 DRAFT ${result.pbv2TreeVersionId}.` }] };
+    },
   };
 }

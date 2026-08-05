@@ -34,6 +34,7 @@ import { productPricingChangeSetService } from "./execution/productPricingChange
 import { pricingChangeRequestFromMessage } from "./productPricingChangeSetParsing";
 import { productPricingChangeSetStore } from "./productPricingChangeSetDb";
 import { configurableProductDraftCommandName } from "./execution/configurableProductDraftCommand";
+import { canonicalProductIntentDraftCommandName } from "./execution/canonicalProductIntentDraftCommand";
 import { applyComplexProductConversationEdit, createInitialComplexProductSpecification, pricingUnitQuestion, routeComplexProductMessage } from "./complexProductConversation";
 import { measurementModeQuestion } from "./complexProductSpecification";
 import { getComplexProductConfirmation, persistComplexProductProposal, resolveConfigurableProductContinuation, updateComplexProductProposal } from "./complexProductDraftPersistence";
@@ -56,7 +57,7 @@ export const productManagementSkill = Object.freeze({
   version: "v1",
   purpose: "Conversationally create or continue validated inactive product drafts using the existing Product Intake workflow.",
   allowedReadDomains: ["products", "product_categories", "pbv2_definitions", "pricing_methods", "materials", "production_routing", "option_definitions", "formula_library_metadata"],
-  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1", "products.create_configurable_draft@v1", "products.clone_to_inactive_draft@v1", "products.replace_inactive_matrix@v1", "products.replace_inactive_quantity_tiers@v1"],
+  allowedCommands: ["products.create_inactive_draft@v1", "products.create_inactive_draft_batch@v1", "products.update_inactive_draft@v1", "products.update_inactive_draft_batch@v1", "products.adjust_pricing@v1", "products.rollback_pricing_change_set@v1", "products.create_configurable_draft@v1", "products.create_from_canonical_intent@v1", "products.clone_to_inactive_draft@v1", "products.replace_inactive_matrix@v1", "products.replace_inactive_quantity_tiers@v1"],
   requiredPermissions: ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch", "assistant.products.adjust_pricing"],
   requiredContext: ["organization", "authenticated_internal_actor", "conversation"],
   confirmationPolicy: "dedicated_plan_confirmation",
@@ -135,7 +136,13 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
 }
 
 function canonicalCards(outcome: Extract<CanonicalProductIntentOutcome, { ok: true }>): ProductManagementCard[] {
-  return [{ kind: "canonical_product_intent_proposal", title: outcome.card.title, summary: outcome.card.readiness.ready ? "Canonical product intent is ready for review." : "Canonical product intent needs the remaining decisions.", sourceLinks: [], details: { canonicalProductIntent: outcome.card, proposalId: outcome.session.proposalId, revision: outcome.card.revision, fingerprint: outcome.card.fingerprint } }];
+  const proposal = { proposalId: outcome.session.proposalId, revision: outcome.card.revision, fingerprint: outcome.card.fingerprint };
+  const cards: ProductManagementCard[] = [{ kind: "canonical_product_intent_proposal", title: outcome.card.title, summary: outcome.card.readiness.ready ? "Canonical product intent is ready for review." : "Canonical product intent needs the remaining decisions.", sourceLinks: [], details: { canonicalProductIntent: outcome.card, ...proposal } }];
+  // The action payload is server-authored and intentionally contains only the
+  // persisted proposal identity. The browser can request a plan by turn id,
+  // but never selects an operation or reconstructs a product from this card.
+  if (outcome.card.readiness.ready) cards.push({ kind: "action_proposal", title: outcome.card.title, summary: "Review the canonical intent, then use the dedicated GO control to create exactly one inactive PBV2 DRAFT.", sourceLinks: [], plan: { action: canonicalProductIntentDraftCommandName, ...proposal } });
+  return cards;
 }
 
 async function loadReferences(organizationId: string) {

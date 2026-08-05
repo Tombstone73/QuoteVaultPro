@@ -6,6 +6,7 @@
  */
 
 import 'dotenv/config';
+import { safeTestDatabaseUrl } from './helpers/safeTestDatabase';
 
 // Set test environment
 process.env.NODE_ENV = 'test';
@@ -13,7 +14,9 @@ process.env.NODE_ENV = 'test';
 // DB-backed tests must opt into a separate database. When it is configured,
 // select it before any DB modules load and bring it through the full immutable
 // migrations_v2 stream (including EPS test/live credentials migration 0130).
-const testDatabaseUrl = process.env.TEST_DATABASE_URL?.trim();
+// Validate before replacing any app URL.  An unsafe configured TEST_DATABASE_URL
+// must fail the run rather than accidentally migrate or write to a shared DB.
+const testDatabaseUrl = safeTestDatabaseUrl(process.env);
 if (testDatabaseUrl) {
   process.env.DATABASE_URL = testDatabaseUrl;
   process.env.MIGRATION_DATABASE_URL = testDatabaseUrl;
