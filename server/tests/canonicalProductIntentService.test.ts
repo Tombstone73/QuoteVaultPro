@@ -148,4 +148,83 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(provider).toHaveBeenCalledTimes(2);
     if (continued.ok) expect(continued.session.specification.session.revisions.at(-1)!.intent.pricing).toMatchObject({ unit: "per_piece", cells: expect.arrayContaining([{ row: "3mm", column: "single", priceCents: 1200 }]) });
   });
+
+  test("persists a selected tenant category without changing the independent pricing or route fields", async () => {
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({
+      generateJson: jest.fn(async () => ({ rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })),
+    }), new ProductIntentPersistenceService(new MemoryStore()), {
+      categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }, { id: "roll-printing", label: "Roll Printing" }],
+      materials: [{ id: "pvc-3", label: "PVC - 3mm (Foamed PVC Sheets)" }], productionRoutes: [{ id: "flatbed", label: "Flatbed" }],
+    });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-category-first", compilerInput: compilerInput() });
+    if (!created.ok) throw new Error("Expected canonical session creation.");
+    const categoryAction = created.card.candidateResolutions.find((action) => action.kind === "select_category" && action.candidate?.id === "flatbed-printing");
+    if (!categoryAction) throw new Error("Expected Flatbed Printing candidate action.");
+
+    const selected = await service.applyCandidateAction({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, actionId: categoryAction.id });
+    expect(selected.outcome).toMatchObject({ ok: true, session: { specification: { session: { currentRevision: 1 } } } });
+    if (!selected.outcome?.ok) throw new Error("Expected category selection to persist.");
+    const selectedIntent = selected.outcome.session.specification.session.revisions.at(-1)!.intent;
+    expect(selectedIntent.identity.category).toEqual({ state: "resolved", id: "flatbed-printing", label: "Flatbed Printing" });
+    expect(selectedIntent.fieldMetadata["identity.category"]).toEqual(expect.objectContaining({ source: "explicit_user" }));
+    expect(selectedIntent.pricing).toMatchObject({ model: "two_dimensional_matrix", unit: "unresolved", cells: yardSignsPayload.intent.pricing.cells });
+    expect(selectedIntent.optionGroups).toEqual(yardSignsPayload.intent.optionGroups);
+    expect(selectedIntent.material).toEqual({ state: "explicitly_unset" });
+    expect(selectedIntent.production.route).toEqual({ state: "explicitly_unset" });
+    expect(selected.outcome.issues).not.toEqual(expect.arrayContaining([expect.objectContaining({ code: "CATEGORY_UNRESOLVED" })]));
+    expect(selected.outcome.card.candidateResolutions.filter((action) => action.kind === "select_category")).toEqual([]);
+    expect(selected.outcome.card.requiredQuestions).toEqual([expect.objectContaining({ path: "pricing.matrix.unit" })]);
+
+    const finished = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Per piece", compilerInput: compilerInput() });
+    expect(finished).toMatchObject({ ok: true, session: { specification: { session: { currentRevision: 2 } } }, card: { readiness: { ready: true }, requiredQuestions: [] } });
+    if (finished.ok) expect(finished.session.specification.session.revisions.at(-1)!.intent).toMatchObject({ identity: { category: { state: "resolved", id: "flatbed-printing", label: "Flatbed Printing" } }, pricing: { model: "two_dimensional_matrix", unit: "per_piece", cells: yardSignsPayload.intent.pricing.cells }, production: { route: { state: "explicitly_unset" } } });
+  });
+
+  test("resolves category after pricing and rejects reused category actions without appending another revision", async () => {
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({
+      generateJson: jest.fn(async () => ({ rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })),
+    }), new ProductIntentPersistenceService(new MemoryStore()), {
+      categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [], productionRoutes: [],
+    });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-pricing-first", compilerInput: compilerInput() });
+    if (!created.ok) throw new Error("Expected canonical session creation.");
+    const priced = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "piece", compilerInput: compilerInput() });
+    if (!priced.ok) throw new Error("Expected pricing continuation.");
+    const categoryAction = priced.card.candidateResolutions.find((action) => action.kind === "select_category" && action.candidate?.id === "flatbed-printing");
+    if (!categoryAction) throw new Error("Expected current Flatbed Printing candidate action.");
+
+    const selected = await service.applyCandidateAction({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, actionId: categoryAction.id });
+    expect(selected.outcome).toMatchObject({ ok: true, session: { specification: { session: { currentRevision: 2 } } }, card: { readiness: { ready: true }, requiredQuestions: [] } });
+    if (!selected.outcome?.ok) throw new Error("Expected category selection to persist.");
+    expect(selected.outcome.session.specification.session.revisions).toHaveLength(3);
+    expect(selected.outcome.session.specification.session.revisions.at(-1)!.intent).toMatchObject({ identity: { category: { state: "resolved", id: "flatbed-printing", label: "Flatbed Printing" } }, pricing: { unit: "per_piece", cells: yardSignsPayload.intent.pricing.cells } });
+
+    await expect(service.applyCandidateAction({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, actionId: categoryAction.id })).rejects.toThrow("PRODUCT_INTENT_INTERACTION_STALE");
+    const current = selected.outcome.session.specification.session;
+    expect(current.currentRevision).toBe(2);
+    expect(current.revisions).toHaveLength(3);
+  });
+
+  test("rejects a server-issued candidate patch with no semantic change without appending a revision", async () => {
+    const store = new MemoryStore();
+    const persistence = new ProductIntentPersistenceService(store);
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({
+      generateJson: jest.fn(async () => ({ rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })),
+    }), persistence, { categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [], productionRoutes: [] });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-no-op", compilerInput: compilerInput() });
+    if (!created.ok) throw new Error("Expected canonical session creation.");
+    const categoryAction = created.card.candidateResolutions.find((action) => action.kind === "select_category");
+    if (!categoryAction) throw new Error("Expected category candidate action.");
+    const originalPresentation = (service as any).presentation.bind(service);
+    (service as any).presentation = async (currentIntent: any, currentIssues: any[]) => ({
+      ...(await originalPresentation(currentIntent, currentIssues)),
+      candidateResolutions: [{ ...categoryAction, patch: { contractVersion: 1, baseRevision: currentIntent.revision, preserveUnchanged: true, operations: [{ op: "set_identity", value: currentIntent.identity }] } }],
+    });
+
+    const result = await service.applyCandidateAction({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, actionId: categoryAction.id });
+    expect(result.outcome).toMatchObject({ ok: false, code: "PRODUCT_INTENT_ACTION_NO_CHANGE" });
+    const persisted = await persistence.load({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId });
+    expect(persisted.specification.session.currentRevision).toBe(0);
+    expect(persisted.specification.session.revisions).toHaveLength(1);
+  });
 });

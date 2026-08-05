@@ -1,10 +1,12 @@
 import {
+  productDraftIntentFingerprint,
   productDraftIntentSchema,
   type ProductDraftIntent,
   type ProductIntentCompilerResult,
   type ProductDraftIntentPatch,
   type UnresolvedQuestionAnswer,
 } from "@shared/productDraftIntent";
+import { randomUUID } from "node:crypto";
 import { z } from "zod";
 import { ProductIntentCompiler, type ProductIntentCompilerInput } from "./productIntentCompiler";
 import {
@@ -45,13 +47,11 @@ function answerContract(intent: ProductDraftIntent, issue: ProductIntentIssue): 
 }
 
 function questionsFrom(intent: ProductDraftIntent, issues: readonly ProductIntentIssue[]) {
-  return {
-    baseRevision: intent.revision,
-    questions: issues.filter((issue) => issue.severity === "question").map((issue) => {
+  const questions = issues.filter((issue) => issue.severity === "question").map((issue) => {
       const answer = answerContract(intent, issue);
       return { id: issue.id ?? issue.code, path: issue.path, question: issue.message, required: true, ...(answer ? { answer } : {}) };
-    }),
-  };
+    });
+  return questions.length ? { baseRevision: intent.revision, questions } : undefined;
 }
 
 function normalizeAnswer(value: string): string { return value.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim(); }
@@ -271,10 +271,17 @@ export class CanonicalProductIntentService {
   }
 
   async applyCandidateAction(input: { organizationId: string; actorUserId: string; proposalId: string; actionId: string; newProductName?: string }): Promise<{ outcome?: CanonicalProductIntentOutcome; navigation?: { href: string; abandon: boolean; cloneProductId?: string } }> {
+    const correlationId = `pica-${randomUUID()}`;
     const current = await this.persistence.load(input); const intent = current.specification.session.revisions.at(-1)!.intent;
     const validation = await this.validate(intent); const card = await this.presentation(intent, validation.issues);
     const action = card.candidateResolutions.find((item) => item.id === input.actionId);
-    if (!action) throw new Error("PRODUCT_INTENT_INTERACTION_STALE");
+    if (!action) {
+      console.warn("[PRODUCT_INTENT_CANDIDATE_ACTION] Candidate action rejected.", {
+        correlationId, sessionId: current.proposalId, baseRevision: intent.revision, latestRevision: current.specification.session.currentRevision,
+        actionId: input.actionId, reason: "stale_or_unknown_action",
+      });
+      throw new Error("PRODUCT_INTENT_INTERACTION_STALE");
+    }
     const parsed = parseProductIntentCandidateAction(action);
     if (parsed.navigationOnly) {
       if (parsed.kind === "open_existing_product") await this.persistence.abandon({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: intent.revision, expectedFingerprint: current.fingerprint });
@@ -286,7 +293,25 @@ export class CanonicalProductIntentService {
     if (!candidatePatch || (parsed.input === "new_product_name" && !String(input.newProductName ?? "").trim())) throw new Error("PRODUCT_INTENT_ACTION_INPUT_INVALID");
     const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
     const next = await this.validate(applyProductDraftIntentPatch(intent, candidatePatch, { actorUserId: input.actorUserId }));
+    const semanticChangeDetected = productDraftIntentFingerprint(intent) !== productDraftIntentFingerprint(next.intent);
+    const candidate = parsed.candidate;
+    const patchPaths = candidatePatch.operations.map((operation) => operation.op === "set_identity" ? "identity.category" : operation.op).sort();
+    if (!semanticChangeDetected) {
+      console.warn("[PRODUCT_INTENT_CANDIDATE_ACTION] Candidate action made no semantic change.", {
+        correlationId, sessionId: current.proposalId, baseRevision: intent.revision, latestRevision: current.specification.session.currentRevision,
+        issueId: parsed.issueId, actionId: parsed.id, candidateType: parsed.kind, candidateId: candidate?.id ?? null,
+        candidateLabel: candidate?.label ?? null, patchPaths, patchApplicationResult: "no_change", semanticChangeDetected,
+        resolverResult: next.intent.identity.category.state,
+      });
+      return { outcome: { ok: false, code: "PRODUCT_INTENT_ACTION_NO_CHANGE", message: "That product selection no longer changes the current intent. Refresh and choose an active option." } };
+    }
     const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: intent.revision, expectedFingerprint: current.fingerprint, patch: replacementPatch(next.intent, intent.revision), reason: "server_resolution", unresolvedQuestions: questionsFrom(next.intent, next.issues) });
+    console.info("[PRODUCT_INTENT_CANDIDATE_ACTION] Candidate action persisted.", {
+      correlationId, sessionId: current.proposalId, baseRevision: intent.revision, latestRevision: current.specification.session.currentRevision,
+      issueId: parsed.issueId, actionId: parsed.id, candidateType: parsed.kind, candidateId: candidate?.id ?? null,
+      candidateLabel: candidate?.label ?? null, patchPaths, patchApplicationResult: "applied", semanticChangeDetected,
+      newRevision: session.specification.session.currentRevision, resolverResult: next.intent.identity.category.state, persistenceResult: "persisted",
+    });
     return { outcome: { ok: true, session, issues: next.issues, card: await this.presentation(next.intent, next.issues) } };
   }
 }

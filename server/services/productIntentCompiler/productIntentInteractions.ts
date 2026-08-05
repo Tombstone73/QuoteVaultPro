@@ -55,7 +55,12 @@ function referenceActions(input: { intent: ProductDraftIntent; fingerprint: stri
   const { intent, fingerprint: fingerprintValue, issue, kind, values } = input;
   const action = kind === "category" ? "select_category" : kind === "material" ? "select_material" : "select_production_route";
   const apply = (value: TenantIntentReference) => kind === "category"
-    ? patch(intent, [{ op: "set_identity", value: { ...intent.identity, category: { state: "resolved", id: value.id, label: value.label } } }])
+    ? patch(intent, [
+      { op: "set_identity", value: { ...intent.identity, category: { state: "resolved", id: value.id, label: value.label } } },
+      // A candidate click is a structured user choice, so it must supersede
+      // any low-confidence provider metadata during reference resolution.
+      { op: "merge_field_metadata", value: { "identity.category": { source: "explicit_user" } } },
+    ])
     : kind === "material"
       ? patch(intent, [{ op: "set_material", value: { state: "resolved", id: value.id, label: value.label } }])
       : patch(intent, [{ op: "set_production", value: { ...intent.production, route: { state: "resolved", id: value.id, label: value.label } } }]);
