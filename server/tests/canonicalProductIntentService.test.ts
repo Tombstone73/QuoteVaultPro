@@ -73,10 +73,10 @@ describe("CanonicalProductIntentService compiler failures", () => {
       expect.objectContaining({ id: "0:pricing.matrix.unit:required", code: "PRICING_UNIT_UNRESOLVED", path: "pricing.matrix.unit" }),
     ]));
     expect(result.card.candidateResolutions.filter((action) => action.kind === "select_category")).toHaveLength(2);
-    expect(result.card.requiredQuestions).toEqual([expect.objectContaining({ id: "0:pricing.matrix.unit:required", path: "pricing.matrix.unit" })]);
-    expect(result.session.specification.latestUnresolvedQuestions).toEqual({ questions: expect.arrayContaining([
+    expect(result.card.requiredQuestions).toEqual([expect.objectContaining({ id: "0:pricing.matrix.unit:required", path: "pricing.matrix.unit", answer: expect.objectContaining({ answerType: "choice", allowedChoices: expect.arrayContaining([expect.objectContaining({ canonicalValue: "per_piece" }), expect.objectContaining({ canonicalValue: "per_square_foot" })]) }) })]);
+    expect(result.session.specification.latestUnresolvedQuestions).toEqual({ baseRevision: 0, questions: expect.arrayContaining([
       expect.objectContaining({ id: "0:identity.category:candidate", path: "identity.category" }),
-      expect.objectContaining({ id: "0:pricing.matrix.unit:required", path: "pricing.matrix.unit" }),
+      expect.objectContaining({ id: "0:pricing.matrix.unit:required", path: "pricing.matrix.unit", answer: expect.objectContaining({ issueId: "0:pricing.matrix.unit:required", canonicalPath: "pricing.matrix.unit", baseRevision: 0 }) }),
     ]) });
   });
 
@@ -93,5 +93,59 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(result).toMatchObject({ ok: false, code: "PRODUCT_INTENT_SESSION_CREATION_FAILED", message: expect.stringMatching(/^The canonical product intent could not be prepared safely\. Nothing was created\. Reference: pic-/) });
     expect(errorSpy).toHaveBeenCalledWith("[PRODUCT_INTENT_PIPELINE] Initial canonical session failed.", expect.objectContaining({ stage: "persistence_preparation", code: "PRODUCT_INTENT_SCHEMA_REJECTION", schemaIssuePaths: ["persisted"] }));
     errorSpy.mockRestore();
+  });
+
+  test.each(["Per piece.", "PIECE", "Per sqft"])('resolves the active matrix-unit question for "%s" without calling the provider', async (answer) => {
+    const provider = jest.fn(async () => ({ rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }));
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), {
+      categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [{ id: "pvc-3", label: "PVC - 3mm (Foamed PVC Sheets)" }], productionRoutes: [{ id: "flatbed", label: "Flatbed" }],
+    });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: `yard-${answer}`, compilerInput: compilerInput() });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error("Expected canonical session creation.");
+
+    const continued = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: answer, compilerInput: compilerInput() });
+
+    expect(continued.ok).toBe(true);
+    if (!continued.ok) throw new Error("Expected deterministic required-answer continuation.");
+    const intent = continued.session.specification.session.revisions.at(-1)!.intent;
+    expect(provider).toHaveBeenCalledTimes(1);
+    expect(intent.revision).toBe(1);
+    expect(intent.pricing).toMatchObject({ model: "two_dimensional_matrix", unit: answer.toLocaleLowerCase().includes("sqft") ? "per_square_foot" : "per_piece", cells: expect.arrayContaining([{ row: "3mm", column: "single", priceCents: 1200 }, { row: "6mm", column: "double", priceCents: 2200 }]) });
+    expect(intent.identity.category).toMatchObject({ state: "unresolved" });
+    expect(intent.material).toEqual({ state: "explicitly_unset" });
+    expect(intent.production.route).toEqual({ state: "explicitly_unset" });
+    expect(continued.issues).toEqual([expect.objectContaining({ code: "CATEGORY_UNRESOLVED", id: "1:identity.category:candidate" })]);
+    expect(continued.card.requiredQuestions).toEqual([]);
+    expect(continued.card.candidateResolutions.filter((action) => action.kind === "select_category")).toHaveLength(1);
+  });
+
+  test("does not turn unrelated or already-resolved answers into a deterministic patch", async () => {
+    const provider = jest.fn(async () => ({ rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }));
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [], productionRoutes: [] });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-unmatched", compilerInput: compilerInput() });
+    if (!created.ok) throw new Error("Expected canonical session creation.");
+    const unrelated = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Make it excellent", compilerInput: compilerInput() });
+    expect(unrelated).toMatchObject({ ok: false, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNMATCHED" });
+    expect(provider).toHaveBeenCalledTimes(2);
+  });
+
+  test("uses a scoped provider patch fallback when an answer is not an exact server alias", async () => {
+    let calls = 0;
+    const provider = jest.fn(async (request) => {
+      calls += 1;
+      if (calls === 1) return { rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
+      const currentIntent = JSON.parse(request.user).currentIntent;
+      return { rawText: JSON.stringify({ kind: "intent_patch", patch: { operations: [{ op: "set_pricing", value: { ...currentIntent.pricing, unit: "per_piece" } }, { op: "set_unresolved_fields", value: [] }, { op: "merge_field_metadata", value: { "pricing.unit": { source: "explicit_user" } } }] } }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
+    });
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [], productionRoutes: [] });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-provider-patch", compilerInput: compilerInput() });
+    if (!created.ok) throw new Error("Expected canonical session creation.");
+
+    const continued = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Use the standard basis", compilerInput: compilerInput() });
+
+    expect(continued).toMatchObject({ ok: true, session: { specification: { session: { currentRevision: 1 } } } });
+    expect(provider).toHaveBeenCalledTimes(2);
+    if (continued.ok) expect(continued.session.specification.session.revisions.at(-1)!.intent.pricing).toMatchObject({ unit: "per_piece", cells: expect.arrayContaining([{ row: "3mm", column: "single", priceCents: 1200 }]) });
   });
 });

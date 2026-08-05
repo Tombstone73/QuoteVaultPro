@@ -94,6 +94,30 @@ describe("ProductIntentCompiler", () => {
     if (result.ok && result.result.kind === "complete_intent") expect(result.result.intent.intentId).toEqual(expect.any(String));
   });
 
+  test("requires a patch for a continuation and enriches its server-owned binding", async () => {
+    const initialCompiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(JSON.stringify(yardSignsPayload))) });
+    const initial = await initialCompiler.compile(compilerInput);
+    if (!initial.ok || initial.result.kind !== "complete_intent") throw new Error("Expected initial compiler result.");
+    const requests: any[] = [];
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async (request) => {
+      requests.push(request);
+      return providerResponse(JSON.stringify({ kind: "intent_patch", patch: { operations: [{ op: "set_pricing", value: { ...initial.result.intent.pricing, unit: "per_piece" } }] } }));
+    }) });
+
+    const result = await compiler.compile({
+      ...compilerInput,
+      request: "Set the current pricing unit.",
+      currentIntent: initial.result.intent,
+      currentRevision: 0,
+      activeRequiredIssues: [{ issueId: "0:pricing.matrix.unit:required", canonicalPath: "pricing.matrix.unit", answerType: "choice", allowedChoices: [{ displayLabel: "Per piece", canonicalValue: "per_piece", safeAliases: ["per piece", "piece"] }, { displayLabel: "Per square foot", canonicalValue: "per_square_foot", safeAliases: ["per square foot", "square foot", "per sqft"] }], baseRevision: 0 }],
+    });
+
+    expect(result).toMatchObject({ ok: true, result: { kind: "intent_patch", patch: { contractVersion: 1, baseRevision: 0, preserveUnchanged: true, operations: [expect.objectContaining({ op: "set_pricing", value: expect.objectContaining({ unit: "per_piece" }) })] } } });
+    expect(requests[0].system).toContain("This is a continuation");
+    expect(requests[0].user).toContain("0:pricing.matrix.unit:required");
+    expect(requests[0].user).toContain("canonicalPatchContract");
+  });
+
   test("repairs invalid JSON once with issue paths and preserves the Yard Signs matrix", async () => {
     const requests: any[] = [];
     const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async (request) => {

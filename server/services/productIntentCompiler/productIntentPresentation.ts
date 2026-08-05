@@ -1,4 +1,4 @@
-import { productDraftIntentFingerprint, type ProductDraftIntent } from "@shared/productDraftIntent";
+import { productDraftIntentFingerprint, type ProductDraftIntent, type UnresolvedQuestionAnswer } from "@shared/productDraftIntent";
 import type { ProductIntentIssue } from "./productIntentResolver";
 import type { ProductIntentCandidateAction, ProductIntentRecommendation } from "./productIntentInteractions";
 
@@ -8,7 +8,7 @@ export type CanonicalProductIntentProposalDto = {
   fingerprint: string;
   title: string;
   readiness: { ready: boolean; blockers: string[]; questions: string[] };
-  requiredQuestions: Array<{ id: string; question: string; path: string }>;
+  requiredQuestions: Array<{ id: string; question: string; path: string; answer?: UnresolvedQuestionAnswer }>;
   candidateResolutions: ProductIntentCandidateAction[];
   optionalRecommendations: ProductIntentRecommendation[];
   fields: Record<string, string | string[]>;
@@ -23,6 +23,10 @@ function pricing(intent: ProductDraftIntent): string {
   if (value.model === "two_dimensional_matrix") return value.unit === "unresolved" ? `Matrix — pricing unit not selected (${value.cells.length} prices)` : `${value.unit === "per_square_foot" ? "Per square foot" : "Per piece"} matrix (${value.cells.length} prices)`;
   return "Unresolved";
 }
+function answerContract(intent: ProductDraftIntent, issue: ProductIntentIssue): UnresolvedQuestionAnswer | undefined {
+  if (issue.id == null || issue.path !== "pricing.matrix.unit" || issue.code !== "PRICING_UNIT_UNRESOLVED" || intent.pricing.model !== "two_dimensional_matrix" || intent.pricing.unit !== "unresolved") return undefined;
+  return { issueId: issue.id, canonicalPath: "pricing.matrix.unit", answerType: "choice", allowedChoices: [{ displayLabel: "Per piece", canonicalValue: "per_piece", safeAliases: ["per piece", "piece"] }, { displayLabel: "Per square foot", canonicalValue: "per_square_foot", safeAliases: ["per square foot", "square foot", "per sqft"] }], baseRevision: intent.revision };
+}
 
 /** Presentation is intentionally a pure projection of the canonical revision;
  * it never sees source text, legacy briefs, or a PBV2 tree. */
@@ -35,7 +39,10 @@ export function presentProductDraftIntent(intent: ProductDraftIntent, issues: re
   return {
     kind: "canonical_product_intent_proposal", revision: intent.revision, fingerprint: productDraftIntentFingerprint(intent), title: `Create inactive draft: ${intent.identity.name}`,
     readiness: { ready: blockers.length === 0 && questions.length === 0 && intent.state === "ready_for_review", blockers, questions },
-    requiredQuestions: visibleQuestions.map((issue) => ({ id: issue.id ?? issue.code, question: issue.message, path: issue.path })),
+    requiredQuestions: visibleQuestions.map((issue) => {
+      const answer = answerContract(intent, issue);
+      return { id: issue.id ?? issue.code, question: issue.message, path: issue.path, ...(answer ? { answer } : {}) };
+    }),
     candidateResolutions: interactions.candidateResolutions ?? [], optionalRecommendations: interactions.optionalRecommendations ?? [],
     fields: {
       Product: intent.identity.name, Category: intent.identity.category.state === "resolved" ? intent.identity.category.label : "Not selected",

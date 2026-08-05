@@ -2,6 +2,8 @@ import {
   productDraftIntentSchema,
   type ProductDraftIntent,
   type ProductIntentCompilerResult,
+  type ProductDraftIntentPatch,
+  type UnresolvedQuestionAnswer,
 } from "@shared/productDraftIntent";
 import { z } from "zod";
 import { ProductIntentCompiler, type ProductIntentCompilerInput } from "./productIntentCompiler";
@@ -30,10 +32,74 @@ export type CanonicalProductIntentOutcome =
   | { ok: true; session: CanonicalProductIntentSession; card: CanonicalProductIntentProposalDto; issues: ProductIntentIssue[] }
   | { ok: false; code: string; message: string };
 
-function questionsFrom(issues: readonly ProductIntentIssue[]) {
+function answerContract(intent: ProductDraftIntent, issue: ProductIntentIssue): UnresolvedQuestionAnswer | undefined {
+  if (issue.id == null || issue.path !== "pricing.matrix.unit" || issue.code !== "PRICING_UNIT_UNRESOLVED" || intent.pricing.model !== "two_dimensional_matrix" || intent.pricing.unit !== "unresolved") return undefined;
   return {
-    questions: issues.filter((issue) => issue.severity === "question").map((issue) => ({ id: issue.id ?? issue.code, path: issue.path, question: issue.message, required: true })),
+    issueId: issue.id, canonicalPath: "pricing.matrix.unit", answerType: "choice",
+    allowedChoices: [
+      { displayLabel: "Per piece", canonicalValue: "per_piece", safeAliases: ["per piece", "piece"] },
+      { displayLabel: "Per square foot", canonicalValue: "per_square_foot", safeAliases: ["per square foot", "square foot", "per sqft"] },
+    ],
+    baseRevision: intent.revision,
   };
+}
+
+function questionsFrom(intent: ProductDraftIntent, issues: readonly ProductIntentIssue[]) {
+  return {
+    baseRevision: intent.revision,
+    questions: issues.filter((issue) => issue.severity === "question").map((issue) => {
+      const answer = answerContract(intent, issue);
+      return { id: issue.id ?? issue.code, path: issue.path, question: issue.message, required: true, ...(answer ? { answer } : {}) };
+    }),
+  };
+}
+
+function normalizeAnswer(value: string): string { return value.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim(); }
+
+function deterministicAnswerPatch(intent: ProductDraftIntent, answers: readonly UnresolvedQuestionAnswer[], request: string): { issueId: string; patch: ProductDraftIntentPatch } | null {
+  const normalizedRequest = normalizeAnswer(request);
+  const matches = answers.flatMap((answer) => answer.allowedChoices.filter((choice) => choice.safeAliases.some((alias) => normalizeAnswer(alias) === normalizedRequest)).map((choice) => ({ answer, choice })));
+  if (matches.length !== 1) return null;
+  const { answer, choice } = matches[0]!;
+  if (answer.baseRevision !== intent.revision || answer.canonicalPath !== "pricing.matrix.unit" || (choice.canonicalValue !== "per_piece" && choice.canonicalValue !== "per_square_foot") || intent.pricing.model !== "two_dimensional_matrix" || intent.pricing.unit !== "unresolved") return null;
+  return {
+    issueId: answer.issueId,
+    patch: {
+      contractVersion: 1, baseRevision: intent.revision, preserveUnchanged: true,
+      operations: [
+        { op: "set_pricing", value: { ...intent.pricing, unit: choice.canonicalValue } },
+        { op: "set_unresolved_fields", value: intent.unresolvedFields.filter((field) => field.path !== "pricing.unit" && field.path !== answer.canonicalPath) },
+        { op: "merge_field_metadata", value: { "pricing.unit": { source: "explicit_user" } } },
+      ],
+    },
+  };
+}
+
+function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch: ProductDraftIntentPatch, answers: readonly UnresolvedQuestionAnswer[]): boolean {
+  if (answers.length === 0) return true;
+  if (answers.length !== 1 || answers[0]!.canonicalPath !== "pricing.matrix.unit" || intent.pricing.model !== "two_dimensional_matrix") return false;
+  const expectedUnresolved = intent.unresolvedFields.filter((field) => field.path !== "pricing.unit" && field.path !== "pricing.matrix.unit");
+  let pricingUpdated = false;
+  return patch.operations.every((operation) => {
+    if (operation.op === "set_pricing") {
+      pricingUpdated = true;
+      return operation.value.model === "two_dimensional_matrix"
+        && (operation.value.unit === "per_piece" || operation.value.unit === "per_square_foot")
+        && JSON.stringify({ ...operation.value, unit: "unresolved" }) === JSON.stringify(intent.pricing);
+    }
+    if (operation.op === "set_unresolved_fields") return JSON.stringify(operation.value) === JSON.stringify(expectedUnresolved);
+    if (operation.op === "merge_field_metadata") return Object.keys(operation.value).length === 1 && "pricing.unit" in operation.value;
+    return false;
+  }) && pricingUpdated;
+}
+
+function continuationFailure(input: { stage: string; current: CanonicalProductIntentSession; activeIssueIds: readonly string[]; deterministicAttempted: boolean; providerRequested: boolean; providerResultType?: string; patchSchemaPaths?: readonly string[]; code: string; message: string }) {
+  console.warn("[PRODUCT_INTENT_CONTINUATION] Canonical continuation failed.", {
+    stage: input.stage, sessionId: input.current.proposalId, currentRevision: input.current.specification.session.currentRevision,
+    activeIssueIds: input.activeIssueIds, deterministicAttempted: input.deterministicAttempted, providerRequested: input.providerRequested,
+    providerResultType: input.providerResultType ?? null, patchSchemaPaths: input.patchSchemaPaths ?? [], code: input.code,
+  });
+  return { ok: false as const, code: input.code, message: input.message };
 }
 
 type CanonicalIntentPipelineStage = "tenant_reference_resolution" | "canonical_validation" | "presentation" | "persistence_preparation";
@@ -134,7 +200,7 @@ export class CanonicalProductIntentService {
       stage = "presentation";
       const card = await this.presentation(intent, issues);
       stage = "persistence_preparation";
-      const session = await this.persistence.create({ organizationId: input.organizationId, actorUserId: input.actorUserId, conversationId: input.conversationId, intent, compilerResult: compiled.result, unresolvedQuestions: questionsFrom(issues), resolutionMetadata: { architecture: "canonical_product_intent", dismissedRecommendationIds: [] } });
+      const session = await this.persistence.create({ organizationId: input.organizationId, actorUserId: input.actorUserId, conversationId: input.conversationId, intent, compilerResult: compiled.result, unresolvedQuestions: questionsFrom(intent, issues), resolutionMetadata: { architecture: "canonical_product_intent", dismissedRecommendationIds: [] } });
       return { ok: true, session, issues, card };
     } catch (error) {
       return pipelineFailure({
@@ -151,16 +217,37 @@ export class CanonicalProductIntentService {
 
   async continue(input: { organizationId: string; actorUserId: string; proposalId: string; request: string; compilerInput: ProductIntentCompilerInput }): Promise<CanonicalProductIntentOutcome> {
     const current = await this.persistence.load({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId });
-    const compiled = await this.compiler.compile({ ...input.compilerInput, request: input.request, currentIntent: current.specification.session.revisions.at(-1)!.intent, currentRevision: current.specification.session.currentRevision });
-    if (!compiled.ok) return { ok: false, code: compiled.error.code, message: compiled.error.message };
-    if (compiled.result.kind !== "intent_patch") return { ok: false, code: "PRODUCT_INTENT_PATCH_REQUIRED", message: "The continuation must produce a typed patch against the current product intent." };
     const draft = current.specification.session.revisions.at(-1)!.intent;
-    // Validate the complete post-patch result before it becomes a persisted revision.
-    const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
-    const { intent, issues } = await this.validate(applyProductDraftIntentPatch(draft, compiled.result.patch, { actorUserId: input.actorUserId }));
-    const patch = replacementPatch(intent, current.specification.session.currentRevision);
-    const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: current.specification.session.currentRevision, expectedFingerprint: current.fingerprint, patch, reason: "correction", compilerResult: compiled.result, unresolvedQuestions: questionsFrom(issues) });
-    return { ok: true, session, issues, card: await this.presentation(intent, issues) };
+    const active = await this.validate(draft);
+    const activeAnswers = active.issues.flatMap((issue) => {
+      const answer = answerContract(draft, issue);
+      return answer ? [answer] : [];
+    });
+    const activeIssueIds = active.issues.map((issue) => issue.id ?? issue.code);
+    const deterministic = deterministicAnswerPatch(draft, activeAnswers, input.request);
+    let sourcePatch: ProductDraftIntentPatch;
+    let compilerResult: ProductIntentCompilerResult | undefined;
+    if (deterministic) {
+      sourcePatch = deterministic.patch;
+    } else {
+      const compiled = await this.compiler.compile({ ...input.compilerInput, request: input.request, currentIntent: draft, currentRevision: current.specification.session.currentRevision, activeRequiredIssues: activeAnswers });
+      if (!compiled.ok) return { ok: false, code: compiled.error.code, message: compiled.error.message };
+      if (compiled.result.kind !== "intent_patch") return continuationFailure({ stage: "provider_result_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: true, providerResultType: compiled.result.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNMATCHED", message: activeAnswers.length === 1 ? `I could not apply that answer to the current product question. Please choose ${activeAnswers[0]!.allowedChoices.map((choice) => choice.displayLabel).join(" or ")}.` : "I could not apply that answer to the current product question. Please answer the outstanding product question." });
+      if (!providerPatchIsScopedToActiveAnswers(draft, compiled.result.patch, activeAnswers)) return continuationFailure({ stage: "patch_scope_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: true, providerResultType: compiled.result.kind, code: "PRODUCT_INTENT_PATCH_OUT_OF_SCOPE", message: "I could not apply that answer to the current product question. Please review the available choices and try again." });
+      sourcePatch = compiled.result.patch;
+      compilerResult = compiled.result;
+    }
+    try {
+      const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
+      const { intent, issues } = await this.validate(applyProductDraftIntentPatch(draft, sourcePatch, { actorUserId: input.actorUserId }));
+      if (activeAnswers.some((answer) => issues.some((issue) => issue.id === `${intent.revision}:${answer.canonicalPath}:required`))) return continuationFailure({ stage: "resolver_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: !deterministic, providerResultType: compilerResult?.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNRESOLVED", message: "I could not apply that answer to the current product question. Please review the available choices and try again." });
+      const patch = replacementPatch(intent, current.specification.session.currentRevision);
+      const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: current.specification.session.currentRevision, expectedFingerprint: current.fingerprint, patch, reason: deterministic ? "answer" : "correction", compilerResult, unresolvedQuestions: questionsFrom(intent, issues) });
+      return { ok: true, session, issues, card: await this.presentation(intent, issues) };
+    } catch (error) {
+      const patchSchemaPaths = error instanceof z.ZodError ? error.issues.map((issue) => issue.path.join(".") || "patch") : [];
+      return continuationFailure({ stage: "patch_application", current, activeIssueIds, deterministicAttempted: true, providerRequested: !deterministic, providerResultType: compilerResult?.kind, patchSchemaPaths, code: "PRODUCT_INTENT_CONTINUATION_REJECTED", message: "I could not apply that answer to the current product question. Please review the available choices and try again." });
+    }
   }
 
   async acceptRecommendation(input: { organizationId: string; actorUserId: string; proposalId: string; recommendationId: string }): Promise<CanonicalProductIntentOutcome> {
@@ -170,7 +257,7 @@ export class CanonicalProductIntentService {
     if (!recommendation) return { ok: false, code: "PRODUCT_INTENT_INTERACTION_STALE", message: "That product suggestion is no longer available; review the latest revision." };
     const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
     const validation = await this.validate(applyProductDraftIntentPatch(intent, parseProductIntentRecommendation(recommendation).patch, { actorUserId: input.actorUserId }));
-    const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: intent.revision, expectedFingerprint: current.fingerprint, patch: replacementPatch(validation.intent, intent.revision), reason: "server_resolution", unresolvedQuestions: questionsFrom(validation.issues), resolutionMetadata: { ...current.specification.resolutionMetadata, dismissedRecommendationIds: [] } });
+    const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: intent.revision, expectedFingerprint: current.fingerprint, patch: replacementPatch(validation.intent, intent.revision), reason: "server_resolution", unresolvedQuestions: questionsFrom(validation.intent, validation.issues), resolutionMetadata: { ...current.specification.resolutionMetadata, dismissedRecommendationIds: [] } });
     return { ok: true, session, issues: validation.issues, card: await this.presentation(validation.intent, validation.issues) };
   }
 
@@ -199,7 +286,7 @@ export class CanonicalProductIntentService {
     if (!candidatePatch || (parsed.input === "new_product_name" && !String(input.newProductName ?? "").trim())) throw new Error("PRODUCT_INTENT_ACTION_INPUT_INVALID");
     const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
     const next = await this.validate(applyProductDraftIntentPatch(intent, candidatePatch, { actorUserId: input.actorUserId }));
-    const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: intent.revision, expectedFingerprint: current.fingerprint, patch: replacementPatch(next.intent, intent.revision), reason: "server_resolution", unresolvedQuestions: questionsFrom(next.issues) });
+    const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: intent.revision, expectedFingerprint: current.fingerprint, patch: replacementPatch(next.intent, intent.revision), reason: "server_resolution", unresolvedQuestions: questionsFrom(next.intent, next.issues) });
     return { outcome: { ok: true, session, issues: next.issues, card: await this.presentation(next.intent, next.issues) } };
   }
 }

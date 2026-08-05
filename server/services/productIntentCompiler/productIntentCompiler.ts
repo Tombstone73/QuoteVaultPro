@@ -4,6 +4,7 @@ import {
   productIntentCompilerResultSchema,
   type ProductDraftIntent,
   type ProductIntentCompilerResult,
+  type UnresolvedQuestionAnswer,
 } from "@shared/productDraftIntent";
 
 /** The compiler is deliberately an interpretation boundary. It has no database,
@@ -36,6 +37,9 @@ export type ProductIntentCompilerInput = {
   supportedArchetypes: readonly string[];
   candidateLabels?: ProductIntentCandidateLabels;
   serverConstraints?: readonly string[];
+  /** Server-issued active questions for a continuation. The provider sees
+   * labels and canonical values, never authority to bind a revision itself. */
+  activeRequiredIssues?: readonly UnresolvedQuestionAnswer[];
   timeoutMs?: number;
 };
 
@@ -167,6 +171,7 @@ const providerPayloadGuide = {
 };
 
 function promptForCompilation(input: ProductIntentCompilerInput): { system: string; user: string } {
+  const continuation = input.currentIntent != null;
   return {
     system: [
       "You are the PrintersHero Product Intent Compiler.",
@@ -175,7 +180,9 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
       "Interpret natural language only; do not execute commands, create products, invent tenant IDs, or claim that a database lookup succeeded.",
       "Use only candidate labels supplied by the server for tenant-scoped entities. If no supplied label is an unambiguous match, return an unresolved-question result.",
       "For continuations and corrections, preserve every existing authoritative intent field unless the request explicitly changes it.",
-      "A correction must return a typed patch, not a rewritten product intent, unless the request explicitly replaces the complete product.",
+      continuation
+        ? "This is a continuation. Return only { kind: 'intent_patch', patch: { operations: [...] } }. Never return a complete intent. Use only the active required issue supplied by the server, preserve every unrelated field, and omit contractVersion, baseRevision, and preserveUnchanged because the server binds them."
+        : "For an initial request, return { kind: 'complete_intent', intent: { ... } }.",
       "Do not turn preservation instructions into product options, materials, or entity references.",
       "Never set an active or published lifecycle. Confidence never makes a value execution-authorizing.",
     ].join(" "),
@@ -189,6 +196,7 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
       allowedEnums: input.allowedEnums,
       supportedArchetypes: input.supportedArchetypes,
       candidateLabels: candidateLabelsForPrompt(input.candidateLabels),
+      ...(continuation ? { activeRequiredIssues: input.activeRequiredIssues ?? [], canonicalPatchContract: { operations: "Typed ProductDraftIntentPatch operations only. Use set_pricing with the complete current pricing object when changing a matrix unit; do not alter unrelated fields.", serverOwnedFields: ["contractVersion", "baseRevision", "preserveUnchanged"] } } : {}),
       serverConstraints: input.serverConstraints ?? [],
     }),
   };
@@ -290,6 +298,18 @@ function normalizeInitialCompleteIntent(input: ProductIntentCompilerInput, value
   };
 }
 
+function normalizeContinuationPatch(input: ProductIntentCompilerInput, value: unknown): unknown {
+  if (!input.currentIntent || input.currentRevision == null || !value || typeof value !== "object" || Array.isArray(value)) return value;
+  const root = value as Record<string, unknown>;
+  if (root.kind !== "intent_patch" || !root.patch || typeof root.patch !== "object" || Array.isArray(root.patch)) return value;
+  const candidate = root.patch as Record<string, unknown>;
+  const expected: Record<string, unknown> = { contractVersion: 1, baseRevision: input.currentRevision, preserveUnchanged: true };
+  for (const [key, expectedValue] of Object.entries(expected)) {
+    if (key in candidate && candidate[key] !== expectedValue) throw new Error(`Provider supplied an invalid server-owned patch field: ${key}`);
+  }
+  return { ...root, patch: { ...candidate, ...expected } };
+}
+
 function providerFailureStage(error: unknown): ProductIntentCompilerFailureStage {
   const kind = error && typeof error === "object" ? (error as { kind?: unknown }).kind : null;
   if (kind === "empty_response") return "provider_empty_response";
@@ -383,7 +403,7 @@ export class ProductIntentCompiler {
       }
 
       try {
-        parsedJson = normalizeInitialCompleteIntent(input, parsedJson, initialIntentId);
+        parsedJson = normalizeContinuationPatch(input, normalizeInitialCompleteIntent(input, parsedJson, initialIntentId));
       } catch {
         failureStage = attempt === 0 ? "runtime_schema_rejection" : "repair_response_schema_rejection";
         validationIssuePaths = ["intent.serverOwnedFields"];
