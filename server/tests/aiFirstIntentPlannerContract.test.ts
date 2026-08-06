@@ -61,7 +61,7 @@ describe("AI-first intent planner contract", () => {
   test("contains only registered planner-visible capability references", () => {
     expect(() => validateAssistantCapabilityCatalog()).not.toThrow();
     expect(getAssistantCapability("canonical_product_intent_compiler").commandNames).toContain("products.create_from_canonical_intent");
-    expect(assistantCapabilityCatalog).toHaveLength(24);
+    expect(assistantCapabilityCatalog).toHaveLength(25);
   });
 
   test("does not expose a runtime free-text routing mode", async () => {
