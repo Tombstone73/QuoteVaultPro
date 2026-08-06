@@ -70,12 +70,26 @@ describe("Assistant workspace presentation", () => {
     act(() => normal.root.unmount());
 
     const authorized = render(cards, { diagnosticsEnabled: true, correlationId: "corr_123", presentation: "diagnostic", responseState: { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true } });
-    expect(authorized.container.textContent).toContain("Show diagnostics");
+    expect(authorized.container.textContent).toContain("Technical diagnostics");
     const button = authorized.container.querySelector("button") as HTMLButtonElement;
     act(() => button.click());
     expect(authorized.container.textContent).toContain("navigation.get_current_context");
     expect(authorized.container.textContent).toContain("corr_123");
     act(() => authorized.root.unmount());
+  });
+
+  test("lazy-loads sanitized technical diagnostics for admins and keeps validation paths readable", async () => {
+    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({ success: true, data: [{ referenceId: "pic-card-1", correlationId: "corr-card-1", diagnosticType: "product_intent_compiler", stage: "repair_response_schema_rejection", provider: "test", model: "model", parseMethod: "repaired_json", repairResult: "failed", validationIssuePaths: ["intent.optionGroups.2.values.0.priceImpactPercent"], selectedCapability: "canonical_product_intent_compiler", persistenceResult: "not_attempted", createdAt: "2026-08-06T10:00:00.000Z" }] }) }));
+    (globalThis as any).fetch = fetchMock;
+    const { container, root } = render([{ kind: "provider_unavailable", title: "Planner unavailable", summary: "Please retry.", sourceLinks: [], toolStatus: "failed" }], { diagnosticsEnabled: true, correlationId: "corr-card-1", presentation: "diagnostic", responseState: { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true }, onRetry: () => undefined });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Technical diagnostics") as HTMLButtonElement;
+    await act(async () => { button.click(); await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledWith("/api/assistant/diagnostics/corr-card-1", { credentials: "include" });
+    expect(container.textContent).toContain("intent.optionGroups.2.values.0.priceImpactPercent");
+    expect(container.textContent).not.toContain("[object Object]");
+    expect(container.textContent).toContain("Try again");
+    act(() => root.unmount());
   });
 
   test("does not offer retry or diagnostics for a successful capability answer", () => {
@@ -88,7 +102,7 @@ describe("Assistant workspace presentation", () => {
       onRetry: () => undefined,
     });
     expect(container.textContent).not.toContain("Try again");
-    expect(container.textContent).not.toContain("Show diagnostics");
+    expect(container.textContent).not.toContain("Technical diagnostics");
     act(() => root.unmount());
   });
 

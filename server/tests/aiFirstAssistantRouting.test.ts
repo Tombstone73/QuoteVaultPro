@@ -1,6 +1,9 @@
 import { describe, expect, jest, test } from "@jest/globals";
 import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
 
+const persistAiDiagnostic = jest.fn(async (value: unknown) => value);
+jest.unstable_mockModule("../services/aiDiagnosticsService", () => ({ persistAiDiagnostic }));
+
 // The service import has existing DB-backed specialist imports. This is a
 // deliberately unreachable local endpoint used only so the test exercises the
 // injected canonical dispatcher; it never opens a connection.
@@ -33,7 +36,42 @@ const capabilityInquiryPlan = {
   requiresClarification: false, clarificationQuestion: null, reasonCode: "help_or_explanation_request",
 } as const;
 
+const quotePlan = {
+  version: 1, operation: "create", domain: "quotes", mode: "mutation", capabilityId: "create_quote", confidence: "high",
+  target: { kind: "new_entity", entityId: null }, contextUsage: { workspaceIsAuthoritative: false, workspaceRelevance: "supporting", activeSessionId: null },
+  requiresClarification: false, clarificationQuestion: null, reasonCode: "explicit_new_entity_request",
+} as const;
+
 describe("AI-first assistant free-text routing", () => {
+  test("records one correlated specialist diagnostic when dispatch throws without executing a fallback mutation", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const storage = repo();
+    const planner = { plan: jest.fn(async () => ({ ok: true as const, plan: quotePlan, diagnostics: { provider: "openai_compatible", model: "deepseek-test" } })) };
+    const service = new AssistantService(storage, { getCapabilities: jest.fn(async () => ({ enabled: true, conversationsEnabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, planner, { respondPlannedCanonicalProductIntent: jest.fn() });
+    const dispatch = jest.fn(async () => { throw new Error("unexpected specialist failure"); });
+    (service as any).dispatchAiFirstSpecialist = dispatch;
+    const permittedActor = { ...actor, permissions: ["assistant.quotes.create_draft"] };
+
+    const result = await service.createTurn(scope, "conversation_1", permittedActor, { message: "Create a quote", context });
+
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(storage.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "That planned workflow could not be completed. Nothing was changed." }));
+    expect(persistAiDiagnostic).toHaveBeenCalledTimes(1);
+    expect(persistAiDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ diagnosticType: "specialist_dispatch", correlationId: result.correlationId, referenceId: result.correlationId, stage: "specialist_exception" }));
+  });
+
+  test("keeps the original safe specialist failure when diagnostic persistence fails", async () => {
+    persistAiDiagnostic.mockRejectedValueOnce(new Error("diagnostic store unavailable"));
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const storage = repo();
+    const planner = { plan: jest.fn(async () => ({ ok: true as const, plan: quotePlan, diagnostics: { provider: "openai_compatible", model: "deepseek-test" } })) };
+    const service = new AssistantService(storage, { getCapabilities: jest.fn(async () => ({ enabled: true, conversationsEnabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, planner, { respondPlannedCanonicalProductIntent: jest.fn() });
+    (service as any).dispatchAiFirstSpecialist = jest.fn(async () => { throw new Error("unexpected specialist failure"); });
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.quotes.create_draft"] }, { message: "Create a quote", context });
+
+    expect(storage.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "That planned workflow could not be completed. Nothing was changed." }));
+  });
   test("routes a detailed Translucent Vinyl request from Product Details to canonical compiler with the unchanged full message", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const storage = repo();

@@ -54,6 +54,9 @@ export type ProductIntentCompilerDiagnostics = {
   stage: ProductIntentCompilerFailureStage | "success";
   parseFailureType?: "json_parse" | "json_extraction";
   schemaIssuePaths?: string[];
+  schemaIssueCodes?: string[];
+  missingRequiredKeys?: string[];
+  unknownKeys?: string[];
 };
 
 export type ProductIntentCompilerFailureStage =
@@ -278,6 +281,17 @@ function schemaIssuePaths(result: z.SafeParseError<unknown>): string[] {
   });
 }
 
+function schemaIssueMetadata(result: z.SafeParseError<unknown>) {
+  const issues = result.error.issues.slice(0, 20);
+  const path = (issue: z.ZodIssue) => issue.path.join(".") || "result";
+  return {
+    paths: schemaIssuePaths(result),
+    codes: [...new Set(issues.map((issue) => issue.code))],
+    missing: [...new Set(issues.filter((issue) => issue.code === "invalid_type" && "received" in issue && issue.received === "undefined").map(path))],
+    unknown: [...new Set(issues.flatMap((issue) => issue.code === "unrecognized_keys" && "keys" in issue && Array.isArray(issue.keys) ? issue.keys.map((key) => `${path(issue)}.${key}`) : []))],
+  };
+}
+
 function normalizedText(value: string): string { return value.toLocaleLowerCase().replace(/[^a-z0-9.]+/g, " ").replace(/\s+/g, " ").trim(); }
 
 /** The provider sometimes mirrors PBV2's minQty/maxQty spellings. Translate
@@ -397,7 +411,7 @@ function logCompilerFailure(input: Pick<ProductIntentCompilerInput, "orgId">, co
 
 async function persistCompilerDiagnostic(input: ProductIntentCompilerInput, diagnostics: ProductIntentCompilerDiagnostics | undefined, stage: ProductIntentCompilerFailureStage, errorCode: string) {
   try {
-    const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId: diagnostics?.correlationId, correlationId: diagnostics?.correlationId, diagnosticType: "product_intent_compiler", tenantId: input.orgId, actorId: null, conversationId: null, provider: diagnostics?.provider ?? null, model: diagnostics?.model ?? null, providerRequestId: diagnostics?.requestMetadata.providerRequestId ?? null, stage, errorCode, providerResponseState: stage === "json_extraction_failure" ? "parse_failed" : stage.includes("schema") ? "contract_failed" : "not_received", parseMethod: "none", repairAttempted: (diagnostics?.attempts ?? 0) > 1, repairResult: (diagnostics?.attempts ?? 0) > 1 ? "failed" : "not_attempted", validationSchema: stage.includes("schema") ? "ProductIntentCompilerResult" : null, validationIssuePaths: diagnostics?.schemaIssuePaths ?? [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [], plannerOperation: null, selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler", optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString() });
+    const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId: diagnostics?.correlationId, correlationId: diagnostics?.correlationId, diagnosticType: "product_intent_compiler", tenantId: input.orgId, actorId: null, conversationId: null, provider: diagnostics?.provider ?? null, model: diagnostics?.model ?? null, providerRequestId: diagnostics?.requestMetadata.providerRequestId ?? null, stage, errorCode, providerResponseState: stage === "json_extraction_failure" ? "parse_failed" : stage.includes("schema") ? "contract_failed" : "not_received", parseMethod: "none", repairAttempted: (diagnostics?.attempts ?? 0) > 1, repairResult: (diagnostics?.attempts ?? 0) > 1 ? "failed" : "not_attempted", validationSchema: stage.includes("schema") ? "ProductIntentCompilerResult" : null, validationIssuePaths: diagnostics?.schemaIssuePaths ?? [], validationIssueCodes: diagnostics?.schemaIssueCodes ?? [], returnedTopLevelKeys: [], missingRequiredKeys: diagnostics?.missingRequiredKeys ?? [], unknownKeys: diagnostics?.unknownKeys ?? [], plannerOperation: null, selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler", optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString() });
     await persistAiDiagnostic(envelope);
   } catch { /* Diagnostics must never conceal the original compiler failure. */ }
 }
@@ -492,8 +506,9 @@ export class ProductIntentCompiler {
       }
 
       failureStage = attempt === 0 ? "runtime_schema_rejection" : "repair_response_schema_rejection";
-      validationIssuePaths = schemaIssuePaths(result);
-      lastDiagnostics = { ...lastDiagnostics, stage: failureStage, schemaIssuePaths: validationIssuePaths };
+      const issueMetadata = schemaIssueMetadata(result);
+      validationIssuePaths = issueMetadata.paths;
+      lastDiagnostics = { ...lastDiagnostics, stage: failureStage, schemaIssuePaths: validationIssuePaths, schemaIssueCodes: issueMetadata.codes, missingRequiredKeys: issueMetadata.missing, unknownKeys: issueMetadata.unknown };
       logCompilerFailure(input, correlationId, lastDiagnostics, failureStage, {
         issueCount: result.error.issues.length,
         firstIssue: invalidResultMessage(result),

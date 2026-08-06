@@ -420,6 +420,7 @@ export function ResultCards({
   const [technicalDiagnostics, setTechnicalDiagnostics] = React.useState<any[] | null>(null);
   const [technicalDiagnosticsError, setTechnicalDiagnosticsError] = React.useState<string | null>(null);
   const [technicalDiagnosticsLoading, setTechnicalDiagnosticsLoading] = React.useState(false);
+  const [technicalDiagnosticsCopyStatus, setTechnicalDiagnosticsCopyStatus] = React.useState<"copied" | "failed" | null>(null);
   const [genericCreateErrors, setGenericCreateErrors] = React.useState<Record<string, string>>({});
   const [genericConfirmErrors, setGenericConfirmErrors] = React.useState<Record<string, string>>({});
   const presentation = responsePresentationForCards(serverPresentation);
