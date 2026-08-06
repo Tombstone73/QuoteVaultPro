@@ -147,8 +147,14 @@ describe("ProductIntentCompiler", () => {
     ["HTTP failure", Object.assign(new Error("HTTP 400"), { kind: "http_failure", status: 400, providerRequestId: "req_http" }), "provider_http_failure"],
     ["empty response", Object.assign(new Error("empty"), { kind: "empty_response", status: 200, providerRequestId: "req_empty" }), "provider_empty_response"],
   ])("returns a safe diagnostic reference for provider %s", async (_case, error, stage) => {
-    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+    const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
     const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => { throw error; }) });
     await expect(compiler.compile(compilerInput)).resolves.toMatchObject({ ok: false, error: { code: "provider_failure", diagnosticCode: expect.stringMatching(/^pic-/) }, diagnostics: { stage } });
+    expect(warn).toHaveBeenCalledWith("[PRODUCT_INTENT_COMPILER] Compilation failed.", expect.objectContaining({
+      organizationId: "org_test",
+      correlationId: expect.stringMatching(/^pic-/),
+      stage,
+      providerRequestId: error.providerRequestId,
+    }));
   });
 });
