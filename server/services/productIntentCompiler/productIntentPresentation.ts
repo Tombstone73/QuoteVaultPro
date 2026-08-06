@@ -19,7 +19,7 @@ function reference(value: ProductDraftIntent["material"], unresolvedLabel = "Not
 function pricing(intent: ProductDraftIntent): string {
   const value = intent.pricing;
   if (value.model === "scalar") return `${money(value.priceCents)} ${value.unit === "per_square_foot" ? "per square foot" : value.unit === "per_piece" ? "per piece" : "flat fee"}${value.minimumChargeCents == null ? "" : `; minimum ${money(value.minimumChargeCents)}`}`;
-  if (value.model === "quantity_tiers") return value.tiers.map((tier) => `${tier.minimumQuantity}${tier.maximumQuantity == null ? "+" : `–${tier.maximumQuantity}`}: ${money(tier.priceCents)}`).join(", ");
+  if (value.model === "quantity_tiers") return `Quantity tiers ${value.unit === "per_piece" ? "per piece" : "per square foot"}: ${value.tiers.map((tier) => `${tier.minimumQuantity}${tier.maximumQuantity == null ? "+" : `–${tier.maximumQuantity}`}: ${money(tier.priceCents)}`).join(", ")}`;
   if (value.model === "two_dimensional_matrix") return value.unit === "unresolved" ? `Matrix — pricing unit not selected (${value.cells.length} prices)` : `${value.unit === "per_square_foot" ? "Per square foot" : "Per piece"} matrix (${value.cells.length} prices)`;
   return "Unresolved";
 }

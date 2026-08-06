@@ -146,7 +146,7 @@ const providerPayloadGuide = {
     lifecycle: { productStatus: "inactive", published: false },
     measurement: "{ mode: 'dimensions_required' } | { mode: 'fixed_size', dimensions: { widthIn, heightIn, allowRotation? } } | { mode: 'quantity_only' }",
     quantity: "{ behavior: 'customer_entered', minimum?, maximum? } | { behavior: 'fixed', quantity } | { behavior: 'not_applicable' }",
-    pricing: "{ model: 'scalar', unit: 'per_piece'|'per_square_foot'|'flat_fee', priceCents } | { model: 'two_dimensional_matrix', unit: 'per_piece'|'per_square_foot'|'unresolved', rowOptionKey, columnOptionKey, cells: [{ row, column, priceCents }] } | { model: 'quantity_tiers', unit: 'per_piece'|'per_square_foot', tiers } | { model: 'unresolved' }",
+    pricing: "{ model: 'scalar', unit: 'per_piece'|'per_square_foot'|'flat_fee', priceCents } | { model: 'two_dimensional_matrix', unit: 'per_piece'|'per_square_foot'|'unresolved', rowOptionKey, columnOptionKey, cells: [{ row, column, priceCents }] } | { model: 'quantity_tiers', unit: 'per_piece'|'per_square_foot', tiers: [{ minimumQuantity: positive integer, maximumQuantity: positive integer | null, priceCents: positive integer }] } | { model: 'unresolved' }. Quantity tiers are ordered, continuous inclusive ranges beginning at 1; only the final tier may be open ended and it must use maximumQuantity: null. Prices are integer cents.",
     material: "{ state: 'resolved', id, label } | { state: 'unresolved', label } | { state: 'explicitly_unset' }",
     optionGroups: "[{ key, label, required, selectionMode: 'single'|'multiple', values: [{ key, label, isDefault }] }]",
     workflow: "{ kind: 'standard_production'|'fulfillment_only'|'service_fee', requiresProofApproval, requiresProductionJob }",
@@ -276,6 +276,66 @@ function schemaIssuePaths(result: z.SafeParseError<unknown>): string[] {
   });
 }
 
+function normalizedText(value: string): string { return value.toLocaleLowerCase().replace(/[^a-z0-9.]+/g, " ").replace(/\s+/g, " ").trim(); }
+
+/** The provider sometimes mirrors PBV2's minQty/maxQty spellings. Translate
+ * only that structural alias at the compiler boundary; monetary units and
+ * semantic tier coverage remain strictly validated by the canonical contract. */
+function normalizeProviderQuantityTiers(pricing: unknown): unknown {
+  if (!pricing || typeof pricing !== "object" || Array.isArray(pricing)) return pricing;
+  const source = pricing as Record<string, unknown>;
+  if (source.model !== "quantity_tiers" || !Array.isArray(source.tiers)) return pricing;
+  return {
+    ...source,
+    tiers: source.tiers.map((value, index, tiers) => {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+      const tier = value as Record<string, unknown>;
+      const { minQty: _minQty, minQuantity: _minQuantity, minimumQuantity, maxQty: _maxQty, maxQuantity: _maxQuantity, maximumQuantity: declaredMaximum, perPieceCents: _perPieceCents, priceCents: declaredPrice, ...rest } = tier;
+      const minimum = minimumQuantity ?? _minQuantity ?? _minQty;
+      const maximum = "maximumQuantity" in tier ? declaredMaximum : "maxQuantity" in tier ? _maxQuantity : "maxQty" in tier ? _maxQty : index === tiers.length - 1 ? null : undefined;
+      const price = declaredPrice ?? _perPieceCents;
+      return {
+        ...rest,
+        ...(minimum === undefined ? {} : { minimumQuantity: minimum }),
+        ...(maximum === undefined ? {} : { maximumQuantity: maximum }),
+        ...(price === undefined ? {} : { priceCents: price }),
+      };
+    }),
+  };
+}
+
+const materialFamilyTerms = new Set(["coroplast", "vinyl", "acrylic", "banner", "pvc", "paper"]);
+const materialVariantTerms = new Set(["adhesive", "cast", "calendered", "clear", "foam", "foamed", "gloss", "matte", "perforated", "rigid", "textured", "translucent", "white", "black", "blue", "red"]);
+function escapeRegExp(value: string): string { return value.replace(/[|\\{}()[\]^$+*?.]/g, "\\$&"); }
+
+/** A provider may identify a tenant material only when the request contains a
+ * material-specific qualifier. Generic family wording must never authorize a
+ * thickness, finish, weight, colour, or tenant variant. */
+function requestSupportsResolvedMaterial(request: string, label: string): boolean {
+  const source = normalizedText(request);
+  const tokens = normalizedText(label).split(" ").filter(Boolean);
+  const familyTerms = tokens.filter((token) => materialFamilyTerms.has(token));
+  if (familyTerms.length && !familyTerms.every((term) => new RegExp(`(?:^|\\s)${escapeRegExp(term)}(?:$|\\s)`).test(source))) return false;
+  const numericQualifiers = tokens.filter((token) => /\d/.test(token));
+  const namedQualifiers = tokens.filter((token) => materialVariantTerms.has(token));
+  const qualifiers = numericQualifiers.length ? numericQualifiers : namedQualifiers;
+  if (qualifiers.length === 0) return true;
+  return qualifiers.every((qualifier) => new RegExp(`(?:^|\\s)${escapeRegExp(qualifier)}(?:$|\\s)`).test(source));
+}
+
+function normalizeUnsafeProviderMaterial(request: string, intent: Record<string, unknown>): Record<string, unknown> {
+  const material = intent.material;
+  const metadata = intent.fieldMetadata;
+  if (!material || typeof material !== "object" || Array.isArray(material) || !metadata || typeof metadata !== "object" || Array.isArray(metadata)) return intent;
+  const reference = material as Record<string, unknown>;
+  const fieldMetadata = metadata as Record<string, unknown>;
+  const materialMetadata = fieldMetadata.material;
+  const source = materialMetadata && typeof materialMetadata === "object" && !Array.isArray(materialMetadata) ? (materialMetadata as Record<string, unknown>).source : null;
+  const label = typeof reference.label === "string" ? reference.label : "";
+  if (reference.state !== "resolved" || source === "selected_template" || source === "canonical_default" || !label || requestSupportsResolvedMaterial(request, label)) return intent;
+  return { ...intent, material: { state: "explicitly_unset" }, fieldMetadata: { ...fieldMetadata, material: { source: "unresolved" } } };
+}
+
 function normalizeInitialCompleteIntent(input: ProductIntentCompilerInput, value: unknown, intentId: string): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const root = value as Record<string, unknown>;
@@ -286,7 +346,7 @@ function normalizeInitialCompleteIntent(input: ProductIntentCompilerInput, value
   return {
     ...root,
     intent: {
-      ...candidate,
+      ...normalizeUnsafeProviderMaterial(input.request, { ...candidate, pricing: normalizeProviderQuantityTiers(candidate.pricing) }),
       contractVersion: 1,
       intentId,
       organizationId: input.orgId,
