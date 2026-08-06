@@ -1,5 +1,6 @@
 import { productDraftIntentFingerprint } from "@shared/productDraftIntent";
 import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
+import { optionTreeV2Schema } from "@shared/optionTreeV2";
 import { validatePricingPreviewRequest } from "../services/pricing/pricingPreviewValidation";
 import { ProductIntentProjectionError, projectProductDraftIntentToProductBuilderDraft } from "../services/productIntentCompiler/productIntentProjection";
 
@@ -55,6 +56,39 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
     expect(result.treeJson.meta).toMatchObject({ pricingProfileKey: "qty_only", requiresDimensions: false });
     expect((result.treeJson.meta as any).pricingFormula).toBeUndefined();
     expect(JSON.stringify(result.treeJson)).not.toContain("total_sqft");
+    expect((result.treeJson.meta as any).productIntake.quantity).toEqual(expect.objectContaining({
+      configured: true,
+      behavior: "customer_entered",
+      notes: "Quantity is entered on the quote or order line item.",
+      lineItemQuantitySource: true,
+      customerFacingOptionGenerated: false,
+      sourceOptions: [],
+      mapping: {
+        source: "line_item_quantity",
+        variable: "q",
+        pricingBehavior: "per_piece",
+        pricingPreviewField: "quantity",
+        quoteLineItemField: "quantity",
+        orderLineItemField: "quantity",
+        matrixAxes: ["thickness", "sides"],
+      },
+    }));
+    expect(optionTreeV2Schema.safeParse(result.treeJson).success).toBe(true);
+  });
+
+  it("rejects canonical tree metadata when any required quantity field is omitted while keeping legacy trees compatible", () => {
+    const projected = projectProductDraftIntentToProductBuilderDraft(perPieceMatrixIntent());
+    const missingMapping = structuredClone(projected.treeJson) as any;
+    delete missingMapping.meta.productIntake.quantity.mapping;
+    const rejected = optionTreeV2Schema.safeParse(missingMapping);
+    expect(rejected.success).toBe(false);
+    if (!rejected.success) expect(rejected.error.issues.map((issue) => issue.path.join("."))).toContain("meta.productIntake.quantity.mapping");
+
+    const legacy = structuredClone(projected.treeJson) as any;
+    delete legacy.meta.productIntake.architecture;
+    delete legacy.meta.productIntake.quantity.mapping;
+    delete legacy.meta.productIntake.quantity.configured;
+    expect(optionTreeV2Schema.safeParse(legacy).success).toBe(true);
   });
 
   it.each([
@@ -78,9 +112,26 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
     }));
     expect(perSqftMatrix.product).toMatchObject({ pricingMode: "area", pricingProfileKey: "default", measurementMode: "dimensions_required" });
     expect((perSqftMatrix.treeJson.meta as any).requiresDimensions).toBe(true);
-    expect(projectProductDraftIntentToProductBuilderDraft(intent({ measurement: { mode: "quantity_only" }, pricing: { model: "scalar", unit: "per_piece", priceCents: 1200 } })).product.pricingProfileKey).toBe("qty_only");
-    expect(projectProductDraftIntentToProductBuilderDraft(intent({ measurement: { mode: "quantity_only" }, pricing: { model: "quantity_tiers", unit: "per_piece", tiers: [{ minimumQuantity: 1, maximumQuantity: null, priceCents: 1200 }] } })).product.pricingProfileKey).toBe("qty_only");
-    expect(projectProductDraftIntentToProductBuilderDraft(intent({ measurement: { mode: "quantity_only" }, workflow: { kind: "service_fee", requiresProofApproval: false, requiresProductionJob: false }, production: { route: { state: "explicitly_unset" }, configuration: {} }, pricing: { model: "scalar", unit: "flat_fee", priceCents: 1200 } })).product.pricingProfileKey).toBe("fee");
+    const scalar = projectProductDraftIntentToProductBuilderDraft(intent({ measurement: { mode: "quantity_only" }, pricing: { model: "scalar", unit: "per_piece", priceCents: 1200 } }));
+    expect(scalar.product.pricingProfileKey).toBe("qty_only");
+    expect((scalar.treeJson.meta as any).productIntake.quantity.mapping).toMatchObject({ variable: "q", pricingBehavior: "per_piece", matrixAxes: [] });
+    const tiers = projectProductDraftIntentToProductBuilderDraft(intent({ measurement: { mode: "quantity_only" }, pricing: { model: "quantity_tiers", unit: "per_piece", tiers: [{ minimumQuantity: 1, maximumQuantity: null, priceCents: 1200 }] } }));
+    expect(tiers.product.pricingProfileKey).toBe("qty_only");
+    expect((tiers.treeJson.meta as any).productIntake.quantity.mapping).toMatchObject({ variable: "q", pricingBehavior: "quantity_tiers" });
+    const fee = projectProductDraftIntentToProductBuilderDraft(intent({ measurement: { mode: "quantity_only" }, workflow: { kind: "service_fee", requiresProofApproval: false, requiresProductionJob: false }, production: { route: { state: "explicitly_unset" }, configuration: {} }, pricing: { model: "scalar", unit: "flat_fee", priceCents: 1200 } }));
+    expect(fee.product.pricingProfileKey).toBe("fee");
+    expect((fee.treeJson.meta as any).productIntake.quantity.mapping).toMatchObject({ pricingBehavior: "flat_fee", variable: null });
+    expect((perSqftMatrix.treeJson.meta as any).productIntake.quantity.mapping).toMatchObject({ pricingBehavior: "per_square_foot", variable: null });
+  });
+
+  it("keeps fixed-size quantity behavior explicit and blocks quantity-only products with no quantity behavior", () => {
+    const fixed = projectProductDraftIntentToProductBuilderDraft(intent({
+      measurement: { mode: "fixed_size", dimensions: { widthIn: 24, heightIn: 18, allowRotation: false } },
+      quantity: { behavior: "fixed", quantity: 2 },
+      pricing: { model: "scalar", unit: "per_piece", priceCents: 1200 },
+    }));
+    expect((fixed.treeJson.meta as any).productIntake.quantity).toMatchObject({ configured: true, lineItemQuantitySource: false, mapping: { source: "fixed_quantity", variable: "q", fixedQuantity: 2 } });
+    expect(() => projectProductDraftIntentToProductBuilderDraft(intent({ measurement: { mode: "quantity_only" }, quantity: { behavior: "not_applicable" }, pricing: { model: "scalar", unit: "per_piece", priceCents: 1200 } }))).toThrow(ProductIntentProjectionError);
   });
 
   it("projects continuous quantity tiers into PBV2 lower-bound tiers", () => {

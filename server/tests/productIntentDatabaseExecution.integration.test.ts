@@ -121,6 +121,18 @@ describeDatabase("canonical Product Intent database execution (requires safe TES
       expect(tree.treeJson.meta.pricingFormula).toBeUndefined();
       expect(JSON.stringify(tree.treeJson)).not.toContain("total_sqft");
       expect(tree.treeJson.meta.pricingV2.optionMatrixPricingUnit).toBe("per_piece");
+      expect(tree.treeJson.meta.productIntake.quantity).toMatchObject({
+        configured: true,
+        lineItemQuantitySource: true,
+        customerFacingOptionGenerated: false,
+        sourceOptions: [],
+        mapping: {
+          source: "line_item_quantity",
+          variable: "q",
+          pricingBehavior: "per_piece",
+          matrixAxes: ["thickness", "sides"],
+        },
+      });
       const laminationInput = Object.values(tree.treeJson.nodes).find((node: any) => node.key === "lamination") as any;
       expect(laminationInput.input.defaultValue).toBe("none");
       expect(tree.treeJson.meta.canonicalExecution.pbv2TreeVersionId).toBe(first.pbv2TreeVersionId);

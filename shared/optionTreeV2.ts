@@ -271,6 +271,11 @@ export type OptionTreeV2 = {
     productIntake?: {
       /** Product Intake provenance is optional for legacy/manual PBV2 trees.
        * When supplied, these fields are canonical evidence, not price inputs. */
+      architecture?: "product_draft_intent";
+      contractVersion?: number;
+      intentId?: string;
+      revision?: number;
+      fingerprint?: string;
       sessionId?: string;
       productName?: string;
       confidence?: number;
@@ -305,6 +310,7 @@ export type OptionTreeV2 = {
         warning: string | null;
       };
       quantity?: {
+        configured?: boolean;
         behavior: string;
         confidence: number;
         notes: string | null;
@@ -319,6 +325,16 @@ export type OptionTreeV2 = {
           sampleValues: string[];
           sourcePaths: string[];
         }>;
+        mapping?: {
+          source: "line_item_quantity" | "fixed_quantity" | "not_applicable";
+          variable: "q" | null;
+          pricingBehavior: "per_piece" | "quantity_tiers" | "flat_fee" | "per_square_foot";
+          pricingPreviewField: "quantity" | null;
+          quoteLineItemField: "quantity" | null;
+          orderLineItemField: "quantity" | null;
+          matrixAxes: string[];
+          fixedQuantity?: number;
+        };
         warning: string | null;
       };
       quantityWarnings?: string[];
@@ -695,6 +711,11 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
         confidence: z.number().min(0).max(100).optional(),
       }).optional(),
       productIntake: z.object({
+        architecture: z.literal("product_draft_intent").optional(),
+        contractVersion: z.number().int().positive().optional(),
+        intentId: z.string().optional(),
+        revision: z.number().int().nonnegative().optional(),
+        fingerprint: z.string().optional(),
         sessionId: z.string().optional(),
         productName: z.string().optional(),
         confidence: z.number().min(0).max(100).optional(),
@@ -729,6 +750,7 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
           warning: z.string().nullable(),
         }).optional(),
         quantity: z.object({
+          configured: z.boolean().optional(),
           behavior: z.string(),
           confidence: z.number().min(0).max(100),
           notes: z.string().nullable(),
@@ -743,6 +765,16 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
             sampleValues: z.array(z.string()),
             sourcePaths: z.array(z.string()),
           })),
+          mapping: z.object({
+            source: z.enum(["line_item_quantity", "fixed_quantity", "not_applicable"]),
+            variable: z.enum(["q"]).nullable(),
+            pricingBehavior: z.enum(["per_piece", "quantity_tiers", "flat_fee", "per_square_foot"]),
+            pricingPreviewField: z.literal("quantity").nullable(),
+            quoteLineItemField: z.literal("quantity").nullable(),
+            orderLineItemField: z.literal("quantity").nullable(),
+            matrixAxes: z.array(z.string()),
+            fixedQuantity: z.number().int().positive().optional(),
+          }).optional(),
           warning: z.string().nullable(),
         }).optional(),
         quantityWarnings: z.array(z.string()).optional(),
@@ -852,6 +884,25 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
           reasons: z.array(z.string()),
           warnings: z.array(z.string()),
         }).optional(),
+      }).superRefine((productIntake, ctx) => {
+        // Legacy and manually-created trees predate this audit contract. New
+        // canonical Product Intent trees are intentionally strict: a draft is
+        // not a valid canonical quantity-only configuration without all of the
+        // line-item quantity evidence Product Builder needs to explain it.
+        if (productIntake.architecture !== "product_draft_intent" || !productIntake.quantity) return;
+        const quantity = productIntake.quantity;
+        for (const field of ["configured", "notes", "lineItemQuantitySource", "customerFacingOptionGenerated", "sourceOptions", "mapping"] as const) {
+          if (quantity[field] === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity", field], message: "Required" });
+        }
+        if (quantity.mapping?.source === "not_applicable" ? quantity.configured !== false : quantity.configured !== true) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity", "configured"], message: "Canonical Product Intent quantity configured state must agree with its source mapping." });
+        }
+        if (quantity.mapping?.source === "line_item_quantity" && ["per_piece", "quantity_tiers"].includes(quantity.mapping.pricingBehavior) && (quantity.mapping.variable !== "q" || quantity.lineItemQuantitySource !== true)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity", "mapping"], message: "Line-item quantity must map to q." });
+        }
+        if (quantity.quantityOnly && quantity.mapping?.pricingBehavior === "per_square_foot") {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity", "mapping"], message: "Quantity-only metadata cannot use square-foot pricing." });
+        }
       }).optional(),
     })
     .optional(),
