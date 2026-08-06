@@ -157,4 +157,24 @@ describe("ProductIntentCompiler", () => {
       providerRequestId: error.providerRequestId,
     }));
   });
+
+  test("captures dependent-option fields as strict compiler paths without creating a product intent", async () => {
+    const dependentOptionPayload = {
+      ...yardSignsPayload,
+      intent: {
+        ...yardSignsPayload.intent,
+        identity: { ...yardSignsPayload.intent.identity, name: "Translucent Vinyl - Multilayer Print Test 2" },
+        measurement: { mode: "dimensions_required" },
+        pricing: { model: "two_dimensional_matrix", unit: "per_square_foot", rowOptionKey: "layers", columnOptionKey: "surface", cells: [{ row: "3_layers", column: "first_surface", priceCents: 500 }, { row: "5_layers", column: "first_surface", priceCents: 600 }] },
+        optionGroups: [
+          { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first_surface", label: "1st Surface", isDefault: true }, { key: "second_surface", label: "2nd Surface", isDefault: false }] },
+          { key: "layers", label: "Print Layers", required: true, selectionMode: "single", values: [{ key: "3_layers", label: "3 Layers", isDefault: true }, { key: "5_layers", label: "5 Layers", isDefault: false }] },
+          { key: "finishing", label: "Finishing", required: false, selectionMode: "single", values: [{ key: "contour", label: "Contour Cutting", isDefault: false, priceImpactPercent: 10 }, { key: "weed_tape", label: "Weed and Tape", isDefault: false, requiresOption: "contour", totalMarkupPercent: 30 }] },
+        ],
+      },
+    };
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(JSON.stringify(dependentOptionPayload))) });
+    const result = await compiler.compile({ ...compilerInput, request: "Create translucent vinyl with dependent finishing options." });
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid_contract" }, diagnostics: { stage: "repair_response_schema_rejection", validationIssuePaths: expect.arrayContaining(["intent.optionGroups.2.values.0.priceImpactPercent", "intent.optionGroups.2.values.1.requiresOption", "intent.optionGroups.2.values.1.totalMarkupPercent"]) } });
+  });
 });
