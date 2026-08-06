@@ -812,6 +812,61 @@ export class ProductManagementSkillService {
       : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent could not be created", summary: "No legacy Product Intake session or product was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
   }
 
+  /**
+   * AI-first entrypoint for a plan that has already selected the canonical
+   * compiler.  In particular, a planned new-product request must not pass
+   * through the legacy product keyword router before reaching the canonical
+   * compiler.  The original request text is intentionally forwarded verbatim
+   * to the compiler.
+   */
+  async respondPlannedCanonicalProductIntent(input: {
+    organizationId: string;
+    userId: string;
+    conversationId: string;
+    message: string;
+    operation: "create" | "continue_session" | "correct" | "select_candidate" | "accept_recommendation" | "request_confirmation" | "execute_go";
+  }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    const router = this.deps.canonicalProductIntent;
+    if (!router) return { handled: true, response: "Product interpretation is unavailable until the canonical service is configured.", cards: [] };
+
+    if (input.operation === "create") {
+      try {
+        const outcome = await router.create({
+          organizationId: input.organizationId,
+          actorUserId: input.userId,
+          conversationId: input.conversationId,
+          request: input.message,
+        });
+        return outcome.ok
+          ? { handled: true, response: outcome.card.readiness.ready ? "I created a canonical product intent ready for review. No product has been created." : "I created a canonical product intent and will ask only its remaining questions.", cards: canonicalCards(outcome) }
+          : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent could not be created", summary: "No legacy Product Intake session or product was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
+      } catch (error) {
+        const message = error instanceof Error ? error.message : "The canonical product intent could not be created safely.";
+        return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent unavailable", summary: "No product intent was changed.", sourceLinks: [], details: { errors: [message] } }] };
+      }
+    }
+
+    // A persisted canonical session is its own authoritative boundary.  The
+    // existing continuation implementation reloads and validates it before
+    // producing a revision; it never trusts the planner for product fields.
+    const canonical = await this.respondCanonicalProductIntent(input);
+    if (canonical.handled) return canonical;
+    return this.respondLegacyProductSessionCompatibility(input);
+  }
+
+  /**
+   * Temporary, isolated compatibility boundary for conversations created by
+   * the pre-canonical product system. The AI-first planner has already chosen
+   * this product workflow before this method is reached; no new free-text
+   * message may enter it as a first-pass route.
+   */
+  private async respondLegacyProductSessionCompatibility(input: { organizationId: string; userId: string; conversationId: string; message: string }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    const legacy = await this.respond(input);
+    return legacy.handled
+      ? legacy
+      : { handled: true, response: "This product conversation uses a legacy session that could not be continued safely. No product was changed.", cards: [{ kind: "product_validation_errors", title: "Legacy product session unavailable", summary: "No product was changed.", sourceLinks: [], details: { errors: ["The legacy product session did not expose a supported continuation."] } }] };
+  }
+
   private async continueExplicitIntakeCorrection(input: { organizationId: string; userId: string; message: string; sessionId: string }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
     const existing = await this.deps.sessions.getSessionDetail(input.organizationId, input.sessionId);
     if (!existing || ["draft_created", "abandoned"].includes(existing.session.status)) return { handled: false, response: "", cards: [] };

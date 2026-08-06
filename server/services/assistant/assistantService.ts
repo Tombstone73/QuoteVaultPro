@@ -36,6 +36,15 @@ import { deterministicOrderLookupTarget, deterministicSearchTarget, resolveDeter
 import { AnalyticalCustomerResolutionService, type PersistedAnalyticalResolution } from "./analyticalCustomerResolution";
 import { resolveSystemGuideAnswer } from "./systemGuide";
 import { resolveConfigurableProductContinuation } from "./complexProductDraftPersistence";
+import {
+  getAssistantCapability,
+  resolveAssistantIntentPlannerMode,
+  type AssistantIntentPlan,
+} from "./assistantIntentPlanner";
+import {
+  ConfiguredAssistantIntentPlannerProvider,
+  type AssistantIntentPlannerProvider,
+} from "./intentPlannerProvider";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
@@ -282,6 +291,12 @@ export class AssistantService {
      * repository is available. Optional during migration rollout so normal
      * assistant turns do not depend on an unfinished table. */
     private readonly reportResolutionService?: AnalyticalCustomerResolutionService,
+    /** This planner owns free-text interpretation. Structured UI routes do not
+     * enter createTurn and therefore remain server-bound direct actions. */
+    private readonly intentPlanner: AssistantIntentPlannerProvider = new ConfiguredAssistantIntentPlannerProvider(new OpenAiCompatibleBugReviewProvider()),
+    /** Injectable only for composition and isolated routing tests; production
+     * always uses the canonical compiler-backed singleton. */
+    private readonly productIntentDispatcher: Pick<typeof productManagementSkillService, "respondPlannedCanonicalProductIntent"> = productManagementSkillService,
   ) {}
 
   async getCapabilities(scope: AssistantScope, actor?: AssistantActor) {
@@ -500,6 +515,9 @@ export class AssistantService {
     }
 
     const correlationId = crypto.randomUUID();
+    const intentPlannerMode = resolveAssistantIntentPlannerMode();
+    if (intentPlannerMode === "enabled") return this.createAiFirstTurn({ scope, conversationId, actor, request, correlationId });
+    if (intentPlannerMode === "shadow") await this.captureAiFirstShadow({ scope, request, correlationId });
     // System Guide answers are local, read-only, and sourced from the
     // versioned manifest/approved corpus. A guide phrase such as "Flatbed"
     // must not intercept a valid, server-persisted configurable-product
@@ -776,6 +794,199 @@ export class AssistantService {
     if (!result) throw this.notFound();
 
     return result;
+  }
+
+  /**
+   * The only free-text AI-first dispatch boundary.  It receives one strict
+   * provider-neutral plan, verifies server-owned constraints, and then gives
+   * the selected specialist the original message without rewriting it.  A
+   * planning failure is persisted as a safe failure; it never falls through
+   * to a keyword router.
+   */
+  private async createAiFirstTurn(input: {
+    scope: AssistantScope;
+    conversationId: string;
+    actor: AssistantActor;
+    request: AssistantTurnRequest;
+    correlationId: string;
+  }): Promise<AssistantTurnResult> {
+    const { scope, conversationId, actor, request, correlationId } = input;
+    const capability = await this.getCapabilities(scope, actor);
+    if (!capability.toolsEnabled) {
+      return this.persistAiFirstResponse(input, {
+        response: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY,
+        status: "failed",
+        errorCode: "provider_unavailable",
+        cards: [{ kind: "provider_unavailable", title: "AI planning unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }],
+      });
+    }
+    const conversation = await this.repo.getConversation({ ...scope, conversationId });
+    if (!conversation) throw this.notFound();
+    const activeSessionId = activeProductIntakeSession(conversation.messages);
+    const plannerResult = await this.intentPlanner.plan({
+      organizationId: scope.organizationId,
+      promptVersion: "ai-first-intent-planner-v1",
+      timeoutUseCase: "ai_first_intent_planner",
+      system: "You are the PrintersHero AI-first typed intent planner. Return exactly one JSON object and no markdown or prose. Required strict keys: version (always 1), operation (lookup|report|explain|create|update|continue_session|correct|select_candidate|accept_recommendation|request_confirmation|execute_go|general_conversation|unrelated_conversation|clarify|unsupported), domain (products|quotes|orders|production|fulfillment|billing|payments|customers|reporting|system|conversation|unknown), mode (read|mutation|none), capabilityId, confidence, target {kind,entityId}, contextUsage {workspaceIsAuthoritative:false,workspaceRelevance,activeSessionId}, requiresClarification, clarificationQuestion, reasonCode. capabilityId must be one of system_guide, search_customers, search_products, search_orders, operational_summary, legacy_read_tooling, canonical_product_intent_compiler, products_workflow, clone_product, update_inactive_product, replace_product_matrix, replace_product_tiers, create_quote, update_quote, convert_quote, create_order, update_order, orders_workflow, production_operations, fulfillment_operations, billing_operations, payment_operations, crm_management, general_conversation, or null. Select canonical_product_intent_compiler with operation create, domain products, mode mutation, target new_entity for a detailed request to create a new product, including Translucent Vinyl. Never select system_guide from Product Details or generic workspace context; only select it for an actual help/explanation request. Treat workspace as supporting only, never authoritative. Never return product fields, executable arguments, tenant identity, permissions, or prose.",
+      user: JSON.stringify({
+        originalMessage: request.message,
+        trustedContext: {
+          route: request.context.route,
+          pageTitle: request.context.pageTitle,
+          entityType: request.context.entityType ?? null,
+          entityId: request.context.entityId ?? null,
+          hasActiveCanonicalSession: Boolean(activeSessionId),
+        },
+        contract: "version, operation, domain, mode, capabilityId, confidence, target, contextUsage, requiresClarification, clarificationQuestion, reasonCode",
+      }),
+    });
+    if (!plannerResult.ok) {
+      return this.persistAiFirstResponse(input, {
+        response: plannerResult.error.message,
+        status: "failed",
+        errorCode: plannerResult.error.code,
+        cards: [{ kind: "provider_unavailable", title: "AI planning unavailable", summary: plannerResult.error.message, sourceLinks: [], toolStatus: "failed" }],
+        provider: plannerResult.diagnostics.provider,
+        model: plannerResult.diagnostics.model,
+      });
+    }
+
+    const plan = plannerResult.plan;
+    const validation = this.validateAiFirstPlan(plan, activeSessionId, actor);
+    if (validation) {
+      return this.persistAiFirstResponse(input, {
+        response: validation,
+        status: "failed",
+        errorCode: "invalid_intent_plan",
+        cards: [{ kind: "tool_warning", title: "AI plan rejected", summary: validation, sourceLinks: [], toolStatus: "permission_denied" }],
+        provider: plannerResult.diagnostics.provider,
+        model: plannerResult.diagnostics.model,
+      });
+    }
+
+    if (plan.requiresClarification) {
+      return this.persistAiFirstResponse(input, {
+        response: plan.clarificationQuestion ?? "Please clarify what you need.", status: "responded", errorCode: null,
+        cards: [{ kind: "tool_warning", title: "Clarification needed", summary: plan.clarificationQuestion ?? "Please clarify what you need.", sourceLinks: [] }],
+        provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model,
+      });
+    }
+    if (!plan.capabilityId) {
+      const response = plan.operation === "unsupported"
+        ? "I can’t safely complete that request here."
+        : "How can I help with your products, quotes, orders, or operations?";
+      return this.persistAiFirstResponse(input, { response, status: "responded", errorCode: null, cards: [], provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model });
+    }
+
+    let response = "I couldn't complete that request.";
+    let cards: AssistantStructuredCard[] = [];
+    const plannedCapability = plan.capabilityId;
+    if (plannedCapability === "system_guide") {
+      const guide = resolveSystemGuideAnswer(request.message, request.context);
+      response = guide?.response ?? "I can help explain the supported PrintersHero workflows.";
+      cards = (guide?.cards ?? [{ kind: "notice", title: "System Guide", body: response, tone: "info" }]) as AssistantStructuredCard[];
+    } else if (plannedCapability === "canonical_product_intent_compiler") {
+      const product = await this.productIntentDispatcher.respondPlannedCanonicalProductIntent({
+        organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id,
+        message: request.message,
+        operation: plan.operation as "create" | "continue_session" | "correct" | "select_candidate" | "accept_recommendation" | "request_confirmation" | "execute_go",
+      });
+      response = product.response;
+      cards = product.cards as AssistantStructuredCard[];
+    } else {
+      const specialist = await this.dispatchAiFirstSpecialist(plannedCapability, {
+        organizationId: scope.organizationId,
+        userId: actor.userId,
+        conversationId: conversation.id,
+        message: request.message,
+      });
+      if (specialist) {
+        response = specialist.response;
+        cards = specialist.cards as AssistantStructuredCard[];
+      } else if (plan.mode === "read") {
+        // The typed planner selected a read capability first. The existing
+        // read planner is now a post-selection tool-argument compiler only;
+        // it cannot decide a mutation route or act as a fallback router.
+        const readPlan = await this.planner.plan({ organizationId: scope.organizationId, message: request.message, context: request.context });
+        if (readPlan.plan.clarificationRequired) {
+          response = readPlan.plan.clarificationQuestion ?? "Please clarify what you want to look up.";
+          cards = [{ kind: "tool_warning", title: "Clarification needed", summary: response, sourceLinks: [] }];
+        } else {
+          const audits: AssistantToolExecutionAudit[] = [];
+          const orchestration = this.createOrchestrator((event) => audits.push(event));
+          const executed = await orchestration.executePlan(readPlan.plan, { scope, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId });
+          const rendered = renderToolResults(executed.executions);
+          response = rendered.response;
+          cards = rendered.cards;
+        }
+      } else {
+        response = "That planned workflow is not available in this deployment. Nothing was changed.";
+        cards = [{ kind: "tool_warning", title: "Workflow unavailable", summary: response, sourceLinks: [], toolStatus: "permission_denied" }];
+      }
+    }
+    console.info("[AI_FIRST_INTENT_PLANNER] Dispatched validated plan.", {
+      correlationId, capabilityId: plannedCapability, operation: plan.operation,
+      provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model,
+      activeSession: Boolean(activeSessionId),
+    });
+    return this.persistAiFirstResponse(input, { response, status: "responded", errorCode: null, cards, provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model });
+  }
+
+  /** Shadow planning is observability only. It neither persists a turn nor
+   * invokes a specialist, a read tool, or a command. */
+  private async captureAiFirstShadow(input: { scope: AssistantScope; request: AssistantTurnRequest; correlationId: string }): Promise<void> {
+    try {
+      const outcome = await this.intentPlanner.plan({
+        organizationId: input.scope.organizationId,
+        promptVersion: "ai-first-intent-planner-v1",
+        timeoutUseCase: "ai_first_intent_planner_shadow",
+        system: "Return one strict AI-first intent-plan JSON object only. This is shadow telemetry and cannot execute anything.",
+        user: JSON.stringify({ originalMessage: input.request.message, trustedContext: { route: input.request.context.route, pageTitle: input.request.context.pageTitle }, shadow: true }),
+      });
+      console.info("[AI_FIRST_INTENT_PLANNER] Shadow plan completed.", {
+        correlationId: input.correlationId, mode: "shadow", ok: outcome.ok,
+        capabilityId: outcome.ok ? outcome.plan.capabilityId : null,
+        failureCode: outcome.ok ? null : outcome.error.code,
+      });
+    } catch {
+      console.warn("[AI_FIRST_INTENT_PLANNER] Shadow planner failed.", { correlationId: input.correlationId, mode: "shadow" });
+    }
+  }
+
+  private validateAiFirstPlan(plan: AssistantIntentPlan, activeSessionId: string | null, actor: AssistantActor): string | null {
+    if (plan.contextUsage.activeSessionId !== null && plan.contextUsage.activeSessionId !== activeSessionId) return "The requested session could not be verified. Nothing was changed.";
+    if (!plan.capabilityId) return null;
+    const capability = getAssistantCapability(plan.capabilityId);
+    if (capability.domain !== plan.domain || capability.mode !== plan.mode || !capability.operations.includes(plan.operation)) return "The AI plan selected an incompatible capability. Nothing was changed.";
+    if (capability.requiredContext === "active_session" && !activeSessionId) return "This request needs an active assistant session.";
+    if (capability.requiredContext === "current_entity" && plan.contextUsage.workspaceRelevance !== "entity_reference") return "This request needs a server-verified current record.";
+    if (capability.requiredPermissions.some((permission) => !hasPermission(actor, permission))) return "You don't have permission for that assistant workflow.";
+    return null;
+  }
+
+  private async dispatchAiFirstSpecialist(capabilityId: Exclude<NonNullable<AssistantIntentPlan["capabilityId"]>, "canonical_product_intent_compiler" | "system_guide">, input: { organizationId: string; userId: string; conversationId: string; message: string }): Promise<{ handled: boolean; response: string; cards: unknown[] } | null> {
+    switch (capabilityId) {
+      case "create_quote": case "update_quote": return quoteDraftIntakeService.respond(input);
+      case "create_order": case "update_order": case "orders_workflow": return orderIntakeService.respond({ ...input, pendingRequest: undefined });
+      case "crm_management": return crmManagementService.respond(input);
+      case "production_operations": return productionOperationsService.respond(input);
+      case "fulfillment_operations": return fulfillmentOperationsService.respond(input);
+      case "billing_operations": return billingInvoiceOperationsService.respond(input);
+      case "payment_operations": return paymentOperationsService.respond(input);
+      default: return null;
+    }
+  }
+
+  private async persistAiFirstResponse(input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string }, result: { response: string; status: "responded" | "failed"; errorCode: string | null; cards: AssistantStructuredCard[]; provider?: string | null; model?: string | null }): Promise<AssistantTurnResult> {
+    const persisted = await this.persistFoundationTurn({
+      ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message, context: input.request.context,
+      clientRequestId: input.request.clientRequestId, response: result.response, correlationId: input.correlationId, status: result.status,
+      structuredCards: result.cards, initialTitle: titleFromMessage(input.request.message), provider: result.provider ?? null, model: result.model ?? null,
+      mode: "ai_first_typed_intent_planner", promptVersion: "ai-first-intent-planner-v1", errorCode: result.errorCode,
+      errorMessage: result.status === "failed" ? result.response : null,
+    });
+    if (!persisted) throw this.notFound();
+    return persisted;
   }
 
   private async readPausedResolutionTurn(
