@@ -2,17 +2,6 @@
 
 export const pricingUnitQuestion = "Are these prices per piece or per square foot?";
 
-export type ComplexProductConversationRoute = "configurable" | "standalone" | "pricing" | "clarify" | "ignore";
-export function routeComplexProductMessage(message: string): ComplexProductConversationRoute {
-  if (/\bseparate\b[\s\S]{0,80}\bproducts?\b/i.test(message)) return "standalone";
-  const options = /\b(?:options?|thickness|printed[- ]?sides?)\b/i.test(message);
-  const product = /\b(?:PVC|coroplast|banner|sign)\b/i.test(message);
-  const one = /\b(?:one|configurable)\b[\s\S]{0,60}\bproduct\b/i.test(message);
-  if (options && (one || product || /\bmatrix\b|\|/i.test(message))) return "configurable";
-  if (/\b(?:increase|decrease|raise|reduce)\b[\s\S]{0,80}\b(?:price|pricing)\b/i.test(message)) return "pricing";
-  return "ignore";
-}
-
 function valueList(message: string): string[] {
   const values = Array.from(message.matchAll(/\b(\d+(?:\.\d+)?)\s*mm\b/gi), (match) => `${match[1]}mm`);
   return Array.from(new Set(values)).slice(0, 12);
