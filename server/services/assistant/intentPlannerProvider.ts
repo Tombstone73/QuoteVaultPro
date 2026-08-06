@@ -7,8 +7,11 @@ import {
 import type { ResolvedAiProvider } from "../ai/aiProviderResolver";
 import {
   assistantIntentPlanSchema,
+  assistantIntentCapabilityIdValues,
+  assistantIntentModeValues,
   type AssistantIntentPlan,
 } from "./aiFirstIntentPlannerContract";
+import { assistantCapabilityCatalog, getAssistantCapability } from "./aiFirstCapabilityCatalog";
 import { sanitizeAiDiagnosticEnvelope } from "@shared/aiDiagnostics";
 import { persistAiDiagnostic } from "../aiDiagnosticsService";
 
@@ -151,9 +154,35 @@ function repairPrompt(input: AssistantIntentPlannerProviderInput, invalidOutput:
       plannerInput: input.user,
       invalidPlannerOutput: invalidOutput.slice(0, MAX_REPAIR_OUTPUT_CHARS),
       validationIssuePaths: issues.slice(0, 20),
+      allowedModeValues: assistantIntentModeValues,
+      allowedCapabilityIds: assistantIntentCapabilityIdValues,
+      capabilityCatalog: assistantCapabilityCatalog.map(({ id, domain, mode, operations }) => ({ id, domain, mode, operations })),
       instruction: "Repair only the planner response. Return strict JSON only.",
     }),
   };
+}
+
+function enrichPlannerCandidate(candidate: unknown): unknown {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
+  const plan = { ...(candidate as Record<string, unknown>) };
+  const capabilityId = plan.capabilityId;
+  if (plan.operation === "general_conversation") {
+    plan.mode = "none";
+    plan.domain = "conversation";
+    plan.capabilityId = null;
+    return plan;
+  }
+  if (typeof capabilityId === "string" && (assistantIntentCapabilityIdValues as readonly string[]).includes(capabilityId)) {
+    const capability = getAssistantCapability(capabilityId as AssistantIntentPlan["capabilityId"] & string);
+    plan.mode = capability.mode;
+    plan.domain = capability.domain;
+    return plan;
+  }
+  if (plan.operation === "explain" && plan.domain === "system" && plan.reasonCode === "help_or_explanation_request" && plan.target && typeof plan.target === "object" && (plan.target as { kind?: unknown }).kind === "none" && (capabilityId === null || capabilityId === undefined)) {
+    plan.capabilityId = "assistant_capabilities";
+    plan.mode = "read";
+  }
+  return plan;
 }
 
 function logPlannerFailure(organizationId: string, diagnostics: AssistantIntentPlannerDiagnostics, extra: Record<string, unknown> = {}) {
@@ -274,7 +303,7 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
         return { ok: false, error: { code: "invalid_json", message: `I couldn't safely interpret that request. Nothing was changed. Please retry. Reference: ${correlationId}.`, retryable: true, correlationId }, diagnostics };
       }
 
-      const parsed = assistantIntentPlanSchema.safeParse(candidate);
+      const parsed = assistantIntentPlanSchema.safeParse(enrichPlannerCandidate(candidate));
       if (parsed.success) {
         return {
           ok: true,

@@ -82,6 +82,45 @@ describe("AI-first intent planner provider boundary", () => {
   });
 
   test.each([
+    ["missing mode", { ...validPlan, mode: undefined }, { mode: "mutation", capabilityId: "canonical_product_intent_compiler" }],
+    ["invalid mode", { ...validPlan, mode: "read" }, { mode: "mutation", capabilityId: "canonical_product_intent_compiler" }],
+  ])("enriches %s from a valid selected capability without a repair", async (_case, rawPlan, expected) => {
+    const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify(rawPlan), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })) } as any;
+    const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
+
+    await expect(planner.plan(input())).resolves.toMatchObject({ ok: true, plan: expected, diagnostics: { attempts: 1, repairAttempted: false } });
+    expect(provider.generateJson).toHaveBeenCalledTimes(1);
+  });
+
+  test("enriches a missing capability for the unambiguous read-only capability inquiry", async () => {
+    const capabilityInquiry = { version: 1, operation: "explain", domain: "system", mode: "none", confidence: "high", target: { kind: "none", entityId: null }, contextUsage: { workspaceIsAuthoritative: false, workspaceRelevance: "supporting", activeSessionId: null }, requiresClarification: false, clarificationQuestion: null, reasonCode: "help_or_explanation_request" };
+    const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify(capabilityInquiry), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })) } as any;
+    const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
+
+    await expect(planner.plan({ ...input(), user: JSON.stringify({ request: "Are you able to add products to the system?" }) })).resolves.toMatchObject({ ok: true, plan: { operation: "explain", capabilityId: "assistant_capabilities", mode: "read" } });
+  });
+
+  test("normalizes ordinary general help to a valid no-dispatch plan", async () => {
+    const generalHelp = { version: 1, operation: "general_conversation", domain: "system", mode: "read", capabilityId: "general_conversation", confidence: "high", target: { kind: "none", entityId: null }, contextUsage: { workspaceIsAuthoritative: false, workspaceRelevance: "none", activeSessionId: null }, requiresClarification: false, clarificationQuestion: null, reasonCode: "general_conversation" };
+    const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify(generalHelp), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} })) } as any;
+    const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
+
+    await expect(planner.plan({ ...input(), user: JSON.stringify({ request: "can you help me?" }) })).resolves.toMatchObject({ ok: true, plan: { operation: "general_conversation", domain: "conversation", mode: "none", capabilityId: null } });
+  });
+
+  test("repairs an invalid capability ID using the catalog supplied to the bounded repair", async () => {
+    const provider = { generateJson: jest.fn()
+      .mockResolvedValueOnce({ rawText: JSON.stringify({ ...validPlan, capabilityId: "add_products", mode: "none" }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })
+      .mockResolvedValueOnce({ rawText: JSON.stringify(validPlan), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }),
+    } as any;
+    const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
+
+    await expect(planner.plan(input())).resolves.toMatchObject({ ok: true, plan: validPlan, diagnostics: { attempts: 2, repairAttempted: true } });
+    expect(provider.generateJson.mock.calls[1]?.[0]?.user).toContain("allowedCapabilityIds");
+    expect(provider.generateJson.mock.calls[1]?.[0]?.user).toContain("canonical_product_intent_compiler");
+  });
+
+  test.each([
     ["a JSON markdown fence", `\`\`\`json\n${JSON.stringify(validPlan)}\n\`\`\``],
     ["a prose-wrapped JSON object", `Here is the plan: ${JSON.stringify(validPlan)} Thanks.`],
   ])("accepts %s while preserving strict contract validation", async (_label, rawText) => {

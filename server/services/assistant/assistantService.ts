@@ -490,7 +490,7 @@ export class AssistantService {
           entityId: request.context.entityId ?? null,
           hasActiveCanonicalSession: Boolean(activeSessionId),
         },
-        contract: "version, operation, domain, mode, capabilityId, confidence, target, contextUsage, requiresClarification, clarificationQuestion, reasonCode",
+        contract: "version, operation, domain, mode, capabilityId, confidence, target, contextUsage, requiresClarification, clarificationQuestion, reasonCode. mode is exactly read|mutation|none. capabilityId is one of the planner-listed canonical IDs or null only for general_conversation, unrelated_conversation, clarify, and unsupported. For a capability question use operation explain, domain system, capabilityId assistant_capabilities, mode read, target kind none. For general help use operation general_conversation, domain conversation, capabilityId null, mode none.",
       }),
     });
     if (!plannerResult.ok) {
