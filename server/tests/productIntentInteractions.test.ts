@@ -25,12 +25,14 @@ describe("canonical Product Intent interactions", () => {
     expect(generateProductIntentRecommendations(intent(), fingerprint, [first.id]).map((item) => item.id)).not.toContain(first.id);
   });
 
-  test("issues tenant-bound material and duplicate actions without exposing client patches", () => {
+  test("issues tenant-bound material and duplicate actions without exposing a catalog-wide material list", () => {
     const unresolved = intent({ material: { state: "unresolved", label: "Unknown" }, identity: { name: "Vinyl", description: "", category: { state: "resolved", id: "cat", label: "Signs" } } });
     const actions = generateProductIntentCandidateActions(unresolved, fingerprint, [{ code: "MATERIAL_UNRESOLVED", path: "material", severity: "question", message: "Which material?" }, { code: "DUPLICATE_PRODUCT_NAME", path: "identity.name", severity: "blocker", message: "Duplicate" }], { categories: [], materials: [{ id: "mat-1", label: "Vinyl" }], productionRoutes: [], existingProducts: [{ id: "product-1", name: "Vinyl", isActive: true, cloneSupported: true }] });
-    expect(actions.map((item) => item.kind)).toEqual(expect.arrayContaining(["select_material", "confirm_no_material", "rename_new_product", "open_existing_product", "clone_existing_product_to_inactive_draft"]));
+    expect(actions.map((item) => item.kind)).toEqual(expect.arrayContaining(["select_material", "rename_new_product", "open_existing_product", "clone_existing_product_to_inactive_draft"]));
+    expect(actions.map((item) => item.kind)).not.toContain("confirm_no_material");
     expect(actions.every((item) => productIntentCandidateActionSchema.safeParse(item).success)).toBe(true);
     expect(actions.find((item) => item.kind === "select_material")?.patch?.operations[0]).toMatchObject({ op: "set_material", value: { id: "mat-1" } });
+    expect(actions.find((item) => item.kind === "select_material")?.patch?.operations).toEqual(expect.arrayContaining([{ op: "merge_field_metadata", value: { material: { source: "explicit_user" } } }]));
   });
 
   test("marks a category candidate as an explicit structured user selection", () => {

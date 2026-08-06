@@ -194,7 +194,10 @@ export class CanonicalProductIntentService {
     const fingerprint = (await import("@shared/productDraftIntent")).productDraftIntentFingerprint(intent);
     return presentProductDraftIntent(intent, issues, {
       candidateResolutions: generateProductIntentCandidateActions(intent, fingerprint, issues, this.candidates),
-      optionalRecommendations: generateProductIntentRecommendations(intent, fingerprint, dismissed),
+      optionalRecommendations: generateProductIntentRecommendations(intent, fingerprint, dismissed, {
+        materials: this.candidates.materials,
+        materialRequired: this.validation.requiresMaterial?.(intent) === true,
+      }),
     });
   }
 

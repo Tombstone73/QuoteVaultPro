@@ -53,7 +53,7 @@ describe("canonical Product Intent issue aggregation and presentation", () => {
 
   test("does not resolve a material or route from a low-confidence provider guess", () => {
     const resolved = resolveProductDraftIntentReferences(yardSignsIntent(), candidates);
-    expect(resolved.material).toEqual({ state: "explicitly_unset" });
+    expect(resolved.material).toMatchObject({ state: "unresolved", label: "PVC - 3mm (Foamed PVC Sheets)" });
     expect(resolved.production.route).toEqual({ state: "explicitly_unset" });
     expect(resolved.optionGroups[0]!.values.map((value) => value.key)).toEqual(["3mm", "6mm"]);
   });
