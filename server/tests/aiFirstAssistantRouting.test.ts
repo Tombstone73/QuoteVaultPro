@@ -39,6 +39,7 @@ describe("AI-first assistant free-text routing", () => {
     await service.createTurn(scope, "conversation_1", actor, { message, context });
 
     expect(planner.plan).toHaveBeenCalledWith(expect.objectContaining({ user: expect.stringContaining(message) }));
+    expect(planner.plan).toHaveBeenCalledWith(expect.objectContaining({ system: expect.stringContaining('"entityId":null') }));
     expect(canonical.respondPlannedCanonicalProductIntent).toHaveBeenCalledWith(expect.objectContaining({ message, operation: "create", conversationId: "conversation_1" }));
     expect(storage.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ mode: "ai_first_typed_intent_planner", message }));
   });

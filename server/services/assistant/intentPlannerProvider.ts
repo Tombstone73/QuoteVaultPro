@@ -79,8 +79,49 @@ function safeRequestMetadata(value: Record<string, unknown> | undefined): Record
   return result;
 }
 
+/**
+ * Providers occasionally wrap an otherwise valid JSON object in a markdown
+ * fence or a short sentence despite JSON-mode. Extract one balanced object,
+ * then keep the contract parser strict. This never accepts a second object,
+ * arbitrary prose as a plan, or an array.
+ */
+export function extractPlannerJsonObject(rawText: string): unknown {
+  const trimmed = rawText.trim();
+  const fenced = /^```(?:json)?\s*([\s\S]*?)\s*```$/i.exec(trimmed);
+  const source = fenced?.[1]?.trim() || trimmed;
+  try {
+    return JSON.parse(source);
+  } catch {
+    // Continue only when a single balanced object is embedded in prose.
+  }
+  const start = source.indexOf("{");
+  if (start < 0) throw new Error("Planner response must include a JSON object.");
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = start; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (inString) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === '"') inString = false;
+      continue;
+    }
+    if (character === '"') { inString = true; continue; }
+    if (character === "{") depth += 1;
+    if (character === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        if (source.slice(index + 1).includes("{")) throw new Error("Planner response contains more than one JSON object.");
+        return JSON.parse(source.slice(start, index + 1));
+      }
+    }
+  }
+  throw new Error("Planner response did not contain a complete JSON object.");
+}
+
 function strictJsonObject(rawText: string): unknown {
-  const parsed: unknown = JSON.parse(rawText.trim());
+  const parsed = extractPlannerJsonObject(rawText);
   if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
     throw new Error("Planner response must be a JSON object.");
   }
@@ -113,9 +154,10 @@ function repairPrompt(input: AssistantIntentPlannerProviderInput, invalidOutput:
   };
 }
 
-function logPlannerFailure(diagnostics: AssistantIntentPlannerDiagnostics, extra: Record<string, unknown> = {}) {
+function logPlannerFailure(organizationId: string, diagnostics: AssistantIntentPlannerDiagnostics, extra: Record<string, unknown> = {}) {
   // Do not include messages, prompts, raw model output, endpoints, or secrets.
   console.warn("[ASSISTANT_INTENT_PLANNER] Planning failed.", {
+    organizationId,
     correlationId: diagnostics.correlationId,
     provider: diagnostics.provider,
     model: diagnostics.model,
@@ -153,13 +195,13 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
       config = await resolver.resolveProvider({ orgId: input.organizationId, feature: "assistant" });
     } catch {
       const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: null, model: null, attempts: 0, stage: "provider_unavailable", repairAttempted: false, providerMetadata: {} };
-      logPlannerFailure(diagnostics);
+      logPlannerFailure(input.organizationId, diagnostics);
       return { ok: false, error: { code: "provider_unavailable", message: `AI planning is unavailable. Please retry. Reference: ${correlationId}.`, retryable: true, correlationId }, diagnostics };
     }
 
     if (!config.enabled || !config.provider || !config.endpoint || !config.apiKey || !config.model) {
       const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: config.provider, model: config.model, attempts: 0, stage: "provider_unavailable", repairAttempted: false, providerMetadata: {} };
-      logPlannerFailure(diagnostics);
+      logPlannerFailure(input.organizationId, diagnostics);
       return { ok: false, error: { code: "provider_unavailable", message: `AI planning is unavailable. Please retry. Reference: ${correlationId}.`, retryable: false, correlationId }, diagnostics };
     }
 
@@ -192,7 +234,7 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
           repairAttempted: attempt > 0,
           providerMetadata: {},
         };
-        logPlannerFailure(diagnostics, { providerFailureKind: safeFailureKind(error) });
+        logPlannerFailure(input.organizationId, diagnostics, { providerFailureKind: safeFailureKind(error) });
         return {
           ok: false,
           error: {
@@ -215,7 +257,7 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
         issues = ["result"];
         if (attempt < MAX_REPAIR_ATTEMPTS) continue;
         const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: response.provider, model: response.model, attempts: attempt + 1, stage, repairAttempted: attempt > 0, providerMetadata: metadata, validationIssuePaths: issues };
-        logPlannerFailure(diagnostics, { validationIssuePaths: issues });
+        logPlannerFailure(input.organizationId, diagnostics, { validationIssuePaths: issues });
         return { ok: false, error: { code: "invalid_json", message: `I couldn't safely interpret that request. Nothing was changed. Please retry. Reference: ${correlationId}.`, retryable: true, correlationId }, diagnostics };
       }
 
@@ -232,14 +274,14 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
       issues = validationIssuePaths(parsed.error);
       if (attempt < MAX_REPAIR_ATTEMPTS) continue;
       const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: response.provider, model: response.model, attempts: attempt + 1, stage, repairAttempted: attempt > 0, providerMetadata: metadata, validationIssuePaths: issues };
-      logPlannerFailure(diagnostics, { validationIssuePaths: issues });
+      logPlannerFailure(input.organizationId, diagnostics, { validationIssuePaths: issues });
       return { ok: false, error: { code: "invalid_contract", message: `I couldn't safely interpret that request. Nothing was changed. Please retry. Reference: ${correlationId}.`, retryable: true, correlationId }, diagnostics };
     }
 
     // The loop always returns; this protects future changes from exposing a
     // provider response without a validated contract.
     const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: response?.provider ?? config.provider, model: response?.model ?? config.model, attempts: MAX_REPAIR_ATTEMPTS + 1, stage, repairAttempted: true, providerMetadata: safeRequestMetadata(response?.requestMetadata), validationIssuePaths: issues };
-    logPlannerFailure(diagnostics);
+    logPlannerFailure(input.organizationId, diagnostics);
     return { ok: false, error: { code: "invalid_contract", message: `I couldn't safely interpret that request. Nothing was changed. Please retry. Reference: ${correlationId}.`, retryable: true, correlationId }, diagnostics };
   }
 }

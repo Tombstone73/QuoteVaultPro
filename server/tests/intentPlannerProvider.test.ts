@@ -81,6 +81,16 @@ describe("AI-first intent planner provider boundary", () => {
     expect(provider.generateJson.mock.calls[1]?.[0]?.user).toContain("unexpectedRoute");
   });
 
+  test.each([
+    ["a JSON markdown fence", `\`\`\`json\n${JSON.stringify(validPlan)}\n\`\`\``],
+    ["a prose-wrapped JSON object", `Here is the plan: ${JSON.stringify(validPlan)} Thanks.`],
+  ])("accepts %s while preserving strict contract validation", async (_label, rawText) => {
+    const provider = { generateJson: jest.fn(async () => ({ rawText, provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })) } as any;
+    const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
+
+    await expect(planner.plan(input())).resolves.toMatchObject({ ok: true, plan: validPlan, diagnostics: { attempts: 1 } });
+  });
+
   test("rejects malformed output after one repair without logging customer content or selecting a fallback", async () => {
     const customerMessage = "CUSTOMER_CONTENT_MUST_NOT_APPEAR_IN_LOGS";
     const provider = {
