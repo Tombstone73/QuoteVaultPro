@@ -34,6 +34,15 @@ export type CanonicalProductIntentOutcome =
   | { ok: true; session: CanonicalProductIntentSession; card: CanonicalProductIntentProposalDto; issues: ProductIntentIssue[] }
   | { ok: false; code: string; message: string };
 
+/** Read-only view of the latest persisted revision. It is intentionally
+ * separate from continuation so inquiries cannot append revisions or invoke
+ * the compiler's patch-only contract. */
+export type CanonicalProductIntentInspection = {
+  session: CanonicalProductIntentSession;
+  card: CanonicalProductIntentProposalDto;
+  issues: ProductIntentIssue[];
+};
+
 function answerContract(intent: ProductDraftIntent, issue: ProductIntentIssue): UnresolvedQuestionAnswer | undefined {
   if (issue.id == null || issue.path !== "pricing.matrix.unit" || issue.code !== "PRICING_UNIT_UNRESOLVED" || intent.pricing.model !== "two_dimensional_matrix" || intent.pricing.unit !== "unresolved") return undefined;
   return {
@@ -161,7 +170,7 @@ function replacementPatch(intent: ProductDraftIntent, baseRevision: number) {
  * accepts structured compiler results and never delegates to legacy parsing. */
 export class CanonicalProductIntentService {
   constructor(
-    private readonly compiler: ProductIntentCompiler,
+    private readonly compiler: ProductIntentCompiler | null,
     private readonly persistence: ProductIntentPersistenceService,
     private readonly candidates: CanonicalProductIntentCandidates,
     private readonly validation: Omit<ProductIntentResolutionContext, "categoryLabels" | "materialLabels" | "productionRouteLabels"> = {},
@@ -189,7 +198,18 @@ export class CanonicalProductIntentService {
     });
   }
 
+  async inspect(input: { organizationId: string; actorUserId: string; proposalId: string }): Promise<CanonicalProductIntentInspection> {
+    const session = await this.persistence.load(input);
+    const intent = session.specification.session.revisions.at(-1)!.intent;
+    const dismissed = Array.isArray(session.specification.resolutionMetadata.dismissedRecommendationIds)
+      ? session.specification.resolutionMetadata.dismissedRecommendationIds.filter((value): value is string => typeof value === "string")
+      : [];
+    const validation = await this.validate(intent);
+    return { session, issues: validation.issues, card: await this.presentation(validation.intent, validation.issues, dismissed) };
+  }
+
   async create(input: { organizationId: string; actorUserId: string; conversationId: string; compilerInput: ProductIntentCompilerInput }): Promise<CanonicalProductIntentOutcome> {
+    if (!this.compiler) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interpretation is unavailable until a compatible AI provider is configured." };
     const compiled = await this.compiler.compile(input.compilerInput);
     if (!compiled.ok) return { ok: false, code: compiled.error.code, message: compiled.error.message };
     if (compiled.result.kind !== "complete_intent") return { ok: false, code: "PRODUCT_INTENT_INITIAL_RESULT_INVALID", message: "The product request needs a complete structured intent before it can be saved." };
@@ -230,6 +250,7 @@ export class CanonicalProductIntentService {
     if (deterministic) {
       sourcePatch = deterministic.patch;
     } else {
+      if (!this.compiler) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interpretation is unavailable until a compatible AI provider is configured." };
       const compiled = await this.compiler.compile({ ...input.compilerInput, request: input.request, currentIntent: draft, currentRevision: current.specification.session.currentRevision, activeRequiredIssues: activeAnswers });
       if (!compiled.ok) return { ok: false, code: compiled.error.code, message: compiled.error.message };
       if (compiled.result.kind !== "intent_patch") return continuationFailure({ stage: "provider_result_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: true, providerResultType: compiled.result.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNMATCHED", message: activeAnswers.length === 1 ? `I could not apply that answer to the current product question. Please choose ${activeAnswers[0]!.allowedChoices.map((choice) => choice.displayLabel).join(" or ")}.` : "I could not apply that answer to the current product question. Please answer the outstanding product question." });

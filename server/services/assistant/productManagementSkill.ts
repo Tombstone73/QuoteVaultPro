@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
+import { randomUUID } from "node:crypto";
 import { materials, pbv2OptionGroupTemplates, pbv2TreeVersions, products, productTypes, stations } from "@shared/schema";
-import { CanonicalProductIntentService, type CanonicalProductIntentOutcome } from "../productIntentCompiler/canonicalProductIntentService";
+import { CanonicalProductIntentService, type CanonicalProductIntentInspection, type CanonicalProductIntentOutcome } from "../productIntentCompiler/canonicalProductIntentService";
 import { createConfiguredProductIntentCompiler, type ProductIntentCompilerInput } from "../productIntentCompiler/productIntentCompiler";
 import { DrizzleCanonicalProductIntentProposalStore, ProductIntentPersistenceError, ProductIntentPersistenceService, type CanonicalProductIntentSession } from "../productIntentCompiler/productIntentPersistence";
 import {
@@ -92,6 +93,7 @@ export interface CanonicalProductIntentRouter {
   loadForConversation(input: { organizationId: string; actorUserId: string; conversationId: string }): Promise<CanonicalProductIntentSession | null>;
   create(input: { organizationId: string; actorUserId: string; conversationId: string; request: string }): Promise<CanonicalProductIntentOutcome>;
   continue(input: { organizationId: string; actorUserId: string; proposalId: string; request: string }): Promise<CanonicalProductIntentOutcome>;
+  inspect?(input: { organizationId: string; actorUserId: string; proposalId: string }): Promise<CanonicalProductIntentInspection>;
   interact?(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; cloneProductId?: string } }>;
 }
 
@@ -110,9 +112,7 @@ function compilerInput(orgId: string, request: string, candidates: { categories:
  * initialize a provider or a database connection. */
 export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductIntentRouter {
   private readonly persistence = new ProductIntentPersistenceService(new DrizzleCanonicalProductIntentProposalStore());
-  private async service(organizationId: string): Promise<{ service: CanonicalProductIntentService; candidates: { categories: Array<{ id: string; label: string }>; materials: Array<{ id: string; label: string }>; productionRoutes: Array<{ id: string; label: string }>; existingProducts: Array<{ id: string; name: string; isActive: boolean; cloneSupported: boolean }> } } | null> {
-    const compiler = await createConfiguredProductIntentCompiler();
-    if (!compiler) return null;
+  private async candidates(organizationId: string): Promise<{ categories: Array<{ id: string; label: string }>; materials: Array<{ id: string; label: string }>; productionRoutes: Array<{ id: string; label: string }>; existingProducts: Array<{ id: string; name: string; isActive: boolean; cloneSupported: boolean }> }> {
     const [categoryRows, materialRows, routeRows, existingProducts] = await Promise.all([
       db.select({ id: productTypes.id, label: productTypes.name }).from(productTypes).where(eq(productTypes.organizationId, organizationId)),
       db.select({ id: materials.id, label: materials.name }).from(materials).where(eq(materials.organizationId, organizationId)),
@@ -122,12 +122,24 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
     // Canonical duplicate resolution only advertises cloning after a dedicated
     // clone proposal has been prepared. This listing has not done that work,
     // so it must not imply that a source can be cloned yet.
-    const candidates = { categories: categoryRows, materials: materialRows, productionRoutes: routeRows, existingProducts: existingProducts.map((product) => ({ ...product, cloneSupported: false })) };
+    return { categories: categoryRows, materials: materialRows, productionRoutes: routeRows, existingProducts: existingProducts.map((product) => ({ ...product, cloneSupported: false })) };
+  }
+  private async service(organizationId: string): Promise<{ service: CanonicalProductIntentService; candidates: { categories: Array<{ id: string; label: string }>; materials: Array<{ id: string; label: string }>; productionRoutes: Array<{ id: string; label: string }>; existingProducts: Array<{ id: string; name: string; isActive: boolean; cloneSupported: boolean }> } } | null> {
+    const compiler = await createConfiguredProductIntentCompiler();
+    if (!compiler) return null;
+    const candidates = await this.candidates(organizationId);
     return { candidates, service: new CanonicalProductIntentService(compiler, this.persistence, candidates, {
       duplicateName: async (name) => candidates.existingProducts.some((product) => normalizeProductReference(product.name) === normalizeProductReference(name)),
     }) };
   }
   loadForConversation(input: { organizationId: string; actorUserId: string; conversationId: string }) { return this.persistence.loadForConversation(input); }
+  async inspect(input: { organizationId: string; actorUserId: string; proposalId: string }) {
+    // Inspection deliberately avoids provider configuration and compiler use.
+    const candidates = await this.candidates(input.organizationId);
+    return new CanonicalProductIntentService(null, this.persistence, candidates, {
+      duplicateName: async (name) => candidates.existingProducts.some((product) => normalizeProductReference(product.name) === normalizeProductReference(name)),
+    }).inspect(input);
+  }
   async create(input: { organizationId: string; actorUserId: string; conversationId: string; request: string }): Promise<CanonicalProductIntentOutcome> {
     const configured = await this.service(input.organizationId);
     if (!configured) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interpretation is unavailable until a compatible AI provider is configured." };
@@ -176,6 +188,65 @@ function isProductIntent(message: string): boolean {
 export function isExplicitProductCreation(message: string): boolean {
   return /\b(?:create|add|build|make|start)\b[\s\S]{0,100}\b(?:new|brand-new)?\s*(?:inactive\s+)?(?:service\s+)?(?:product|banner|sign|print)\b/i.test(message)
     || /\b(?:new|brand-new)\s+(?:inactive\s+)?(?:service\s+)?product\b/i.test(message);
+}
+
+export type CanonicalSessionMessageClassification =
+  | "answer_required_issue"
+  | "apply_correction"
+  | "accept_recommendation"
+  | "dismiss_recommendation"
+  | "resolve_candidate"
+  | "request_review"
+  | "confirm_execution"
+  | "ask_session_status"
+  | "ask_about_current_product"
+  | "start_new_product"
+  | "unrelated_conversation";
+
+function normalizeCanonicalSessionMessage(message: string): string {
+  return message.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").replace(/\s+/g, " ").trim();
+}
+
+/** This classifies only the conversational operation. It never extracts or
+ * changes product fields; detailed changes remain inside canonical patches. */
+export function classifyCanonicalSessionMessage(message: string): CanonicalSessionMessageClassification {
+  const normalized = normalizeCanonicalSessionMessage(message);
+  if (isExplicitProductCreation(message)) return "start_new_product";
+  if (/^(?:(?:are there )?any other questions|is anything missing|is this ready|what do you still need|what is still missing|can i (?:use|click) go|can i create it now|what happens if i click go)$/.test(normalized)) return "ask_session_status";
+  if (/^(?:what pricing did i choose|what is the pricing|is proof required|did flatbed work|did the category selection work|what category is selected|what options did i choose)$/.test(normalized)) return "ask_about_current_product";
+  if (/^(?:review|review this|prepare review)$/.test(normalized)) return "request_review";
+  if (/^(?:go|confirm|create it now)$/.test(normalized)) return "confirm_execution";
+  if (/^(?:accept|apply) (?:the )?(?:recommendation|suggestion)$/.test(normalized)) return "accept_recommendation";
+  if(/^(?:dismiss|ignore) (?:the )?(?:recommendation|suggestion)$/.test(normalized)) return "dismiss_recommendation";
+  if (/^(?:select|choose|use) (?:the )?(?:category|candidate)/.test(normalized)) return "resolve_candidate";
+  if (isExplicitProductIntakeCorrection(message) || /^(?:change|set|clear|add|remove|delete|replace|rename|require)\b/.test(normalized)) return "apply_correction";
+  if (/^(?:what|which|who|where|when|why|how|can|could|would|do|does|did|is|are)\b/.test(normalized)) return "unrelated_conversation";
+  return "answer_required_issue";
+}
+
+function inquiryResponse(input: { classification: CanonicalSessionMessageClassification; inspection: CanonicalProductIntentInspection }): string {
+  const { card, session } = input.inspection;
+  const fields = card.fields;
+  const blocking = [...card.readiness.blockers, ...card.readiness.questions];
+  const optionalProof = card.optionalRecommendations.find((recommendation) => recommendation.kind === "enable_proof_approval");
+  const readiness = session.specification.session.state === "awaiting_confirmation"
+    ? "A confirmation plan is already awaiting confirmation."
+    : card.readiness.ready
+      ? "It is ready for review and confirmation."
+      : "It still needs the required decisions listed on the current card.";
+  switch (input.classification) {
+    case "ask_session_status":
+      return blocking.length
+        ? `The current product still needs: ${blocking.join(" ")} ${readiness}`
+        : session.specification.session.state === "awaiting_confirmation"
+          ? `No required questions remain. ${fields.Product ?? "This product"} has a confirmation plan awaiting confirmation.${optionalProof ? " Proof approval remains an optional suggestion." : ""}`
+        : `No required questions remain. ${fields.Product ?? "This product"} is ready for review and confirmation.${optionalProof ? " Proof approval is available as an optional suggestion, but it does not block creation." : ""}`;
+    case "ask_about_current_product": {
+      return `Current configuration: Category is ${fields.Category ?? "Not selected"}; pricing is ${fields.Pricing ?? "Not set"}; options are ${Array.isArray(fields.Options) ? fields.Options.join("; ") : fields.Options ?? "Not set"}; proof is ${fields.Proof ?? "Not set"}; production route is ${fields["Production route"] ?? "Not set"}. ${readiness}${optionalProof ? " Proof approval remains optional." : ""}`;
+    }
+    default:
+      return readiness;
+  }
 }
 
 function isMatrixCreationRequest(message: string): boolean {
@@ -704,7 +775,27 @@ export class ProductManagementSkillService {
       if (explicitCreation) return { handled: true, response: "This conversation already has a canonical product intent. Finish, abandon, or start the new product in a separate conversation; the two requests were not merged.", cards: canonicalCards({ ok: true, session: current, issues: [], card: { kind: "canonical_product_intent_proposal", revision: current.specification.session.currentRevision, fingerprint: current.fingerprint, title: "Current canonical product intent", readiness: { ready: false, blockers: [], questions: [] }, requiredQuestions: [], candidateResolutions: [], optionalRecommendations: [], fields: {} } }) };
       const state = current.specification.session.state;
       if (["executed", "expired", "abandoned"].includes(state)) return { handled: true, response: `This canonical product-intent session is ${state} and cannot be changed.`, cards: [] };
+      const classification = classifyCanonicalSessionMessage(input.message);
+      const readOnly = classification === "ask_session_status" || classification === "ask_about_current_product" || classification === "request_review" || classification === "unrelated_conversation";
+      if (readOnly) {
+        const correlationId = `piq-${randomUUID()}`;
+        if (!router.inspect) {
+          console.warn("[PRODUCT_INTENT_INQUIRY] Read-only inspection is unavailable.", { correlationId, sessionId: current.proposalId, currentRevision: current.specification.session.currentRevision, classification, mode: "read_only", providerCalled: false, patchRequired: false, revisionCreated: false, confirmationState: state, errorStage: "inspection_unavailable" });
+          return { handled: true, response: "I can keep the current product unchanged, but cannot safely read its latest status in this deployment. Please refresh the current review card.", cards: [] };
+        }
+        try {
+          const inspection = await router.inspect({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: current.proposalId });
+          console.info("[PRODUCT_INTENT_INQUIRY] Routed canonical session message.", { correlationId, sessionId: inspection.session.proposalId, currentRevision: inspection.session.specification.session.currentRevision, classification, mode: "read_only", deterministicHandler: classification, providerCalled: false, patchRequired: false, revisionCreated: false, confirmationState: inspection.session.specification.session.state, errorStage: null });
+          if (classification === "unrelated_conversation") return { handled: true, response: "Are you asking about the current product configuration, or do you want to change it? The current product was not changed.", cards: canonicalCards({ ok: true, session: inspection.session, issues: inspection.issues, card: inspection.card }) };
+          return { handled: true, response: inquiryResponse({ classification, inspection }), cards: canonicalCards({ ok: true, session: inspection.session, issues: inspection.issues, card: inspection.card }) };
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "The canonical product-intent session could not be inspected safely.";
+          console.warn("[PRODUCT_INTENT_INQUIRY] Read-only inspection failed.", { correlationId, sessionId: current.proposalId, currentRevision: current.specification.session.currentRevision, classification, mode: "read_only", providerCalled: false, patchRequired: false, revisionCreated: false, confirmationState: state, errorStage: "inspection" });
+          return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent unavailable", summary: "No product intent was changed.", sourceLinks: [], details: { errors: [message], correlationId } }] };
+        }
+      }
       try {
+        console.info("[PRODUCT_INTENT_INQUIRY] Routed canonical session message.", { correlationId: `piq-${randomUUID()}`, sessionId: current.proposalId, currentRevision: current.specification.session.currentRevision, classification, mode: "mutating", deterministicHandler: null, providerCalled: "continuation", patchRequired: true, revisionCreated: "pending", confirmationState: state, errorStage: null });
         const outcome = await router.continue({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: current.proposalId, request: input.message });
         return outcome.ok
           ? { handled: true, response: outcome.card.readiness.ready ? "I saved the canonical revision. It is ready for review." : "I saved the canonical revision and kept only its remaining questions.", cards: canonicalCards(outcome) }
