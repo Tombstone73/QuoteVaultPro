@@ -515,7 +515,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Company Settings routes extracted to ./routes/companySettings.routes.ts (do NOT re-add here)
   registerCompanySettingsRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
   registerAiFoundationRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
-  registerAssistantRoutes(app, { isAuthenticated, tenantContext });
+  registerAssistantRoutes(app, { isAuthenticated, tenantContext, isAdmin });
   registerAssistantExecutionRoutes(app, { isAuthenticated, tenantContext });
   registerCustomerRelationsRoutes(app, { isAuthenticated, tenantContext, isAdmin });
 

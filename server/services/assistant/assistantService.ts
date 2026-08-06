@@ -23,6 +23,7 @@ import { productionOperationsService } from "./productionOperationsService";
 import { fulfillmentOperationsService } from "./fulfillmentOperationsService";
 import { billingInvoiceOperationsService } from "./billingInvoiceOperationsService";
 import { paymentOperationsService } from "./paymentOperationsService";
+import { persistAiDiagnostic } from "../aiDiagnosticsService";
 import {
   assistantCapabilityCommandDescriptions,
   assistantCapabilityCommandPermissions,
@@ -549,12 +550,13 @@ export class AssistantService {
       response = product.response;
       cards = product.cards as AssistantStructuredCard[];
     } else {
-      const specialist = await this.dispatchAiFirstSpecialist(plannedCapability, {
-        organizationId: scope.organizationId,
-        userId: actor.userId,
-        conversationId: conversation.id,
-        message: request.message,
-      });
+      let specialist: { handled: boolean; response: string; cards: unknown[] } | null = null;
+      try {
+        specialist = await this.dispatchAiFirstSpecialist(plannedCapability, { organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, message: request.message });
+      } catch {
+        await persistAiDiagnostic({ version: 1, referenceId: correlationId, correlationId, diagnosticType: "specialist_dispatch", tenantId: scope.organizationId, actorId: actor.userId, conversationId: conversation.id, provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model, providerRequestId: null, stage: "specialist_exception", errorCode: "specialist_dispatch_failed", providerResponseState: "accepted", parseMethod: "none", repairAttempted: false, repairResult: "not_attempted", validationSchema: null, validationIssuePaths: [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [], plannerOperation: plan.operation, selectedCapability: plannedCapability, specialistName: plannedCapability, optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString() }).catch(() => undefined);
+        specialist = { handled: true, response: "That planned workflow could not be completed. Nothing was changed.", cards: [{ kind: "tool_warning", title: "Workflow unavailable", summary: "That planned workflow could not be completed. Nothing was changed.", sourceLinks: [], toolStatus: "failed" }] };
+      }
       if (specialist) {
         response = specialist.response;
         cards = specialist.cards as AssistantStructuredCard[];

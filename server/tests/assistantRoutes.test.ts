@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globa
 import express from "express";
 import request from "supertest";
 
+
 jest.unstable_mockModule("../tenantContext", () => ({
   getRequestOrganizationId: (req: any) => req.organizationId,
 }));
@@ -80,7 +81,7 @@ function buildService() {
   };
 }
 
-function buildApp(service: any, options: { authenticated?: boolean; withTenant?: boolean; orgId?: string; reportResolutionService?: any } = {}) {
+function buildApp(service: any, options: { authenticated?: boolean; withTenant?: boolean; admin?: boolean; orgId?: string; reportResolutionService?: any } = {}) {
   const app = express();
   app.use(express.json());
   const authenticated = jest.fn((req: any, res: any, next: any) => {
@@ -93,11 +94,15 @@ function buildApp(service: any, options: { authenticated?: boolean; withTenant?:
     req.organizationId = options.orgId ?? "org_1";
     next();
   });
-  registerAssistantRoutes(app, { isAuthenticated: authenticated, tenantContext }, {
+  const isAdmin = jest.fn((req: any, res: any, next: any) => {
+    if (options.admin === false) return res.status(403).json({ error: { code: "forbidden", message: "Forbidden" } });
+    next();
+  });
+  registerAssistantRoutes(app, { isAuthenticated: authenticated, tenantContext, isAdmin }, {
     service,
     reportResolutionService: options.reportResolutionService,
   });
-  return { app, authenticated, tenantContext };
+  return { app, authenticated, tenantContext, isAdmin };
 }
 
 function turnBody(extra: Record<string, unknown> = {}) {
@@ -120,6 +125,14 @@ function turnBody(extra: Record<string, unknown> = {}) {
 
 describe("assistant routes", () => {
   beforeEach(() => jest.clearAllMocks());
+
+  test("rejects diagnostic lookup before database access for unauthenticated, non-admin, and malformed requests", async () => {
+    const service = buildService();
+    const admin = buildApp(service, { admin: true });
+    await request(buildApp(service, { authenticated: false, admin: true }).app).get("/api/assistant/diagnostics/pic-diagnostic-1").expect(401);
+    await request(buildApp(service, { admin: false }).app).get("/api/assistant/diagnostics/pic-diagnostic-1").expect(403);
+    await request(admin.app).get("/api/assistant/diagnostics/bad").expect(404);
+  });
 
   test("requires authentication and tenant context before exposing capabilities", async () => {
     const service = buildService();
