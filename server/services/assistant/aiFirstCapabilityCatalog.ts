@@ -34,6 +34,7 @@ export type AssistantCapabilityCatalogItem = z.infer<typeof assistantCapabilityC
  * selected entry against its registered read tool or confirmation-bound command.
  */
 export const assistantCapabilityCatalog = [
+  { id: "assistant_capabilities", domain: "system", mode: "read", operations: ["explain"], requiredPermissions: [], requiredContext: "none", inputContract: "original_message", confirmationRequired: false, specialistCompiler: false, legacyCompatibility: false, readToolNames: [], commandNames: [] },
   { id: "system_guide", domain: "system", mode: "read", operations: ["explain"], requiredPermissions: ["internal_staff"], requiredContext: "none", inputContract: "original_message", confirmationRequired: false, specialistCompiler: false, legacyCompatibility: false, readToolNames: [], commandNames: [] },
   { id: "search_customers", domain: "customers", mode: "read", operations: ["lookup"], requiredPermissions: ["internal_staff"], requiredContext: "none", inputContract: "original_message", confirmationRequired: false, specialistCompiler: false, legacyCompatibility: false, readToolNames: ["search.global", "customers.get_summary"], commandNames: [] },
   { id: "search_products", domain: "products", mode: "read", operations: ["lookup", "explain"], requiredPermissions: ["catalog_read"], requiredContext: "none", inputContract: "original_message", confirmationRequired: false, specialistCompiler: false, legacyCompatibility: false, readToolNames: ["search.global", "products.get_summary"], commandNames: [] },

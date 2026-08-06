@@ -48,6 +48,7 @@ export type AssistantIntentMode = (typeof assistantIntentModeValues)[number];
 
 /** These values are capability identifiers, not model-callable tool names. */
 export const assistantIntentCapabilityIdValues = [
+  "assistant_capabilities",
   "system_guide",
   "search_customers",
   "search_products",

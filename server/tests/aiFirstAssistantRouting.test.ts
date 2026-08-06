@@ -27,6 +27,12 @@ const translucentVinylPlan = {
   requiresClarification: false, clarificationQuestion: null, reasonCode: "explicit_new_entity_request",
 } as const;
 
+const capabilityInquiryPlan = {
+  version: 1, operation: "explain", domain: "system", mode: "read", capabilityId: "assistant_capabilities", confidence: "high",
+  target: { kind: "none", entityId: null }, contextUsage: { workspaceIsAuthoritative: false, workspaceRelevance: "supporting", activeSessionId: null },
+  requiresClarification: false, clarificationQuestion: null, reasonCode: "help_or_explanation_request",
+} as const;
+
 describe("AI-first assistant free-text routing", () => {
   test("routes a detailed Translucent Vinyl request from Product Details to canonical compiler with the unchanged full message", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
@@ -55,5 +61,18 @@ describe("AI-first assistant free-text routing", () => {
 
     expect(canonical.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
     expect(storage.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", errorCode: "provider_failure", mode: "ai_first_typed_intent_planner" }));
+  });
+
+  test("answers a product capability inquiry without invoking the canonical compiler after a prior failed request", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const storage = repo();
+    const planner = { plan: jest.fn(async () => ({ ok: true as const, plan: capabilityInquiryPlan, diagnostics: { provider: "openai_compatible", model: "deepseek-test" } })) };
+    const canonical = { respondPlannedCanonicalProductIntent: jest.fn() };
+    const service = new AssistantService(storage, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, planner, canonical);
+
+    await service.createTurn(scope, "conversation_1", actor, { message: "Are you able to create new products?", context });
+
+    expect(canonical.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
+    expect(storage.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "responded", errorCode: null, response: expect.stringContaining("inactive Product Builder drafts") }));
   });
 });
