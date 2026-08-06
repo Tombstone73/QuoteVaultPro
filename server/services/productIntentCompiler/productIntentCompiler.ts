@@ -380,11 +380,13 @@ function providerFailureStage(error: unknown): ProductIntentCompilerFailureStage
   return "provider_request_failure";
 }
 
-function logCompilerFailure(diagnostics: ProductIntentCompilerDiagnostics | undefined, stage: ProductIntentCompilerFailureStage, extra: Record<string, unknown> = {}) {
+function logCompilerFailure(input: Pick<ProductIntentCompilerInput, "orgId">, correlationId: string, diagnostics: ProductIntentCompilerDiagnostics | undefined, stage: ProductIntentCompilerFailureStage, extra: Record<string, unknown> = {}) {
   console.warn("[PRODUCT_INTENT_COMPILER] Compilation failed.", {
-    correlationId: diagnostics?.correlationId ?? null,
+    organizationId: input.orgId,
+    correlationId: diagnostics?.correlationId ?? correlationId,
     provider: diagnostics?.provider ?? null,
     model: diagnostics?.model ?? null,
+    providerRequestId: diagnostics?.requestMetadata.providerRequestId ?? null,
     stage,
     repairAttempted: (diagnostics?.attempts ?? 0) > 1,
     ...extra,
@@ -425,7 +427,7 @@ export class ProductIntentCompiler {
       } catch (error) {
         const unavailable = isProviderUnavailable(error);
         const stage = unavailable ? "provider_request_failure" : providerFailureStage(error);
-        logCompilerFailure(lastDiagnostics, stage, {
+        logCompilerFailure(input, correlationId, lastDiagnostics, stage, {
           failureKind: error && typeof error === "object" ? (error as { kind?: unknown }).kind ?? null : null,
           status: error && typeof error === "object" ? (error as { status?: unknown }).status ?? null : null,
           providerRequestId: error && typeof error === "object" ? (error as { providerRequestId?: unknown }).providerRequestId ?? null : null,
@@ -461,7 +463,7 @@ export class ProductIntentCompiler {
         failureStage = "json_extraction_failure";
         validationIssuePaths = ["result"];
         lastDiagnostics = { ...lastDiagnostics, stage: failureStage, parseFailureType: "json_extraction", schemaIssuePaths: validationIssuePaths };
-        logCompilerFailure(lastDiagnostics, failureStage, { parseFailureType: "json_extraction" });
+        logCompilerFailure(input, correlationId, lastDiagnostics, failureStage, { parseFailureType: "json_extraction", parseResult: "failed" });
         continue;
       }
 
@@ -471,7 +473,7 @@ export class ProductIntentCompiler {
         failureStage = attempt === 0 ? "runtime_schema_rejection" : "repair_response_schema_rejection";
         validationIssuePaths = ["intent.serverOwnedFields"];
         lastDiagnostics = { ...lastDiagnostics, stage: failureStage, schemaIssuePaths: validationIssuePaths };
-        logCompilerFailure(lastDiagnostics, failureStage, { schemaIssuePaths: validationIssuePaths });
+        logCompilerFailure(input, correlationId, lastDiagnostics, failureStage, { parseResult: "success", schemaIssuePaths: validationIssuePaths });
         continue;
       }
 
@@ -483,9 +485,10 @@ export class ProductIntentCompiler {
       failureStage = attempt === 0 ? "runtime_schema_rejection" : "repair_response_schema_rejection";
       validationIssuePaths = schemaIssuePaths(result);
       lastDiagnostics = { ...lastDiagnostics, stage: failureStage, schemaIssuePaths: validationIssuePaths };
-      logCompilerFailure(lastDiagnostics, failureStage, {
+      logCompilerFailure(input, correlationId, lastDiagnostics, failureStage, {
         issueCount: result.error.issues.length,
         firstIssue: invalidResultMessage(result),
+        parseResult: "success",
         schemaIssuePaths: validationIssuePaths,
       });
     }
