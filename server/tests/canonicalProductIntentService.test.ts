@@ -227,4 +227,30 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(persisted.specification.session.currentRevision).toBe(0);
     expect(persisted.specification.session.revisions).toHaveLength(1);
   });
+
+  test("inspects the latest ready revision without a compiler, patch validation, persistence write, or fingerprint change", async () => {
+    const provider = jest.fn(async () => ({ rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }));
+    const persistence = new ProductIntentPersistenceService(new MemoryStore());
+    const candidates = { categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [], productionRoutes: [] };
+    const writer = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), persistence, candidates);
+    const created = await writer.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-read-only", compilerInput: compilerInput() });
+    if (!created.ok) throw new Error("Expected canonical session creation.");
+    const category = created.card.candidateResolutions.find((action) => action.kind === "select_category");
+    if (!category) throw new Error("Expected category candidate.");
+    const selected = await writer.applyCandidateAction({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, actionId: category.id });
+    if (!selected.outcome?.ok) throw new Error("Expected category selection.");
+    const ready = await writer.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Per piece", compilerInput: compilerInput() });
+    if (!ready.ok) throw new Error("Expected deterministic pricing answer.");
+    const before = await persistence.load({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId });
+
+    const reader = new CanonicalProductIntentService(null, persistence, candidates);
+    const inspected = await reader.inspect({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId });
+    const after = await persistence.load({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId });
+
+    expect(inspected).toMatchObject({ session: { fingerprint: before.fingerprint, specification: { session: { currentRevision: 2 } } }, card: { readiness: { ready: true }, optionalRecommendations: [expect.objectContaining({ kind: "enable_proof_approval" })] } });
+    expect(inspected.card.fields).toMatchObject({ Category: "Flatbed Printing", Proof: "Not required", "Production route": "Not set" });
+    expect(after.fingerprint).toBe(before.fingerprint);
+    expect(after.specification.session.revisions).toHaveLength(before.specification.session.revisions.length);
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
 });
