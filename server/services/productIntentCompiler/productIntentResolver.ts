@@ -76,12 +76,14 @@ export function resolveProductDraftIntentReferences(rawIntent: unknown, candidat
 
 function validateTiers(intent: ProductDraftIntent, issues: ProductIntentIssue[]) {
   if (intent.pricing.model !== "quantity_tiers") return;
-  const tiers = [...intent.pricing.tiers].sort((a, b) => a.minimumQuantity - b.minimumQuantity);
+  const tiers = intent.pricing.tiers;
   let expected = 1;
   tiers.forEach((tier, index) => {
-    if (tier.minimumQuantity !== expected) issues.push({ code: "QUANTITY_TIER_GAP", path: `pricing.tiers.${index}`, severity: "blocker", message: `Quantity tiers must start at ${expected} without a gap.` });
+    if (tier.minimumQuantity < expected) issues.push({ code: "QUANTITY_TIER_OVERLAP", path: `pricing.tiers.${index}`, severity: "blocker", message: "Quantity tiers overlap or are out of order." });
+    else if (tier.minimumQuantity !== expected) issues.push({ code: "QUANTITY_TIER_GAP", path: `pricing.tiers.${index}`, severity: "blocker", message: `Quantity tiers must start at ${expected} without a gap.` });
     if (tier.maximumQuantity != null && tier.maximumQuantity < tier.minimumQuantity) issues.push({ code: "QUANTITY_TIER_RANGE", path: `pricing.tiers.${index}`, severity: "blocker", message: "A tier maximum cannot be below its minimum." });
     if (index < tiers.length - 1 && tier.maximumQuantity == null) issues.push({ code: "QUANTITY_TIER_OPEN_ENDED", path: `pricing.tiers.${index}`, severity: "blocker", message: "Only the final quantity tier may be open ended." });
+    if (index === tiers.length - 1 && tier.maximumQuantity != null) issues.push({ code: "QUANTITY_TIER_FINAL_OPEN_ENDED", path: `pricing.tiers.${index}`, severity: "blocker", message: "The final quantity tier must be open ended." });
     expected = tier.maximumQuantity == null ? Number.MAX_SAFE_INTEGER : tier.maximumQuantity + 1;
   });
 }
