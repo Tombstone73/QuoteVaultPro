@@ -26,6 +26,10 @@ import { AnalyticalCustomerResolutionService } from "../services/assistant/analy
 import { AssistantAnalyticsReportingRepository } from "../storage/assistantAnalyticsReporting.repo";
 import { assistantReportEntityResolutionsRepository } from "../storage/assistantReportEntityResolutions.repo";
 import { ConfiguredCanonicalProductIntentRouter } from "../services/assistant/productManagementSkill";
+import { and, desc, eq, or } from "drizzle-orm";
+import { db } from "../db";
+import { aiAuditEvents } from "@shared/schema";
+import { aiDiagnosticEnvelopeSchema } from "@shared/aiDiagnostics";
 
 const canonicalInteractionRequestSchema = z.object({
   proposalId: z.string().uuid(), action: z.enum(["accept_recommendation", "dismiss_recommendation", "apply_candidate"]), actionId: z.string().min(3).max(128), newProductName: z.string().trim().min(1).max(160).optional(),
@@ -247,7 +251,7 @@ function sendReportResolutionError(res: Response, error: unknown) {
 
 export function registerAssistantRoutes(
   app: Express,
-  middleware: { isAuthenticated: RequestHandler; tenantContext: RequestHandler },
+  middleware: { isAuthenticated: RequestHandler; tenantContext: RequestHandler; isAdmin?: RequestHandler },
   dependencies: AssistantRouteDependencies = {},
 ): void {
   const service = dependencies.service ?? new AssistantService(
@@ -270,6 +274,17 @@ export function registerAssistantRoutes(
     ?? (service as unknown as Partial<AssistantOrderOptionSelectionService>);
   const { isAuthenticated, tenantContext } = middleware;
   const guarded: RequestHandler[] = [isAuthenticated, tenantContext];
+
+  if (middleware.isAdmin) app.get("/api/assistant/diagnostics/:reference", isAuthenticated, tenantContext, middleware.isAdmin, async (req, res) => {
+    const scope = resolveScope(req);
+    const reference = String(req.params.reference ?? "");
+    if (!/^(aip|pic)-[A-Za-z0-9-]{8,}$/.test(reference)) return res.status(404).json({ success: false, error: { code: "DIAGNOSTIC_NOT_FOUND", message: "Diagnostic not found." } });
+    const rows = await db.select().from(aiAuditEvents).where(and(eq(aiAuditEvents.orgId, scope.organizationId), or(eq(aiAuditEvents.correlationId, reference), eq(aiAuditEvents.metadata["referenceId"] as any, reference)))).orderBy(desc(aiAuditEvents.createdAt)).limit(1);
+    const row = rows[0];
+    const diagnostic = row ? aiDiagnosticEnvelopeSchema.safeParse(row.metadata) : null;
+    if (!diagnostic?.success) return res.status(404).json({ success: false, error: { code: "DIAGNOSTIC_NOT_FOUND", message: "Diagnostic not found." } });
+    return res.json({ success: true, data: diagnostic.data });
+  });
 
   const resolveScope = (req: Request) => {
     const userId = getUserId(req.user);

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { z } from "zod";
+import { sanitizeAiDiagnosticEnvelope } from "@shared/aiDiagnostics";
 import {
   productIntentCompilerResultSchema,
   type ProductDraftIntent,
@@ -393,6 +394,14 @@ function logCompilerFailure(input: Pick<ProductIntentCompilerInput, "orgId">, co
   });
 }
 
+async function persistCompilerDiagnostic(input: ProductIntentCompilerInput, diagnostics: ProductIntentCompilerDiagnostics | undefined, stage: ProductIntentCompilerFailureStage, errorCode: string) {
+  try {
+    const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId: diagnostics?.correlationId, correlationId: diagnostics?.correlationId, diagnosticType: "product_intent_compiler", tenantId: input.orgId, actorId: null, conversationId: null, provider: diagnostics?.provider ?? null, model: diagnostics?.model ?? null, providerRequestId: diagnostics?.requestMetadata.providerRequestId ?? null, stage, errorCode, providerResponseState: stage === "json_extraction_failure" ? "parse_failed" : stage.includes("schema") ? "contract_failed" : "not_received", parseMethod: "none", repairAttempted: (diagnostics?.attempts ?? 0) > 1, repairResult: (diagnostics?.attempts ?? 0) > 1 ? "failed" : "not_attempted", validationSchema: stage.includes("schema") ? "ProductIntentCompilerResult" : null, validationIssuePaths: diagnostics?.schemaIssuePaths ?? [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [], plannerOperation: null, selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler", optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString() });
+    const { db } = await import("../../db"); const { aiAuditEvents } = await import("@shared/schema");
+    await db.insert(aiAuditEvents).values({ orgId: input.orgId, eventType: "ai_diagnostic", status: "failed", correlationId: envelope.correlationId, metadata: envelope });
+  } catch { /* Diagnostics must never conceal the original compiler failure. */ }
+}
+
 /**
  * Calls the configured provider and turns its JSON into the provider-neutral
  * canonical result. All provider-specific API behaviour remains inside the
@@ -493,6 +502,7 @@ export class ProductIntentCompiler {
       });
     }
 
+    await persistCompilerDiagnostic(input, lastDiagnostics, failureStage, invalidOutput.trim().startsWith("{") ? "invalid_contract" : "invalid_json");
     return {
       ok: false,
       error: {

@@ -1,0 +1,24 @@
+import { z } from "zod";
+
+const safeId = z.string().trim().min(1).max(160).regex(/^[A-Za-z0-9][A-Za-z0-9._:-]*$/);
+const safeText = z.string().trim().min(1).max(160);
+
+/** Persisted diagnostic metadata. It is deliberately summary-only: prompts,
+ * model output, credentials, headers, URLs, and stack traces are excluded. */
+export const aiDiagnosticEnvelopeSchema = z.object({
+  version: z.literal(1), referenceId: safeId, correlationId: safeId,
+  diagnosticType: z.enum(["ai_planner", "product_intent_compiler", "specialist_dispatch"]),
+  tenantId: safeId, actorId: safeId.nullable(), conversationId: safeId.nullable(),
+  provider: safeText.nullable(), model: safeText.nullable(), providerRequestId: safeId.nullable(),
+  stage: safeText, errorCode: safeText.nullable(), providerResponseState: z.enum(["not_received", "received", "empty", "parse_failed", "contract_failed", "accepted"]),
+  parseMethod: z.enum(["none", "raw_json", "extracted_json", "repaired_json"]), repairAttempted: z.boolean(), repairResult: z.enum(["not_attempted", "succeeded", "failed"]),
+  validationSchema: safeText.nullable(), validationIssuePaths: z.array(safeText).max(20), validationIssueCodes: z.array(safeText).max(20),
+  returnedTopLevelKeys: z.array(safeText).max(30), missingRequiredKeys: z.array(safeText).max(30), unknownKeys: z.array(safeText).max(30),
+  plannerOperation: safeText.nullable(), selectedCapability: safeText.nullable(), specialistName: safeText.nullable(),
+  optionNormalizationStage: safeText.nullable(), resolverStage: safeText.nullable(), persistenceAttempted: z.boolean(), persistenceResult: z.enum(["not_attempted", "succeeded", "failed"]), createdAt: z.string().datetime(),
+}).strict();
+export type AiDiagnosticEnvelope = z.infer<typeof aiDiagnosticEnvelopeSchema>;
+
+export function sanitizeAiDiagnosticEnvelope(value: unknown): AiDiagnosticEnvelope {
+  return aiDiagnosticEnvelopeSchema.parse(value);
+}
