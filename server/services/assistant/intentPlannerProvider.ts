@@ -9,6 +9,7 @@ import {
   assistantIntentPlanSchema,
   type AssistantIntentPlan,
 } from "./aiFirstIntentPlannerContract";
+import { sanitizeAiDiagnosticEnvelope } from "@shared/aiDiagnostics";
 
 /**
  * Provider-neutral boundary for the AI-first planner.  It intentionally owns
@@ -169,6 +170,14 @@ function logPlannerFailure(organizationId: string, diagnostics: AssistantIntentP
   });
 }
 
+async function persistPlannerDiagnostic(organizationId: string, diagnostics: AssistantIntentPlannerDiagnostics, errorCode: string) {
+  try {
+    const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId: diagnostics.correlationId, correlationId: diagnostics.correlationId, diagnosticType: "ai_planner", tenantId: organizationId, actorId: null, conversationId: null, provider: diagnostics.provider, model: diagnostics.model, providerRequestId: diagnostics.providerMetadata.providerRequestId as string ?? null, stage: diagnostics.stage, errorCode, providerResponseState: diagnostics.stage === "invalid_json" ? "parse_failed" : diagnostics.stage === "invalid_contract" ? "contract_failed" : "not_received", parseMethod: "none", repairAttempted: diagnostics.repairAttempted, repairResult: diagnostics.repairAttempted ? "failed" : "not_attempted", validationSchema: diagnostics.stage === "invalid_contract" ? "AssistantIntentPlan" : null, validationIssuePaths: diagnostics.validationIssuePaths ?? [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [], plannerOperation: null, selectedCapability: null, specialistName: null, optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString() });
+    const { db } = await import("../../db"); const { aiAuditEvents } = await import("@shared/schema");
+    await db.insert(aiAuditEvents).values({ orgId: organizationId, eventType: "ai_diagnostic", status: "failed", correlationId: envelope.correlationId, metadata: envelope });
+  } catch { /* preserve the planner's original safe failure */ }
+}
+
 /**
  * Works with the existing OpenAI-compatible adapter (including DeepSeek's
  * JSON-mode policy) and with future adapters that implement AiProviderAdapter.
@@ -196,12 +205,14 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
     } catch {
       const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: null, model: null, attempts: 0, stage: "provider_unavailable", repairAttempted: false, providerMetadata: {} };
       logPlannerFailure(input.organizationId, diagnostics);
+      await persistPlannerDiagnostic(input.organizationId, diagnostics, "provider_unavailable");
       return { ok: false, error: { code: "provider_unavailable", message: `AI planning is unavailable. Please retry. Reference: ${correlationId}.`, retryable: true, correlationId }, diagnostics };
     }
 
     if (!config.enabled || !config.provider || !config.endpoint || !config.apiKey || !config.model) {
       const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: config.provider, model: config.model, attempts: 0, stage: "provider_unavailable", repairAttempted: false, providerMetadata: {} };
       logPlannerFailure(input.organizationId, diagnostics);
+      await persistPlannerDiagnostic(input.organizationId, diagnostics, "provider_unavailable");
       return { ok: false, error: { code: "provider_unavailable", message: `AI planning is unavailable. Please retry. Reference: ${correlationId}.`, retryable: false, correlationId }, diagnostics };
     }
 
@@ -235,6 +246,7 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
           providerMetadata: {},
         };
         logPlannerFailure(input.organizationId, diagnostics, { providerFailureKind: safeFailureKind(error) });
+        await persistPlannerDiagnostic(input.organizationId, diagnostics, stage === "provider_unavailable" ? "provider_unavailable" : "provider_failure");
         return {
           ok: false,
           error: {
@@ -258,6 +270,7 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
         if (attempt < MAX_REPAIR_ATTEMPTS) continue;
         const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: response.provider, model: response.model, attempts: attempt + 1, stage, repairAttempted: attempt > 0, providerMetadata: metadata, validationIssuePaths: issues };
         logPlannerFailure(input.organizationId, diagnostics, { validationIssuePaths: issues });
+        await persistPlannerDiagnostic(input.organizationId, diagnostics, "invalid_json");
         return { ok: false, error: { code: "invalid_json", message: `I couldn't safely interpret that request. Nothing was changed. Please retry. Reference: ${correlationId}.`, retryable: true, correlationId }, diagnostics };
       }
 
@@ -275,6 +288,7 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
       if (attempt < MAX_REPAIR_ATTEMPTS) continue;
       const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: response.provider, model: response.model, attempts: attempt + 1, stage, repairAttempted: attempt > 0, providerMetadata: metadata, validationIssuePaths: issues };
       logPlannerFailure(input.organizationId, diagnostics, { validationIssuePaths: issues });
+      await persistPlannerDiagnostic(input.organizationId, diagnostics, "invalid_contract");
       return { ok: false, error: { code: "invalid_contract", message: `I couldn't safely interpret that request. Nothing was changed. Please retry. Reference: ${correlationId}.`, retryable: true, correlationId }, diagnostics };
     }
 
