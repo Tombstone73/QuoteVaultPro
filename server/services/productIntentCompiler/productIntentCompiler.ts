@@ -333,7 +333,10 @@ function normalizeUnsafeProviderMaterial(request: string, intent: Record<string,
   const source = materialMetadata && typeof materialMetadata === "object" && !Array.isArray(materialMetadata) ? (materialMetadata as Record<string, unknown>).source : null;
   const label = typeof reference.label === "string" ? reference.label : "";
   if (reference.state !== "resolved" || source === "selected_template" || source === "canonical_default" || !label || requestSupportsResolvedMaterial(request, label)) return intent;
-  return { ...intent, material: { state: "explicitly_unset" }, fieldMetadata: { ...fieldMetadata, material: { source: "unresolved" } } };
+  // Preserve an unsupported provider material as an unresolved hint rather
+  // than pretending the user chose no material. The resolver may offer only
+  // relevant optional choices, but it can never silently select this record.
+  return { ...intent, material: { state: "unresolved", label }, fieldMetadata: { ...fieldMetadata, material: { source: "unresolved" } } };
 }
 
 function normalizeInitialCompleteIntent(input: ProductIntentCompilerInput, value: unknown, intentId: string): unknown {

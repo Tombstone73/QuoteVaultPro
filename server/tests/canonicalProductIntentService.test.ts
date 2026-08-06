@@ -67,7 +67,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const persistedIntent = result.session.specification.session.revisions[0]!.intent;
     expect(result.session.status).toBe("needs_answers");
     expect(result.session.specification.session.currentRevision).toBe(0);
-    expect(persistedIntent).toMatchObject({ state: "needs_answers", identity: { category: { state: "unresolved", label: "Product category" } }, material: { state: "explicitly_unset" }, production: { route: { state: "explicitly_unset" } }, pricing: { unit: "unresolved" } });
+    expect(persistedIntent).toMatchObject({ state: "needs_answers", identity: { category: { state: "unresolved", label: "Product category" } }, material: { state: "unresolved" }, production: { route: { state: "explicitly_unset" } }, pricing: { unit: "unresolved" } });
     expect(result.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "0:identity.category:candidate", code: "CATEGORY_UNRESOLVED" }),
       expect.objectContaining({ id: "0:pricing.matrix.unit:required", code: "PRICING_UNIT_UNRESOLVED", path: "pricing.matrix.unit" }),
@@ -113,7 +113,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(intent.revision).toBe(1);
     expect(intent.pricing).toMatchObject({ model: "two_dimensional_matrix", unit: answer.toLocaleLowerCase().includes("sqft") ? "per_square_foot" : "per_piece", cells: expect.arrayContaining([{ row: "3mm", column: "single", priceCents: 1200 }, { row: "6mm", column: "double", priceCents: 2200 }]) });
     expect(intent.identity.category).toMatchObject({ state: "unresolved" });
-    expect(intent.material).toEqual({ state: "explicitly_unset" });
+    expect(intent.material).toMatchObject({ state: "unresolved" });
     expect(intent.production.route).toEqual({ state: "explicitly_unset" });
     expect(continued.issues).toEqual([expect.objectContaining({ code: "CATEGORY_UNRESOLVED", id: "1:identity.category:candidate" })]);
     expect(continued.card.requiredQuestions).toEqual([]);
@@ -169,7 +169,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(selectedIntent.fieldMetadata["identity.category"]).toEqual(expect.objectContaining({ source: "explicit_user" }));
     expect(selectedIntent.pricing).toMatchObject({ model: "two_dimensional_matrix", unit: "unresolved", cells: yardSignsPayload.intent.pricing.cells });
     expect(selectedIntent.optionGroups).toEqual(yardSignsPayload.intent.optionGroups);
-    expect(selectedIntent.material).toEqual({ state: "explicitly_unset" });
+    expect(selectedIntent.material).toMatchObject({ state: "unresolved" });
     expect(selectedIntent.production.route).toEqual({ state: "explicitly_unset" });
     expect(selected.outcome.issues).not.toEqual(expect.arrayContaining([expect.objectContaining({ code: "CATEGORY_UNRESOLVED" })]));
     expect(selected.outcome.card.candidateResolutions.filter((action) => action.kind === "select_category")).toEqual([]);

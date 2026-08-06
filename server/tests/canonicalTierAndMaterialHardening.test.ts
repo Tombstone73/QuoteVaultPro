@@ -3,6 +3,7 @@ import { resolvePricingV2BaseRates } from "@shared/pbv2/pricingAdapter";
 import { productDraftIntentSchema } from "@shared/productDraftIntent";
 import { CanonicalProductIntentService } from "../services/productIntentCompiler/canonicalProductIntentService";
 import { ProductIntentCompiler } from "../services/productIntentCompiler/productIntentCompiler";
+import { generateProductIntentCandidateActions } from "../services/productIntentCompiler/productIntentInteractions";
 import { ProductIntentPersistenceService, type CanonicalProductIntentProposalRow, type CanonicalProductIntentProposalStore } from "../services/productIntentCompiler/productIntentPersistence";
 import { projectProductDraftIntentToProductBuilderDraft } from "../services/productIntentCompiler/productIntentProjection";
 import { resolveAndValidateProductDraftIntent } from "../services/productIntentCompiler/productIntentResolver";
@@ -92,7 +93,7 @@ describe("canonical quantity-tier and material hardening", () => {
     const generic = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: jest.fn(async () => ({ rawText: JSON.stringify(fixedSizePayload("Coroplast 4mm")), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })) }), new ProductIntentPersistenceService(new MemoryStore()), candidates);
     const genericResult = await generic.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "generic-coroplast", compilerInput: compilerInput("Create 18x24 Coroplast Test. It is a fixed 18 inch by 24 inch product priced at $15 per piece with customer-entered quantity.") });
     if (!genericResult.ok) throw new Error("Expected generic material session.");
-    expect(genericResult.session.specification.session.revisions[0]!.intent).toMatchObject({ material: { state: "explicitly_unset" }, measurement: { mode: "fixed_size", dimensions: { widthIn: 18, heightIn: 24 } }, pricing: { model: "scalar", unit: "per_piece", priceCents: 1500 } });
+    expect(genericResult.session.specification.session.revisions[0]!.intent).toMatchObject({ material: { state: "unresolved" }, measurement: { mode: "fixed_size", dimensions: { widthIn: 18, heightIn: 24 } }, pricing: { model: "scalar", unit: "per_piece", priceCents: 1500 } });
 
     const explicit = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: jest.fn(async () => ({ rawText: JSON.stringify(fixedSizePayload("Coroplast 4mm")), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })) }), new ProductIntentPersistenceService(new MemoryStore()), candidates);
     const explicitResult = await explicit.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "explicit-coroplast", compilerInput: compilerInput("Create a fixed 18 by 24 inch 4mm Coroplast product at $15 per piece with customer-entered quantity.") });
@@ -107,7 +108,74 @@ describe("canonical quantity-tier and material hardening", () => {
     const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: jest.fn(async () => ({ rawText: JSON.stringify(fixedSizePayload(label)), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })) }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [{ id: "specific-material", label }], productionRoutes: [] });
     const result = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: `generic-${_family}`, compilerInput: compilerInput(request) });
     if (!result.ok) throw new Error("Expected generic material session.");
-    expect(result.session.specification.session.revisions[0]!.intent.material).toEqual({ state: "explicitly_unset" });
+    expect(result.session.specification.session.revisions[0]!.intent.material).toMatchObject({ state: "unresolved" });
+  });
+
+  test("keeps generic Coroplast material optional, suggests only relevant capped choices, and persists an explicit recommendation selection", async () => {
+    const materials = [
+      { id: "coroplast-10", label: "Coroplast 10mm" }, { id: "coroplast-4", label: "Coroplast 4mm" }, { id: "coroplast-3", label: "Coroplast 3mm" },
+      { id: "coroplast-6", label: "Coroplast 6mm" }, { id: "coroplast-white", label: "Coroplast White" }, { id: "coroplast-black", label: "Coroplast Black" },
+      { id: "banner", label: "Banner Material" }, { id: "laminate", label: "Gloss Laminate" }, { id: "vinyl", label: "Adhesive Vinyl" }, { id: "pvc", label: "PVC 3mm" },
+    ];
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({
+      generateJson: jest.fn(async () => ({ rawText: JSON.stringify(fixedSizePayload("Coroplast 4mm")), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })),
+    }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [{ id: "signs", label: "Signs" }], materials, productionRoutes: [] });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "coroplast-optional", compilerInput: compilerInput("Create a new product called 18x24 Coroplast Test 3. It is a fixed 18 inch by 24 inch product priced at $15 per piece with customer-entered quantity.") });
+    if (!created.ok) throw new Error("Expected Coroplast session.");
+    expect(created.session.specification.session.revisions[0]!.intent).toMatchObject({
+      material: { state: "unresolved" }, measurement: { mode: "fixed_size", dimensions: { widthIn: 18, heightIn: 24 } },
+      quantity: { behavior: "customer_entered" }, pricing: { model: "scalar", unit: "per_piece", priceCents: 1500 }, production: { route: { state: "explicitly_unset" } },
+    });
+    expect(created.issues).toEqual([expect.objectContaining({ code: "CATEGORY_UNRESOLVED" })]);
+    expect(created.card.candidateResolutions.map((action) => action.kind)).toEqual(["select_category"]);
+    const materialRecommendations = created.card.optionalRecommendations.filter((item) => item.kind === "select_material");
+    expect(materialRecommendations).toHaveLength(5);
+    expect(materialRecommendations.map((item) => item.title)).toEqual([
+      "Select Coroplast 3mm", "Select Coroplast 4mm", "Select Coroplast 6mm", "Select Coroplast 10mm", "Select Coroplast Black",
+    ]);
+    expect(materialRecommendations.map((item) => item.title).join(" ")).not.toMatch(/Banner|Laminate|Vinyl|PVC/);
+
+    const category = created.card.candidateResolutions[0]!;
+    const categorized = await service.applyCandidateAction({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, actionId: category.id });
+    if (!categorized.outcome?.ok) throw new Error("Expected category selection.");
+    expect(categorized.outcome.card.readiness).toEqual({ ready: true, blockers: [], questions: [] });
+    expect(categorized.outcome.session.specification.session.revisions.at(-1)!.intent.material).toMatchObject({ state: "unresolved" });
+
+    const secondSuggestion = categorized.outcome.card.optionalRecommendations.find((item) => item.kind === "select_material" && item.title === "Select Coroplast 10mm");
+    if (!secondSuggestion) throw new Error("Expected optional Coroplast 10mm suggestion.");
+    const dismissed = await service.dismissRecommendation({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, recommendationId: secondSuggestion.id });
+    expect(dismissed.ok).toBe(true);
+    expect(dismissed.session.specification.session.currentRevision).toBe(1);
+
+    const selectedSuggestion = dismissed.card.optionalRecommendations.find((item) => item.kind === "select_material" && item.title === "Select Coroplast 4mm");
+    if (!selectedSuggestion) throw new Error("Expected optional Coroplast 4mm suggestion.");
+    const selected = await service.acceptRecommendation({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, recommendationId: selectedSuggestion.id });
+    if (!selected.ok) throw new Error("Expected material selection to persist.");
+    const selectedIntent = selected.session.specification.session.revisions.at(-1)!.intent;
+    expect(selected.session.specification.session.currentRevision).toBe(2);
+    expect(selectedIntent).toMatchObject({
+      material: { state: "resolved", id: "coroplast-4", label: "Coroplast 4mm" }, fieldMetadata: { material: { source: "explicit_user" } },
+      measurement: { mode: "fixed_size", dimensions: { widthIn: 18, heightIn: 24 } }, pricing: { model: "scalar", unit: "per_piece", priceCents: 1500 }, production: { route: { state: "explicitly_unset" } },
+    });
+  });
+
+  test("blocks unresolved material only when a server-owned deterministic requirement says it is needed", async () => {
+    const intent = productDraftIntentSchema.parse({
+      contractVersion: 1, intentId: "required-material", organizationId: "org-1", revision: 0, state: "compiling", operation: "new_product",
+      identity: { name: "Coroplast Sign", description: "", category: { state: "resolved", id: "signs", label: "Signs" } }, lifecycle: { productStatus: "inactive", published: false },
+      measurement: { mode: "fixed_size", dimensions: { widthIn: 18, heightIn: 24, allowRotation: false } }, quantity: { behavior: "customer_entered", minimum: 1 }, pricing: { model: "scalar", unit: "per_piece", priceCents: 1500 },
+      material: { state: "unresolved", label: "Coroplast" }, optionGroups: [], workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true }, production: { route: { state: "explicitly_unset" }, configuration: { materialDependentEvaluator: true } }, visibility: { catalogVisible: false }, unresolvedFields: [], fieldMetadata: { material: { source: "unresolved" } }, revisionMetadata: { parentRevision: null }, operationContext: {},
+    });
+    const materials = [{ id: "c4", label: "Coroplast 4mm" }, { id: "c10", label: "Coroplast 10mm" }, { id: "banner", label: "Banner Material" }, { id: "vinyl", label: "Adhesive Vinyl" }];
+    const context = { categoryLabels: ["Signs"], materialLabels: materials.map((item) => item.label), requiresMaterial: (value: typeof intent) => value.production.configuration.materialDependentEvaluator === true };
+    const validation = await resolveAndValidateProductDraftIntent(intent, context);
+    expect(validation.ready).toBe(false);
+    expect(validation.issues).toEqual([expect.objectContaining({ code: "MATERIAL_UNRESOLVED", path: "material" })]);
+    const actions = generateProductIntentCandidateActions(validation.intent, "a".repeat(64), validation.issues, { categories: [], materials, productionRoutes: [] });
+    expect(actions.map((action) => action.candidate?.label)).toEqual(["Coroplast 4mm", "Coroplast 10mm"]);
+
+    const explicitlyUnset = await resolveAndValidateProductDraftIntent({ ...intent, material: { state: "explicitly_unset" } }, context);
+    expect(explicitlyUnset.issues).toEqual([]);
   });
 
   test("preserves a selected-template material and rejects zero-cent tier prices at the canonical schema boundary", async () => {

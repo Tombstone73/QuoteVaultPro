@@ -15,6 +15,10 @@ export type ProductIntentResolutionContext = {
   categoryLabels: readonly string[];
   materialLabels?: readonly string[];
   productionRouteLabels?: readonly string[];
+  /** A server-owned Product Builder rule. This must be a pure, deterministic
+   * decision based on the canonical intent; a material search hint, tenant
+   * inventory, or production-job flag alone must never make material required. */
+  requiresMaterial?: (intent: ProductDraftIntent) => boolean;
   duplicateName?: (name: string) => Promise<boolean> | boolean;
   /** Reuse the existing PBV2/Product Builder validator without granting the
    * resolver write access. */
@@ -52,6 +56,13 @@ export function aggregateProductIntentIssues(intent: ProductDraftIntent, issues:
   return Array.from(byId.values());
 }
 
+/** The canonical contract permits a material-free draft by default. Product
+ * Builder integrations may opt in only with an established deterministic rule
+ * (for example, a selected template whose evaluator requires material). */
+export function isMaterialRequired(intent: ProductDraftIntent, context: Pick<ProductIntentResolutionContext, "requiresMaterial"> = {}): boolean {
+  return context.requiresMaterial?.(intent) === true;
+}
+
 /** Resolves only exact, tenant-owned labels with an allowed field source. A
  * provider cannot select operations-critical tenant references by guessing an
  * ID, by fuzzy similarity, or from option values. */
@@ -69,7 +80,10 @@ export function resolveProductDraftIntentReferences(rawIntent: unknown, candidat
     return fallback === "explicitly_unset" ? { state: "explicitly_unset" } : { state: "unresolved", label: label || "Not selected" };
   };
   intent.identity.category = resolve(intent.identity.category, candidates.categories, "identity.category", "unresolved");
-  intent.material = resolve(intent.material, candidates.materials, "material", "explicitly_unset");
+  // Retain an unresolved material hint. It is distinct from an explicit choice
+  // to leave material unset and can safely drive a nonblocking, relevant
+  // suggestion when material is optional.
+  intent.material = resolve(intent.material, candidates.materials, "material", "unresolved");
   intent.production.route = resolve(intent.production.route, candidates.productionRoutes, "production.route", "explicitly_unset");
   return productDraftIntentSchema.parse(intent);
 }
@@ -94,13 +108,19 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
   const issues: ProductIntentIssue[] = [];
   if (intent.identity.category.state === "unresolved") issues.push({ code: "CATEGORY_UNRESOLVED", path: "identity.category", severity: "question", message: "Choose a product category." });
   else if (!includesLabel(context.categoryLabels, intent.identity.category.label)) issues.push({ code: "CATEGORY_NOT_FOUND", path: "identity.category", severity: "question", message: `The category ${intent.identity.category.label} is not available for this tenant.` });
-  if (intent.material.state === "unresolved") issues.push({ code: "MATERIAL_UNRESOLVED", path: "material", severity: "question", message: "Which material should this product use?" });
+  const materialRequired = isMaterialRequired(intent, context);
+  if (intent.material.state === "unresolved" && materialRequired) issues.push({ code: "MATERIAL_UNRESOLVED", path: "material", severity: "question", message: "Which material should this product use?" });
   if (intent.material.state === "resolved" && !includesLabel(context.materialLabels, intent.material.label)) issues.push({ code: "MATERIAL_NOT_FOUND", path: "material", severity: "question", message: `The material ${intent.material.label} is not available for this tenant.` });
   if (intent.production.route.state === "unresolved") issues.push({ code: "ROUTE_UNRESOLVED", path: "production.route", severity: "question", message: "Which production route should this product use?" });
   if (intent.production.route.state === "resolved" && !includesLabel(context.productionRouteLabels, intent.production.route.label)) issues.push({ code: "ROUTE_NOT_FOUND", path: "production.route", severity: "question", message: `The production route ${intent.production.route.label} is not available for this tenant.` });
   if (intent.pricing.model === "unresolved") issues.push({ code: "PRICING_UNRESOLVED", path: "pricing.model", severity: "question", message: "Should pricing be per piece, per square foot, a matrix, or quantity tiers?" });
   if (intent.pricing.model === "two_dimensional_matrix" && intent.pricing.unit === "unresolved") issues.push({ code: "PRICING_UNIT_UNRESOLVED", path: "pricing.unit", severity: "question", message: "Are these matrix prices per piece or per square foot?" });
-  for (const field of intent.unresolvedFields) issues.push({ code: field.code || "UNRESOLVED_FIELD", path: field.path, severity: "question", message: field.question ?? "This field needs a decision." });
+  for (const field of intent.unresolvedFields) {
+    // The material reference above owns material readiness. An optional
+    // unresolved material must not reappear as a generic blocking question.
+    if (field.path === "material") continue;
+    issues.push({ code: field.code || "UNRESOLVED_FIELD", path: field.path, severity: "question", message: field.question ?? "This field needs a decision." });
+  }
   validateTiers(intent, issues);
   if (await context.duplicateName?.(intent.identity.name)) issues.push({ code: "DUPLICATE_PRODUCT_NAME", path: "identity.name", severity: "blocker", message: "A product with this name already exists; select it or explicitly request a clone." });
   // PBV2 projection is meaningful only after canonical resolution succeeds;

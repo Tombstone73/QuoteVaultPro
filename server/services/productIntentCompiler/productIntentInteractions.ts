@@ -9,7 +9,7 @@ const fingerprint = z.string().regex(/^[a-f0-9]{64}$/i);
 const actionId = z.string().regex(/^[a-z][a-z0-9_-]{2,120}$/);
 
 export const productIntentRecommendationSchema = z.object({
-  id: actionId, revision, fingerprint, kind: z.enum(["add_minimum_charge", "enable_proof_approval", "enable_production_job"]),
+  id: actionId, revision, fingerprint, kind: z.enum(["add_minimum_charge", "enable_proof_approval", "enable_production_job", "select_material"]),
   title: nonEmpty, description: nonEmpty, reason: nonEmpty, source: z.literal("canonical_rule"), dismissible: z.literal(true), patch: productDraftIntentPatchSchema,
 }).strict();
 export type ProductIntentRecommendation = z.infer<typeof productIntentRecommendationSchema>;
@@ -26,6 +26,7 @@ export type ProductIntentCandidateAction = z.infer<typeof productIntentCandidate
 
 export type ExistingProductCandidate = { id: string; name: string; isActive: boolean; cloneSupported?: boolean };
 export type ProductIntentInteractionContext = { categories: readonly TenantIntentReference[]; materials: readonly TenantIntentReference[]; productionRoutes: readonly TenantIntentReference[]; existingProducts?: readonly ExistingProductCandidate[] };
+export type ProductIntentRecommendationContext = Pick<ProductIntentInteractionContext, "materials"> & { materialRequired?: boolean };
 
 function id(prefix: string, revisionValue: number, fingerprintValue: string, discriminator: string) {
   return `${prefix}_${createHash("sha256").update(`${revisionValue}:${fingerprintValue}:${discriminator}`).digest("hex").slice(0, 24)}`;
@@ -34,12 +35,57 @@ function patch(intent: ProductDraftIntent, operations: ProductDraftIntentPatch["
   return productDraftIntentPatchSchema.parse({ contractVersion: 1, baseRevision: intent.revision, preserveUnchanged: true, operations });
 }
 
-/** Deterministic optional improvements. They never depend on provider prose and
- * never change readiness. Keep this intentionally small; templates are only
- * suggested once they have a safe canonical option-group mapping. */
-export function generateProductIntentRecommendations(intent: ProductDraftIntent, fingerprintValue: string, dismissed: readonly string[] = []): ProductIntentRecommendation[] {
+const materialFamilyTerms = new Set(["coroplast", "vinyl", "acrylic", "banner", "paper", "pvc"]);
+const materialPlaceholders = new Set(["", "material", "not selected", "unknown", "unspecified"]);
+
+function normalized(value: string): string { return value.trim().toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim(); }
+function tokens(value: string): string[] { return normalized(value).split(" ").filter(Boolean); }
+
+/** A material hint is only a search key, never an authorization to select a
+ * tenant record. Keep the matching deliberately small and deterministic so a
+ * generic family cannot leak the entire tenant material catalog. */
+export function relevantMaterialCandidates(intent: ProductDraftIntent, materials: readonly TenantIntentReference[]): TenantIntentReference[] {
+  if (intent.material.state !== "unresolved") return [];
+  const hint = normalized(intent.material.label);
+  const metadata = intent.fieldMetadata.material;
+  const familyTokens = Array.from(new Set([
+    ...tokens(intent.material.label), ...tokens(intent.identity.name), ...tokens(intent.identity.description),
+  ].filter((token) => materialFamilyTerms.has(token))));
+  const authoritativeExact = !materialPlaceholders.has(hint) && ["explicit_user", "selected_template"].includes(metadata?.source ?? "");
+  const requestedTokens = authoritativeExact ? tokens(intent.material.label) : familyTokens;
+  if (!requestedTokens.length) return [];
+  return materials.flatMap((candidate) => {
+    const label = normalized(candidate.label);
+    const candidateTokens = new Set(tokens(candidate.label));
+    const exact = authoritativeExact && label === hint;
+    const matches = requestedTokens.every((token) => candidateTokens.has(token));
+    if (!exact && !matches) return [];
+    return [{ candidate, score: exact ? 2 : 1 }];
+  }).sort((left, right) => right.score - left.score || left.candidate.label.localeCompare(right.candidate.label, undefined, { numeric: true, sensitivity: "base" }))
+    .slice(0, 5)
+    .map(({ candidate }) => candidate);
+}
+
+/** Deterministic optional improvements. They never change readiness. Material
+ * suggestions are explicit user choices with server-owned typed patches; they
+ * are not candidate actions under the blocking-resolution section. */
+export function generateProductIntentRecommendations(intent: ProductDraftIntent, fingerprintValue: string, dismissed: readonly string[] = [], context: ProductIntentRecommendationContext = { materials: [] }): ProductIntentRecommendation[] {
   if (intent.workflow.kind === "service_fee") return [];
   const items: ProductIntentRecommendation[] = [];
+  if (intent.material.state === "unresolved" && !context.materialRequired) {
+    for (const material of relevantMaterialCandidates(intent, context.materials)) {
+      const recommendationId = id("rec", intent.revision, fingerprintValue, `select_material:${material.id}`);
+      items.push(productIntentRecommendationSchema.parse({
+        id: recommendationId, revision: intent.revision, fingerprint: fingerprintValue, kind: "select_material",
+        title: `Select ${material.label}`, description: `Use the tenant material ${material.label}.`,
+        reason: "This optional material matches the canonical material-family hint.", source: "canonical_rule", dismissible: true,
+        patch: patch(intent, [
+          { op: "set_material", value: { state: "resolved", id: material.id, label: material.label } },
+          { op: "merge_field_metadata", value: { material: { source: "explicit_user" } } },
+        ]),
+      }));
+    }
+  }
   if (intent.workflow.kind === "standard_production" && !intent.workflow.requiresProofApproval) {
     const recommendationId = id("rec", intent.revision, fingerprintValue, "enable_proof_approval");
     items.push(productIntentRecommendationSchema.parse({ id: recommendationId, revision: intent.revision, fingerprint: fingerprintValue, kind: "enable_proof_approval", title: "Require proof approval", description: "Add proof approval before production begins.", reason: "This is an optional safeguard for a production product.", source: "canonical_rule", dismissible: true, patch: patch(intent, [{ op: "set_workflow", value: { ...intent.workflow, requiresProofApproval: true } }]) }));
@@ -48,7 +94,10 @@ export function generateProductIntentRecommendations(intent: ProductDraftIntent,
     const recommendationId = id("rec", intent.revision, fingerprintValue, "add_minimum_charge_2500");
     items.push(productIntentRecommendationSchema.parse({ id: recommendationId, revision: intent.revision, fingerprint: fingerprintValue, kind: "add_minimum_charge", title: "Add a $25.00 minimum charge", description: "Set a $25.00 minimum charge for this product.", reason: "A minimum charge can protect small production orders without changing the listed rate.", source: "canonical_rule", dismissible: true, patch: patch(intent, [{ op: "set_pricing", value: { ...intent.pricing, minimumChargeCents: 2500 } }]) }));
   }
-  return items.filter((item) => !dismissed.includes(item.id)).slice(0, 3);
+  // At most five material choices plus the two pre-existing safety/value
+  // suggestions keeps the card compact while never truncating a relevant
+  // material family to the first catalog entry.
+  return items.filter((item) => !dismissed.includes(item.id)).slice(0, 7);
 }
 
 function referenceActions(input: { intent: ProductDraftIntent; fingerprint: string; issue: ProductIntentIssue; kind: "category" | "material" | "route"; values: readonly TenantIntentReference[] }): ProductIntentCandidateAction[] {
@@ -62,11 +111,14 @@ function referenceActions(input: { intent: ProductDraftIntent; fingerprint: stri
       { op: "merge_field_metadata", value: { "identity.category": { source: "explicit_user" } } },
     ])
     : kind === "material"
-      ? patch(intent, [{ op: "set_material", value: { state: "resolved", id: value.id, label: value.label } }])
+      ? patch(intent, [
+        { op: "set_material", value: { state: "resolved", id: value.id, label: value.label } },
+        { op: "merge_field_metadata", value: { material: { source: "explicit_user" } } },
+      ])
       : patch(intent, [{ op: "set_production", value: { ...intent.production, route: { state: "resolved", id: value.id, label: value.label } } }]);
   const issueId = issue.id ?? issue.code;
-  const actions = values.slice(0, 10).map((value) => productIntentCandidateActionSchema.parse({ id: id("cand", intent.revision, fingerprintValue, `${issueId}:${action}:${value.id}`), issueId, revision: intent.revision, fingerprint: fingerprintValue, kind: action, label: `Use ${value.label}`, description: `Use the tenant ${kind === "route" ? "production route" : kind} ${value.label}.`, blocksConfirmation: true, candidate: { id: value.id, label: value.label }, patch: apply(value), navigationOnly: false }));
-  if (kind === "material") actions.push(productIntentCandidateActionSchema.parse({ id: id("cand", intent.revision, fingerprintValue, `${issueId}:confirm_no_material`), issueId, revision: intent.revision, fingerprint: fingerprintValue, kind: "confirm_no_material", label: "No material selected", description: "Explicitly create this product without a material.", blocksConfirmation: true, patch: patch(intent, [{ op: "set_material", value: { state: "explicitly_unset" } }]), navigationOnly: false }));
+  const relevantValues = kind === "material" ? relevantMaterialCandidates(intent, values) : values.slice(0, 10);
+  const actions = relevantValues.map((value) => productIntentCandidateActionSchema.parse({ id: id("cand", intent.revision, fingerprintValue, `${issueId}:${action}:${value.id}`), issueId, revision: intent.revision, fingerprint: fingerprintValue, kind: action, label: `Use ${value.label}`, description: `Use the tenant ${kind === "route" ? "production route" : kind} ${value.label}.`, blocksConfirmation: true, candidate: { id: value.id, label: value.label }, patch: apply(value), navigationOnly: false }));
   return actions;
 }
 
