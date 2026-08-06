@@ -64,7 +64,7 @@ describe("LegacyAssistantSessionCompatibility", () => {
       references: jest.fn(async () => ({ materials: [], templates: [] })),
       canonicalProductIntent: router,
     });
-    const generalRouter = jest.spyOn(service, "respond");
+    expect(service).not.toHaveProperty("respond");
 
     const result = await service.respondPlannedCanonicalProductIntent({
       organizationId: "org_1",
@@ -75,7 +75,6 @@ describe("LegacyAssistantSessionCompatibility", () => {
     });
 
     expect(result.response).toContain("pre-canonical product proposal");
-    expect(generalRouter).not.toHaveBeenCalled();
     expect(router.continue).not.toHaveBeenCalled();
     expect(router.create).not.toHaveBeenCalled();
   });
