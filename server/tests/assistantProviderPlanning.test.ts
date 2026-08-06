@@ -1,7 +1,6 @@
 import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import {
   ConfiguredAssistantPlanner,
-  isExplicitAssistantWriteRequest,
   resolveAssistantPlanningTimeoutMs,
 } from "../services/assistant/providerPlanning";
 
@@ -46,15 +45,6 @@ describe("assistant provider planning", () => {
     expect(resolveAssistantPlanningTimeoutMs({ AI_ASSISTANT_PLANNING_TIMEOUT_MS: "1000" } as NodeJS.ProcessEnv)).toBe(5_000);
     expect(resolveAssistantPlanningTimeoutMs({ AI_ASSISTANT_PLANNING_TIMEOUT_MS: "999999" } as NodeJS.ProcessEnv)).toBe(60_000);
     expect(resolveAssistantPlanningTimeoutMs({ AI_ASSISTANT_PLANNING_TIMEOUT_MS: "22000" } as NodeJS.ProcessEnv)).toBe(22_000);
-  });
-
-  test("locally refuses GO and mutation requests without invoking the provider", async () => {
-    const provider = { generateJson: jest.fn() } as any;
-    const planner = new ConfiguredAssistantPlanner(provider, resolver());
-    const result = await planner.plan({ organizationId: "org_1", message: "GO", context });
-    expect(result.plan.intent).toBe("unsupported_write");
-    expect(provider.generateJson).not.toHaveBeenCalled();
-    expect(isExplicitAssistantWriteRequest("Change the order status")).toBe(true);
   });
 
   test("accepts only strict JSON that conforms to the constrained plan schema", async () => {

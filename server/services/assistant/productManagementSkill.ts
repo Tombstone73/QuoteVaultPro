@@ -34,6 +34,7 @@ import { productPricingChangeSetCommandName, productPricingRollbackCommandName }
 import { productPricingChangeSetService } from "./execution/productPricingChangeSetAdapter";
 import { pricingChangeRequestFromMessage } from "./productPricingChangeSetParsing";
 import { productPricingChangeSetStore } from "./productPricingChangeSetDb";
+import { LegacyAssistantSessionCompatibility } from "./legacyAssistantSessionCompatibility";
 import { configurableProductDraftCommandName } from "./execution/configurableProductDraftCommand";
 import { canonicalProductIntentDraftCommandName } from "./execution/canonicalProductIntentDraftCommand";
 import { applyComplexProductConversationEdit, createInitialComplexProductSpecification, pricingUnitQuestion, routeComplexProductMessage } from "./complexProductConversation";
@@ -846,25 +847,25 @@ export class ProductManagementSkillService {
       }
     }
 
-    // A persisted canonical session is its own authoritative boundary.  The
-    // existing continuation implementation reloads and validates it before
-    // producing a revision; it never trusts the planner for product fields.
-    const canonical = await this.respondCanonicalProductIntent(input);
-    if (canonical.handled) return canonical;
-    return this.respondLegacyProductSessionCompatibility(input);
-  }
-
-  /**
-   * Temporary, isolated compatibility boundary for conversations created by
-   * the pre-canonical product system. The AI-first planner has already chosen
-   * this product workflow before this method is reached; no new free-text
-   * message may enter it as a first-pass route.
-   */
-  private async respondLegacyProductSessionCompatibility(input: { organizationId: string; userId: string; conversationId: string; message: string }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
-    const legacy = await this.respond(input);
-    return legacy.handled
-      ? legacy
-      : { handled: true, response: "This product conversation uses a legacy session that could not be continued safely. No product was changed.", cards: [{ kind: "product_validation_errors", title: "Legacy product session unavailable", summary: "No product was changed.", sourceLinks: [], details: { errors: ["The legacy product session did not expose a supported continuation."] } }] };
+    let current: CanonicalProductIntentSession | null;
+    try {
+      current = await router.loadForConversation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
+    } catch (error) {
+      if (!(error instanceof ProductIntentPersistenceError) || error.code !== "PRODUCT_INTENT_LEGACY_SESSION") throw error;
+      const compatibility = await new LegacyAssistantSessionCompatibility().inspect({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId, canonicalProbe: router, correlationId: `legacy-product-session-${randomUUID()}` });
+      return { handled: true, response: compatibility.kind === "legacy_session" ? compatibility.response : "The product session could not be verified. No product was changed.", cards: [] };
+    }
+    if (!current) return { handled: true, response: "No canonical product-intent session was found for this continuation. No product was changed.", cards: [] };
+    if (["executed", "expired", "abandoned"].includes(current.specification.session.state)) return { handled: true, response: `This canonical product-intent session is ${current.specification.session.state} and cannot be changed.`, cards: [] };
+    try {
+      const outcome = await router.continue({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: current.proposalId, request: input.message });
+      return outcome.ok
+        ? { handled: true, response: outcome.card.readiness.ready ? "I saved the canonical revision. It is ready for review." : "I saved the canonical revision and kept only its remaining questions.", cards: canonicalCards(outcome) }
+        : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The canonical product intent could not be updated safely.";
+      return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: [message] } }] };
+    }
   }
 
   private async continueExplicitIntakeCorrection(input: { organizationId: string; userId: string; message: string; sessionId: string }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {

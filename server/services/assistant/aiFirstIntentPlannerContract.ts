@@ -53,7 +53,7 @@ export const assistantIntentCapabilityIdValues = [
   "search_products",
   "search_orders",
   "operational_summary",
-  "legacy_read_tooling",
+  "read_tooling",
   "canonical_product_intent_compiler",
   "products_workflow",
   "clone_product",

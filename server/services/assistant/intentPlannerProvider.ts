@@ -115,7 +115,7 @@ function repairPrompt(input: AssistantIntentPlannerProviderInput, invalidOutput:
 
 function logPlannerFailure(diagnostics: AssistantIntentPlannerDiagnostics, extra: Record<string, unknown> = {}) {
   // Do not include messages, prompts, raw model output, endpoints, or secrets.
-  console.warn("[AI_FIRST_INTENT_PLANNER] Planning failed.", {
+  console.warn("[ASSISTANT_INTENT_PLANNER] Planning failed.", {
     correlationId: diagnostics.correlationId,
     provider: diagnostics.provider,
     model: diagnostics.model,

@@ -109,26 +109,6 @@ function withBoundedAnalyticsPlan(plan: AssistantProviderPlan): AssistantProvide
   return plan;
 }
 
-/** A conservative refusal gate protects the common mutation/confirmation
- * phrasing even if a provider is misconfigured or returns an invalid plan. */
-export function isExplicitAssistantWriteRequest(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
-  if (/^go[!.\s]*$/.test(normalized)) return true;
-  return /\b(change|edit|update|delete|remove|create|save|approve|confirm|cancel|adjust|activate|deactivate)\b/.test(normalized)
-    || /\b(change|update|set)\b.{0,48}\b(price|pricing|status|payment|invoice|inventory|product|customer|order)\b/.test(normalized);
-}
-
-export function directWriteRefusalPlan(): AssistantProviderPlan {
-  return assistantProviderPlanSchema.parse({
-    intent: "unsupported_write",
-    selectedSkill: null,
-    toolCalls: [],
-    clarificationRequired: false,
-    clarificationQuestion: null,
-    responseStyle: "concise",
-  });
-}
-
 export class ConfiguredAssistantPlanner implements AssistantPlanner {
   constructor(
     private readonly provider: AiProviderAdapter,
@@ -136,15 +116,6 @@ export class ConfiguredAssistantPlanner implements AssistantPlanner {
   ) {}
 
   async plan(input: AssistantPlanningInput) {
-    if (isExplicitAssistantWriteRequest(input.message)) {
-      return {
-        plan: directWriteRefusalPlan(),
-        provider: "local_policy",
-        model: "none",
-        metadata: { refusal: "read_only" },
-      };
-    }
-
     const config = await this.resolver.resolveProvider({ orgId: input.organizationId, feature: "assistant" });
     // Existing configured adapter guarantees strict JSON-object mode only for
     // OpenAI-compatible provider mode. Do not parse prose from other providers.

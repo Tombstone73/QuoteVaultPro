@@ -5,7 +5,6 @@ import {
   normalizeAssistantIntentPlan,
 } from "../services/assistant/aiFirstIntentPlannerContract";
 import { assistantCapabilityCatalog, getAssistantCapability, validateAssistantCapabilityCatalog } from "../services/assistant/aiFirstCapabilityCatalog";
-import { AssistantIntentPlannerConfigurationError, resolveAssistantIntentPlannerMode } from "../services/assistant/assistantIntentPlanner";
 
 const productCreationPlan = {
   version: 1,
@@ -65,9 +64,9 @@ describe("AI-first intent planner contract", () => {
     expect(assistantCapabilityCatalog).toHaveLength(24);
   });
 
-  test("defaults missing planner configuration to AI-first and rejects unknown modes", () => {
-    expect(resolveAssistantIntentPlannerMode({} as NodeJS.ProcessEnv)).toBe("enabled");
-    expect(resolveAssistantIntentPlannerMode({ AI_FIRST_INTENT_PLANNER: "shadow" } as NodeJS.ProcessEnv)).toBe("shadow");
-    expect(() => resolveAssistantIntentPlannerMode({ AI_FIRST_INTENT_PLANNER: "sometimes" } as NodeJS.ProcessEnv)).toThrow(AssistantIntentPlannerConfigurationError);
+  test("does not expose a runtime free-text routing mode", async () => {
+    const plannerModule = await import("../services/assistant/assistantIntentPlanner");
+    expect(plannerModule).not.toHaveProperty("resolveAssistantIntentPlannerMode");
+    expect(plannerModule).not.toHaveProperty("assistantIntentPlannerModeValues");
   });
 });

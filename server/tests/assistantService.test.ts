@@ -4,7 +4,6 @@ import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
 let AssistantService: any;
 let AssistantServiceError: any;
 let ASSISTANT_UNAVAILABLE_REPLY: string;
-let resolveAssistantCapabilityQuestion: any;
 let responseStateForCards: any;
 let titleFromMessage: any;
 let assistantCapabilityCommandPermissions: any;
@@ -15,7 +14,6 @@ beforeAll(async () => {
   AssistantService = module.AssistantService;
   AssistantServiceError = module.AssistantServiceError;
   ASSISTANT_UNAVAILABLE_REPLY = module.ASSISTANT_UNAVAILABLE_REPLY;
-  resolveAssistantCapabilityQuestion = module.resolveAssistantCapabilityQuestion;
   responseStateForCards = module.responseStateForCards;
   titleFromMessage = module.titleFromMessage;
   const capabilities = await import("../services/assistant/assistantCapabilities");
@@ -136,29 +134,6 @@ describe("AssistantService", () => {
       .not.toBe(assistantCapabilityCommandPermissions["products.create_inactive_draft"]);
   });
 
-  test("answers capability questions locally from the server capability summary", async () => {
-    resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true });
-    const service = new AssistantService(makeRepo(), resolver);
-    const capability = await service.getCapabilities(scope, {
-      ...actor,
-      permissions: [
-        "assistant.quotes.add_internal_note",
-        "assistant.products.create_inactive_draft",
-        "assistant.products.update_inactive_draft",
-      ],
-    });
-
-    expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
-      .toContain("help create an inactive product draft after your confirmation");
-    expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
-      .toContain("update an inactive product draft after your confirmation");
-    expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
-      .not.toMatch(/GO actions|tool names|read-only result/i);
-    expect(resolveAssistantCapabilityQuestion("What can't you do yet?", capability)?.response)
-      .toContain("product activation remains disabled");
-    expect(resolveAssistantCapabilityQuestion("Find order 20002", capability)).toBeNull();
-  });
-
   test("keeps successful capability answers and safe not-found results non-retryable", () => {
     expect(responseStateForCards([{ kind: "notice", title: "Assistant capabilities", body: "I can help.", tone: "info" }]))
       .toEqual({ kind: "success", retryable: false, diagnosticsAvailable: false });
@@ -173,17 +148,6 @@ describe("AssistantService", () => {
     expect(titleFromMessage("Find order ORD 20002!")).toBe("Find Order ORD-20002");
     expect(titleFromMessage("Find customer T3 Signs.")).toBe("T3 Signs Lookup");
     expect(titleFromMessage("\u0000**Create** a product draft")).toBe("Product Draft Setup");
-  });
-
-  test("explains missing write permission without advertising a read-only organization as mutable", async () => {
-    resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true });
-    const service = new AssistantService(makeRepo(), resolver);
-    const capability = await service.getCapabilities(scope, { ...actor, permissions: ["catalog.read"] });
-
-    expect(capability.writeActionsEnabled).toBe(false);
-    expect(capability.composerHelperText).toBe("Business lookups are enabled. Write actions and external research are disabled.");
-    expect(resolveAssistantCapabilityQuestion("What can't you do yet?", capability)?.response)
-      .toContain("your current role is not permitted");
   });
 
   test("uses both organization and user scope when loading a conversation", async () => {
