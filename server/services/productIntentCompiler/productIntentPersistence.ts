@@ -70,7 +70,7 @@ export interface CanonicalProductIntentProposalStore {
 }
 
 export class ProductIntentPersistenceError extends Error {
-  constructor(public readonly code: "PRODUCT_INTENT_NOT_FOUND" | "PRODUCT_INTENT_LEGACY_SESSION" | "PRODUCT_INTENT_ACTOR_MISMATCH" | "PRODUCT_INTENT_STALE_REVISION" | "PRODUCT_INTENT_CREATE_CONFLICT" | "PRODUCT_INTENT_SESSION_ID_MISMATCH", message: string) {
+  constructor(public readonly code: "PRODUCT_INTENT_NOT_FOUND" | "PRODUCT_INTENT_ACTOR_MISMATCH" | "PRODUCT_INTENT_STALE_REVISION" | "PRODUCT_INTENT_CREATE_CONFLICT" | "PRODUCT_INTENT_SESSION_ID_MISMATCH", message: string) {
     super(message);
     this.name = "ProductIntentPersistenceError";
   }
@@ -242,7 +242,7 @@ export class ProductIntentPersistenceService {
   private toSession(row: CanonicalProductIntentProposalRow, actorUserId: string): CanonicalProductIntentSession {
     ensureActor(row, actorUserId);
     const specification = parsedCanonicalRow(row);
-    if (!specification) throw new ProductIntentPersistenceError("PRODUCT_INTENT_LEGACY_SESSION", "This conversation uses the legacy product-intake compatibility path.");
+    if (!specification) throw new ProductIntentPersistenceError("PRODUCT_INTENT_NOT_FOUND", "The product-intent session is unavailable.");
     if (specification.session.organizationId !== row.organizationId || specification.session.sessionId !== row.id) throw new ProductIntentPersistenceError("PRODUCT_INTENT_SESSION_ID_MISMATCH", "The canonical product-intent session binding is invalid.");
     const expectedFingerprint = productDraftIntentFingerprint(currentProductIntent(specification.session));
     if (row.fingerprint !== expectedFingerprint) throw new ProductIntentPersistenceError("PRODUCT_INTENT_STALE_REVISION", "The canonical product-intent fingerprint is invalid.");

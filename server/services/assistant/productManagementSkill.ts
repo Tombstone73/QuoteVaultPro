@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { materials, pbv2OptionGroupTemplates, pbv2TreeVersions, products, productTypes, stations } from "@shared/schema";
 import { CanonicalProductIntentService, type CanonicalProductIntentInspection, type CanonicalProductIntentOutcome } from "../productIntentCompiler/canonicalProductIntentService";
 import { createConfiguredProductIntentCompiler, type ProductIntentCompilerInput } from "../productIntentCompiler/productIntentCompiler";
-import { DrizzleCanonicalProductIntentProposalStore, ProductIntentPersistenceError, ProductIntentPersistenceService, type CanonicalProductIntentSession } from "../productIntentCompiler/productIntentPersistence";
+import { DrizzleCanonicalProductIntentProposalStore, ProductIntentPersistenceService, type CanonicalProductIntentSession } from "../productIntentCompiler/productIntentPersistence";
 import {
   productIntakeWizardAnalyzeRequestSchema,
   type ProductIntakeSessionDetail,
@@ -34,7 +34,6 @@ import { productPricingChangeSetCommandName, productPricingRollbackCommandName }
 import { productPricingChangeSetService } from "./execution/productPricingChangeSetAdapter";
 import { pricingChangeRequestFromMessage } from "./productPricingChangeSetParsing";
 import { productPricingChangeSetStore } from "./productPricingChangeSetDb";
-import { LegacyAssistantSessionCompatibility } from "./legacyAssistantSessionCompatibility";
 import { configurableProductDraftCommandName } from "./execution/configurableProductDraftCommand";
 import { canonicalProductIntentDraftCommandName } from "./execution/canonicalProductIntentDraftCommand";
 import { measurementModeQuestion } from "./complexProductSpecification";
@@ -222,9 +221,8 @@ export class ProductManagementSkillService {
     try {
       current = await router.loadForConversation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
     } catch (error) {
-      if (!(error instanceof ProductIntentPersistenceError) || error.code !== "PRODUCT_INTENT_LEGACY_SESSION") throw error;
-      const compatibility = await new LegacyAssistantSessionCompatibility().inspect({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId, canonicalProbe: router, correlationId: `legacy-product-session-${randomUUID()}` });
-      return { handled: true, response: compatibility.kind === "legacy_session" ? compatibility.response : "The product session could not be verified. No product was changed.", cards: [] };
+      const message = error instanceof Error ? error.message : "The product session could not be loaded safely.";
+      return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Product session unavailable", summary: "No product was changed.", sourceLinks: [], details: { errors: [message] } }] };
     }
     if (!current) return { handled: true, response: "No canonical product-intent session was found for this continuation. No product was changed.", cards: [] };
     if (["executed", "expired", "abandoned"].includes(current.specification.session.state)) return { handled: true, response: `This canonical product-intent session is ${current.specification.session.state} and cannot be changed.`, cards: [] };
