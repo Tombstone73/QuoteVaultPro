@@ -392,7 +392,8 @@ export function ResultCards({
   cancellingPlanId,
   confirmingPlanId,
   diagnosticsEnabled = false,
-  correlationId = null,
+  correlationId: persistedCorrelationId = null,
+  diagnosticReference = null,
   presentation: serverPresentation,
   responseState,
   onRetry,
@@ -410,6 +411,7 @@ export function ResultCards({
   confirmingPlanId?: string;
   diagnosticsEnabled?: boolean;
   correlationId?: string | null;
+  diagnosticReference?: string | null;
   presentation?: AssistantResponsePresentation;
   responseState?: AssistantResponseState;
   onRetry?: () => void;
@@ -418,9 +420,17 @@ export function ResultCards({
 }) {
   const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false);
   const [technicalDiagnostics, setTechnicalDiagnostics] = React.useState<any[] | null>(null);
-  const [technicalDiagnosticsError, setTechnicalDiagnosticsError] = React.useState<string | null>(null);
+  const [technicalDiagnosticsError, setTechnicalDiagnosticsErrorState] = React.useState<string | null>(null);
   const [technicalDiagnosticsLoading, setTechnicalDiagnosticsLoading] = React.useState(false);
   const [technicalDiagnosticsCopyStatus, setTechnicalDiagnosticsCopyStatus] = React.useState<"copied" | "failed" | null>(null);
+  const publicDiagnosticReference = cards.flatMap((card: any) => [card.summary, card.body]).find((value) => typeof value === "string" && /\b(?:aip|pic)-[0-9a-f-]{36}\b/i.test(value))?.match(/\b(?:aip|pic)-[0-9a-f-]{36}\b/i)?.[0] ?? null;
+  const correlationId = diagnosticReference ?? publicDiagnosticReference ?? persistedCorrelationId;
+  const diagnosticLookupReference = correlationId;
+  const setTechnicalDiagnosticsError = (message: string | null) => setTechnicalDiagnosticsErrorState(message ? (message.includes("Reference:") ? message : `${message} Reference: ${diagnosticLookupReference ?? "Unavailable"}`) : null);
+  const fetch = ((input: RequestInfo | URL, init?: RequestInit) => Promise.race([
+    globalThis.fetch(input, init),
+    new Promise<Response>((_, reject) => window.setTimeout(() => reject(new Error(`Diagnostic record could not be loaded. Reference: ${diagnosticLookupReference ?? "Unavailable"}`)), 10_000)),
+  ])) as typeof globalThis.fetch;
   const [genericCreateErrors, setGenericCreateErrors] = React.useState<Record<string, string>>({});
   const [genericConfirmErrors, setGenericConfirmErrors] = React.useState<Record<string, string>>({});
   const presentation = responsePresentationForCards(serverPresentation);
