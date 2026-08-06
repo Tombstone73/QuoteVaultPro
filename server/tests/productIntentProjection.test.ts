@@ -1,4 +1,6 @@
 import { productDraftIntentFingerprint } from "@shared/productDraftIntent";
+import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
+import { validatePricingPreviewRequest } from "../services/pricing/pricingPreviewValidation";
 import { ProductIntentProjectionError, projectProductDraftIntentToProductBuilderDraft } from "../services/productIntentCompiler/productIntentProjection";
 
 function intent(overrides: Record<string, unknown> = {}) {
@@ -11,6 +13,22 @@ function intent(overrides: Record<string, unknown> = {}) {
     visibility: { catalogVisible: false }, unresolvedFields: [], fieldMetadata: { "pricing.unit": { source: "explicit_user", confidence: 1 } }, revisionMetadata: { parentRevision: 0 }, operationContext: {},
   };
   return { ...base, ...overrides };
+}
+
+function perPieceMatrixIntent(overrides: Record<string, unknown> = {}) {
+  return intent({
+    measurement: { mode: "quantity_only" },
+    pricing: { model: "two_dimensional_matrix", unit: "per_piece", rowOptionKey: "thickness", columnOptionKey: "sides", cells: [
+      { row: "3mm", column: "single", priceCents: 1200 }, { row: "3mm", column: "double", priceCents: 1800 },
+      { row: "6mm", column: "single", priceCents: 1600 }, { row: "6mm", column: "double", priceCents: 2200 },
+    ] },
+    optionGroups: [
+      { key: "thickness", label: "Thickness", required: true, selectionMode: "single", values: [{ key: "3mm", label: "3mm", isDefault: true }, { key: "6mm", label: "6mm", isDefault: false }] },
+      { key: "sides", label: "Sides", required: true, selectionMode: "single", values: [{ key: "single", label: "Single-sided", isDefault: true }, { key: "double", label: "Double-sided", isDefault: false }] },
+    ],
+    production: { route: { state: "explicitly_unset" }, configuration: {} },
+    ...overrides,
+  });
 }
 
 describe("projectProductDraftIntentToProductBuilderDraft", () => {
@@ -26,22 +44,43 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
   });
 
   it("projects an exact two-dimensional matrix without recreating its prices", () => {
-    const source = intent({
-      pricing: { model: "two_dimensional_matrix", unit: "per_piece", rowOptionKey: "thickness", columnOptionKey: "sides", cells: [
-        { row: "3mm", column: "single", priceCents: 1200 }, { row: "3mm", column: "double", priceCents: 1800 },
-        { row: "6mm", column: "single", priceCents: 1600 }, { row: "6mm", column: "double", priceCents: 2200 },
-      ] },
-      optionGroups: [
-        { key: "thickness", label: "Thickness", required: true, selectionMode: "single", values: [{ key: "3mm", label: "3mm", isDefault: true }, { key: "6mm", label: "6mm", isDefault: false }] },
-        { key: "sides", label: "Sides", required: true, selectionMode: "single", values: [{ key: "single", label: "Single-sided", isDefault: true }, { key: "double", label: "Double-sided", isDefault: false }] },
-      ],
-    });
+    const source = perPieceMatrixIntent();
     const result = projectProductDraftIntentToProductBuilderDraft(source);
     const matrix = result.treeJson.pricingMatrix as any;
     expect(matrix.dimensions).toEqual(["thickness", "sides"]);
     expect(matrix.rows).toHaveLength(4);
     expect(matrix.rows.map((row: any) => row.variables.base_price).sort((a: number, b: number) => a - b)).toEqual([1200, 1600, 1800, 2200]);
     expect((result.treeJson.meta as any).pricingV2.optionMatrixPricingUnit).toBe("per_piece");
+    expect(result.product).toMatchObject({ pricingMode: "quantity", measurementMode: "quantity_only", pricingProfileKey: "qty_only", isActive: false });
+    expect(result.treeJson.meta).toMatchObject({ pricingProfileKey: "qty_only", requiresDimensions: false });
+    expect((result.treeJson.meta as any).pricingFormula).toBeUndefined();
+    expect(JSON.stringify(result.treeJson)).not.toContain("total_sqft");
+  });
+
+  it.each([
+    ["3mm", "single", 1, 12], ["3mm", "double", 1, 18], ["6mm", "single", 1, 16], ["6mm", "double", 1, 22], ["6mm", "double", 3, 66],
+  ])("evaluates the quantity-only per-piece matrix for %s / %s at quantity %i", (thickness, sides, quantity, expectedTotal) => {
+    const projected = projectProductDraftIntentToProductBuilderDraft(perPieceMatrixIntent());
+    const request = validatePricingPreviewRequest({ treeJson: projected.treeJson, quantity, optionSelectionsJson: { thickness: { value: thickness }, sides: { value: sides } } });
+    expect(request).toMatchObject({ ok: true, normalized: { widthNum: 0, heightNum: 0, quantityNum: quantity } });
+    if (!request.ok) throw new Error("Expected a dimension-free pricing preview request.");
+    const matrix = extractProductOptionPricingMatrix(projected.treeJson);
+    const resolved = resolveProductOptionPricingMatrix({ pricingMatrix: matrix, selections: { thickness, sides } });
+    expect(resolved.errors).toEqual([]);
+    expect(resolved.variables.base_price).toBe(expectedTotal / quantity);
+    expect(resolved.variables.base_price * request.normalized.quantityNum).toBe(expectedTotal);
+  });
+
+  it("keeps square-foot matrices dimensional while assigning every per-piece pricing family to the quantity profile", () => {
+    const perSqftMatrix = projectProductDraftIntentToProductBuilderDraft(intent({
+      pricing: { model: "two_dimensional_matrix", unit: "per_square_foot", rowOptionKey: "thickness", columnOptionKey: "sides", cells: [{ row: "3mm", column: "single", priceCents: 1200 }] },
+      optionGroups: [{ key: "thickness", label: "Thickness", required: true, selectionMode: "single", values: [{ key: "3mm", label: "3mm", isDefault: true }] }, { key: "sides", label: "Sides", required: true, selectionMode: "single", values: [{ key: "single", label: "Single-sided", isDefault: true }] }],
+    }));
+    expect(perSqftMatrix.product).toMatchObject({ pricingMode: "area", pricingProfileKey: "default", measurementMode: "dimensions_required" });
+    expect((perSqftMatrix.treeJson.meta as any).requiresDimensions).toBe(true);
+    expect(projectProductDraftIntentToProductBuilderDraft(intent({ measurement: { mode: "quantity_only" }, pricing: { model: "scalar", unit: "per_piece", priceCents: 1200 } })).product.pricingProfileKey).toBe("qty_only");
+    expect(projectProductDraftIntentToProductBuilderDraft(intent({ measurement: { mode: "quantity_only" }, pricing: { model: "quantity_tiers", unit: "per_piece", tiers: [{ minimumQuantity: 1, maximumQuantity: null, priceCents: 1200 }] } })).product.pricingProfileKey).toBe("qty_only");
+    expect(projectProductDraftIntentToProductBuilderDraft(intent({ measurement: { mode: "quantity_only" }, workflow: { kind: "service_fee", requiresProofApproval: false, requiresProductionJob: false }, production: { route: { state: "explicitly_unset" }, configuration: {} }, pricing: { model: "scalar", unit: "flat_fee", priceCents: 1200 } })).product.pricingProfileKey).toBe("fee");
   });
 
   it("projects continuous quantity tiers into PBV2 lower-bound tiers", () => {
