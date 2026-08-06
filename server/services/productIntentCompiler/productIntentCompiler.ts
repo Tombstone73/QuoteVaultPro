@@ -502,7 +502,8 @@ export class ProductIntentCompiler {
       });
     }
 
-    await persistCompilerDiagnostic(input, lastDiagnostics, failureStage, invalidOutput.trim().startsWith("{") ? "invalid_contract" : "invalid_json");
+    const finalDiagnostics = lastDiagnostics ? { ...lastDiagnostics, schemaIssuePaths: validationIssuePaths } : lastDiagnostics;
+    await persistCompilerDiagnostic(input, finalDiagnostics, failureStage, invalidOutput.trim().startsWith("{") ? "invalid_contract" : "invalid_json");
     return {
       ok: false,
       error: {
@@ -511,7 +512,7 @@ export class ProductIntentCompiler {
         retryable: true,
         diagnosticCode: correlationId,
       },
-      diagnostics: lastDiagnostics,
+      diagnostics: finalDiagnostics,
     };
   }
 }
