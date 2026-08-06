@@ -89,12 +89,28 @@ function buildMatrix(intent: ProductDraftIntent, groups: Map<string, ProductDraf
   return { dimensions: [rowOptionKey, columnOptionKey], rows };
 }
 
+/**
+ * PBV2's default profile is explicitly square-foot formula pricing. Every
+ * canonical per-piece shape must select the existing quantity-only evaluator
+ * instead, including option matrices whose rate is resolved from a cell.
+ */
+function pricingProfileKeyFor(pricing: ProductDraftIntent["pricing"]): "default" | "qty_only" | "fee" {
+  if (pricing.model === "scalar" && pricing.unit === "flat_fee") return "fee";
+  if (
+    (pricing.model === "scalar" && pricing.unit === "per_piece")
+    || (pricing.model === "quantity_tiers" && pricing.unit === "per_piece")
+    || (pricing.model === "two_dimensional_matrix" && pricing.unit === "per_piece")
+  ) return "qty_only";
+  return "default";
+}
+
 /** Pure, deterministic intent → Product Builder/PBV2 projection. No DB access. */
 export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknown): ProjectedProductBuilderDraft {
   const intent = parseProductDraftIntent(rawIntent); assertReady(intent);
   const optionTree = buildOptions(intent); const matrix = buildMatrix(intent, optionTree.groups);
   const pricing = intent.pricing;
   const isFee = pricing.model === "scalar" && pricing.unit === "flat_fee";
+  const pricingProfileKey = pricingProfileKeyFor(pricing);
   assert(!isFee || intent.workflow.kind === "service_fee", "FLAT_FEE_WORKFLOW_INVALID", "Flat-fee pricing requires the service-fee workflow.", "workflow.kind");
   const perSqft = pricing.model === "scalar" && pricing.unit === "per_square_foot" ? pricing.priceCents : null;
   const perPiece = pricing.model === "scalar" && pricing.unit === "per_piece" ? pricing.priceCents : null;
@@ -111,7 +127,7 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
     schemaVersion: 2, status: "DRAFT", rootNodeIds: optionTree.rootNodeIds, nodes: optionTree.nodes, edges: optionTree.edges,
     ...(matrix ? { pricingMatrix: matrix } : {}),
     meta: {
-      title: `${intent.identity.name} PBV2 Draft`, pricingProfileKey: isFee ? "fee" : pricing.model === "quantity_tiers" ? "qty_only" : "default", pricingV2,
+      title: `${intent.identity.name} PBV2 Draft`, pricingProfileKey, pricingV2,
       ...(isFee ? { pricingFormula: "flatFee", pricingFormulaVariables: { flatFee: pricing.priceCents / 100 } } : {}),
       requiresDimensions: intent.measurement.mode === "dimensions_required", ...(fixedDimensions ? { fixedDimensions } : {}),
       productIntake: {
@@ -134,7 +150,7 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
   const route = intent.production.route.state === "resolved" ? { id: intent.production.route.id, label: intent.production.route.label } : null;
   const material = intent.material.state === "resolved" ? { state: "resolved" as const, id: intent.material.id, label: intent.material.label } : { state: "explicitly_unset" as const };
   return {
-    product: { name: intent.identity.name, category: intent.identity.category.label, description: intent.identity.description, pricingMode: pricing.model === "scalar" && pricing.unit === "per_square_foot" || pricing.model === "two_dimensional_matrix" && pricing.unit === "per_square_foot" || pricing.model === "quantity_tiers" && pricing.unit === "per_square_foot" ? "area" : "quantity", measurementMode: intent.measurement.mode === "quantity_only" ? "quantity_only" : "dimensions_required", pricingEngine: "pricingProfile", pricingProfileKey: isFee ? "fee" : pricing.model === "quantity_tiers" ? "qty_only" : "default", requiresProductionJob: intent.workflow.requiresProductionJob, requiresProofApproval: intent.workflow.requiresProofApproval, isService: intent.workflow.kind === "service_fee", isTaxable: true, isActive: false },
+    product: { name: intent.identity.name, category: intent.identity.category.label, description: intent.identity.description, pricingMode: pricing.model === "scalar" && pricing.unit === "per_square_foot" || pricing.model === "two_dimensional_matrix" && pricing.unit === "per_square_foot" || pricing.model === "quantity_tiers" && pricing.unit === "per_square_foot" ? "area" : "quantity", measurementMode: intent.measurement.mode === "quantity_only" ? "quantity_only" : "dimensions_required", pricingEngine: "pricingProfile", pricingProfileKey, requiresProductionJob: intent.workflow.requiresProductionJob, requiresProofApproval: intent.workflow.requiresProofApproval, isService: intent.workflow.kind === "service_fee", isTaxable: true, isActive: false },
     treeJson, relationships: { productionRoute: route, material }, audit: { contractVersion: 1, intentId: intent.intentId, revision: intent.revision, fingerprint, fieldMetadata: intent.fieldMetadata },
   };
 }

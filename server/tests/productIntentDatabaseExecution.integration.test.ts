@@ -89,6 +89,7 @@ describeDatabase("canonical Product Intent database execution (requires safe TES
       const intent = canonicalIntent({
         organizationId: orgId,
         intentId: `canonical-matrix-${orgId}`,
+        measurement: { mode: "quantity_only" },
         pricing: {
           model: "two_dimensional_matrix", unit: "per_piece", rowOptionKey: "thickness", columnOptionKey: "sides",
           cells: [
@@ -113,9 +114,12 @@ describeDatabase("canonical Product Intent database execution (requires safe TES
 
       const [product] = await tx.select().from(schema.products).where((await import("drizzle-orm")).eq(schema.products.id, first.productId));
       const [tree] = await tx.select().from(schema.pbv2TreeVersions).where((await import("drizzle-orm")).eq(schema.pbv2TreeVersions.id, first.pbv2TreeVersionId));
-      expect(product).toMatchObject({ organizationId: orgId, isActive: false, primaryMaterialId: materialId, requiresProofApproval: true, requiresProductionJob: true });
+      expect(product).toMatchObject({ organizationId: orgId, isActive: false, measurementMode: "quantity_only", pricingMode: "quantity", pricingProfileKey: "qty_only", primaryMaterialId: materialId, requiresProofApproval: true, requiresProductionJob: true });
       expect(tree).toMatchObject({ organizationId: orgId, productId: first.productId, status: "DRAFT", schemaVersion: 2 });
       expect(tree.treeJson.pricingMatrix.rows).toHaveLength(4);
+      expect(tree.treeJson.meta.pricingProfileKey).toBe("qty_only");
+      expect(tree.treeJson.meta.pricingFormula).toBeUndefined();
+      expect(JSON.stringify(tree.treeJson)).not.toContain("total_sqft");
       expect(tree.treeJson.meta.pricingV2.optionMatrixPricingUnit).toBe("per_piece");
       const laminationInput = Object.values(tree.treeJson.nodes).find((node: any) => node.key === "lamination") as any;
       expect(laminationInput.input.defaultValue).toBe("none");
