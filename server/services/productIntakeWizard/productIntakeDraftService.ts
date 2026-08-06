@@ -32,6 +32,7 @@ import type { Pbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 import type { ProductOptionRule } from "@shared/productOptionRules";
 import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
+import { buildProductIntakeQuantityMetadata, type ProductIntakeQuantityPricingBehavior } from "@shared/productIntakeQuantityMetadata";
 import { db as defaultDb } from "../../db";
 import { normalizeChoicePricingAnswer, stripDefaultChoiceAnnotation } from "./productIntakeOptionHelpers";
 import { correctedStateBlockers, ProductIntakeSessionError } from "./productIntakeSessionService";
@@ -1487,7 +1488,15 @@ function shouldCollectQuantity(brief: ProductIntakeBrief): boolean {
   return !/unknown|none|not applicable|fixed/.test(text);
 }
 
-function quantityMetadataForBrief(brief: ProductIntakeBrief) {
+function quantityPricingBehaviorForBrief(brief: ProductIntakeBrief): ProductIntakeQuantityPricingBehavior {
+  const text = `${brief.pricingAnalysis.behavior} ${brief.pricingAnalysis.notes ?? ""}`.toLowerCase();
+  if (/flat|fixed/.test(text)) return "flat_fee";
+  if (/tier/.test(text)) return "quantity_tiers";
+  if (/qty|quantity|piece|each/.test(text)) return "per_piece";
+  return "per_square_foot";
+}
+
+function quantityMetadataForBrief(brief: ProductIntakeBrief, quantityOnly: boolean) {
   const behavior = compactText(brief.quantityBehavior.behavior, "unknown");
   const notes = compactText(brief.quantityBehavior.notes, "");
   const sourceOptions = [...brief.requiredOptions, ...brief.optionalOptions]
@@ -1504,17 +1513,14 @@ function quantityMetadataForBrief(brief: ProductIntakeBrief) {
       sourcePaths: option.sourcePaths,
     }));
 
-  return {
+  return buildProductIntakeQuantityMetadata({
     behavior,
     confidence: brief.quantityBehavior.confidence,
     notes: notes || null,
-    lineItemQuantitySource: true,
-    customerFacingOptionGenerated: false,
+    quantityOnly,
     sourceOptions,
-    warning: shouldCollectQuantity(brief)
-      ? "Quantity is captured on quote/order line items. Intake quantity behavior is preserved as pricing metadata and must not create a PBV2 customer-facing option."
-      : null,
-  };
+    pricingBehavior: quantityPricingBehaviorForBrief(brief),
+  });
 }
 
 function pricingModeForBrief(brief: ProductIntakeBrief): "area" | "quantity" | "flat" {
@@ -1847,7 +1853,7 @@ export function buildProductIntakeDraftTree(args: {
         sizeMode,
         ...(fixedDimensions ? { fixedDimensions } : {}),
         size: sizeMetadata,
-        quantity: { ...quantityMetadataForBrief(args.brief), quantityOnly },
+        quantity: quantityMetadataForBrief(args.brief, quantityOnly),
         pricingReadiness: {
           base: pricingReadiness.base,
           sources: pricingReadiness.sources,

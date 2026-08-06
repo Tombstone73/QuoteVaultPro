@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
 import { parseProductDraftIntent, productDraftIntentFingerprint, type ProductDraftIntent } from "@shared/productDraftIntent";
 import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
-import { validateOptionTreeV2 } from "@shared/optionTreeV2";
+import { optionTreeV2Schema, validateOptionTreeV2 } from "@shared/optionTreeV2";
 import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
+import { buildProductIntakeQuantityMetadata, type ProductIntakeQuantityPricingBehavior } from "@shared/productIntakeQuantityMetadata";
 
 /** A structured pre-write failure; callers must not fall back to legacy intake. */
 export class ProductIntentProjectionError extends Error {
@@ -47,6 +48,7 @@ function assertReady(intent: ProductDraftIntent): void {
   assert(intent.workflow.kind !== "service_fee" || !intent.workflow.requiresProductionJob, "SERVICE_FEE_PRODUCTION_JOB", "Service fees cannot create production jobs.", "workflow.requiresProductionJob");
   assert(intent.production.route.state === "explicitly_unset" || intent.workflow.requiresProductionJob, "ROUTE_WITHOUT_PRODUCTION_JOB", "A production route requires a production job.", "production.route");
   if (intent.measurement.mode === "quantity_only") {
+    assert(intent.quantity.behavior !== "not_applicable", "QUANTITY_ONLY_QUANTITY_UNCONFIGURED", "Quantity-only products must declare a customer-entered or fixed quantity behavior.", "quantity");
     assert(!(intent.pricing.model === "scalar" && intent.pricing.unit === "per_square_foot"), "SQUARE_FOOT_QUANTITY_ONLY", "Per-square-foot pricing requires dimensions or fixed dimensions.", "pricing");
     assert(!(intent.pricing.model === "quantity_tiers" && intent.pricing.unit === "per_square_foot"), "SQUARE_FOOT_QUANTITY_ONLY", "Per-square-foot quantity tiers require dimensions or fixed dimensions.", "pricing");
   }
@@ -104,6 +106,26 @@ function pricingProfileKeyFor(pricing: ProductDraftIntent["pricing"]): "default"
   return "default";
 }
 
+function quantityPricingBehaviorFor(pricing: ProductDraftIntent["pricing"]): ProductIntakeQuantityPricingBehavior {
+  if (pricing.model === "quantity_tiers") return pricing.unit === "per_piece" ? "quantity_tiers" : "per_square_foot";
+  if (pricing.model === "two_dimensional_matrix") return pricing.unit === "per_piece" ? "per_piece" : "per_square_foot";
+  if (pricing.model === "scalar") return pricing.unit;
+  throw new ProductIntentProjectionError("PRICING_UNRESOLVED", "Resolved pricing is required before building quantity metadata.", "pricing");
+}
+
+function quantityMetadataForIntent(intent: ProductDraftIntent) {
+  const fixedQuantity = intent.quantity.behavior === "fixed" ? intent.quantity.quantity : undefined;
+  const pricing = intent.pricing;
+  return buildProductIntakeQuantityMetadata({
+    behavior: intent.quantity.behavior,
+    confidence: 100,
+    quantityOnly: intent.measurement.mode === "quantity_only",
+    pricingBehavior: quantityPricingBehaviorFor(pricing),
+    matrixAxes: pricing.model === "two_dimensional_matrix" ? [pricing.rowOptionKey, pricing.columnOptionKey] : [],
+    ...(fixedQuantity === undefined ? {} : { fixedQuantity }),
+  });
+}
+
 /** Pure, deterministic intent → Product Builder/PBV2 projection. No DB access. */
 export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknown): ProjectedProductBuilderDraft {
   const intent = parseProductDraftIntent(rawIntent); assertReady(intent);
@@ -123,6 +145,7 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
   };
   const fixedDimensions = intent.measurement.mode === "fixed_size" ? { ...intent.measurement.dimensions, unit: "in" as const, label: `${intent.measurement.dimensions.widthIn}\" x ${intent.measurement.dimensions.heightIn}\"` } : null;
   const fingerprint = productDraftIntentFingerprint(intent);
+  const quantityMetadata = quantityMetadataForIntent(intent);
   const treeJson: Record<string, unknown> = {
     schemaVersion: 2, status: "DRAFT", rootNodeIds: optionTree.rootNodeIds, nodes: optionTree.nodes, edges: optionTree.edges,
     ...(matrix ? { pricingMatrix: matrix } : {}),
@@ -132,7 +155,7 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
       requiresDimensions: intent.measurement.mode === "dimensions_required", ...(fixedDimensions ? { fixedDimensions } : {}),
       productIntake: {
         architecture: "product_draft_intent", contractVersion: intent.contractVersion, intentId: intent.intentId, revision: intent.revision, fingerprint,
-        quantity: intent.quantity, material: intent.material, production: intent.production, workflow: intent.workflow, fieldMetadata: intent.fieldMetadata,
+        quantity: quantityMetadata, material: intent.material, production: intent.production, workflow: intent.workflow, fieldMetadata: intent.fieldMetadata,
       },
     },
   };
@@ -143,6 +166,8 @@ export function projectProductDraftIntentToProductBuilderDraft(rawIntent: unknow
     const graph = validateOptionTreeV2(treeJson);
     assert(graph.ok, "PBV2_TREE_INVALID", graph.ok ? "" : graph.errors.join(" "), "treeJson");
   }
+  const metadataContract = optionTreeV2Schema.safeParse(treeJson);
+  assert(metadataContract.success, "PBV2_PRODUCT_INTAKE_METADATA_INVALID", metadataContract.success ? "" : metadataContract.error.issues.map((issue) => `${issue.path.join(".")}: ${issue.message}`).join(" "), "treeJson.meta.productIntake.quantity");
   if (pricing.model !== "two_dimensional_matrix") {
     const base = validateTreeHasBasePrice(treeJson);
     assert(base.ok, "PBV2_PRICING_INVALID", base.ok ? "" : base.errors.map((finding) => finding.message).join(" "), "pricing");
