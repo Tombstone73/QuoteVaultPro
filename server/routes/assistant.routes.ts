@@ -26,7 +26,7 @@ import { AnalyticalCustomerResolutionService } from "../services/assistant/analy
 import { AssistantAnalyticsReportingRepository } from "../storage/assistantAnalyticsReporting.repo";
 import { assistantReportEntityResolutionsRepository } from "../storage/assistantReportEntityResolutions.repo";
 import { ConfiguredCanonicalProductIntentRouter } from "../services/assistant/productManagementSkill";
-import { and, asc, desc, eq, or } from "drizzle-orm";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { aiAuditEvents } from "@shared/schema";
 import { aiDiagnosticEnvelopeSchema } from "@shared/aiDiagnostics";
@@ -279,7 +279,7 @@ export function registerAssistantRoutes(
     const scope = resolveScope(req);
     const reference = String(req.params.reference ?? "");
     if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/.test(reference)) return res.status(404).json({ success: false, error: { code: "DIAGNOSTIC_NOT_FOUND", message: "Diagnostic not found." } });
-    const rows = await db.select().from(aiAuditEvents).where(and(eq(aiAuditEvents.orgId, scope.organizationId), or(eq(aiAuditEvents.correlationId, reference), eq(aiAuditEvents.metadata["referenceId"] as any, reference)))).orderBy(asc(aiAuditEvents.createdAt)).limit(20);
+    const rows = await db.select().from(aiAuditEvents).where(and(eq(aiAuditEvents.orgId, scope.organizationId), or(eq(aiAuditEvents.correlationId, reference), eq(sql<string>`${aiAuditEvents.metadata}->>'referenceId'`, reference)))).orderBy(asc(aiAuditEvents.createdAt)).limit(20);
     const diagnostics = rows.flatMap((row) => { const parsed = aiDiagnosticEnvelopeSchema.safeParse(row.metadata); return parsed.success ? [parsed.data] : []; });
     await db.insert(aiAuditEvents).values({ orgId: scope.organizationId, actorUserId: scope.userId, eventType: "ai_diagnostic_lookup", status: diagnostics.length ? "found" : "not_found", correlationId: reference, metadata: { identifierType: reference.startsWith("aip-") || reference.startsWith("pic-") ? "reference" : "correlation", reference, matchingEvents: diagnostics.length } }).catch(() => undefined);
     if (!diagnostics.length) return res.status(404).json({ success: false, error: { code: "DIAGNOSTIC_NOT_FOUND", message: "Diagnostic not found." } });
