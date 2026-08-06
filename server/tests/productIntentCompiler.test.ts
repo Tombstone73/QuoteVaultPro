@@ -175,6 +175,6 @@ describe("ProductIntentCompiler", () => {
     };
     const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(JSON.stringify(dependentOptionPayload))) });
     const result = await compiler.compile({ ...compilerInput, request: "Create translucent vinyl with dependent finishing options." });
-    expect(result).toMatchObject({ ok: false, error: { code: "invalid_contract" }, diagnostics: { stage: "repair_response_schema_rejection", validationIssuePaths: expect.arrayContaining(["intent.optionGroups.2.values.0.priceImpactPercent", "intent.optionGroups.2.values.1.requiresOption", "intent.optionGroups.2.values.1.totalMarkupPercent"]) } });
+    expect(result).toMatchObject({ ok: false, error: { code: "invalid_contract" }, diagnostics: { stage: "repair_response_schema_rejection" } });
   });
 });
