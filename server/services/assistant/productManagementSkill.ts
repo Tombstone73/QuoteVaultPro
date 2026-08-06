@@ -169,6 +169,10 @@ function canonicalCards(outcome: Extract<CanonicalProductIntentOutcome, { ok: tr
   return cards;
 }
 
+function normalizeProductReference(value: string): string {
+  return value.trim().replace(/\s+/g, " ").toLocaleLowerCase();
+}
+
 async function loadReferences(organizationId: string) {
   const [materialRows, templateRows] = await Promise.all([
     db.select({ id: materials.id, sku: materials.sku, name: materials.name }).from(materials).where(eq(materials.organizationId, organizationId)),
