@@ -12,14 +12,12 @@ import type {
 import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { assistantReportResolutionCancelRequestSchema, assistantReportResolutionSelectionRequestSchema, assistantTurnRequestSchema } from "@shared/assistantContracts";
 import { AssistantOrchestrationService, type AssistantToolExecutionAudit } from "./orchestration";
-import { AssistantPlanningError, ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
+import { ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
-import { resolveQuoteInternalNoteIntent } from "./execution/quoteInternalNoteIntent";
-import { isActiveProductIntakeCorrectionRequest, productManagementSkillService } from "./productManagementSkill";
+import { productManagementSkillService } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
-import { pendingOrderIntakeRequest } from "./orderIntakeContinuation";
 import { crmManagementService } from "./crmManagementService";
 import { productionOperationsService } from "./productionOperationsService";
 import { fulfillmentOperationsService } from "./fulfillmentOperationsService";
@@ -32,15 +30,20 @@ import {
   assistantCapabilityReadTools,
   isAssistantCapabilityProductionCommand,
 } from "./assistantCapabilities";
-import { deterministicOrderLookupTarget, deterministicSearchTarget, resolveDeterministicReadPlan } from "./deterministicReadRouting";
 import { AnalyticalCustomerResolutionService, type PersistedAnalyticalResolution } from "./analyticalCustomerResolution";
 import { resolveSystemGuideAnswer } from "./systemGuide";
-import { resolveConfigurableProductContinuation } from "./complexProductDraftPersistence";
+import {
+  getAssistantCapability,
+  type AssistantIntentPlan,
+} from "./assistantIntentPlanner";
+import {
+  ConfiguredAssistantIntentPlannerProvider,
+  type AssistantIntentPlannerProvider,
+} from "./intentPlannerProvider";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
 export const ASSISTANT_UNAVAILABLE_REPLY = "I can't answer that until a compatible AI provider is configured.";
-export const ASSISTANT_WRITE_REFUSAL_REPLY = "I can't make that change here. I can still help you look up the record or explain what needs attention.";
 
 export class AssistantServiceError extends Error {
   constructor(
@@ -166,52 +169,6 @@ function hasPermission(actor: AssistantActor | undefined, permission: string): b
   return Boolean(actor?.permissions?.includes(permission));
 }
 
-/** Returns a local-only reply for the two capability questions that must never
- * depend on provider planning. The response derives entirely from the same
- * server summary used by the capability endpoint and composer. */
-export function resolveAssistantCapabilityQuestion(
-  message: string,
-  capability: AssistantCapabilitySummary,
-): { response: string; title: string } | null {
-  const normalized = message.trim().toLowerCase().replace(/[’']/g, "'").replace(/\s+/g, " ");
-  const asksAvailable = /^(?:what|which) (?:can|do) (?:you|the assistant) (?:currently )?do\??$/.test(normalized)
-    || /^(?:what are )?(?:your|the assistant's) capabilities\??$/.test(normalized);
-  const asksUnavailable = /^(?:what|which) (?:can't|cannot) (?:you|the assistant) (?:currently )?do(?: yet)?\??$/.test(normalized)
-    || /^(?:what|which) (?:can|do) (?:you|the assistant) (?:not|not yet) (?:currently )?do\??$/.test(normalized)
-    || /^(?:what are )?(?:your|the assistant's) limitations\??$/.test(normalized);
-  if (!asksAvailable && !asksUnavailable) return null;
-
-  if (asksAvailable) {
-    if (!capability.readToolsEnabled) {
-      return { title: "Assistant capabilities", response: capability.unavailableReason ?? "Business lookups are currently unavailable." };
-    }
-    const confirmedActions: string[] = [];
-    for (const command of capability.productionCommandsPermittedForUser) {
-      if (isAssistantCapabilityProductionCommand(command)) confirmedActions.push(assistantCapabilityCommandDescriptions[command]);
-    }
-    const actionSentence = confirmedActions.length
-      ? ` I can also ${confirmedActions.join(" and ")}.`
-      : capability.productionCommandsEnabled.length
-        ? " Confirmed changes are available to some roles, but not to your current role."
-        : "";
-    return { title: "Assistant capabilities", response: `I can search your records, summarize orders and products, show production queues, identify overdue or urgent jobs, compare station workloads, and show what needs attention today.${actionSentence} I can't activate products, edit active products, perform external research, or make unconfirmed changes yet.` };
-  }
-
-  const limits = [
-    "product activation remains disabled",
-    "active-product editing remains disabled",
-    "external research remains disabled",
-    "MCP integrations remain disabled",
-  ];
-  if (!capability.readToolsEnabled) limits.unshift(capability.unavailableReason ?? "business lookups are currently unavailable");
-  if (capability.productionCommandsEnabled.length && !capability.productionCommandsPermittedForUser.length) {
-    limits.unshift("confirmed actions are enabled for this organization, but your current role is not permitted to use them");
-  } else if (!capability.productionCommandsEnabled.length) {
-    limits.unshift("confirmed actions are unavailable because the assistant provider or organization setting is disabled");
-  }
-  return { title: "Assistant limitations", response: `I can't ${limits.join("; ")}.` };
-}
-
 export function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
@@ -253,24 +210,6 @@ function activeProductIntakeSession(messages: AssistantMessageRecord[]): string 
   return null;
 }
 
-/** An active Product Intake owns explicit corrections, even when a correction
- * contains words that would ordinarily be answered by the read-only guide. */
-export function shouldDeferSystemGuideForActiveProductIntake(messages: AssistantMessageRecord[], message: string): boolean {
-  return Boolean(activeProductIntakeSession(messages) && isActiveProductIntakeCorrectionRequest(message));
-}
-
-function activeConfigurableProductProposalId(messages: AssistantMessageRecord[]): string | null {
-  for (const message of [...messages].reverse()) {
-    if (message.role !== "assistant") continue;
-    for (const card of [...(message.structuredCards ?? [])].reverse()) {
-      const candidate = card as { details?: { configurableProduct?: { proposalId?: unknown } }; plan?: { action?: unknown; proposalId?: unknown } };
-      if (candidate.plan?.action === "products.create_configurable_draft" && typeof candidate.plan.proposalId === "string") return candidate.plan.proposalId;
-      if (typeof candidate.details?.configurableProduct?.proposalId === "string") return candidate.details.configurableProduct.proposalId;
-    }
-  }
-  return null;
-}
-
 export class AssistantService {
   constructor(
     private readonly repo: AssistantRepository,
@@ -282,6 +221,12 @@ export class AssistantService {
      * repository is available. Optional during migration rollout so normal
      * assistant turns do not depend on an unfinished table. */
     private readonly reportResolutionService?: AnalyticalCustomerResolutionService,
+    /** This planner owns free-text interpretation. Structured UI routes do not
+     * enter createTurn and therefore remain server-bound direct actions. */
+    private readonly intentPlanner: AssistantIntentPlannerProvider = new ConfiguredAssistantIntentPlannerProvider(new OpenAiCompatibleBugReviewProvider()),
+    /** Injectable only for composition and isolated routing tests; production
+     * always uses the canonical compiler-backed singleton. */
+    private readonly productIntentDispatcher: Pick<typeof productManagementSkillService, "respondPlannedCanonicalProductIntent"> = productManagementSkillService,
   ) {}
 
   async getCapabilities(scope: AssistantScope, actor?: AssistantActor) {
@@ -453,7 +398,7 @@ export class AssistantService {
       context: resolution.context,
       correlationId,
     });
-    const rendered = renderToolResults(executed.executions, null, null, false);
+    const rendered = renderToolResults(executed.executions);
     const result = await this.repo.createReportResolutionContinuation!({
       ...scope,
       resolutionId,
@@ -500,282 +445,179 @@ export class AssistantService {
     }
 
     const correlationId = crypto.randomUUID();
-    // System Guide answers are local, read-only, and sourced from the
-    // versioned manifest/approved corpus. A guide phrase such as "Flatbed"
-    // must not intercept a valid, server-persisted configurable-product
-    // continuation before Product Management can handle it.
-    const systemGuide = resolveSystemGuideAnswer(request.message, request.context);
-    let preloadedConversation: Awaited<ReturnType<typeof this.repo.getConversation>> | null = null;
-    if (systemGuide) {
-      preloadedConversation = await this.repo.getConversation({ ...scope, conversationId });
-      if (!preloadedConversation) throw this.notFound();
-      let deferSystemGuide = shouldDeferSystemGuideForActiveProductIntake(preloadedConversation.messages, request.message);
-      if (!deferSystemGuide) {
-        try {
-          deferSystemGuide = Boolean(await resolveConfigurableProductContinuation({
-            organizationId: scope.organizationId,
-            actorUserId: actor.userId,
-            conversationId: preloadedConversation.id,
-            priorProposalId: activeConfigurableProductProposalId(preloadedConversation.messages),
-          }));
-        } catch {
-          // Ambiguous, stale, or cross-actor continuation state must fail closed
-          // through Product Management rather than falling through to a guide.
-          deferSystemGuide = true;
-        }
-      }
-      if (!deferSystemGuide) {
-        return this.persistResponse({
-          scope, conversationId, actor, request, correlationId,
-          response: systemGuide.response,
-          status: "responded",
-          structuredCards: systemGuide.cards,
-        });
-      }
-    }
+    return this.createAiFirstTurn({ scope, conversationId, actor, request, correlationId });
+  }
+
+  /**
+   * The only free-text AI-first dispatch boundary.  It receives one strict
+   * provider-neutral plan, verifies server-owned constraints, and then gives
+   * the selected specialist the original message without rewriting it.  A
+   * planning failure is persisted as a safe failure; it never falls through
+   * to a keyword router.
+   */
+  private async createAiFirstTurn(input: {
+    scope: AssistantScope;
+    conversationId: string;
+    actor: AssistantActor;
+    request: AssistantTurnRequest;
+    correlationId: string;
+  }): Promise<AssistantTurnResult> {
+    const { scope, conversationId, actor, request, correlationId } = input;
+    const capability = await this.getCapabilities(scope, actor);
     if (!capability.toolsEnabled) {
-      return this.persistResponse({
-        scope, conversationId, actor, request, correlationId,
+      return this.persistAiFirstResponse(input, {
         response: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY,
         status: "failed",
         errorCode: "provider_unavailable",
-        structuredCards: [{ kind: "provider_unavailable", title: "Business questions unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }],
+        cards: [{ kind: "provider_unavailable", title: "AI planning unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }],
       });
     }
-
-    let response = "I could not complete that business lookup.";
-    let status: "responded" | "failed" = "responded";
-    let provider: string | null = null;
-    let model: string | null = null;
-    let errorCode: string | null = null;
-    let cards: AssistantStructuredCard[] = [];
-    const audits: AssistantToolExecutionAudit[] = [];
-    try {
-      const capabilityReply = resolveAssistantCapabilityQuestion(request.message, capability);
-      if (capabilityReply) {
-        response = capabilityReply.response;
-        // A local capability answer is a successful conversational response;
-        // it is not a warning, retry target, or diagnostic disclosure.
-        cards = [{ kind: "notice", title: capabilityReply.title, body: response, tone: "info" }];
-        provider = "local_policy";
-        model = "assistant-capabilities-v1";
-      } else {
-      // This runs before the read-only provider planner and is intentionally
-      // narrower than a general write classifier. It can only propose the one
-      // server-registered quote-note action; execution still requires a
-      // server-created plan, confirmation token, reauthorization, and domain
-      // service revalidation.
-      const conversation = preloadedConversation ?? await this.repo.getConversation({ ...scope, conversationId });
-      if (!conversation) throw this.notFound();
-      // The repository-owned ID is the canonical continuation identity.  Do
-      // not make a persisted configurable proposal depend on a route/client
-      // alias once the conversation has been tenant- and actor-scoped.
-      const canonicalConversationId = conversation.id;
-      const activeConfigurableProposalId = activeConfigurableProductProposalId(conversation.messages);
-      const quoteDraft = await quoteDraftIntakeService.respond({
-        organizationId: scope.organizationId,
-        userId: actor.userId,
-        conversationId,
-        message: request.message,
-      });
-      if (quoteDraft.handled) {
-        response = quoteDraft.response;
-        cards = quoteDraft.cards as AssistantResultCard[];
-        provider = "local_quote_intake";
-        model = "conversational-quote-intake-v1";
-      } else {
-      const orderIntake = await orderIntakeService.respond({
-        organizationId: scope.organizationId,
-        userId: actor.userId,
-        conversationId,
-        message: request.message,
-        pendingRequest: pendingOrderIntakeRequest(conversation.messages),
-      });
-      if (orderIntake.handled) {
-        response = orderIntake.response;
-        cards = orderIntake.cards as AssistantResultCard[];
-        provider = "local_order_intake";
-        model = "conversational-order-intake-v1";
-      } else {
-      const crmIntake = await crmManagementService.respond({
-        organizationId: scope.organizationId,
-        userId: actor.userId,
-        conversationId,
-        message: request.message,
-      });
-      if (crmIntake.handled) {
-        response = crmIntake.response;
-        cards = crmIntake.cards as AssistantResultCard[];
-        provider = "local_crm_intake";
-        model = "conversational-crm-intake-v1";
-      } else {
-      // A configurable-product proposal is conversation-bound. It must see
-      // its incremental corrections before broad operational responders can
-      // reinterpret route, sheet, or minimum-charge wording as a lookup.
-      const productManagement = await productManagementSkillService.respond({
-        organizationId: scope.organizationId,
-        userId: actor.userId,
-        conversationId: canonicalConversationId,
-        message: request.message,
-        activeSessionId: activeProductIntakeSession(conversation.messages),
-        activeConfigurableProposalId,
-      });
-      if (productManagement.handled) {
-        response = productManagement.response;
-        cards = productManagement.cards as AssistantResultCard[];
-        provider = "local_product_intake";
-        model = "product-management-skill-v1";
-      } else {
-      const productionIntake = await productionOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (productionIntake.handled) {
-        response = productionIntake.response;
-        cards = productionIntake.cards as AssistantResultCard[];
-        provider = "local_production_intake";
-        model = "conversational-production-intake-v1";
-      } else {
-      const fulfillmentIntake = await fulfillmentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (fulfillmentIntake.handled) { response = fulfillmentIntake.response; cards = fulfillmentIntake.cards as AssistantResultCard[]; provider = "local_fulfillment_intake"; model = "conversational-fulfillment-intake-v1"; } else {
-      const billingIntake = await billingInvoiceOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (billingIntake.handled) { response = billingIntake.response; cards = billingIntake.cards as AssistantResultCard[]; provider = "local_billing_intake"; model = "conversational-billing-intake-v1"; } else {
-      const paymentIntake = await paymentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (paymentIntake.handled) { response = paymentIntake.response; cards = paymentIntake.cards as AssistantResultCard[]; provider = "local_payment_intake"; model = "conversational-payment-intake-v1"; } else {
-      const quoteNoteIntent = resolveQuoteInternalNoteIntent(request.message, request.context);
-      if (quoteNoteIntent.kind === "resolved") {
-        response = "I can prepare an internal-only quote note preview. Review it and use the dedicated GO control to continue.";
-        cards = [{
-          kind: "action_proposal",
-          title: "Prepare internal quote note",
-          summary: response,
-          sourceLinks: [],
-          plan: {
-            action: "quotes.add_internal_note",
-            preview: {
-              quoteId: quoteNoteIntent.quoteId ?? null,
-              quoteNumber: quoteNoteIntent.expectedQuoteNumber ?? null,
-              noteText: quoteNoteIntent.noteText,
-              quotePath: quoteNoteIntent.quoteId ? `/quotes/${quoteNoteIntent.quoteId}` : null,
-              unchangedItems: ["Pricing", "Quote status", "Customer-facing notes", "Order state", "Production", "Invoice", "Payment"],
-            },
-          },
-        }];
-        provider = "local_policy";
-        model = "stage-4-quote-note-intent";
-      } else if (quoteNoteIntent.kind === "clarification") {
-        response = quoteNoteIntent.message;
-        cards = [{ kind: "missing_information", title: "Quote note needs clarification", summary: response, sourceLinks: [] }];
-        provider = "local_policy";
-        model = "stage-4-quote-note-intent";
-      } else {
-      // Exact, read-only lookups and current-context questions must not depend
-      // on a provider producing a valid JSON plan. The selected plan still
-      // traverses the same registry and orchestration enforcement as a
-      // provider plan, including tenant scope, permissions, limits, audits,
-      // timeouts, and result schemas.
-      const deterministicPlan = resolveDeterministicReadPlan(request.message, request.context);
-      const planned = deterministicPlan
-        ? { plan: deterministicPlan, provider: "local_policy", model: "deterministic-read-routing-v1", metadata: { route: "exact_read" } }
-        : await this.planner.plan({ organizationId: scope.organizationId, message: request.message, context: request.context });
-      provider = planned.provider;
-      model = planned.model;
-      let executablePlan = planned.plan;
-      if (this.reportResolutionService && !planned.plan.clarificationRequired) {
-        const preflight = await this.reportResolutionService.preflight({
-          scope: { ...scope, conversationId },
-          originalUserRequest: request.message,
-          plan: planned.plan,
-          context: request.context,
-        });
-        if (preflight.kind === "awaiting_entity_resolution") {
-          // `pause` writes the user message, assistant card, context snapshot,
-          // and resolution in one transaction. Never call createFoundationTurn
-          // here or a duplicate, independently visible card could be created.
-          return this.readPausedResolutionTurn(scope, conversationId, preflight.resolution);
-        }
-        if (preflight.kind === "persistence_failed") {
-          status = "failed";
-          errorCode = "report_resolution_persistence_failed";
-          response = preflight.message;
-          cards = [{ kind: "provider_unavailable", title: "Company selection unavailable", summary: response, sourceLinks: [], toolStatus: "failed" }];
-        } else if (preflight.kind === "no_match") {
-          response = preflight.message;
-          cards = [{ kind: "not_found", title: "Company not found", summary: response, sourceLinks: [], toolStatus: "not_found" }];
-        } else if (preflight.kind === "continue") {
-          executablePlan = preflight.plan;
-        }
-      }
-      if (planned.plan.intent === "unsupported_write") {
-        response = ASSISTANT_WRITE_REFUSAL_REPLY;
-        cards = [{ kind: "tool_warning", title: "Read-only assistant", summary: response, sourceLinks: [], toolStatus: "permission_denied" }];
-      } else if (planned.plan.clarificationRequired) {
-        response = planned.plan.clarificationQuestion ?? "Please clarify what you want to look up.";
-        cards = [{ kind: "tool_warning", title: "Clarification needed", summary: response, sourceLinks: [] }];
-      } else if (!cards.length) {
-        const orchestration = this.createOrchestrator((event) => { audits.push(event); });
-        const executed = await orchestration.executePlan(executablePlan, {
-          scope,
-          actor: { userId: actor.userId, email: actor.email },
-          permissions: actor.permissions ?? [],
-          context: request.context,
-          correlationId,
-        });
-        const rendered = renderToolResults(
-          executed.executions,
-          deterministicPlan ? deterministicSearchTarget(deterministicPlan) : null,
-          deterministicPlan ? deterministicOrderLookupTarget(deterministicPlan) : null,
-          deterministicPlan?.selectedSkill === "deterministic_current_order_blocking",
-        );
-        response = rendered.response;
-        cards = rendered.cards;
-      }
-      }
-      }
-      }
-      }
-      }
-      }
-      }
-      }
-      }
-      }
-    } catch (error) {
-      status = "failed";
-      errorCode = error instanceof AssistantPlanningError ? error.code : "provider_unavailable";
-      response = error instanceof AssistantPlanningError ? error.message : "The assistant is temporarily unavailable. Please retry.";
-      cards = [{ kind: "provider_unavailable", title: "Business questions unavailable", summary: response, sourceLinks: [], toolStatus: "failed" }];
-    }
-    const result = await this.persistFoundationTurn({
-      ...scope,
-      conversationId,
-      actor,
-      message: request.message,
-      context: request.context,
-      clientRequestId: request.clientRequestId,
-      response,
-      correlationId,
-      status,
-      structuredCards: cards,
-      initialTitle: titleFromMessage(request.message),
-      provider,
-      model,
-      mode: "stage_2_read_only",
-      promptVersion: "assistant-stage-2-planner-v1",
-      errorCode,
-      errorMessage: status === "failed" ? response : null,
-      toolExecutions: audits.map((audit) => ({
-        toolName: audit.toolName,
-        toolVersion: audit.toolVersion,
-        status: audit.status === "succeeded" || audit.status === "not_found" || audit.status === "partial" ? "succeeded" : audit.status === "rejected" ? "disabled" : "failed",
-        errorCode: audit.failureCode,
-        auditStatus: audit.status,
-        durationMs: audit.durationMs,
-        failureCategory: audit.failureCategory,
-        failingStep: audit.failingStep,
-        coreResultSucceeded: audit.coreResultSucceeded,
-      })),
+    const conversation = await this.repo.getConversation({ ...scope, conversationId });
+    if (!conversation) throw this.notFound();
+    const activeSessionId = activeProductIntakeSession(conversation.messages);
+    const plannerResult = await this.intentPlanner.plan({
+      organizationId: scope.organizationId,
+      promptVersion: "ai-first-intent-planner-v1",
+      timeoutUseCase: "ai_first_intent_planner",
+      system: "You are the PrintersHero AI-first typed intent planner. Return exactly one JSON object and no markdown or prose. Required strict keys: version (always 1), operation (lookup|report|explain|create|update|continue_session|correct|select_candidate|accept_recommendation|request_confirmation|execute_go|general_conversation|unrelated_conversation|clarify|unsupported), domain (products|quotes|orders|production|fulfillment|billing|payments|customers|reporting|system|conversation|unknown), mode (read|mutation|none), capabilityId, confidence, target {kind,entityId}, contextUsage {workspaceIsAuthoritative:false,workspaceRelevance,activeSessionId}, requiresClarification, clarificationQuestion, reasonCode. capabilityId must be one of system_guide, search_customers, search_products, search_orders, operational_summary, read_tooling, canonical_product_intent_compiler, products_workflow, clone_product, update_inactive_product, replace_product_matrix, replace_product_tiers, create_quote, update_quote, convert_quote, create_order, update_order, orders_workflow, production_operations, fulfillment_operations, billing_operations, payment_operations, crm_management, general_conversation, or null. Select canonical_product_intent_compiler with operation create, domain products, mode mutation, target new_entity for a detailed request to create a new product, including Translucent Vinyl. Never select system_guide from Product Details or generic workspace context; only select it for an actual help/explanation request. Treat workspace as supporting only, never authoritative. Never return product fields, executable arguments, tenant identity, permissions, or prose.",
+      user: JSON.stringify({
+        originalMessage: request.message,
+        trustedContext: {
+          route: request.context.route,
+          pageTitle: request.context.pageTitle,
+          entityType: request.context.entityType ?? null,
+          entityId: request.context.entityId ?? null,
+          hasActiveCanonicalSession: Boolean(activeSessionId),
+        },
+        contract: "version, operation, domain, mode, capabilityId, confidence, target, contextUsage, requiresClarification, clarificationQuestion, reasonCode",
+      }),
     });
-    if (!result) throw this.notFound();
+    if (!plannerResult.ok) {
+      return this.persistAiFirstResponse(input, {
+        response: plannerResult.error.message,
+        status: "failed",
+        errorCode: plannerResult.error.code,
+        cards: [{ kind: "provider_unavailable", title: "AI planning unavailable", summary: plannerResult.error.message, sourceLinks: [], toolStatus: "failed" }],
+        provider: plannerResult.diagnostics.provider,
+        model: plannerResult.diagnostics.model,
+      });
+    }
 
-    return result;
+    const plan = plannerResult.plan;
+    const validation = this.validateAiFirstPlan(plan, activeSessionId, actor);
+    if (validation) {
+      return this.persistAiFirstResponse(input, {
+        response: validation,
+        status: "failed",
+        errorCode: "invalid_intent_plan",
+        cards: [{ kind: "tool_warning", title: "AI plan rejected", summary: validation, sourceLinks: [], toolStatus: "permission_denied" }],
+        provider: plannerResult.diagnostics.provider,
+        model: plannerResult.diagnostics.model,
+      });
+    }
+
+    if (plan.requiresClarification) {
+      return this.persistAiFirstResponse(input, {
+        response: plan.clarificationQuestion ?? "Please clarify what you need.", status: "responded", errorCode: null,
+        cards: [{ kind: "tool_warning", title: "Clarification needed", summary: plan.clarificationQuestion ?? "Please clarify what you need.", sourceLinks: [] }],
+        provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model,
+      });
+    }
+    if (!plan.capabilityId) {
+      const response = plan.operation === "unsupported"
+        ? "I can’t safely complete that request here."
+        : "How can I help with your products, quotes, orders, or operations?";
+      return this.persistAiFirstResponse(input, { response, status: "responded", errorCode: null, cards: [], provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model });
+    }
+
+    let response = "I couldn't complete that request.";
+    let cards: AssistantStructuredCard[] = [];
+    const plannedCapability = plan.capabilityId;
+    if (plannedCapability === "system_guide") {
+      const guide = resolveSystemGuideAnswer(request.message, request.context);
+      response = guide?.response ?? "I can help explain the supported PrintersHero workflows.";
+      cards = (guide?.cards ?? [{ kind: "notice", title: "System Guide", body: response, tone: "info" }]) as AssistantStructuredCard[];
+    } else if (plannedCapability === "canonical_product_intent_compiler") {
+      const product = await this.productIntentDispatcher.respondPlannedCanonicalProductIntent({
+        organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id,
+        message: request.message,
+        operation: plan.operation as "create" | "continue_session" | "correct" | "select_candidate" | "accept_recommendation" | "request_confirmation" | "execute_go",
+      });
+      response = product.response;
+      cards = product.cards as AssistantStructuredCard[];
+    } else {
+      const specialist = await this.dispatchAiFirstSpecialist(plannedCapability, {
+        organizationId: scope.organizationId,
+        userId: actor.userId,
+        conversationId: conversation.id,
+        message: request.message,
+      });
+      if (specialist) {
+        response = specialist.response;
+        cards = specialist.cards as AssistantStructuredCard[];
+      } else if (plan.mode === "read") {
+        // The typed planner selected a read capability first. The existing
+        // read planner is now a post-selection tool-argument compiler only;
+        // it cannot decide a mutation route or act as a fallback router.
+        const readPlan = await this.planner.plan({ organizationId: scope.organizationId, message: request.message, context: request.context });
+        if (readPlan.plan.clarificationRequired) {
+          response = readPlan.plan.clarificationQuestion ?? "Please clarify what you want to look up.";
+          cards = [{ kind: "tool_warning", title: "Clarification needed", summary: response, sourceLinks: [] }];
+        } else {
+          const audits: AssistantToolExecutionAudit[] = [];
+          const orchestration = this.createOrchestrator((event) => audits.push(event));
+          const executed = await orchestration.executePlan(readPlan.plan, { scope, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId });
+          const rendered = renderToolResults(executed.executions);
+          response = rendered.response;
+          cards = rendered.cards;
+        }
+      } else {
+        response = "That planned workflow is not available in this deployment. Nothing was changed.";
+        cards = [{ kind: "tool_warning", title: "Workflow unavailable", summary: response, sourceLinks: [], toolStatus: "permission_denied" }];
+      }
+    }
+    console.info("[ASSISTANT_INTENT_PLANNER] Dispatched validated plan.", {
+      correlationId, capabilityId: plannedCapability, operation: plan.operation,
+      provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model,
+      activeSession: Boolean(activeSessionId),
+    });
+    return this.persistAiFirstResponse(input, { response, status: "responded", errorCode: null, cards, provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model });
+  }
+
+  private validateAiFirstPlan(plan: AssistantIntentPlan, activeSessionId: string | null, actor: AssistantActor): string | null {
+    if (plan.contextUsage.activeSessionId !== null && plan.contextUsage.activeSessionId !== activeSessionId) return "The requested session could not be verified. Nothing was changed.";
+    if (!plan.capabilityId) return null;
+    const capability = getAssistantCapability(plan.capabilityId);
+    if (capability.domain !== plan.domain || capability.mode !== plan.mode || !capability.operations.includes(plan.operation)) return "The AI plan selected an incompatible capability. Nothing was changed.";
+    if (capability.requiredContext === "active_session" && !activeSessionId) return "This request needs an active assistant session.";
+    if (capability.requiredContext === "current_entity" && plan.contextUsage.workspaceRelevance !== "entity_reference") return "This request needs a server-verified current record.";
+    if (capability.requiredPermissions.some((permission) => !hasPermission(actor, permission))) return "You don't have permission for that assistant workflow.";
+    return null;
+  }
+
+  private async dispatchAiFirstSpecialist(capabilityId: Exclude<NonNullable<AssistantIntentPlan["capabilityId"]>, "canonical_product_intent_compiler" | "system_guide">, input: { organizationId: string; userId: string; conversationId: string; message: string }): Promise<{ handled: boolean; response: string; cards: unknown[] } | null> {
+    switch (capabilityId) {
+      case "create_quote": case "update_quote": return quoteDraftIntakeService.respond(input);
+      case "create_order": case "update_order": case "orders_workflow": return orderIntakeService.respond({ ...input, pendingRequest: undefined });
+      case "crm_management": return crmManagementService.respond(input);
+      case "production_operations": return productionOperationsService.respond(input);
+      case "fulfillment_operations": return fulfillmentOperationsService.respond(input);
+      case "billing_operations": return billingInvoiceOperationsService.respond(input);
+      case "payment_operations": return paymentOperationsService.respond(input);
+      default: return null;
+    }
+  }
+
+  private async persistAiFirstResponse(input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string }, result: { response: string; status: "responded" | "failed"; errorCode: string | null; cards: AssistantStructuredCard[]; provider?: string | null; model?: string | null }): Promise<AssistantTurnResult> {
+    const persisted = await this.persistFoundationTurn({
+      ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message, context: input.request.context,
+      clientRequestId: input.request.clientRequestId, response: result.response, correlationId: input.correlationId, status: result.status,
+      structuredCards: result.cards, initialTitle: titleFromMessage(input.request.message), provider: result.provider ?? null, model: result.model ?? null,
+      mode: "ai_first_typed_intent_planner", promptVersion: "ai-first-intent-planner-v1", errorCode: result.errorCode,
+      errorMessage: result.status === "failed" ? result.response : null,
+    });
+    if (!persisted) throw this.notFound();
+    return persisted;
   }
 
   private async readPausedResolutionTurn(
@@ -811,23 +653,6 @@ export class AssistantService {
     return new AssistantServiceError("ASSISTANT_CONVERSATION_NOT_FOUND", "Conversation not found.", 404);
   }
 
-  private async persistResponse(input: {
-    scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string;
-    response: string; status: "responded" | "failed"; errorCode?: string; structuredCards: AssistantStructuredCard[];
-  }) {
-    const result = await this.persistFoundationTurn({
-      ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message,
-      context: input.request.context, clientRequestId: input.request.clientRequestId, response: input.response,
-      correlationId: input.correlationId, status: input.status,
-      structuredCards: input.structuredCards,
-      initialTitle: titleFromMessage(input.request.message),
-      provider: null, model: null, mode: "stage_2_read_only", promptVersion: "assistant-stage-2-planner-v1",
-      errorCode: input.errorCode ?? null, errorMessage: input.status === "failed" ? input.response : null,
-    });
-    if (!result) throw this.notFound();
-    return result;
-  }
-
   /**
    * A read result and the durable conversation response are separate concerns.
    * We cannot claim a lookup failed when only response persistence failed.
@@ -845,103 +670,23 @@ export class AssistantService {
   }
 }
 
-function renderToolResults(
-  executions: Array<{ toolName: string; status: string; result?: any; warning?: string; failureCategory?: string; failureCode?: string; failingStep?: string; coreResultSucceeded?: boolean }>,
-  exactSearchTarget: import("./deterministicReadRouting").DeterministicSearchTarget | null = null,
-  exactOrderLookup: import("./deterministicReadRouting").DeterministicOrderLookupTarget | null = null,
-  currentOrderSummary = false,
-) {
+function renderToolResults(executions: Array<{ toolName: string; status: string; result?: any; warning?: string; failureCategory?: string; failureCode?: string; failingStep?: string; coreResultSucceeded?: boolean }>) {
   const cards: AssistantResultCard[] = [];
   for (const execution of executions) {
     if (!execution.result) {
       const permissionDenied = execution.status === "permission_denied";
-      const summary = permissionDenied
-        ? "You don't have permission to view that order."
-        : exactOrderLookup && execution.failureCategory === "timeout"
-          ? "I couldn't complete that lookup before it timed out. Nothing was changed. Please retry."
-          : exactOrderLookup
-            ? "I couldn't complete the order lookup right now. Nothing was changed. Please retry."
-          : execution.warning ?? "The lookup could not be completed.";
-      cards.push({
-        kind: permissionDenied ? "permission_denied" : "tool_warning",
-        title: displayToolTitle(execution.toolName),
-        summary,
-        sourceLinks: [],
-        toolStatus: execution.status === "rejected" ? "failed" : execution.status as any,
-        ...(execution.failureCategory ? {
-          details: {
-            failureCategory: execution.failureCategory,
-            failureCode: execution.failureCode ?? null,
-            failingStep: execution.failingStep ?? null,
-            coreResultSucceeded: execution.coreResultSucceeded ?? false,
-          },
-        } : {}),
-      });
+      cards.push({ kind: permissionDenied ? "permission_denied" : "tool_warning", title: displayToolTitle(execution.toolName), summary: permissionDenied ? "You don't have permission to view that record." : execution.warning ?? "The lookup could not be completed.", sourceLinks: [], toolStatus: execution.status === "rejected" ? "failed" : execution.status as any });
       continue;
     }
     const result = execution.result;
     if (result.status === "not_found") {
-      const summary = exactOrderLookup
-        ? `I couldn't find order ${exactOrderLookup.displayNumber} in the current organization.`
-        : execution.toolName === "production.get_queue_summary"
-          ? result.warning ?? "I couldn't find that active production station. Try the station name shown on your production board."
-          : "No matching record was found.";
-      cards.push({ kind: "not_found", title: displayToolTitle(execution.toolName), summary, sourceLinks: [], toolStatus: "not_found" });
+      cards.push({ kind: "not_found", title: displayToolTitle(execution.toolName), summary: execution.toolName === "production.get_queue_summary" ? result.warning ?? "No matching production station was found." : "No matching record was found.", sourceLinks: [], toolStatus: "not_found" });
       continue;
     }
-    if (execution.toolName === "search.global" && exactSearchTarget) {
-      const exactMatches = exactSearchMatches(result.data?.matches, exactSearchTarget);
-      const entityLabel = exactSearchTarget.entityType;
-      if (!exactMatches.length) {
-        cards.push({ kind: "not_found", title: `No matching ${entityLabel}`, summary: `I couldn't find a matching ${entityLabel}.`, sourceLinks: [], toolStatus: "not_found" });
-        continue;
-      }
-      const filteredResult = {
-        ...result,
-        data: { ...result.data, matches: exactMatches },
-        provenance: result.provenance
-          ? { ...result.provenance, sourceLinks: result.provenance.sourceLinks.filter((link: { entityId?: string; href?: string }) => exactMatches.some((match: { recordId: string; sourceLink?: { href?: string } }) => match.recordId === link.entityId || match.sourceLink?.href === link.href)) }
-          : undefined,
-      };
-      if (exactMatches.length > 1) {
-        cards.push({
-          kind: "search_results",
-          title: `Multiple matching ${entityLabel}s`,
-          summary: `I found multiple ${entityLabel}s with that exact name. Please choose one from the results.`,
-          freshness: filteredResult.provenance?.freshness.capturedAt,
-          sourceLinks: filteredResult.provenance?.sourceLinks ?? [],
-          toolStatus: result.status,
-          details: filteredResult.data,
-        });
-        continue;
-      }
-      const match = exactMatches[0]!;
-      cards.push({
-        kind: "search_results",
-        title: `${entityLabel[0]!.toUpperCase()}${entityLabel.slice(1)} found`,
-        summary: `I found ${match.label}${match.status ? `, currently ${match.status}` : ""}.`,
-        freshness: filteredResult.provenance?.freshness.capturedAt,
-        sourceLinks: filteredResult.provenance?.sourceLinks ?? [],
-        toolStatus: result.status,
-        details: filteredResult.data,
-      });
-      continue;
-    }
-    const names: Record<string, AssistantResultCard["kind"]> = {
-      "search.global": "search_results", "customers.get_summary": "customer_summary", "orders.get_summary": "order_summary",
-      "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context",
-      "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary",
-      "orders.get_due_summary": "order_due_summary",
-      "production.get_completed_jobs": "completed_job_summary",
-      "analytics.resolve_customer": "customer_resolution", "analytics.customer_product_sales": "customer_product_sales",
-      "analytics.customer_uninvoiced_orders": "uninvoiced_order_summary",
-    };
-    const summary = summaryForTool(execution.toolName, result.data, { exactOrderLookup, currentOrderSummary });
-    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: displayToolTitle(execution.toolName), summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: withSuggestedPrompts(execution.toolName, result.data) });
+    const names: Record<string, AssistantResultCard["kind"]> = { "search.global": "search_results", "customers.get_summary": "customer_summary", "orders.get_summary": "order_summary", "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context", "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary", "orders.get_due_summary": "order_due_summary", "production.get_completed_jobs": "completed_job_summary", "analytics.resolve_customer": "customer_resolution", "analytics.customer_product_sales": "customer_product_sales", "analytics.customer_uninvoiced_orders": "uninvoiced_order_summary" };
+    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: displayToolTitle(execution.toolName), summary: summaryForTool(execution.toolName, result.data), freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: withSuggestedPrompts(execution.toolName, result.data) });
   }
-  if (!cards.length) return { response: "I need a little more detail to find the right information.", cards };
-  const completed = cards.filter((card) => !["tool_warning", "permission_denied", "not_found"].includes(card.kind));
-  return { response: completed.length ? completed.map((card) => card.summary).join(" ") : cards[0]!.summary, cards };
+  return { response: cards.length ? cards.map((card) => card.summary).join(" ") : "I need a little more detail to find the right information.", cards };
 }
 
 /** Suggestions remain ordinary, visible text prompts. They do not contain
@@ -993,25 +738,7 @@ function displayToolTitle(toolName: string): string {
   return titles[toolName] ?? "Assistant result";
 }
 
-function exactSearchMatches(matches: unknown, target: import("./deterministicReadRouting").DeterministicSearchTarget) {
-  if (!Array.isArray(matches)) return [];
-  const normalizedTarget = normalizeExactLookupValue(target.query);
-  return matches.filter((match): match is { entityType: string; recordId: string; label: string; status?: string } => {
-    if (!match || typeof match !== "object") return false;
-    const candidate = match as { entityType?: unknown; label?: unknown };
-    if (candidate.entityType !== target.entityType || typeof candidate.label !== "string") return false;
-    const normalizedLabel = normalizeExactLookupValue(candidate.label);
-    return target.entityType === "quote"
-      ? normalizedLabel === normalizedTarget || normalizedLabel === `quote ${normalizedTarget}`
-      : normalizedLabel === normalizedTarget;
-  });
-}
-
-function normalizeExactLookupValue(value: string): string {
-  return value.trim().toLocaleLowerCase("en-US").replace(/\s+/g, " ");
-}
-
-function summaryForTool(toolName: string, data: any, options: { exactOrderLookup: import("./deterministicReadRouting").DeterministicOrderLookupTarget | null; currentOrderSummary: boolean }): string {
+function summaryForTool(toolName: string, data: any): string {
   if (toolName === "search.global") {
     const count = data.matches?.length ?? 0;
     return count ? `I found ${count} matching ${count === 1 ? "record" : "records"}.` : "I couldn't find a matching record.";
@@ -1021,28 +748,16 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
     const order = data.order;
     const operationalSummary = summarizeOperationalOrder(data);
     if (operationalSummary) return operationalSummary;
-    if (options.exactOrderLookup && order) {
-      const orderLabel = order.label ?? order.number ?? options.exactOrderLookup.displayNumber;
-      const displayOrder = /^order\b/i.test(orderLabel) ? orderLabel : `Order ${orderLabel}`;
-      return `I found ${displayOrder}${data.customer?.label ? ` for ${data.customer.label}` : ""}.`;
-    }
-    if (options.currentOrderSummary) {
-      const blockers = Array.isArray(data.blockingIssues) ? data.blockingIssues : [];
-      return blockers.length
-        ? `${order?.label ?? "This order"} is currently ${formatAssistantDisplayValue(order?.status)}. ${blockers.join(" ")}`
-        : `I can see ${order?.label ?? "this order"}'s current status, but the system does not expose a reliable blocking reason yet.`;
-    }
     return `${order?.label ?? "This order"} is currently ${formatAssistantDisplayValue(order?.status)}${data.dueDate ? ` and due ${formatAssistantDate(data.dueDate)}` : ""}.`;
   }
   if (toolName === "orders.get_due_summary") {
     const orders = Array.isArray(data.orders) ? data.orders as Array<{ orderNumber?: string }> : [];
     const total = Number(data.totalMatchingOrders ?? orders.length ?? 0);
-    const filter = options.exactOrderLookup ? "matching" : undefined;
     if (!total) return "There are no matching orders in that due-date window.";
     const labels = orders.map((order) => order.orderNumber).filter((value): value is string => Boolean(value));
     const listed = labels.length <= 3 ? labels.join(labels.length === 2 ? " and " : ", ") : `${labels.slice(0, 3).join(", ")}${total > 3 ? ", and more" : ""}`;
     const state = orders[0] && (data.orders[0] as { dueState?: string }).dueState;
-    const phrase = state === "overdue" ? "overdue" : state === "due_today" ? "due today" : state === "due_tomorrow" ? "due tomorrow" : filter ?? "matching";
+    const phrase = state === "overdue" ? "overdue" : state === "due_today" ? "due today" : state === "due_tomorrow" ? "due tomorrow" : "matching";
     return `${total} ${total === 1 ? "order is" : "orders are"} ${phrase}: ${listed}.`;
   }
   if (toolName === "production.get_completed_jobs") {
