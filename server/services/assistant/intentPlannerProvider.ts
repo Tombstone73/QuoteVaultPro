@@ -10,6 +10,7 @@ import {
   type AssistantIntentPlan,
 } from "./aiFirstIntentPlannerContract";
 import { sanitizeAiDiagnosticEnvelope } from "@shared/aiDiagnostics";
+import { persistAiDiagnostic } from "../aiDiagnosticsService";
 
 /**
  * Provider-neutral boundary for the AI-first planner.  It intentionally owns
@@ -173,8 +174,7 @@ function logPlannerFailure(organizationId: string, diagnostics: AssistantIntentP
 async function persistPlannerDiagnostic(organizationId: string, diagnostics: AssistantIntentPlannerDiagnostics, errorCode: string) {
   try {
     const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId: diagnostics.correlationId, correlationId: diagnostics.correlationId, diagnosticType: "ai_planner", tenantId: organizationId, actorId: null, conversationId: null, provider: diagnostics.provider, model: diagnostics.model, providerRequestId: diagnostics.providerMetadata.providerRequestId as string ?? null, stage: diagnostics.stage, errorCode, providerResponseState: diagnostics.stage === "invalid_json" ? "parse_failed" : diagnostics.stage === "invalid_contract" ? "contract_failed" : "not_received", parseMethod: "none", repairAttempted: diagnostics.repairAttempted, repairResult: diagnostics.repairAttempted ? "failed" : "not_attempted", validationSchema: diagnostics.stage === "invalid_contract" ? "AssistantIntentPlan" : null, validationIssuePaths: diagnostics.validationIssuePaths ?? [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [], plannerOperation: null, selectedCapability: null, specialistName: null, optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString() });
-    const { db } = await import("../../db"); const { aiAuditEvents } = await import("@shared/schema");
-    await db.insert(aiAuditEvents).values({ orgId: organizationId, eventType: "ai_diagnostic", status: "failed", correlationId: envelope.correlationId, metadata: envelope });
+    await persistAiDiagnostic(envelope);
   } catch { /* preserve the planner's original safe failure */ }
 }
 
