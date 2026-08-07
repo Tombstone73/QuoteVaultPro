@@ -7931,9 +7931,36 @@ export const aiExecutionPlans = pgTable("ai_execution_plans", {
   index("ai_execution_plans_correlation_id_idx").on(table.correlationId),
 ]);
 
+/**
+ * A bounded, reviewable parent scope for several independently planned
+ * commands. Child plans remain the authoritative command records; this table
+ * records only the explicit composition and its one user-facing GO.
+ */
+export const aiCompositeExecutionPlans = pgTable("ai_composite_execution_plans", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  contextHash: varchar("context_hash", { length: 128 }).notNull(),
+  compositeFingerprint: varchar("composite_fingerprint", { length: 128 }).notNull(),
+  operations: jsonb("operations").$type<Array<Record<string, unknown>>>().notNull().default(sql.raw("'[]'::jsonb")),
+  status: varchar("status", { length: 32 }).notNull().default("preview_ready"),
+  planVersion: integer("plan_version").notNull().default(1),
+  result: jsonb("result").$type<Record<string, unknown> | null>(),
+  correlationId: varchar("correlation_id", { length: 128 }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_composite_execution_plans_org_user_created_idx").on(table.orgId, table.userId, table.createdAt),
+  index("ai_composite_execution_plans_org_conversation_status_idx").on(table.orgId, table.conversationId, table.status),
+  index("ai_composite_execution_plans_correlation_id_idx").on(table.correlationId),
+]);
+
 export const aiConfirmations = pgTable("ai_confirmations", {
   id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
-  planId: varchar("plan_id").notNull().references(() => aiExecutionPlans.id, { onDelete: "cascade" }),
+  planId: varchar("plan_id").references(() => aiExecutionPlans.id, { onDelete: "cascade" }),
+  compositePlanId: varchar("composite_plan_id").references(() => aiCompositeExecutionPlans.id, { onDelete: "cascade" }),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   tokenHash: varchar("token_hash", { length: 128 }).notNull(),
@@ -7951,6 +7978,7 @@ export const aiConfirmations = pgTable("ai_confirmations", {
   uniqueIndex("ai_confirmations_token_hash_uidx").on(table.tokenHash),
   index("ai_confirmations_org_user_plan_idx").on(table.orgId, table.userId, table.planId),
   index("ai_confirmations_plan_expires_idx").on(table.planId, table.expiresAt),
+  index("ai_confirmations_composite_plan_expires_idx").on(table.compositePlanId, table.expiresAt),
 ]);
 
 export const aiExecutionSteps = pgTable("ai_execution_steps", {
