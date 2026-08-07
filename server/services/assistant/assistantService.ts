@@ -260,13 +260,20 @@ const trustedObservationStorageKey = "trustedReadObservations";
 const MAX_TRUSTED_OPERATOR_OBSERVATIONS = 5;
 const MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES = 16_000;
 
+/** Financial reads require authorization at every retrieval. Never retain an
+ * analytics observation for a later direct-answer turn, because a user's role
+ * may have changed since the original read. */
+function mayPersistTrustedObservation(toolName: string): boolean {
+  return !toolName.startsWith("analytics.");
+}
+
 function persistedTrustedObservations(semanticChanges: Record<string, unknown>): AssistantOperatorTrustedObservation[] {
   const candidate = semanticChanges[trustedObservationStorageKey];
   if (!Array.isArray(candidate)) return [];
   return candidate.flatMap((item) => {
     if (!item || typeof item !== "object" || Array.isArray(item)) return [];
     const value = item as Record<string, unknown>;
-    return typeof value.toolName === "string" && typeof value.capturedAt === "string" && "data" in value
+    return typeof value.toolName === "string" && mayPersistTrustedObservation(value.toolName) && typeof value.capturedAt === "string" && "data" in value
       ? [{ toolName: value.toolName, data: value.data, capturedAt: value.capturedAt }]
       : [];
   }).slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS);
@@ -280,7 +287,7 @@ function mergeTrustedOperatorObservations(
 ): Record<string, unknown> {
   const retained = persistedTrustedObservations(semanticChanges);
   const additions = observations.flatMap((observation) => {
-    if (!registeredReadToolNames.has(observation.toolName) || observation.status !== "succeeded" || !observation.result?.provenance) return [];
+    if (!registeredReadToolNames.has(observation.toolName) || !mayPersistTrustedObservation(observation.toolName) || observation.status !== "succeeded" || !observation.result?.provenance) return [];
     try {
       const data = JSON.parse(JSON.stringify(observation.result.data));
       if (JSON.stringify(data).length > MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES) return [];
