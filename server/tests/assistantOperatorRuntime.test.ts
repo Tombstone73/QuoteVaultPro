@@ -3,7 +3,7 @@ import { AssistantOperatorRuntime, type AssistantOperatorDecisionProvider, type 
 import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
 
 const context = assistantContextEnvelopeSchema.parse({ contextVersion: "v1", route: "/orders", pageTitle: "Orders", selectedRecordIds: [], activeFilters: [], capturedAt: "2026-08-07T12:00:00.000Z", unsavedChanges: false });
-const trustedContext = { scope: { organizationId: "org_1", userId: "user_1" }, actor: { userId: "user_1", email: "user@example.test" }, permissions: ["assistant.internal_staff"], context, correlationId: "correlation_1" };
+const trustedContext = { scope: { organizationId: "org_1", userId: "user_1" }, actor: { userId: "user_1", email: "user@example.test" }, permissions: ["assistant.internal_staff"], context, correlationId: "correlation_1", goal: "test goal" };
 
 describe("AssistantOperatorRuntime", () => {
   test("composes an alternate investigation after incomplete evidence", async () => {

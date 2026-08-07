@@ -33,8 +33,13 @@ const quantitySchema = z.discriminatedUnion("behavior", [
  * existing PBV2 choice-level addPercent impact; it is not a second pricing
  * engine and cannot carry arbitrary provider formulas. */
 const optionPriceImpactSchema = z.object({ kind: z.literal("percentage_of_base"), percent: z.number().finite().min(-100).max(100) }).strict();
-const optionValueSchema = z.object({ key: nonEmpty, label: nonEmpty, isDefault: z.boolean().default(false), priceImpact: optionPriceImpactSchema.optional() }).strict();
-const optionGroupSchema = z.object({ key: nonEmpty, label: nonEmpty, required: z.boolean(), selectionMode: z.enum(["single", "multiple"]), values: z.array(optionValueSchema).min(1) }).strict().superRefine((group, ctx) => {
+/** A total impact is a business semantic: projection derives the incremental
+ * PBV2 adjustment after checking its prerequisite. This prevents an AI from
+ * accidentally representing Contour 10% + Weed/Tape total 30% as 40%. */
+const totalPercentImpactSchema = z.object({ percent: z.number().finite().min(-100).max(100), prerequisite: z.object({ optionGroupKey: nonEmpty, optionValueKey: nonEmpty }).strict() }).strict();
+const optionAvailabilitySchema = z.object({ optionGroupKey: nonEmpty, optionValueKey: nonEmpty }).strict();
+const optionValueSchema = z.object({ key: nonEmpty, label: nonEmpty, isDefault: z.boolean().default(false), priceImpact: optionPriceImpactSchema.optional(), totalPercentOfBaseWhenEnabled: totalPercentImpactSchema.optional() }).strict();
+const optionGroupSchema = z.object({ key: nonEmpty, label: nonEmpty, required: z.boolean(), selectionMode: z.enum(["single", "multiple"]), values: z.array(optionValueSchema).min(1), availableWhen: optionAvailabilitySchema.optional() }).strict().superRefine((group, ctx) => {
   if (new Set(group.values.map((value) => value.key.toLocaleLowerCase())).size !== group.values.length) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Option value keys must be unique.", path: ["values"] });
   if (group.selectionMode === "single" && group.values.filter((value) => value.isDefault).length > 1) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Single-select groups may have one default.", path: ["values"] });
   // PBV2 supports required choices without a preselected value. Do not invent

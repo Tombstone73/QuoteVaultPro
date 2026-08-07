@@ -1,0 +1,34 @@
+import { describe, expect, test } from "@jest/globals";
+import { productDraftIntentSchema } from "@shared/productDraftIntent";
+import { projectProductDraftIntentToProductBuilderDraft } from "../services/productIntentCompiler/productIntentProjection";
+
+describe("Translucent Vinyl semantic PBV2 projection", () => {
+  test("enforces the Contour → Weed/Tape dependency and derives +30% total, never +40%", () => {
+    const intent = productDraftIntentSchema.parse({
+      contractVersion: 1, intentId: "translucent_1", organizationId: "org_1", revision: 0, state: "ready_for_review", operation: "new_product",
+      identity: { name: "Translucent Vinyl - Multilayer Print", description: "", category: { state: "resolved", id: "category_1", label: "Print Products" } }, lifecycle: { productStatus: "inactive", published: false },
+      measurement: { mode: "dimensions_required" }, quantity: { behavior: "customer_entered", minimum: 1 },
+      pricing: { model: "two_dimensional_matrix", unit: "per_square_foot", rowOptionKey: "surface", columnOptionKey: "layers", cells: [
+        { row: "first", column: "three", priceCents: 500 }, { row: "first", column: "five", priceCents: 600 }, { row: "second", column: "three", priceCents: 500 }, { row: "second", column: "five", priceCents: 600 },
+      ] }, material: { state: "explicitly_unset" },
+      optionGroups: [
+        { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first", label: "1st surface (right reading)", isDefault: true }, { key: "second", label: "2nd surface (reverse printed)", isDefault: false }] },
+        { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "three", label: "3 Layers", isDefault: true }, { key: "five", label: "5 Layers", isDefault: false }] },
+        { key: "contour", label: "Contour Cutting", required: false, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: true }, { key: "yes", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }] },
+        { key: "weed_tape", label: "Weed and Tape", required: false, selectionMode: "single", availableWhen: { optionGroupKey: "contour", optionValueKey: "yes" }, values: [{ key: "none", label: "None", isDefault: true }, { key: "yes", label: "Weed and Tape", isDefault: false, totalPercentOfBaseWhenEnabled: { percent: 30, prerequisite: { optionGroupKey: "contour", optionValueKey: "yes" } } }] },
+      ], workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true }, production: { route: { state: "explicitly_unset" }, configuration: {} }, visibility: { catalogVisible: false }, unresolvedFields: [], fieldMetadata: {}, revisionMetadata: { parentRevision: null }, operationContext: {},
+    });
+    const projected = projectProductDraftIntentToProductBuilderDraft(intent);
+    expect(projected.product).toMatchObject({ name: "Translucent Vinyl - Multilayer Print", pricingMode: "area", measurementMode: "dimensions_required", isActive: false });
+    expect(projected.relationships).toEqual({ productionRoute: null, material: { state: "explicitly_unset" } });
+    const nodes = projected.treeJson.nodes as Record<string, any>;
+    const contour = Object.values(nodes).find((node: any) => node.key === "contour") as any;
+    const weed = Object.values(nodes).find((node: any) => node.key === "weed_tape") as any;
+    expect(weed.visibility.rules).toEqual([{ type: "equals", selectionKey: "contour", value: "yes" }]);
+    expect(contour.choices.find((choice: any) => choice.value === "yes").pricingImpact[0].percent).toBe(10);
+    expect(weed.choices.find((choice: any) => choice.value === "yes").pricingImpact[0].percent).toBe(20);
+    expect(10 + 20).toBe(30);
+    const matrix = projected.treeJson.pricingMatrix as any;
+    expect(matrix.rows).toEqual(expect.arrayContaining([expect.objectContaining({ when: { surface: "first", layers: "three" }, variables: { base_price: 500 } }), expect.objectContaining({ when: { surface: "second", layers: "five" }, variables: { base_price: 600 } })]));
+  });
+});

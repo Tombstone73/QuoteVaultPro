@@ -60,9 +60,11 @@ function assertReady(intent: ProductDraftIntent): void {
 function buildOptions(intent: ProductDraftIntent) {
   const nodes: Record<string, unknown> = {}; const rootNodeIds: string[] = []; const edges: Record<string, unknown>[] = [];
   const groups = new Map<string, ProductDraftIntent["optionGroups"][number]>();
-  intent.optionGroups.forEach((group, index) => {
+  intent.optionGroups.forEach((group) => {
     assert(!groups.has(group.key), "OPTION_GROUP_DUPLICATE", `Option group '${group.key}' is duplicated.`, "optionGroups");
     groups.set(group.key, group);
+  });
+  intent.optionGroups.forEach((group, index) => {
     const groupId = stableId("intent_group", group.key); const nodeId = stableId("intent_input", group.key);
     rootNodeIds.push(nodeId);
     nodes[groupId] = { id: groupId, kind: "group", type: "GROUP", status: "ENABLED", key: `${group.key}_group`, label: group.label, displayOrder: index + 1, input: { type: "select", required: group.required } };
@@ -70,15 +72,16 @@ function buildOptions(intent: ProductDraftIntent) {
     nodes[nodeId] = {
       id: nodeId, kind: "question", type: "INPUT", status: "ENABLED", key: group.key, label: group.label, ui: { sortOrder: index + 1 },
       input: { type: group.selectionMode === "multiple" ? "multiselect" : "select", required: group.required, selectionKey: group.key, valueType: "ENUM", constraints: { select: { allowEmpty: !group.required } }, ...(defaults.length ? { defaultValue: group.selectionMode === "multiple" ? defaults : defaults[0] } : {}) },
+      ...(group.availableWhen ? { visibility: { rules: [{ type: "equals", selectionKey: group.availableWhen.optionGroupKey, value: group.availableWhen.optionValueKey }] } } : {}),
       choices: group.values.map((value, valueIndex) => ({
         id: `${nodeId}_choice_${valueIndex + 1}`,
         value: value.key,
         label: value.label,
         sortOrder: valueIndex + 1,
-        ...(value.priceImpact ? {
+        ...((value.priceImpact || value.totalPercentOfBaseWhenEnabled) ? {
           pricingImpact: [{
             mode: "addPercent" as const,
-            percent: value.priceImpact.percent,
+            percent: value.priceImpact?.percent ?? totalImpactDelta(value, groups),
             basis: "base" as const,
             label: `${value.label} adjustment`,
           }],
@@ -88,6 +91,17 @@ function buildOptions(intent: ProductDraftIntent) {
     edges.push({ id: `${groupId}_edge`, fromNodeId: groupId, toNodeId: nodeId, status: "DISABLED" });
   });
   return { nodes, rootNodeIds, edges, groups };
+}
+
+function totalImpactDelta(value: ProductDraftIntent["optionGroups"][number]["values"][number], groups: Map<string, ProductDraftIntent["optionGroups"][number]>): number {
+  const total = value.totalPercentOfBaseWhenEnabled;
+  assert(total, "OPTION_TOTAL_IMPACT_INVALID", "A total option impact is required.", "optionGroups");
+  const prerequisiteGroup = groups.get(total.prerequisite.optionGroupKey);
+  const prerequisite = prerequisiteGroup?.values.find((candidate) => candidate.key === total.prerequisite.optionValueKey);
+  assert(prerequisite && prerequisite.priceImpact, "OPTION_TOTAL_IMPACT_PREREQUISITE_INVALID", "A total option impact requires an existing percentage prerequisite.", "optionGroups");
+  const delta = total.percent - prerequisite.priceImpact.percent;
+  assert(delta >= -100 && delta <= 100, "OPTION_TOTAL_IMPACT_DELTA_INVALID", "The derived option impact is outside supported bounds.", "optionGroups");
+  return delta;
 }
 
 function buildMatrix(intent: ProductDraftIntent, groups: Map<string, ProductDraftIntent["optionGroups"][number]>): ProductOptionPricingMatrix | null {

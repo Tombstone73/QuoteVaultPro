@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AssistantContextEnvelope, AssistantToolName, AssistantToolResultEnvelope } from "@shared/assistantContracts";
+import type { AssistantContextEnvelope, AssistantToolResultEnvelope } from "@shared/assistantContracts";
 
 /**
  * The operator loop is intentionally separate from provider transport and
@@ -30,7 +30,7 @@ export type AssistantOperatorObservation = {
 };
 
 export interface AssistantOperatorToolExecutor {
-  catalog(): ReadonlyArray<{ name: AssistantToolName; description: string }>;
+  catalog(): ReadonlyArray<{ name: string; description: string }>;
   execute(input: { toolName: string; arguments: Record<string, unknown>; context: AssistantOperatorTrustedContext }): Promise<Omit<AssistantOperatorObservation, "step">>;
 }
 
@@ -40,6 +40,11 @@ export interface AssistantOperatorTrustedContext {
   permissions: readonly string[];
   context: AssistantContextEnvelope;
   correlationId: string;
+  /** Original user goal is trusted conversational input, never a model tool
+   * argument. Semantic adapters can use it without asking the model to repeat
+   * it in a persistence-shaped payload. */
+  goal: string;
+  task?: { id: string; domain: string | null; canonicalProductIntentProposalId: string | null };
 }
 
 export interface AssistantOperatorDecisionProvider {
@@ -48,7 +53,7 @@ export interface AssistantOperatorDecisionProvider {
     taskId: string;
     step: number;
     remainingSteps: number;
-    toolCatalog: ReadonlyArray<{ name: AssistantToolName; description: string }>;
+    toolCatalog: ReadonlyArray<{ name: string; description: string }>;
     observations: readonly AssistantOperatorObservation[];
     safeWorkingSummary: string | null;
   }): Promise<unknown>;

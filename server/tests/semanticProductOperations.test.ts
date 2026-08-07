@@ -25,6 +25,14 @@ describe("semantic product operations", () => {
     expect(() => compileSemanticProductOperations(translucentIntent, { kind: "semantic_operations", operations: [{ op: "set_option_default", optionGroup: "Surface", value: "Front" }] }, 4)).toThrow("OPTION_VALUE_UNRESOLVED");
   });
 
+  test("compiles a natural layer-price correction across the matrix axis", () => {
+    const patch = compileSemanticProductOperations(translucentIntent, { kind: "semantic_operations", operations: [{ op: "set_matrix_rate", optionGroup: "Layers", value: "3 layers", priceCents: 550 }] }, 4);
+    const next = applyProductDraftIntentPatch(translucentIntent, patch);
+    if (next.pricing.model !== "two_dimensional_matrix") throw new Error("Expected matrix pricing");
+    expect(next.pricing.cells.filter((cell) => cell.column === "three-layer").map((cell) => cell.priceCents)).toEqual([550, 550]);
+    expect(next.pricing.cells.filter((cell) => cell.column === "five-layer").map((cell) => cell.priceCents)).toEqual([600, 600]);
+  });
+
   test("the compiler accepts semantic continuation output and emits only a server-built canonical patch", async () => {
     const compiler = new ProductIntentCompiler({ generateJson: async () => ({
       rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_option_default", optionGroup: "Surface", value: "1st surface (right reading)" }, { op: "set_option_default", optionGroup: "Layers", value: "3 layers" }] }),

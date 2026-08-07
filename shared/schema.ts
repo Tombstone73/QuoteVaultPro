@@ -7818,6 +7818,32 @@ export const aiContextSnapshots = pgTable("ai_context_snapshots", {
   index("ai_context_snapshots_turn_id_idx").on(table.turnId),
 ]);
 
+/** Safe operator working context. This is not a second business source of
+ * truth: it stores only task identity, summaries, references, and state while
+ * canonical product/command records retain all authoritative mutation data. */
+export const aiOperatorTasks = pgTable("ai_operator_tasks", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  domain: varchar("domain", { length: 80 }),
+  goal: varchar("goal", { length: 2000 }).notNull(),
+  workingSummary: varchar("working_summary", { length: 2000 }),
+  entityReferences: jsonb("entity_references").$type<Array<{ type: string; id: string; label?: string }>>().notNull().default(sql.raw("'[]'::jsonb")),
+  missingInformation: jsonb("missing_information").$type<string[]>().notNull().default(sql.raw("'[]'::jsonb")),
+  semanticChanges: jsonb("semantic_changes").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  confirmationState: varchar("confirmation_state", { length: 64 }).notNull().default("none"),
+  status: varchar("status", { length: 64 }).notNull().default("active"),
+  canonicalProductIntentProposalId: varchar("canonical_product_intent_proposal_id", { length: 120 }),
+  lastObservationSummary: varchar("last_observation_summary", { length: 2000 }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_operator_tasks_org_conversation_status_idx").on(table.orgId, table.conversationId, table.status, table.updatedAt),
+  index("ai_operator_tasks_org_user_updated_idx").on(table.orgId, table.userId, table.updatedAt),
+]);
+
 export const aiToolExecutions = pgTable("ai_tool_executions", {
   id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
