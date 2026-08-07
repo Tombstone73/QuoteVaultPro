@@ -49,6 +49,51 @@ describe("AssistantOperatorRuntime", () => {
     expect(result).toMatchObject({ status: "failed", response: "I couldn't complete that request because the needed business lookup is unavailable or invalid." });
   });
 
+  test("continues after provider-native web activity that has no final content yet", async () => {
+    const provider: AssistantOperatorDecisionProvider = {
+      decide: jest.fn(async ({ step }) => step === 1
+        ? { kind: "continue", workingSummary: "Continuing public research." }
+        : { kind: "complete", response: "I found current public product information with sources." }),
+    };
+    const execute = jest.fn(async () => { throw new Error("no PrintersHero tool should run"); });
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Research printable sidewalk vinyl.", taskId: "task_web", trustedContext });
+
+    expect(result).toMatchObject({ status: "completed", response: "I found current public product information with sources." });
+    expect(provider.decide).toHaveBeenCalledTimes(2);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("keeps successful observations available after a later tool failure", async () => {
+    const provider: AssistantOperatorDecisionProvider = {
+      decide: async ({ observations }) => observations.length === 0
+        ? { kind: "call_tools", calls: [{ toolName: "products.get_summary", arguments: { query: "13 oz banner" } }] }
+        : observations.length === 1
+          ? { kind: "call_tools", calls: [{ toolName: "web.search", arguments: { query: "Indianapolis banner pricing" } }] }
+          : { kind: "complete", response: "I found your internal banner pricing, but public market research was unavailable, so I cannot make a reliable comparison yet." },
+    };
+    const result = await new AssistantOperatorRuntime(provider, {
+      catalog: () => [],
+      execute: async ({ toolName }) => toolName === "products.get_summary"
+        ? { toolName, status: "succeeded", result: { status: "succeeded", data: { products: ["Banner"] }, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-07T12:00:00.000Z" } } } as any }
+        : { toolName, status: "failed", warning: "Public research was unavailable." },
+    }).run({ goal: "Compare our 13 oz banner prices with Indianapolis.", taskId: "task_mixed", trustedContext });
+
+    expect(result.status).toBe("completed");
+    expect(result.observations.map((item) => item.status)).toEqual(["succeeded", "failed"]);
+    expect(result.response).toContain("internal banner pricing");
+  });
+
+  test("turns an unexpected tool exception into a recoverable observation", async () => {
+    const provider: AssistantOperatorDecisionProvider = {
+      decide: async ({ observations }) => observations.length
+        ? { kind: "complete", response: "The lookup was unavailable, so I cannot verify that fact." }
+        : { kind: "call_tools", calls: [{ toolName: "web.search", arguments: { query: "test" } }] },
+    };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute: async () => { throw new Error("network failure"); } }).run({ goal: "Research this.", taskId: "task_exception", trustedContext });
+
+    expect(result).toMatchObject({ status: "completed", observations: [expect.objectContaining({ status: "failed", warning: "The requested capability was temporarily unavailable." })] });
+  });
+
   test("composes quote detail, customer, and linked-order investigation from a trusted newest-quote reference", async () => {
     const calls: string[] = [];
     const provider: AssistantOperatorDecisionProvider = {

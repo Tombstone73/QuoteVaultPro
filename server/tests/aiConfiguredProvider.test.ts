@@ -142,6 +142,20 @@ describe("configured AI provider", () => {
     expect(result.requestMetadata.nativeWebSources).toEqual([{ title: "Example supplier", url: "https://example.com/products" }]);
   });
 
+  test("continues a native web-search-only Responses result instead of treating it as empty", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ output: [
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "hidden chain" }] },
+      { type: "web_search_call", action: { type: "search", query: "printable sidewalk vinyl" } },
+    ] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "continue", workingSummary: "Continuing public research." });
+    expect(result.requestMetadata).toMatchObject({ nativeWebSearch: true, nativeWebSearchActionCount: 1 });
+    expect(result.rawText).not.toContain("hidden chain");
+    expect(JSON.stringify(result.requestMetadata)).not.toContain("hidden chain");
+  });
+
   test("detects only the official DeepSeek API hostname", () => {
     expect(resolveOpenAiCompatibleRequestPolicy("https://api.deepseek.com/chat/completions")).toMatchObject({
       family: "deepseek",

@@ -470,10 +470,21 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       const functionCalls = output.filter((item: any) => item?.type === "function_call" && typeof item.name === "string" && typeof item.arguments === "string" && providerFunctionNames.has(item.name));
       const webSearchActions = output.filter((item: any) => item?.type === "web_search_call" && item.action && typeof item.action === "object").map((item: any) => item.action);
       const webSources = nativeWebSources(output);
+      const finalText = output.filter((item: any) => item?.type === "message").flatMap((item: any) => Array.isArray(item.content) ? item.content : []).filter((part: any) => part?.type === "output_text" && typeof part.text === "string").map((part: any) => part.text).join("\n");
       const rawText = functionCalls.length
         ? JSON.stringify({ kind: "call_tools", calls: functionCalls.map((item: any) => ({ toolName: providerFunctionNames.get(item.name), arguments: (() => { try { const parsed = JSON.parse(item.arguments); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}; } catch { return {}; } })() })), workingSummary: "Continuing authorized investigation." })
-        : output.filter((item: any) => item?.type === "message").flatMap((item: any) => Array.isArray(item.content) ? item.content : []).filter((part: any) => part?.type === "output_text" && typeof part.text === "string").map((part: any) => part.text).join("\n");
-      if (!rawText.trim()) throw new AiProviderResponseError({ kind: "empty_response", status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek Responses did not include a usable function call or final answer." });
+        : finalText || (webSearchActions.length
+          ? JSON.stringify({ kind: "continue", workingSummary: "Continuing public research." })
+          : "");
+      if (!rawText.trim()) throw new AiProviderResponseError({ kind: "empty_response", status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek Responses did not include a usable function call, web-search continuation, or final answer." });
+      console.info("[AI_PROVIDER] DeepSeek Responses Operator result.", {
+        model: config.model,
+        apiSurface: "deepseek_responses",
+        functionCallCount: functionCalls.length,
+        nativeWebSearchActionCount: webSearchActions.length,
+        nativeWebSourceCount: webSources.length,
+        disposition: functionCalls.length ? "function_calls" : webSearchActions.length && !finalText ? "native_web_continuation" : "direct_completion",
+      });
       return {
         rawText,
         provider: config.provider,

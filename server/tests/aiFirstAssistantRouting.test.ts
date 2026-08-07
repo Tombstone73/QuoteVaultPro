@@ -27,13 +27,17 @@ function tasks(): AssistantOperatorTaskStore & { updates: any[] } {
   return { updates, getActive: jest.fn(async () => null), create: jest.fn(async () => task), update: jest.fn(async (input: any) => { updates.push(input); Object.assign(task, input.patch); return task; }) };
 }
 
+function operatorProviderResolver() {
+  return { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://provider.test", apiKey: "test", model: "test", mode: "printershero_managed", source: "test" })) };
+}
+
 describe("AI Operator routing (replacement for retired AI-first planner coverage)", () => {
   test("ordinary free text invokes the bounded operator provider and never the legacy intent planner", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository();
     const legacyPlanner = { plan: jest.fn(async () => { throw new Error("retired planner must not run"); }) };
     const provider = { decide: jest.fn(async () => ({ kind: "complete", response: "I can help with that.", workingSummary: "General assistance complete." })) };
-    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, legacyPlanner as any, undefined, () => provider, tasks());
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, legacyPlanner as any, undefined, () => provider, tasks(), undefined, undefined, operatorProviderResolver() as any);
 
     await service.createTurn(scope, "conversation_1", actor, { message: "What can you help with?", context });
 
@@ -50,7 +54,7 @@ describe("AI Operator routing (replacement for retired AI-first planner coverage
       ? ({ kind: "complete", response: "Product draft is ready for review.", workingSummary: "Draft prepared." })
       : ({ kind: "call_tools", calls: [{ toolName: "products.manage_intent", arguments: { operation: "start_new" } }] })) };
     const legacyPlanner = { plan: jest.fn() };
-    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, legacyPlanner as any, product, () => provider, tasks());
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, legacyPlanner as any, product, () => provider, tasks(), undefined, undefined, operatorProviderResolver() as any);
     const message = "Create a new Translucent Vinyl product with a 3 mm hem.";
 
     await service.createTurn(scope, "conversation_1", actor, { message, context });
@@ -60,16 +64,32 @@ describe("AI Operator routing (replacement for retired AI-first planner coverage
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "Product draft is ready for review.", mode: "ai_operator_runtime" }));
   });
 
+  test("a product capability question is answered from the permission-aware catalog without starting Product Builder", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository();
+    const product = { respondPlannedCanonicalProductIntent: jest.fn() };
+    const provider = { decide: jest.fn(async ({ toolCatalog }: any) => {
+      expect(toolCatalog.some((tool: { name: string }) => tool.name === "products.manage_intent")).toBe(false);
+      return { kind: "complete", response: "Your current permissions do not allow product creation." };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => provider, tasks(), undefined, undefined, operatorProviderResolver() as any);
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: [] }, { message: "Can you add products to the system?", context });
+
+    expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "Your current permissions do not allow product creation." }));
+  });
+
   test("an invalid operator decision fails safely without invoking a product mutation path", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository();
     const product = { respondPlannedCanonicalProductIntent: jest.fn() };
     const provider = { decide: jest.fn(async () => ({ kind: "unsupported_decision" })) };
-    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => provider, tasks());
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => provider, tasks(), undefined, undefined, operatorProviderResolver() as any);
 
     await service.createTurn(scope, "conversation_1", actor, { message: "Change a product.", context });
 
     expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
-    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", errorCode: "operator_failed", response: "I couldn't complete the request because the AI Operator could not complete its investigation. Nothing was changed." }));
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", errorCode: "operator_failed", response: "I couldn't complete the request because the AI Operator could not complete its investigation." }));
   });
 });

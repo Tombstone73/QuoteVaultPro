@@ -70,4 +70,20 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     ]));
     expect(generateOperatorDecision).toHaveBeenCalledTimes(2);
   });
+
+  test("keeps a native-search continuation inside the same Operator provider lifecycle", async () => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const generateOperatorDecision = jest.fn()
+      .mockResolvedValueOnce({ rawText: JSON.stringify({ kind: "continue", workingSummary: "Continuing public research." }), requestMetadata: {}, operatorContinuation: { items: [{ type: "web_search_call", action: { type: "search", query: "sidewalk vinyl" } }], functionCalls: [] } })
+      .mockResolvedValueOnce({ rawText: JSON.stringify({ kind: "complete", response: "Here are the current options." }), requestMetadata: { nativeWebSources: [{ title: "Supplier", url: "https://example.com/vinyl" }] } });
+    const provider = new ConfiguredAssistantOperatorDecisionProvider(
+      "org_1", { generateJson: jest.fn(), generateOperatorDecision } as any,
+      { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "test", model: "deepseek-v4-flash" })) } as any,
+    );
+    const base = { goal: "Research sidewalk vinyl.", taskId: "task_web", remainingSteps: 2, toolCatalog: [], safeWorkingSummary: null };
+
+    expect(await provider.decide({ ...base, step: 1, observations: [] })).toEqual({ kind: "continue", workingSummary: "Continuing public research." });
+    expect(await provider.decide({ ...base, step: 2, observations: [] })).toEqual({ kind: "complete", response: "Here are the current options.\n\nSources:\n- Supplier: https://example.com/vinyl" });
+    expect(generateOperatorDecision.mock.calls[1]?.[0].responseContinuation).toEqual([expect.objectContaining({ type: "web_search_call" })]);
+  });
 });

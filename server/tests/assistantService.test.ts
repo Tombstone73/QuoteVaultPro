@@ -125,6 +125,14 @@ describe("AssistantService", () => {
     expect((await service.getCapabilities(scope, { ...actor, permissions: ["assistant.diagnostics.view"] })).diagnosticsEnabled).toBe(true);
   });
 
+  test("advertises provider-native public research without requiring the server fallback key", async () => {
+    resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true, externalResearchEnabled: true });
+    const capability = await new AssistantService(makeRepo(), resolver).getCapabilities(scope, actor);
+
+    expect(capability).toMatchObject({ externalResearchEnabled: true, readToolsEnabled: true });
+    expect(capability.composerHelperText).toBe("Business lookups and external research are enabled. Write actions require additional permission.");
+  });
+
   test("keeps reviewed command permissions and capability wording explicit for inactive-draft updates", () => {
     expect(assistantCapabilityCommandPermissions["products.update_inactive_draft"])
       .toBe("assistant.products.update_inactive_draft");

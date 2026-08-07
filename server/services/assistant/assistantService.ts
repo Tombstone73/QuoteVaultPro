@@ -172,7 +172,7 @@ export interface AssistantRepository {
 }
 
 export interface AssistantCapabilityResolver {
-  getCapabilities(organizationId: string): Promise<{ enabled: boolean; toolsEnabled?: boolean; providerConfigured?: boolean; unavailableReason?: string | null }>;
+  getCapabilities(organizationId: string): Promise<{ enabled: boolean; toolsEnabled?: boolean; providerConfigured?: boolean; externalResearchEnabled?: boolean; unavailableReason?: string | null }>;
 }
 
 type AssistantCapabilitySummary = Awaited<ReturnType<AssistantService["getCapabilities"]>>;
@@ -331,6 +331,9 @@ export class AssistantService {
      * uses the static read registry plus reviewed semantic tools. */
     private readonly createOperatorToolExecutor: (audit: (event: AssistantToolExecutionAudit) => void, semanticTools: readonly AssistantOperatorSemanticTool[]) => AssistantOperatorToolExecutor =
       (audit, semanticTools) => createAssistantOperatorToolExecutor(audit, semanticTools),
+    /** Injectable for isolated runtime tests; production resolves the same
+     * organization-scoped configuration at the Operator boundary. */
+    private readonly operatorProviderResolver: Pick<typeof aiProviderResolver, "resolveProvider"> = aiProviderResolver,
   ) {}
 
   async getCapabilities(scope: AssistantScope, actor?: AssistantActor) {
@@ -355,7 +358,7 @@ export class AssistantService {
       writeActionsEnabled,
       productionCommandsEnabled,
       productionCommandsPermittedForUser,
-      externalResearchEnabled: false,
+      externalResearchEnabled: Boolean(resolved.enabled && resolved.externalResearchEnabled),
       mcpEnabled: false,
       productActivationEnabled: false,
       activeProductEditingEnabled: false,
@@ -363,8 +366,10 @@ export class AssistantService {
       composerHelperText: !readToolsEnabled
         ? "System Guide help is available. " + (resolved.unavailableReason ?? "Business record questions are unavailable until AI configuration is complete.")
         : writeActionsEnabled
-          ? "Business lookups and confirmed actions are enabled. Changes require a preview and the dedicated GO button. External research is disabled."
-          : "Business lookups are enabled. Write actions and external research are disabled.",
+          ? `Business lookups and confirmed actions are enabled. Changes require a preview and the dedicated GO button. External research is ${resolved.externalResearchEnabled ? "enabled" : "disabled"}.`
+          : resolved.externalResearchEnabled
+            ? "Business lookups and external research are enabled. Write actions require additional permission."
+            : "Business lookups are enabled. Write actions and external research are disabled.",
       assistantVersion: "stage-9-system-guide",
       unavailableReason: resolved.unavailableReason ?? (resolved.enabled ? null : "The assistant is disabled for this organization."),
       actorScope: scope,
@@ -568,16 +573,19 @@ export class AssistantService {
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
     if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
     const audits: AssistantToolExecutionAudit[] = [];
-    const providerConfig = await aiProviderResolver.resolveProvider({ orgId: scope.organizationId, feature: "assistant" });
+    const providerConfig = await this.operatorProviderResolver.resolveProvider({ orgId: scope.organizationId, feature: "assistant" });
     const providerCapabilities = resolveAiProviderCapabilities(providerConfig);
     // Native search and the server-owned search are intentionally mutually
     // exclusive in a turn. This is capability selection, not phrase routing.
     const fallbackWebTools = !providerCapabilities.nativeWebSearch && isPublicWebResearchConfigured()
       ? createPublicWebResearchTools()
       : [];
-    const semanticTools: AssistantOperatorSemanticTool[] = [{
+    const mayManageProducts = hasPermission(actor, "assistant.products.create_inactive_draft")
+      || hasPermission(actor, "assistant.products.update_inactive_draft")
+      || hasPermission(actor, "assistant.products.update_inactive_draft_batch");
+    const productIntentTools: AssistantOperatorSemanticTool[] = mayManageProducts ? [{
       name: "products.manage_intent",
-      description: "Start or continue an inactive Product Builder intent from the user's business goal. Arguments: operation optional auto|continue|start_new. Never supplies product IDs, patch paths, or persistence metadata.",
+      description: "Start or continue an inactive Product Builder only when the user is asking to create or change a product. Do not use for questions about available product capabilities; answer those directly from this permission-aware catalog. Arguments: operation optional auto|continue|start_new. Never supplies product IDs, patch paths, or persistence metadata.",
       execute: async ({ arguments: args, context }) => {
         const operation = args.operation === "start_new" || args.operation === "continue" ? args.operation : "auto";
         if (operation === "start_new" && context.task?.canonicalProductIntentProposalId) {
@@ -591,7 +599,8 @@ export class AssistantService {
         const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? null;
         return { status: "succeeded", result: { status: "succeeded", data: { response: product.response, cards: product.cards, proposalId, taskDomain: "products" } } as any };
       },
-    }, {
+    }] : [];
+    const semanticTools: AssistantOperatorSemanticTool[] = [...productIntentTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {

@@ -115,7 +115,9 @@ export const assistantCapabilitySchema = z.object({
     "products.create_inactive_draft",
     "products.update_inactive_draft",
   ])).max(3),
-  externalResearchEnabled: z.literal(false),
+  /** True when the selected provider offers native public research or the
+   * separately configured server-owned fallback is available. */
+  externalResearchEnabled: z.boolean(),
   mcpEnabled: z.literal(false),
   productActivationEnabled: z.literal(false),
   activeProductEditingEnabled: z.literal(false),

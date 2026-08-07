@@ -15,6 +15,9 @@ const operatorToolCallSchema = z.object({
 
 export const assistantOperatorDecisionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("call_tools"), calls: z.array(operatorToolCallSchema).min(1).max(3), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
+  /** A provider-native capability made progress but needs another Responses
+   * request before it can produce a user-visible decision. */
+  z.object({ kind: z.literal("continue"), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("ask_user"), question: z.string().trim().min(1).max(1_000), missingInformation: z.array(z.string().trim().min(1).max(160)).min(1).max(12), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("complete"), response: z.string().trim().min(1).max(8_000), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("fail"), response: z.string().trim().min(1).max(1_000), recoverySummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
@@ -101,8 +104,15 @@ function safeFailureResponse(observations: readonly AssistantOperatorObservation
   const last = observations.at(-1);
   if (last?.status === "permission_denied") return "I don't have permission to inspect the information needed to complete that request.";
   if (last?.status === "rejected") return "I couldn't complete that request because the needed business lookup is unavailable or invalid.";
-  if (last?.status === "failed" || last?.status === "timed_out") return "I couldn't complete the requested business lookup because it was unavailable. Nothing was changed.";
-  return "I couldn't complete the request because the AI Operator could not complete its investigation. Nothing was changed.";
+  const retainedEvidence = observations.some((observation) => observation.status === "succeeded" || observation.status === "partial" || observation.status === "not_found");
+  if (last?.status === "failed" || last?.status === "timed_out") {
+    return retainedEvidence
+      ? "I completed part of the investigation, but a later lookup was unavailable. The completed results remain available above."
+      : "I couldn't complete the requested business lookup because it was unavailable.";
+  }
+  return retainedEvidence
+    ? "I completed part of the investigation, but the Operator could not finish a later step. The completed results remain available above."
+    : "I couldn't complete the request because the AI Operator could not complete its investigation.";
 }
 
 function repeatsPriorClarification(previous: readonly string[], next: readonly string[]): boolean {
@@ -139,6 +149,7 @@ export class AssistantOperatorRuntime {
         return { status: "failed", response: safeFailureResponse(observations), observations, safeWorkingSummary, missingInformation: [] };
       }
       safeWorkingSummary = decision.kind === "fail" ? decision.recoverySummary ?? safeWorkingSummary : decision.workingSummary ?? safeWorkingSummary;
+      if (decision.kind === "continue") continue;
       if (decision.kind === "complete") return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [] };
       if (decision.kind === "ask_user") {
         if (repeatsPriorClarification(input.trustedContext.task?.missingInformation ?? [], decision.missingInformation)) {
@@ -155,8 +166,15 @@ export class AssistantOperatorRuntime {
       if (decision.kind === "fail") return { status: "failed", response: decision.response, observations, safeWorkingSummary, missingInformation: [] };
 
       for (const call of decision.calls) {
-        const execution = await this.tools.execute({ toolName: call.toolName, arguments: call.arguments, context: { ...input.trustedContext, analysisObservations: observations } });
-        observations.push({ step, ...execution });
+        try {
+          const execution = await this.tools.execute({ toolName: call.toolName, arguments: call.arguments, context: { ...input.trustedContext, analysisObservations: observations } });
+          observations.push({ step, ...execution });
+        } catch {
+          // Provider/model execution faults are still bounded observations.
+          // Returning them to the model lets it choose a safe alternative or
+          // a truthful partial answer without exposing implementation detail.
+          observations.push({ step, toolName: call.toolName, status: "failed", warning: "The requested capability was temporarily unavailable." });
+        }
       }
     }
     return {
