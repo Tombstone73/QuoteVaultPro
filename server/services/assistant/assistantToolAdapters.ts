@@ -6,11 +6,14 @@ import {
   assistantGlobalSearchResultSchema,
   assistantQuoteSearchInputSchema,
   assistantQuoteSearchResultSchema,
+  assistantQuoteDetailInputSchema,
+  assistantQuoteDetailResultSchema,
   type AssistantSourceLink,
   type AssistantToolResultEnvelope,
 } from "@shared/assistantContracts";
 import { createCustomerSummaryTool, createSearchGlobalTool, customerSummaryToolResultSchema } from "./searchCustomerTools";
 import { createQuoteSearchTool } from "./quoteSearchTools";
+import { createQuoteDetailTool } from "./quoteDetailTools";
 import { createStage2OrderProductToolAdapters } from "./orderProductOperationalTools";
 import { createAssistantProductionReportingToolAdapters } from "./productionReportingTools";
 import { createAssistantAnalyticsReportingToolAdapters } from "./analyticsReportingTools";
@@ -48,6 +51,7 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
   const search = createSearchGlobalTool();
   const customer = createCustomerSummaryTool();
   const quoteSearch = createQuoteSearchTool();
+  const quoteDetail = createQuoteDetailTool();
   return {
     ...createStage2OrderProductToolAdapters(),
     ...createAssistantProductionReportingToolAdapters(),
@@ -95,6 +99,15 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
             freshness: { capturedAt: result.freshness },
           },
         };
+      },
+    },
+    "quotes.get_detail": {
+      async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        const input = assistantQuoteDetailInputSchema.parse(rawInput);
+        const result = await quoteDetail.execute(contextForLegacyAdapter(context), input);
+        if (result.status === "not_found") return { status: "not_found", data: null };
+        const data = assistantQuoteDetailResultSchema.parse(result.data);
+        return { status: "succeeded", data, provenance: { sourceLinks: result.sourceLinks.map((link) => ({ ...link, capturedAt: result.freshness })), freshness: { capturedAt: result.freshness } } };
       },
     },
     "customers.get_summary": {

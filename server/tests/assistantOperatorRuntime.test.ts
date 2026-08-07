@@ -1,4 +1,4 @@
-import { describe, expect, test } from "@jest/globals";
+import { describe, expect, jest, test } from "@jest/globals";
 import { AssistantOperatorRuntime, type AssistantOperatorDecisionProvider, type AssistantOperatorToolExecutor } from "../services/assistant/operatorRuntime";
 import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
 
@@ -47,5 +47,44 @@ describe("AssistantOperatorRuntime", () => {
     };
     const result = await new AssistantOperatorRuntime(provider, tools).run({ goal: "Show open quotes", taskId: "task_3", trustedContext });
     expect(result).toMatchObject({ status: "failed", response: "I couldn't complete that request because the needed business lookup is unavailable or invalid." });
+  });
+
+  test("composes quote detail, customer, and linked-order investigation from a trusted newest-quote reference", async () => {
+    const calls: string[] = [];
+    const provider: AssistantOperatorDecisionProvider = {
+      decide: async ({ observations, task }) => {
+        expect(task?.entityReferences).toEqual(expect.arrayContaining([expect.objectContaining({ type: "quote", id: "quote_new" })]));
+        if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "quotes.get_detail", arguments: { quoteId: "quote_new" } }] };
+        if (observations.length === 1) return { kind: "call_tools", calls: [{ toolName: "customers.get_summary", arguments: { customerId: "customer_new" } }, { toolName: "orders.get_summary", arguments: { orderId: "order_new" } }] };
+        return { kind: "complete", response: "QT-910322 has one quoted item; its linked order has one queued production job." };
+      },
+    };
+    const tools: AssistantOperatorToolExecutor = {
+      catalog: () => [{ name: "quotes.get_detail", description: "Quote line items and authoritative related-order state." }, { name: "customers.get_summary", description: "Customer summary." }, { name: "orders.get_summary", description: "Order and production summary." }],
+      execute: async ({ toolName }) => {
+        calls.push(toolName);
+        const data = toolName === "quotes.get_detail"
+          ? { lineItems: [{ description: "Window graphic" }], relatedOrder: { state: "linked", order: { recordId: "order_new" } } }
+          : toolName === "orders.get_summary"
+            ? { operational: { production: { totalJobs: 1, queuedJobs: 1 } } }
+            : { customer: { recordId: "customer_new" } };
+        return { toolName, status: "succeeded", result: { status: "succeeded", data, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-07T12:00:00.000Z" } } } as any };
+      },
+    };
+    const result = await new AssistantOperatorRuntime(provider, tools).run({
+      goal: "Take the newest one and tell me what you can determine about the customer, the items being quoted, and whether there is any related order or production activity.", taskId: "task_quote", trustedContext: { ...trustedContext, task: { id: "task_quote", domain: "quotes", canonicalProductIntentProposalId: null, entityReferences: [{ type: "quote", id: "quote_new", label: "Quote QT-910322" }, { type: "customer", id: "customer_new", label: "Acme" }, { type: "order", id: "order_new", label: "Order ORD-910322" }] },
+    });
+    expect(result.status).toBe("completed");
+    expect(calls).toEqual(["quotes.get_detail", "customers.get_summary", "orders.get_summary"]);
+    expect(result.response).not.toMatch(/tool|api|way to view/i);
+  });
+
+  test("treats authoritative no-related-order as a completed quote investigation without an order or production lookup", async () => {
+    const execute = jest.fn(async ({ toolName }: any) => ({ toolName, status: "succeeded", result: { status: "succeeded", data: { relatedOrder: { state: "none" }, lineItems: [{ description: "Decals" }] }, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-07T12:00:00.000Z" } } } }));
+    const provider: AssistantOperatorDecisionProvider = { decide: async ({ observations }) => observations.length ? { kind: "complete", response: "The quote has no related order, so there is no order production activity to inspect." } : { kind: "call_tools", calls: [{ toolName: "quotes.get_detail", arguments: { quoteId: "quote_no_order" } }] } };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [{ name: "quotes.get_detail", description: "Quote details including relationship state." }], execute }).run({ goal: "Investigate this quote.", taskId: "task_none", trustedContext });
+    expect(result.status).toBe("completed");
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledWith(expect.objectContaining({ toolName: "quotes.get_detail" }));
   });
 });

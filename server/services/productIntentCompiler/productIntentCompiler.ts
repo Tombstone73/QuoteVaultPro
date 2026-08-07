@@ -366,6 +366,57 @@ function normalizeUnsafeProviderMaterial(request: string, intent: Record<string,
   return { ...intent, material: { state: "unresolved", label }, fieldMetadata: { ...fieldMetadata, material: { source: "unresolved" } } };
 }
 
+/** Categories and routes are consequential tenant capabilities.  A model may
+ * suggest a label, but it cannot make it canonical merely because that label
+ * exists in this tenant: the user request must contain the exact business
+ * label unless a server-owned template or explicit user source supplied it. */
+function normalizeUnsafeProviderOperationalReferences(request: string, intent: Record<string, unknown>): Record<string, unknown> {
+  const metadata = intent.fieldMetadata;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata)) return intent;
+  const nextMetadata = { ...(metadata as Record<string, unknown>) };
+  const next = { ...intent };
+  for (const [path, root, unset] of [["identity.category", "identity", false], ["production.route", "production", true]] as const) {
+    const rootValue = next[root];
+    const source = nextMetadata[path];
+    if (!rootValue || typeof rootValue !== "object" || Array.isArray(rootValue) || !source || typeof source !== "object" || Array.isArray(source)) continue;
+    const reference = path === "identity.category" ? (rootValue as Record<string, unknown>).category : (rootValue as Record<string, unknown>).route;
+    const sourceKind = (source as Record<string, unknown>).source;
+    const label = reference && typeof reference === "object" && !Array.isArray(reference) ? (reference as Record<string, unknown>).label : null;
+    if (sourceKind !== "ai_interpreted" || typeof label !== "string" || !label.trim() || normalizedText(request).includes(normalizedText(label))) continue;
+    nextMetadata[path] = { source: "unresolved" };
+    next[root] = path === "identity.category"
+      ? { ...(rootValue as Record<string, unknown>), category: { state: "unresolved", label } }
+      : { ...(rootValue as Record<string, unknown>), route: unset ? { state: "explicitly_unset" } : { state: "unresolved", label } };
+  }
+  return { ...next, fieldMetadata: nextMetadata };
+}
+
+/** Product Builder owns safe starting workflow policy.  The provider may
+ * interpret explicit proof/production language, but absent such language the
+ * defaults are server-written and visibly attributed as canonical defaults. */
+function normalizeServerOwnedProductDefaults(request: string, intent: Record<string, unknown>): Record<string, unknown> {
+  const metadata = intent.fieldMetadata;
+  const workflow = intent.workflow;
+  if (!metadata || typeof metadata !== "object" || Array.isArray(metadata) || !workflow || typeof workflow !== "object" || Array.isArray(workflow)) return intent;
+  const source = normalizedText(request);
+  const mentionsProof = /\bproof\b/.test(source);
+  const mentionsProductionJob = /\bproduction job\b/.test(source);
+  const nextMetadata = { ...(metadata as Record<string, unknown>) };
+  const nextWorkflow = { ...(workflow as Record<string, unknown>) };
+  if (!mentionsProof) {
+    nextWorkflow.requiresProofApproval = false;
+    nextMetadata["workflow.requiresProofApproval"] = { source: "canonical_default" };
+  }
+  if (!mentionsProductionJob && nextWorkflow.kind === "standard_production") {
+    nextWorkflow.requiresProductionJob = true;
+    nextMetadata["workflow.requiresProductionJob"] = { source: "canonical_default" };
+  }
+  nextMetadata["lifecycle.productStatus"] = { source: "canonical_default" };
+  nextMetadata["lifecycle.published"] = { source: "canonical_default" };
+  nextMetadata["visibility.catalogVisible"] = { source: "canonical_default" };
+  return { ...intent, workflow: nextWorkflow, lifecycle: { productStatus: "inactive", published: false }, visibility: { catalogVisible: false }, fieldMetadata: nextMetadata };
+}
+
 function optionDefaultMetadataPath(key: string): string { return `optionGroups.${key}.default`; }
 
 /** Provider output may describe an explicit or template-owned default, but it
@@ -403,7 +454,7 @@ function normalizeInitialCompleteIntent(input: ProductIntentCompilerInput, value
   return {
     ...root,
     intent: {
-      ...normalizeUnsafeProviderOptionDefaults(normalizeUnsafeProviderMaterial(input.request, { ...candidate, pricing: normalizeProviderQuantityTiers(candidate.pricing) })),
+      ...normalizeServerOwnedProductDefaults(input.request, normalizeUnsafeProviderOptionDefaults(normalizeUnsafeProviderOperationalReferences(input.request, normalizeUnsafeProviderMaterial(input.request, { ...candidate, pricing: normalizeProviderQuantityTiers(candidate.pricing) })))),
       contractVersion: 1,
       intentId,
       organizationId: input.orgId,

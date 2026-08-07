@@ -36,6 +36,7 @@ export const assistantToolExecutionStatusValues = ["not_run", "succeeded", "fail
 export const assistantToolNameValues = [
   "search.global",
   "quotes.search",
+  "quotes.get_detail",
   "customers.get_summary",
   "orders.get_summary",
   "products.get_summary",
@@ -353,6 +354,33 @@ export const assistantQuoteSearchResultSchema = z.object({
     recencyField: z.literal("createdAt"),
     sentAtAvailable: z.literal(false),
   }).strict(),
+}).strict();
+
+/** One tenant-authorized quote detail read.  It intentionally reports an
+ * authoritative relationship state instead of making a missing conversion
+ * look like a failed lookup. */
+export const assistantQuoteDetailInputSchema = z.object({
+  quoteId: assistantSafeIdentifierSchema,
+}).strict();
+export const assistantQuoteDetailLineItemSchema = z.object({
+  id: assistantSafeIdentifierSchema,
+  description: z.string().trim().min(1).max(500),
+  productName: z.string().trim().min(1).max(255).optional(),
+  quantity: z.number().int().positive(),
+  dimensions: z.object({ widthInches: z.number().positive(), heightInches: z.number().positive() }).strict().optional(),
+  options: z.array(z.string().trim().min(1).max(240)).max(12).optional(),
+}).strict();
+export const assistantQuoteDetailResultSchema = z.object({
+  quote: assistantEntitySummarySchema,
+  customer: assistantEntitySummarySchema.optional(),
+  contact: z.object({ name: z.string().trim().min(1).max(240), email: z.string().trim().email().max(320).optional(), phone: z.string().trim().min(1).max(80).optional() }).strict().optional(),
+  total: z.number().finite().nonnegative(),
+  status: z.enum(["draft", "pending_approval", "sent", "approved", "rejected", "expired", "converted"]),
+  lineItems: z.array(assistantQuoteDetailLineItemSchema).max(50),
+  relatedOrder: z.discriminatedUnion("state", [
+    z.object({ state: z.literal("linked"), order: assistantEntitySummarySchema }).strict(),
+    z.object({ state: z.literal("none") }).strict(),
+  ]),
 }).strict();
 
 export const assistantOrderSummaryInputSchema = z.object({

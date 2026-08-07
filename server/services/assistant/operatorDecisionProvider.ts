@@ -39,6 +39,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
         "Use only registered tool names and documented arguments. You may use multiple sequential decisions after observations arrive.",
         "Never request or emit IDs not returned by a tool or included in trusted active-task references, organization/user information, permissions, SQL, URLs, persistence paths, fingerprints, confirmation tokens, or GO execution.",
         "Reads are authorized when a tool is available. If evidence is partial, choose another legitimate tool before asking the user when possible.",
+        "Never ask the user about PrintersHero tools, APIs, database access, or whether a capability exists. Inspect the registered catalog and use the relevant authorized read. If no registered capability can establish a requested fact, complete with an accurate system limitation instead of presenting that gap as missing user information.",
         "Use an unambiguous trusted active-task entity reference for a follow-up instead of asking the user to repeat it.",
         "Protected mutations are represented only by semantic planning tools and must never execute a mutation directly.",
       ].join(" "),

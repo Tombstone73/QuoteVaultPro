@@ -76,9 +76,91 @@ function questionsFrom(intent: ProductDraftIntent, issues: readonly ProductInten
   return questions.length ? { baseRevision: intent.revision, questions } : undefined;
 }
 
-function normalizeAnswer(value: string): string { return value.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim(); }
+const semanticNumberWords: Record<string, string> = {
+  "1": "one", "1st": "one", first: "one", one: "one",
+  "2": "two", "2nd": "two", second: "two", two: "two",
+  "3": "three", "3rd": "three", third: "three", three: "three",
+  "4": "four", "4th": "four", fourth: "four", four: "four",
+  "5": "five", "5th": "five", fifth: "five", five: "five",
+};
+function normalizeAnswer(value: string): string {
+  return value.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim()
+    .split(" ").filter(Boolean).map((token) => semanticNumberWords[token] ?? token.replace(/s$/, "")).join(" ");
+}
+
+function includesTokenSequence(haystack: readonly string[], needle: readonly string[]): boolean {
+  if (!needle.length || needle.length > haystack.length) return false;
+  return haystack.some((_, index) => needle.every((token, offset) => haystack[index + offset] === token));
+}
+
+/** Resolve only wording that identifies exactly one server-issued choice.  This
+ * protects a continuation when a provider notices one answer in a compound
+ * reply but omits another; it has no access to arbitrary product values. */
+function resolvedSemanticAnswers(intent: ProductDraftIntent, answers: readonly UnresolvedQuestionAnswer[], request: string) {
+  const requestTokens = normalizeAnswer(request).split(" ").filter(Boolean);
+  const resolved: Array<{ answer: UnresolvedQuestionAnswer; choice: UnresolvedQuestionAnswer["allowedChoices"][number] }> = [];
+  for (const answer of answers) {
+    const groupKey = answer.canonicalPath.startsWith("optionGroups.") ? answer.canonicalPath.slice("optionGroups.".length, -".default".length) : null;
+    const group = groupKey ? intent.optionGroups.find((candidate) => candidate.key === groupKey) : null;
+    const groupTokens = group ? normalizeAnswer(group.label).split(" ").filter(Boolean) : [];
+    const choices = answer.allowedChoices.filter((choice) => {
+      const variants = new Set<string>([choice.displayLabel, choice.canonicalValue, ...choice.safeAliases].map(normalizeAnswer).filter(Boolean));
+      if (Array.from(variants).some((variant) => includesTokenSequence(requestTokens, variant.split(" ")))) return true;
+      if (!groupTokens.length || !includesTokenSequence(requestTokens, groupTokens)) return false;
+      // Display labels commonly contain a useful group-qualified prefix, such
+      // as "1st Surface (Right Reading)".  Matching that prefix accepts a
+      // natural answer without requiring the explanatory parenthetical.
+      const displayTokens = normalizeAnswer(choice.displayLabel).split(" ").filter(Boolean);
+      const groupIndex = displayTokens.findIndex((token, index) => groupTokens.every((part, offset) => displayTokens[index + offset] === part));
+      if (groupIndex >= 0 && includesTokenSequence(requestTokens, displayTokens.slice(0, groupIndex + groupTokens.length))) return true;
+      // Conversely, group-qualified language can use a distinctive label
+      // suffix (for example "Surface ... right reading").
+      return groupIndex >= 0 && displayTokens.length > groupIndex + groupTokens.length
+        && includesTokenSequence(requestTokens, displayTokens.slice(groupIndex + groupTokens.length));
+    });
+    if (choices.length === 1 && answer.baseRevision === intent.revision) resolved.push({ answer, choice: choices[0]! });
+  }
+  return resolved;
+}
+
+function deterministicAnswersPatch(intent: ProductDraftIntent, answers: readonly UnresolvedQuestionAnswer[], request: string): ProductDraftIntentPatch | null {
+  const resolved = resolvedSemanticAnswers(intent, answers, request);
+  if (!resolved.length) return null;
+  const nextGroups = structuredClone(intent.optionGroups);
+  const metadata: Record<string, { source: "explicit_user" }> = {};
+  let groupsChanged = false;
+  let nextPricing = intent.pricing;
+  let pricingChanged = false;
+  let unresolvedFields = intent.unresolvedFields;
+  let unresolvedChanged = false;
+  for (const { answer, choice } of resolved) {
+    if (answer.canonicalPath === "pricing.matrix.unit" && intent.pricing.model === "two_dimensional_matrix" && (choice.canonicalValue === "per_piece" || choice.canonicalValue === "per_square_foot")) {
+      nextPricing = { ...intent.pricing, unit: choice.canonicalValue };
+      pricingChanged = true;
+      unresolvedFields = unresolvedFields.filter((field) => field.path !== "pricing.unit" && field.path !== answer.canonicalPath);
+      unresolvedChanged = true;
+      metadata["pricing.unit"] = { source: "explicit_user" };
+      continue;
+    }
+    if (!answer.canonicalPath.startsWith("optionGroups.") || !answer.canonicalPath.endsWith(".default")) continue;
+    const key = answer.canonicalPath.slice("optionGroups.".length, -".default".length);
+    const group = nextGroups.find((candidate) => candidate.key === key);
+    if (!group || group.selectionMode !== "single" || !group.required || !group.values.some((value) => value.key === choice.canonicalValue)) continue;
+    group.values = group.values.map((value) => ({ ...value, isDefault: value.key === choice.canonicalValue }));
+    groupsChanged = true;
+    metadata[answer.canonicalPath] = { source: "explicit_user" };
+  }
+  const operations: ProductDraftIntentPatch["operations"] = [];
+  if (groupsChanged) operations.push({ op: "replace_option_groups", value: nextGroups });
+  if (pricingChanged) operations.push({ op: "set_pricing", value: nextPricing });
+  if (unresolvedChanged) operations.push({ op: "set_unresolved_fields", value: unresolvedFields });
+  if (Object.keys(metadata).length) operations.push({ op: "merge_field_metadata", value: metadata });
+  return operations.length ? { contractVersion: 1, baseRevision: intent.revision, preserveUnchanged: true, operations } : null;
+}
 
 function deterministicAnswerPatch(intent: ProductDraftIntent, answers: readonly UnresolvedQuestionAnswer[], request: string): { issueId: string; patch: ProductDraftIntentPatch } | null {
+  const semanticPatch = deterministicAnswersPatch(intent, answers, request);
+  if (semanticPatch) return { issueId: "semantic_multi_answer", patch: semanticPatch };
   const normalizedRequest = normalizeAnswer(request);
   const matches = answers.flatMap((answer) => answer.allowedChoices.filter((choice) => choice.safeAliases.some((alias) => normalizeAnswer(alias) === normalizedRequest)).map((choice) => ({ answer, choice })));
   if (matches.length !== 1) return null;

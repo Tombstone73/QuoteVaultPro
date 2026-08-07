@@ -94,6 +94,9 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(persisted.optionGroups.find((group) => group.key === "finishing")?.required).toBe(false);
     expect(persisted.optionGroups.find((group) => group.key === "finishing")?.values.find((value) => value.isDefault)?.key).toBe("none");
     expect(persisted.fieldMetadata["optionGroups.finishing.default"]).toEqual({ source: "canonical_default" });
+    expect(persisted.fieldMetadata["workflow.requiresProofApproval"]).toEqual({ source: "canonical_default" });
+    expect(persisted.fieldMetadata["workflow.requiresProductionJob"]).toEqual({ source: "canonical_default" });
+    expect(result.card.fields).toMatchObject({ "Proof provenance": "Authoritative server default", "Production-job provenance": "Authoritative server default" });
     expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "CATEGORY_UNRESOLVED", path: "identity.category" }), expect.objectContaining({ code: "OPTION_DEFAULT_UNRESOLVED", path: "optionGroups.surface.default" }), expect.objectContaining({ code: "OPTION_DEFAULT_UNRESOLVED", path: "optionGroups.layers.default" })]));
     expect(result.card.requiredQuestions).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.surface.default" }), expect.objectContaining({ path: "optionGroups.layers.default" })]));
     expect(result.card.requiredQuestions).not.toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.finishing.default" })]));
@@ -103,6 +106,24 @@ describe("CanonicalProductIntentService compiler failures", () => {
       expect.stringContaining("Finishing: None (default), Contour Cutting, Contour Cutting + Weed and Tape; Default: None"),
     ]));
     expect(result.card.candidateResolutions.filter((action) => action.kind === "select_category")).toHaveLength(1);
+  });
+
+  test("does not turn an AI-suggested category into canonical state when the user did not name that capability", async () => {
+    const payload = structuredClone(translucentVinylPayload);
+    payload.intent.identity.category = { state: "resolved", id: "flatbed-printing", label: "Flatbed Printing" };
+    payload.intent.fieldMetadata["identity.category"] = { source: "ai_interpreted", confidence: 1 };
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({
+      generateJson: async () => ({ rawText: JSON.stringify(payload), provider: "openai_compatible", model: "provider-bound-test", requestMetadata: {} }),
+    }), new ProductIntentPersistenceService(new MemoryStore()), {
+      categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [], productionRoutes: [],
+    });
+    const result = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "ai-category-guard", compilerInput: { ...compilerInput(), request: "Create a translucent vinyl product with layered printing." } });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected a saved canonical intent.");
+    const intent = result.session.specification.session.revisions[0]!.intent;
+    expect(intent.identity.category).toMatchObject({ state: "unresolved", label: "Flatbed Printing" });
+    expect(intent.fieldMetadata["identity.category"]).toEqual({ source: "unresolved" });
+    expect(result.card.fields["Category provenance"]).toBe("Unresolved");
   });
 
   test("answers one option-default question with a revision-bound patch and preserves all unrelated complex pricing", async () => {
@@ -160,7 +181,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     if (!created.ok) throw new Error("Expected a canonical complex-product session.");
     const before = created.session.specification.session.revisions[0]!.intent;
 
-    const continued = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "1st surface should be default and 3 layers should be default.", compilerInput: compilerInput() });
+    const continued = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "1st surface and 3 layer printing should be defaults", compilerInput: compilerInput() });
 
     expect(continued).toMatchObject({ ok: true, card: { readiness: { ready: true }, requiredQuestions: [] } });
     if (!continued.ok) throw new Error("Expected both defaults to be applied.");
@@ -174,7 +195,10 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(after.identity.category).toEqual(before.identity.category);
     expect(after.material).toEqual(before.material);
     expect(after.production.route).toEqual(before.production.route);
-    expect(provider).toHaveBeenCalledTimes(2);
+    // The server resolves both exact, allowed business values in the compound
+    // reply. The configured provider remains needed for initial interpretation
+    // but cannot drop one answer during continuation.
+    expect(provider).toHaveBeenCalledTimes(1);
   });
 
   test("applies three scoped option-default answers atomically and rejects an invalid selection without a revision", async () => {

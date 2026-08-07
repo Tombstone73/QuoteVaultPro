@@ -27,6 +27,15 @@ function answerContract(intent: ProductDraftIntent, issue: ProductIntentIssue): 
   if (issue.id == null || issue.path !== "pricing.matrix.unit" || issue.code !== "PRICING_UNIT_UNRESOLVED" || intent.pricing.model !== "two_dimensional_matrix" || intent.pricing.unit !== "unresolved") return undefined;
   return { issueId: issue.id, canonicalPath: "pricing.matrix.unit", answerType: "choice", allowedChoices: [{ displayLabel: "Per piece", canonicalValue: "per_piece", safeAliases: ["per piece", "piece"] }, { displayLabel: "Per square foot", canonicalValue: "per_square_foot", safeAliases: ["per square foot", "square foot", "per sqft"] }], baseRevision: intent.revision };
 }
+function provenance(intent: ProductDraftIntent, path: string): string {
+  const source = intent.fieldMetadata[path]?.source ?? "unresolved";
+  return source === "canonical_default" ? "Authoritative server default"
+    : source === "explicit_user" ? "User supplied"
+      : source === "selected_template" ? "Selected template"
+        : source === "structured_candidate" ? "Server-selected candidate"
+          : source === "ai_interpreted" ? "AI interpreted (not execution authority)"
+            : "Unresolved";
+}
 
 /** Presentation is intentionally a pure projection of the canonical revision;
  * it never sees source text, legacy briefs, or a PBV2 tree. */
@@ -54,6 +63,9 @@ export function presentProductDraftIntent(intent: ProductDraftIntent, issues: re
       Quantity: intent.quantity.behavior === "customer_entered" ? "Customer enters quantity" : intent.quantity.behavior === "fixed" ? `Fixed quantity: ${intent.quantity.quantity}` : "Not applicable",
       Pricing: pricing(intent), Material: reference(intent.material), Options: optionGroups,
       Proof: intent.workflow.requiresProofApproval ? "Required" : "Not required", "Production job": intent.workflow.requiresProductionJob ? "Required" : "Not required",
+      "Category provenance": provenance(intent, "identity.category"),
+      "Proof provenance": provenance(intent, "workflow.requiresProofApproval"),
+      "Production-job provenance": provenance(intent, "workflow.requiresProductionJob"),
       "Production route": reference(intent.production.route, "Not set"), Lifecycle: "Inactive draft", Visibility: intent.visibility.catalogVisible ? "Visible" : "Hidden",
     },
   };

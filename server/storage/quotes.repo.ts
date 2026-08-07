@@ -26,7 +26,7 @@ import {
     resolveLineItemProofApprovalRequirement,
     resolveProofApprovalLockEnabledFromOrgPreferences,
 } from "@shared/proofApprovalLock";
-import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray } from "drizzle-orm";
+import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray, or } from "drizzle-orm";
 import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { sanitizeJsonForPostgres } from "../lib/quoteCreateLineItemNormalizer";
@@ -1008,6 +1008,29 @@ export class QuotesRepository {
             lineItems: lineItemsWithRelations,
             inboundReview: inboundLinks.get(quoteRow.id) ?? null,
         };
+    }
+
+    /** Authoritative quote-to-order linkage.  A conversion pointer is
+     * preferred, with the canonical order.quoteId relationship retained for
+     * older conversions.  This is deliberately separate from presentation so
+     * internal readers can distinguish no order from an unavailable lookup. */
+    async getRelatedOrderForQuote(organizationId: string, quoteId: string): Promise<{ id: string; displayNumber: string | null; orderNumber: string } | null> {
+        const [quote] = await this.dbInstance
+            .select({ convertedToOrderId: quotes.convertedToOrderId })
+            .from(quotes)
+            .where(and(eq(quotes.organizationId, organizationId), eq(quotes.id, quoteId)))
+            .limit(1);
+        if (!quote) return null;
+        const relation = quote.convertedToOrderId
+            ? and(eq(orders.organizationId, organizationId), or(eq(orders.id, quote.convertedToOrderId), eq(orders.quoteId, quoteId)))
+            : and(eq(orders.organizationId, organizationId), eq(orders.quoteId, quoteId));
+        const [order] = await this.dbInstance
+            .select({ id: orders.id, displayNumber: orders.displayNumber, orderNumber: orders.orderNumber })
+            .from(orders)
+            .where(relation)
+            .orderBy(desc(orders.createdAt))
+            .limit(1);
+        return order ?? null;
     }
 
     async getMaxQuoteNumber(organizationId: string): Promise<number | null> {
