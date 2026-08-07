@@ -16,8 +16,8 @@ const context = assistantContextEnvelopeSchema.parse({
 const scope = { organizationId: "org_1", userId: "user_1" };
 const actor = { userId: "user_1", email: "user@example.test", ipAddress: null, userAgent: null, permissions: ["assistant.products.create_inactive_draft"] };
 
-function repo() {
-  const conversation = { id: "conversation_1", organizationId: "org_1", userId: "user_1", title: "New", status: "active" as const, lastActivityAt: new Date(), createdAt: new Date(), updatedAt: new Date(), messages: [] };
+function repo(messages: any[] = []) {
+  const conversation = { id: "conversation_1", organizationId: "org_1", userId: "user_1", title: "New", status: "active" as const, lastActivityAt: new Date(), createdAt: new Date(), updatedAt: new Date(), messages };
   return {
     listConversations: jest.fn(), createConversation: jest.fn(), getConversation: jest.fn(async () => conversation), updateConversation: jest.fn(),
     createFoundationTurn: jest.fn(async (input: any) => ({ turnId: "turn_1", correlationId: input.correlationId, status: input.status, conversation, userMessage: { id: "u", conversationId: conversation.id, turnId: "turn_1", role: "user", content: input.message, createdAt: new Date() }, assistantMessage: { id: "a", conversationId: conversation.id, turnId: "turn_1", role: "assistant", content: input.response, createdAt: new Date() } })),
@@ -40,6 +40,12 @@ const quotePlan = {
   version: 1, operation: "create", domain: "quotes", mode: "mutation", capabilityId: "create_quote", confidence: "high",
   target: { kind: "new_entity", entityId: null }, contextUsage: { workspaceIsAuthoritative: false, workspaceRelevance: "supporting", activeSessionId: null },
   requiresClarification: false, clarificationQuestion: null, reasonCode: "explicit_new_entity_request",
+} as const;
+
+const canonicalContinuationPlan = {
+  version: 1, operation: "continue_session", domain: "products", mode: "mutation", capabilityId: "canonical_product_intent_compiler", confidence: "high",
+  target: { kind: "active_session", entityId: null }, contextUsage: { workspaceIsAuthoritative: false, workspaceRelevance: "supporting", activeSessionId: "proposal_1" },
+  requiresClarification: false, clarificationQuestion: null, reasonCode: "active_session_continuation",
 } as const;
 
 describe("AI-first assistant free-text routing", () => {
@@ -86,6 +92,22 @@ describe("AI-first assistant free-text routing", () => {
     expect(planner.plan).toHaveBeenCalledWith(expect.objectContaining({ system: expect.stringContaining('"entityId":null') }));
     expect(canonical.respondPlannedCanonicalProductIntent).toHaveBeenCalledWith(expect.objectContaining({ message, operation: "create", conversationId: "conversation_1" }));
     expect(storage.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ mode: "ai_first_typed_intent_planner", message }));
+  });
+
+  test("routes an active canonical Product Intent reply to its continuation specialist", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const storage = repo([{ id: "assistant_1", conversationId: "conversation_1", turnId: "turn_0", role: "assistant", content: "Canonical intent", structuredCards: [{ kind: "canonical_product_intent_proposal", details: { proposalId: "proposal_1", canonicalProductIntent: { kind: "canonical_product_intent_proposal" } }], createdAt: new Date() }]);
+    const planner = { plan: jest.fn(async () => ({ ok: true as const, plan: canonicalContinuationPlan, diagnostics: { provider: "openai_compatible", model: "deepseek-test" } })) };
+    const canonical = { respondPlannedCanonicalProductIntent: jest.fn(async () => ({ handled: true, response: "Canonical revision saved.", cards: [] })) };
+    const service = new AssistantService(storage, { getCapabilities: jest.fn(async () => ({ enabled: true, conversationsEnabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, planner, canonical);
+    const message = "1st surface should be default and 3 layers should be default.";
+
+    await service.createTurn(scope, "conversation_1", actor, { message, context });
+
+    expect(planner.plan).toHaveBeenCalledWith(expect.objectContaining({ activeSessionId: "proposal_1", user: expect.stringContaining('"hasActiveCanonicalSession":true') }));
+    expect(planner.plan).toHaveBeenCalledWith(expect.objectContaining({ system: expect.stringContaining("operation continue_session") }));
+    expect(canonical.respondPlannedCanonicalProductIntent).toHaveBeenCalledWith(expect.objectContaining({ message, operation: "continue_session", conversationId: "conversation_1" }));
+    expect(storage.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "Canonical revision saved." }));
   });
 
   test("persists a planner failure without calling the canonical or legacy product dispatcher", async () => {

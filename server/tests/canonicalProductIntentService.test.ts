@@ -33,7 +33,7 @@ const translucentVinylPayload = {
     optionGroups: [
       { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first_surface", label: "1st Surface (Right Reading)", isDefault: false }, { key: "second_surface", label: "2nd Surface (Reverse Printed)", isDefault: false }] },
       { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "3_layers", label: "3 Layers", isDefault: false }, { key: "5_layers", label: "5 Layers", isDefault: false }] },
-      { key: "finishing", label: "Finishing", required: false, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
+      { key: "finishing", label: "Finishing", required: true, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
     ],
     workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true }, production: { route: { state: "explicitly_unset" }, configuration: {} }, visibility: { catalogVisible: false },
     unresolvedFields: [], fieldMetadata: { material: { source: "unresolved" }, "production.route": { source: "unresolved" } },
@@ -91,10 +91,12 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(persisted.optionGroups.map((group) => group.key)).toEqual(["surface", "layers", "finishing"]);
     expect(persisted.optionGroups.find((group) => group.key === "surface")?.values.every((value) => !value.isDefault)).toBe(true);
     expect(persisted.optionGroups.find((group) => group.key === "layers")?.values.every((value) => !value.isDefault)).toBe(true);
+    expect(persisted.optionGroups.find((group) => group.key === "finishing")?.required).toBe(false);
     expect(persisted.optionGroups.find((group) => group.key === "finishing")?.values.find((value) => value.isDefault)?.key).toBe("none");
     expect(persisted.fieldMetadata["optionGroups.finishing.default"]).toEqual({ source: "canonical_default" });
     expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "CATEGORY_UNRESOLVED", path: "identity.category" }), expect.objectContaining({ code: "OPTION_DEFAULT_UNRESOLVED", path: "optionGroups.surface.default" }), expect.objectContaining({ code: "OPTION_DEFAULT_UNRESOLVED", path: "optionGroups.layers.default" })]));
     expect(result.card.requiredQuestions).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.surface.default" }), expect.objectContaining({ path: "optionGroups.layers.default" })]));
+    expect(result.card.requiredQuestions).not.toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.finishing.default" })]));
     expect(result.card.fields.Options).toEqual(expect.arrayContaining([
       expect.stringContaining("Surface: 1st Surface (Right Reading), 2nd Surface (Reverse Printed); Default: Not selected"),
       expect.stringContaining("Layers: 3 Layers, 5 Layers; Default: Not selected"),
@@ -135,6 +137,83 @@ describe("CanonicalProductIntentService compiler failures", () => {
       expect(resolved.optionGroups.find((group) => group.key === "surface")?.values.find((value) => value.isDefault)?.key).toBe("first_surface");
       expect(resolved.fieldMetadata["optionGroups.surface.default"]).toEqual({ source: "explicit_user" });
     }
+  });
+
+  test("applies two unambiguous option-default answers atomically in one canonical revision", async () => {
+    const payload = structuredClone(translucentVinylPayload);
+    payload.intent.identity.category = { state: "resolved", id: "signs", label: "Signs" };
+    payload.intent.fieldMetadata["identity.category"] = { source: "explicit_user" };
+    const provider = jest.fn(async (input: any) => {
+      const compilerRequest = JSON.parse(input.user);
+      if (!compilerRequest.currentIntent) return { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
+      const current = compilerRequest.currentIntent;
+      return {
+        rawText: JSON.stringify({ kind: "intent_patch", patch: { operations: [
+          { op: "replace_option_groups", value: current.optionGroups.map((group: any) => group.key === "surface" ? { ...group, values: group.values.map((value: any) => ({ ...value, isDefault: value.key === "first_surface" })) } : group.key === "layers" ? { ...group, values: group.values.map((value: any) => ({ ...value, isDefault: value.key === "3_layers" })) } : group) },
+          { op: "merge_field_metadata", value: { "optionGroups.surface.default": { source: "explicit_user" }, "optionGroups.layers.default": { source: "explicit_user" } } },
+        ] } }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
+    });
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), {
+      categories: [{ id: "signs", label: "Signs" }], materials: [], productionRoutes: [],
+    });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "translucent-multi-defaults", compilerInput: compilerInput() });
+    if (!created.ok) throw new Error("Expected a canonical complex-product session.");
+    const before = created.session.specification.session.revisions[0]!.intent;
+
+    const continued = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "1st surface should be default and 3 layers should be default.", compilerInput: compilerInput() });
+
+    expect(continued).toMatchObject({ ok: true, card: { readiness: { ready: true }, requiredQuestions: [] } });
+    if (!continued.ok) throw new Error("Expected both defaults to be applied.");
+    const after = continued.session.specification.session.revisions.at(-1)!.intent;
+    expect(continued.session.specification.session.revisions).toHaveLength(2);
+    expect(after.revision).toBe(1);
+    expect(after.optionGroups.find((group) => group.key === "surface")?.values.find((value) => value.isDefault)?.key).toBe("first_surface");
+    expect(after.optionGroups.find((group) => group.key === "layers")?.values.find((value) => value.isDefault)?.key).toBe("3_layers");
+    expect(after.optionGroups.find((group) => group.key === "finishing")?.values.find((value) => value.isDefault)?.key).toBe("none");
+    expect(after.pricing).toEqual(before.pricing);
+    expect(after.identity.category).toEqual(before.identity.category);
+    expect(after.material).toEqual(before.material);
+    expect(after.production.route).toEqual(before.production.route);
+    expect(provider).toHaveBeenCalledTimes(2);
+  });
+
+  test("applies three scoped option-default answers atomically and rejects an invalid selection without a revision", async () => {
+    const payload = structuredClone(translucentVinylPayload);
+    payload.intent.identity.category = { state: "resolved", id: "signs", label: "Signs" };
+    payload.intent.fieldMetadata["identity.category"] = { source: "explicit_user" };
+    payload.intent.optionGroups.push({ key: "mounting", label: "Mounting", required: true, selectionMode: "single", values: [{ key: "permanent", label: "Permanent Mount", isDefault: false }, { key: "removable", label: "Removable Mount", isDefault: false }] });
+    let continuationCount = 0;
+    const provider = jest.fn(async (input: any) => {
+      const compilerRequest = JSON.parse(input.user);
+      if (!compilerRequest.currentIntent) return { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
+      continuationCount += 1;
+      const current = compilerRequest.currentIntent;
+      const selectedByGroup: Record<string, string> = continuationCount === 1
+        ? { surface: "not_a_choice" }
+        : { surface: "first_surface", layers: "3_layers", mounting: "permanent" };
+      return {
+        rawText: JSON.stringify({ kind: "intent_patch", patch: { operations: [
+          { op: "replace_option_groups", value: current.optionGroups.map((group: any) => selectedByGroup[group.key] ? { ...group, values: group.values.map((value: any) => ({ ...value, isDefault: value.key === selectedByGroup[group.key] })) } : group) },
+          { op: "merge_field_metadata", value: Object.fromEntries(Object.keys(selectedByGroup).map((key) => [`optionGroups.${key}.default`, { source: "explicit_user" }])) },
+        ] } }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
+    });
+    const store = new MemoryStore();
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(store), {
+      categories: [{ id: "signs", label: "Signs" }], materials: [], productionRoutes: [],
+    });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "translucent-three-defaults", compilerInput: compilerInput() });
+    if (!created.ok) throw new Error("Expected a canonical complex-product session.");
+    expect(created.card.requiredQuestions).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.surface.default" }), expect.objectContaining({ path: "optionGroups.layers.default" }), expect.objectContaining({ path: "optionGroups.mounting.default" })]));
+
+    const invalid = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Change the surface default to an unsupported choice.", compilerInput: compilerInput() });
+    expect(invalid).toMatchObject({ ok: false, code: "PRODUCT_INTENT_PATCH_OUT_OF_SCOPE" });
+    expect(store.rows.get(created.session.proposalId)?.specification.session.revisions).toHaveLength(1);
+
+    const continued = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Use 1st Surface, 3 Layers, and Permanent Mount as the defaults.", compilerInput: compilerInput() });
+    expect(continued).toMatchObject({ ok: true, card: { readiness: { ready: true }, requiredQuestions: [] } });
+    if (!continued.ok) throw new Error("Expected three defaults to be applied.");
+    expect(continued.session.specification.session.revisions).toHaveLength(2);
+    expect(continued.session.specification.session.revisions.at(-1)!.intent.optionGroups.find((group) => group.key === "mounting")?.values.find((value) => value.isDefault)?.key).toBe("permanent");
   });
 
   test("persists the Yard Signs unresolved matrix as initial revision zero", async () => {

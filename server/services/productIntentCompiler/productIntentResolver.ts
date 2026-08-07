@@ -41,22 +41,28 @@ function mayResolveOperationalReference(intent: ProductDraftIntent, field: Refer
 
 function canonicalIssuePath(path: string): string { return path === "pricing.unit" ? "pricing.matrix.unit" : path; }
 function optionDefaultPath(key: string): string { return `optionGroups.${key}.default`; }
-function isNeutralNone(value: { key: string; label: string }): boolean { return value.key.trim().toLocaleLowerCase() === "none" && value.label.trim().toLocaleLowerCase() === "none"; }
+function isNeutralNone(value: ProductDraftIntent["optionGroups"][number]["values"][number]): boolean {
+  return value.key.trim().toLocaleLowerCase() === "none"
+    && value.label.trim().toLocaleLowerCase() === "none"
+    && (value.priceImpact == null || (value.priceImpact.kind === "percentage_of_base" && value.priceImpact.percent === 0));
+}
 function optionDefaultQuestion(group: ProductDraftIntent["optionGroups"][number]): string {
   const labels = group.values.map((value) => value.label);
   const choices = labels.length === 2 ? `${labels[0]} or ${labels[1]}` : `${labels.slice(0, -1).join(", ")}, or ${labels.at(-1)}`;
   return `Which ${group.label} option should be the default: ${choices}?`;
 }
 
-/** Only an optional, explicitly neutral "None" value receives a server-owned
- * default. Meaningful choices remain unresolved until a user/template source
- * supplies one. */
+/** An exact zero-impact None is a server-owned no-add-on state, not a required
+ * customer choice. Meaningful choices remain unresolved until a user/template
+ * source supplies one. */
 function normalizeSafeNeutralOptionDefaults(rawIntent: ProductDraftIntent): ProductDraftIntent {
   const intent = structuredClone(rawIntent);
   for (const group of intent.optionGroups) {
-    if (group.selectionMode !== "single" || group.required || group.values.some((value) => value.isDefault)) continue;
+    if (group.selectionMode !== "single") continue;
     const neutral = group.values.find(isNeutralNone);
     if (!neutral) continue;
+    group.required = false;
+    if (group.values.some((value) => value.isDefault)) continue;
     neutral.isDefault = true;
     intent.fieldMetadata[optionDefaultPath(group.key)] = { source: "canonical_default" };
   }

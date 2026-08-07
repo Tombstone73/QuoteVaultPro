@@ -153,7 +153,7 @@ const providerPayloadGuide = {
     quantity: "{ behavior: 'customer_entered', minimum?, maximum? } | { behavior: 'fixed', quantity } | { behavior: 'not_applicable' }",
     pricing: "{ model: 'scalar', unit: 'per_piece'|'per_square_foot'|'flat_fee', priceCents } | { model: 'two_dimensional_matrix', unit: 'per_piece'|'per_square_foot'|'unresolved', rowOptionKey, columnOptionKey, cells: [{ row, column, priceCents }] } | { model: 'quantity_tiers', unit: 'per_piece'|'per_square_foot', tiers: [{ minimumQuantity: positive integer, maximumQuantity: positive integer | null, priceCents: positive integer }] } | { model: 'unresolved' }. Quantity tiers are ordered, continuous inclusive ranges beginning at 1; only the final tier may be open ended and it must use maximumQuantity: null. Prices are integer cents. For an option-controlled rate, use the existing two_dimensional_matrix and include every row/column combination; repeat a rate across an unrelated axis rather than creating a second product.",
     material: "{ state: 'resolved', id, label } | { state: 'unresolved', label } | { state: 'explicitly_unset' }",
-    optionGroups: "[{ key, label, required, selectionMode: 'single'|'multiple', values: [{ key, label, isDefault, priceImpact?: { kind: 'percentage_of_base', percent } }] }]. Use priceImpact only for an explicit percentage of the resolved base price. When a dependent finishing relationship is safely expressible as inclusive alternatives, normalize it into one required single-select group (for example None 0%, Contour 10%, Contour plus Weed and Tape 30% total). Never emit separate stackable impacts for an inclusive total.",
+    optionGroups: "[{ key, label, required, selectionMode: 'single'|'multiple', values: [{ key, label, isDefault, priceImpact?: { kind: 'percentage_of_base', percent } }] }]. Use priceImpact only for an explicit percentage of the resolved base price. When a dependent finishing relationship is safely expressible as inclusive alternatives, normalize it into one optional single-select group with exact None as the no-add-on default (for example None 0%, Contour 10%, Contour plus Weed and Tape 30% total). Never emit separate stackable impacts for an inclusive total.",
     workflow: "{ kind: 'standard_production'|'fulfillment_only'|'service_fee', requiresProofApproval, requiresProductionJob }",
     production: "{ route: resolved|unresolved|explicitly_unset reference, configuration: {} }",
     visibility: { catalogVisible: false },
@@ -186,7 +186,7 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
       "Use only candidate labels supplied by the server for tenant-scoped entities. If no supplied label is an unambiguous match, return an unresolved-question result.",
       "For continuations and corrections, preserve every existing authoritative intent field unless the request explicitly changes it.",
       continuation
-        ? "This is a continuation. Return only { kind: 'intent_patch', patch: { operations: [...] } }. Never return a complete intent. Use only the active required issue supplied by the server, preserve every unrelated field, and omit contractVersion, baseRevision, and preserveUnchanged because the server binds them."
+        ? "This is a continuation. Return only { kind: 'intent_patch', patch: { operations: [...] } }. Never return a complete intent. Resolve every unambiguous active required issue answered by this message in one patch; use only server-supplied active issues, preserve every unrelated field, and omit contractVersion, baseRevision, and preserveUnchanged because the server binds them."
         : "For an initial request, return { kind: 'complete_intent', intent: { ... } }.",
       "Do not turn preservation instructions into product options, materials, or entity references.",
       "Never set an active or published lifecycle. Confidence never makes a value execution-authorizing.",
@@ -201,7 +201,7 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
       allowedEnums: input.allowedEnums,
       supportedArchetypes: input.supportedArchetypes,
       candidateLabels: candidateLabelsForPrompt(input.candidateLabels),
-      ...(continuation ? { activeRequiredIssues: input.activeRequiredIssues ?? [], canonicalPatchContract: { operations: "Typed ProductDraftIntentPatch operations only. Use set_pricing with the complete current pricing object when changing a matrix unit; do not alter unrelated fields.", serverOwnedFields: ["contractVersion", "baseRevision", "preserveUnchanged"] } } : {}),
+      ...(continuation ? { activeRequiredIssues: input.activeRequiredIssues ?? [], canonicalPatchContract: { operations: "Typed ProductDraftIntentPatch operations only. A single patch may resolve multiple active questions. Use one replace_option_groups operation to change only answered option defaults; use set_pricing with the complete current pricing object when changing a matrix unit; do not alter unrelated fields.", serverOwnedFields: ["contractVersion", "baseRevision", "preserveUnchanged"] } } : {}),
       serverConstraints: input.serverConstraints ?? [],
     }),
   };
@@ -357,32 +357,15 @@ function normalizeUnsafeProviderMaterial(request: string, intent: Record<string,
 
 function optionDefaultMetadataPath(key: string): string { return `optionGroups.${key}.default`; }
 
-function requestExpressesOptionDefault(request: string, label: string): boolean {
-  const normalizedRequest = request.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  const normalizedLabel = label.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
-  if (!normalizedLabel) return false;
-  const defaultToIndex = normalizedRequest.indexOf("default to ");
-  const defaultClause = defaultToIndex < 0 ? "" : normalizedRequest.slice(defaultToIndex);
-  return [
-    `default to ${normalizedLabel}`,
-    `default ${normalizedLabel}`,
-    `make ${normalizedLabel} default`,
-    `${normalizedLabel} as the default`,
-    `${normalizedLabel} as default`,
-  ].some((phrase) => normalizedRequest.includes(phrase))
-    || (defaultClause.includes(normalizedLabel) && !defaultClause.includes(" or "));
-}
-
 /** Provider output may describe an explicit or template-owned default, but it
  * must never manufacture a meaningful customer choice just by flagging the
  * first value. Canonical defaults are applied later by the server only for a
  * proven neutral optional value. */
-function normalizeUnsafeProviderOptionDefaults(request: string, intent: Record<string, unknown>): Record<string, unknown> {
+function normalizeUnsafeProviderOptionDefaults(intent: Record<string, unknown>): Record<string, unknown> {
   const groups = intent.optionGroups;
   const metadata = intent.fieldMetadata;
   if (!Array.isArray(groups) || !metadata || typeof metadata !== "object" || Array.isArray(metadata)) return intent;
   const fieldMetadata = metadata as Record<string, unknown>;
-  const inferredFieldMetadata: Record<string, unknown> = {};
   return {
     ...intent,
     optionGroups: groups.map((group) => {
@@ -392,16 +375,10 @@ function normalizeUnsafeProviderOptionDefaults(request: string, intent: Record<s
       const source = key && fieldMetadata[optionDefaultMetadataPath(key)] && typeof fieldMetadata[optionDefaultMetadataPath(key)] === "object"
         ? (fieldMetadata[optionDefaultMetadataPath(key)] as Record<string, unknown>).source
         : null;
-      const templateOrCandidateDefault = source === "structured_candidate" || source === "selected_template";
-      if (templateOrCandidateDefault || !Array.isArray(candidate.values)) return candidate;
-      const userDefaults = candidate.values.filter((value) => value && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).isDefault === true && requestExpressesOptionDefault(request, String((value as Record<string, unknown>).label ?? "")));
-      if (userDefaults.length === 1 && key) {
-        inferredFieldMetadata[optionDefaultMetadataPath(key)] = { source: "explicit_user" };
-        return { ...candidate, values: candidate.values.map((value) => value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, unknown>), isDefault: value === userDefaults[0] } : value) };
-      }
+      const authoritative = source === "explicit_user" || source === "structured_candidate" || source === "selected_template";
+      if (authoritative || !Array.isArray(candidate.values)) return candidate;
       return { ...candidate, values: candidate.values.map((value) => value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, unknown>), isDefault: false } : value) };
     }),
-    fieldMetadata: { ...fieldMetadata, ...inferredFieldMetadata },
   };
 }
 
@@ -415,7 +392,7 @@ function normalizeInitialCompleteIntent(input: ProductIntentCompilerInput, value
   return {
     ...root,
     intent: {
-      ...normalizeUnsafeProviderOptionDefaults(input.request, normalizeUnsafeProviderMaterial(input.request, { ...candidate, pricing: normalizeProviderQuantityTiers(candidate.pricing) })),
+      ...normalizeUnsafeProviderOptionDefaults(normalizeUnsafeProviderMaterial(input.request, { ...candidate, pricing: normalizeProviderQuantityTiers(candidate.pricing) })),
       contractVersion: 1,
       intentId,
       organizationId: input.orgId,

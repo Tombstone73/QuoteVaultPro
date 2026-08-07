@@ -113,41 +113,71 @@ function deterministicAnswerPatch(intent: ProductDraftIntent, answers: readonly 
 
 function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch: ProductDraftIntentPatch, answers: readonly UnresolvedQuestionAnswer[]): boolean {
   if (answers.length === 0) return true;
-  if (answers.length !== 1) return false;
-  const activeAnswer = answers[0]!;
-  if (activeAnswer.canonicalPath.startsWith("optionGroups.") && activeAnswer.canonicalPath.endsWith(".default")) {
-    const key = activeAnswer.canonicalPath.slice("optionGroups.".length, -".default".length);
-    const group = intent.optionGroups.find((candidate) => candidate.key === key);
-    if (!group) return false;
-    let replaced = false;
-    return patch.operations.every((operation) => {
-      if (operation.op === "replace_option_groups") {
-        const next = operation.value.find((candidate) => candidate.key === key);
-        replaced = true;
-        return JSON.stringify(operation.value.filter((candidate) => candidate.key !== key)) === JSON.stringify(intent.optionGroups.filter((candidate) => candidate.key !== key))
-          && Boolean(next)
-          && next!.selectionMode === "single"
-          && next!.values.filter((value) => value.isDefault).length === 1
-          && next!.values.every((value) => group.values.some((current) => current.key === value.key && current.label === value.label));
-      }
-      if (operation.op === "merge_field_metadata") return Object.keys(operation.value).length === 1 && activeAnswer.canonicalPath in operation.value;
-      return false;
-    }) && replaced;
-  }
-  if (activeAnswer.canonicalPath !== "pricing.matrix.unit" || intent.pricing.model !== "two_dimensional_matrix") return false;
-  const expectedUnresolved = intent.unresolvedFields.filter((field) => field.path !== "pricing.unit" && field.path !== "pricing.matrix.unit");
+  const optionAnswers = new Map(answers
+    .filter((answer) => answer.canonicalPath.startsWith("optionGroups.") && answer.canonicalPath.endsWith(".default"))
+    .map((answer) => [answer.canonicalPath.slice("optionGroups.".length, -".default".length), answer]));
+  const pricingAnswer = answers.find((answer) => answer.canonicalPath === "pricing.matrix.unit");
+  const touchedPaths = new Set<string>();
+  const metadataPaths = new Set<string>();
+  let optionGroupsReplaced = false;
   let pricingUpdated = false;
-  return patch.operations.every((operation) => {
-    if (operation.op === "set_pricing") {
-      pricingUpdated = true;
-      return operation.value.model === "two_dimensional_matrix"
-        && (operation.value.unit === "per_piece" || operation.value.unit === "per_square_foot")
-        && JSON.stringify({ ...operation.value, unit: "unresolved" }) === JSON.stringify(intent.pricing);
+  let unresolvedFieldsUpdated = false;
+  for (const operation of patch.operations) {
+    if (operation.op === "replace_option_groups") {
+      if (optionGroupsReplaced || operation.value.length !== intent.optionGroups.length) return false;
+      optionGroupsReplaced = true;
+      for (let index = 0; index < intent.optionGroups.length; index += 1) {
+        const current = intent.optionGroups[index]!;
+        const next = operation.value[index]!;
+        const answer = optionAnswers.get(current.key);
+        if (next.key !== current.key || next.label !== current.label || next.required !== current.required || next.selectionMode !== current.selectionMode || next.values.length !== current.values.length) return false;
+        const unchanged = JSON.stringify(next) === JSON.stringify(current);
+        if (unchanged) continue;
+        if (!answer) {
+          return false;
+        }
+        if (next.values.some((value, valueIndex) => {
+          const prior = current.values[valueIndex]!;
+          const { isDefault: _nextDefault, ...nextWithoutDefault } = value;
+          const { isDefault: _priorDefault, ...priorWithoutDefault } = prior;
+          return JSON.stringify(nextWithoutDefault) !== JSON.stringify(priorWithoutDefault);
+        })) return false;
+        const selected = next.values.filter((value) => value.isDefault);
+        if (selected.length !== 1 || !answer.allowedChoices.some((choice) => choice.canonicalValue === selected[0]!.key)) return false;
+        touchedPaths.add(answer.canonicalPath);
+      }
+      continue;
     }
-    if (operation.op === "set_unresolved_fields") return JSON.stringify(operation.value) === JSON.stringify(expectedUnresolved);
-    if (operation.op === "merge_field_metadata") return Object.keys(operation.value).length === 1 && "pricing.unit" in operation.value;
+    if (operation.op === "set_pricing") {
+      if (!pricingAnswer || intent.pricing.model !== "two_dimensional_matrix" || pricingUpdated) return false;
+      pricingUpdated = true;
+      if (!(operation.value.model === "two_dimensional_matrix"
+        && (operation.value.unit === "per_piece" || operation.value.unit === "per_square_foot")
+        && JSON.stringify({ ...operation.value, unit: "unresolved" }) === JSON.stringify(intent.pricing))) return false;
+      touchedPaths.add(pricingAnswer.canonicalPath);
+      continue;
+    }
+    if (operation.op === "set_unresolved_fields") {
+      if (!pricingAnswer || unresolvedFieldsUpdated) return false;
+      unresolvedFieldsUpdated = true;
+      const expectedUnresolved = intent.unresolvedFields.filter((field) => field.path !== "pricing.unit" && field.path !== "pricing.matrix.unit");
+      if (JSON.stringify(operation.value) !== JSON.stringify(expectedUnresolved)) return false;
+      continue;
+    }
+    if (operation.op === "merge_field_metadata") {
+      for (const path of Object.keys(operation.value)) {
+        const canonicalPath = path === "pricing.unit" ? "pricing.matrix.unit" : path;
+        if (!answers.some((answer) => answer.canonicalPath === canonicalPath)) return false;
+        metadataPaths.add(canonicalPath);
+      }
+      continue;
+    }
     return false;
-  }) && pricingUpdated;
+  }
+  return touchedPaths.size > 0
+    && Array.from(touchedPaths).every((path) => metadataPaths.has(path))
+    && (!pricingUpdated || unresolvedFieldsUpdated)
+    && (!unresolvedFieldsUpdated || pricingUpdated);
 }
 
 function continuationFailure(input: { stage: string; current: CanonicalProductIntentSession; activeIssueIds: readonly string[]; deterministicAttempted: boolean; providerRequested: boolean; providerResultType?: string; patchSchemaPaths?: readonly string[]; code: string; message: string }) {
@@ -312,10 +342,8 @@ export class CanonicalProductIntentService {
     try {
       const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
       const { intent, issues } = await this.validate(applyProductDraftIntentPatch(draft, sourcePatch, { actorUserId: input.actorUserId }));
-      const answeredPath = deterministic
-        ? activeAnswers.find((answer) => answer.issueId === deterministic.issueId)?.canonicalPath
-        : activeAnswers[0]?.canonicalPath;
-      if (answeredPath && issues.some((issue) => issue.id === `${intent.revision}:${answeredPath}:required`)) return continuationFailure({ stage: "resolver_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: !deterministic, providerResultType: compilerResult?.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNRESOLVED", message: "I could not apply that answer to the current product question. Please review the available choices and try again." });
+      const resolvedAnswers = activeAnswers.filter((answer) => !issues.some((issue) => issue.id === `${intent.revision}:${answer.canonicalPath}:required`));
+      if (resolvedAnswers.length === 0) return continuationFailure({ stage: "resolver_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: !deterministic, providerResultType: compilerResult?.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNRESOLVED", message: "I could not apply that answer to the current product question. Please review the available choices and try again." });
       const patch = replacementPatch(intent, current.specification.session.currentRevision);
       const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: current.specification.session.currentRevision, expectedFingerprint: current.fingerprint, patch, reason: deterministic ? "answer" : "correction", compilerResult, unresolvedQuestions: questionsFrom(intent, issues) });
       return { ok: true, session, issues, card: await this.presentation(intent, issues) };
