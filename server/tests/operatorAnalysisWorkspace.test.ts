@@ -29,6 +29,42 @@ describe("operator analysis workspace", () => {
     expect(result.rows).toEqual([{ customer: "Acme", invoiceCount: 2, total: 17.76 }, { customer: "Beta", invoiceCount: 2, total: 8.88 }]);
   });
 
+  test("supports AI-selected period comparison without a customer-decline report endpoint", () => {
+    const comparisonContext: any = {
+      ...context,
+      analysisObservations: [{
+        step: 1, toolName: "analytics.invoice_activity", status: "succeeded",
+        result: { status: "succeeded", data: { invoices: [
+          { customerName: "Acme", postedAt: "2026-07-03T12:00:00.000Z", totalCents: 20000 },
+          { customerName: "Acme", postedAt: "2026-08-03T12:00:00.000Z", totalCents: 15000 },
+          { customerName: "Beta", postedAt: "2026-07-03T12:00:00.000Z", totalCents: 10000 },
+          { customerName: "Beta", postedAt: "2026-08-03T12:00:00.000Z", totalCents: 10000 },
+        ] }, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-07T12:00:00.000Z" } } },
+      }],
+    };
+    const result = runOperatorAnalysis({
+      purpose: "Compare AI-selected comparable first-week customer spend periods.",
+      dataset: { source: "current_turn", toolName: "analytics.invoice_activity", path: "invoices" },
+      program: { operations: [
+        { op: "classify_range", as: "period", field: "postedAt", ranges: [
+          { label: "historical", start: "2026-07-01T00:00:00.000Z", endExclusive: "2026-07-08T00:00:00.000Z" },
+          { label: "current", start: "2026-08-01T00:00:00.000Z", endExclusive: "2026-08-08T00:00:00.000Z" },
+        ] },
+        { op: "group", by: ["customerName", "period"], metrics: [{ as: "spendCents", op: "sum", field: "totalCents" }] },
+        { op: "pivot", by: ["customerName"], column: "period", values: [
+          { columnValue: "current", field: "spendCents", as: "currentSpendCents" },
+          { columnValue: "historical", field: "spendCents", as: "historicalSpendCents" },
+        ] },
+        { op: "calculate", fields: [{ as: "percentChange", calculation: "percent_change", fields: ["currentSpendCents", "historicalSpendCents"] }] },
+        { op: "sort", field: "percentChange", direction: "ascending" },
+      ] },
+    }, comparisonContext);
+    expect(result.rows).toEqual([
+      { customerName: "Acme", currentSpendCents: 15000, historicalSpendCents: 20000, percentChange: -25 },
+      { customerName: "Beta", currentSpendCents: 10000, historicalSpendCents: 10000, percentChange: 0 },
+    ]);
+  });
+
   test("accepts only task-bound released observations and rejects arbitrary code, paths, and missing dataset references", () => {
     expect(() => runOperatorAnalysis({
       purpose: "Run code", dataset: { source: "current_turn", toolName: "authorized.invoices", path: "invoices" },
