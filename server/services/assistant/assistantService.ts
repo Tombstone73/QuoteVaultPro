@@ -17,6 +17,7 @@ import { ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPla
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
 import { AssistantOperatorRuntime, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation, type AssistantOperatorTrustedObservation } from "./operatorRuntime";
 import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionProvider";
+import { runOperatorAnalysis } from "./operatorAnalysisWorkspace";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
 import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
 import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore } from "./operatorTaskContext";
@@ -254,7 +255,7 @@ function mergeOperatorEntityReferences(
   return Array.from(references.values()).slice(-25);
 }
 
-const registeredReadToolNames = new Set<string>(assistantToolNameValues);
+const registeredReadToolNames = new Set<string>([...assistantToolNameValues, "analysis.run"]);
 const trustedObservationStorageKey = "trustedReadObservations";
 const MAX_TRUSTED_OPERATOR_OBSERVATIONS = 5;
 const MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES = 16_000;
@@ -572,6 +573,17 @@ export class AssistantService {
         });
         const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? null;
         return { status: "succeeded", result: { status: "succeeded", data: { response: product.response, cards: product.cards, proposalId, taskDomain: "products" } } as any };
+      },
+    }, {
+      name: "analysis.run",
+      description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program of filter, project, group, sort, limit, and summarize operations. It cannot run code, SQL, network, filesystem, or application-service access.",
+      execute: async ({ arguments: args, context }) => {
+        try {
+          const data = runOperatorAnalysis(args, context);
+          return { status: "succeeded", result: { status: "succeeded", data, provenance: { sourceLinks: [], freshness: { capturedAt: new Date().toISOString() } } } as any };
+        } catch (error) {
+          return { status: "rejected", warning: error instanceof Error ? error.message : "The requested analysis could not be run safely." };
+        }
       },
     }, this.operatorCompositeTool()];
     const runtime = new AssistantOperatorRuntime(this.operatorDecisionProvider(scope.organizationId), this.createOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));

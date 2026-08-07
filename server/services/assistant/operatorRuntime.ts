@@ -71,6 +71,9 @@ export interface AssistantOperatorTrustedContext {
      * to keep asking the same question after a user replies. */
     missingInformation?: string[];
   };
+  /** Prior tool observations in this runtime only. Semantic tools may inspect
+   * these released facts, never ambient services or untrusted model state. */
+  analysisObservations?: readonly AssistantOperatorObservation[];
 }
 
 export interface AssistantOperatorDecisionProvider {
@@ -152,7 +155,7 @@ export class AssistantOperatorRuntime {
       if (decision.kind === "fail") return { status: "failed", response: decision.response, observations, safeWorkingSummary, missingInformation: [] };
 
       for (const call of decision.calls) {
-        const execution = await this.tools.execute({ toolName: call.toolName, arguments: call.arguments, context: input.trustedContext });
+        const execution = await this.tools.execute({ toolName: call.toolName, arguments: call.arguments, context: { ...input.trustedContext, analysisObservations: observations } });
         observations.push({ step, ...execution });
       }
     }
