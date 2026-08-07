@@ -18,6 +18,7 @@ import { AssistantOperatorRuntime, type AssistantOperatorDecisionProvider, type 
 import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionProvider";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
 import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore } from "./operatorTaskContext";
+import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { productManagementSkillService } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
@@ -238,6 +239,9 @@ export class AssistantService {
     private readonly operatorDecisionProvider: (organizationId: string) => AssistantOperatorDecisionProvider =
       (organizationId) => new ConfiguredAssistantOperatorDecisionProvider(organizationId, new OpenAiCompatibleBugReviewProvider()),
     private readonly operatorTasks: AssistantOperatorTaskStore = new DrizzleAssistantOperatorTaskStore(),
+    /** Composite semantic tools are separately injectable so the free-text
+     * integration path can be tested without a database. */
+    private readonly operatorCompositeTool: () => AssistantOperatorSemanticTool = () => createQuoteInternalNoteCompositeSemanticTool(),
   ) {}
 
   async getCapabilities(scope: AssistantScope, actor?: AssistantActor) {
@@ -491,20 +495,22 @@ export class AssistantService {
         const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? null;
         return { status: "succeeded", result: { status: "succeeded", data: { response: product.response, cards: product.cards, proposalId, taskDomain: "products" } } as any };
       },
-    }];
+    }, this.operatorCompositeTool()];
     const runtime = new AssistantOperatorRuntime(this.operatorDecisionProvider(scope.organizationId), createAssistantOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));
     const run = await runtime.run({
       goal: request.message,
       taskId: task.id,
       initialWorkingSummary: task.workingSummary,
-      trustedContext: { scope, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId } },
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId } },
     });
     const productObservation = [...run.observations].reverse().find((item) => item.toolName === "products.manage_intent" && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; cards?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
+    const compositeCards = run.observations.flatMap((observation) => observation.presentation?.cards ?? []);
     const cards = Array.isArray(productData?.cards)
       ? productData.cards as AssistantStructuredCard[]
-      : renderToolResults(run.observations).cards;
-    const response = typeof productData?.response === "string" ? productData.response : run.response;
+      : [...renderToolResults(run.observations).cards, ...compositeCards];
+    const compositeResponse = [...run.observations].reverse().map((observation) => observation.result?.data).find((data): data is { response?: unknown } => Boolean(data && typeof data === "object" && typeof (data as any).response === "string"));
+    const response = typeof productData?.response === "string" ? productData.response : typeof compositeResponse?.response === "string" ? compositeResponse.response : run.response;
     const status = run.status === "failed" ? "failed" : "responded" as const;
     const proposalId = typeof productData?.proposalId === "string" ? productData.proposalId : null;
     // A completed read-only detour must not close an unfinished authoritative

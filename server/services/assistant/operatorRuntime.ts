@@ -1,5 +1,5 @@
 import { z } from "zod";
-import type { AssistantContextEnvelope, AssistantToolResultEnvelope } from "@shared/assistantContracts";
+import type { AssistantContextEnvelope, AssistantStructuredCard, AssistantToolResultEnvelope } from "@shared/assistantContracts";
 
 /**
  * The operator loop is intentionally separate from provider transport and
@@ -27,6 +27,10 @@ export type AssistantOperatorObservation = {
   status: "succeeded" | "not_found" | "permission_denied" | "partial" | "failed" | "rejected" | "timed_out";
   result?: AssistantToolResultEnvelope;
   warning?: string;
+  /** Server-to-browser presentation only. It is intentionally excluded from
+   * subsequent provider decisions so the model never receives GO tokens,
+   * plan identifiers, fingerprints, or command payloads. */
+  presentation?: { cards: AssistantStructuredCard[] };
 };
 
 export interface AssistantOperatorToolExecutor {
@@ -36,6 +40,7 @@ export interface AssistantOperatorToolExecutor {
 
 export interface AssistantOperatorTrustedContext {
   scope: { organizationId: string; userId: string };
+  conversationId: string;
   actor: { userId: string; email: string | null };
   permissions: readonly string[];
   context: AssistantContextEnvelope;

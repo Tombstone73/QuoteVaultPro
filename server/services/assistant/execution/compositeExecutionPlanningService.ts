@@ -41,6 +41,10 @@ export class CompositeExecutionPlanningService {
     private readonly now: () => Date = () => new Date(),
   ) {}
 
+  async getPlan(scope: ExecutionActorScope, planId: string): Promise<CompositeExecutionPlan> {
+    return this.require(scope, planId);
+  }
+
   async createPlan(scope: ExecutionActorScope, input: { conversationId: string; context: AssistantContextEnvelope; correlationId: string; operations: readonly { commandName: string; arguments: Record<string, unknown> }[] }): Promise<CompositeExecutionPlan> {
     if (input.operations.length < 2 || input.operations.length > 25) throw new ExecutionPlanError("COMPOSITE_OPERATION_COUNT", "A composite plan must contain between two and twenty-five operations.");
     const children: ExecutionPlanRecord[] = [];
