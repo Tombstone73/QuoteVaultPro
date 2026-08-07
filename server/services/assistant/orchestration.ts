@@ -148,6 +148,24 @@ export class AssistantOrchestrationService {
     this.registry = createAssistantToolRegistry(adapters);
   }
 
+  /** Safe catalog for an Operator model. Schemas, permissions, tenant scope,
+   * and execution metadata deliberately remain server-side. */
+  catalog(): Array<{ name: AssistantToolName; description: string }> {
+    return Array.from(this.registry.values()).map((tool) => ({ name: tool.name, description: tool.description }));
+  }
+
+  /** Low-level bounded read invocation for the iterative Operator Runtime.
+   * Unlike executePlan, this lets the runtime request the next step only after
+   * observing the prior result. It cannot execute mutations because the
+   * registry contains read-only tools only. */
+  async executeTool(
+    toolName: string,
+    args: Record<string, unknown>,
+    trustedContext: Omit<AssistantTrustedToolContext, "signal">,
+  ): Promise<AssistantToolExecution> {
+    return this.executeCall(toolName as AssistantToolName, args, trustedContext);
+  }
+
   /**
    * A provider plan gets one bounded, non-recursive execution pass.  A tool is
    * never given access to the registry, so it cannot invoke another tool.

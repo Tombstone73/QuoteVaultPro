@@ -8,6 +8,7 @@ import {
   type ProductIntentCompilerResult,
   type UnresolvedQuestionAnswer,
 } from "@shared/productDraftIntent";
+import { compileSemanticProductOperations, semanticProductOperationsResultSchema } from "./semanticProductOperations";
 
 /** The compiler is deliberately an interpretation boundary. It has no database,
  * routing, persistence, or command-execution dependency. */
@@ -196,7 +197,7 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
       "Use only candidate labels supplied by the server for tenant-scoped entities. If no supplied label is an unambiguous match, return an unresolved-question result.",
       "For continuations and corrections, preserve every existing authoritative intent field unless the request explicitly changes it.",
       continuation
-        ? "This is a continuation. Return only { kind: 'intent_patch', patch: { operations: [...] } }. Never return a complete intent. Resolve every unambiguous active required issue answered by this message in one patch; use only server-supplied active issues, preserve every unrelated field, and omit contractVersion, baseRevision, and preserveUnchanged because the server binds them."
+        ? "This is a continuation. Return only { kind: 'semantic_operations', operations: [...] }. Never return a complete intent or a canonical patch. Resolve every unambiguous active required issue answered by this message in one operation set; use business labels only and preserve every unrelated field."
         : "For an initial request, return { kind: 'complete_intent', intent: { ... } }.",
       "Do not turn preservation instructions into product options, materials, or entity references.",
       "Never set an active or published lifecycle. Confidence never makes a value execution-authorizing.",
@@ -211,7 +212,7 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
       allowedEnums: input.allowedEnums,
       supportedArchetypes: input.supportedArchetypes,
       candidateLabels: candidateLabelsForPrompt(input.candidateLabels),
-      ...(continuation ? { activeRequiredIssues: input.activeRequiredIssues ?? [], canonicalPatchContract: { operations: "Typed ProductDraftIntentPatch operations only. A single patch may resolve multiple active questions. Use one replace_option_groups operation to change only answered option defaults; use set_pricing with the complete current pricing object when changing a matrix unit; do not alter unrelated fields.", serverOwnedFields: ["contractVersion", "baseRevision", "preserveUnchanged"] } } : {}),
+      ...(continuation ? { activeRequiredIssues: input.activeRequiredIssues ?? [], semanticOperationContract: { operations: "Use set_option_default with optionGroup and value display labels for each answered default; use set_pricing_basis with per_piece or per_square_foot when answering a matrix pricing basis. Do not use canonical keys, paths, ProductDraftIntentPatch operations, revisions, IDs, or PBV2 structures." } } : {}),
       serverConstraints: input.serverConstraints ?? [],
     }),
   };
@@ -426,6 +427,16 @@ function normalizeContinuationPatch(input: ProductIntentCompilerInput, value: un
   return { ...root, patch: { ...candidate, ...expected } };
 }
 
+/** The provider can speak in business labels for continuations. The existing
+ * ProductDraftIntentPatch remains server-only and is built only after exact
+ * resolution against the current canonical intent. */
+function normalizeSemanticContinuation(input: ProductIntentCompilerInput, value: unknown): unknown {
+  if (!input.currentIntent || input.currentRevision == null || !value || typeof value !== "object" || Array.isArray(value)) return value;
+  const parsed = semanticProductOperationsResultSchema.safeParse(value);
+  if (!parsed.success) return value;
+  return { kind: "intent_patch", patch: compileSemanticProductOperations(input.currentIntent, parsed.data, input.currentRevision) };
+}
+
 function providerFailureStage(error: unknown): ProductIntentCompilerFailureStage {
   const kind = error && typeof error === "object" ? (error as { kind?: unknown }).kind : null;
   if (kind === "empty_response") return "provider_empty_response";
@@ -533,7 +544,7 @@ export class ProductIntentCompiler {
       }
 
       try {
-        parsedJson = normalizeContinuationPatch(input, normalizeInitialCompleteIntent(input, parsedJson, initialIntentId));
+        parsedJson = normalizeContinuationPatch(input, normalizeSemanticContinuation(input, normalizeInitialCompleteIntent(input, parsedJson, initialIntentId)));
       } catch {
         failureStage = attempt === 0 ? "runtime_schema_rejection" : "repair_response_schema_rejection";
         validationIssuePaths = ["intent.serverOwnedFields"];
