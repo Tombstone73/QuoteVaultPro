@@ -7,7 +7,7 @@ export const PRODUCT_DRAFT_INTENT_VERSION = 1 as const;
 const nonEmpty = z.string().trim().min(1);
 const centsSchema = z.number().int().min(0);
 const positiveNumber = z.number().finite().positive();
-export const fieldSourceSchema = z.enum(["explicit_user", "ai_interpreted", "selected_template", "canonical_default", "unresolved"]);
+export const fieldSourceSchema = z.enum(["explicit_user", "structured_candidate", "ai_interpreted", "selected_template", "canonical_default", "unresolved"]);
 export const fieldMetadataSchema = z.object({ source: fieldSourceSchema, confidence: z.number().min(0).max(1).optional() }).strict();
 export const unresolvedFieldSchema = z.object({ path: nonEmpty, code: nonEmpty, question: nonEmpty.optional() }).strict();
 

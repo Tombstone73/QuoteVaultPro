@@ -15,7 +15,7 @@ const yardSignsPayload = {
     optionGroups: [{ key: "thickness", label: "Thickness", required: true, selectionMode: "single", values: [{ key: "3mm", label: "3mm", isDefault: true }, { key: "6mm", label: "6mm", isDefault: false }] }, { key: "sides", label: "Sides", required: true, selectionMode: "single", values: [{ key: "single", label: "Single-sided", isDefault: true }, { key: "double", label: "Double-sided", isDefault: false }] }],
     workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true }, production: { route: { state: "resolved", id: "provider-guessed-flatbed", label: "Flatbed" }, configuration: {} }, visibility: { catalogVisible: false },
     unresolvedFields: [{ path: "pricing.unit", code: "PRICING_UNIT_UNRESOLVED", question: "Are these matrix prices per piece or per square foot?" }],
-    fieldMetadata: { "identity.category": { source: "ai_interpreted", confidence: 0.5 }, material: { source: "ai_interpreted", confidence: 0.5 }, "production.route": { source: "ai_interpreted", confidence: 0.5 }, "pricing.unit": { source: "unresolved" } },
+    fieldMetadata: { "identity.category": { source: "ai_interpreted", confidence: 0.5 }, material: { source: "ai_interpreted", confidence: 0.5 }, "production.route": { source: "ai_interpreted", confidence: 0.5 }, "pricing.unit": { source: "unresolved" }, "optionGroups.thickness.default": { source: "selected_template" }, "optionGroups.sides.default": { source: "selected_template" } },
   },
 };
 
@@ -33,7 +33,7 @@ const translucentVinylPayload = {
     optionGroups: [
       { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first_surface", label: "1st Surface (Right Reading)", isDefault: false }, { key: "second_surface", label: "2nd Surface (Reverse Printed)", isDefault: false }] },
       { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "3_layers", label: "3 Layers", isDefault: false }, { key: "5_layers", label: "5 Layers", isDefault: false }] },
-      { key: "finishing", label: "Finishing", required: true, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
+      { key: "finishing", label: "Finishing", required: false, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
     ],
     workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true }, production: { route: { state: "explicitly_unset" }, configuration: {} }, visibility: { catalogVisible: false },
     unresolvedFields: [], fieldMetadata: { material: { source: "unresolved" }, "production.route": { source: "unresolved" } },
@@ -89,9 +89,52 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(store.rows.size).toBe(1);
     expect(persisted).toMatchObject({ state: "needs_answers", measurement: { mode: "dimensions_required" }, quantity: { behavior: "customer_entered" }, material: { state: "explicitly_unset" }, production: { route: { state: "explicitly_unset" } }, workflow: { requiresProductionJob: true, requiresProofApproval: false } });
     expect(persisted.optionGroups.map((group) => group.key)).toEqual(["surface", "layers", "finishing"]);
-    expect(result.issues).toEqual([expect.objectContaining({ code: "CATEGORY_UNRESOLVED", path: "identity.category" })]);
-    expect(result.card.requiredQuestions).toEqual([]);
+    expect(persisted.optionGroups.find((group) => group.key === "surface")?.values.every((value) => !value.isDefault)).toBe(true);
+    expect(persisted.optionGroups.find((group) => group.key === "layers")?.values.every((value) => !value.isDefault)).toBe(true);
+    expect(persisted.optionGroups.find((group) => group.key === "finishing")?.values.find((value) => value.isDefault)?.key).toBe("none");
+    expect(persisted.fieldMetadata["optionGroups.finishing.default"]).toEqual({ source: "canonical_default" });
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "CATEGORY_UNRESOLVED", path: "identity.category" }), expect.objectContaining({ code: "OPTION_DEFAULT_UNRESOLVED", path: "optionGroups.surface.default" }), expect.objectContaining({ code: "OPTION_DEFAULT_UNRESOLVED", path: "optionGroups.layers.default" })]));
+    expect(result.card.requiredQuestions).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.surface.default" }), expect.objectContaining({ path: "optionGroups.layers.default" })]));
+    expect(result.card.fields.Options).toEqual(expect.arrayContaining([
+      expect.stringContaining("Surface: 1st Surface (Right Reading), 2nd Surface (Reverse Printed); Default: Not selected"),
+      expect.stringContaining("Layers: 3 Layers, 5 Layers; Default: Not selected"),
+      expect.stringContaining("Finishing: None (default), Contour Cutting, Contour Cutting + Weed and Tape; Default: None"),
+    ]));
     expect(result.card.candidateResolutions.filter((action) => action.kind === "select_category")).toHaveLength(1);
+  });
+
+  test("answers one option-default question with a revision-bound patch and preserves all unrelated complex pricing", async () => {
+    const payload = structuredClone(translucentVinylPayload);
+    payload.intent.identity.category = { state: "resolved", id: "signs", label: "Signs" };
+    payload.intent.fieldMetadata["identity.category"] = { source: "explicit_user" };
+    const provider = jest.fn(async () => ({ rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }));
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), {
+      categories: [{ id: "signs", label: "Signs" }], materials: [], productionRoutes: [],
+    });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "translucent-defaults", compilerInput: { ...compilerInput(), request: "Create Translucent Vinyl - Multilayer Print Test 8." } });
+    if (!created.ok) throw new Error("Expected a canonical complex-product session.");
+
+    const layersAnswer = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "3 Layers", compilerInput: compilerInput() });
+    expect(layersAnswer.ok).toBe(true);
+    if (!layersAnswer.ok) throw new Error("Expected the Layers default answer to apply.");
+    const layerRevision = layersAnswer.session.specification.session.revisions.at(-1)!.intent;
+    expect(layerRevision.revision).toBe(1);
+    expect(layerRevision.optionGroups.find((group) => group.key === "layers")?.values.find((value) => value.isDefault)?.key).toBe("3_layers");
+    expect(layerRevision.optionGroups.find((group) => group.key === "surface")?.values.every((value) => !value.isDefault)).toBe(true);
+    expect(layerRevision.optionGroups.find((group) => group.key === "finishing")?.values.find((value) => value.isDefault)?.key).toBe("none");
+    expect(layerRevision.pricing).toEqual(created.session.specification.session.revisions[0]!.intent.pricing);
+    expect(layersAnswer.issues).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.surface.default" })]));
+    expect(layersAnswer.issues).not.toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.layers.default" })]));
+    expect(provider).toHaveBeenCalledTimes(1);
+
+    const surfaceAnswer = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "1st Surface (Right Reading)", compilerInput: compilerInput() });
+    expect(surfaceAnswer).toMatchObject({ ok: true, card: { readiness: { ready: true }, requiredQuestions: [] } });
+    if (surfaceAnswer.ok) {
+      const resolved = surfaceAnswer.session.specification.session.revisions.at(-1)!.intent;
+      expect(resolved.revision).toBe(2);
+      expect(resolved.optionGroups.find((group) => group.key === "surface")?.values.find((value) => value.isDefault)?.key).toBe("first_surface");
+      expect(resolved.fieldMetadata["optionGroups.surface.default"]).toEqual({ source: "explicit_user" });
+    }
   });
 
   test("persists the Yard Signs unresolved matrix as initial revision zero", async () => {

@@ -41,6 +41,9 @@ function assertReady(intent: ProductDraftIntent): void {
   assert(intent.material.state !== "unresolved", "MATERIAL_UNRESOLVED", "Material must be resolved or explicitly unset before projection.", "material");
   assert(intent.production.route.state !== "unresolved", "ROUTE_UNRESOLVED", "Production route must be resolved or explicitly unset before projection.", "production.route");
   assert(intent.pricing.model !== "unresolved", "PRICING_UNRESOLVED", "Pricing must be resolved before projection.", "pricing");
+  for (const group of intent.optionGroups) {
+    assert(!(group.required && group.selectionMode === "single" && group.values.every((value) => !value.isDefault)), "OPTION_DEFAULT_UNRESOLVED", `A default is required for option group '${group.label}' before projection.`, `optionGroups.${group.key}.default`);
+  }
   if (intent.pricing.model === "two_dimensional_matrix") {
     assert(intent.pricing.unit !== "unresolved", "PRICING_UNIT_UNRESOLVED", "Matrix pricing must be per piece or per square foot before projection.", "pricing.unit");
   }

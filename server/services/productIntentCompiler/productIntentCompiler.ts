@@ -158,7 +158,7 @@ const providerPayloadGuide = {
     production: "{ route: resolved|unresolved|explicitly_unset reference, configuration: {} }",
     visibility: { catalogVisible: false },
     unresolvedFields: "For an unknown matrix unit, preserve every matrix cell and add { path: 'pricing.unit', code: 'PRICING_UNIT_UNRESOLVED', question: 'Are these matrix prices per piece or per square foot?' }.",
-    fieldMetadata: "object keyed by field path with { source: 'explicit_user'|'ai_interpreted'|'selected_template'|'canonical_default'|'unresolved', confidence?: number }",
+    fieldMetadata: "object keyed by field path with { source: 'explicit_user'|'structured_candidate'|'ai_interpreted'|'selected_template'|'canonical_default'|'unresolved', confidence?: number }",
     tenantReferenceRules: "For category, material, and production.route: use an exact tenant label only when the user explicitly selected it, an explicit selected tenant template supplies it, or a high-confidence interpretation has direct evidence. Never infer a material or route from option-group names, option values, product names, dimensions, or fuzzy similarity. Generic placeholders such as 'Product category', 'Material', or 'Route' must remain unresolved. If material or route is not supported by evidence, return { state: 'explicitly_unset' } and fieldMetadata source 'unresolved'.",
   },
   example: {
@@ -355,6 +355,56 @@ function normalizeUnsafeProviderMaterial(request: string, intent: Record<string,
   return { ...intent, material: { state: "unresolved", label }, fieldMetadata: { ...fieldMetadata, material: { source: "unresolved" } } };
 }
 
+function optionDefaultMetadataPath(key: string): string { return `optionGroups.${key}.default`; }
+
+function requestExpressesOptionDefault(request: string, label: string): boolean {
+  const normalizedRequest = request.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  const normalizedLabel = label.trim().toLocaleLowerCase().replace(/[^\p{L}\p{N}]+/gu, " ").trim();
+  if (!normalizedLabel) return false;
+  const defaultToIndex = normalizedRequest.indexOf("default to ");
+  const defaultClause = defaultToIndex < 0 ? "" : normalizedRequest.slice(defaultToIndex);
+  return [
+    `default to ${normalizedLabel}`,
+    `default ${normalizedLabel}`,
+    `make ${normalizedLabel} default`,
+    `${normalizedLabel} as the default`,
+    `${normalizedLabel} as default`,
+  ].some((phrase) => normalizedRequest.includes(phrase))
+    || (defaultClause.includes(normalizedLabel) && !defaultClause.includes(" or "));
+}
+
+/** Provider output may describe an explicit or template-owned default, but it
+ * must never manufacture a meaningful customer choice just by flagging the
+ * first value. Canonical defaults are applied later by the server only for a
+ * proven neutral optional value. */
+function normalizeUnsafeProviderOptionDefaults(request: string, intent: Record<string, unknown>): Record<string, unknown> {
+  const groups = intent.optionGroups;
+  const metadata = intent.fieldMetadata;
+  if (!Array.isArray(groups) || !metadata || typeof metadata !== "object" || Array.isArray(metadata)) return intent;
+  const fieldMetadata = metadata as Record<string, unknown>;
+  const inferredFieldMetadata: Record<string, unknown> = {};
+  return {
+    ...intent,
+    optionGroups: groups.map((group) => {
+      if (!group || typeof group !== "object" || Array.isArray(group)) return group;
+      const candidate = group as Record<string, unknown>;
+      const key = typeof candidate.key === "string" ? candidate.key : "";
+      const source = key && fieldMetadata[optionDefaultMetadataPath(key)] && typeof fieldMetadata[optionDefaultMetadataPath(key)] === "object"
+        ? (fieldMetadata[optionDefaultMetadataPath(key)] as Record<string, unknown>).source
+        : null;
+      const templateOrCandidateDefault = source === "structured_candidate" || source === "selected_template";
+      if (templateOrCandidateDefault || !Array.isArray(candidate.values)) return candidate;
+      const userDefaults = candidate.values.filter((value) => value && typeof value === "object" && !Array.isArray(value) && (value as Record<string, unknown>).isDefault === true && requestExpressesOptionDefault(request, String((value as Record<string, unknown>).label ?? "")));
+      if (userDefaults.length === 1 && key) {
+        inferredFieldMetadata[optionDefaultMetadataPath(key)] = { source: "explicit_user" };
+        return { ...candidate, values: candidate.values.map((value) => value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, unknown>), isDefault: value === userDefaults[0] } : value) };
+      }
+      return { ...candidate, values: candidate.values.map((value) => value && typeof value === "object" && !Array.isArray(value) ? { ...(value as Record<string, unknown>), isDefault: false } : value) };
+    }),
+    fieldMetadata: { ...fieldMetadata, ...inferredFieldMetadata },
+  };
+}
+
 function normalizeInitialCompleteIntent(input: ProductIntentCompilerInput, value: unknown, intentId: string): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) return value;
   const root = value as Record<string, unknown>;
@@ -365,7 +415,7 @@ function normalizeInitialCompleteIntent(input: ProductIntentCompilerInput, value
   return {
     ...root,
     intent: {
-      ...normalizeUnsafeProviderMaterial(input.request, { ...candidate, pricing: normalizeProviderQuantityTiers(candidate.pricing) }),
+      ...normalizeUnsafeProviderOptionDefaults(input.request, normalizeUnsafeProviderMaterial(input.request, { ...candidate, pricing: normalizeProviderQuantityTiers(candidate.pricing) })),
       contractVersion: 1,
       intentId,
       organizationId: input.orgId,

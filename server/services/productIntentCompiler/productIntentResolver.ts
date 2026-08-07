@@ -40,6 +40,28 @@ function mayResolveOperationalReference(intent: ProductDraftIntent, field: Refer
 }
 
 function canonicalIssuePath(path: string): string { return path === "pricing.unit" ? "pricing.matrix.unit" : path; }
+function optionDefaultPath(key: string): string { return `optionGroups.${key}.default`; }
+function isNeutralNone(value: { key: string; label: string }): boolean { return value.key.trim().toLocaleLowerCase() === "none" && value.label.trim().toLocaleLowerCase() === "none"; }
+function optionDefaultQuestion(group: ProductDraftIntent["optionGroups"][number]): string {
+  const labels = group.values.map((value) => value.label);
+  const choices = labels.length === 2 ? `${labels[0]} or ${labels[1]}` : `${labels.slice(0, -1).join(", ")}, or ${labels.at(-1)}`;
+  return `Which ${group.label} option should be the default: ${choices}?`;
+}
+
+/** Only an optional, explicitly neutral "None" value receives a server-owned
+ * default. Meaningful choices remain unresolved until a user/template source
+ * supplies one. */
+function normalizeSafeNeutralOptionDefaults(rawIntent: ProductDraftIntent): ProductDraftIntent {
+  const intent = structuredClone(rawIntent);
+  for (const group of intent.optionGroups) {
+    if (group.selectionMode !== "single" || group.required || group.values.some((value) => value.isDefault)) continue;
+    const neutral = group.values.find(isNeutralNone);
+    if (!neutral) continue;
+    neutral.isDefault = true;
+    intent.fieldMetadata[optionDefaultPath(group.key)] = { source: "canonical_default" };
+  }
+  return productDraftIntentSchema.parse(intent);
+}
 function semanticIssueId(revision: number, issue: ProductIntentIssue): string {
   const resolution = ["CATEGORY_UNRESOLVED", "CATEGORY_NOT_FOUND", "MATERIAL_UNRESOLVED", "MATERIAL_NOT_FOUND", "ROUTE_UNRESOLVED", "ROUTE_NOT_FOUND"].includes(issue.code) ? "candidate" : "required";
   return `${revision}:${canonicalIssuePath(issue.path)}:${resolution}`;
@@ -104,7 +126,7 @@ function validateTiers(intent: ProductDraftIntent, issues: ProductIntentIssue[])
 
 /** Deterministic only: no source-text parsing, inference, provider call, or DB write. */
 export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, context: ProductIntentResolutionContext): Promise<{ intent: ProductDraftIntent; issues: ProductIntentIssue[]; ready: boolean }> {
-  const intent = productDraftIntentSchema.parse(rawIntent);
+  const intent = normalizeSafeNeutralOptionDefaults(productDraftIntentSchema.parse(rawIntent));
   const issues: ProductIntentIssue[] = [];
   if (intent.identity.category.state === "unresolved") issues.push({ code: "CATEGORY_UNRESOLVED", path: "identity.category", severity: "question", message: "Choose a product category." });
   else if (!includesLabel(context.categoryLabels, intent.identity.category.label)) issues.push({ code: "CATEGORY_NOT_FOUND", path: "identity.category", severity: "question", message: `The category ${intent.identity.category.label} is not available for this tenant.` });
@@ -115,6 +137,11 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
   if (intent.production.route.state === "resolved" && !includesLabel(context.productionRouteLabels, intent.production.route.label)) issues.push({ code: "ROUTE_NOT_FOUND", path: "production.route", severity: "question", message: `The production route ${intent.production.route.label} is not available for this tenant.` });
   if (intent.pricing.model === "unresolved") issues.push({ code: "PRICING_UNRESOLVED", path: "pricing.model", severity: "question", message: "Should pricing be per piece, per square foot, a matrix, or quantity tiers?" });
   if (intent.pricing.model === "two_dimensional_matrix" && intent.pricing.unit === "unresolved") issues.push({ code: "PRICING_UNIT_UNRESOLVED", path: "pricing.unit", severity: "question", message: "Are these matrix prices per piece or per square foot?" });
+  for (const group of intent.optionGroups) {
+    if (group.required && group.selectionMode === "single" && group.values.every((value) => !value.isDefault)) {
+      issues.push({ code: "OPTION_DEFAULT_UNRESOLVED", path: optionDefaultPath(group.key), severity: "question", message: optionDefaultQuestion(group) });
+    }
+  }
   for (const field of intent.unresolvedFields) {
     // The material reference above owns material readiness. An optional
     // unresolved material must not reappear as a generic blocking question.

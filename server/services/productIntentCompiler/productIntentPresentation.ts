@@ -35,7 +35,11 @@ export function presentProductDraftIntent(intent: ProductDraftIntent, issues: re
   const visibleQuestions = issues.filter((issue) => issue.severity === "question" && !candidateIssueIds.has(issue.id ?? issue.code));
   const questions = visibleQuestions.map((issue) => issue.message);
   const blockers = issues.filter((issue) => issue.severity === "blocker").map((issue) => issue.message);
-  const optionGroups = intent.optionGroups.map((group) => `${group.label}: ${group.values.map((value) => `${value.label}${value.isDefault ? " (default)" : ""}`).join(", ")}`);
+  const optionGroups = intent.optionGroups.map((group) => {
+    const selectedDefault = group.values.find((value) => value.isDefault);
+    const values = group.values.map((value) => `${value.label}${value.isDefault ? " (default)" : ""}`).join(", ");
+    return group.selectionMode === "single" ? `${group.label}: ${values}; Default: ${selectedDefault?.label ?? "Not selected"}` : `${group.label}: ${values}`;
+  });
   return {
     kind: "canonical_product_intent_proposal", revision: intent.revision, fingerprint: productDraftIntentFingerprint(intent), title: `Create inactive draft: ${intent.identity.name}`,
     readiness: { ready: blockers.length === 0 && questions.length === 0 && intent.state === "ready_for_review", blockers, questions },

@@ -33,7 +33,7 @@ const yardSignsPayload = {
       { key: "sides", label: "Sides", required: true, selectionMode: "single", values: [{ key: "single", label: "Single-sided", isDefault: true }, { key: "double", label: "Double-sided", isDefault: false }] },
     ],
     workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true }, production: { route: { state: "explicitly_unset" }, configuration: {} }, visibility: { catalogVisible: false },
-    unresolvedFields: [{ path: "pricing.unit", code: "PRICING_UNIT_UNRESOLVED", question: "Are these matrix prices per piece or per square foot?" }], fieldMetadata: { "pricing.unit": { source: "unresolved" } },
+    unresolvedFields: [{ path: "pricing.unit", code: "PRICING_UNIT_UNRESOLVED", question: "Are these matrix prices per piece or per square foot?" }], fieldMetadata: { "pricing.unit": { source: "unresolved" }, "optionGroups.thickness.default": { source: "selected_template" }, "optionGroups.sides.default": { source: "selected_template" } },
   },
 };
 
@@ -169,7 +169,7 @@ describe("ProductIntentCompiler", () => {
         optionGroups: [
           { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first_surface", label: "1st Surface (Right Reading)", isDefault: false }, { key: "second_surface", label: "2nd Surface (Reverse Printed)", isDefault: false }] },
           { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "3_layers", label: "3 Layers", isDefault: false }, { key: "5_layers", label: "5 Layers", isDefault: false }] },
-          { key: "finishing", label: "Finishing", required: true, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
+          { key: "finishing", label: "Finishing", required: false, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
         ],
       },
     };
@@ -178,10 +178,60 @@ describe("ProductIntentCompiler", () => {
     expect(result).toMatchObject({ ok: true, result: { kind: "complete_intent", intent: { revision: 0, measurement: { mode: "dimensions_required" }, quantity: { behavior: "customer_entered" }, pricing: { model: "two_dimensional_matrix", unit: "per_square_foot", cells: expect.arrayContaining([{ row: "3_layers", column: "first_surface", priceCents: 500 }, { row: "5_layers", column: "second_surface", priceCents: 600 }]) }, material: { state: "explicitly_unset" }, production: { route: { state: "explicitly_unset" } } } } });
     if (!result.ok || result.result.kind !== "complete_intent") throw new Error("Expected a complete complex product intent.");
     const finishing = result.result.intent.optionGroups.find((group) => group.key === "finishing");
-    expect(finishing).toMatchObject({ required: true, selectionMode: "single", values: expect.arrayContaining([
+    expect(finishing).toMatchObject({ required: false, selectionMode: "single", values: expect.arrayContaining([
       expect.objectContaining({ key: "none", priceImpact: { kind: "percentage_of_base", percent: 0 } }),
       expect.objectContaining({ key: "contour_cutting", priceImpact: { kind: "percentage_of_base", percent: 10 } }),
       expect.objectContaining({ key: "contour_cutting_weed_tape", priceImpact: { kind: "percentage_of_base", percent: 30 } }),
     ]) });
+  });
+
+  test("does not retain a provider-selected first meaningful option without an authoritative default source", async () => {
+    const payload = structuredClone(yardSignsPayload);
+    payload.intent.fieldMetadata = { "pricing.unit": { source: "unresolved" } };
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(JSON.stringify(payload))) });
+
+    const result = await compiler.compile(compilerInput);
+
+    expect(result).toMatchObject({ ok: true, result: { kind: "complete_intent" } });
+    if (!result.ok || result.result.kind !== "complete_intent") throw new Error("Expected a complete intent.");
+    expect(result.result.intent.optionGroups.find((group) => group.key === "thickness")?.values.every((value) => !value.isDefault)).toBe(true);
+    expect(result.result.intent.optionGroups.find((group) => group.key === "sides")?.values.every((value) => !value.isDefault)).toBe(true);
+  });
+
+  test.each([
+    ["explicit user", "explicit_user", "Create Yard Signs Test 3. Default to 3mm and Single-sided."],
+    ["selected template", "selected_template", compilerInput.request],
+  ])("preserves a meaningful option default from an authoritative %s source", async (_label, source, request) => {
+    const payload = structuredClone(yardSignsPayload);
+    payload.intent.fieldMetadata = {
+      "pricing.unit": { source: "unresolved" },
+      "optionGroups.thickness.default": { source },
+      "optionGroups.sides.default": { source },
+    };
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(JSON.stringify(payload))) });
+
+    const result = await compiler.compile({ ...compilerInput, request });
+
+    expect(result).toMatchObject({ ok: true, result: { kind: "complete_intent" } });
+    if (!result.ok || result.result.kind !== "complete_intent") throw new Error("Expected a complete intent.");
+    expect(result.result.intent.optionGroups.find((group) => group.key === "thickness")?.values.find((value) => value.isDefault)?.key).toBe("3mm");
+    expect(result.result.intent.fieldMetadata["optionGroups.thickness.default"]).toEqual({ source });
+  });
+
+  test("preserves a structured candidate option default", async () => {
+    const payload = structuredClone(yardSignsPayload);
+    payload.intent.fieldMetadata = {
+      "pricing.unit": { source: "unresolved" },
+      "optionGroups.thickness.default": { source: "structured_candidate" },
+      "optionGroups.sides.default": { source: "structured_candidate" },
+    };
+    const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(JSON.stringify(payload))) });
+
+    const result = await compiler.compile(compilerInput);
+
+    expect(result).toMatchObject({ ok: true, result: { kind: "complete_intent" } });
+    if (!result.ok || result.result.kind !== "complete_intent") throw new Error("Expected a complete intent.");
+    expect(result.result.intent.optionGroups.find((group) => group.key === "thickness")?.values.find((value) => value.isDefault)?.key).toBe("3mm");
+    expect(result.result.intent.fieldMetadata["optionGroups.thickness.default"]).toEqual({ source: "structured_candidate" });
   });
 });

@@ -44,13 +44,24 @@ export type CanonicalProductIntentInspection = {
 };
 
 function answerContract(intent: ProductDraftIntent, issue: ProductIntentIssue): UnresolvedQuestionAnswer | undefined {
-  if (issue.id == null || issue.path !== "pricing.matrix.unit" || issue.code !== "PRICING_UNIT_UNRESOLVED" || intent.pricing.model !== "two_dimensional_matrix" || intent.pricing.unit !== "unresolved") return undefined;
+  if (issue.id == null) return undefined;
+  if (issue.path === "pricing.matrix.unit" && issue.code === "PRICING_UNIT_UNRESOLVED" && intent.pricing.model === "two_dimensional_matrix" && intent.pricing.unit === "unresolved") {
+    return {
+      issueId: issue.id, canonicalPath: "pricing.matrix.unit", answerType: "choice",
+      allowedChoices: [
+        { displayLabel: "Per piece", canonicalValue: "per_piece", safeAliases: ["per piece", "piece"] },
+        { displayLabel: "Per square foot", canonicalValue: "per_square_foot", safeAliases: ["per square foot", "square foot", "per sqft"] },
+      ],
+      baseRevision: intent.revision,
+    };
+  }
+  if (issue.code !== "OPTION_DEFAULT_UNRESOLVED" || !issue.path.startsWith("optionGroups.") || !issue.path.endsWith(".default")) return undefined;
+  const key = issue.path.slice("optionGroups.".length, -".default".length);
+  const group = intent.optionGroups.find((candidate) => candidate.key === key);
+  if (!group || group.selectionMode !== "single" || !group.required || group.values.some((value) => value.isDefault)) return undefined;
   return {
-    issueId: issue.id, canonicalPath: "pricing.matrix.unit", answerType: "choice",
-    allowedChoices: [
-      { displayLabel: "Per piece", canonicalValue: "per_piece", safeAliases: ["per piece", "piece"] },
-      { displayLabel: "Per square foot", canonicalValue: "per_square_foot", safeAliases: ["per square foot", "square foot", "per sqft"] },
-    ],
+    issueId: issue.id, canonicalPath: issue.path, answerType: "choice",
+    allowedChoices: group.values.map((value) => ({ displayLabel: value.label, canonicalValue: value.key, safeAliases: [value.label, value.key] })),
     baseRevision: intent.revision,
   };
 }
@@ -70,15 +81,31 @@ function deterministicAnswerPatch(intent: ProductDraftIntent, answers: readonly 
   const matches = answers.flatMap((answer) => answer.allowedChoices.filter((choice) => choice.safeAliases.some((alias) => normalizeAnswer(alias) === normalizedRequest)).map((choice) => ({ answer, choice })));
   if (matches.length !== 1) return null;
   const { answer, choice } = matches[0]!;
-  if (answer.baseRevision !== intent.revision || answer.canonicalPath !== "pricing.matrix.unit" || (choice.canonicalValue !== "per_piece" && choice.canonicalValue !== "per_square_foot") || intent.pricing.model !== "two_dimensional_matrix" || intent.pricing.unit !== "unresolved") return null;
+  if (answer.baseRevision !== intent.revision) return null;
+  if (answer.canonicalPath === "pricing.matrix.unit" && (choice.canonicalValue === "per_piece" || choice.canonicalValue === "per_square_foot") && intent.pricing.model === "two_dimensional_matrix" && intent.pricing.unit === "unresolved") {
+    return {
+      issueId: answer.issueId,
+      patch: {
+        contractVersion: 1, baseRevision: intent.revision, preserveUnchanged: true,
+        operations: [
+          { op: "set_pricing", value: { ...intent.pricing, unit: choice.canonicalValue } },
+          { op: "set_unresolved_fields", value: intent.unresolvedFields.filter((field) => field.path !== "pricing.unit" && field.path !== answer.canonicalPath) },
+          { op: "merge_field_metadata", value: { "pricing.unit": { source: "explicit_user" } } },
+        ],
+      },
+    };
+  }
+  if (!answer.canonicalPath.startsWith("optionGroups.") || !answer.canonicalPath.endsWith(".default")) return null;
+  const key = answer.canonicalPath.slice("optionGroups.".length, -".default".length);
+  const group = intent.optionGroups.find((candidate) => candidate.key === key);
+  if (!group || group.selectionMode !== "single" || !group.required || !group.values.some((value) => value.key === choice.canonicalValue)) return null;
   return {
     issueId: answer.issueId,
     patch: {
       contractVersion: 1, baseRevision: intent.revision, preserveUnchanged: true,
       operations: [
-        { op: "set_pricing", value: { ...intent.pricing, unit: choice.canonicalValue } },
-        { op: "set_unresolved_fields", value: intent.unresolvedFields.filter((field) => field.path !== "pricing.unit" && field.path !== answer.canonicalPath) },
-        { op: "merge_field_metadata", value: { "pricing.unit": { source: "explicit_user" } } },
+        { op: "replace_option_groups", value: intent.optionGroups.map((candidate) => candidate.key === key ? { ...candidate, values: candidate.values.map((value) => ({ ...value, isDefault: value.key === choice.canonicalValue })) } : candidate) },
+        { op: "merge_field_metadata", value: { [answer.canonicalPath]: { source: "explicit_user" } } },
       ],
     },
   };
@@ -86,7 +113,28 @@ function deterministicAnswerPatch(intent: ProductDraftIntent, answers: readonly 
 
 function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch: ProductDraftIntentPatch, answers: readonly UnresolvedQuestionAnswer[]): boolean {
   if (answers.length === 0) return true;
-  if (answers.length !== 1 || answers[0]!.canonicalPath !== "pricing.matrix.unit" || intent.pricing.model !== "two_dimensional_matrix") return false;
+  if (answers.length !== 1) return false;
+  const activeAnswer = answers[0]!;
+  if (activeAnswer.canonicalPath.startsWith("optionGroups.") && activeAnswer.canonicalPath.endsWith(".default")) {
+    const key = activeAnswer.canonicalPath.slice("optionGroups.".length, -".default".length);
+    const group = intent.optionGroups.find((candidate) => candidate.key === key);
+    if (!group) return false;
+    let replaced = false;
+    return patch.operations.every((operation) => {
+      if (operation.op === "replace_option_groups") {
+        const next = operation.value.find((candidate) => candidate.key === key);
+        replaced = true;
+        return JSON.stringify(operation.value.filter((candidate) => candidate.key !== key)) === JSON.stringify(intent.optionGroups.filter((candidate) => candidate.key !== key))
+          && Boolean(next)
+          && next!.selectionMode === "single"
+          && next!.values.filter((value) => value.isDefault).length === 1
+          && next!.values.every((value) => group.values.some((current) => current.key === value.key && current.label === value.label));
+      }
+      if (operation.op === "merge_field_metadata") return Object.keys(operation.value).length === 1 && activeAnswer.canonicalPath in operation.value;
+      return false;
+    }) && replaced;
+  }
+  if (activeAnswer.canonicalPath !== "pricing.matrix.unit" || intent.pricing.model !== "two_dimensional_matrix") return false;
   const expectedUnresolved = intent.unresolvedFields.filter((field) => field.path !== "pricing.unit" && field.path !== "pricing.matrix.unit");
   let pricingUpdated = false;
   return patch.operations.every((operation) => {
@@ -264,7 +312,10 @@ export class CanonicalProductIntentService {
     try {
       const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
       const { intent, issues } = await this.validate(applyProductDraftIntentPatch(draft, sourcePatch, { actorUserId: input.actorUserId }));
-      if (activeAnswers.some((answer) => issues.some((issue) => issue.id === `${intent.revision}:${answer.canonicalPath}:required`))) return continuationFailure({ stage: "resolver_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: !deterministic, providerResultType: compilerResult?.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNRESOLVED", message: "I could not apply that answer to the current product question. Please review the available choices and try again." });
+      const answeredPath = deterministic
+        ? activeAnswers.find((answer) => answer.issueId === deterministic.issueId)?.canonicalPath
+        : activeAnswers[0]?.canonicalPath;
+      if (answeredPath && issues.some((issue) => issue.id === `${intent.revision}:${answeredPath}:required`)) return continuationFailure({ stage: "resolver_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: !deterministic, providerResultType: compilerResult?.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNRESOLVED", message: "I could not apply that answer to the current product question. Please review the available choices and try again." });
       const patch = replacementPatch(intent, current.specification.session.currentRevision);
       const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: current.specification.session.currentRevision, expectedFingerprint: current.fingerprint, patch, reason: deterministic ? "answer" : "correction", compilerResult, unresolvedQuestions: questionsFrom(intent, issues) });
       return { ok: true, session, issues, card: await this.presentation(intent, issues) };

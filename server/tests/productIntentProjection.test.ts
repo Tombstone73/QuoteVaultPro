@@ -42,9 +42,9 @@ function translucentVinylIntent(overrides: Record<string, unknown> = {}) {
     ] },
     material: { state: "explicitly_unset" },
     optionGroups: [
-      { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first_surface", label: "1st Surface (Right Reading)", isDefault: false }, { key: "second_surface", label: "2nd Surface (Reverse Printed)", isDefault: false }] },
-      { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "3_layers", label: "3 Layers", isDefault: false }, { key: "5_layers", label: "5 Layers", isDefault: false }] },
-      { key: "finishing", label: "Finishing", required: true, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
+      { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first_surface", label: "1st Surface (Right Reading)", isDefault: true }, { key: "second_surface", label: "2nd Surface (Reverse Printed)", isDefault: false }] },
+      { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "3_layers", label: "3 Layers", isDefault: true }, { key: "5_layers", label: "5 Layers", isDefault: false }] },
+      { key: "finishing", label: "Finishing", required: false, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: true, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
     ],
     workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true },
     production: { route: { state: "explicitly_unset" }, configuration: {} },
@@ -177,7 +177,7 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
     const finishing = Object.values((projected.treeJson as any).nodes).find((node: any) => node.key === "finishing") as any;
     expect(surface.choices.map((choice: any) => choice.label)).toEqual(["1st Surface (Right Reading)", "2nd Surface (Reverse Printed)"]);
     expect(surface.choices.every((choice: any) => choice.pricingImpact === undefined)).toBe(true);
-    expect(finishing.input).toMatchObject({ type: "select", required: true, selectionKey: "finishing" });
+    expect(finishing.input).toMatchObject({ type: "select", required: false, selectionKey: "finishing" });
     expect(finishing.choices.map((choice: any) => choice.value)).toEqual(["none", "contour_cutting", "contour_cutting_weed_tape"]);
     expect(finishing.choices.find((choice: any) => choice.value === "contour_cutting")?.pricingImpact).toEqual([expect.objectContaining({ mode: "addPercent", percent: 10, basis: "base" })]);
     expect(finishing.choices.find((choice: any) => choice.value === "contour_cutting_weed_tape")?.pricingImpact).toEqual([expect.objectContaining({ mode: "addPercent", percent: 30, basis: "base" })]);
@@ -217,6 +217,13 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
 
   it("rejects unresolved operational state before returning any draft", () => {
     expect(() => projectProductDraftIntentToProductBuilderDraft(intent({ material: { state: "unresolved", label: "Acrylic" } }))).toThrow(ProductIntentProjectionError);
+  });
+
+  it("blocks projection when a required meaningful option default remains unresolved", () => {
+    const source = translucentVinylIntent({
+      optionGroups: translucentVinylIntent().optionGroups.map((group: any) => group.key === "surface" ? { ...group, values: group.values.map((value: any) => ({ ...value, isDefault: false })) } : group),
+    });
+    expect(() => projectProductDraftIntentToProductBuilderDraft(source)).toThrow(expect.objectContaining({ code: "OPTION_DEFAULT_UNRESOLVED", path: "optionGroups.surface.default" }));
   });
 
   it("preserves an unresolved matrix unit in the contract but blocks PBV2 projection", () => {
