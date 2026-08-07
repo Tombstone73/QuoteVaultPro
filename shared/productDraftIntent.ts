@@ -29,11 +29,16 @@ const quantitySchema = z.discriminatedUnion("behavior", [
   z.object({ behavior: z.literal("fixed"), quantity: z.number().int().positive() }).strict(),
   z.object({ behavior: z.literal("not_applicable") }).strict(),
 ]);
-const optionValueSchema = z.object({ key: nonEmpty, label: nonEmpty, isDefault: z.boolean().default(false) }).strict();
+/** A canonical, base-relative option adjustment. Projection maps this to the
+ * existing PBV2 choice-level addPercent impact; it is not a second pricing
+ * engine and cannot carry arbitrary provider formulas. */
+const optionPriceImpactSchema = z.object({ kind: z.literal("percentage_of_base"), percent: z.number().finite().min(-100).max(100) }).strict();
+const optionValueSchema = z.object({ key: nonEmpty, label: nonEmpty, isDefault: z.boolean().default(false), priceImpact: optionPriceImpactSchema.optional() }).strict();
 const optionGroupSchema = z.object({ key: nonEmpty, label: nonEmpty, required: z.boolean(), selectionMode: z.enum(["single", "multiple"]), values: z.array(optionValueSchema).min(1) }).strict().superRefine((group, ctx) => {
   if (new Set(group.values.map((value) => value.key.toLocaleLowerCase())).size !== group.values.length) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Option value keys must be unique.", path: ["values"] });
   if (group.selectionMode === "single" && group.values.filter((value) => value.isDefault).length > 1) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Single-select groups may have one default.", path: ["values"] });
-  if (group.required && group.values.every((value) => !value.isDefault)) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Required option groups need a default.", path: ["values"] });
+  // PBV2 supports required choices without a preselected value. Do not invent
+  // a default merely to make an AI-authored product executable.
 });
 const matrixCellSchema = z.object({ row: nonEmpty, column: nonEmpty, priceCents: centsSchema }).strict();
 const pricingSchema = z.discriminatedUnion("model", [

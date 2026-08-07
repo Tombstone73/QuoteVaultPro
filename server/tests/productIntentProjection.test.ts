@@ -3,6 +3,7 @@ import { extractProductOptionPricingMatrix, resolveProductOptionPricingMatrix } 
 import { optionTreeV2Schema } from "@shared/optionTreeV2";
 import { validatePricingPreviewRequest } from "../services/pricing/pricingPreviewValidation";
 import { ProductIntentProjectionError, projectProductDraftIntentToProductBuilderDraft } from "../services/productIntentCompiler/productIntentProjection";
+import { evaluateOptionTreeV2 } from "../services/optionTreeV2Evaluator";
 
 function intent(overrides: Record<string, unknown> = {}) {
   const base = {
@@ -27,6 +28,25 @@ function perPieceMatrixIntent(overrides: Record<string, unknown> = {}) {
       { key: "thickness", label: "Thickness", required: true, selectionMode: "single", values: [{ key: "3mm", label: "3mm", isDefault: true }, { key: "6mm", label: "6mm", isDefault: false }] },
       { key: "sides", label: "Sides", required: true, selectionMode: "single", values: [{ key: "single", label: "Single-sided", isDefault: true }, { key: "double", label: "Double-sided", isDefault: false }] },
     ],
+    production: { route: { state: "explicitly_unset" }, configuration: {} },
+    ...overrides,
+  });
+}
+
+function translucentVinylIntent(overrides: Record<string, unknown> = {}) {
+  return intent({
+    identity: { name: "Translucent Vinyl - Multilayer Print Test 6", description: "", category: { state: "resolved", id: "category-1", label: "Signs" } },
+    pricing: { model: "two_dimensional_matrix", unit: "per_square_foot", rowOptionKey: "layers", columnOptionKey: "surface", cells: [
+      { row: "3_layers", column: "first_surface", priceCents: 500 }, { row: "3_layers", column: "second_surface", priceCents: 500 },
+      { row: "5_layers", column: "first_surface", priceCents: 600 }, { row: "5_layers", column: "second_surface", priceCents: 600 },
+    ] },
+    material: { state: "explicitly_unset" },
+    optionGroups: [
+      { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first_surface", label: "1st Surface (Right Reading)", isDefault: false }, { key: "second_surface", label: "2nd Surface (Reverse Printed)", isDefault: false }] },
+      { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "3_layers", label: "3 Layers", isDefault: false }, { key: "5_layers", label: "5 Layers", isDefault: false }] },
+      { key: "finishing", label: "Finishing", required: true, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
+    ],
+    workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true },
     production: { route: { state: "explicitly_unset" }, configuration: {} },
     ...overrides,
   });
@@ -122,6 +142,57 @@ describe("projectProductDraftIntentToProductBuilderDraft", () => {
     expect(fee.product.pricingProfileKey).toBe("fee");
     expect((fee.treeJson.meta as any).productIntake.quantity.mapping).toMatchObject({ pricingBehavior: "flat_fee", variable: null });
     expect((perSqftMatrix.treeJson.meta as any).productIntake.quantity.mapping).toMatchObject({ pricingBehavior: "per_square_foot", variable: null });
+  });
+
+  it.each([
+    ["3_layers", "none", 5000],
+    ["3_layers", "contour_cutting", 5500],
+    ["3_layers", "contour_cutting_weed_tape", 6500],
+    ["5_layers", "none", 6000],
+    ["5_layers", "contour_cutting", 6600],
+    ["5_layers", "contour_cutting_weed_tape", 7800],
+  ])("projects option-controlled square-foot pricing for %s / %s", (layers, finishing, expectedCents) => {
+    const projected = projectProductDraftIntentToProductBuilderDraft(translucentVinylIntent());
+    const matrix = extractProductOptionPricingMatrix(projected.treeJson);
+    const selections = { surface: "first_surface", layers, finishing };
+    const resolved = resolveProductOptionPricingMatrix({ pricingMatrix: matrix, selections });
+    expect(resolved.errors).toEqual([]);
+    const basePrice = (resolved.variables.base_price ?? 0) * 10;
+    const evaluation = evaluateOptionTreeV2({
+      tree: projected.treeJson,
+      selections: { schemaVersion: 2, selected: Object.fromEntries(Object.entries(selections).map(([key, value]) => [key, { value }])) },
+      width: 120,
+      height: 12,
+      quantity: 1,
+      basePrice,
+    });
+    expect(Math.round((basePrice + evaluation.optionsPrice) * 100)).toBe(expectedCents);
+    expect(projected.product).toMatchObject({ pricingMode: "area", measurementMode: "dimensions_required", pricingProfileKey: "default", requiresProductionJob: true, requiresProofApproval: false });
+    expect(projected.relationships).toEqual({ material: { state: "explicitly_unset" }, productionRoute: null });
+  });
+
+  it("uses one exclusive finishing choice, preventing a 30% total from stacking to 40%", () => {
+    const projected = projectProductDraftIntentToProductBuilderDraft(translucentVinylIntent());
+    const surface = Object.values((projected.treeJson as any).nodes).find((node: any) => node.key === "surface") as any;
+    const finishing = Object.values((projected.treeJson as any).nodes).find((node: any) => node.key === "finishing") as any;
+    expect(surface.choices.map((choice: any) => choice.label)).toEqual(["1st Surface (Right Reading)", "2nd Surface (Reverse Printed)"]);
+    expect(surface.choices.every((choice: any) => choice.pricingImpact === undefined)).toBe(true);
+    expect(finishing.input).toMatchObject({ type: "select", required: true, selectionKey: "finishing" });
+    expect(finishing.choices.map((choice: any) => choice.value)).toEqual(["none", "contour_cutting", "contour_cutting_weed_tape"]);
+    expect(finishing.choices.find((choice: any) => choice.value === "contour_cutting")?.pricingImpact).toEqual([expect.objectContaining({ mode: "addPercent", percent: 10, basis: "base" })]);
+    expect(finishing.choices.find((choice: any) => choice.value === "contour_cutting_weed_tape")?.pricingImpact).toEqual([expect.objectContaining({ mode: "addPercent", percent: 30, basis: "base" })]);
+    expect(finishing.choices.some((choice: any) => choice.value === "weed_tape")).toBe(false);
+    expect(optionTreeV2Schema.safeParse(projected.treeJson).success).toBe(true);
+    const missingDimensions = validatePricingPreviewRequest({ treeJson: projected.treeJson, quantity: 1, optionSelectionsJson: { surface: { value: "first_surface" }, layers: { value: "3_layers" }, finishing: { value: "none" } } });
+    expect(missingDimensions).toMatchObject({ ok: false, envelope: { details: expect.arrayContaining([expect.objectContaining({ path: "width" }), expect.objectContaining({ path: "height" })]) } });
+  });
+
+  it("multiplies the resolved square-foot base and its exclusive finishing impact by quantity", () => {
+    const projected = projectProductDraftIntentToProductBuilderDraft(translucentVinylIntent());
+    const resolved = resolveProductOptionPricingMatrix({ pricingMatrix: extractProductOptionPricingMatrix(projected.treeJson), selections: { surface: "second_surface", layers: "5_layers", finishing: "contour_cutting" } });
+    const basePrice = (resolved.variables.base_price ?? 0) * 10 * 2;
+    const evaluation = evaluateOptionTreeV2({ tree: projected.treeJson, selections: { schemaVersion: 2, selected: { surface: { value: "second_surface" }, layers: { value: "5_layers" }, finishing: { value: "contour_cutting" } } }, width: 120, height: 12, quantity: 2, basePrice });
+    expect(Math.round((basePrice + evaluation.optionsPrice) * 100)).toBe(13200);
   });
 
   it("keeps fixed-size quantity behavior explicit and blocks quantity-only products with no quantity behavior", () => {

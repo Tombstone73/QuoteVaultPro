@@ -158,23 +158,30 @@ describe("ProductIntentCompiler", () => {
     }));
   });
 
-  test("captures dependent-option fields as strict compiler paths without creating a product intent", async () => {
+  test("compiles dependent finishing as exclusive base-relative alternatives", async () => {
     const dependentOptionPayload = {
       ...yardSignsPayload,
       intent: {
         ...yardSignsPayload.intent,
-        identity: { ...yardSignsPayload.intent.identity, name: "Translucent Vinyl - Multilayer Print Test 2" },
+        identity: { ...yardSignsPayload.intent.identity, name: "Translucent Vinyl - Multilayer Print Test 6" },
         measurement: { mode: "dimensions_required" },
-        pricing: { model: "two_dimensional_matrix", unit: "per_square_foot", rowOptionKey: "layers", columnOptionKey: "surface", cells: [{ row: "3_layers", column: "first_surface", priceCents: 500 }, { row: "5_layers", column: "first_surface", priceCents: 600 }] },
+        pricing: { model: "two_dimensional_matrix", unit: "per_square_foot", rowOptionKey: "layers", columnOptionKey: "surface", cells: [{ row: "3_layers", column: "first_surface", priceCents: 500 }, { row: "3_layers", column: "second_surface", priceCents: 500 }, { row: "5_layers", column: "first_surface", priceCents: 600 }, { row: "5_layers", column: "second_surface", priceCents: 600 }] },
         optionGroups: [
-          { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first_surface", label: "1st Surface", isDefault: true }, { key: "second_surface", label: "2nd Surface", isDefault: false }] },
-          { key: "layers", label: "Print Layers", required: true, selectionMode: "single", values: [{ key: "3_layers", label: "3 Layers", isDefault: true }, { key: "5_layers", label: "5 Layers", isDefault: false }] },
-          { key: "finishing", label: "Finishing", required: false, selectionMode: "single", values: [{ key: "contour", label: "Contour Cutting", isDefault: false, priceImpactPercent: 10 }, { key: "weed_tape", label: "Weed and Tape", isDefault: false, requiresOption: "contour", totalMarkupPercent: 30 }] },
+          { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first_surface", label: "1st Surface (Right Reading)", isDefault: false }, { key: "second_surface", label: "2nd Surface (Reverse Printed)", isDefault: false }] },
+          { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "3_layers", label: "3 Layers", isDefault: false }, { key: "5_layers", label: "5 Layers", isDefault: false }] },
+          { key: "finishing", label: "Finishing", required: true, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
         ],
       },
     };
     const compiler = new ProductIntentCompiler({ generateJson: jest.fn(async () => providerResponse(JSON.stringify(dependentOptionPayload))) });
     const result = await compiler.compile({ ...compilerInput, request: "Create translucent vinyl with dependent finishing options." });
-    expect(result).toMatchObject({ ok: false, error: { code: "invalid_contract" }, diagnostics: { stage: "repair_response_schema_rejection", schemaIssuePaths: expect.arrayContaining(["intent.optionGroups.2.values.0.priceImpactPercent", "intent.optionGroups.2.values.1.requiresOption", "intent.optionGroups.2.values.1.totalMarkupPercent"]), schemaIssueCodes: expect.arrayContaining(["unrecognized_keys"]), unknownKeys: expect.arrayContaining(["intent.optionGroups.2.values.0.priceImpactPercent", "intent.optionGroups.2.values.1.requiresOption", "intent.optionGroups.2.values.1.totalMarkupPercent"]) } });
+    expect(result).toMatchObject({ ok: true, result: { kind: "complete_intent", intent: { revision: 0, measurement: { mode: "dimensions_required" }, quantity: { behavior: "customer_entered" }, pricing: { model: "two_dimensional_matrix", unit: "per_square_foot", cells: expect.arrayContaining([{ row: "3_layers", column: "first_surface", priceCents: 500 }, { row: "5_layers", column: "second_surface", priceCents: 600 }]) }, material: { state: "explicitly_unset" }, production: { route: { state: "explicitly_unset" } } } } });
+    if (!result.ok || result.result.kind !== "complete_intent") throw new Error("Expected a complete complex product intent.");
+    const finishing = result.result.intent.optionGroups.find((group) => group.key === "finishing");
+    expect(finishing).toMatchObject({ required: true, selectionMode: "single", values: expect.arrayContaining([
+      expect.objectContaining({ key: "none", priceImpact: { kind: "percentage_of_base", percent: 0 } }),
+      expect.objectContaining({ key: "contour_cutting", priceImpact: { kind: "percentage_of_base", percent: 10 } }),
+      expect.objectContaining({ key: "contour_cutting_weed_tape", priceImpact: { kind: "percentage_of_base", percent: 30 } }),
+    ]) });
   });
 });

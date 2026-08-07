@@ -19,6 +19,27 @@ const yardSignsPayload = {
   },
 };
 
+const translucentVinylPayload = {
+  kind: "complete_intent",
+  intent: {
+    operation: "new_product",
+    identity: { name: "Translucent Vinyl - Multilayer Print Test 6", description: "", category: { state: "unresolved", label: "Product category" } },
+    lifecycle: { productStatus: "inactive", published: false }, measurement: { mode: "dimensions_required" }, quantity: { behavior: "customer_entered", minimum: 1 },
+    pricing: { model: "two_dimensional_matrix", unit: "per_square_foot", rowOptionKey: "layers", columnOptionKey: "surface", cells: [
+      { row: "3_layers", column: "first_surface", priceCents: 500 }, { row: "3_layers", column: "second_surface", priceCents: 500 },
+      { row: "5_layers", column: "first_surface", priceCents: 600 }, { row: "5_layers", column: "second_surface", priceCents: 600 },
+    ] },
+    material: { state: "explicitly_unset" },
+    optionGroups: [
+      { key: "surface", label: "Surface", required: true, selectionMode: "single", values: [{ key: "first_surface", label: "1st Surface (Right Reading)", isDefault: false }, { key: "second_surface", label: "2nd Surface (Reverse Printed)", isDefault: false }] },
+      { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "3_layers", label: "3 Layers", isDefault: false }, { key: "5_layers", label: "5 Layers", isDefault: false }] },
+      { key: "finishing", label: "Finishing", required: true, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 0 } }, { key: "contour_cutting", label: "Contour Cutting", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }, { key: "contour_cutting_weed_tape", label: "Contour Cutting + Weed and Tape", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 30 } }] },
+    ],
+    workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true }, production: { route: { state: "explicitly_unset" }, configuration: {} }, visibility: { catalogVisible: false },
+    unresolvedFields: [], fieldMetadata: { material: { source: "unresolved" }, "production.route": { source: "unresolved" } },
+  },
+};
+
 class MemoryStore implements CanonicalProductIntentProposalStore {
   rows = new Map<string, CanonicalProductIntentProposalRow>();
   async insert(input: Omit<CanonicalProductIntentProposalRow, "createdAt" | "updatedAt">) { const row = { ...structuredClone(input), createdAt: new Date(), updatedAt: new Date() }; this.rows.set(row.id, row); return structuredClone(row); }
@@ -48,6 +69,29 @@ describe("CanonicalProductIntentService compiler failures", () => {
 
     expect(result).toMatchObject({ ok: false, code: "invalid_json" });
     expect(persistence.create).not.toHaveBeenCalled();
+  });
+
+  test("persists the complex translucent-vinyl intent at revision zero without creating a product before GO", async () => {
+    const store = new MemoryStore();
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({
+      generateJson: jest.fn(async () => ({ rawText: JSON.stringify(translucentVinylPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })),
+    }), new ProductIntentPersistenceService(store), {
+      categories: [{ id: "signs", label: "Signs" }], materials: [{ id: "translucent-vinyl", label: "Translucent Vinyl" }], productionRoutes: [{ id: "roll", label: "Roll Printing" }],
+    });
+
+    const result = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "translucent-vinyl-6", compilerInput: { ...compilerInput(), request: "Create Translucent Vinyl - Multilayer Print Test 6 with surface, 3/5 layer square-foot pricing, contour cutting, and weed/tape." } });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected the complex canonical session to persist.");
+    const persisted = result.session.specification.session.revisions[0]!.intent;
+    expect(result.session.specification.session.currentRevision).toBe(0);
+    expect(result.session.specification.session.revisions).toHaveLength(1);
+    expect(store.rows.size).toBe(1);
+    expect(persisted).toMatchObject({ state: "needs_answers", measurement: { mode: "dimensions_required" }, quantity: { behavior: "customer_entered" }, material: { state: "explicitly_unset" }, production: { route: { state: "explicitly_unset" } }, workflow: { requiresProductionJob: true, requiresProofApproval: false } });
+    expect(persisted.optionGroups.map((group) => group.key)).toEqual(["surface", "layers", "finishing"]);
+    expect(result.issues).toEqual([expect.objectContaining({ code: "CATEGORY_UNRESOLVED", path: "identity.category" })]);
+    expect(result.card.requiredQuestions).toEqual([]);
+    expect(result.card.candidateResolutions.filter((action) => action.kind === "select_category")).toHaveLength(1);
   });
 
   test("persists the Yard Signs unresolved matrix as initial revision zero", async () => {

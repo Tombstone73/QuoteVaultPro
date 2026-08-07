@@ -67,7 +67,20 @@ function buildOptions(intent: ProductDraftIntent) {
     nodes[nodeId] = {
       id: nodeId, kind: "question", type: "INPUT", status: "ENABLED", key: group.key, label: group.label, ui: { sortOrder: index + 1 },
       input: { type: group.selectionMode === "multiple" ? "multiselect" : "select", required: group.required, selectionKey: group.key, valueType: "ENUM", constraints: { select: { allowEmpty: !group.required } }, ...(defaults.length ? { defaultValue: group.selectionMode === "multiple" ? defaults : defaults[0] } : {}) },
-      choices: group.values.map((value, valueIndex) => ({ id: `${nodeId}_choice_${valueIndex + 1}`, value: value.key, label: value.label, sortOrder: valueIndex + 1 })),
+      choices: group.values.map((value, valueIndex) => ({
+        id: `${nodeId}_choice_${valueIndex + 1}`,
+        value: value.key,
+        label: value.label,
+        sortOrder: valueIndex + 1,
+        ...(value.priceImpact ? {
+          pricingImpact: [{
+            mode: "addPercent" as const,
+            percent: value.priceImpact.percent,
+            basis: "base" as const,
+            label: `${value.label} adjustment`,
+          }],
+        } : {}),
+      })),
     };
     edges.push({ id: `${groupId}_edge`, fromNodeId: groupId, toNodeId: nodeId, status: "DISABLED" });
   });
