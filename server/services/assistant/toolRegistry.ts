@@ -2,6 +2,8 @@ import { z, type ZodTypeAny } from "zod";
 import {
   assistantCustomerSummaryInputSchema,
   assistantCustomerSummaryResultSchema,
+  assistantQuoteSearchInputSchema,
+  assistantQuoteSearchResultSchema,
   assistantGlobalSearchInputSchema,
   assistantGlobalSearchResultSchema,
   assistantNavigationCurrentContextInputSchema,
@@ -93,6 +95,19 @@ const toolMetadata = {
     dataClassification: "internal",
     sourceLinkBehavior: "required",
     auditCategory: "assistant_search",
+    modelSummarizationAllowed: true,
+  },
+  "quotes.search": {
+    description: "Search a bounded tenant-wide quote list without requiring a customer. Arguments are all optional: customer (business name), quoteNumber, lifecycle open or closed, canonical status draft|pending_approval|sent|approved|rejected|expired|converted, createdAtRange {start,end} ISO datetimes, sort newest|oldest|total_desc|total_asc, and limit up to 20. Use lifecycle open for open quotes. Results include quote number, customer, total, canonical status, creation date, and trusted quote/customer references. Quote sent timestamps are not stored; sent quotes are ordered by creation date.",
+    requiredPermission: "internal_staff",
+    requiredContext: ["trusted_actor"] as const,
+    inputSchema: assistantQuoteSearchInputSchema,
+    resultSchema: assistantQuoteSearchResultSchema,
+    maxResults: 20,
+    timeoutMs: 5_000,
+    dataClassification: "internal",
+    sourceLinkBehavior: "optional",
+    auditCategory: "assistant_quote_search",
     modelSummarizationAllowed: true,
   },
   "customers.get_summary": {

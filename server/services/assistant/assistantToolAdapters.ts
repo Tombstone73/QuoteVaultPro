@@ -4,10 +4,13 @@ import {
   assistantEntitySummarySchema,
   assistantGlobalSearchInputSchema,
   assistantGlobalSearchResultSchema,
+  assistantQuoteSearchInputSchema,
+  assistantQuoteSearchResultSchema,
   type AssistantSourceLink,
   type AssistantToolResultEnvelope,
 } from "@shared/assistantContracts";
 import { createCustomerSummaryTool, createSearchGlobalTool, customerSummaryToolResultSchema } from "./searchCustomerTools";
+import { createQuoteSearchTool } from "./quoteSearchTools";
 import { createStage2OrderProductToolAdapters } from "./orderProductOperationalTools";
 import { createAssistantProductionReportingToolAdapters } from "./productionReportingTools";
 import { createAssistantAnalyticsReportingToolAdapters } from "./analyticsReportingTools";
@@ -44,6 +47,7 @@ function contextForLegacyAdapter(context: AssistantTrustedToolContext) {
 export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
   const search = createSearchGlobalTool();
   const customer = createCustomerSummaryTool();
+  const quoteSearch = createQuoteSearchTool();
   return {
     ...createStage2OrderProductToolAdapters(),
     ...createAssistantProductionReportingToolAdapters(),
@@ -73,6 +77,21 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
           data,
           provenance: {
             sourceLinks: matches.slice(0, 10).map((match) => match.sourceLink),
+            freshness: { capturedAt: result.freshness },
+          },
+        };
+      },
+    },
+    "quotes.search": {
+      async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        const input = assistantQuoteSearchInputSchema.parse(rawInput);
+        const result = await quoteSearch.execute(contextForLegacyAdapter(context), input);
+        const data = assistantQuoteSearchResultSchema.parse(result.data);
+        return {
+          status: "succeeded",
+          data,
+          provenance: {
+            sourceLinks: result.sourceLinks.map((link) => sourceLink(link, link.entityType, result.freshness)),
             freshness: { capturedAt: result.freshness },
           },
         };

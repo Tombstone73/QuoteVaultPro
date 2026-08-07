@@ -33,4 +33,19 @@ describe("AssistantOperatorRuntime", () => {
     const result = await new AssistantOperatorRuntime(provider, tools).run({ goal: "Create a product", taskId: "task_2", trustedContext });
     expect(result).toMatchObject({ status: "awaiting_input", missingInformation: ["product category"] });
   });
+
+  test("describes an unavailable read tool as a capability limitation rather than a safety block", async () => {
+    const provider: AssistantOperatorDecisionProvider = {
+      decide: async ({ observations }) => {
+        if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "quotes.search", arguments: {} }] };
+        throw new Error("provider cannot continue after rejected read");
+      },
+    };
+    const tools: AssistantOperatorToolExecutor = {
+      catalog: () => [{ name: "quotes.search", description: "Search quotes." }],
+      execute: async ({ toolName }) => ({ toolName, status: "rejected", warning: "The requested business tool is not available." }),
+    };
+    const result = await new AssistantOperatorRuntime(provider, tools).run({ goal: "Show open quotes", taskId: "task_3", trustedContext });
+    expect(result).toMatchObject({ status: "failed", response: "I couldn't complete that request because the needed business lookup is unavailable or invalid." });
+  });
 });

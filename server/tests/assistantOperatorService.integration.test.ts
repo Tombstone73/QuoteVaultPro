@@ -22,6 +22,19 @@ function taskStore(activeProposalId: string | null = null): AssistantOperatorTas
   return { updates, getActive: jest.fn(async () => activeProposalId ? task : null), create: jest.fn(async () => task), update: jest.fn(async (input: any) => { updates.push(input); Object.assign(task, input.patch); return task; }) };
 }
 
+function continuingTaskStore(): AssistantOperatorTaskStore & { updates: any[]; task: any } {
+  const task: any = { id: "task_1", organizationId: "org_1", userId: "user_1", conversationId: "conversation_1", domain: null, goal: "Find quotes", workingSummary: null, entityReferences: [], missingInformation: [], semanticChanges: {}, confirmationState: "none", status: "active", canonicalProductIntentProposalId: null, lastObservationSummary: null };
+  const updates: any[] = [];
+  let created = false;
+  return {
+    task,
+    updates,
+    getActive: jest.fn(async () => created ? task : null),
+    create: jest.fn(async () => { created = true; return task; }),
+    update: jest.fn(async (input: any) => { updates.push(input); Object.assign(task, input.patch); return task; }),
+  };
+}
+
 describe("AssistantService Operator Runtime integration", () => {
   test("ordinary free text enters the Operator Runtime instead of the legacy planner", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
@@ -66,5 +79,68 @@ describe("AssistantService Operator Runtime integration", () => {
 
     expect(compositeTool.execute).toHaveBeenCalledTimes(1);
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "I prepared one confirmation for 2 eligible open quotes.", structuredCards: expect.arrayContaining([expect.objectContaining({ kind: "action_plan", plan: expect.objectContaining({ id: "composite_1", confirmationToken: "opaque-user-token" }) })]) }));
+  });
+
+  test("ordinary quote investigations use tenant-wide search and retain trusted references for an unambiguous follow-up", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository();
+    const tasks = continuingTaskStore();
+    const executor = {
+      catalog: () => [
+        { name: "quotes.search", description: "Search tenant-wide quotes without requiring a customer." },
+        { name: "customers.get_summary", description: "Get one customer summary." },
+      ],
+      execute: jest.fn(async ({ toolName, arguments: args, context: trusted }: any) => {
+        expect(trusted.scope).toEqual(scope);
+        if (toolName === "quotes.search") {
+          expect(args).toEqual({ lifecycle: "open", sort: "newest", limit: 5 });
+          return {
+            toolName,
+            status: "succeeded",
+            result: {
+              status: "succeeded",
+              data: {
+                totalMatchingQuotes: 2,
+                quotes: [
+                  { quoteId: "quote_new", quoteNumber: "Q-200", customer: { id: "customer_new", name: "Acme" }, total: 5100, status: "sent", open: true, createdAt: "2026-08-07T12:00:00.000Z", sourceLink: { label: "Quote Q-200", href: "/quotes/quote_new", entityType: "quote", entityId: "quote_new" } },
+                  { quoteId: "quote_old", quoteNumber: "Q-199", customer: { id: "customer_old", name: "Beta" }, total: 2500, status: "draft", open: true, createdAt: "2026-08-06T12:00:00.000Z", sourceLink: { label: "Quote Q-199", href: "/quotes/quote_old", entityType: "quote", entityId: "quote_old" } },
+                ],
+                appliedFilters: { lifecycle: "open", recencyField: "createdAt", sentAtAvailable: false },
+              },
+              provenance: { sourceLinks: [{ label: "Quote Q-200", href: "/quotes/quote_new", entityType: "quote", entityId: "quote_new", capturedAt: "2026-08-07T12:00:00.000Z" }], freshness: { capturedAt: "2026-08-07T12:00:00.000Z" } },
+            },
+          };
+        }
+        expect(toolName).toBe("customers.get_summary");
+        expect(args).toEqual({ customerId: "customer_new" });
+        return { toolName, status: "succeeded", result: { status: "succeeded", data: { customer: { recordId: "customer_new", label: "Acme", entityType: "customer", sourceLink: { label: "Acme", href: "/customers/customer_new", entityType: "customer", entityId: "customer_new" }, freshness: "2026-08-07T12:00:00.000Z" } }, provenance: { sourceLinks: [{ label: "Acme", href: "/customers/customer_new", entityType: "customer", entityId: "customer_new", capturedAt: "2026-08-07T12:00:00.000Z" }], freshness: { capturedAt: "2026-08-07T12:00:00.000Z" } } } };
+      }),
+    };
+    const provider = {
+      decide: jest.fn(async ({ goal, observations, task: activeTask, toolCatalog }: any) => {
+        if (goal.startsWith("Find my 5")) {
+          if (!observations.length) {
+            expect(toolCatalog).toEqual(expect.arrayContaining([expect.objectContaining({ name: "quotes.search" })]));
+            return { kind: "call_tools", calls: [{ toolName: "quotes.search", arguments: { lifecycle: "open", sort: "newest", limit: 5 } }], workingSummary: "Listed the newest open quotes." };
+          }
+          return { kind: "complete", response: "Q-200 for Acme is newest, followed by Q-199 for Beta.", workingSummary: "Open quote investigation complete." };
+        }
+        expect(activeTask.entityReferences).toEqual(expect.arrayContaining([
+          expect.objectContaining({ type: "quote", id: "quote_new" }),
+          expect.objectContaining({ type: "customer", id: "customer_new" }),
+        ]));
+        return observations.length
+          ? { kind: "complete", response: "Acme is the customer on the newest quote.", workingSummary: "Customer follow-up complete." }
+          : { kind: "call_tools", calls: [{ toolName: "customers.get_summary", arguments: { customerId: "customer_new" } }] };
+      }),
+    };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, () => executor as any);
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "Find my 5 most recent open quotes. Give me the quote number, customer, total, and status. Don't change anything.", context });
+    expect(tasks.updates.at(-1).patch).toEqual(expect.objectContaining({ domain: "quotes", status: "active", entityReferences: expect.arrayContaining([expect.objectContaining({ type: "quote", id: "quote_new" }), expect.objectContaining({ type: "customer", id: "customer_new" })]) }));
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "Take the newest one and tell me about the customer.", context });
+    expect(executor.execute).toHaveBeenCalledWith(expect.objectContaining({ toolName: "customers.get_summary", arguments: { customerId: "customer_new" } }));
+    expect(repo.createFoundationTurn).toHaveBeenLastCalledWith(expect.objectContaining({ response: "Acme is the customer on the newest quote.", mode: "ai_operator_runtime" }));
   });
 });

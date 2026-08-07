@@ -35,6 +35,7 @@ export const assistantMessageRoleValues = ["user", "assistant", "system"] as con
 export const assistantToolExecutionStatusValues = ["not_run", "succeeded", "failed", "disabled"] as const;
 export const assistantToolNameValues = [
   "search.global",
+  "quotes.search",
   "customers.get_summary",
   "orders.get_summary",
   "products.get_summary",
@@ -303,6 +304,55 @@ export const assistantCustomerSummaryResultSchema = z.object({
     label: z.string().trim().min(1).max(160),
     amount: z.number().finite(),
   }).strict().optional(),
+}).strict();
+
+/** A business-level quote investigation. The caller can supply a customer
+ * name when that is part of the question, but tenant-wide reads deliberately
+ * require no customer identifier. */
+export const assistantQuoteSearchInputSchema = z.object({
+  customer: z.string().trim().min(1).max(240).optional(),
+  quoteNumber: z.string().trim().min(1).max(64).optional(),
+  lifecycle: z.enum(["open", "closed"]).optional(),
+  status: z.enum(["draft", "pending_approval", "sent", "approved", "rejected", "expired", "converted"]).optional(),
+  createdAtRange: z.object({
+    start: assistantIsoDateTimeSchema,
+    end: assistantIsoDateTimeSchema,
+  }).strict().optional(),
+  sort: z.enum(["newest", "oldest", "total_desc", "total_asc"]).optional(),
+  limit: z.number().int().min(1).max(20).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.lifecycle && value.status) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "lifecycle and status cannot be combined" });
+  }
+  if (value.createdAtRange && value.createdAtRange.start > value.createdAtRange.end) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["createdAtRange", "end"], message: "created date range end must not precede start" });
+  }
+});
+export const assistantQuoteSearchRowSchema = z.object({
+  quoteId: assistantSafeIdentifierSchema,
+  quoteNumber: z.string().trim().min(1).max(64),
+  customer: z.object({
+    id: assistantSafeIdentifierSchema.optional(),
+    name: z.string().trim().min(1).max(240),
+    sourceLink: assistantSourceLinkSchema.optional(),
+  }).strict(),
+  total: z.number().finite().nonnegative(),
+  status: z.enum(["draft", "pending_approval", "sent", "approved", "rejected", "expired", "converted"]),
+  open: z.boolean(),
+  createdAt: assistantIsoDateTimeSchema,
+  relatedOrderId: assistantSafeIdentifierSchema.optional(),
+  sourceLink: assistantSourceLinkSchema,
+}).strict();
+export const assistantQuoteSearchResultSchema = z.object({
+  totalMatchingQuotes: z.number().int().nonnegative(),
+  quotes: z.array(assistantQuoteSearchRowSchema).max(20),
+  appliedFilters: z.object({
+    lifecycle: z.enum(["open", "closed"]).optional(),
+    status: z.enum(["draft", "pending_approval", "sent", "approved", "rejected", "expired", "converted"]).optional(),
+    customer: z.string().trim().min(1).max(240).optional(),
+    recencyField: z.literal("createdAt"),
+    sentAtAvailable: z.literal(false),
+  }).strict(),
 }).strict();
 
 export const assistantOrderSummaryInputSchema = z.object({

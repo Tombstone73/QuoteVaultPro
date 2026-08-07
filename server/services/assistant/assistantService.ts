@@ -17,6 +17,7 @@ import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
 import { AssistantOperatorRuntime, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation } from "./operatorRuntime";
 import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionProvider";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
+import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
 import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore } from "./operatorTaskContext";
 import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
@@ -217,6 +218,41 @@ function activeProductIntakeSession(messages: AssistantMessageRecord[]): string 
   return null;
 }
 
+/** Persist only reduced, server-validated entity references. These are a
+ * continuity aid for a later conversational turn, never a source of tenant
+ * scope or authorization. */
+function mergeOperatorEntityReferences(
+  existing: Array<{ type: string; id: string; label?: string }>,
+  observations: readonly AssistantOperatorObservation[],
+): Array<{ type: string; id: string; label?: string }> {
+  const references = new Map<string, { type: string; id: string; label?: string }>();
+  const add = (type: unknown, id: unknown, label?: unknown) => {
+    if (typeof type !== "string" || !/^(?:quote|customer|order)$/.test(type)) return;
+    if (typeof id !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/.test(id)) return;
+    references.set(`${type}:${id}`, { type, id, ...(typeof label === "string" && label.trim() ? { label: label.trim().slice(0, 240) } : {}) });
+  };
+  for (const reference of existing) add(reference.type, reference.id, reference.label);
+  for (const observation of observations) {
+    for (const link of observation.result?.provenance?.sourceLinks ?? []) {
+      add(link.entityType, link.entityId, link.label);
+    }
+    // quotes.search has a strict shared result schema. Reading its reduced
+    // rows here retains every returned reference even when provenance is
+    // intentionally capped at ten source links.
+    if (observation.toolName !== "quotes.search" || !observation.result?.data || typeof observation.result.data !== "object") continue;
+    const rows = (observation.result.data as { quotes?: unknown }).quotes;
+    if (!Array.isArray(rows)) continue;
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const quote = row as { quoteId?: unknown; quoteNumber?: unknown; customer?: { id?: unknown; name?: unknown }; relatedOrderId?: unknown };
+      add("quote", quote.quoteId, typeof quote.quoteNumber === "string" ? `Quote ${quote.quoteNumber}` : undefined);
+      add("customer", quote.customer?.id, quote.customer?.name);
+      add("order", quote.relatedOrderId);
+    }
+  }
+  return Array.from(references.values()).slice(-25);
+}
+
 export class AssistantService {
   constructor(
     private readonly repo: AssistantRepository,
@@ -242,6 +278,10 @@ export class AssistantService {
     /** Composite semantic tools are separately injectable so the free-text
      * integration path can be tested without a database. */
     private readonly operatorCompositeTool: () => AssistantOperatorSemanticTool = () => createQuoteInternalNoteCompositeSemanticTool(),
+    /** Injectable only for end-to-end operator-path tests. Production always
+     * uses the static read registry plus reviewed semantic tools. */
+    private readonly createOperatorToolExecutor: (audit: (event: AssistantToolExecutionAudit) => void, semanticTools: readonly AssistantOperatorSemanticTool[]) => AssistantOperatorToolExecutor =
+      (audit, semanticTools) => createAssistantOperatorToolExecutor(audit, semanticTools),
   ) {}
 
   async getCapabilities(scope: AssistantScope, actor?: AssistantActor) {
@@ -496,12 +536,12 @@ export class AssistantService {
         return { status: "succeeded", result: { status: "succeeded", data: { response: product.response, cards: product.cards, proposalId, taskDomain: "products" } } as any };
       },
     }, this.operatorCompositeTool()];
-    const runtime = new AssistantOperatorRuntime(this.operatorDecisionProvider(scope.organizationId), createAssistantOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));
+    const runtime = new AssistantOperatorRuntime(this.operatorDecisionProvider(scope.organizationId), this.createOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));
     const run = await runtime.run({
       goal: request.message,
       taskId: task.id,
       initialWorkingSummary: task.workingSummary,
-      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId } },
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, entityReferences: task.entityReferences } },
     });
     const productObservation = [...run.observations].reverse().find((item) => item.toolName === "products.manage_intent" && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; cards?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
@@ -516,12 +556,16 @@ export class AssistantService {
     // A completed read-only detour must not close an unfinished authoritative
     // product task. The task record merely remembers that active intent; it
     // never duplicates its canonical Product Intent state.
-    const activeStatus = run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId
+    const entityReferences = mergeOperatorEntityReferences(task.entityReferences, run.observations);
+    const quoteInvestigation = run.observations.some((observation) => observation.toolName === "quotes.search" && observation.status === "succeeded");
+    const continuesQuoteInvestigation = task.domain === "quotes" || quoteInvestigation;
+    const activeStatus = run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || (continuesQuoteInvestigation && entityReferences.length > 0)
       ? "active"
       : run.status === "completed" ? "completed" : "blocked";
     await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: {
-      ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : {}),
+      ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : quoteInvestigation ? { domain: "quotes" } : {}),
       workingSummary: run.safeWorkingSummary,
+      entityReferences,
       missingInformation: run.missingInformation,
       ...(proposalId ? { canonicalProductIntentProposalId: proposalId } : {}),
       lastObservationSummary: run.observations.at(-1)?.warning ?? null,

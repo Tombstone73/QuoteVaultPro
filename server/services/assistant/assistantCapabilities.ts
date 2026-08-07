@@ -87,6 +87,7 @@ export function isAssistantCapabilityProductionCommand(value: string): value is 
 
 export const assistantCapabilityReadTools = [
   "search.global",
+  "quotes.search",
   "customers.get_summary",
   "orders.get_summary",
   "products.get_summary",

@@ -49,7 +49,14 @@ export interface AssistantOperatorTrustedContext {
    * argument. Semantic adapters can use it without asking the model to repeat
    * it in a persistence-shaped payload. */
   goal: string;
-  task?: { id: string; domain: string | null; canonicalProductIntentProposalId: string | null };
+  task?: {
+    id: string;
+    domain: string | null;
+    canonicalProductIntentProposalId: string | null;
+    /** Reduced, server-derived references from prior observations in this
+     * conversation. They support unambiguous follow-ups, never authorization. */
+    entityReferences: Array<{ type: string; id: string; label?: string }>;
+  };
 }
 
 export interface AssistantOperatorDecisionProvider {
@@ -61,6 +68,7 @@ export interface AssistantOperatorDecisionProvider {
     toolCatalog: ReadonlyArray<{ name: string; description: string }>;
     observations: readonly AssistantOperatorObservation[];
     safeWorkingSummary: string | null;
+    task?: AssistantOperatorTrustedContext["task"];
   }): Promise<unknown>;
 }
 
@@ -75,7 +83,9 @@ export type AssistantOperatorRunResult = {
 function safeFailureResponse(observations: readonly AssistantOperatorObservation[]): string {
   const last = observations.at(-1);
   if (last?.status === "permission_denied") return "I don't have permission to inspect the information needed to complete that request.";
-  return "I couldn't complete that request safely. Nothing was changed.";
+  if (last?.status === "rejected") return "I couldn't complete that request because the needed business lookup is unavailable or invalid.";
+  if (last?.status === "failed" || last?.status === "timed_out") return "I couldn't complete the requested business lookup because it was unavailable. Nothing was changed.";
+  return "I couldn't complete the request because the AI Operator could not complete its investigation. Nothing was changed.";
 }
 
 /** A bounded sequential tool loop. It deliberately has no mutation executor:
@@ -98,7 +108,7 @@ export class AssistantOperatorRuntime {
       try {
         decision = assistantOperatorDecisionSchema.parse(await this.provider.decide({
           goal: input.goal, taskId: input.taskId, step, remainingSteps: boundedSteps - step,
-          toolCatalog: this.tools.catalog(), observations, safeWorkingSummary,
+          toolCatalog: this.tools.catalog(), observations, safeWorkingSummary, task: input.trustedContext.task,
         }));
       } catch {
         return { status: "failed", response: safeFailureResponse(observations), observations, safeWorkingSummary, missingInformation: [] };

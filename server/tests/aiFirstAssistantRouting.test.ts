@@ -70,6 +70,6 @@ describe("AI Operator routing (replacement for retired AI-first planner coverage
     await service.createTurn(scope, "conversation_1", actor, { message: "Change a product.", context });
 
     expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
-    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", errorCode: "operator_failed", response: "I couldn't complete that request safely. Nothing was changed." }));
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", errorCode: "operator_failed", response: "I couldn't complete the request because the AI Operator could not complete its investigation. Nothing was changed." }));
   });
 });
