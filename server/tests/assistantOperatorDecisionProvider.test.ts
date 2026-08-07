@@ -10,6 +10,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       expect(request.system).toContain("A direct complete response is a first-class outcome");
       expect(request.system).toContain("Treat a user's requested presentation as part of the goal");
       expect(request.system).toContain("If multiple records share the extreme value");
+      expect(request.system).toContain("PrintersHero is not read-only");
       const body = JSON.parse(request.user);
       expect(body.goal).toBe("all 5");
       expect(body.observations).toEqual([]);
