@@ -93,6 +93,41 @@ describe("Assistant workspace presentation", () => {
     act(() => root.unmount());
   });
 
+  test("exposes a canonical continuation diagnostic by its visible pic reference only to admins", async () => {
+    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({ success: true, data: [{ referenceId: "pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca", correlationId: "pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca", diagnosticType: "product_intent_compiler", stage: "patch_application", provider: "openai_compatible", model: "deepseek-test", parseMethod: "raw_json", repairResult: "not_attempted", validationSchema: "ProductDraftIntentPatch", validationIssuePaths: ["operations.0.value"], validationIssueCodes: ["invalid_type"], persistenceResult: "not_attempted", createdAt: "2026-08-07T10:00:00.000Z", rawProviderOutput: "never-copy" }] }) }));
+    const copy = jest.fn(async () => undefined);
+    (globalThis as any).fetch = fetchMock;
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copy } });
+    const cards = [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: ["I couldn't safely interpret that product request. Reference: pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca"] } }];
+    const normal = render(cards, { correlationId: "aip-planner-reference", responseState: { kind: "validation_error", retryable: false, diagnosticsAvailable: true } });
+    expect(normal.container.textContent).not.toContain("Technical diagnostics");
+    act(() => normal.root.unmount());
+
+    const { container, root } = render(cards, { diagnosticsEnabled: true, correlationId: "aip-planner-reference", responseState: { kind: "validation_error", retryable: false, diagnosticsAvailable: true } });
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Technical diagnostics") as HTMLButtonElement;
+    await act(async () => { button.click(); await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledWith("/api/assistant/diagnostics/pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca", { credentials: "include" });
+    expect(container.textContent).toContain("patch_application");
+    expect(container.textContent).toContain("operations.0.value");
+    expect(container.textContent).toContain("invalid_type");
+    const copyButton = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Copy diagnostics") as HTMLButtonElement;
+    act(() => copyButton.click());
+    expect(copy).toHaveBeenCalledWith(expect.stringContaining("pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca"));
+    expect(JSON.stringify(copy.mock.calls)).not.toContain("never-copy");
+    act(() => root.unmount());
+  });
+
+  test("terminates a canonical continuation diagnostic load failure", async () => {
+    (globalThis as any).fetch = jest.fn(async () => ({ ok: false, json: async () => ({ success: false }) }));
+    const cards = [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: ["Reference: pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca"] } }];
+    const { container, root } = render(cards, { diagnosticsEnabled: true, responseState: { kind: "validation_error", retryable: false, diagnosticsAvailable: true } });
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Technical diagnostics") as HTMLButtonElement;
+    await act(async () => { button.click(); await Promise.resolve(); });
+    expect(container.textContent).toContain("Technical diagnostics are unavailable. Reference: pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca");
+    expect(container.textContent).not.toContain("Loading technical diagnostics");
+    act(() => root.unmount());
+  });
+
   test("does not offer retry or diagnostics for a successful capability answer", () => {
     const { container, root } = render([
       { kind: "notice", title: "Assistant capabilities", body: "I can help with lookups.", tone: "info" },

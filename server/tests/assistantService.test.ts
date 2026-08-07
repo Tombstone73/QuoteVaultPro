@@ -141,6 +141,8 @@ describe("AssistantService", () => {
       .toEqual({ kind: "not_found", retryable: false, diagnosticsAvailable: false });
     expect(responseStateForCards([{ kind: "provider_unavailable", title: "Unavailable", summary: "Retry later.", sourceLinks: [], toolStatus: "failed" }]))
       .toEqual({ kind: "retryable_failure", retryable: true, diagnosticsAvailable: true });
+    expect(responseStateForCards([{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: ["Nothing was changed. Reference: pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca"] } }]))
+      .toEqual({ kind: "validation_error", retryable: false, diagnosticsAvailable: true });
   });
 
   test("derives safe, readable first-message conversation titles without provider input", () => {

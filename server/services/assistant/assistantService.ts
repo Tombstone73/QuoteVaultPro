@@ -932,6 +932,12 @@ export function responsePresentationForCards(cards: readonly unknown[]): Assista
 export function responseStateForCards(cards: readonly unknown[]): AssistantResponseState {
   const values = cards.filter((card): card is { kind: string; toolStatus?: string } => Boolean(card && typeof card === "object" && typeof (card as { kind?: unknown }).kind === "string"));
   const kinds = new Set(values.map((card) => card.kind));
+  const canonicalContinuationDiagnostic = values.some((card) => {
+    if (card.kind !== "product_validation_errors") return false;
+    const details = card && typeof card === "object" && "details" in card ? (card as { details?: unknown }).details : null;
+    const errors = details && typeof details === "object" && !Array.isArray(details) ? (details as { errors?: unknown }).errors : null;
+    return Array.isArray(errors) && errors.some((value) => typeof value === "string" && /\bpic-[0-9a-f-]{36}\b/i.test(value));
+  });
   if (kinds.has("provider_unavailable")) return { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true };
   if (values.some((card) => card.kind === "tool_warning" && card.toolStatus === "failed")) {
     return { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true };
@@ -942,6 +948,7 @@ export function responseStateForCards(cards: readonly unknown[]): AssistantRespo
   if (kinds.has("not_found")) return { kind: "not_found", retryable: false, diagnosticsAvailable: false };
   if (kinds.has("partial_result")) return { kind: "partial", retryable: false, diagnosticsAvailable: true };
   if (kinds.has("tool_warning")) return { kind: "validation_error", retryable: false, diagnosticsAvailable: false };
+  if (canonicalContinuationDiagnostic) return { kind: "validation_error", retryable: false, diagnosticsAvailable: true };
   return { kind: "success", retryable: false, diagnosticsAvailable: false };
 }
 
