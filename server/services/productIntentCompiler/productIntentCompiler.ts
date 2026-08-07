@@ -29,6 +29,16 @@ export type ProductIntentCandidateLabels = {
 export type ProductIntentCompilerInput = {
   orgId: string;
   request: string;
+  /** A server-generated public diagnostic reference for a continuation. It is
+   * deliberately not part of the provider prompt and lets every terminal
+   * continuation failure round-trip through the admin diagnostic lookup. */
+  diagnosticReferenceId?: string;
+  diagnosticContext?: {
+    actorId: string | null;
+    conversationId: string | null;
+    sessionId: string | null;
+    currentRevision: number | null;
+  };
   /** Present for a continuation, answer, or correction. This is server-loaded
    * state; the provider receives no tenant IDs beyond the opaque labels below. */
   currentIntent?: ProductDraftIntent | null;
@@ -438,7 +448,10 @@ function logCompilerFailure(input: Pick<ProductIntentCompilerInput, "orgId">, co
 
 async function persistCompilerDiagnostic(input: ProductIntentCompilerInput, diagnostics: ProductIntentCompilerDiagnostics | undefined, stage: ProductIntentCompilerFailureStage, errorCode: string) {
   try {
-    const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId: diagnostics?.correlationId, correlationId: diagnostics?.correlationId, diagnosticType: "product_intent_compiler", tenantId: input.orgId, actorId: null, conversationId: null, provider: diagnostics?.provider ?? null, model: diagnostics?.model ?? null, providerRequestId: diagnostics?.requestMetadata.providerRequestId ?? null, stage, errorCode, providerResponseState: stage === "json_extraction_failure" ? "parse_failed" : stage.includes("schema") ? "contract_failed" : "not_received", parseMethod: "none", repairAttempted: (diagnostics?.attempts ?? 0) > 1, repairResult: (diagnostics?.attempts ?? 0) > 1 ? "failed" : "not_attempted", validationSchema: stage.includes("schema") ? "ProductIntentCompilerResult" : null, validationIssuePaths: diagnostics?.schemaIssuePaths ?? [], validationIssueCodes: diagnostics?.schemaIssueCodes ?? [], returnedTopLevelKeys: [], missingRequiredKeys: diagnostics?.missingRequiredKeys ?? [], unknownKeys: diagnostics?.unknownKeys ?? [], plannerOperation: null, selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler", optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString() });
+    const referenceId = diagnostics?.correlationId ?? input.diagnosticReferenceId;
+    if (!referenceId) return;
+    const repaired = (diagnostics?.attempts ?? 0) > 1;
+    const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId, correlationId: referenceId, diagnosticType: "product_intent_compiler", tenantId: input.orgId, actorId: input.diagnosticContext?.actorId ?? null, conversationId: input.diagnosticContext?.conversationId ?? null, provider: diagnostics?.provider ?? null, model: diagnostics?.model ?? null, providerRequestId: diagnostics?.requestMetadata.providerRequestId ?? null, stage, errorCode, providerResponseState: stage === "json_extraction_failure" ? "parse_failed" : stage.includes("schema") ? "contract_failed" : "not_received", parseMethod: stage === "json_extraction_failure" ? "none" : repaired ? "repaired_json" : "raw_json", repairAttempted: repaired, repairResult: repaired ? "failed" : "not_attempted", validationSchema: stage.includes("schema") ? "ProductIntentCompilerResult" : null, validationIssuePaths: diagnostics?.schemaIssuePaths ?? [], validationIssueCodes: diagnostics?.schemaIssueCodes ?? [], returnedTopLevelKeys: [], missingRequiredKeys: diagnostics?.missingRequiredKeys ?? [], unknownKeys: diagnostics?.unknownKeys ?? [], plannerOperation: null, selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler", optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString(), sessionId: input.diagnosticContext?.sessionId ?? null, currentRevision: input.diagnosticContext?.currentRevision ?? null, patchOperationCount: null, patchPaths: [] });
     await persistAiDiagnostic(envelope);
   } catch { /* Diagnostics must never conceal the original compiler failure. */ }
 }
@@ -453,7 +466,7 @@ export class ProductIntentCompiler {
 
   async compile(input: ProductIntentCompilerInput): Promise<ProductIntentCompilerOutcome> {
     const timeoutMs = clampTimeout(input.timeoutMs);
-    const correlationId = `pic-${randomUUID()}`;
+    const correlationId = input.diagnosticReferenceId ?? `pic-${randomUUID()}`;
     const initialIntentId = randomUUID();
     let lastDiagnostics: ProductIntentCompilerDiagnostics | undefined;
     let invalidOutput = "";
@@ -482,6 +495,8 @@ export class ProductIntentCompiler {
           status: error && typeof error === "object" ? (error as { status?: unknown }).status ?? null : null,
           providerRequestId: error && typeof error === "object" ? (error as { providerRequestId?: unknown }).providerRequestId ?? null : null,
         });
+        const diagnostics = lastDiagnostics ?? { correlationId, provider: "unknown", model: "unknown", requestMetadata: {}, attempts: attempt, stage };
+        await persistCompilerDiagnostic(input, diagnostics, stage, unavailable ? "provider_unavailable" : "provider_failure");
         return {
           ok: false,
           error: {
@@ -492,7 +507,7 @@ export class ProductIntentCompiler {
             retryable: !unavailable,
             diagnosticCode: correlationId,
           },
-          diagnostics: lastDiagnostics ?? { correlationId, provider: "unknown", model: "unknown", requestMetadata: {}, attempts: attempt, stage },
+          diagnostics,
         };
       }
 

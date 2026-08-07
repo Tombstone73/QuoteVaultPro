@@ -16,6 +16,10 @@ export const aiDiagnosticEnvelopeSchema = z.object({
   returnedTopLevelKeys: z.array(safeText).max(30), missingRequiredKeys: z.array(safeText).max(30), unknownKeys: z.array(safeText).max(30),
   plannerOperation: safeText.nullable(), selectedCapability: safeText.nullable(), specialistName: safeText.nullable(),
   optionNormalizationStage: safeText.nullable(), resolverStage: safeText.nullable(), persistenceAttempted: z.boolean(), persistenceResult: z.enum(["not_attempted", "succeeded", "failed"]), createdAt: z.string().datetime(),
+  /** Continuation-only context. These are server-owned identifiers and
+   * structural summaries; neither provider output nor customer content is kept. */
+  sessionId: safeId.nullable().optional(), currentRevision: z.number().int().nonnegative().nullable().optional(),
+  patchOperationCount: z.number().int().nonnegative().max(50).nullable().optional(), patchPaths: z.array(safeText).max(30).optional(),
 }).strict();
 export type AiDiagnosticEnvelope = z.infer<typeof aiDiagnosticEnvelopeSchema>;
 

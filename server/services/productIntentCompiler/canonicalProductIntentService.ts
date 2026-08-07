@@ -8,6 +8,8 @@ import {
 } from "@shared/productDraftIntent";
 import { randomUUID } from "node:crypto";
 import { z } from "zod";
+import { sanitizeAiDiagnosticEnvelope } from "@shared/aiDiagnostics";
+import { persistAiDiagnostic } from "../aiDiagnosticsService";
 import { ProductIntentCompiler, type ProductIntentCompilerInput } from "./productIntentCompiler";
 import {
   ProductIntentPersistenceService,
@@ -180,11 +182,70 @@ function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch:
     && (!unresolvedFieldsUpdated || pricingUpdated);
 }
 
-function continuationFailure(input: { stage: string; current: CanonicalProductIntentSession; activeIssueIds: readonly string[]; deterministicAttempted: boolean; providerRequested: boolean; providerResultType?: string; patchSchemaPaths?: readonly string[]; code: string; message: string }) {
+function continuationIssueMetadata(error: unknown) {
+  if (!(error instanceof z.ZodError)) return { paths: [] as string[], codes: [] as string[], missing: [] as string[], unknown: [] as string[] };
+  const paths = error.issues.slice(0, 20).map((issue) => issue.path.join(".") || "patch");
+  const codes = Array.from(new Set(error.issues.slice(0, 20).map((issue) => issue.code)));
+  const missing = Array.from(new Set(error.issues.filter((issue) => issue.code === "invalid_type" && (issue as { received?: unknown }).received === "undefined").map((issue) => issue.path.join(".") || "patch")));
+  const unknown = Array.from(new Set(error.issues.flatMap((issue) => issue.code === "unrecognized_keys" && Array.isArray((issue as { keys?: unknown }).keys)
+    ? ((issue as { keys: unknown[] }).keys.filter((key): key is string => typeof key === "string").map((key) => `${issue.path.join(".") || "patch"}.${key}`)) : [])));
+  return { paths, codes, missing, unknown };
+}
+
+function continuationPatchPaths(patch: ProductDraftIntentPatch | undefined): string[] {
+  if (!patch) return [];
+  return Array.from(new Set(patch.operations.flatMap((operation) => {
+    if (operation.op === "merge_field_metadata") return Object.keys(operation.value);
+    if (operation.op === "set_identity") return ["identity"];
+    if (operation.op === "set_measurement") return ["measurement"];
+    if (operation.op === "set_quantity") return ["quantity"];
+    if (operation.op === "set_pricing") return ["pricing"];
+    if (operation.op === "set_material") return ["material"];
+    if (operation.op === "replace_option_groups") return ["optionGroups"];
+    if (operation.op === "set_workflow") return ["workflow"];
+    if (operation.op === "set_production") return ["production"];
+    if (operation.op === "set_visibility") return ["visibility"];
+    if (operation.op === "set_unresolved_fields") return ["unresolvedFields"];
+    return ["state"];
+  }))).slice(0, 30);
+}
+
+async function continuationFailure(input: {
+  referenceId: string; organizationId: string; actorUserId: string; proposalId: string;
+  stage: string; current?: CanonicalProductIntentSession; activeIssueIds: readonly string[];
+  deterministicAttempted: boolean; providerRequested: boolean; provider?: string | null; model?: string | null;
+  providerResultType?: string; patch?: ProductDraftIntentPatch; error?: unknown;
+  validationSchema?: string | null; repairAttempted?: boolean; repairResult?: "not_attempted" | "succeeded" | "failed";
+  parseMethod?: "none" | "raw_json" | "extracted_json" | "repaired_json";
+  providerResponseState?: "not_received" | "received" | "empty" | "parse_failed" | "contract_failed" | "accepted";
+  resolverStage?: string | null; persistenceAttempted?: boolean; persistenceResult?: "not_attempted" | "succeeded" | "failed";
+  code: string; message: string;
+}) {
+  const issue = continuationIssueMetadata(input.error);
+  const current = input.current;
+  try {
+    await persistAiDiagnostic(sanitizeAiDiagnosticEnvelope({
+      version: 1, referenceId: input.referenceId, correlationId: input.referenceId,
+      diagnosticType: "product_intent_compiler", tenantId: input.organizationId, actorId: input.actorUserId,
+      conversationId: current?.conversationId ?? null, provider: input.provider ?? null, model: input.model ?? null,
+      providerRequestId: null, stage: input.stage, errorCode: input.code,
+      providerResponseState: input.providerResponseState ?? (input.providerRequested ? "accepted" : "not_received"),
+      parseMethod: input.parseMethod ?? "none", repairAttempted: input.repairAttempted ?? false,
+      repairResult: input.repairResult ?? "not_attempted", validationSchema: input.validationSchema ?? (input.error instanceof z.ZodError ? "ProductDraftIntentPatch" : null),
+      validationIssuePaths: issue.paths, validationIssueCodes: issue.codes, returnedTopLevelKeys: [],
+      missingRequiredKeys: issue.missing, unknownKeys: issue.unknown, plannerOperation: null,
+      selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler",
+      optionNormalizationStage: null, resolverStage: input.resolverStage ?? null,
+      persistenceAttempted: input.persistenceAttempted ?? false, persistenceResult: input.persistenceResult ?? "not_attempted",
+      createdAt: new Date().toISOString(), sessionId: current?.proposalId ?? input.proposalId,
+      currentRevision: current?.specification.session.currentRevision ?? null,
+      patchOperationCount: input.patch?.operations.length ?? null, patchPaths: continuationPatchPaths(input.patch),
+    }));
+  } catch { /* Diagnostic persistence is fail-soft and cannot replace the safe continuation error. */ }
   console.warn("[PRODUCT_INTENT_CONTINUATION] Canonical continuation failed.", {
-    stage: input.stage, sessionId: input.current.proposalId, currentRevision: input.current.specification.session.currentRevision,
+    referenceId: input.referenceId, stage: input.stage, sessionId: current?.proposalId ?? input.proposalId, currentRevision: current?.specification.session.currentRevision ?? null,
     activeIssueIds: input.activeIssueIds, deterministicAttempted: input.deterministicAttempted, providerRequested: input.providerRequested,
-    providerResultType: input.providerResultType ?? null, patchSchemaPaths: input.patchSchemaPaths ?? [], code: input.code,
+    providerResultType: input.providerResultType ?? null, patchSchemaPaths: issue.paths, code: input.code,
   });
   return { ok: false as const, code: input.code, message: input.message };
 }
@@ -317,39 +378,61 @@ export class CanonicalProductIntentService {
   }
 
   async continue(input: { organizationId: string; actorUserId: string; proposalId: string; request: string; compilerInput: ProductIntentCompilerInput }): Promise<CanonicalProductIntentOutcome> {
-    const current = await this.persistence.load({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId });
-    const draft = current.specification.session.revisions.at(-1)!.intent;
-    const active = await this.validate(draft);
-    const activeAnswers = active.issues.flatMap((issue) => {
-      const answer = answerContract(draft, issue);
-      return answer ? [answer] : [];
-    });
-    const activeIssueIds = active.issues.map((issue) => issue.id ?? issue.code);
-    const deterministic = deterministicAnswerPatch(draft, activeAnswers, input.request);
-    let sourcePatch: ProductDraftIntentPatch;
+    const referenceId = `pic-${randomUUID()}`;
+    let current: CanonicalProductIntentSession | undefined;
+    let activeIssueIds: string[] = [];
+    let sourcePatch: ProductDraftIntentPatch | undefined;
     let compilerResult: ProductIntentCompilerResult | undefined;
-    if (deterministic) {
-      sourcePatch = deterministic.patch;
-    } else {
-      if (!this.compiler) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interpretation is unavailable until a compatible AI provider is configured." };
-      const compiled = await this.compiler.compile({ ...input.compilerInput, request: input.request, currentIntent: draft, currentRevision: current.specification.session.currentRevision, activeRequiredIssues: activeAnswers });
-      if (!compiled.ok) return { ok: false, code: compiled.error.code, message: compiled.error.message };
-      if (compiled.result.kind !== "intent_patch") return continuationFailure({ stage: "provider_result_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: true, providerResultType: compiled.result.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNMATCHED", message: activeAnswers.length === 1 ? `I could not apply that answer to the current product question. Please choose ${activeAnswers[0]!.allowedChoices.map((choice) => choice.displayLabel).join(" or ")}.` : "I could not apply that answer to the current product question. Please answer the outstanding product question." });
-      if (!providerPatchIsScopedToActiveAnswers(draft, compiled.result.patch, activeAnswers)) return continuationFailure({ stage: "patch_scope_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: true, providerResultType: compiled.result.kind, code: "PRODUCT_INTENT_PATCH_OUT_OF_SCOPE", message: "I could not apply that answer to the current product question. Please review the available choices and try again." });
-      sourcePatch = compiled.result.patch;
-      compilerResult = compiled.result;
-    }
+    let provider: string | null = null;
+    let model: string | null = null;
+    let continuationStage = "active_session_lookup";
+    let providerRequested = false;
+    let deterministicAttempted = false;
     try {
+      current = await this.persistence.load({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId });
+      const draft = current.specification.session.revisions.at(-1)?.intent;
+      if (!draft) return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "missing_base_revision", current, activeIssueIds, deterministicAttempted, providerRequested, code: "PRODUCT_INTENT_MISSING_BASE_REVISION", message: `I could not apply that answer to the current product question. Please refresh and try again. Reference: ${referenceId}.` });
+      continuationStage = "active_intent_validation";
+      const active = await this.validate(draft);
+      const activeAnswers = active.issues.flatMap((issue) => {
+        const answer = answerContract(draft, issue);
+        return answer ? [answer] : [];
+      });
+      activeIssueIds = active.issues.map((issue) => issue.id ?? issue.code);
+      const deterministic = deterministicAnswerPatch(draft, activeAnswers, input.request);
+      deterministicAttempted = true;
+      if (deterministic) {
+        sourcePatch = deterministic.patch;
+      } else {
+        if (!this.compiler) return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "provider_unavailable", current, activeIssueIds, deterministicAttempted, providerRequested, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: `Product interpretation is unavailable until a compatible AI provider is configured. Reference: ${referenceId}.` });
+        providerRequested = true;
+        continuationStage = "provider_continuation";
+        const compiled = await this.compiler.compile({ ...input.compilerInput, request: input.request, currentIntent: draft, currentRevision: current.specification.session.currentRevision, activeRequiredIssues: activeAnswers, diagnosticReferenceId: referenceId, diagnosticContext: { actorId: input.actorUserId, conversationId: current.conversationId, sessionId: current.proposalId, currentRevision: current.specification.session.currentRevision } });
+        provider = compiled.diagnostics?.provider ?? null;
+        model = compiled.diagnostics?.model ?? null;
+        // Compiler terminal failures have already been persisted using this
+        // continuation reference and context. Do not write a duplicate event.
+        if (!compiled.ok) return { ok: false, code: compiled.error.code, message: compiled.error.message };
+        if (compiled.result.kind !== "intent_patch") return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "provider_result_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compiled.result.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNMATCHED", message: activeAnswers.length === 1 ? `I could not apply that answer to the current product question. Please choose ${activeAnswers[0]!.allowedChoices.map((choice) => choice.displayLabel).join(" or ")}. Reference: ${referenceId}.` : `I could not apply that answer to the current product question. Please answer the outstanding product question. Reference: ${referenceId}.` });
+        if (!providerPatchIsScopedToActiveAnswers(draft, compiled.result.patch, activeAnswers)) return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "patch_scope_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compiled.result.kind, patch: compiled.result.patch, code: "PRODUCT_INTENT_PATCH_OUT_OF_SCOPE", message: `I could not apply that answer to the current product question. Please review the available choices and try again. Reference: ${referenceId}.` });
+        sourcePatch = compiled.result.patch;
+        compilerResult = compiled.result;
+      }
+      continuationStage = "patch_application";
       const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
-      const { intent, issues } = await this.validate(applyProductDraftIntentPatch(draft, sourcePatch, { actorUserId: input.actorUserId }));
+      const patched = applyProductDraftIntentPatch(draft, sourcePatch!, { actorUserId: input.actorUserId });
+      continuationStage = "full_intent_validation";
+      const { intent, issues } = await this.validate(patched, (stage) => { continuationStage = stage === "tenant_reference_resolution" ? "tenant_reference_resolution" : "resolver_validation"; });
       const resolvedAnswers = activeAnswers.filter((answer) => !issues.some((issue) => issue.id === `${intent.revision}:${answer.canonicalPath}:required`));
-      if (resolvedAnswers.length === 0) return continuationFailure({ stage: "resolver_validation", current, activeIssueIds, deterministicAttempted: true, providerRequested: !deterministic, providerResultType: compilerResult?.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNRESOLVED", message: "I could not apply that answer to the current product question. Please review the available choices and try again." });
+      if (resolvedAnswers.length === 0) return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "resolver_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compilerResult?.kind, patch: sourcePatch, resolverStage: "required_answer_resolution", code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNRESOLVED", message: `I could not apply that answer to the current product question. Please review the available choices and try again. Reference: ${referenceId}.` });
       const patch = replacementPatch(intent, current.specification.session.currentRevision);
+      continuationStage = "revision_persistence";
       const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: current.specification.session.currentRevision, expectedFingerprint: current.fingerprint, patch, reason: deterministic ? "answer" : "correction", compilerResult, unresolvedQuestions: questionsFrom(intent, issues) });
       return { ok: true, session, issues, card: await this.presentation(intent, issues) };
     } catch (error) {
-      const patchSchemaPaths = error instanceof z.ZodError ? error.issues.map((issue) => issue.path.join(".") || "patch") : [];
-      return continuationFailure({ stage: "patch_application", current, activeIssueIds, deterministicAttempted: true, providerRequested: !deterministic, providerResultType: compilerResult?.kind, patchSchemaPaths, code: "PRODUCT_INTENT_CONTINUATION_REJECTED", message: "I could not apply that answer to the current product question. Please review the available choices and try again." });
+      const persistenceFailure = continuationStage === "revision_persistence";
+      const stale = error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "PRODUCT_INTENT_STALE_REVISION";
+      return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: stale ? "stale_revision" : continuationStage, current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, patch: sourcePatch, error, validationSchema: error instanceof z.ZodError ? (continuationStage === "patch_application" ? "ProductDraftIntentPatch" : "ProductDraftIntent") : null, resolverStage: continuationStage === "resolver_validation" ? "canonical_resolver" : null, persistenceAttempted: persistenceFailure, persistenceResult: persistenceFailure ? "failed" : "not_attempted", code: stale ? "PRODUCT_INTENT_STALE_REVISION" : "PRODUCT_INTENT_CONTINUATION_REJECTED", message: `I could not apply that answer to the current product question. Please review the available choices and try again. Reference: ${referenceId}.` });
     }
   }
 
