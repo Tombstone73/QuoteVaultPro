@@ -57,6 +57,8 @@ import { fulfillmentOperationCommandNames, fulfillmentOperationsService } from "
 import { billingInvoiceOperationCommandNames, billingInvoiceOperationsService } from "../services/assistant/billingInvoiceOperationsService";
 import { createBillingInvoiceOperationCommandDefinition, createBillingInvoiceOperationExecutionCommand } from "../services/assistant/execution/billingInvoiceOperationsCommands";
 import { paymentOperationCommandNames, paymentOperationsService } from "../services/assistant/paymentOperationsService";
+import { CompositeExecutionPlanningService } from "../services/assistant/execution/compositeExecutionPlanningService";
+import { createQuoteInternalNoteCompositeExecutionService } from "../services/assistant/execution/quoteInternalNoteCompositeTool";
 import { createPaymentOperationCommandDefinition, createPaymentOperationExecutionCommand } from "../services/assistant/execution/paymentOperationsCommands";
 
 function userId(req: Request): string | null {
@@ -143,6 +145,22 @@ function safeError(res: Response, error: unknown) {
 
 export interface AssistantExecutionRouteDependencies {
   service?: ExecutionPlanningService;
+  compositeService?: CompositeExecutionPlanningService;
+}
+
+function compositePlanDto(plan: any) {
+  return {
+    id: plan.id, conversationId: plan.conversationId, turnId: null, action: "composite_protected_mutation", commandVersion: "v1",
+    status: plan.status, riskLevel: "low", planVersion: plan.version, contextVersion: "v1",
+    preview: {
+      title: `${plan.operations.length} approved operations`, summary: "One confirmation covers the displayed internal-only note operations.",
+      affectedEntities: plan.operations.flatMap((operation: any) => operation.affectedRecords.map((record: any) => ({ entityType: record.entityType, entityId: record.entityId, label: `${record.entityType} ${record.entityId}` }))),
+      sideEffects: plan.operations.map((operation: any) => ({ label: operation.commandName, description: operation.summary, affectedRecordCount: operation.affectedRecords.length, reversible: false })),
+      undo: { available: false, label: null, expiresAt: null },
+    },
+    missingInformation: [], executable: plan.status === "awaiting_confirmation", confirmationAvailable: plan.status === "awaiting_confirmation", cancellationAvailable: false,
+    expiresAt: plan.expiresAt.toISOString(), staleReason: plan.status === "invalidated" ? "Plan inputs changed." : null, failureSummary: null, steps: [], correlationId: plan.correlationId, createdAt: null, updatedAt: null,
+  };
 }
 
 function createProductionExecutionService(): ExecutionPlanningService {
@@ -215,6 +233,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
 
 export function registerAssistantExecutionRoutes(app: Express, middleware: { isAuthenticated: RequestHandler; tenantContext: RequestHandler }, dependencies: AssistantExecutionRouteDependencies = {}): void {
   const service = dependencies.service ?? createProductionExecutionService();
+  const compositeService = dependencies.compositeService ?? createQuoteInternalNoteCompositeExecutionService();
   const guarded = [middleware.isAuthenticated, middleware.tenantContext];
 
   app.post("/api/assistant/conversations/:conversationId/plans", ...guarded, async (req, res) => {
@@ -419,7 +438,7 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
 
   app.get("/api/assistant/plans/:planId", ...guarded, async (req, res) => {
     try { return res.json({ success: true, data: planDto(await service.getPlan(scope(req), req.params.planId)) }); }
-    catch (error) { return safeError(res, error); }
+    catch (error) { if (error instanceof ExecutionPlanError && error.code === "PLAN_NOT_FOUND") { try { return res.json({ success: true, data: compositePlanDto(await compositeService.getPlan(scope(req), req.params.planId)) }); } catch (compositeError) { return safeError(res, compositeError); } } return safeError(res, error); }
   });
   app.get("/api/assistant/plans/:planId/status", ...guarded, async (req, res) => {
     try { return res.json({ success: true, data: planDto(await service.getPlan(scope(req), req.params.planId)) }); }
@@ -436,7 +455,14 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       const input = assistantConfirmationRequestSchema.parse(req.body ?? {});
       const result = await service.confirmAndExecute(scope(req), { planId: req.params.planId, expectedVersion: input.expectedPlanVersion, token: input.confirmationToken, context: input.context });
       return res.json({ success: true, data: { plan: planDto(result.plan, Boolean(result.result)), result: result.result ?? null, accepted: true, executionStarted: Boolean(result.result) } });
-    } catch (error) { return safeError(res, error); }
+    } catch (error) {
+      if (!(error instanceof ExecutionPlanError) || error.code !== "PLAN_NOT_FOUND") return safeError(res, error);
+      try {
+        const input = assistantConfirmationRequestSchema.parse(req.body ?? {});
+        const result = await compositeService.confirmAndExecute(scope(req), { planId: req.params.planId, expectedVersion: input.expectedPlanVersion, token: input.confirmationToken, context: input.context });
+        return res.json({ success: true, data: { plan: compositePlanDto(result.plan), result: result.result, accepted: true, executionStarted: true } });
+      } catch (compositeError) { return safeError(res, compositeError); }
+    }
   };
   app.post("/api/assistant/plans/:planId/confirmations", ...guarded, confirm);
   // Retain the Stage 3 singular endpoint as a safe compatibility alias.

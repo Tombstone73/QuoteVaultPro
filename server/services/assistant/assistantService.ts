@@ -14,6 +14,11 @@ import { assistantReportResolutionCancelRequestSchema, assistantReportResolution
 import { AssistantOrchestrationService, type AssistantToolExecutionAudit } from "./orchestration";
 import { ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
+import { AssistantOperatorRuntime, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation } from "./operatorRuntime";
+import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionProvider";
+import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
+import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore } from "./operatorTaskContext";
+import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { productManagementSkillService } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
@@ -229,6 +234,14 @@ export class AssistantService {
     /** Injectable only for composition and isolated routing tests; production
      * always uses the canonical compiler-backed singleton. */
     private readonly productIntentDispatcher: Pick<typeof productManagementSkillService, "respondPlannedCanonicalProductIntent"> = productManagementSkillService,
+    /** Ordinary free text always enters this provider/runtime path. Tests can
+     * supply deterministic decisions without initializing a real provider. */
+    private readonly operatorDecisionProvider: (organizationId: string) => AssistantOperatorDecisionProvider =
+      (organizationId) => new ConfiguredAssistantOperatorDecisionProvider(organizationId, new OpenAiCompatibleBugReviewProvider()),
+    private readonly operatorTasks: AssistantOperatorTaskStore = new DrizzleAssistantOperatorTaskStore(),
+    /** Composite semantic tools are separately injectable so the free-text
+     * integration path can be tested without a database. */
+    private readonly operatorCompositeTool: () => AssistantOperatorSemanticTool = () => createQuoteInternalNoteCompositeSemanticTool(),
   ) {}
 
   async getCapabilities(scope: AssistantScope, actor?: AssistantActor) {
@@ -447,7 +460,75 @@ export class AssistantService {
     }
 
     const correlationId = crypto.randomUUID();
-    return this.createAiFirstTurn({ scope, conversationId, actor, request, correlationId });
+    return this.createOperatorTurn({ scope, conversationId, actor, request, correlationId });
+  }
+
+  /** Primary ordinary free-text path. Exact structured routes never call
+   * createTurn and remain deterministic server actions. The former planner /
+   * specialist path remains below solely as an isolated compatibility path. */
+  private async createOperatorTurn(input: {
+    scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string;
+  }): Promise<AssistantTurnResult> {
+    const { scope, conversationId, actor, request, correlationId } = input;
+    const capability = await this.getCapabilities(scope, actor);
+    if (!capability.toolsEnabled) {
+      return this.persistOperatorResponse(input, { response: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, status: "failed", cards: [{ kind: "provider_unavailable", title: "AI Operator unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }], errorCode: "operator_unavailable", audits: [] });
+    }
+    const conversation = await this.repo.getConversation({ ...scope, conversationId });
+    if (!conversation) throw this.notFound();
+    let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
+    if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
+    const audits: AssistantToolExecutionAudit[] = [];
+    const semanticTools: AssistantOperatorSemanticTool[] = [{
+      name: "products.manage_intent",
+      description: "Start or continue an inactive Product Builder intent from the user's business goal. Arguments: operation optional auto|continue|start_new. Never supplies product IDs, patch paths, or persistence metadata.",
+      execute: async ({ arguments: args, context }) => {
+        const operation = args.operation === "start_new" || args.operation === "continue" ? args.operation : "auto";
+        if (operation === "start_new" && context.task?.canonicalProductIntentProposalId) {
+          return { status: "partial", warning: "An unfinished product task is active.", result: { status: "partial", data: { taskSwitchRequired: true, response: "I have an unfinished product task. Should I keep it and start a separate new product?" } } as any };
+        }
+        const productOperation = operation === "continue" || (operation === "auto" && Boolean(context.task?.canonicalProductIntentProposalId)) ? "continue_session" : "create";
+        const product = await this.productIntentDispatcher.respondPlannedCanonicalProductIntent({
+          organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id,
+          message: context.goal, operation: productOperation,
+        });
+        const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? null;
+        return { status: "succeeded", result: { status: "succeeded", data: { response: product.response, cards: product.cards, proposalId, taskDomain: "products" } } as any };
+      },
+    }, this.operatorCompositeTool()];
+    const runtime = new AssistantOperatorRuntime(this.operatorDecisionProvider(scope.organizationId), createAssistantOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));
+    const run = await runtime.run({
+      goal: request.message,
+      taskId: task.id,
+      initialWorkingSummary: task.workingSummary,
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId } },
+    });
+    const productObservation = [...run.observations].reverse().find((item) => item.toolName === "products.manage_intent" && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
+    const productData = productObservation?.result?.data as { response?: unknown; cards?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
+    const compositeCards = run.observations.flatMap((observation) => observation.presentation?.cards ?? []);
+    const cards = Array.isArray(productData?.cards)
+      ? productData.cards as AssistantStructuredCard[]
+      : [...renderToolResults(run.observations).cards, ...compositeCards];
+    const compositeResponse = [...run.observations].reverse().map((observation) => observation.result?.data).find((data): data is { response?: unknown } => Boolean(data && typeof data === "object" && typeof (data as any).response === "string"));
+    const response = typeof productData?.response === "string" ? productData.response : typeof compositeResponse?.response === "string" ? compositeResponse.response : run.response;
+    const status = run.status === "failed" ? "failed" : "responded" as const;
+    const proposalId = typeof productData?.proposalId === "string" ? productData.proposalId : null;
+    // A completed read-only detour must not close an unfinished authoritative
+    // product task. The task record merely remembers that active intent; it
+    // never duplicates its canonical Product Intent state.
+    const activeStatus = run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId
+      ? "active"
+      : run.status === "completed" ? "completed" : "blocked";
+    await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: {
+      ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : {}),
+      workingSummary: run.safeWorkingSummary,
+      missingInformation: run.missingInformation,
+      ...(proposalId ? { canonicalProductIntentProposalId: proposalId } : {}),
+      lastObservationSummary: run.observations.at(-1)?.warning ?? null,
+      status: activeStatus,
+    } });
+    console.info("[ASSISTANT_OPERATOR_RUNTIME] Ordinary free-text turn handled.", { correlationId, conversationId: conversation.id, taskId: task.id, outcome: run.status, toolCount: run.observations.length, legacyFallback: false });
+    return this.persistOperatorResponse(input, { response, status, cards, errorCode: run.status === "failed" ? "operator_failed" : null, audits });
   }
 
   /**
@@ -614,6 +695,27 @@ export class AssistantService {
       case "payment_operations": return paymentOperationsService.respond(input);
       default: return null;
     }
+  }
+
+  private async persistOperatorResponse(
+    input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string },
+    result: { response: string; status: "responded" | "failed"; errorCode: string | null; cards: AssistantStructuredCard[]; audits: AssistantToolExecutionAudit[] },
+  ): Promise<AssistantTurnResult> {
+    const persisted = await this.persistFoundationTurn({
+      ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message, context: input.request.context,
+      clientRequestId: input.request.clientRequestId, response: result.response, correlationId: input.correlationId, status: result.status,
+      structuredCards: result.cards, initialTitle: titleFromMessage(input.request.message), provider: "operator_runtime", model: null,
+      mode: "ai_operator_runtime", promptVersion: "ai-operator-runtime-v1", errorCode: result.errorCode,
+      errorMessage: result.status === "failed" ? result.response : null,
+      toolExecutions: result.audits.map((audit) => ({
+        toolName: audit.toolName, toolVersion: audit.toolVersion,
+        status: audit.status === "succeeded" || audit.status === "not_found" || audit.status === "partial" ? "succeeded" : audit.status === "rejected" ? "disabled" : "failed",
+        errorCode: audit.failureCode, auditStatus: audit.status, durationMs: audit.durationMs,
+        failureCategory: audit.failureCategory, failingStep: audit.failingStep, coreResultSucceeded: audit.coreResultSucceeded,
+      })),
+    });
+    if (!persisted) throw this.notFound();
+    return persisted;
   }
 
   private async persistAiFirstResponse(input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string }, result: { response: string; status: "responded" | "failed"; errorCode: string | null; cards: AssistantStructuredCard[]; provider?: string | null; model?: string | null }): Promise<AssistantTurnResult> {
