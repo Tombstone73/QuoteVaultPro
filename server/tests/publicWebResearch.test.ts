@@ -19,6 +19,13 @@ describe("public web research boundary", () => {
     expect(calls).toBe(1);
   });
 
+  test("enforces redirect and content-type limits", async () => {
+    const redirects = new PublicWebResearchClient(publicLookup, async () => ({ statusCode: 302, headers: { location: "https://public.test/again" }, body: Buffer.alloc(0) }));
+    await expect(redirects.open("https://public.test/")).rejects.toThrow("redirect limit");
+    const unsupported = new PublicWebResearchClient(publicLookup, async () => ({ statusCode: 200, headers: { "content-type": "image/png" }, body: Buffer.alloc(1) }));
+    await expect(unsupported.open("https://public.test/")).rejects.toThrow("content type");
+  });
+
   test("returns bounded extracted text from a public page", async () => {
     const client = new PublicWebResearchClient(publicLookup, async () => ({ statusCode: 200, headers: { "content-type": "text/html" }, body: Buffer.from("<title>Example</title><script>secret()</script><h1>Hello</h1>") }));
     await expect(client.open("https://example.test/")).resolves.toMatchObject({ domain: "example.test", title: "Example", text: "Example Hello", truncated: false });
