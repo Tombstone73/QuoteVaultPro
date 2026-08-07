@@ -7,7 +7,7 @@ jest.mock("@/lib/apiConfig", () => ({ apiUrl: (path: string) => path }));
 jest.mock("./AssistantWorkspaceProvider", () => ({ useAssistantWorkspace: () => ({}) }));
 jest.mock("@/hooks/useAssistantApi", () => ({ useSubmitAssistantOrderOptionSelections: () => ({ mutate: jest.fn(), isPending: false, isError: false }) }));
 
-import { ResultCards, responsePresentationForCards } from "./AssistantWorkspace";
+import { AssistantMessageContent, ResultCards, responsePresentationForCards } from "./AssistantWorkspace";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -26,6 +26,21 @@ function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlati
 
 describe("Assistant workspace presentation", () => {
   afterEach(() => document.body.innerHTML = "");
+
+  test("renders intentional multi-record line breaks without interpreting assistant text as HTML", () => {
+    const content = "**QT-910322**\nCustomer: Test customer\n\n**QT-910321**\nCustomer: 55 Twin Lane";
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => root.render(<AssistantMessageContent content={content} />));
+
+    const message = container.querySelector("[data-testid='assistant-message-content']") as HTMLDivElement;
+    expect(message).not.toBeNull();
+    expect(message.className).toContain("whitespace-pre-wrap");
+    expect(message.textContent).toBe(content);
+    expect(message.innerHTML).not.toContain("<strong>");
+    act(() => root.unmount());
+  });
 
   test("keeps current-record answers conversational and hides the tool name", () => {
     const { container, root } = render([

@@ -7,6 +7,8 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const generateJson = jest.fn(async (request: any) => {
       expect(request.system).toContain("A direct complete response is a first-class outcome");
+      expect(request.system).toContain("Treat a user's requested presentation as part of the goal");
+      expect(request.system).toContain("If multiple records share the extreme value");
       const body = JSON.parse(request.user);
       expect(body.goal).toBe("all 5");
       expect(body.observations).toEqual([]);
@@ -14,7 +16,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
         toolName: "quotes.search",
         data: expect.objectContaining({ totalMatchingQuotes: 5 }),
       })]);
-      return { rawText: JSON.stringify({ kind: "complete", response: "QT-1\nQT-2\nQT-3\nQT-4\nQT-5" }) };
+      return { rawText: JSON.stringify({ kind: "complete", response: "**QT-1**\nCustomer: Acme\n\n**QT-2**\nCustomer: Beta" }) };
     });
     const provider = new ConfiguredAssistantOperatorDecisionProvider(
       "org_1",
@@ -44,7 +46,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       },
     });
 
-    expect(decision).toEqual({ kind: "complete", response: "QT-1\nQT-2\nQT-3\nQT-4\nQT-5" });
+    expect(decision).toEqual({ kind: "complete", response: "**QT-1**\nCustomer: Acme\n\n**QT-2**\nCustomer: Beta" });
     expect(generateJson).toHaveBeenCalledTimes(1);
   });
 });

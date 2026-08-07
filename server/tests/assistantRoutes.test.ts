@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globa
 import express from "express";
 import request from "supertest";
 
+process.env.DATABASE_URL ??= "postgresql://readonly:readonly@127.0.0.1:1/quotevault_test";
 
 jest.unstable_mockModule("../tenantContext", () => ({
   getRequestOrganizationId: (req: any) => req.organizationId,
@@ -254,6 +255,24 @@ describe("assistant routes", () => {
       expect.objectContaining({ userId: "user_1" }),
       expect.objectContaining({ context: expect.not.objectContaining({ organizationId: expect.anything() }) }),
     );
+  });
+
+  test("serializes a multiline operator response without flattening its content", async () => {
+    const service = buildService();
+    const multiline = "**QT-910322**\nCustomer: Test customer\n\n**QT-910321**\nCustomer: 55 Twin Lane";
+    service.createTurn.mockResolvedValue({
+      turnId: "turn_1",
+      correlationId: "correlation_1",
+      status: "responded",
+      conversation,
+      userMessage: { id: "message_1", conversationId: conversation.id, turnId: "turn_1", role: "user", content: "Format these quotes", createdAt: new Date(NOW) },
+      assistantMessage: { id: "message_2", conversationId: conversation.id, turnId: "turn_1", role: "assistant", content: multiline, structuredCards: [], createdAt: new Date(NOW) },
+    });
+    const { app } = buildApp(service);
+
+    const response = await request(app).post("/api/assistant/conversations/conversation_1/turns").send(turnBody()).expect(201);
+
+    expect(response.body.data.message.content).toBe(multiline);
   });
 
   test("disabled assistant rejects turns without calling any provider or domain dependency", async () => {
