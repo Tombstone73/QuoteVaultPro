@@ -4,6 +4,8 @@ export {
   analyticsCustomerProductSalesResultSchema,
   analyticsCustomerUninvoicedOrdersInputSchema,
   analyticsCustomerUninvoicedOrdersResultSchema,
+  analyticsInvoiceActivityInputSchema,
+  analyticsInvoiceActivityResultSchema,
   analyticsResolveCustomerInputSchema,
   analyticsResolveCustomerResultSchema,
 } from "./aiReportingContracts";
@@ -49,6 +51,7 @@ export const assistantToolNameValues = [
   "analytics.resolve_customer",
   "analytics.customer_product_sales",
   "analytics.customer_uninvoiced_orders",
+  "analytics.invoice_activity",
 ] as const;
 export const assistantPlannerIntentValues = ["lookup", "operational_summary", "production_reporting", "analytical_reporting", "navigation", "unsupported_write", "clarification"] as const;
 /** Reporting scope is independent from tool selection. Keeping it typed avoids

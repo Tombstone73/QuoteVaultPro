@@ -8,6 +8,7 @@ export const analyticsRankingMetricValues = ["revenue", "quantity", "invoice_cou
 /** Financial reporting is deliberately labelled at the point it is persisted.
  * Operational order value is never recognized revenue. */
 export const analyticsFinancialSourceValues = ["posted_revenue", "order_value", "combined_pipeline_view"] as const;
+export const analyticsInvoiceStatusValues = ["finalized", "billed", "sent", "partially_paid", "overdue", "paid"] as const;
 
 export const analyticsDateRangeSchema = z.object({
   start: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
@@ -97,6 +98,36 @@ export const analyticsCustomerUninvoicedOrdersResultSchema = z.object({
   dateRange: analyticsDateRangeSchema,
   totalOrderValueCents: z.number().int().nonnegative(),
   orders: z.array(analyticsCustomerUninvoicedOrderSchema).max(25),
+  warnings: z.array(z.string().trim().min(1).max(300)).max(10),
+  timezone: z.string().trim().min(1).max(80),
+}).strict();
+
+/** Generic released invoice facts for AI-authored analysis. This is not a
+ * report: it contains no server-selected KPIs, rankings, or conclusions. */
+export const analyticsInvoiceActivityInputSchema = z.object({
+  dateRange: analyticsDateRangeSchema,
+  statuses: z.array(z.enum(analyticsInvoiceStatusValues)).min(1).max(analyticsInvoiceStatusValues.length).optional(),
+  customerId: z.string().trim().min(1).max(128).optional(),
+  limit: z.number().int().min(1).max(200).default(200),
+}).strict();
+export const analyticsInvoiceActivityRowSchema = z.object({
+  invoiceId: z.string().trim().min(1).max(128),
+  invoiceNumber: z.string().trim().min(1).max(80),
+  customerId: z.string().trim().min(1).max(128),
+  customerName: z.string().trim().min(1).max(240),
+  postedAt: z.string().datetime({ offset: true }),
+  dueAt: z.string().datetime({ offset: true }).nullable(),
+  status: z.enum(analyticsInvoiceStatusValues),
+  totalCents: z.number().int().nonnegative(),
+  amountPaidCents: z.number().int().nonnegative(),
+  balanceDueCents: z.number().int().nonnegative(),
+  currency: z.string().trim().min(1).max(8),
+  sourceLink: z.object({ label: z.string(), href: z.string().startsWith("/") }).strict(),
+}).strict();
+export const analyticsInvoiceActivityResultSchema = z.object({
+  dateRange: analyticsDateRangeSchema,
+  invoices: z.array(analyticsInvoiceActivityRowSchema).max(200),
+  truncated: z.boolean(),
   warnings: z.array(z.string().trim().min(1).max(300)).max(10),
   timezone: z.string().trim().min(1).max(80),
 }).strict();

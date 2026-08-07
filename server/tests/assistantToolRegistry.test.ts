@@ -54,6 +54,7 @@ describe("assistant tool registry", () => {
       "analytics.resolve_customer",
       "analytics.customer_product_sales",
       "analytics.customer_uninvoiced_orders",
+      "analytics.invoice_activity",
     ]);
     for (const tool of registry.values()) {
       expect(tool.readOnly).toBe(true);

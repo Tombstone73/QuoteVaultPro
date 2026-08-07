@@ -184,9 +184,16 @@ export type InvoiceListSortDir = 'asc' | 'desc';
 export interface ListInvoicesForOrganizationOptions {
   organizationId: string;
   status?: string;
+  /** A bounded allowlist used by analytical consumers. It is still combined
+   * with the trusted organization predicate below. */
+  statuses?: readonly string[];
   customerId?: string;
   orderId?: string;
   search?: string;
+  /** Inclusive/exclusive window over the canonical posted-or-issued timestamp.
+   * These values are server-created Dates, never a model-authored query. */
+  issuedAtStart?: Date;
+  issuedAtEndExclusive?: Date;
   sortBy?: string;
   sortDir?: string;
   limit?: number;
@@ -279,15 +286,19 @@ function invoiceListSortExpression(sortBy: InvoiceListSortBy, organizationId: st
 export async function listInvoicesForOrganization(
   opts: ListInvoicesForOrganizationOptions,
 ): Promise<EnrichedInvoiceListItem[]> {
-  const limit = Math.min(Math.max(Number(opts.limit || 50), 1), 200);
+  const limit = Math.min(Math.max(Number(opts.limit || 50), 1), 201);
   const offset = Math.max(Number(opts.offset || 0), 0);
   const sortBy = normalizeInvoiceListSortBy(opts.sortBy);
   const sortDir = normalizeInvoiceListSortDir(opts.sortDir);
 
   const whereClauses: any[] = [eq(invoices.organizationId, opts.organizationId)];
-  if (opts.status) whereClauses.push(eq(invoices.status, opts.status));
+  if (opts.statuses?.length) whereClauses.push(inArray(invoices.status, [...opts.statuses]));
+  else if (opts.status) whereClauses.push(eq(invoices.status, opts.status));
   if (opts.customerId) whereClauses.push(eq(invoices.customerId, opts.customerId));
   if (opts.orderId) whereClauses.push(eq(invoices.orderId, opts.orderId));
+  const postedOrIssuedAt = sql<Date>`coalesce(${invoices.issuedAt}, ${invoices.issueDate})`;
+  if (opts.issuedAtStart) whereClauses.push(sql`${postedOrIssuedAt} >= ${opts.issuedAtStart}`);
+  if (opts.issuedAtEndExclusive) whereClauses.push(sql`${postedOrIssuedAt} < ${opts.issuedAtEndExclusive}`);
 
   const search = String(opts.search || '').trim();
   if (search) {
