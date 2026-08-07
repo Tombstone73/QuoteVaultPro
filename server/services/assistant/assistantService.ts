@@ -576,7 +576,7 @@ export class AssistantService {
       },
     }, {
       name: "analysis.run",
-      description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program of filter, project, group, sort, limit, and summarize operations. It cannot run code, SQL, network, filesystem, or application-service access.",
+      description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
       execute: async ({ arguments: args, context }) => {
         try {
           const data = runOperatorAnalysis(args, context);
