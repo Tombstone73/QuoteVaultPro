@@ -68,6 +68,16 @@ describe("assistant quote search tool", () => {
     expect(repository.search).toHaveBeenLastCalledWith("org_allowed", { customer: "Acme", lifecycle: "open" });
   });
 
+  test("uses newest-created ordering by default and makes absent sent timestamps explicit", async () => {
+    const tool = createQuoteSearchTool(repository);
+    await tool.execute({ scope: { organizationId: "org_allowed", userId: "user_1" } }, {});
+    expect(repository.search).toHaveBeenLastCalledWith("org_allowed", {});
+
+    const sent = await tool.execute({ scope: { organizationId: "org_allowed", userId: "user_1" } }, { status: "sent", sort: "newest", limit: 5 });
+    expect(repository.search).toHaveBeenLastCalledWith("org_allowed", { status: "sent", sort: "newest", limit: 5 });
+    expect(sent.data.appliedFilters).toEqual({ status: "sent", recencyField: "createdAt", sentAtAvailable: false });
+  });
+
   test("returns a normal successful zero-result envelope", async () => {
     const empty = { search: jest.fn(async () => ({ totalMatchingQuotes: 0, quotes: [] })) };
     const result = await createQuoteSearchTool(empty).execute({ scope: { organizationId: "org_allowed", userId: "user_1" } }, { lifecycle: "open" });
