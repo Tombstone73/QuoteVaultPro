@@ -45,6 +45,7 @@ describe("assistant tool registry", () => {
       "customers.get_summary",
       "orders.get_summary",
       "products.get_summary",
+      "products.get_pricing",
       "reports.operational_summary",
       "navigation.get_current_context",
       "production.get_queue_summary",
@@ -68,6 +69,12 @@ describe("assistant tool registry", () => {
     const orderSummary = createAssistantToolRegistry().get("orders.get_summary")!;
     expect(orderSummary.timeoutMs).toBe(5_000);
     expect(orderSummary.timeoutMs).toBeLessThanOrEqual(ASSISTANT_PLATFORM_MAX_TOOL_TIMEOUT_MS);
+  });
+
+  test("keeps authoritative product pricing behind finance-read permission", () => {
+    const pricing = createAssistantToolRegistry().get("products.get_pricing")!;
+    expect(pricing).toMatchObject({ requiredPermission: "finance_read", readOnly: true, dataClassification: "restricted_finance", timeoutMs: 5_000 });
+    expect(() => pricing.inputSchema.parse({ query: "Banner", organizationId: "other-org" })).toThrow();
   });
 
   test("normalizes only a safe numeric order summary number at the registered-tool boundary", () => {

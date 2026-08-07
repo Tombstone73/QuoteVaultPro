@@ -42,6 +42,7 @@ export const assistantToolNameValues = [
   "customers.get_summary",
   "orders.get_summary",
   "products.get_summary",
+  "products.get_pricing",
   "reports.operational_summary",
   "navigation.get_current_context",
   "production.get_queue_summary",
@@ -473,6 +474,31 @@ export const assistantProductSummaryResultSchema = z.object({
   materialSummary: z.array(z.string().trim().min(1).max(240)).max(20).optional(),
   optionSummary: z.string().trim().min(1).max(1_000).optional(),
   productionRoutingSummary: z.string().trim().min(1).max(1_000).optional(),
+}).strict();
+
+export const assistantProductPricingInputSchema = z.object({
+  productId: assistantSafeIdentifierSchema.optional(),
+  query: z.string().trim().min(1).max(160).optional(),
+  quantity: z.number().int().min(1).max(100_000).optional(),
+  widthIn: z.number().finite().positive().max(10_000).optional(),
+  heightIn: z.number().finite().positive().max(10_000).optional(),
+  optionSelections: z.record(z.unknown()).optional(),
+}).strict().refine((value) => Boolean(value.productId || value.query), {
+  message: "productId or query is required",
+});
+export const assistantProductPricingResultSchema = z.object({
+  product: assistantEntitySummarySchema,
+  active: z.boolean(),
+  pricing: z.object({
+    status: z.enum(["priced", "requires_input", "unavailable"]),
+    pricingMethod: z.string().trim().min(1).max(160).nullable(),
+    treeVersionId: assistantSafeIdentifierSchema.nullable(),
+    quantity: z.number().int().positive(),
+    dimensions: z.object({ widthIn: z.number().finite().positive(), heightIn: z.number().finite().positive() }).strict().nullable(),
+    totalCents: z.number().int().nonnegative().nullable(),
+    averageUnitCents: z.number().int().nonnegative().nullable(),
+    message: z.string().trim().min(1).max(500),
+  }).strict(),
 }).strict();
 
 export const assistantOperationalSummaryInputSchema = z.object({

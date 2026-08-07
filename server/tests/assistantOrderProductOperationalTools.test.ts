@@ -237,6 +237,40 @@ describe("assistant order/product/operational tools", () => {
     expect(result.sourceLinks[0]?.href).toBe("/products/product-1/edit");
   });
 
+  test("projects tenant-scoped authoritative PBV2 pricing without exposing the tree", async () => {
+    const projectProductPrice = jest.fn(async () => ({
+      pbv2TreeVersionId: "tree-1",
+      lineTotalCents: 5400,
+      breakdown: { pricingMethod: "per_piece" },
+      pbv2SnapshotJson: { pricing: { pricingMethod: "per_piece" }, dimensions: { widthIn: 36, heightIn: 72 } },
+    }));
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice });
+
+    const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", quantity: 3, widthIn: 36, heightIn: 72, optionSelections: { finishing: { value: "grommets" } } });
+
+    expect(projectProductPrice).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org-a", productId: "product-1", quantity: 3, widthIn: 36, heightIn: 72 }));
+    expect(result.data.pricing).toMatchObject({ status: "priced", treeVersionId: "tree-1", totalCents: 5400, averageUnitCents: 1800, dimensions: { widthIn: 36, heightIn: 72 } });
+    expect(JSON.stringify(result.data)).not.toContain("treeJson");
+  });
+
+  test("does not fabricate a price when PBV2 needs a scenario", async () => {
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice: jest.fn(async () => { throw new Error("dimensions required"); }) });
+
+    const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes" });
+
+    expect(result.data.pricing).toMatchObject({ status: "requires_input", totalCents: null, averageUnitCents: null });
+  });
+
+  test("does not disclose another tenant's product pricing", async () => {
+    const projectProductPrice = jest.fn();
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice });
+
+    const result = await tools.productsGetPricing.execute({ ...invocation, organizationId: "org-b" }, { productId: "product-1" });
+
+    expect(result).toMatchObject({ status: "not_found", data: { product: null } });
+    expect(projectProductPrice).not.toHaveBeenCalled();
+  });
+
   test("operational summary preserves only canonical service metrics", async () => {
     const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, getOperationalSummary: async () => ({ inboundOrders: 2, overview: 4, design: 1, proofing: 3, prepress: 5, flatbed: 2, roll: 1, fulfillment: 7, invoices: { pendingSend: 8, unpaid: 9 } }) });
     const result = await tools.reportsOperationalSummary.execute(invocation, {});

@@ -9,6 +9,8 @@ import {
   assistantOrderSummaryResultSchema,
   assistantProductSummaryInputSchema,
   assistantProductSummaryResultSchema,
+  assistantProductPricingInputSchema,
+  assistantProductPricingResultSchema,
   assistantSourceLinkSchema,
   type AssistantContextEnvelope,
   type AssistantToolResultEnvelope,
@@ -39,6 +41,17 @@ export const orderSummaryToolInputSchema = z.object({
 export const productSummaryToolInputSchema = z.object({
   productId: identifierSchema.optional(),
   query: z.string().trim().min(1).max(160).optional(),
+}).strict().refine((value) => Boolean(value.productId || value.query), {
+  message: "A product ID or product name is required",
+});
+
+export const productPricingToolInputSchema = z.object({
+  productId: identifierSchema.optional(),
+  query: z.string().trim().min(1).max(160).optional(),
+  quantity: z.number().int().min(1).max(100_000).optional(),
+  widthIn: z.number().finite().positive().max(10_000).optional(),
+  heightIn: z.number().finite().positive().max(10_000).optional(),
+  optionSelections: z.record(z.unknown()).optional(),
 }).strict().refine((value) => Boolean(value.productId || value.query), {
   message: "A product ID or product name is required",
 });
@@ -135,6 +148,20 @@ export const productSummaryToolResultSchema = toolEnvelopeSchema(z.object({
   }).nullable(),
 }).strict());
 
+export const productPricingToolResultSchema = toolEnvelopeSchema(z.object({
+  product: z.object({ id: identifierSchema, name: z.string().min(1).max(255), active: z.boolean(), pricingMethod: z.string().min(1) }).nullable(),
+  pricing: z.object({
+    status: z.enum(["priced", "requires_input", "unavailable"]),
+    pricingMethod: z.string().min(1).max(160).nullable(),
+    treeVersionId: identifierSchema.nullable(),
+    quantity: z.number().int().positive(),
+    dimensions: z.object({ widthIn: z.number().finite().positive(), heightIn: z.number().finite().positive() }).strict().nullable(),
+    totalCents: z.number().int().nonnegative().nullable(),
+    averageUnitCents: z.number().int().nonnegative().nullable(),
+    message: z.string().min(1).max(500),
+  }).strict(),
+}).strict());
+
 export const operationalSummaryToolResultSchema = toolEnvelopeSchema(z.object({
   timezone: z.string().min(1),
   metrics: z.array(z.object({
@@ -203,7 +230,7 @@ export type AssistantToolTrustedInvocation = {
 };
 
 type ToolDefinition<TInput extends z.ZodTypeAny, TResult extends z.ZodTypeAny> = {
-  name: "orders.get_summary" | "products.get_summary" | "reports.operational_summary" | "navigation.get_current_context";
+  name: "orders.get_summary" | "products.get_summary" | "products.get_pricing" | "reports.operational_summary" | "navigation.get_current_context";
   version: "stage-2";
   readOnly: true;
   inputSchema: TInput;
@@ -227,6 +254,12 @@ export interface AssistantOrderProductToolDependencies {
   logOrderSummaryStep?: (event: OrderSummaryStepLog) => void;
   /** Bound each independent optional read so it cannot consume the core tool deadline. */
   optionalOrderEnrichmentTimeoutMs?: number;
+  projectProductPrice?: (input: { organizationId: string; productId: string; quantity: number; widthIn?: number; heightIn?: number; pbv2ExplicitSelections: Record<string, unknown> }) => Promise<{
+    pbv2TreeVersionId: string;
+    lineTotalCents: number;
+    breakdown: { pricingMethod?: string };
+    pbv2SnapshotJson: { pricing?: { pricingMethod?: string }; dimensions?: { widthIn?: number; heightIn?: number } };
+  }>;
 }
 
 type OrderSummaryStep = "normalize_input" | "lookup_core_order" | "lookup_customer" | "lookup_line_items" | "enrich_production" | "enrich_fulfillment" | "enrich_artwork" | "enrich_billing" | "build_result" | "validate_result" | "return_result";
@@ -500,6 +533,15 @@ function productionOverview(production: Array<z.infer<typeof normalizedProductio
 
 export function createOrderProductOperationalTools(deps: AssistantOrderProductToolDependencies = {}) {
   const repository = deps.repository ?? new AssistantOrderProductRepository();
+  const projectProductPrice = deps.projectProductPrice ?? (async (input) => {
+    const { priceLineItem } = await import("../pricing/PricingService");
+    return priceLineItem(input) as Promise<{
+      pbv2TreeVersionId: string;
+      lineTotalCents: number;
+      breakdown: { pricingMethod?: string };
+      pbv2SnapshotJson: { pricing?: { pricingMethod?: string }; dimensions?: { widthIn?: number; heightIn?: number } };
+    }>;
+  });
   const customerRepository = new DrizzleAssistantSearchCustomerRepository();
   const quoteRepository = new QuoteInternalNotesRepository();
   const getCustomerContext = deps.getCustomerContext ?? ((organizationId, customerId) =>
@@ -632,6 +674,72 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
     },
   };
 
+  const productsGetPricing: Tool<typeof productPricingToolInputSchema, typeof productPricingToolResultSchema> = {
+    definition: { name: "products.get_pricing", version: "stage-2", readOnly: true, inputSchema: productPricingToolInputSchema, resultSchema: productPricingToolResultSchema, maximumResultCount: 1 },
+    async execute(invocation, rawInput) {
+      const input = productPricingToolInputSchema.parse(rawInput);
+      const record = await repository.getProduct(invocation.organizationId, input);
+      const retrievedAt = now();
+      if (!record) return productPricingToolResultSchema.parse({
+        status: "not_found",
+        data: { product: null, pricing: { status: "unavailable", pricingMethod: null, treeVersionId: null, quantity: input.quantity ?? 1, dimensions: null, totalCents: null, averageUnitCents: null, message: "No tenant-scoped product matched that reference." } },
+        sourceLinks: [], freshness: notFoundFreshness(retrievedAt),
+      });
+      const quantity = input.quantity ?? 1;
+      const pricingMethod = record.product.pricingProfileKey ?? record.product.pricingEngine ?? record.product.pricingMode;
+      const sourceLinks = [{ label: record.product.name, href: `/products/${record.product.id}/edit`, entityType: "product" as const, entityId: record.product.id, capturedAt: toIso(record.product.updatedAt) ?? retrievedAt.toISOString() }];
+      try {
+        const projection = await projectProductPrice({
+          organizationId: invocation.organizationId,
+          productId: record.product.id,
+          quantity,
+          ...(input.widthIn ? { widthIn: input.widthIn } : {}),
+          ...(input.heightIn ? { heightIn: input.heightIn } : {}),
+          pbv2ExplicitSelections: input.optionSelections ?? {},
+        });
+        const dimensions = projection.pbv2SnapshotJson.dimensions;
+        const widthIn = Number(dimensions?.widthIn);
+        const heightIn = Number(dimensions?.heightIn);
+        return productPricingToolResultSchema.parse({
+          status: "ok",
+          data: {
+            product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod },
+            pricing: {
+              status: "priced",
+              pricingMethod: projection.breakdown.pricingMethod ?? projection.pbv2SnapshotJson.pricing?.pricingMethod ?? pricingMethod,
+              treeVersionId: projection.pbv2TreeVersionId,
+              quantity,
+              dimensions: Number.isFinite(widthIn) && widthIn > 0 && Number.isFinite(heightIn) && heightIn > 0 ? { widthIn, heightIn } : null,
+              totalCents: projection.lineTotalCents,
+              averageUnitCents: Math.round(projection.lineTotalCents / quantity),
+              message: "Authoritative PBV2 pricing projection for the requested scenario.",
+            },
+          },
+          sourceLinks, freshness: { retrievedAt: retrievedAt.toISOString() },
+        });
+      } catch {
+        const missingScenarioInput = input.widthIn == null || input.heightIn == null;
+        return productPricingToolResultSchema.parse({
+          status: "ok",
+          data: {
+            product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod },
+            pricing: {
+              status: missingScenarioInput ? "requires_input" : "unavailable",
+              pricingMethod,
+              treeVersionId: record.product.pbv2ActiveTreeVersionId ?? null,
+              quantity,
+              dimensions: input.widthIn && input.heightIn ? { widthIn: input.widthIn, heightIn: input.heightIn } : null,
+              totalCents: null,
+              averageUnitCents: null,
+              message: missingScenarioInput ? "This product needs a size and possibly pricing options before PBV2 can calculate an authoritative customer price." : "PBV2 could not calculate an authoritative customer price for that scenario.",
+            },
+          },
+          sourceLinks, freshness: { retrievedAt: retrievedAt.toISOString() },
+        });
+      }
+    },
+  };
+
   const reportsOperationalSummary: Tool<typeof operationalSummaryToolInputSchema, typeof operationalSummaryToolResultSchema> = {
     definition: { name: "reports.operational_summary", version: "stage-2", readOnly: true, inputSchema: operationalSummaryToolInputSchema, resultSchema: operationalSummaryToolResultSchema, maximumResultCount: 10 },
     async execute(invocation, rawInput) {
@@ -681,7 +789,7 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
     },
   };
 
-  return { ordersGetSummary, productsGetSummary, reportsOperationalSummary, navigationGetCurrentContext };
+  return { ordersGetSummary, productsGetSummary, productsGetPricing, reportsOperationalSummary, navigationGetCurrentContext };
 }
 
 /**
@@ -769,6 +877,22 @@ export function createStage2OrderProductToolAdapters(
           ...(result.data.materials.length ? { materialSummary: result.data.materials.map((material) => material.sku ? `${material.name} (${material.sku})` : material.name) } : {}),
           ...(result.data.options.length ? { optionSummary: `${result.data.options.length} option${result.data.options.length === 1 ? "" : "s"}; ${result.data.options.filter((option) => option.active).length} active.` } : {}),
           productionRoutingSummary: `${result.data.productionRouting?.requiresProductionJob ? "Requires" : "Does not require"} a production job; ${result.data.productionRouting?.requiresProofApproval ? "proof approval required" : "proof approval not required"}; artwork ${result.data.productionRouting?.artworkPolicy ?? "not configured"}.`,
+        });
+        return succeeded(data, result.sourceLinks, freshness);
+      },
+    },
+    "products.get_pricing": {
+      async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        const input = assistantProductPricingInputSchema.parse(rawInput);
+        const result = await tools.productsGetPricing.execute(toInvocation(context), input);
+        if (result.status === "not_found" || !result.data.product) return { status: "not_found", data: null };
+        const product = result.data.product;
+        const freshness = result.freshness.retrievedAt;
+        const sourceLink = result.sourceLinks[0]!;
+        const data = assistantProductPricingResultSchema.parse({
+          product: entitySummary("product", product.id, product.name, product.active ? "active" : "inactive", sourceLink, freshness, product.pricingMethod),
+          active: product.active,
+          pricing: result.data.pricing,
         });
         return succeeded(data, result.sourceLinks, freshness);
       },
