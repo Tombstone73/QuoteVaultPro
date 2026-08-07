@@ -450,6 +450,10 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
             { type: "web_search" },
           ],
           tool_choice: "auto",
+          // Responses enables thinking by default. The operator requires a
+          // bounded visible JSON decision; otherwise reasoning can consume
+          // the response budget before the native web result is expressed.
+          reasoning: { effort: "none" },
           text: { format: { type: "json_object" } },
           max_output_tokens: resolveAiJsonMaxTokens(request.maxTokens),
         }),
@@ -467,23 +471,45 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       }
       const providerRequestId = providerRequestIdFromHeaders(response.headers) ?? providerRequestIdFromBody(body);
       const output = Array.isArray(body?.output) ? body.output : [];
+      const responseStatus = typeof body?.status === "string" ? body.status : "unknown";
+      const incompleteReason = typeof body?.incomplete_details?.reason === "string" ? body.incomplete_details.reason : null;
+      const providerErrorCode = typeof body?.error?.code === "string" ? body.error.code : null;
+      const outputItemTypes = output.slice(0, 32).map((item: any) => typeof item?.type === "string" ? item.type.slice(0, 80) : "unknown");
+      const outputItemStatuses = output.slice(0, 32).map((item: any) => typeof item?.status === "string" ? item.status.slice(0, 80) : "unknown");
       const functionCalls = output.filter((item: any) => item?.type === "function_call" && typeof item.name === "string" && typeof item.arguments === "string" && providerFunctionNames.has(item.name));
-      const webSearchActions = output.filter((item: any) => item?.type === "web_search_call" && item.action && typeof item.action === "object").map((item: any) => item.action);
+      const nativeWebSearchCalls = output.filter((item: any) => item?.type === "web_search_call");
+      const webSearchActions = nativeWebSearchCalls.filter((item: any) => item.action && typeof item.action === "object").map((item: any) => item.action);
       const webSources = nativeWebSources(output);
       const finalText = output.filter((item: any) => item?.type === "message").flatMap((item: any) => Array.isArray(item.content) ? item.content : []).filter((part: any) => part?.type === "output_text" && typeof part.text === "string").map((part: any) => part.text).join("\n");
+      if (responseStatus !== "unknown" && responseStatus !== "completed") {
+        const failureKind = responseStatus === "incomplete" && incompleteReason === "max_output_tokens" ? "truncated_output" : "malformed_response";
+        logProviderFailure({ message: "[AI_PROVIDER] DeepSeek Responses Operator did not reach a terminal completion.", provider: config.provider, model: config.model, endpoint, status: response.status, providerRequestId, providerErrorCode, failureKind, timeoutMs, elapsedMs: Date.now() - started, feature: request.feature, useCase: request.timeoutUseCase ?? request.feature });
+        throw new AiProviderResponseError({ kind: failureKind, status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek Responses did not return a complete Operator result." });
+      }
       const rawText = functionCalls.length
         ? JSON.stringify({ kind: "call_tools", calls: functionCalls.map((item: any) => ({ toolName: providerFunctionNames.get(item.name), arguments: (() => { try { const parsed = JSON.parse(item.arguments); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}; } catch { return {}; } })() })), workingSummary: "Continuing authorized investigation." })
-        : finalText || (webSearchActions.length
+        : finalText || (nativeWebSearchCalls.length
           ? JSON.stringify({ kind: "continue", workingSummary: "Continuing public research." })
           : "");
       if (!rawText.trim()) throw new AiProviderResponseError({ kind: "empty_response", status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek Responses did not include a usable function call, web-search continuation, or final answer." });
       console.info("[AI_PROVIDER] DeepSeek Responses Operator result.", {
         model: config.model,
         apiSurface: "deepseek_responses",
+        requestSequence: request.operatorRequestSequence ?? null,
+        responseStatus,
+        responseId: safeProviderDiagnosticToken(body?.id),
+        httpStatus: response.status,
+        outputItemCount: output.length,
+        outputItemTypes,
+        outputItemStatuses,
         functionCallCount: functionCalls.length,
+        functionAliases: functionCalls.map((item: any) => item.name).slice(0, 12),
+        nativeWebSearchCallCount: nativeWebSearchCalls.length,
         nativeWebSearchActionCount: webSearchActions.length,
         nativeWebSourceCount: webSources.length,
-        disposition: functionCalls.length ? "function_calls" : webSearchActions.length && !finalText ? "native_web_continuation" : "direct_completion",
+        messageOutputTextPresent: Boolean(finalText),
+        continuationReason: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !finalText ? "native_web_activity" : null,
+        parseClassification: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !finalText ? "native_web_continuation" : finalText ? "direct_completion" : "empty_response",
       });
       return {
         rawText,
@@ -493,7 +519,13 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
           latencyMs: Date.now() - started, promptVersion: request.promptVersion, mode: config.mode, source: config.source,
           providerRequestId, providerResponseId: safeProviderDiagnosticToken(body?.id), usage: body?.usage ?? null,
           apiSurface: "deepseek_responses", toolChoice: "auto", nativeWebSearch: true,
-          nativeWebSearchActionCount: webSearchActions.length,
+          requestSequence: request.operatorRequestSequence ?? null, responseStatus, httpStatus: response.status,
+          outputItemCount: output.length, outputItemTypes, outputItemStatuses,
+          functionAliases: functionCalls.map((item: any) => item.name).slice(0, 12),
+          messageOutputTextPresent: Boolean(finalText),
+          continuationReason: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !finalText ? "native_web_activity" : null,
+          parseClassification: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !finalText ? "native_web_continuation" : finalText ? "direct_completion" : "empty_response",
+          nativeWebSearchCallCount: nativeWebSearchCalls.length, nativeWebSearchActionCount: webSearchActions.length,
           nativeWebSources: webSources,
           timeoutMs, timeoutUseCase: request.timeoutUseCase ?? request.feature,
         },

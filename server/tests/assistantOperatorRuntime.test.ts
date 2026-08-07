@@ -63,6 +63,20 @@ describe("AssistantOperatorRuntime", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  test("allows multiple provider-native web continuations before a final answer", async () => {
+    const provider: AssistantOperatorDecisionProvider = {
+      decide: jest.fn(async ({ step }) => step < 3
+        ? { kind: "continue", workingSummary: "Continuing public research." }
+        : { kind: "complete", response: "I completed the multi-source public research." }),
+    };
+    const execute = jest.fn(async () => { throw new Error("native web research is not a PrintersHero function"); });
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Research several current printable sidewalk vinyl options.", taskId: "task_multi_web", trustedContext });
+
+    expect(result).toMatchObject({ status: "completed", response: "I completed the multi-source public research." });
+    expect(provider.decide).toHaveBeenCalledTimes(3);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   test("keeps successful observations available after a later tool failure", async () => {
     const provider: AssistantOperatorDecisionProvider = {
       decide: async ({ observations }) => observations.length === 0

@@ -1,4 +1,5 @@
 import { describe, expect, jest, test } from "@jest/globals";
+import { AiProviderResponseError } from "../services/ai/providers/AiProviderAdapter";
 
 process.env.DATABASE_URL ??= "postgresql://readonly:readonly@127.0.0.1:1/quotevault_test";
 
@@ -68,6 +69,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       expect.objectContaining({ type: "function_call", call_id: "call_1" }),
       expect.objectContaining({ type: "function_call_output", call_id: "call_1" }),
     ]));
+    expect(generateOperatorDecision.mock.calls.map((call) => call[0].operatorRequestSequence)).toEqual([1, 2]);
     expect(generateOperatorDecision).toHaveBeenCalledTimes(2);
   });
 
@@ -85,5 +87,16 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     expect(await provider.decide({ ...base, step: 1, observations: [] })).toEqual({ kind: "continue", workingSummary: "Continuing public research." });
     expect(await provider.decide({ ...base, step: 2, observations: [] })).toEqual({ kind: "complete", response: "Here are the current options.\n\nSources:\n- Supplier: https://example.com/vinyl" });
     expect(generateOperatorDecision.mock.calls[1]?.[0].responseContinuation).toEqual([expect.objectContaining({ type: "web_search_call" })]);
+  });
+
+  test("converts a typed incomplete provider result into a useful safe failure", async () => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const provider = new ConfiguredAssistantOperatorDecisionProvider(
+      "org_1", { generateJson: jest.fn(), generateOperatorDecision: jest.fn(async () => { throw new AiProviderResponseError({ kind: "truncated_output", message: "hidden provider detail" }); }) } as any,
+      { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "test", model: "deepseek-v4-flash" })) } as any,
+    );
+
+    await expect(provider.decide({ goal: "Research sidewalk vinyl.", taskId: "task_failure", step: 1, remainingSteps: 2, toolCatalog: [], observations: [], safeWorkingSummary: null }))
+      .resolves.toEqual({ kind: "fail", response: "The AI provider did not return a complete investigation result before its output limit." });
   });
 });

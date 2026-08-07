@@ -109,6 +109,7 @@ describe("configured AI provider", () => {
     const fetchMock = jest.fn(async () => jsonResponse({
       id: "resp_1",
       model: "deepseek-v4-flash",
+      status: "completed",
       output: [{ type: "reasoning", content: [{ type: "reasoning_text", text: "private" }] }, {
         type: "web_search_call", action: { type: "search", query: "banner prices Indianapolis" },
       }, {
@@ -121,18 +122,19 @@ describe("configured AI provider", () => {
     expect(fetchMock).toHaveBeenCalledWith("https://api.deepseek.com/responses", expect.objectContaining({ method: "POST" }));
     const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
     expect(body.tool_choice).toBe("auto");
+    expect(body.reasoning).toEqual({ effort: "none" });
     expect(body.tools).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "function", name: "ph_0_quotes_search" }),
       { type: "web_search" },
     ]));
     expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "quotes.search", arguments: { status: "open" } }] });
-    expect(result.requestMetadata).toMatchObject({ apiSurface: "deepseek_responses", nativeWebSearch: true });
+    expect(result.requestMetadata).toMatchObject({ apiSurface: "deepseek_responses", nativeWebSearch: true, responseStatus: "completed", outputItemTypes: ["reasoning", "web_search_call", "function_call"] });
     expect(result.operatorContinuation?.functionCalls).toEqual([{ callId: "call_1", toolName: "quotes.search" }]);
     expect(JSON.stringify(result.requestMetadata)).not.toContain("private");
   });
 
   test("returns a direct Responses API answer without exposing reasoning", async () => {
-    global.fetch = jest.fn(async () => jsonResponse({ output: [
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [
       { type: "reasoning", content: [{ type: "reasoning_text", text: "hidden chain" }] },
       { type: "message", content: [{ type: "output_text", text: '{"kind":"complete","response":"Ready."}', annotations: [{ title: "Example supplier", url: "https://example.com/products" }] }] },
     ] })) as unknown as typeof fetch;
@@ -143,7 +145,7 @@ describe("configured AI provider", () => {
   });
 
   test("continues a native web-search-only Responses result instead of treating it as empty", async () => {
-    global.fetch = jest.fn(async () => jsonResponse({ output: [
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [
       { type: "reasoning", content: [{ type: "reasoning_text", text: "hidden chain" }] },
       { type: "web_search_call", action: { type: "search", query: "printable sidewalk vinyl" } },
     ] })) as unknown as typeof fetch;
@@ -151,9 +153,39 @@ describe("configured AI provider", () => {
     const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
 
     expect(JSON.parse(result.rawText)).toEqual({ kind: "continue", workingSummary: "Continuing public research." });
-    expect(result.requestMetadata).toMatchObject({ nativeWebSearch: true, nativeWebSearchActionCount: 1 });
+    expect(result.requestMetadata).toMatchObject({ nativeWebSearch: true, responseStatus: "completed", nativeWebSearchCallCount: 1, nativeWebSearchActionCount: 1, parseClassification: "native_web_continuation" });
     expect(result.rawText).not.toContain("hidden chain");
     expect(JSON.stringify(result.requestMetadata)).not.toContain("hidden chain");
+  });
+
+  test("handles a completed native web item even when optional action detail is absent", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ id: "resp_web_1", status: "completed", output: [
+      { type: "web_search_call", status: "completed" },
+    ] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toMatchObject({ kind: "continue" });
+    expect(result.requestMetadata).toMatchObject({ responseStatus: "completed", outputItemStatuses: ["completed"], nativeWebSearchCallCount: 1, nativeWebSearchActionCount: 0 });
+  });
+
+  test("rejects an incomplete Responses result instead of treating it as a usable continuation", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ id: "resp_incomplete", status: "incomplete", incomplete_details: { reason: "max_output_tokens" }, output: [
+      { type: "web_search_call", status: "incomplete", action: { type: "search" } },
+    ] })) as unknown as typeof fetch;
+
+    await expect(new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] }))
+      .rejects.toMatchObject({ name: "AiProviderResponseError", kind: "truncated_output", providerRequestId: "resp_incomplete" });
+  });
+
+  test("keeps a valid answer when optional source annotations are malformed", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ id: "resp_sources", status: "completed", output: [{
+      type: "message", status: "completed", content: [{ type: "output_text", text: '{"kind":"complete","response":"Research complete."}', annotations: [{ url: "not a url" }, { source: { url: "ftp://invalid.example" } }] }],
+    }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+    expect(result.rawText).toContain("Research complete.");
+    expect(result.requestMetadata.nativeWebSources).toEqual([]);
   });
 
   test("detects only the official DeepSeek API hostname", () => {

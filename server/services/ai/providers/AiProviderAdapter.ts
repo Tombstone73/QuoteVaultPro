@@ -36,6 +36,8 @@ export interface AiProviderResponse {
 
 export interface AiProviderOperatorRequest extends AiProviderRequest {
   toolCatalog: ReadonlyArray<{ name: string; description: string }>;
+  /** Safe, in-memory sequence number for one bounded Operator turn. */
+  operatorRequestSequence?: number;
   /** Responses output retained only for this live Operator turn. It is never
    * persisted and may include provider reasoning needed for continuation. */
   responseContinuation?: readonly unknown[];

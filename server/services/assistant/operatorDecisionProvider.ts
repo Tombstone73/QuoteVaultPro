@@ -1,5 +1,5 @@
-import type { AiProviderAdapter } from "../ai/providers/AiProviderAdapter";
-import { AiProviderUnavailableError } from "../ai/providers/AiProviderAdapter";
+import type { AiProviderAdapter, AiProviderResponse } from "../ai/providers/AiProviderAdapter";
+import { AiProviderResponseError, AiProviderTimeoutError, AiProviderUnavailableError } from "../ai/providers/AiProviderAdapter";
 import { aiProviderResolver, type ResolvedAiProvider } from "../ai/aiProviderResolver";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import type { AssistantOperatorDecisionProvider } from "./operatorRuntime";
@@ -18,6 +18,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
   private responseContinuation: unknown[] = [];
   private pendingFunctionCalls: Array<{ callId: string; toolName: string }> = [];
   private pendingObservationStart = 0;
+  private responseRequestSequence = 0;
   constructor(
     private readonly organizationId: string,
     private readonly provider: AiProviderAdapter,
@@ -69,15 +70,31 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
     });
     if (capabilities.responsesApi && this.provider.generateOperatorDecision) {
       this.appendFunctionOutputs(input.observations);
-      const response = await this.provider.generateOperatorDecision({
-        orgId: this.organizationId, feature: "assistant", promptVersion: "ai-operator-runtime-v1", timeoutUseCase: "assistant_operator_decision", timeoutMs: 30_000,
-        providerConfig: config, system, user, toolCatalog: input.toolCatalog, responseContinuation: this.responseContinuation,
-      });
+      let response: AiProviderResponse;
+      try {
+        response = await this.provider.generateOperatorDecision({
+          orgId: this.organizationId, feature: "assistant", promptVersion: "ai-operator-runtime-v1", timeoutUseCase: "assistant_operator_decision", timeoutMs: 30_000,
+          providerConfig: config, system, user, toolCatalog: input.toolCatalog, responseContinuation: this.responseContinuation,
+          operatorRequestSequence: ++this.responseRequestSequence,
+        });
+      } catch (error) {
+        return providerFailureDecision(error);
+      }
       const continuation = response.operatorContinuation;
       this.responseContinuation = Array.isArray(continuation?.items) ? [...this.responseContinuation, ...continuation.items] : this.responseContinuation;
       this.pendingFunctionCalls = Array.isArray(continuation?.functionCalls) ? continuation.functionCalls : [];
       this.pendingObservationStart = input.observations.length;
-      try { return this.withNativeSources(JSON.parse(response.rawText), response.requestMetadata.nativeWebSources); } catch { throw new Error("ASSISTANT_OPERATOR_INVALID_JSON"); }
+      try { return this.withNativeSources(JSON.parse(response.rawText), response.requestMetadata.nativeWebSources); }
+      catch {
+        console.warn("[AI_PROVIDER] DeepSeek Responses Operator decision could not be parsed.", {
+          requestSequence: response.requestMetadata.requestSequence ?? null,
+          apiSurface: response.requestMetadata.apiSurface ?? null,
+          responseStatus: response.requestMetadata.responseStatus ?? null,
+          outputItemTypes: response.requestMetadata.outputItemTypes ?? [],
+          parseClassification: "invalid_operator_json",
+        });
+        return { kind: "fail", response: "The AI provider returned an unusable investigation result." };
+      }
     }
     const response = await this.provider.generateJson({
       orgId: this.organizationId,
@@ -122,4 +139,14 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
     const response = `${complete.response}\n\nSources:\n${appendix}`;
     return response.length <= 8_000 ? { ...complete, response } : decision;
   }
+}
+
+function providerFailureDecision(error: unknown): { kind: "fail"; response: string } {
+  if (error instanceof AiProviderTimeoutError) return { kind: "fail", response: "The AI provider did not finish the investigation before the request timed out." };
+  if (error instanceof AiProviderResponseError) {
+    if (error.kind === "truncated_output") return { kind: "fail", response: "The AI provider did not return a complete investigation result before its output limit." };
+    if (error.kind === "rate_limit") return { kind: "fail", response: "The AI provider is temporarily busy and could not complete the investigation." };
+    return { kind: "fail", response: "The AI provider did not return a usable investigation result." };
+  }
+  throw error;
 }
