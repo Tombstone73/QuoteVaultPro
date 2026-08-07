@@ -12,11 +12,18 @@ import { resolveOpenAiCompatibleRequestPolicy } from "./providerRequestPolicy";
 const DEFAULT_AI_JSON_MAX_TOKENS = 2048;
 const MIN_AI_JSON_MAX_TOKENS = 128;
 const MAX_AI_JSON_MAX_TOKENS = 4096;
+export const DEFAULT_AI_OPERATOR_PROVIDER_TIMEOUT_MS = 120_000;
 
 export function resolveAiProviderTimeoutMs(overrideMs?: number): number {
   if (Number.isFinite(overrideMs) && Number(overrideMs) > 0) return Number(overrideMs);
   const parsed = Number(process.env.AI_PROVIDER_TIMEOUT_MS || process.env.AI_BUG_REVIEW_TIMEOUT_MS || 30000);
   return Number.isFinite(parsed) && parsed > 0 ? parsed : 30000;
+}
+
+/** Keep longer Operator decisions independent from generic AI request timeouts. */
+export function resolveAiOperatorProviderTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.AI_OPERATOR_PROVIDER_TIMEOUT_MS);
+  return Number.isFinite(configured) && configured > 0 ? configured : DEFAULT_AI_OPERATOR_PROVIDER_TIMEOUT_MS;
 }
 
 function clampInteger(value: number, min: number, max: number): number {
@@ -535,7 +542,21 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         },
       };
     } catch (error) {
-      if (controller.signal.aborted) throw new AiProviderTimeoutError({ timeoutMs, elapsedMs: Date.now() - started, provider: config.provider, model: config.model, useCase: request.timeoutUseCase ?? request.feature });
+      if (controller.signal.aborted) {
+        const elapsedMs = Date.now() - started;
+        logProviderFailure({
+          message: "[AI_PROVIDER] DeepSeek Responses request timed out.",
+          feature: request.feature,
+          useCase: request.timeoutUseCase ?? request.feature,
+          timeoutMs,
+          elapsedMs,
+          provider: config.provider,
+          model: config.model,
+          endpoint,
+          failureKind: "timeout",
+        });
+        throw new AiProviderTimeoutError({ timeoutMs, elapsedMs, provider: config.provider, model: config.model, useCase: request.timeoutUseCase ?? request.feature });
+      }
       throw error;
     } finally { clearTimeout(timeout); }
   }

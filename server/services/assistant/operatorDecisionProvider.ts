@@ -1,6 +1,7 @@
 import type { AiProviderAdapter, AiProviderResponse } from "../ai/providers/AiProviderAdapter";
 import { AiProviderResponseError, AiProviderTimeoutError, AiProviderUnavailableError } from "../ai/providers/AiProviderAdapter";
 import { aiProviderResolver, type ResolvedAiProvider } from "../ai/aiProviderResolver";
+import { resolveAiOperatorProviderTimeoutMs } from "../ai/providers/configuredProvider";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import type { AssistantOperatorDecisionProvider } from "./operatorRuntime";
 
@@ -31,6 +32,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       throw new AiProviderUnavailableError("AI Operator is unavailable.");
     }
     const capabilities = resolveAiProviderCapabilities(config);
+    const operatorTimeoutMs = resolveAiOperatorProviderTimeoutMs();
     const system = [
       "You are the PrintersHero AI Operator. Decide the next safe business step, not an implementation route.",
       "Return exactly one JSON object and no markdown. Valid shapes:",
@@ -74,7 +76,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       let response: AiProviderResponse;
       try {
         response = await this.provider.generateOperatorDecision({
-          orgId: this.organizationId, feature: "assistant", promptVersion: "ai-operator-runtime-v1", timeoutUseCase: "assistant_operator_decision", timeoutMs: 30_000,
+          orgId: this.organizationId, feature: "assistant", promptVersion: "ai-operator-runtime-v1", timeoutUseCase: "assistant_operator_decision", timeoutMs: operatorTimeoutMs,
           providerConfig: config, system, user, toolCatalog: input.toolCatalog, responseContinuation: this.responseContinuation,
           operatorRequestSequence: ++this.responseRequestSequence,
         });
@@ -102,7 +104,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       feature: "assistant",
       promptVersion: "ai-operator-runtime-v1",
       timeoutUseCase: "assistant_operator_decision",
-      timeoutMs: 30_000,
+      timeoutMs: operatorTimeoutMs,
       providerConfig: config,
       system, user,
     });

@@ -4,6 +4,7 @@ import {
   composeOpenAiChatCompletionsEndpoint,
   composeDeepSeekResponsesEndpoint,
   OpenAiCompatibleBugReviewProvider,
+  resolveAiOperatorProviderTimeoutMs,
   resolveAiJsonMaxTokens,
   resolveAiProviderTimeoutMs,
 } from "../services/ai/providers/configuredProvider";
@@ -82,6 +83,14 @@ describe("configured AI provider", () => {
     } finally {
       restoreEnv("AI_PROVIDER_TIMEOUT_MS", previousProviderTimeout);
     }
+  });
+
+  test("keeps the Operator timeout separate from generic provider timeout configuration", () => {
+    expect(resolveAiOperatorProviderTimeoutMs({})).toBe(120000);
+    expect(resolveAiOperatorProviderTimeoutMs({ AI_PROVIDER_TIMEOUT_MS: "45000" })).toBe(120000);
+    expect(resolveAiOperatorProviderTimeoutMs({ AI_OPERATOR_PROVIDER_TIMEOUT_MS: "90000" })).toBe(90000);
+    expect(resolveAiOperatorProviderTimeoutMs({ AI_OPERATOR_PROVIDER_TIMEOUT_MS: "invalid" })).toBe(120000);
+    expect(resolveAiOperatorProviderTimeoutMs({ AI_OPERATOR_PROVIDER_TIMEOUT_MS: "0" })).toBe(120000);
   });
 
   test("composes OpenAI base endpoint to chat completions endpoint", () => {
@@ -381,6 +390,27 @@ describe("configured AI provider", () => {
         model: "deepseek-v4-flash",
         useCase: "assistant",
       });
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  test("DeepSeek Responses preserves the supplied Operator timeout and logs a safe timeout diagnostic", async () => {
+    jest.useFakeTimers();
+    try {
+      global.fetch = jest.fn((_endpoint: string, init: RequestInit) => new Promise((_resolve, reject) => {
+        init.signal?.addEventListener("abort", () => reject(new Error("aborted")));
+      })) as unknown as typeof fetch;
+      const warn = jest.spyOn(console, "warn").mockImplementation(() => undefined);
+      const provider = new OpenAiCompatibleBugReviewProvider();
+      const request = provider.generateOperatorDecision!({ ...baseRequest({ timeoutMs: 7, timeoutUseCase: "assistant_operator_decision" }), toolCatalog: [] }).catch((error) => error);
+      await jest.advanceTimersByTimeAsync(7);
+
+      const error = await request;
+      expect(error).toBeInstanceOf(AiProviderTimeoutError);
+      expect(error).toMatchObject({ timeoutMs: 7, provider: "openai_compatible", model: "deepseek-v4-flash", useCase: "assistant_operator_decision" });
+      expect(JSON.stringify(warn.mock.calls)).toContain("DeepSeek Responses request timed out.");
+      expect(JSON.stringify(warn.mock.calls)).not.toContain("secret-test-key");
     } finally {
       jest.useRealTimers();
     }

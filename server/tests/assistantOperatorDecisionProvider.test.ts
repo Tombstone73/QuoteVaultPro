@@ -50,6 +50,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
 
     expect(decision).toEqual({ kind: "complete", response: "**QT-1**\nCustomer: Acme\n\n**QT-2**\nCustomer: Beta" });
     expect(generateJson).toHaveBeenCalledTimes(1);
+    expect(generateJson.mock.calls[0]?.[0]).toMatchObject({ timeoutMs: 120000, timeoutUseCase: "assistant_operator_decision" });
   });
 
   test("uses the native DeepSeek Responses path and carries only function output between decisions", async () => {
@@ -71,6 +72,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       expect.objectContaining({ type: "function_call_output", call_id: "call_1" }),
     ]));
     expect(generateOperatorDecision.mock.calls.map((call) => call[0].operatorRequestSequence)).toEqual([1, 2]);
+    expect(generateOperatorDecision.mock.calls.map((call) => call[0].timeoutMs)).toEqual([120000, 120000]);
     expect(generateOperatorDecision).toHaveBeenCalledTimes(2);
   });
 
