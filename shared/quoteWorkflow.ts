@@ -34,6 +34,15 @@ export type QuoteStatusDB = 'draft' | 'pending_approval' | 'pending' | 'active' 
  */
 export type QuoteWorkflowState = 'draft' | 'pending_approval' | 'sent' | 'approved' | 'rejected' | 'expired' | 'converted';
 
+/** Quote investigations use this shared lifecycle definition rather than
+ * inferring "open" from raw database values. A quote remains open while it
+ * can still be prepared for approval or is awaiting a customer response. */
+export const OPEN_QUOTE_WORKFLOW_STATES = ['draft', 'pending_approval', 'sent'] as const satisfies readonly QuoteWorkflowState[];
+
+export function isOpenQuoteWorkflowState(state: QuoteWorkflowState): boolean {
+  return (OPEN_QUOTE_WORKFLOW_STATES as readonly QuoteWorkflowState[]).includes(state);
+}
+
 // ============================================================================
 // SEMANTIC MAPPING (DB ↔ Enterprise)
 // ============================================================================
