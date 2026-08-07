@@ -1,20 +1,21 @@
-import type {
-  AssistantContextEnvelope,
-  AssistantCreateConversationRequest,
-  AssistantResponsePresentation,
-  AssistantResponseState,
-  AssistantStructuredCard,
-  AssistantUpdateConversationRequest,
-  AssistantTurnRequest,
-  AssistantReportResolutionSelectionRequest,
-  AssistantReportResolutionCancelRequest,
+import {
+  assistantToolNameValues,
+  type AssistantContextEnvelope,
+  type AssistantCreateConversationRequest,
+  type AssistantResponsePresentation,
+  type AssistantResponseState,
+  type AssistantStructuredCard,
+  type AssistantUpdateConversationRequest,
+  type AssistantTurnRequest,
+  type AssistantReportResolutionSelectionRequest,
+  type AssistantReportResolutionCancelRequest,
 } from "@shared/assistantContracts";
 import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { assistantReportResolutionCancelRequestSchema, assistantReportResolutionSelectionRequestSchema, assistantTurnRequestSchema } from "@shared/assistantContracts";
 import { AssistantOrchestrationService, type AssistantToolExecutionAudit } from "./orchestration";
 import { ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
-import { AssistantOperatorRuntime, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation } from "./operatorRuntime";
+import { AssistantOperatorRuntime, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation, type AssistantOperatorTrustedObservation } from "./operatorRuntime";
 import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionProvider";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
 import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
@@ -251,6 +252,43 @@ function mergeOperatorEntityReferences(
     }
   }
   return Array.from(references.values()).slice(-25);
+}
+
+const registeredReadToolNames = new Set<string>(assistantToolNameValues);
+const trustedObservationStorageKey = "trustedReadObservations";
+const MAX_TRUSTED_OPERATOR_OBSERVATIONS = 5;
+const MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES = 16_000;
+
+function persistedTrustedObservations(semanticChanges: Record<string, unknown>): AssistantOperatorTrustedObservation[] {
+  const candidate = semanticChanges[trustedObservationStorageKey];
+  if (!Array.isArray(candidate)) return [];
+  return candidate.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const value = item as Record<string, unknown>;
+    return typeof value.toolName === "string" && typeof value.capturedAt === "string" && "data" in value
+      ? [{ toolName: value.toolName, data: value.data, capturedAt: value.capturedAt }]
+      : [];
+  }).slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS);
+}
+
+/** Persist only validated static read results. Semantic planning output and
+ * presentation/action cards are intentionally excluded. */
+function mergeTrustedOperatorObservations(
+  semanticChanges: Record<string, unknown>,
+  observations: readonly AssistantOperatorObservation[],
+): Record<string, unknown> {
+  const retained = persistedTrustedObservations(semanticChanges);
+  const additions = observations.flatMap((observation) => {
+    if (!registeredReadToolNames.has(observation.toolName) || observation.status !== "succeeded" || !observation.result?.provenance) return [];
+    try {
+      const data = JSON.parse(JSON.stringify(observation.result.data));
+      if (JSON.stringify(data).length > MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES) return [];
+      return [{ toolName: observation.toolName, data, capturedAt: observation.result.provenance.freshness.capturedAt }];
+    } catch {
+      return [];
+    }
+  });
+  return { ...semanticChanges, [trustedObservationStorageKey]: [...retained, ...additions].slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS) };
 }
 
 export class AssistantService {
@@ -541,7 +579,7 @@ export class AssistantService {
       goal: request.message,
       taskId: task.id,
       initialWorkingSummary: task.workingSummary,
-      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, entityReferences: task.entityReferences } },
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
     });
     const productObservation = [...run.observations].reverse().find((item) => item.toolName === "products.manage_intent" && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; cards?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
@@ -566,6 +604,7 @@ export class AssistantService {
       ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : quoteInvestigation ? { domain: "quotes" } : {}),
       workingSummary: run.safeWorkingSummary,
       entityReferences,
+      semanticChanges: mergeTrustedOperatorObservations(task.semanticChanges, run.observations),
       missingInformation: run.missingInformation,
       ...(proposalId ? { canonicalProductIntentProposalId: proposalId } : {}),
       lastObservationSummary: run.observations.at(-1)?.warning ?? null,

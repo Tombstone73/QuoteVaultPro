@@ -33,6 +33,14 @@ export type AssistantOperatorObservation = {
   presentation?: { cards: AssistantStructuredCard[] };
 };
 
+/** A bounded, already-authorized read result retained for presentation-only
+ * follow-ups. It is never authorization, freshness, or mutation authority. */
+export type AssistantOperatorTrustedObservation = {
+  toolName: string;
+  data: unknown;
+  capturedAt: string;
+};
+
 export interface AssistantOperatorToolExecutor {
   catalog(): ReadonlyArray<{ name: string; description: string }>;
   execute(input: { toolName: string; arguments: Record<string, unknown>; context: AssistantOperatorTrustedContext }): Promise<Omit<AssistantOperatorObservation, "step">>;
@@ -56,6 +64,12 @@ export interface AssistantOperatorTrustedContext {
     /** Reduced, server-derived references from prior observations in this
      * conversation. They support unambiguous follow-ups, never authorization. */
     entityReferences: Array<{ type: string; id: string; label?: string }>;
+    /** Validated read data from recent turns. It lets the provider answer a
+     * harmless transformation directly without refetching changing state. */
+    trustedObservations?: AssistantOperatorTrustedObservation[];
+    /** A repeated identical clarification is a recovery signal, not a reason
+     * to keep asking the same question after a user replies. */
+    missingInformation?: string[];
   };
 }
 
@@ -88,6 +102,14 @@ function safeFailureResponse(observations: readonly AssistantOperatorObservation
   return "I couldn't complete the request because the AI Operator could not complete its investigation. Nothing was changed.";
 }
 
+function repeatsPriorClarification(previous: readonly string[], next: readonly string[]): boolean {
+  if (!previous.length || previous.length !== next.length) return false;
+  const normalize = (value: string) => value.trim().toLocaleLowerCase().replace(/\s+/g, " ");
+  const prior = [...previous].map(normalize).sort();
+  const requested = [...next].map(normalize).sort();
+  return prior.every((value, index) => value === requested[index]);
+}
+
 /** A bounded sequential tool loop. It deliberately has no mutation executor:
  * protected work remains a proposal/confirmation/GO responsibility of the
  * existing deterministic command layer. */
@@ -115,7 +137,18 @@ export class AssistantOperatorRuntime {
       }
       safeWorkingSummary = decision.kind === "fail" ? decision.recoverySummary ?? safeWorkingSummary : decision.workingSummary ?? safeWorkingSummary;
       if (decision.kind === "complete") return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [] };
-      if (decision.kind === "ask_user") return { status: "awaiting_input", response: decision.question, observations, safeWorkingSummary, missingInformation: decision.missingInformation };
+      if (decision.kind === "ask_user") {
+        if (repeatsPriorClarification(input.trustedContext.task?.missingInformation ?? [], decision.missingInformation)) {
+          return {
+            status: "failed",
+            response: "I couldn't reconcile the information already provided with the outstanding request. I won't repeat the same clarification; please start a new request if you still need help.",
+            observations,
+            safeWorkingSummary,
+            missingInformation: [],
+          };
+        }
+        return { status: "awaiting_input", response: decision.question, observations, safeWorkingSummary, missingInformation: decision.missingInformation };
+      }
       if (decision.kind === "fail") return { status: "failed", response: decision.response, observations, safeWorkingSummary, missingInformation: [] };
 
       for (const call of decision.calls) {

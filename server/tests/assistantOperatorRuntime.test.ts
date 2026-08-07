@@ -87,4 +87,39 @@ describe("AssistantOperatorRuntime", () => {
     expect(execute).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledWith(expect.objectContaining({ toolName: "quotes.get_detail" }));
   });
+
+  test("accepts a direct presentation answer from retained quote observations without calling a tool", async () => {
+    const execute = jest.fn(async () => { throw new Error("presentation needs no lookup"); });
+    const provider: AssistantOperatorDecisionProvider = {
+      decide: async ({ task, observations }) => {
+        expect(observations).toEqual([]);
+        expect(task?.trustedObservations).toEqual([expect.objectContaining({ toolName: "quotes.search", data: expect.objectContaining({ quotes: expect.arrayContaining([expect.objectContaining({ quoteNumber: "QT-910322" })]) }) })]);
+        return { kind: "complete", response: "QT-910322 — Acme — $51.00 — Sent\nQT-910321 — Beta — $25.00 — Draft", workingSummary: "Reformatted the five known quotes." };
+      },
+    };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [{ name: "quotes.search", description: "Search quotes." }], execute }).run({
+      goal: "please separate these into individual lines per quote so I can read them", taskId: "task_format", trustedContext: { ...trustedContext, task: { id: "task_format", domain: "quotes", canonicalProductIntentProposalId: null, entityReferences: [], trustedObservations: [{ toolName: "quotes.search", data: { quotes: [{ quoteNumber: "QT-910322", customer: { name: "Acme" }, total: 51, status: "sent" }, { quoteNumber: "QT-910321", customer: { name: "Beta" }, total: 25, status: "draft" }] }, capturedAt: "2026-08-07T12:00:00.000Z" }], missingInformation: [] } },
+    });
+    expect(result).toMatchObject({ status: "completed", observations: [] });
+    expect(result.response).toContain("\n");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("allows a cross-domain presentation answer from retained results without a forced lookup", async () => {
+    const execute = jest.fn(async () => { throw new Error("presentation needs no lookup"); });
+    const provider: AssistantOperatorDecisionProvider = { decide: async ({ task }) => {
+      expect(task?.trustedObservations?.[0]?.toolName).toBe("orders.get_due_summary");
+      return { kind: "complete", response: "ORD-20 — due Aug 8\nORD-19 — due Aug 10" };
+    } };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Put those in order by due date.", taskId: "task_orders", trustedContext: { ...trustedContext, task: { id: "task_orders", domain: "orders", canonicalProductIntentProposalId: null, entityReferences: [], trustedObservations: [{ toolName: "orders.get_due_summary", data: { orders: [{ number: "ORD-20" }, { number: "ORD-19" }] }, capturedAt: "2026-08-07T12:00:00.000Z" }], missingInformation: [] } } });
+    expect(result.status).toBe("completed");
+    expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("stops an identical clarification loop instead of asking the same missing question again", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: async () => ({ kind: "ask_user", question: "Which quotes would you like separated?", missingInformation: ["quote selection"] }) };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute: async () => { throw new Error("not called"); } }).run({ goal: "all 5", taskId: "task_loop", trustedContext: { ...trustedContext, task: { id: "task_loop", domain: "quotes", canonicalProductIntentProposalId: null, entityReferences: [], trustedObservations: [], missingInformation: ["quote selection"] } } });
+    expect(result).toMatchObject({ status: "failed", missingInformation: [] });
+    expect(result.response).toContain("won't repeat");
+  });
 });

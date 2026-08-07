@@ -143,4 +143,31 @@ describe("AssistantService Operator Runtime integration", () => {
     expect(executor.execute).toHaveBeenCalledWith(expect.objectContaining({ toolName: "customers.get_summary", arguments: { customerId: "customer_new" } }));
     expect(repo.createFoundationTurn).toHaveBeenLastCalledWith(expect.objectContaining({ response: "Acme is the customer on the newest quote.", mode: "ai_operator_runtime" }));
   });
+
+  test("the exact quote-formatting follow-up answers from retained observations without another lookup", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = continuingTaskStore();
+    const executor = {
+      catalog: () => [{ name: "quotes.search", description: "Search tenant-wide quotes." }],
+      execute: jest.fn(async ({ toolName }: any) => ({ toolName, status: "succeeded", result: { status: "succeeded", data: { totalMatchingQuotes: 5, quotes: [
+        { quoteId: "quote_1", quoteNumber: "QT-910322", customer: { id: "customer_1", name: "Acme" }, total: 51, status: "sent", open: true, createdAt: "2026-08-07T12:00:00.000Z", sourceLink: { label: "Quote QT-910322", href: "/quotes/quote_1", entityType: "quote", entityId: "quote_1" } },
+        { quoteId: "quote_2", quoteNumber: "QT-910321", customer: { id: "customer_2", name: "Beta" }, total: 25, status: "draft", open: true, createdAt: "2026-08-06T12:00:00.000Z", sourceLink: { label: "Quote QT-910321", href: "/quotes/quote_2", entityType: "quote", entityId: "quote_2" } },
+        { quoteId: "quote_3", quoteNumber: "QT-910320", customer: { id: "customer_3", name: "Cedar" }, total: 75, status: "sent", open: true, createdAt: "2026-08-05T12:00:00.000Z", sourceLink: { label: "Quote QT-910320", href: "/quotes/quote_3", entityType: "quote", entityId: "quote_3" } },
+        { quoteId: "quote_4", quoteNumber: "QT-910319", customer: { id: "customer_4", name: "Delta" }, total: 90, status: "draft", open: true, createdAt: "2026-08-04T12:00:00.000Z", sourceLink: { label: "Quote QT-910319", href: "/quotes/quote_4", entityType: "quote", entityId: "quote_4" } },
+        { quoteId: "quote_5", quoteNumber: "QT-910318", customer: { id: "customer_5", name: "Elm" }, total: 42, status: "sent", open: true, createdAt: "2026-08-03T12:00:00.000Z", sourceLink: { label: "Quote QT-910318", href: "/quotes/quote_5", entityType: "quote", entityId: "quote_5" } },
+      ], appliedFilters: { lifecycle: "open", recencyField: "createdAt", sentAtAvailable: false } }, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-07T12:00:00.000Z" } } } })),
+    };
+    const provider = { decide: jest.fn(async ({ goal, observations, task }: any) => {
+      if (goal.startsWith("Find my 5")) return observations.length ? { kind: "complete", response: "Five quotes found." } : { kind: "call_tools", calls: [{ toolName: "quotes.search", arguments: { lifecycle: "open", sort: "newest", limit: 5 } }] };
+      expect(observations).toEqual([]);
+      expect(task.trustedObservations).toEqual([expect.objectContaining({ toolName: "quotes.search", data: expect.objectContaining({ totalMatchingQuotes: 5, quotes: expect.arrayContaining([expect.objectContaining({ quoteNumber: "QT-910318" })]) }) })]);
+      return { kind: "complete", response: "QT-910322 — Acme — $51.00 — Sent\nQT-910321 — Beta — $25.00 — Draft\nQT-910320 — Cedar — $75.00 — Sent\nQT-910319 — Delta — $90.00 — Draft\nQT-910318 — Elm — $42.00 — Sent" };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, () => executor as any);
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "Find my 5 most recent open quotes. Give me the quote number, customer, total, and status. Don't change anything.", context });
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "please separate these into individual lines per quote so I can read them", context });
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "all 5", context });
+    expect(executor.execute).toHaveBeenCalledTimes(1);
+    expect(repo.createFoundationTurn).toHaveBeenLastCalledWith(expect.objectContaining({ response: expect.stringContaining("QT-910318 — Elm"), mode: "ai_operator_runtime" }));
+  });
 });
