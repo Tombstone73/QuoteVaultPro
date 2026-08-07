@@ -7,8 +7,10 @@ import {
 import type { ResolvedAiProvider } from "../ai/aiProviderResolver";
 import {
   assistantIntentPlanSchema,
+  assistantIntentProviderResponseSchema,
   assistantIntentCapabilityIdValues,
   assistantIntentModeValues,
+  type AssistantIntentProviderResponse,
   type AssistantIntentPlan,
 } from "./aiFirstIntentPlannerContract";
 import { assistantCapabilityCatalog, getAssistantCapability } from "./aiFirstCapabilityCatalog";
@@ -32,6 +34,8 @@ export interface AssistantIntentPlannerProviderInput {
   timeoutMs?: number;
   timeoutUseCase?: string;
   maxTokens?: number;
+  currentEntityId?: string | null;
+  activeSessionId?: string | null;
 }
 
 export interface AssistantIntentPlannerProviderResolver {
@@ -162,27 +166,47 @@ function repairPrompt(input: AssistantIntentPlannerProviderInput, invalidOutput:
   };
 }
 
-function enrichPlannerCandidate(candidate: unknown): unknown {
-  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return candidate;
-  const plan = { ...(candidate as Record<string, unknown>) };
-  const capabilityId = plan.capabilityId;
-  if (plan.operation === "general_conversation") {
-    plan.mode = "none";
-    plan.domain = "conversation";
-    plan.capabilityId = null;
-    return plan;
-  }
-  if (typeof capabilityId === "string" && (assistantIntentCapabilityIdValues as readonly string[]).includes(capabilityId)) {
-    const capability = getAssistantCapability(capabilityId as AssistantIntentPlan["capabilityId"] & string);
-    plan.mode = capability.mode;
-    plan.domain = capability.domain;
-    return plan;
-  }
-  if (plan.operation === "explain" && plan.domain === "system" && plan.reasonCode === "help_or_explanation_request" && plan.target && typeof plan.target === "object" && (plan.target as { kind?: unknown }).kind === "none" && (capabilityId === null || capabilityId === undefined)) {
-    plan.capabilityId = "assistant_capabilities";
-    plan.mode = "read";
-  }
-  return plan;
+function serverReasonCode(operation: AssistantIntentProviderResponse["operation"], capabilityId: AssistantIntentPlan["capabilityId"], targetKind: AssistantIntentProviderResponse["target"]["kind"]): AssistantIntentPlan["reasonCode"] {
+  if (capabilityId === "assistant_capabilities") return "help_or_explanation_request";
+  if (operation === "general_conversation") return "general_conversation";
+  if (operation === "unrelated_conversation") return "unrelated_conversation";
+  if (operation === "clarify") return "ambiguous_request";
+  if (operation === "unsupported") return "unsupported_request";
+  if (operation === "create" && targetKind === "new_entity") return "explicit_new_entity_request";
+  if (operation === "continue_session") return "active_session_continuation";
+  if (operation === "correct") return "explicit_correction";
+  if (operation === "select_candidate") return "explicit_candidate_action";
+  if (operation === "accept_recommendation") return "explicit_recommendation_action";
+  if (operation === "request_confirmation") return "explicit_confirmation_request";
+  if (operation === "execute_go") return "explicit_go_request";
+  if (operation === "report") return "reporting_request";
+  if (operation === "lookup" || operation === "explain") return "read_only_lookup_request";
+  return "explicit_existing_entity_request";
+}
+
+function enrichPlannerCandidate(candidate: AssistantIntentProviderResponse, input: AssistantIntentPlannerProviderInput): unknown {
+  const noDispatch = ["general_conversation", "unrelated_conversation", "clarify", "unsupported"] as const;
+  const capabilityId = noDispatch.includes(candidate.operation as typeof noDispatch[number]) ? null : candidate.capabilityId ?? null;
+  const capability = capabilityId ? getAssistantCapability(capabilityId) : null;
+  const targetKind = candidate.target.kind;
+  return {
+    version: 1,
+    operation: candidate.operation,
+    domain: capability?.domain ?? (candidate.operation === "unsupported" ? "unknown" : "conversation"),
+    mode: capability?.mode ?? "none",
+    capabilityId,
+    confidence: candidate.confidence ?? "medium",
+    target: { kind: targetKind, entityId: targetKind === "existing_entity" ? input.currentEntityId ?? null : null },
+    contextUsage: { workspaceIsAuthoritative: false, workspaceRelevance: targetKind === "existing_entity" ? "entity_reference" : targetKind === "none" ? "none" : "supporting", activeSessionId: input.activeSessionId ?? null },
+    requiresClarification: candidate.requiresClarification,
+    clarificationQuestion: candidate.clarificationQuestion ?? null,
+    reasonCode: serverReasonCode(candidate.operation, capabilityId, targetKind),
+  };
+}
+
+function isProviderCapabilityOperationCompatible(candidate: AssistantIntentProviderResponse): boolean {
+  if (!candidate.capabilityId) return true;
+  return Boolean(getAssistantCapability(candidate.capabilityId)?.operations.includes(candidate.operation));
 }
 
 function logPlannerFailure(organizationId: string, diagnostics: AssistantIntentPlannerDiagnostics, extra: Record<string, unknown> = {}) {
@@ -254,7 +278,7 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
         response = await this.provider.generateJson({
           orgId: input.organizationId,
           feature: "assistant",
-          system: prompt.system,
+          system: `${prompt.system}\n\nProvider boundary: return JSON containing only semantic planner fields: operation, capabilityId when a registered specialist is selected, confidence when useful, target.kind, requiresClarification, and clarificationQuestion. The server derives version, domain, mode, reasonCode, target.entityId, trusted context, authorization, and all execution metadata. Do not return server-derived fields.`,
           user: prompt.user,
           promptVersion: input.promptVersion,
           repairAttempt: attempt > 0,
@@ -303,8 +327,12 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
         return { ok: false, error: { code: "invalid_json", message: `I couldn't safely interpret that request. Nothing was changed. Please retry. Reference: ${correlationId}.`, retryable: true, correlationId }, diagnostics };
       }
 
-      const parsed = assistantIntentPlanSchema.safeParse(enrichPlannerCandidate(candidate));
-      if (parsed.success) {
+      const providerPlan = assistantIntentProviderResponseSchema.safeParse(candidate);
+      const capabilityOperationCompatible = providerPlan.success && isProviderCapabilityOperationCompatible(providerPlan.data);
+      const parsed = capabilityOperationCompatible
+        ? assistantIntentPlanSchema.safeParse(enrichPlannerCandidate(providerPlan.data, input))
+        : null;
+      if (parsed?.success) {
         return {
           ok: true,
           plan: parsed.data,
@@ -313,7 +341,11 @@ export class ConfiguredAssistantIntentPlannerProvider implements AssistantIntent
       }
 
       stage = "invalid_contract";
-      issues = validationIssuePaths(parsed.error);
+      issues = !providerPlan.success
+        ? validationIssuePaths(providerPlan.error)
+        : !capabilityOperationCompatible || parsed?.success
+          ? ["capabilityId"]
+          : validationIssuePaths(parsed.error);
       if (attempt < MAX_REPAIR_ATTEMPTS) continue;
       const diagnostics: AssistantIntentPlannerDiagnostics = { correlationId, provider: response.provider, model: response.model, attempts: attempt + 1, stage, repairAttempted: attempt > 0, providerMetadata: metadata, validationIssuePaths: issues };
       logPlannerFailure(input.organizationId, diagnostics, { validationIssuePaths: issues });

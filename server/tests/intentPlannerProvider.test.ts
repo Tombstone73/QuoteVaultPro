@@ -2,6 +2,10 @@ import { describe, expect, jest, test } from "@jest/globals";
 import {
   ConfiguredAssistantIntentPlannerProvider,
 } from "../services/assistant/intentPlannerProvider";
+import {
+  assistantIntentProviderRequiredFieldNames,
+  assistantIntentProviderResponseSchema,
+} from "../services/assistant/aiFirstIntentPlannerContract";
 
 const validPlan = {
   version: 1,
@@ -83,7 +87,8 @@ describe("AI-first intent planner provider boundary", () => {
 
   test.each([
     ["missing mode", { ...validPlan, mode: undefined }, { mode: "mutation", capabilityId: "canonical_product_intent_compiler" }],
-    ["invalid mode", { ...validPlan, mode: "read" }, { mode: "mutation", capabilityId: "canonical_product_intent_compiler" }],
+    ["conflicting mode", { ...validPlan, mode: "read" }, { mode: "mutation", capabilityId: "canonical_product_intent_compiler" }],
+    ["invalid deterministic metadata", { ...validPlan, domain: "legacy-domain", mode: "legacy-mode", reasonCode: "legacy-reason", contextUsage: { tenantId: "untrusted" } }, { domain: "products", mode: "mutation", reasonCode: "explicit_new_entity_request" }],
   ])("enriches %s from a valid selected capability without a repair", async (_case, rawPlan, expected) => {
     const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify(rawPlan), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })) } as any;
     const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
@@ -92,8 +97,8 @@ describe("AI-first intent planner provider boundary", () => {
     expect(provider.generateJson).toHaveBeenCalledTimes(1);
   });
 
-  test("enriches a missing capability for the unambiguous read-only capability inquiry", async () => {
-    const capabilityInquiry = { version: 1, operation: "explain", domain: "system", mode: "none", confidence: "high", target: { kind: "none", entityId: null }, contextUsage: { workspaceIsAuthoritative: false, workspaceRelevance: "supporting", activeSessionId: null }, requiresClarification: false, clarificationQuestion: null, reasonCode: "help_or_explanation_request" };
+  test("enriches capability metadata for a semantic read-only capability inquiry", async () => {
+    const capabilityInquiry = { operation: "explain", capabilityId: "assistant_capabilities", confidence: "high", target: { kind: "none" }, requiresClarification: false };
     const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify(capabilityInquiry), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })) } as any;
     const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
 
@@ -101,11 +106,65 @@ describe("AI-first intent planner provider boundary", () => {
   });
 
   test("normalizes ordinary general help to a valid no-dispatch plan", async () => {
-    const generalHelp = { version: 1, operation: "general_conversation", domain: "system", mode: "read", capabilityId: "general_conversation", confidence: "high", target: { kind: "none", entityId: null }, contextUsage: { workspaceIsAuthoritative: false, workspaceRelevance: "none", activeSessionId: null }, requiresClarification: false, clarificationQuestion: null, reasonCode: "general_conversation" };
+    const generalHelp = { operation: "general_conversation", target: { kind: "none" }, requiresClarification: false };
     const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify(generalHelp), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} })) } as any;
     const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
 
     await expect(planner.plan({ ...input(), user: JSON.stringify({ request: "can you help me?" }) })).resolves.toMatchObject({ ok: true, plan: { operation: "general_conversation", domain: "conversation", mode: "none", capabilityId: null } });
+  });
+
+  test("keeps the provider contract limited to semantic fields", () => {
+    expect(assistantIntentProviderRequiredFieldNames).toEqual(["operation", "target", "requiresClarification"]);
+    expect(assistantIntentProviderResponseSchema.safeParse({
+      operation: "general_conversation",
+      target: { kind: "none" },
+      requiresClarification: false,
+    }).success).toBe(true);
+  });
+
+  test.each([
+    ["simple product creation", "Create a new product called Banner Test", { operation: "create", capabilityId: "canonical_product_intent_compiler", target: { kind: "new_entity" }, requiresClarification: false }, { domain: "products", mode: "mutation", reasonCode: "explicit_new_entity_request" }],
+    ["detailed product creation", "Create Translucent Vinyl with 3-layer and 5-layer pricing", { operation: "create", capabilityId: "canonical_product_intent_compiler", confidence: "high", target: { kind: "new_entity" }, requiresClarification: false }, { domain: "products", mode: "mutation", reasonCode: "explicit_new_entity_request" }],
+    ["System Guide question", "How do I use the System Guide?", { operation: "explain", capabilityId: "system_guide", target: { kind: "none" }, requiresClarification: false }, { domain: "system", mode: "read", reasonCode: "read_only_lookup_request" }],
+  ])("derives deterministic metadata for %s", async (_label, request, semanticResponse, expected) => {
+    const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify(semanticResponse), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} })) } as any;
+    const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
+
+    await expect(planner.plan({ ...input(), user: JSON.stringify({ request }) })).resolves.toMatchObject({ ok: true, plan: expected, diagnostics: { attempts: 1, repairAttempted: false } });
+  });
+
+  test("derives reasonCode without requiring it from a DeepSeek-shaped response", async () => {
+    const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify({ operation: "general_conversation", target: { kind: "none" }, requiresClarification: false }), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} })) } as any;
+    const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
+
+    await expect(planner.plan({ ...input(), user: JSON.stringify({ request: "can you help me?" }) })).resolves.toMatchObject({ ok: true, plan: { reasonCode: "general_conversation", domain: "conversation", mode: "none" }, diagnostics: { repairAttempted: false } });
+  });
+
+  test("accepts a semantic clarification plan and derives its server metadata", async () => {
+    const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify({ operation: "clarify", target: { kind: "none" }, requiresClarification: true, clarificationQuestion: "Which product should I update?" }), provider: "openai_compatible", model: "generic-test", requestMetadata: {} })) } as any;
+    const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
+
+    await expect(planner.plan(input())).resolves.toMatchObject({ ok: true, plan: { operation: "clarify", capabilityId: null, domain: "conversation", mode: "none", reasonCode: "ambiguous_request" } });
+  });
+
+  test("rejects incompatible capability and operation combinations after enrichment", async () => {
+    const incompatible = { operation: "create", capabilityId: "assistant_capabilities", target: { kind: "new_entity" }, requiresClarification: false };
+    const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify(incompatible), provider: "openai_compatible", model: "generic-test", requestMetadata: {} })) } as any;
+    const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
+    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(planner.plan(input())).resolves.toMatchObject({ ok: false, error: { code: "invalid_contract" }, diagnostics: { validationIssuePaths: ["capabilityId"] } });
+    expect(provider.generateJson).toHaveBeenCalledTimes(2);
+  });
+
+  test("rejects an unknown capability when the bounded semantic repair cannot correct it", async () => {
+    const unknownCapability = { operation: "create", capabilityId: "invent_product", target: { kind: "new_entity" }, requiresClarification: false };
+    const provider = { generateJson: jest.fn(async () => ({ rawText: JSON.stringify(unknownCapability), provider: "openai_compatible", model: "generic-test", requestMetadata: {} })) } as any;
+    const planner = new ConfiguredAssistantIntentPlannerProvider(provider, resolver());
+    jest.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(planner.plan(input())).resolves.toMatchObject({ ok: false, error: { code: "invalid_contract" }, diagnostics: { validationIssuePaths: ["capabilityId"] } });
+    expect(provider.generateJson).toHaveBeenCalledTimes(2);
   });
 
   test("repairs an invalid capability ID using the catalog supplied to the bounded repair", async () => {

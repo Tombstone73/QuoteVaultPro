@@ -119,6 +119,40 @@ export const assistantIntentContextUsageSchema = z.object({
 }).strict();
 export type AssistantIntentContextUsage = z.infer<typeof assistantIntentContextUsageSchema>;
 
+/**
+ * The provider chooses only semantic intent. Catalog facts, trusted context,
+ * and execution metadata are deliberately optional here and overwritten by
+ * server enrichment before the final plan is validated.
+ */
+export const assistantIntentProviderResponseSchema = z.object({
+  operation: z.enum(assistantIntentOperationValues),
+  capabilityId: z.enum(assistantIntentCapabilityIdValues).nullable().optional(),
+  confidence: z.enum(["high", "medium", "low"]).optional(),
+  target: z.object({
+    kind: z.enum(["new_entity", "existing_entity", "active_session", "none"]),
+    // Accepted for backward-compatible parsing only. It is discarded before
+    // final validation; trusted server context owns entity identity.
+    entityId: z.unknown().optional(),
+  }).strict(),
+  requiresClarification: z.boolean(),
+  clarificationQuestion: z.string().trim().min(1).max(500).nullable().optional(),
+  // Accepted only for compatibility with already-deployed prompts; never
+  // trusted as provider-owned truth.
+  version: z.unknown().optional(),
+  domain: z.unknown().optional(),
+  mode: z.unknown().optional(),
+  reasonCode: z.unknown().optional(),
+  contextUsage: z.unknown().optional(),
+}).strict();
+export type AssistantIntentProviderResponse = z.infer<typeof assistantIntentProviderResponseSchema>;
+
+/** Guardrail against making catalog or execution metadata provider-required. */
+export const assistantIntentProviderRequiredFieldNames = [
+  "operation",
+  "target",
+  "requiresClarification",
+] as const;
+
 export const assistantIntentPlanSchema = z.object({
   version: z.literal(assistantIntentPlanVersion),
   operation: z.enum(assistantIntentOperationValues),
@@ -153,6 +187,9 @@ export const assistantIntentPlanSchema = z.object({
   }
   if ((plan.operation === "clarify" || plan.operation === "general_conversation" || plan.operation === "unrelated_conversation" || plan.operation === "unsupported") && plan.capabilityId !== null) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["capabilityId"], message: "This operation must not select a specialist capability." });
+  }
+  if (!noOpOperations.includes(plan.operation) && plan.capabilityId === null) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["capabilityId"], message: "Dispatch operations require a selected registered capability." });
   }
   if (plan.operation === "create" && plan.target.kind !== "new_entity") {
     ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["target", "kind"], message: "Create operations require a new entity target." });
