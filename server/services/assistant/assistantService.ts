@@ -22,8 +22,10 @@ import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool
 import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
 import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore } from "./operatorTaskContext";
 import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
-import { createPublicWebResearchTools } from "./publicWebResearch";
+import { createPublicWebResearchTools, isPublicWebResearchConfigured } from "./publicWebResearch";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
+import { aiProviderResolver } from "../ai/aiProviderResolver";
+import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { productManagementSkillService } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
@@ -566,6 +568,13 @@ export class AssistantService {
     let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
     if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
     const audits: AssistantToolExecutionAudit[] = [];
+    const providerConfig = await aiProviderResolver.resolveProvider({ orgId: scope.organizationId, feature: "assistant" });
+    const providerCapabilities = resolveAiProviderCapabilities(providerConfig);
+    // Native search and the server-owned search are intentionally mutually
+    // exclusive in a turn. This is capability selection, not phrase routing.
+    const fallbackWebTools = !providerCapabilities.nativeWebSearch && isPublicWebResearchConfigured()
+      ? createPublicWebResearchTools()
+      : [];
     const semanticTools: AssistantOperatorSemanticTool[] = [{
       name: "products.manage_intent",
       description: "Start or continue an inactive Product Builder intent from the user's business goal. Arguments: operation optional auto|continue|start_new. Never supplies product IDs, patch paths, or persistence metadata.",
@@ -593,7 +602,7 @@ export class AssistantService {
           return { status: "rejected", warning: error instanceof Error ? error.message : "The requested analysis could not be run safely." };
         }
       },
-    }, ...createPublicWebResearchTools(), this.operatorCompositeTool()];
+    }, ...fallbackWebTools, this.operatorCompositeTool()];
     const runtime = new AssistantOperatorRuntime(this.operatorDecisionProvider(scope.organizationId), this.createOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));
     const run = await runtime.run({
       goal: request.message,

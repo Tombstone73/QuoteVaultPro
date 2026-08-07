@@ -104,6 +104,10 @@ export class PublicWebResearchClient {
   }
 }
 
+export function isPublicWebResearchConfigured(): boolean {
+  return Boolean(process.env.PUBLIC_WEB_SEARCH_API_KEY?.trim());
+}
+
 function searchConfigured(): { endpoint: string; key: string } | null {
   const key = process.env.PUBLIC_WEB_SEARCH_API_KEY?.trim();
   if (!key) return null;

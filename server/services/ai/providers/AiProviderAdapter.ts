@@ -26,12 +26,26 @@ export interface AiProviderResponse {
   provider: string;
   model: string;
   requestMetadata: Record<string, unknown>;
+  /** Ephemeral Responses continuation for a single live Operator runtime.
+   * Never persist, log, or return this field to a client. */
+  operatorContinuation?: {
+    items: unknown[];
+    functionCalls: Array<{ callId: string; toolName: string }>;
+  };
+}
+
+export interface AiProviderOperatorRequest extends AiProviderRequest {
+  toolCatalog: ReadonlyArray<{ name: string; description: string }>;
+  /** Responses output retained only for this live Operator turn. It is never
+   * persisted and may include provider reasoning needed for continuation. */
+  responseContinuation?: readonly unknown[];
 }
 
 export interface AiProviderAdapter {
   generateJson(request: AiProviderRequest): Promise<AiProviderResponse>;
   generateBugReview(request: AiProviderRequest): Promise<AiProviderResponse>;
   generateTriageBrief(request: AiProviderRequest): Promise<AiProviderResponse>;
+  generateOperatorDecision?(request: AiProviderOperatorRequest): Promise<AiProviderResponse>;
 }
 
 export class AiProviderUnavailableError extends Error {

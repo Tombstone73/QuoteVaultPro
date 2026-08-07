@@ -3,6 +3,7 @@ import {
   AiProviderTimeoutError,
   AiProviderUnavailableError,
   type AiProviderAdapter,
+  type AiProviderOperatorRequest,
   type AiProviderRequest,
   type AiProviderResponse,
 } from "./AiProviderAdapter";
@@ -65,6 +66,25 @@ export function composeOpenAiChatCompletionsEndpoint(endpoint: string, provider:
     return trimmed;
   } catch {
     return trimmed;
+  }
+}
+
+/** The managed DeepSeek setting historically stores a Chat Completions URL.
+ * Responses is a sibling endpoint, so translate only the known official
+ * DeepSeek paths; arbitrary compatible-provider endpoints remain untouched. */
+export function composeDeepSeekResponsesEndpoint(endpoint: string): string {
+  try {
+    const url = new URL(endpoint.trim());
+    if (url.hostname.toLowerCase() !== "api.deepseek.com") return endpoint;
+    const path = trimTrailingSlashes(url.pathname || "");
+    if (path === "" || path === "/" || path === "/v1" || path === "/chat/completions" || path === "/v1/chat/completions") {
+      url.pathname = "/responses";
+      url.search = "";
+      return url.toString();
+    }
+    return endpoint;
+  } catch {
+    return endpoint;
   }
 }
 
@@ -383,6 +403,126 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       clearTimeout(timeout);
     }
   }
+
+  /** DeepSeek V4-Flash Responses transport for the existing Operator loop.
+   * Function calls are returned as the runtime's ordinary call_tools decision;
+   * web_search remains server-side at DeepSeek and never becomes an app tool. */
+  async generateOperatorDecision(request: AiProviderOperatorRequest): Promise<AiProviderResponse> {
+    const config = request.providerConfig ?? await (async () => {
+      const { aiProviderResolver } = await import("../aiProviderResolver");
+      return aiProviderResolver.resolveProvider({ orgId: request.orgId, feature: request.feature });
+    })();
+    if (!config.enabled || !config.endpoint || !config.apiKey || !config.model || config.provider !== "openai_compatible" || config.model.trim().toLowerCase() !== "deepseek-v4-flash") {
+      throw new AiProviderUnavailableError("DeepSeek Responses API is not configured for this Operator.");
+    }
+    const endpoint = composeDeepSeekResponsesEndpoint(config.endpoint);
+    if (safeEndpointParts(endpoint).host.toLowerCase() !== "api.deepseek.com") {
+      throw new AiProviderUnavailableError("DeepSeek Responses API requires the official DeepSeek endpoint.");
+    }
+    const timeoutMs = resolveAiProviderTimeoutMs(request.timeoutMs);
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), timeoutMs);
+    const started = Date.now();
+    try {
+      const providerFunctions = request.toolCatalog.map((tool, index) => ({ providerName: deepSeekFunctionName(index, tool.name), tool }));
+      const providerFunctionNames = new Map(providerFunctions.map(({ providerName, tool }) => [providerName, tool.name]));
+      const response = await fetch(endpoint, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
+        signal: controller.signal,
+        body: JSON.stringify({
+          model: config.model,
+          input: [
+            { role: "system", content: request.system },
+            { role: "user", content: request.user },
+            ...(request.responseContinuation ?? []),
+          ],
+          tools: [
+            ...providerFunctions.map(({ providerName, tool }) => ({
+              type: "function",
+              name: providerName,
+              description: tool.description,
+              // The registered server tool boundary remains the authority for
+              // precise validation; this permissive schema avoids claiming an
+              // incomplete schema for the legacy catalog.
+              parameters: { type: "object", additionalProperties: true },
+            })),
+            { type: "web_search" },
+          ],
+          tool_choice: "auto",
+          text: { format: { type: "json_object" } },
+          max_output_tokens: resolveAiJsonMaxTokens(request.maxTokens),
+        }),
+      });
+      if (!response.ok) {
+        const diagnostics = await readSafeProviderErrorDiagnostics(response);
+        const failureKind = classifyHttpFailure(response.status);
+        logProviderFailure({ message: "[AI_PROVIDER] DeepSeek Responses request failed.", provider: config.provider, model: config.model, endpoint, status: response.status, ...diagnostics, failureKind, timeoutMs, elapsedMs: Date.now() - started, feature: request.feature, useCase: request.timeoutUseCase ?? request.feature });
+        throw new AiProviderResponseError({ kind: failureKind, status: response.status, provider: config.provider, model: config.model, providerRequestId: diagnostics.providerRequestId, message: `DeepSeek Responses returned HTTP ${response.status}.` });
+      }
+      let body: any;
+      try { body = await response.json(); }
+      catch {
+        throw new AiProviderResponseError({ kind: "malformed_response", status: response.status, provider: config.provider, model: config.model, providerRequestId: providerRequestIdFromHeaders(response.headers), message: "DeepSeek Responses response could not be parsed safely." });
+      }
+      const providerRequestId = providerRequestIdFromHeaders(response.headers) ?? providerRequestIdFromBody(body);
+      const output = Array.isArray(body?.output) ? body.output : [];
+      const functionCalls = output.filter((item: any) => item?.type === "function_call" && typeof item.name === "string" && typeof item.arguments === "string" && providerFunctionNames.has(item.name));
+      const webSearchActions = output.filter((item: any) => item?.type === "web_search_call" && item.action && typeof item.action === "object").map((item: any) => item.action);
+      const webSources = nativeWebSources(output);
+      const rawText = functionCalls.length
+        ? JSON.stringify({ kind: "call_tools", calls: functionCalls.map((item: any) => ({ toolName: providerFunctionNames.get(item.name), arguments: (() => { try { const parsed = JSON.parse(item.arguments); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}; } catch { return {}; } })() })), workingSummary: "Continuing authorized investigation." })
+        : output.filter((item: any) => item?.type === "message").flatMap((item: any) => Array.isArray(item.content) ? item.content : []).filter((part: any) => part?.type === "output_text" && typeof part.text === "string").map((part: any) => part.text).join("\n");
+      if (!rawText.trim()) throw new AiProviderResponseError({ kind: "empty_response", status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek Responses did not include a usable function call or final answer." });
+      return {
+        rawText,
+        provider: config.provider,
+        model: config.model,
+        requestMetadata: {
+          latencyMs: Date.now() - started, promptVersion: request.promptVersion, mode: config.mode, source: config.source,
+          providerRequestId, providerResponseId: safeProviderDiagnosticToken(body?.id), usage: body?.usage ?? null,
+          apiSurface: "deepseek_responses", toolChoice: "auto", nativeWebSearch: true,
+          nativeWebSearchActionCount: webSearchActions.length,
+          nativeWebSources: webSources,
+          timeoutMs, timeoutUseCase: request.timeoutUseCase ?? request.feature,
+        },
+        operatorContinuation: {
+          items: output,
+          functionCalls: functionCalls.map((item: any) => ({ callId: String(item.call_id ?? ""), toolName: providerFunctionNames.get(item.name)! })).filter((item: { callId: string }) => Boolean(item.callId)),
+        },
+      };
+    } catch (error) {
+      if (controller.signal.aborted) throw new AiProviderTimeoutError({ timeoutMs, elapsedMs: Date.now() - started, provider: config.provider, model: config.model, useCase: request.timeoutUseCase ?? request.feature });
+      throw error;
+    } finally { clearTimeout(timeout); }
+  }
+}
+
+function nativeWebSources(output: readonly any[]): Array<{ title: string; url: string }> {
+  const sources = new Map<string, { title: string; url: string }>();
+  for (const item of output) {
+    if (item?.type !== "message" || !Array.isArray(item.content)) continue;
+    for (const part of item.content) {
+      if (!Array.isArray(part?.annotations)) continue;
+      for (const annotation of part.annotations) {
+        const candidate = annotation?.url ?? annotation?.url_citation?.url ?? annotation?.source?.url;
+        if (typeof candidate !== "string" || candidate.length > 2_000) continue;
+        try {
+          const url = new URL(candidate);
+          if (url.protocol !== "https:" && url.protocol !== "http:") continue;
+          const title = typeof annotation?.title === "string" ? annotation.title : typeof annotation?.url_citation?.title === "string" ? annotation.url_citation.title : url.hostname;
+          sources.set(url.toString(), { title: title.slice(0, 300), url: url.toString() });
+        } catch { /* provider annotations are untrusted input */ }
+      }
+    }
+  }
+  return Array.from(sources.values()).slice(0, 12);
+}
+
+/** Dotted PrintersHero namespaces are invalid DeepSeek function identifiers.
+ * The index makes the transport alias unambiguous without changing registry names. */
+function deepSeekFunctionName(index: number, toolName: string): string {
+  return `ph_${index}_${toolName.replace(/[^a-zA-Z0-9_-]/g, "_")}`.slice(0, 128);
 }
 
 export function createConfiguredAiProvider(): AiProviderAdapter {

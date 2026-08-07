@@ -2,6 +2,7 @@ import { afterEach, describe, expect, jest, test } from "@jest/globals";
 import { AiProviderResponseError, AiProviderTimeoutError } from "../services/ai/providers/AiProviderAdapter";
 import {
   composeOpenAiChatCompletionsEndpoint,
+  composeDeepSeekResponsesEndpoint,
   OpenAiCompatibleBugReviewProvider,
   resolveAiJsonMaxTokens,
   resolveAiProviderTimeoutMs,
@@ -95,6 +96,50 @@ describe("configured AI provider", () => {
   test("preserves the configured DeepSeek chat completions endpoint", () => {
     expect(composeOpenAiChatCompletionsEndpoint("https://api.deepseek.com/chat/completions", "openai_compatible"))
       .toBe("https://api.deepseek.com/chat/completions");
+  });
+
+  test("translates only official DeepSeek Chat Completions URLs to Responses", () => {
+    expect(composeDeepSeekResponsesEndpoint("https://api.deepseek.com/chat/completions"))
+      .toBe("https://api.deepseek.com/responses");
+    expect(composeDeepSeekResponsesEndpoint("https://proxy.example.test/chat/completions"))
+      .toBe("https://proxy.example.test/chat/completions");
+  });
+
+  test("uses DeepSeek Responses with native functions and server-side web search", async () => {
+    const fetchMock = jest.fn(async () => jsonResponse({
+      id: "resp_1",
+      model: "deepseek-v4-flash",
+      output: [{ type: "reasoning", content: [{ type: "reasoning_text", text: "private" }] }, {
+        type: "web_search_call", action: { type: "search", query: "banner prices Indianapolis" },
+      }, {
+        type: "function_call", call_id: "call_1", name: "ph_0_quotes_search", arguments: '{"status":"open"}',
+      }],
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const provider = new OpenAiCompatibleBugReviewProvider();
+    const result = await provider.generateOperatorDecision!({ ...baseRequest(), toolCatalog: [{ name: "quotes.search", description: "Search authorized quotes." }] });
+    expect(fetchMock).toHaveBeenCalledWith("https://api.deepseek.com/responses", expect.objectContaining({ method: "POST" }));
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body.tool_choice).toBe("auto");
+    expect(body.tools).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "function", name: "ph_0_quotes_search" }),
+      { type: "web_search" },
+    ]));
+    expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "quotes.search", arguments: { status: "open" } }] });
+    expect(result.requestMetadata).toMatchObject({ apiSurface: "deepseek_responses", nativeWebSearch: true });
+    expect(result.operatorContinuation?.functionCalls).toEqual([{ callId: "call_1", toolName: "quotes.search" }]);
+    expect(JSON.stringify(result.requestMetadata)).not.toContain("private");
+  });
+
+  test("returns a direct Responses API answer without exposing reasoning", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ output: [
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "hidden chain" }] },
+      { type: "message", content: [{ type: "output_text", text: '{"kind":"complete","response":"Ready."}', annotations: [{ title: "Example supplier", url: "https://example.com/products" }] }] },
+    ] })) as unknown as typeof fetch;
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+    expect(result.rawText).toContain("Ready.");
+    expect(result.rawText).not.toContain("hidden chain");
+    expect(result.requestMetadata.nativeWebSources).toEqual([{ title: "Example supplier", url: "https://example.com/products" }]);
   });
 
   test("detects only the official DeepSeek API hostname", () => {
