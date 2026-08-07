@@ -22,6 +22,7 @@ import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool
 import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
 import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore } from "./operatorTaskContext";
 import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
+import { createPublicWebResearchTools } from "./publicWebResearch";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { productManagementSkillService } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
@@ -255,7 +256,7 @@ function mergeOperatorEntityReferences(
   return Array.from(references.values()).slice(-25);
 }
 
-const registeredReadToolNames = new Set<string>([...assistantToolNameValues, "analysis.run"]);
+const registeredReadToolNames = new Set<string>([...assistantToolNameValues, "analysis.run", "web.search", "web.open"]);
 const trustedObservationStorageKey = "trustedReadObservations";
 const MAX_TRUSTED_OPERATOR_OBSERVATIONS = 5;
 const MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES = 16_000;
@@ -592,7 +593,7 @@ export class AssistantService {
           return { status: "rejected", warning: error instanceof Error ? error.message : "The requested analysis could not be run safely." };
         }
       },
-    }, this.operatorCompositeTool()];
+    }, ...createPublicWebResearchTools(), this.operatorCompositeTool()];
     const runtime = new AssistantOperatorRuntime(this.operatorDecisionProvider(scope.organizationId), this.createOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));
     const run = await runtime.run({
       goal: request.message,
