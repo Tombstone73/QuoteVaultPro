@@ -286,6 +286,18 @@ describe("assistant tool registry", () => {
     expect(execute).not.toHaveBeenCalled();
   });
 
+  test("blocks tenant-wide quote search before its adapter receives an unauthorized actor", async () => {
+    const execute = jest.fn(async () => ({ ...successfulSearch, data: { totalMatchingQuotes: 0, quotes: [], appliedFilters: { recencyField: "createdAt", sentAtAvailable: false } } }));
+    const service = new AssistantOrchestrationService({ "quotes.search": { execute } });
+    const output = await service.executePlan({
+      intent: "lookup", selectedSkill: "search", clarificationRequired: false, clarificationQuestion: null, responseStyle: "concise",
+      toolCalls: [{ toolName: "quotes.search", arguments: { lifecycle: "open" } }],
+    }, { ...trustedContext, permissions: [] });
+
+    expect(output.executions).toEqual([expect.objectContaining({ status: "permission_denied" })]);
+    expect(execute).not.toHaveBeenCalled();
+  });
+
   test("does not execute any tool for an explicit write plan", async () => {
     const execute = jest.fn(async () => successfulSearch);
     const service = new AssistantOrchestrationService({ "search.global": { execute } });
