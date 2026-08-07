@@ -150,7 +150,22 @@ describe("configured AI provider", () => {
     const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
     expect(result.rawText).toContain("Ready.");
     expect(result.rawText).not.toContain("hidden chain");
-    expect(result.requestMetadata.nativeWebSources).toEqual([{ title: "Example supplier", url: "https://example.com/products" }]);
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "Ready." });
+    expect(result.requestMetadata.nativeWebSources).toEqual([{ title: "Example supplier", url: "https://example.com/products", domain: "example.com" }]);
+    expect(result.requestMetadata).toMatchObject({ terminalClassification: "structured_complete", parseClassification: "terminal_completion" });
+  });
+
+  test("normalizes a provider-native researched terminal message after web activity", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ id: "resp_sidewalk", status: "completed", output: [
+      { type: "web_search_call", status: "completed", action: { type: "search", query: "printable sidewalk vinyl" } },
+      { type: "message", status: "completed", content: [{ type: "output_text", text: "For short-term outdoor use, printable textured vinyl is the strongest commercial-print option." , annotations: [{ id: "src_1", title: "Supplier specification", url: "https://supplier.example/vinyl" }] }] },
+    ] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "For short-term outdoor use, printable textured vinyl is the strongest commercial-print option." });
+    expect(result.requestMetadata).toMatchObject({ responseStatus: "completed", outputItemTypes: ["web_search_call", "message"], terminalClassification: "provider_message", parseClassification: "terminal_completion", nativeWebSearchCallCount: 1 });
+    expect(result.requestMetadata.nativeWebSources).toEqual([{ title: "Supplier specification", url: "https://supplier.example/vinyl", domain: "supplier.example", providerSourceReference: "src_1" }]);
   });
 
   test("continues a native web-search-only Responses result instead of treating it as empty", async () => {
@@ -195,6 +210,17 @@ describe("configured AI provider", () => {
     const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
     expect(result.rawText).toContain("Research complete.");
     expect(result.requestMetadata.nativeWebSources).toEqual([]);
+  });
+
+  test("does not mistake prose beside a pending function call for a terminal answer", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [
+      { type: "function_call", call_id: "call_1", name: "ph_0_products_get_summary", arguments: '{"query":"Banner"}' },
+      { type: "message", content: [{ type: "output_text", text: "I will inspect the product next." }] },
+    ] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [{ name: "products.get_summary", description: "Read product summary" }] });
+
+    expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "products.get_summary" }] });
   });
 
   test("detects only the official DeepSeek API hostname", () => {

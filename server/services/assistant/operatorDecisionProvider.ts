@@ -42,7 +42,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       '{"kind":"complete","response":"concise answer grounded in observations","workingSummary":"safe short summary"}',
       '{"kind":"fail","response":"safe explanation","recoverySummary":"safe short summary"}.',
       capabilities.responsesApi
-        ? "When a PrintersHero function is useful, call its provided native function instead of returning call_tools text. Public web search is a read-only provider capability: use it only when useful, without asking for GO. Never put private customer, contact, invoice, token, or internal-note data in a public search. Identify provider-returned sources in your final answer when available."
+        ? "When a PrintersHero function is useful, call its provided native function instead of returning call_tools text. Public web search is a read-only provider capability: use it only when useful, without asking for GO. Never put private customer, contact, invoice, token, or internal-note data in a public search. Do not invent or present model-generated domains as verified sources: provider-returned source links are appended separately when available. If the user requests sources but research has no provider source metadata, say that verified links were unavailable."
         : "Use only registered tool names and documented arguments. You may use multiple sequential decisions after observations arrive.",
       "Never request or emit IDs not returned by a tool or included in trusted active-task references, organization/user information, permissions, SQL, persistence paths, fingerprints, confirmation tokens, or GO execution. The sole URL exception is web.open, which may use a public URL returned by web.search or supplied by the user; never use URLs to access PrintersHero or private infrastructure.",
       "A direct complete response is a first-class outcome: use trusted observations from this turn or active task to format, reorganize, compare, summarize, explain, shorten, expand, sort, or select already-established results without a tool call. Read only when the user asks for new or freshness-sensitive facts.",
@@ -129,17 +129,23 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
 
   private withNativeSources(decision: unknown, sources: unknown): unknown {
     if (!decision || typeof decision !== "object" || (decision as { kind?: unknown }).kind !== "complete" || !Array.isArray(sources)) return decision;
-    const safeSources = sources.flatMap((source): Array<{ title: string; url: string }> => {
+    const safeSources = sources.flatMap((source): Array<{ title: string; url: string; domain: string; providerSourceReference?: string }> => {
       if (!source || typeof source !== "object") return [];
-      const { title, url } = source as { title?: unknown; url?: unknown };
+      const { title, url, domain, providerSourceReference } = source as { title?: unknown; url?: unknown; domain?: unknown; providerSourceReference?: unknown };
       if (typeof title !== "string" || typeof url !== "string") return [];
-      try { const parsed = new URL(url); return parsed.protocol === "https:" || parsed.protocol === "http:" ? [{ title: title.slice(0, 300), url: parsed.toString() }] : []; } catch { return []; }
+      try {
+        const parsed = new URL(url);
+        if (parsed.protocol !== "https:" && parsed.protocol !== "http:") return [];
+        const safeDomain = typeof domain === "string" && domain.trim() ? domain.slice(0, 255) : parsed.hostname.toLowerCase();
+        const safeReference = typeof providerSourceReference === "string" && providerSourceReference.trim() ? providerSourceReference.slice(0, 160) : undefined;
+        return [{ title: title.slice(0, 300), url: parsed.toString(), domain: safeDomain, ...(safeReference ? { providerSourceReference: safeReference } : {}) }];
+      } catch { return []; }
     }).slice(0, 12);
     if (!safeSources.length) return decision;
     const complete = decision as { response?: unknown };
     if (typeof complete.response !== "string") return decision;
-    const appendix = safeSources.map((source) => `- ${source.title}: ${source.url}`).join("\n");
-    const response = `${complete.response}\n\nSources:\n${appendix}`;
+    const appendix = safeSources.map((source) => `- [${source.title}](${source.url}) (${source.domain})`).join("\n");
+    const response = `${complete.response}\n\nProvider-verified sources:\n${appendix}`;
     return response.length <= 8_000 ? { ...complete, response } : decision;
   }
 }
