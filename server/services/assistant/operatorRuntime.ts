@@ -24,6 +24,22 @@ export const assistantOperatorDecisionSchema = z.discriminatedUnion("kind", [
 ]);
 export type AssistantOperatorDecision = z.infer<typeof assistantOperatorDecisionSchema>;
 
+/**
+ * Parse only a complete, schema-valid Operator control message.  This is
+ * intentionally narrow: ordinary JSON remains an ordinary user-facing
+ * response, while a known control shape can stay inside the Operator loop.
+ */
+export function parseAssistantOperatorDecisionText(value: string): AssistantOperatorDecision | null {
+  const trimmed = value.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = assistantOperatorDecisionSchema.safeParse(JSON.parse(trimmed));
+    return parsed.success ? parsed.data : null;
+  } catch {
+    return null;
+  }
+}
+
 export type AssistantOperatorObservation = {
   step: number;
   toolName: string;

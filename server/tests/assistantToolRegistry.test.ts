@@ -77,6 +77,13 @@ describe("assistant tool registry", () => {
     expect(() => pricing.inputSchema.parse({ query: "Banner", organizationId: "other-org" })).toThrow();
   });
 
+  test("describes product reference and pricing responsibilities without prescribing a workflow", () => {
+    const registry = createAssistantToolRegistry();
+    expect(registry.get("search.global")?.description).toContain("trusted product reference");
+    expect(registry.get("products.get_summary")?.description).toContain("not a calculated customer price");
+    expect(registry.get("products.get_pricing")?.description).toContain("search.global");
+  });
+
   test("normalizes only a safe numeric order summary number at the registered-tool boundary", () => {
     expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: 1112 })).toEqual({ orderNumber: "1112" });
     expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: "ORD-1112" })).toEqual({ orderNumber: "ORD-1112" });

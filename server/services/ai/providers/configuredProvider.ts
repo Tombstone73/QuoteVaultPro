@@ -8,6 +8,7 @@ import {
   type AiProviderResponse,
 } from "./AiProviderAdapter";
 import { resolveOpenAiCompatibleRequestPolicy } from "./providerRequestPolicy";
+import { parseAssistantOperatorDecisionText } from "../../assistant/operatorRuntime";
 
 const DEFAULT_AI_JSON_MAX_TOKENS = 2048;
 const MIN_AI_JSON_MAX_TOKENS = 128;
@@ -488,7 +489,13 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       const webSearchActions = nativeWebSearchCalls.filter((item: any) => item.action && typeof item.action === "object").map((item: any) => item.action);
       const webSources = nativeWebSources(output);
       const finalText = output.filter((item: any) => item?.type === "message").flatMap((item: any) => Array.isArray(item.content) ? item.content : []).filter((part: any) => part?.type === "output_text" && typeof part.text === "string").map((part: any) => part.text).join("\n");
-      const terminalCompletion = normalizeDeepSeekOperatorTerminal(finalText);
+      // A valid Operator decision is a control protocol, not native terminal
+      // prose.  Preserve it for the runtime so `continue`, `ask_user`, and
+      // `call_tools` cannot leak into the persisted assistant response.
+      const terminalDecision = parseAssistantOperatorDecisionText(finalText);
+      const terminalCompletion = terminalDecision ? null : normalizeDeepSeekOperatorTerminal(finalText);
+      const terminalClassification = terminalDecision ? "operator_decision" : terminalCompletion?.classification ?? null;
+      const hasTerminalDecision = Boolean(terminalDecision || terminalCompletion);
       if (responseStatus !== "unknown" && responseStatus !== "completed") {
         const failureKind = responseStatus === "incomplete" && incompleteReason === "max_output_tokens" ? "truncated_output" : "malformed_response";
         logProviderFailure({ message: "[AI_PROVIDER] DeepSeek Responses Operator did not reach a terminal completion.", provider: config.provider, model: config.model, endpoint, status: response.status, providerRequestId, providerErrorCode, failureKind, timeoutMs, elapsedMs: Date.now() - started, feature: request.feature, useCase: request.timeoutUseCase ?? request.feature });
@@ -496,7 +503,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       }
       const rawText = functionCalls.length
         ? JSON.stringify({ kind: "call_tools", calls: functionCalls.map((item: any) => ({ toolName: providerFunctionNames.get(item.name), arguments: (() => { try { const parsed = JSON.parse(item.arguments); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}; } catch { return {}; } })() })), workingSummary: "Continuing authorized investigation." })
-        : terminalCompletion ? JSON.stringify({ kind: "complete", response: terminalCompletion.response }) : (nativeWebSearchCalls.length
+        : terminalDecision ? JSON.stringify(terminalDecision) : terminalCompletion ? JSON.stringify({ kind: "complete", response: terminalCompletion.response }) : (nativeWebSearchCalls.length
           ? JSON.stringify({ kind: "continue", workingSummary: "Continuing public research." })
           : "");
       if (!rawText.trim()) throw new AiProviderResponseError({ kind: "empty_response", status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek Responses did not include a usable function call, web-search continuation, or final answer." });
@@ -516,9 +523,9 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         nativeWebSearchActionCount: webSearchActions.length,
         nativeWebSourceCount: webSources.length,
         messageOutputTextPresent: Boolean(finalText),
-        terminalClassification: terminalCompletion?.classification ?? null,
-        continuationReason: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !terminalCompletion ? "native_web_activity" : null,
-        parseClassification: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !terminalCompletion ? "native_web_continuation" : terminalCompletion ? "terminal_completion" : "empty_response",
+        terminalClassification,
+        continuationReason: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !hasTerminalDecision ? "native_web_activity" : null,
+        parseClassification: functionCalls.length ? "function_calls" : terminalDecision ? "operator_decision" : nativeWebSearchCalls.length && !hasTerminalDecision ? "native_web_continuation" : terminalCompletion ? "terminal_completion" : "empty_response",
       });
       return {
         rawText,
@@ -532,9 +539,9 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
           outputItemCount: output.length, outputItemTypes, outputItemStatuses,
           functionAliases: functionCalls.map((item: any) => item.name).slice(0, 12),
           messageOutputTextPresent: Boolean(finalText),
-          terminalClassification: terminalCompletion?.classification ?? null,
-          continuationReason: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !terminalCompletion ? "native_web_activity" : null,
-          parseClassification: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !terminalCompletion ? "native_web_continuation" : terminalCompletion ? "terminal_completion" : "empty_response",
+          terminalClassification,
+          continuationReason: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !hasTerminalDecision ? "native_web_activity" : null,
+          parseClassification: functionCalls.length ? "function_calls" : terminalDecision ? "operator_decision" : nativeWebSearchCalls.length && !hasTerminalDecision ? "native_web_continuation" : terminalCompletion ? "terminal_completion" : "empty_response",
           nativeWebSearchCallCount: nativeWebSearchCalls.length, nativeWebSearchActionCount: webSearchActions.length,
           nativeWebSources: webSources,
           timeoutMs, timeoutUseCase: request.timeoutUseCase ?? request.feature,
@@ -565,15 +572,9 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
   }
 }
 
-function normalizeDeepSeekOperatorTerminal(finalText: string): { response: string; classification: "structured_complete" | "provider_message" } | null {
+function normalizeDeepSeekOperatorTerminal(finalText: string): { response: string; classification: "provider_message" } | null {
   const trimmed = finalText.trim();
   if (!trimmed) return null;
-  try {
-    const parsed = JSON.parse(trimmed) as { kind?: unknown; response?: unknown };
-    if (parsed && parsed.kind === "complete" && typeof parsed.response === "string" && parsed.response.trim()) {
-      return { response: parsed.response.trim(), classification: "structured_complete" };
-    }
-  } catch { /* Native terminal prose is expected for public research. */ }
   return { response: trimmed, classification: "provider_message" };
 }
 

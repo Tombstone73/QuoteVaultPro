@@ -91,7 +91,7 @@ export type AssistantToolAdapters = Partial<Record<AssistantToolName, AssistantT
 
 const toolMetadata = {
   "search.global": {
-    description: "Find bounded tenant-scoped customers, orders, products, and other approved business records.",
+    description: "Find bounded tenant-scoped customers, orders, products, and other approved business records. Use this to establish a trusted product reference by name before a product summary or pricing request.",
     requiredPermission: "internal_staff",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantGlobalSearchInputSchema,
@@ -159,7 +159,7 @@ const toolMetadata = {
     modelSummarizationAllowed: true,
   },
   "products.get_summary": {
-    description: "Return a reduced catalog and production-routing summary for one product.",
+    description: "Return a reduced catalog and production-routing summary for one trusted product reference. This is not a calculated customer price; use products.get_pricing for an authoritative scenario price when permitted.",
     requiredPermission: "catalog_read",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantProductSummaryInputSchema,
@@ -172,7 +172,7 @@ const toolMetadata = {
     modelSummarizationAllowed: true,
   },
   "products.get_pricing": {
-    description: "Project an authoritative PBV2 customer price for one tenant-scoped product and an optional quantity, dimensions, and option-selection scenario. Use products.get_summary first when the product or needed pricing inputs are unclear. This read never changes a product, quote, or order.",
+    description: "Project an authoritative PBV2 customer price for one tenant-scoped product and an optional quantity, dimensions, and option-selection scenario. When only a product name is known, first use search.global to establish a trusted product reference; use products.get_summary to inspect configuration when needed. This read never changes a product, quote, or order.",
     requiredPermission: "finance_read",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantProductPricingInputSchema,

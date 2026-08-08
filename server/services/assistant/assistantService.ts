@@ -15,7 +15,7 @@ import { assistantReportResolutionCancelRequestSchema, assistantReportResolution
 import { AssistantOrchestrationService, type AssistantToolExecutionAudit } from "./orchestration";
 import { ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
-import { AssistantOperatorRuntime, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation, type AssistantOperatorTrustedObservation } from "./operatorRuntime";
+import { AssistantOperatorRuntime, parseAssistantOperatorDecisionText, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation, type AssistantOperatorTrustedObservation } from "./operatorRuntime";
 import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionProvider";
 import { runOperatorAnalysis } from "./operatorAnalysisWorkspace";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
@@ -822,6 +822,22 @@ export class AssistantService {
     input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string },
     result: { response: string; status: "responded" | "failed"; errorCode: string | null; cards: AssistantStructuredCard[]; audits: AssistantToolExecutionAudit[] },
   ): Promise<AssistantTurnResult> {
+    // Defense in depth: a known raw control decision is never a presentable
+    // assistant message. Do not broadly suppress JSON, because users may
+    // legitimately ask for JSON; this catches only exact schema-valid
+    // Operator protocol text.
+    if (parseAssistantOperatorDecisionText(result.response)) {
+      console.warn("[ASSISTANT_OPERATOR] Prevented raw control protocol from persistence.", {
+        correlationId: input.correlationId,
+      });
+      result = {
+        response: "I couldn't safely present an internal investigation result. Please try again.",
+        status: "failed",
+        errorCode: "operator_protocol_leak_prevented",
+        cards: [],
+        audits: result.audits,
+      };
+    }
     const persisted = await this.persistFoundationTurn({
       ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message, context: input.request.context,
       clientRequestId: input.request.clientRequestId, response: result.response, correlationId: input.correlationId, status: result.status,

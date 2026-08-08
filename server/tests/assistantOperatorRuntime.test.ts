@@ -1,11 +1,22 @@
 import { describe, expect, jest, test } from "@jest/globals";
-import { AssistantOperatorRuntime, type AssistantOperatorDecisionProvider, type AssistantOperatorToolExecutor } from "../services/assistant/operatorRuntime";
+import { AssistantOperatorRuntime, parseAssistantOperatorDecisionText, type AssistantOperatorDecisionProvider, type AssistantOperatorToolExecutor } from "../services/assistant/operatorRuntime";
 import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
 
 const context = assistantContextEnvelopeSchema.parse({ contextVersion: "v1", route: "/orders", pageTitle: "Orders", selectedRecordIds: [], activeFilters: [], capturedAt: "2026-08-07T12:00:00.000Z", unsavedChanges: false });
 const trustedContext = { scope: { organizationId: "org_1", userId: "user_1" }, actor: { userId: "user_1", email: "user@example.test" }, permissions: ["assistant.internal_staff"], context, correlationId: "correlation_1", goal: "test goal" };
 
 describe("AssistantOperatorRuntime", () => {
+  test("recognizes only complete schema-valid Operator control JSON", () => {
+    expect(parseAssistantOperatorDecisionText('{"kind":"continue","workingSummary":"Searching catalog."}')).toEqual({ kind: "continue", workingSummary: "Searching catalog." });
+    expect(parseAssistantOperatorDecisionText('{"kind":"call_tools","calls":[{"toolName":"search.global","arguments":{"query":"banner"}}]}')).toMatchObject({ kind: "call_tools" });
+    expect(parseAssistantOperatorDecisionText('{"kind":"ask_user","question":"Which size?","missingInformation":["size"]}')).toMatchObject({ kind: "ask_user" });
+    expect(parseAssistantOperatorDecisionText('{"kind":"complete","response":"Done."}')).toMatchObject({ kind: "complete" });
+    expect(parseAssistantOperatorDecisionText('{"kind":"fail","response":"Unavailable."}')).toMatchObject({ kind: "fail" });
+    expect(parseAssistantOperatorDecisionText('{"kind":"continue"')).toBeNull();
+    expect(parseAssistantOperatorDecisionText('{"kind":"unknown","response":"No."}')).toBeNull();
+    expect(parseAssistantOperatorDecisionText('{"requested":"json"}')).toBeNull();
+  });
+
   test("composes an alternate investigation after incomplete evidence", async () => {
     const provider: AssistantOperatorDecisionProvider = {
       decide: async ({ observations }) => observations.length === 0
@@ -75,6 +86,30 @@ describe("AssistantOperatorRuntime", () => {
     expect(result).toMatchObject({ status: "completed", response: "I completed the multi-source public research." });
     expect(provider.decide).toHaveBeenCalledTimes(3);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("keeps a mixed catalog, pricing, and native-web investigation inside the Operator loop", async () => {
+    const provider: AssistantOperatorDecisionProvider = {
+      decide: jest.fn(async ({ step }) => {
+        if (step === 1) return { kind: "continue", workingSummary: "Searching the catalog for a trusted banner reference." };
+        if (step === 2) return { kind: "call_tools", calls: [{ toolName: "search.global", arguments: { query: "13 oz banner", limit: 5 } }], workingSummary: "Found candidate products and am confirming the pricing input." };
+        if (step === 3) return { kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: { productId: "banner_13oz", quantity: 1 } }], workingSummary: "Comparing authorized internal pricing with public evidence." };
+        if (step === 4) return { kind: "continue", workingSummary: "Continuing public research." };
+        return { kind: "complete", response: "Our authorized 13 oz banner price is competitive with the Indianapolis evidence I found." };
+      }),
+    };
+    const execute = jest.fn(async ({ toolName }) => ({
+      toolName,
+      status: "succeeded" as const,
+      result: { status: "succeeded" as const, data: toolName === "search.global" ? { matches: [{ id: "banner_13oz" }] } : { totalCents: 12500 }, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-08T12:00:00.000Z" } } } as any,
+    }));
+
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Are our 13 oz banner prices competitive around Indianapolis?", taskId: "task_banner", trustedContext });
+
+    expect(result).toMatchObject({ status: "completed", response: "Our authorized 13 oz banner price is competitive with the Indianapolis evidence I found." });
+    expect(provider.decide).toHaveBeenCalledTimes(5);
+    expect(execute.mock.calls.map(([input]) => input.toolName)).toEqual(["search.global", "products.get_pricing"]);
+    expect(result.response).not.toContain('"kind":"continue"');
   });
 
   test("keeps successful observations available after a later tool failure", async () => {

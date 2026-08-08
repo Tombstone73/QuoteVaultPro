@@ -152,7 +152,29 @@ describe("configured AI provider", () => {
     expect(result.rawText).not.toContain("hidden chain");
     expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "Ready." });
     expect(result.requestMetadata.nativeWebSources).toEqual([{ title: "Example supplier", url: "https://example.com/products", domain: "example.com" }]);
-    expect(result.requestMetadata).toMatchObject({ terminalClassification: "structured_complete", parseClassification: "terminal_completion" });
+    expect(result.requestMetadata).toMatchObject({ terminalClassification: "operator_decision", parseClassification: "operator_decision" });
+  });
+
+  test("preserves a valid Operator continue decision instead of rendering it as native prose", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{
+      type: "message", content: [{ type: "output_text", text: '{"kind":"continue","workingSummary":"Searching the catalog for a trusted banner reference."}' }],
+    }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "continue", workingSummary: "Searching the catalog for a trusted banner reference." });
+    expect(result.requestMetadata).toMatchObject({ terminalClassification: "operator_decision", parseClassification: "operator_decision" });
+  });
+
+  test("keeps malformed or unrelated JSON as ordinary terminal content", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{
+      type: "message", content: [{ type: "output_text", text: '{"kind":"continue"' }],
+    }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: '{"kind":"continue"' });
+    expect(result.requestMetadata).toMatchObject({ terminalClassification: "provider_message", parseClassification: "terminal_completion" });
   });
 
   test("normalizes a provider-native researched terminal message after web activity", async () => {
@@ -216,6 +238,17 @@ describe("configured AI provider", () => {
     global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [
       { type: "function_call", call_id: "call_1", name: "ph_0_products_get_summary", arguments: '{"query":"Banner"}' },
       { type: "message", content: [{ type: "output_text", text: "I will inspect the product next." }] },
+    ] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [{ name: "products.get_summary", description: "Read product summary" }] });
+
+    expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "products.get_summary" }] });
+  });
+
+  test("gives pending native function calls priority over a valid Operator decision", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [
+      { type: "function_call", call_id: "call_1", name: "ph_0_products_get_summary", arguments: '{"query":"Banner"}' },
+      { type: "message", content: [{ type: "output_text", text: '{"kind":"continue","workingSummary":"Internal control."}' }] },
     ] })) as unknown as typeof fetch;
 
     const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [{ name: "products.get_summary", description: "Read product summary" }] });
