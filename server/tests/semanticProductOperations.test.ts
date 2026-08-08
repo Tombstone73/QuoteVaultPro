@@ -33,6 +33,17 @@ describe("semantic product operations", () => {
     expect(next.pricing.cells.filter((cell) => cell.column === "five-layer").map((cell) => cell.priceCents)).toEqual([600, 600]);
   });
 
+  test("translates an explicit category correction while preserving the active product configuration", () => {
+    const current = productDraftIntentSchema.parse({ ...translucentIntent, identity: { ...translucentIntent.identity, category: { state: "resolved", id: "flatbed", label: "Flatbed Printing" } }, fieldMetadata: { ...translucentIntent.fieldMetadata, "identity.category": { source: "explicit_user" } } });
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [{ op: "set_category", category: "Roll Printing" }] }, 4, "I accidentally selected flatbed printing, but this would be roll printing.");
+    const next = applyProductDraftIntentPatch(current, patch);
+    expect(next.identity).toEqual({ ...current.identity, category: { state: "unresolved", label: "Roll Printing" } });
+    expect(next.fieldMetadata["identity.category"]).toEqual({ source: "explicit_user" });
+    expect(next.pricing).toEqual(current.pricing);
+    expect(next.optionGroups).toEqual(current.optionGroups);
+    expect(() => compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [{ op: "set_category", category: "Roll Printing" }] }, 4, "Change the current product.")).toThrow("CATEGORY_UNRESOLVED");
+  });
+
   test("the compiler accepts semantic continuation output and emits only a server-built canonical patch", async () => {
     const compiler = new ProductIntentCompiler({ generateJson: async () => ({
       rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_option_default", optionGroup: "Surface", value: "1st surface (right reading)" }, { op: "set_option_default", optionGroup: "Layers", value: "3 layers" }] }),

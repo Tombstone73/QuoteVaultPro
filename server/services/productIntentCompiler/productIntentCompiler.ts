@@ -197,7 +197,7 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
       "Use only candidate labels supplied by the server for tenant-scoped entities. If no supplied label is an unambiguous match, return an unresolved-question result.",
       "For continuations and corrections, preserve every existing authoritative intent field unless the request explicitly changes it.",
       continuation
-        ? "This is a continuation. Return only { kind: 'semantic_operations', operations: [...] }. Never return a complete intent or a canonical patch. Resolve every unambiguous active required issue answered by this message in one operation set; use business labels only and preserve every unrelated field."
+        ? "This is a continuation. Return only { kind: 'semantic_operations', operations: [...] }. Never return a complete intent or a canonical patch. Resolve every unambiguous active required issue answered by this message in one operation set; use business labels only and preserve every unrelated field. A category correction uses set_category with an exact tenant category label explicitly stated by the user."
         : "For an initial request, return { kind: 'complete_intent', intent: { ... } }.",
       "Do not turn preservation instructions into product options, materials, or entity references.",
       "Never set an active or published lifecycle. Confidence never makes a value execution-authorizing.",
@@ -212,7 +212,7 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
       allowedEnums: input.allowedEnums,
       supportedArchetypes: input.supportedArchetypes,
       candidateLabels: candidateLabelsForPrompt(input.candidateLabels),
-      ...(continuation ? { activeRequiredIssues: input.activeRequiredIssues ?? [], semanticOperationContract: { operations: "Use set_option_default with optionGroup and value display labels for each answered default; use set_pricing_basis with per_piece or per_square_foot when answering a matrix pricing basis. Do not use canonical keys, paths, ProductDraftIntentPatch operations, revisions, IDs, or PBV2 structures." } } : {}),
+      ...(continuation ? { activeRequiredIssues: input.activeRequiredIssues ?? [], semanticOperationContract: { operations: "Use set_option_default with optionGroup and value display labels for each answered default; use set_pricing_basis with per_piece or per_square_foot when answering a matrix pricing basis; use set_category only for an explicit user correction to an exact tenant category label. Do not use canonical keys, paths, ProductDraftIntentPatch operations, revisions, IDs, or PBV2 structures." } } : {}),
       serverConstraints: input.serverConstraints ?? [],
     }),
   };
@@ -382,11 +382,20 @@ function normalizeUnsafeProviderOperationalReferences(request: string, intent: R
     const reference = path === "identity.category" ? (rootValue as Record<string, unknown>).category : (rootValue as Record<string, unknown>).route;
     const sourceKind = (source as Record<string, unknown>).source;
     const label = reference && typeof reference === "object" && !Array.isArray(reference) ? (reference as Record<string, unknown>).label : null;
-    if (sourceKind !== "ai_interpreted" || typeof label !== "string" || !label.trim() || normalizedText(request).includes(normalizedText(label))) continue;
-    nextMetadata[path] = { source: "unresolved" };
-    next[root] = path === "identity.category"
-      ? { ...(rootValue as Record<string, unknown>), category: { state: "unresolved", label } }
-      : { ...(rootValue as Record<string, unknown>), route: unset ? { state: "explicitly_unset" } : { state: "unresolved", label } };
+    // A provider cannot self-assert that a tenant capability was supplied by
+    // the user. Only direct request evidence (or server/template provenance)
+    // may carry an operational reference into canonical state.
+    if (["selected_template", "canonical_default"].includes(String(sourceKind))) continue;
+    if (typeof label !== "string" || !label.trim() || !normalizedText(request).includes(normalizedText(label))) {
+      nextMetadata[path] = { source: "unresolved" };
+      next[root] = path === "identity.category"
+        ? { ...(rootValue as Record<string, unknown>), category: { state: "unresolved", label: typeof label === "string" && label.trim() ? label : "Product category" } }
+        : { ...(rootValue as Record<string, unknown>), route: unset ? { state: "explicitly_unset" } : { state: "unresolved", label } };
+      continue;
+    }
+    // Direct wording establishes the business source even if the provider
+    // initially labelled its interpretation differently.
+    nextMetadata[path] = { source: "explicit_user" };
   }
   return { ...next, fieldMetadata: nextMetadata };
 }
@@ -485,7 +494,7 @@ function normalizeSemanticContinuation(input: ProductIntentCompilerInput, value:
   if (!input.currentIntent || input.currentRevision == null || !value || typeof value !== "object" || Array.isArray(value)) return value;
   const parsed = semanticProductOperationsResultSchema.safeParse(value);
   if (!parsed.success) return value;
-  return { kind: "intent_patch", patch: compileSemanticProductOperations(input.currentIntent, parsed.data, input.currentRevision) };
+  return { kind: "intent_patch", patch: compileSemanticProductOperations(input.currentIntent, parsed.data, input.currentRevision, input.request) };
 }
 
 function providerFailureStage(error: unknown): ProductIntentCompilerFailureStage {

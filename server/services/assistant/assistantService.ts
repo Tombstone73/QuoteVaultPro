@@ -585,7 +585,7 @@ export class AssistantService {
       || hasPermission(actor, "assistant.products.update_inactive_draft_batch");
     const productIntentTools: AssistantOperatorSemanticTool[] = mayManageProducts ? [{
       name: "products.manage_intent",
-      description: "Start or continue an inactive Product Builder only when the user is asking to create or change a product. Do not use for questions about available product capabilities; answer those directly from this permission-aware catalog. Arguments: operation optional auto|continue|start_new. Never supplies product IDs, patch paths, or persistence metadata.",
+      description: "Start or continue an inactive Product Builder only when the user is asking to create or change a product. With an active unfinished canonical product task, use auto for its additions, corrections, defaults, prices, category changes, or removals; it preserves that task and its configuration. Use start_new only when the user explicitly asks for a distinct additional product while keeping the current one unfinished. Do not use for questions about available product capabilities; answer those directly from this permission-aware catalog. Arguments: operation optional auto|continue|start_new. Never supplies product IDs, patch paths, or persistence metadata.",
       execute: async ({ arguments: args, context }) => {
         const operation = args.operation === "start_new" || args.operation === "continue" ? args.operation : "auto";
         if (operation === "start_new" && context.task?.canonicalProductIntentProposalId) {
@@ -648,7 +648,7 @@ export class AssistantService {
       lastObservationSummary: run.observations.at(-1)?.warning ?? null,
       status: activeStatus,
     } });
-    console.info("[ASSISTANT_OPERATOR_RUNTIME] Ordinary free-text turn handled.", { correlationId, conversationId: conversation.id, taskId: task.id, outcome: run.status, toolCount: run.observations.length, legacyFallback: false });
+    console.info("[ASSISTANT_OPERATOR_RUNTIME] Ordinary free-text turn handled.", { correlationId, conversationId: conversation.id, taskId: task.id, outcome: run.status, toolCount: run.observations.length, ...run.diagnostics, legacyFallback: false });
     return this.persistOperatorResponse(input, { response, status, cards, errorCode: run.status === "failed" ? "operator_failed" : null, audits });
   }
 

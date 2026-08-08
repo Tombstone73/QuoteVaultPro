@@ -126,6 +126,52 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(result.card.fields["Category provenance"]).toBe("Unresolved");
   });
 
+  test("does not mislabel a provider-invented category as user supplied", async () => {
+    const payload = structuredClone(translucentVinylPayload);
+    payload.intent.identity.category = { state: "resolved", id: "flatbed-printing", label: "Flatbed Printing" };
+    payload.intent.fieldMetadata["identity.category"] = { source: "explicit_user" };
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: async () => ({ rawText: JSON.stringify(payload), provider: "openai_compatible", model: "provider-bound-test", requestMetadata: {} }) }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [], productionRoutes: [] });
+
+    const result = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "invented-category", compilerInput: { ...compilerInput(), request: "Create translucent vinyl with layered printing." } });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("Expected a canonical intent.");
+    expect(result.session.specification.session.revisions[0]!.intent.fieldMetadata["identity.category"]).toEqual({ source: "unresolved" });
+    expect(result.card.fields["Category provenance"]).toBe("Unresolved");
+  });
+
+  test("continues the same canonical product with an explicit roll-printing category correction", async () => {
+    const payload = structuredClone(translucentVinylPayload);
+    payload.intent.identity.category = { state: "resolved", id: "flatbed", label: "Flatbed Printing" };
+    payload.intent.fieldMetadata["identity.category"] = { source: "explicit_user" };
+    const provider = jest.fn(async (input: any) => {
+      const request = JSON.parse(input.user);
+      return request.currentIntent
+        ? { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_category", category: "Roll Printing" }] }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }
+        : { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
+    });
+    const store = new MemoryStore();
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(store), { categories: [{ id: "flatbed", label: "Flatbed Printing" }, { id: "roll", label: "Roll Printing" }], materials: [], productionRoutes: [] });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "roll-correction", compilerInput: { ...compilerInput(), request: "Create Translucent Vinyl - Multilayer Print Test 6 using Flatbed Printing." } });
+    if (!created.ok) throw new Error("Expected the active canonical product.");
+    const before = created.session.specification.session.revisions[0]!.intent;
+
+    const corrected = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "I accidentally selected flatbed printing, but this would be roll printing.", compilerInput: compilerInput() });
+
+    expect(corrected.ok).toBe(true);
+    if (!corrected.ok) throw new Error("Expected category correction to persist.");
+    const after = corrected.session.specification.session.revisions.at(-1)!.intent;
+    expect(corrected.session.proposalId).toBe(created.session.proposalId);
+    expect(corrected.session.specification.session.revisions).toHaveLength(2);
+    expect(after.identity.category).toEqual({ state: "resolved", id: "roll", label: "Roll Printing" });
+    expect(after.fieldMetadata["identity.category"]).toEqual({ source: "explicit_user" });
+    expect(after.optionGroups).toEqual(before.optionGroups);
+    expect(after.pricing).toEqual(before.pricing);
+    expect(after.material).toEqual(before.material);
+    expect(after.production).toEqual(before.production);
+    expect(corrected.card.fields["Category provenance"]).toBe("User supplied");
+  });
+
   test("answers one option-default question with a revision-bound patch and preserves all unrelated complex pricing", async () => {
     const payload = structuredClone(translucentVinylPayload);
     payload.intent.identity.category = { state: "resolved", id: "signs", label: "Signs" };
@@ -134,7 +180,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), {
       categories: [{ id: "signs", label: "Signs" }], materials: [], productionRoutes: [],
     });
-    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "translucent-defaults", compilerInput: { ...compilerInput(), request: "Create Translucent Vinyl - Multilayer Print Test 8." } });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "translucent-defaults", compilerInput: { ...compilerInput(), request: "Create Translucent Vinyl - Multilayer Print Test 8 in Signs." } });
     if (!created.ok) throw new Error("Expected a canonical complex-product session.");
 
     const layersAnswer = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "3 Layers", compilerInput: compilerInput() });

@@ -195,7 +195,7 @@ function deterministicAnswerPatch(intent: ProductDraftIntent, answers: readonly 
   };
 }
 
-function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch: ProductDraftIntentPatch, answers: readonly UnresolvedQuestionAnswer[]): boolean {
+function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch: ProductDraftIntentPatch, answers: readonly UnresolvedQuestionAnswer[], request: string): boolean {
   if (answers.length === 0) return true;
   const optionAnswers = new Map(answers
     .filter((answer) => answer.canonicalPath.startsWith("optionGroups.") && answer.canonicalPath.endsWith(".default"))
@@ -206,6 +206,7 @@ function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch:
   let optionGroupsReplaced = false;
   let pricingUpdated = false;
   let unresolvedFieldsUpdated = false;
+  let identityUpdated = false;
   for (const operation of patch.operations) {
     if (operation.op === "replace_option_groups") {
       if (optionGroupsReplaced || operation.value.length !== intent.optionGroups.length) return false;
@@ -232,6 +233,12 @@ function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch:
       }
       continue;
     }
+    if (operation.op === "set_identity") {
+      if (identityUpdated || operation.value.name !== intent.identity.name || operation.value.description !== intent.identity.description || operation.value.category.state !== "unresolved" || !normalizeAnswer(request).includes(normalizeAnswer(operation.value.category.label))) return false;
+      identityUpdated = true;
+      touchedPaths.add("identity.category");
+      continue;
+    }
     if (operation.op === "set_pricing") {
       if (!pricingAnswer || intent.pricing.model !== "two_dimensional_matrix" || pricingUpdated) return false;
       pricingUpdated = true;
@@ -251,7 +258,7 @@ function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch:
     if (operation.op === "merge_field_metadata") {
       for (const path of Object.keys(operation.value)) {
         const canonicalPath = path === "pricing.unit" ? "pricing.matrix.unit" : path;
-        if (!answers.some((answer) => answer.canonicalPath === canonicalPath)) return false;
+        if (canonicalPath !== "identity.category" && !answers.some((answer) => answer.canonicalPath === canonicalPath)) return false;
         metadataPaths.add(canonicalPath);
       }
       continue;
@@ -496,7 +503,7 @@ export class CanonicalProductIntentService {
         // continuation reference and context. Do not write a duplicate event.
         if (!compiled.ok) return { ok: false, code: compiled.error.code, message: compiled.error.message };
         if (compiled.result.kind !== "intent_patch") return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "provider_result_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compiled.result.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNMATCHED", message: activeAnswers.length === 1 ? `I could not apply that answer to the current product question. Please choose ${activeAnswers[0]!.allowedChoices.map((choice) => choice.displayLabel).join(" or ")}. Reference: ${referenceId}.` : `I could not apply that answer to the current product question. Please answer the outstanding product question. Reference: ${referenceId}.` });
-        if (!providerPatchIsScopedToActiveAnswers(draft, compiled.result.patch, activeAnswers)) return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "patch_scope_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compiled.result.kind, patch: compiled.result.patch, code: "PRODUCT_INTENT_PATCH_OUT_OF_SCOPE", message: `I could not apply that answer to the current product question. Please review the available choices and try again. Reference: ${referenceId}.` });
+        if (!providerPatchIsScopedToActiveAnswers(draft, compiled.result.patch, activeAnswers, input.request)) return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "patch_scope_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compiled.result.kind, patch: compiled.result.patch, code: "PRODUCT_INTENT_PATCH_OUT_OF_SCOPE", message: `I could not apply that answer to the current product question. Please review the available choices and try again. Reference: ${referenceId}.` });
         sourcePatch = compiled.result.patch;
         compilerResult = compiled.result;
       }
@@ -506,7 +513,8 @@ export class CanonicalProductIntentService {
       continuationStage = "full_intent_validation";
       const { intent, issues } = await this.validate(patched, (stage) => { continuationStage = stage === "tenant_reference_resolution" ? "tenant_reference_resolution" : "resolver_validation"; });
       const resolvedAnswers = activeAnswers.filter((answer) => !issues.some((issue) => issue.id === `${intent.revision}:${answer.canonicalPath}:required`));
-      if (resolvedAnswers.length === 0) return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "resolver_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compilerResult?.kind, patch: sourcePatch, resolverStage: "required_answer_resolution", code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNRESOLVED", message: `I could not apply that answer to the current product question. Please review the available choices and try again. Reference: ${referenceId}.` });
+      const correctionChangedIntent = productDraftIntentFingerprint(draft) !== productDraftIntentFingerprint(intent);
+      if (resolvedAnswers.length === 0 && !correctionChangedIntent) return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "resolver_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compilerResult?.kind, patch: sourcePatch, resolverStage: "required_answer_resolution", code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNRESOLVED", message: `I could not apply that answer to the current product question. Please review the available choices and try again. Reference: ${referenceId}.` });
       const patch = replacementPatch(intent, current.specification.session.currentRevision);
       continuationStage = "revision_persistence";
       const session = await this.persistence.appendPatch({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, expectedRevision: current.specification.session.currentRevision, expectedFingerprint: current.fingerprint, patch, reason: deterministic ? "answer" : "correction", compilerResult, unresolvedQuestions: questionsFrom(intent, issues) });
