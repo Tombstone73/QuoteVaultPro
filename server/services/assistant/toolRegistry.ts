@@ -172,7 +172,7 @@ const toolMetadata = {
     modelSummarizationAllowed: true,
   },
   "products.get_pricing": {
-    description: "Project an authoritative PBV2 customer price for one tenant-scoped product and an optional quantity, dimensions, and option-selection scenario. When only a product name is known, first use search.global to establish a trusted product reference; use products.get_summary to inspect configuration when needed. This read never changes a product, quote, or order.",
+    description: "Project an authoritative PBV2 customer price for one tenant-scoped product and an optional quantity, dimensions, and option-selection scenario. When only a product name is known, use search.global to establish a trusted product reference; use products.get_summary to inspect configuration when needed. This read never changes a product, quote, or order.",
     requiredPermission: "finance_read",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantProductPricingInputSchema,
