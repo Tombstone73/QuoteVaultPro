@@ -92,6 +92,19 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     expect(generateOperatorDecision.mock.calls[1]?.[0].responseContinuation).toEqual([expect.objectContaining({ type: "web_search_call" })]);
   });
 
+  test("keeps provider-verified sources on a long researched response", async () => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const response = `Long comparison: ${"commercial-print evidence. ".repeat(430)}`;
+    expect(response.length).toBeGreaterThan(8_000);
+    const generateOperatorDecision = jest.fn(async () => ({ rawText: JSON.stringify({ kind: "complete", response }), requestMetadata: { nativeWebSources: [{ title: "Long source", url: "https://example.com/long", domain: "example.com" }] }, operatorContinuation: { items: [], functionCalls: [] } }));
+    const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson: jest.fn(), generateOperatorDecision } as any, { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "test", model: "deepseek-v4-flash" })) } as any);
+
+    const decision = await provider.decide({ goal: "Research current printable sidewalk vinyl.", taskId: "task_long_web", step: 1, remainingSteps: 15, toolCatalog: [], observations: [], safeWorkingSummary: null });
+
+    expect(decision).toMatchObject({ kind: "complete", response: expect.stringContaining("Provider-verified sources:") });
+    expect((decision as any).response.length).toBeGreaterThan(8_000);
+  });
+
   test("converts a typed incomplete provider result into a useful safe failure", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const provider = new ConfiguredAssistantOperatorDecisionProvider(

@@ -1,11 +1,18 @@
 import { describe, expect, jest, test } from "@jest/globals";
-import { AssistantOperatorRuntime, parseAssistantOperatorDecisionText, type AssistantOperatorDecisionProvider, type AssistantOperatorToolExecutor } from "../services/assistant/operatorRuntime";
+import { AssistantOperatorRuntime, ASSISTANT_OPERATOR_MAX_STEPS, parseAssistantOperatorDecisionText, resolveAiOperatorMaxSteps, type AssistantOperatorDecisionProvider, type AssistantOperatorToolExecutor } from "../services/assistant/operatorRuntime";
 import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
 
 const context = assistantContextEnvelopeSchema.parse({ contextVersion: "v1", route: "/orders", pageTitle: "Orders", selectedRecordIds: [], activeFilters: [], capturedAt: "2026-08-07T12:00:00.000Z", unsavedChanges: false });
 const trustedContext = { scope: { organizationId: "org_1", userId: "user_1" }, actor: { userId: "user_1", email: "user@example.test" }, permissions: ["assistant.internal_staff"], context, correlationId: "correlation_1", goal: "test goal" };
 
 describe("AssistantOperatorRuntime", () => {
+  test("uses a configurable bounded investigation budget with a sixteen-step default", () => {
+    expect(resolveAiOperatorMaxSteps({} as NodeJS.ProcessEnv)).toBe(16);
+    expect(resolveAiOperatorMaxSteps({ AI_OPERATOR_MAX_STEPS: "20" } as NodeJS.ProcessEnv)).toBe(20);
+    expect(resolveAiOperatorMaxSteps({ AI_OPERATOR_MAX_STEPS: "999" } as NodeJS.ProcessEnv)).toBe(ASSISTANT_OPERATOR_MAX_STEPS);
+    expect(resolveAiOperatorMaxSteps({ AI_OPERATOR_MAX_STEPS: "invalid" } as NodeJS.ProcessEnv)).toBe(16);
+  });
+
   test("recognizes only complete schema-valid Operator control JSON", () => {
     expect(parseAssistantOperatorDecisionText('{"kind":"continue","workingSummary":"Searching catalog."}')).toEqual({ kind: "continue", workingSummary: "Searching catalog." });
     expect(parseAssistantOperatorDecisionText('{"kind":"call_tools","calls":[{"toolName":"search.global","arguments":{"query":"banner"}}]}')).toMatchObject({ kind: "call_tools" });
@@ -86,6 +93,37 @@ describe("AssistantOperatorRuntime", () => {
     expect(result).toMatchObject({ status: "completed", response: "I completed the multi-source public research." });
     expect(provider.decide).toHaveBeenCalledTimes(3);
     expect(execute).not.toHaveBeenCalled();
+  });
+
+  test("completes a realistic investigation that exceeds the legacy eight-decision limit", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: jest.fn(async ({ step }) => step < 11
+      ? step % 2 === 0
+        ? { kind: "call_tools", calls: [{ toolName: step === 2 ? "search.global" : step === 4 ? "products.get_summary" : step === 6 ? "products.get_pricing" : step === 8 ? "analysis.run" : "web.open", arguments: {} }] }
+        : { kind: "continue", workingSummary: "Continuing the authorized investigation." }
+      : { kind: "complete", response: "I completed the internal and public comparison from the gathered evidence." }), };
+    const execute = jest.fn(async ({ toolName }) => ({ toolName, status: "succeeded" as const, result: { status: "succeeded" as const, data: { verified: true }, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-08T12:00:00.000Z" } } } as any }));
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Compare banner pricing with current public options.", taskId: "task_long", trustedContext });
+
+    expect(result).toMatchObject({ status: "completed", response: expect.stringContaining("completed") });
+    expect(provider.decide).toHaveBeenCalledTimes(11);
+    expect(result.diagnostics).toMatchObject({ configuredMaxSteps: 16, stepsConsumed: 11, providerDecisionCount: 11, printersHeroToolDecisionCount: 5, continuationCount: 5, finalSynthesisUsed: false });
+  });
+
+  test("uses one evidence-only final synthesis instead of asking the user to retry at the safety limit", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: jest.fn(async ({ step, finalSynthesis, toolCatalog, observations }) => {
+      if (finalSynthesis) {
+        expect(step).toBe(3);
+        expect(toolCatalog).toEqual([]);
+        expect(observations).toHaveLength(2);
+        return { kind: "complete", response: "I established the internal price, but the available research capacity did not produce enough comparable local offers for a reliable market conclusion." };
+      }
+      return { kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: {} }], workingSummary: "Gathering authorized pricing." };
+    }) };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [{ name: "products.get_pricing", description: "Price" }], execute: async ({ toolName }) => ({ toolName, status: "succeeded", result: { status: "succeeded", data: { priceCents: 12500 }, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-08T12:00:00.000Z" } } } as any }) }, 2).run({ goal: "Compare banner prices.", taskId: "task_synthesis", trustedContext });
+
+    expect(result).toMatchObject({ status: "completed", diagnostics: { finalSynthesisUsed: true, configuredMaxSteps: 2, stepsConsumed: 2, providerDecisionCount: 3 } });
+    expect(result.response).not.toContain("Please try again");
+    expect(result.response).not.toContain('"kind"');
   });
 
   test("keeps a mixed catalog, pricing, and native-web investigation inside the Operator loop", async () => {

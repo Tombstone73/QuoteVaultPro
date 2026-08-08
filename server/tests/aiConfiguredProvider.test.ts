@@ -6,6 +6,7 @@ import {
   OpenAiCompatibleBugReviewProvider,
   resolveAiOperatorProviderTimeoutMs,
   resolveAiJsonMaxTokens,
+  resolveAiOperatorMaxOutputTokens,
   resolveAiProviderTimeoutMs,
 } from "../services/ai/providers/configuredProvider";
 import { resolveOpenAiCompatibleRequestPolicy } from "../services/ai/providers/providerRequestPolicy";
@@ -155,6 +156,13 @@ describe("configured AI provider", () => {
     expect(result.requestMetadata).toMatchObject({ terminalClassification: "operator_decision", parseClassification: "operator_decision" });
   });
 
+  test("uses a separate bounded output budget for Operator Responses", () => {
+    expect(resolveAiOperatorMaxOutputTokens({} as NodeJS.ProcessEnv)).toBe(8192);
+    expect(resolveAiOperatorMaxOutputTokens({ AI_OPERATOR_MAX_OUTPUT_TOKENS: "12000" } as NodeJS.ProcessEnv)).toBe(12000);
+    expect(resolveAiOperatorMaxOutputTokens({ AI_OPERATOR_MAX_OUTPUT_TOKENS: "999999" } as NodeJS.ProcessEnv)).toBe(16384);
+    expect(resolveAiOperatorMaxOutputTokens({ AI_OPERATOR_MAX_OUTPUT_TOKENS: "invalid" } as NodeJS.ProcessEnv)).toBe(8192);
+  });
+
   test("preserves a valid Operator continue decision instead of rendering it as native prose", async () => {
     global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{
       type: "message", content: [{ type: "output_text", text: '{"kind":"continue","workingSummary":"Searching the catalog for a trusted banner reference."}' }],
@@ -243,6 +251,23 @@ describe("configured AI provider", () => {
     const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [{ name: "products.get_summary", description: "Read product summary" }] });
 
     expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "products.get_summary" }] });
+  });
+
+  test("accepts a long native-web terminal response and preserves source metadata", async () => {
+    const longAnswer = `Research summary: ${"current commercial-print comparison. ".repeat(420)}`.trim();
+    expect(longAnswer.length).toBeGreaterThan(8_000);
+    const fetchMock = jest.fn(async () => jsonResponse({ status: "completed", output: [
+      { type: "web_search_call", status: "completed", action: { type: "search", query: "sidewalk vinyl" } },
+      { type: "message", content: [{ type: "output_text", text: longAnswer, annotations: [{ id: "long_source", title: "Commercial printable vinyl", url: "https://supplier.example/long-vinyl" }] }] },
+    ] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+
+    expect(body.max_output_tokens).toBe(8192);
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: longAnswer });
+    expect(result.requestMetadata.nativeWebSources).toEqual([expect.objectContaining({ title: "Commercial printable vinyl", url: "https://supplier.example/long-vinyl" })]);
   });
 
   test("gives pending native function calls priority over a valid Operator decision", async () => {

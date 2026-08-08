@@ -14,6 +14,8 @@ const DEFAULT_AI_JSON_MAX_TOKENS = 2048;
 const MIN_AI_JSON_MAX_TOKENS = 128;
 const MAX_AI_JSON_MAX_TOKENS = 4096;
 export const DEFAULT_AI_OPERATOR_PROVIDER_TIMEOUT_MS = 120_000;
+export const DEFAULT_AI_OPERATOR_MAX_OUTPUT_TOKENS = 8_192;
+export const MAX_AI_OPERATOR_MAX_OUTPUT_TOKENS = 16_384;
 
 export function resolveAiProviderTimeoutMs(overrideMs?: number): number {
   if (Number.isFinite(overrideMs) && Number(overrideMs) > 0) return Number(overrideMs);
@@ -29,6 +31,14 @@ export function resolveAiOperatorProviderTimeoutMs(env: NodeJS.ProcessEnv = proc
 
 function clampInteger(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, Math.floor(value)));
+}
+
+/** Operator reports are not small structured-JSON tasks. Keep this separate
+ * from AI_PROVIDER_JSON_MAX_TOKENS while retaining a hard resource ceiling. */
+export function resolveAiOperatorMaxOutputTokens(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.AI_OPERATOR_MAX_OUTPUT_TOKENS);
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_AI_OPERATOR_MAX_OUTPUT_TOKENS;
+  return clampInteger(configured, MIN_AI_JSON_MAX_TOKENS, MAX_AI_OPERATOR_MAX_OUTPUT_TOKENS);
 }
 
 export function resolveAiJsonMaxTokens(overrideTokens?: number, env: NodeJS.ProcessEnv = process.env): number {
@@ -175,6 +185,7 @@ function logProviderFailure(args: {
   providerRequestId?: string | null;
   providerErrorType?: string | null;
   providerErrorCode?: string | null;
+  incompleteReason?: string | null;
   failureKind: string;
   timeoutMs: number;
   elapsedMs: number;
@@ -191,6 +202,7 @@ function logProviderFailure(args: {
     providerRequestId: args.providerRequestId ?? null,
     providerErrorType: args.providerErrorType ?? null,
     providerErrorCode: args.providerErrorCode ?? null,
+    incompleteReason: args.incompleteReason ?? null,
     failureKind: args.failureKind,
     timeoutMs: args.timeoutMs,
     elapsedMs: args.elapsedMs,
@@ -463,7 +475,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
           // the response budget before the native web result is expressed.
           reasoning: { effort: "none" },
           text: { format: { type: "json_object" } },
-          max_output_tokens: resolveAiJsonMaxTokens(request.maxTokens),
+          max_output_tokens: resolveAiOperatorMaxOutputTokens(),
         }),
       });
       if (!response.ok) {
@@ -498,7 +510,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       const hasTerminalDecision = Boolean(terminalDecision || terminalCompletion);
       if (responseStatus !== "unknown" && responseStatus !== "completed") {
         const failureKind = responseStatus === "incomplete" && incompleteReason === "max_output_tokens" ? "truncated_output" : "malformed_response";
-        logProviderFailure({ message: "[AI_PROVIDER] DeepSeek Responses Operator did not reach a terminal completion.", provider: config.provider, model: config.model, endpoint, status: response.status, providerRequestId, providerErrorCode, failureKind, timeoutMs, elapsedMs: Date.now() - started, feature: request.feature, useCase: request.timeoutUseCase ?? request.feature });
+        logProviderFailure({ message: "[AI_PROVIDER] DeepSeek Responses Operator did not reach a terminal completion.", provider: config.provider, model: config.model, endpoint, status: response.status, providerRequestId, providerErrorCode, incompleteReason, failureKind, timeoutMs, elapsedMs: Date.now() - started, feature: request.feature, useCase: request.timeoutUseCase ?? request.feature });
         throw new AiProviderResponseError({ kind: failureKind, status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek Responses did not return a complete Operator result." });
       }
       const rawText = functionCalls.length
@@ -522,6 +534,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         nativeWebSearchCallCount: nativeWebSearchCalls.length,
         nativeWebSearchActionCount: webSearchActions.length,
         nativeWebSourceCount: webSources.length,
+        configuredOperatorMaxOutputTokens: resolveAiOperatorMaxOutputTokens(),
         messageOutputTextPresent: Boolean(finalText),
         terminalClassification,
         continuationReason: functionCalls.length ? "function_calls" : nativeWebSearchCalls.length && !hasTerminalDecision ? "native_web_activity" : null,
@@ -535,6 +548,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
           latencyMs: Date.now() - started, promptVersion: request.promptVersion, mode: config.mode, source: config.source,
           providerRequestId, providerResponseId: safeProviderDiagnosticToken(body?.id), usage: body?.usage ?? null,
           apiSurface: "deepseek_responses", toolChoice: "auto", nativeWebSearch: true,
+          configuredOperatorMaxOutputTokens: resolveAiOperatorMaxOutputTokens(),
           requestSequence: request.operatorRequestSequence ?? null, responseStatus, httpStatus: response.status,
           outputItemCount: output.length, outputItemTypes, outputItemStatuses,
           functionAliases: functionCalls.map((item: any) => item.name).slice(0, 12),

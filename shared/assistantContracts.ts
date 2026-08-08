@@ -981,10 +981,12 @@ export const assistantUsageCorrelationSchema = z.object({
 }).strict();
 export type AssistantUsageCorrelation = z.infer<typeof assistantUsageCorrelationSchema>;
 
+export const ASSISTANT_MESSAGE_MAX_CONTENT_CHARS = 32_000;
+
 export const assistantMessageSchema = z.object({
   id: assistantSafeIdentifierSchema,
   role: z.enum(assistantMessageRoleValues),
-  content: z.string().max(8_000),
+  content: z.string().max(ASSISTANT_MESSAGE_MAX_CONTENT_CHARS),
   /** Server-derived rendering intent; this is metadata, not a visible card. */
   presentation: z.enum(assistantResponsePresentationValues).optional(),
   /** Server-derived interaction state; never infer this from card titles. */

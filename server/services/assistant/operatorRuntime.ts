@@ -1,12 +1,21 @@
 import { z } from "zod";
-import type { AssistantContextEnvelope, AssistantStructuredCard, AssistantToolResultEnvelope } from "@shared/assistantContracts";
+import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, type AssistantContextEnvelope, type AssistantStructuredCard, type AssistantToolResultEnvelope } from "@shared/assistantContracts";
 
 /**
  * The operator loop is intentionally separate from provider transport and
  * persistence.  The model owns the next safe business step; server-owned
  * tools own authorization, validation, tenancy, and observations.
  */
-export const ASSISTANT_OPERATOR_MAX_STEPS = 8;
+export const DEFAULT_ASSISTANT_OPERATOR_MAX_STEPS = 16;
+export const ASSISTANT_OPERATOR_MAX_STEPS = 24;
+
+/** Optional per-deployment investigation budget. It stays finite even when
+ * configured incorrectly, while the default permits real multi-source work. */
+export function resolveAiOperatorMaxSteps(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.AI_OPERATOR_MAX_STEPS);
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_ASSISTANT_OPERATOR_MAX_STEPS;
+  return Math.max(1, Math.min(ASSISTANT_OPERATOR_MAX_STEPS, Math.floor(configured)));
+}
 
 const operatorToolCallSchema = z.object({
   toolName: z.string().trim().min(1).max(120),
@@ -19,7 +28,7 @@ export const assistantOperatorDecisionSchema = z.discriminatedUnion("kind", [
    * request before it can produce a user-visible decision. */
   z.object({ kind: z.literal("continue"), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("ask_user"), question: z.string().trim().min(1).max(1_000), missingInformation: z.array(z.string().trim().min(1).max(160)).min(1).max(12), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
-  z.object({ kind: z.literal("complete"), response: z.string().trim().min(1).max(8_000), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
+  z.object({ kind: z.literal("complete"), response: z.string().trim().min(1).max(ASSISTANT_MESSAGE_MAX_CONTENT_CHARS), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("fail"), response: z.string().trim().min(1).max(1_000), recoverySummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
 ]);
 export type AssistantOperatorDecision = z.infer<typeof assistantOperatorDecisionSchema>;
@@ -105,6 +114,9 @@ export interface AssistantOperatorDecisionProvider {
     observations: readonly AssistantOperatorObservation[];
     safeWorkingSummary: string | null;
     task?: AssistantOperatorTrustedContext["task"];
+    /** Final evidence-only response opportunity after the investigation
+     * budget is exhausted. It always has an empty tool catalog. */
+    finalSynthesis?: boolean;
   }): Promise<unknown>;
 }
 
@@ -114,7 +126,17 @@ export type AssistantOperatorRunResult = {
   observations: AssistantOperatorObservation[];
   safeWorkingSummary: string | null;
   missingInformation: string[];
+  diagnostics: {
+    configuredMaxSteps: number;
+    stepsConsumed: number;
+    providerDecisionCount: number;
+    printersHeroToolDecisionCount: number;
+    continuationCount: number;
+    finalSynthesisUsed: boolean;
+  };
 };
+
+function runtimeDiagnostics(input: AssistantOperatorRunResult["diagnostics"]) { return input; }
 
 function safeFailureResponse(observations: readonly AssistantOperatorObservation[]): string {
   const last = observations.at(-1);
@@ -146,27 +168,31 @@ export class AssistantOperatorRuntime {
   constructor(
     private readonly provider: AssistantOperatorDecisionProvider,
     private readonly tools: AssistantOperatorToolExecutor,
-    private readonly maxSteps = ASSISTANT_OPERATOR_MAX_STEPS,
+    private readonly maxSteps = resolveAiOperatorMaxSteps(),
   ) {}
 
   async run(input: { goal: string; taskId: string; trustedContext: AssistantOperatorTrustedContext; initialWorkingSummary?: string | null }): Promise<AssistantOperatorRunResult> {
     const observations: AssistantOperatorObservation[] = [];
     let safeWorkingSummary = input.initialWorkingSummary ?? null;
     const boundedSteps = Math.max(1, Math.min(ASSISTANT_OPERATOR_MAX_STEPS, this.maxSteps));
+    let providerDecisionCount = 0;
+    let printersHeroToolDecisionCount = 0;
+    let continuationCount = 0;
 
     for (let step = 1; step <= boundedSteps; step += 1) {
       let decision: AssistantOperatorDecision;
       try {
+        providerDecisionCount += 1;
         decision = assistantOperatorDecisionSchema.parse(await this.provider.decide({
           goal: input.goal, taskId: input.taskId, step, remainingSteps: boundedSteps - step,
           toolCatalog: this.tools.catalog(), observations, safeWorkingSummary, task: input.trustedContext.task,
         }));
       } catch {
-        return { status: "failed", response: safeFailureResponse(observations), observations, safeWorkingSummary, missingInformation: [] };
+        return { status: "failed", response: safeFailureResponse(observations), observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       }
       safeWorkingSummary = decision.kind === "fail" ? decision.recoverySummary ?? safeWorkingSummary : decision.workingSummary ?? safeWorkingSummary;
-      if (decision.kind === "continue") continue;
-      if (decision.kind === "complete") return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [] };
+      if (decision.kind === "continue") { continuationCount += 1; continue; }
+      if (decision.kind === "complete") return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       if (decision.kind === "ask_user") {
         if (repeatsPriorClarification(input.trustedContext.task?.missingInformation ?? [], decision.missingInformation)) {
           return {
@@ -174,13 +200,14 @@ export class AssistantOperatorRuntime {
             response: "I couldn't reconcile the information already provided with the outstanding request. I won't repeat the same clarification; please start a new request if you still need help.",
             observations,
             safeWorkingSummary,
-            missingInformation: [],
+            missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }),
           };
         }
-        return { status: "awaiting_input", response: decision.question, observations, safeWorkingSummary, missingInformation: decision.missingInformation };
+        return { status: "awaiting_input", response: decision.question, observations, safeWorkingSummary, missingInformation: decision.missingInformation, diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       }
-      if (decision.kind === "fail") return { status: "failed", response: decision.response, observations, safeWorkingSummary, missingInformation: [] };
+      if (decision.kind === "fail") return { status: "failed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
 
+      printersHeroToolDecisionCount += 1;
       for (const call of decision.calls) {
         try {
           const execution = await this.tools.execute({ toolName: call.toolName, arguments: call.arguments, context: { ...input.trustedContext, analysisObservations: observations } });
@@ -193,12 +220,22 @@ export class AssistantOperatorRuntime {
         }
       }
     }
-    return {
-      status: "step_limit",
-      response: "I need one more safe investigation step to finish that request. Please try again.",
-      observations,
-      safeWorkingSummary,
-      missingInformation: [],
-    };
+    // This is intentionally not another investigation step: it has existing
+    // evidence only and an empty catalog, so it cannot create more work.
+    try {
+      providerDecisionCount += 1;
+      const synthesis = assistantOperatorDecisionSchema.parse(await this.provider.decide({
+        goal: input.goal, taskId: input.taskId, step: boundedSteps + 1, remainingSteps: 0,
+        toolCatalog: [], observations, safeWorkingSummary, task: input.trustedContext.task, finalSynthesis: true,
+      }));
+      safeWorkingSummary = synthesis.kind === "fail" ? synthesis.recoverySummary ?? safeWorkingSummary : synthesis.workingSummary ?? safeWorkingSummary;
+      if (synthesis.kind === "complete") return { status: "completed", response: synthesis.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: boundedSteps, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: true }) };
+      if (synthesis.kind === "fail") return { status: "failed", response: synthesis.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: boundedSteps, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: true }) };
+    } catch {
+      // The completed observations remain persisted and available in cards.
+    }
+    return { status: "step_limit", response: observations.length
+      ? "I completed the available investigation steps, but could not safely produce a final synthesis from the evidence gathered. The completed results remain available above."
+      : "I could not complete the investigation within the configured safety limit.", observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: boundedSteps, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: true }) };
   }
 }

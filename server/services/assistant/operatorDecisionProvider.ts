@@ -3,6 +3,7 @@ import { AiProviderResponseError, AiProviderTimeoutError, AiProviderUnavailableE
 import { aiProviderResolver, type ResolvedAiProvider } from "../ai/aiProviderResolver";
 import { resolveAiOperatorProviderTimeoutMs } from "../ai/providers/configuredProvider";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
+import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS } from "@shared/assistantContracts";
 import type { AssistantOperatorDecisionProvider } from "./operatorRuntime";
 
 export interface AssistantOperatorProviderResolver {
@@ -55,6 +56,9 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       "The registered catalog is permission-aware. Questions about what the assistant can do are informational: answer directly from that catalog without invoking an underlying planning or action capability. Invoke a planning capability only when the user is actually requesting the work.",
       "Use an unambiguous trusted active-task entity reference for a follow-up instead of asking the user to repeat it.",
       "Protected mutations are represented only by semantic planning tools and must never execute a mutation directly.",
+      input.finalSynthesis
+        ? "Investigation capacity is exhausted. Produce one truthful final synthesis using only supplied observations and active-task context. You have no tools in this response: do not return call_tools or continue, do not claim unobserved research, and clearly state evidence gaps."
+        : "",
     ].join(" ");
     const user = JSON.stringify({
       goal: input.goal,
@@ -68,6 +72,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       },
       step: input.step,
       remainingSteps: input.remainingSteps,
+      finalSynthesis: Boolean(input.finalSynthesis),
       tools: input.toolCatalog,
       observations: input.observations.map((observation) => ({ toolName: observation.toolName, status: observation.status, result: observation.result?.data ?? null, warning: observation.warning ?? null })),
     });
@@ -144,9 +149,16 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
     if (!safeSources.length) return decision;
     const complete = decision as { response?: unknown };
     if (typeof complete.response !== "string") return decision;
-    const appendix = safeSources.map((source) => `- [${source.title}](${source.url}) (${source.domain})`).join("\n");
-    const response = `${complete.response}\n\nProvider-verified sources:\n${appendix}`;
-    return response.length <= 8_000 ? { ...complete, response } : decision;
+    const lines = safeSources.map((source) => `- [${source.title}](${source.url}) (${source.domain})`);
+    const heading = "\n\nProvider-verified sources:\n";
+    const available = ASSISTANT_MESSAGE_MAX_CONTENT_CHARS - complete.response.length - heading.length;
+    if (available <= 0) return decision;
+    const included: string[] = [];
+    for (const line of lines) {
+      if (included.join("\n").length + line.length + (included.length ? 1 : 0) > available) break;
+      included.push(line);
+    }
+    return included.length ? { ...complete, response: `${complete.response}${heading}${included.join("\n")}` } : decision;
   }
 }
 
