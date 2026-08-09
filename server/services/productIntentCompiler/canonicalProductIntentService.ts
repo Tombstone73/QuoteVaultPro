@@ -200,7 +200,106 @@ function deterministicAnswerPatch(intent: ProductDraftIntent, answers: readonly 
   };
 }
 
-function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch: ProductDraftIntentPatch, answers: readonly UnresolvedQuestionAnswer[], request: string): boolean {
+function requestSupportsCandidateCategoryCorrection(intent: ProductDraftIntent, request: string, targetLabel: string, candidateLabels: readonly string[]): boolean {
+  const requestTokens = normalizeAnswer(request).split(" ").filter((token) => token.length > 1);
+  const target = normalizeAnswer(targetLabel);
+  if (target && normalizeAnswer(request).includes(target)) return true;
+  const current = normalizeAnswer(intent.identity.category.label);
+  const matchingCandidates = Array.from(new Set(candidateLabels.map(normalizeAnswer).filter(Boolean)))
+    .filter((label) => label !== current)
+    .filter((label) => label.split(" ").some((token) => token.length > 1 && requestTokens.includes(token)));
+  return matchingCandidates.length === 1 && matchingCandidates[0] === target;
+}
+
+function requestMentions(request: string, ...labels: string[]): boolean {
+  const requestTokens = normalizeAnswer(request).split(" ").filter(Boolean);
+  return labels.every((label) => includesTokenSequence(requestTokens, normalizeAnswer(label).split(" ").filter(Boolean)));
+}
+
+/** A semantic continuation is still a server-built patch, but it may correct
+ * an explicit product field while unrelated required questions remain open.
+ * Accept only narrow, evidence-backed structural deltas. */
+function providerPatchIsExplicitSemanticCorrection(intent: ProductDraftIntent, patch: ProductDraftIntentPatch, request: string, categoryLabels: readonly string[]): boolean {
+  const metadata = patch.operations.find((operation) => operation.op === "merge_field_metadata");
+  const metadataPaths = metadata?.op === "merge_field_metadata" ? new Set(Object.keys(metadata.value)) : new Set<string>();
+  const nonMetadataOperations = patch.operations.filter((operation) => operation.op !== "merge_field_metadata");
+  if (!metadataPaths.size || !nonMetadataOperations.length) return false;
+  let changed = false;
+  for (const operation of nonMetadataOperations) {
+    if (operation.op === "set_identity") {
+      const nameChanged = operation.value.name !== intent.identity.name;
+      const categoryChanged = JSON.stringify(operation.value.category) !== JSON.stringify(intent.identity.category);
+      if (operation.value.description !== intent.identity.description || (!nameChanged && !categoryChanged)) return false;
+      if (nameChanged && (!metadataPaths.has("identity.name") || !requestMentions(request, operation.value.name))) return false;
+      if (categoryChanged && (operation.value.category.state !== "unresolved" || !metadataPaths.has("identity.category") || !requestSupportsCandidateCategoryCorrection(intent, request, operation.value.category.label, categoryLabels))) return false;
+      changed = true;
+      continue;
+    }
+    if (operation.op === "set_workflow") {
+      if (!metadataPaths.has("workflow.requiresProofApproval") || !/\bproof\b/i.test(request)
+        || operation.value.kind !== intent.workflow.kind || operation.value.requiresProductionJob !== intent.workflow.requiresProductionJob
+        || operation.value.requiresProofApproval === intent.workflow.requiresProofApproval) return false;
+      changed = true;
+      continue;
+    }
+    if (operation.op === "replace_option_groups") {
+      const nextByKey = new Map(operation.value.map((group) => [group.key, group]));
+      if (nextByKey.size !== operation.value.length || operation.value.length > intent.optionGroups.length) return false;
+      for (const current of intent.optionGroups) {
+        const next = nextByKey.get(current.key);
+        if (!next) {
+          if (!metadataPaths.has(`optionGroups.${current.key}`) || !requestMentions(request, current.label)) return false;
+          changed = true;
+          continue;
+        }
+        if (next.label !== current.label || next.required !== current.required || next.selectionMode !== current.selectionMode || next.values.length !== current.values.length) return false;
+        const changedValues = next.values.filter((value, index) => JSON.stringify({ ...value, isDefault: false }) !== JSON.stringify({ ...current.values[index]!, isDefault: false }));
+        if (changedValues.length) return false;
+        if (JSON.stringify(next) === JSON.stringify(current)) continue;
+        const selected = next.values.filter((value) => value.isDefault);
+        if (selected.length !== 1 || !metadataPaths.has(`optionGroups.${current.key}.default`) || !requestMentions(request, current.label, selected[0]!.label)) return false;
+        changed = true;
+      }
+      continue;
+    }
+    if (operation.op === "set_pricing") {
+      const currentPricing = intent.pricing;
+      const nextPricing = operation.value;
+      if (!metadataPaths.has("pricing.matrix") || (currentPricing.model !== "one_dimensional_matrix" && currentPricing.model !== "two_dimensional_matrix")) return false;
+      if (currentPricing.model === "one_dimensional_matrix") {
+        if (nextPricing.model !== "one_dimensional_matrix" || nextPricing.unit !== currentPricing.unit || nextPricing.optionKey !== currentPricing.optionKey || nextPricing.cells.length !== currentPricing.cells.length) return false;
+        const group = intent.optionGroups.find((candidate) => candidate.key === currentPricing.optionKey);
+        if (!group) return false;
+        for (const cell of nextPricing.cells) {
+          const prior = currentPricing.cells.find((candidate) => candidate.option === cell.option);
+          const value = group.values.find((candidate) => candidate.key === cell.option);
+          if (!prior || !value) return false;
+          if (cell.priceCents !== prior.priceCents && !requestMentions(request, group.label, value.label)) return false;
+          if (cell.priceCents !== prior.priceCents) changed = true;
+        }
+        continue;
+      }
+      if (nextPricing.model !== "two_dimensional_matrix" || nextPricing.unit !== currentPricing.unit || nextPricing.rowOptionKey !== currentPricing.rowOptionKey || nextPricing.columnOptionKey !== currentPricing.columnOptionKey || nextPricing.cells.length !== currentPricing.cells.length) return false;
+      const rowGroup = intent.optionGroups.find((candidate) => candidate.key === currentPricing.rowOptionKey);
+      const columnGroup = intent.optionGroups.find((candidate) => candidate.key === currentPricing.columnOptionKey);
+      if (!rowGroup || !columnGroup) return false;
+      for (const cell of nextPricing.cells) {
+        const prior = currentPricing.cells.find((candidate) => candidate.row === cell.row && candidate.column === cell.column);
+        const rowValue = rowGroup.values.find((candidate) => candidate.key === cell.row);
+        const columnValue = columnGroup.values.find((candidate) => candidate.key === cell.column);
+        if (!prior || !rowValue || !columnValue) return false;
+        if (cell.priceCents !== prior.priceCents && !((requestMentions(request, rowGroup.label, rowValue.label)) || requestMentions(request, columnGroup.label, columnValue.label))) return false;
+        if (cell.priceCents !== prior.priceCents) changed = true;
+      }
+      continue;
+    }
+    return false;
+  }
+  return changed;
+}
+
+function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch: ProductDraftIntentPatch, answers: readonly UnresolvedQuestionAnswer[], request: string, categoryLabels: readonly string[] = []): boolean {
+  if (providerPatchIsExplicitSemanticCorrection(intent, patch, request, categoryLabels)) return true;
   if (answers.length === 0) return true;
   const optionAnswers = new Map(answers
     .filter((answer) => answer.canonicalPath.startsWith("optionGroups.") && answer.canonicalPath.endsWith(".default"))
@@ -239,7 +338,7 @@ function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch:
       continue;
     }
     if (operation.op === "set_identity") {
-      if (identityUpdated || operation.value.name !== intent.identity.name || operation.value.description !== intent.identity.description || operation.value.category.state !== "unresolved" || !normalizeAnswer(request).includes(normalizeAnswer(operation.value.category.label))) return false;
+      if (identityUpdated || operation.value.name !== intent.identity.name || operation.value.description !== intent.identity.description || operation.value.category.state !== "unresolved" || !requestSupportsCandidateCategoryCorrection(intent, request, operation.value.category.label, categoryLabels)) return false;
       identityUpdated = true;
       touchedPaths.add("identity.category");
       continue;
@@ -529,7 +628,7 @@ export class CanonicalProductIntentService {
         // continuation reference and context. Do not write a duplicate event.
         if (!compiled.ok) return { ok: false, code: compiled.error.code, message: compiled.error.message };
         if (compiled.result.kind !== "intent_patch") return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "provider_result_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compiled.result.kind, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNMATCHED", message: activeAnswers.length === 1 ? `I could not apply that answer to the current product question. Please choose ${activeAnswers[0]!.allowedChoices.map((choice) => choice.displayLabel).join(" or ")}. Reference: ${referenceId}.` : `I could not apply that answer to the current product question. Please answer the outstanding product question. Reference: ${referenceId}.` });
-        if (!providerPatchIsScopedToActiveAnswers(draft, compiled.result.patch, activeAnswers, input.request)) return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "patch_scope_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compiled.result.kind, patch: compiled.result.patch, code: "PRODUCT_INTENT_PATCH_OUT_OF_SCOPE", message: `I could not apply that answer to the current product question. Please review the available choices and try again. Reference: ${referenceId}.` });
+        if (!providerPatchIsScopedToActiveAnswers(draft, compiled.result.patch, activeAnswers, input.request, this.candidates.categories.map((candidate) => candidate.label))) return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: "patch_scope_validation", current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, providerResultType: compiled.result.kind, patch: compiled.result.patch, code: "PRODUCT_INTENT_PATCH_OUT_OF_SCOPE", message: `I could not apply that answer to the current product question. Please review the available choices and try again. Reference: ${referenceId}.` });
         sourcePatch = compiled.result.patch;
         compilerResult = compiled.result;
       }

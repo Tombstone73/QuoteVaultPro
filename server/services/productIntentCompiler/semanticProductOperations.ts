@@ -11,12 +11,36 @@ export const semanticProductOperationsResultSchema = z.object({
     z.object({ op: z.literal("set_pricing_basis"), basis: z.enum(["per_piece", "per_square_foot"]) }).strict(),
     z.object({ op: z.literal("set_matrix_rate"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160), priceCents: z.number().int().min(0).max(10_000_000) }).strict(),
     z.object({ op: z.literal("remove_option_value"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160) }).strict(),
+    z.object({ op: z.literal("remove_option_group"), optionGroup: z.string().trim().min(1).max(160) }).strict(),
+    z.object({ op: z.literal("set_product_name"), name: z.string().trim().min(1).max(160) }).strict(),
+    z.object({ op: z.literal("set_proof_requirement"), requiresProofApproval: z.boolean() }).strict(),
   ])).min(1).max(12),
 }).strict();
 export type SemanticProductOperationsResult = z.infer<typeof semanticProductOperationsResultSchema>;
+export type SemanticProductOperationOptions = { categoryLabels?: readonly string[] };
 
 function normalized(value: string): string {
-  return value.normalize("NFKC").trim().replace(/\s+/g, " ").toLocaleLowerCase();
+  return value.normalize("NFKC").toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
+}
+
+function containsWholePhrase(source: string, phrase: string): boolean {
+  const sourceTokens = normalized(source).split(" ").filter(Boolean);
+  const phraseTokens = normalized(phrase).split(" ").filter(Boolean);
+  return phraseTokens.length > 0 && sourceTokens.some((_, index) => phraseTokens.every((token, offset) => sourceTokens[index + offset] === token));
+}
+
+/** A provider returns the user's business phrase; the server resolves it to a
+ * real tenant label only where precisely one configured label contains it. */
+function resolveCategoryLabel(category: string, request: string | undefined, labels: readonly string[] | undefined): string {
+  if (request && !containsWholePhrase(request, category)) throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
+  const candidates = Array.from(new Set((labels ?? []).map((label) => label.trim()).filter(Boolean)))
+    .filter((label) => containsWholePhrase(label, category));
+  if (candidates.length === 1) return candidates[0]!;
+  if (candidates.length > 1) throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_AMBIGUOUS");
+  // The canonical resolver will reject a missing candidate. This preserves the
+  // existing strict behavior for direct compiler tests without guessing IDs.
+  if (!labels?.length) return category;
+  throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
 }
 
 /** Converts a small semantic delta into the pre-existing canonical patch.
@@ -27,6 +51,7 @@ export function compileSemanticProductOperations(
   raw: unknown,
   baseRevision: number,
   request?: string,
+  options: SemanticProductOperationOptions = {},
 ): ProductDraftIntentPatch {
   const semantic = semanticProductOperationsResultSchema.parse(raw);
   if (baseRevision !== current.revision) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_STALE");
@@ -35,16 +60,49 @@ export function compileSemanticProductOperations(
   let optionGroupsChanged = false;
   let nextPricing = current.pricing;
   let pricingChanged = false;
+  let nextIdentity = current.identity;
+  let identityChanged = false;
+  let nextWorkflow = current.workflow;
+  let workflowChanged = false;
   let categoryLabel: string | null = null;
   const changedGroups = new Set<string>();
 
   for (const operation of semantic.operations) {
     if (operation.op === "set_category") {
-      if (categoryLabel || (request && !normalized(request).includes(normalized(operation.category)))) {
-        throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
-      }
-      categoryLabel = operation.category;
+      if (categoryLabel) throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
+      categoryLabel = resolveCategoryLabel(operation.category, request, options.categoryLabels);
       metadata["identity.category"] = { source: "explicit_user" };
+      continue;
+    }
+    if (operation.op === "set_product_name") {
+      if (identityChanged || (request && !containsWholePhrase(request, operation.name))) throw new Error("PRODUCT_INTENT_SEMANTIC_PRODUCT_NAME_UNRESOLVED");
+      nextIdentity = { ...nextIdentity, name: operation.name };
+      identityChanged = true;
+      metadata["identity.name"] = { source: "explicit_user" };
+      continue;
+    }
+    if (operation.op === "set_proof_requirement") {
+      if (workflowChanged || (request && !/\bproof\b/i.test(request))) throw new Error("PRODUCT_INTENT_SEMANTIC_PROOF_REQUIREMENT_UNRESOLVED");
+      nextWorkflow = { ...nextWorkflow, requiresProofApproval: operation.requiresProofApproval };
+      workflowChanged = true;
+      metadata["workflow.requiresProofApproval"] = { source: "explicit_user" };
+      continue;
+    }
+    if (operation.op === "remove_option_group") {
+      const groupMatches = nextGroups.filter((group) => normalized(group.label) === normalized(operation.optionGroup));
+      if (groupMatches.length !== 1 || changedGroups.has(groupMatches[0]!.key)) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_GROUP_UNRESOLVED");
+      const group = groupMatches[0]!;
+      const pricingUsesGroup = (nextPricing.model === "one_dimensional_matrix" && nextPricing.optionKey === group.key)
+        || (nextPricing.model === "two_dimensional_matrix" && (nextPricing.rowOptionKey === group.key || nextPricing.columnOptionKey === group.key));
+      const hasDependentReference = nextGroups.some((candidate) => candidate.key !== group.key && (
+        candidate.availableWhen?.optionGroupKey === group.key
+        || candidate.values.some((value) => value.totalPercentOfBaseWhenEnabled?.prerequisite.optionGroupKey === group.key)
+      ));
+      if (pricingUsesGroup || hasDependentReference) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_GROUP_REQUIRED");
+      nextGroups.splice(nextGroups.indexOf(group), 1);
+      changedGroups.add(group.key);
+      optionGroupsChanged = true;
+      metadata[`optionGroups.${group.key}`] = { source: "explicit_user" };
       continue;
     }
     if (operation.op === "set_pricing_basis") {
@@ -91,9 +149,11 @@ export function compileSemanticProductOperations(
   }
 
   const operations: ProductDraftIntentPatch["operations"] = [];
-  if (categoryLabel) operations.push({ op: "set_identity", value: { ...current.identity, category: { state: "unresolved", label: categoryLabel } } });
+  if (categoryLabel) nextIdentity = { ...nextIdentity, category: { state: "unresolved", label: categoryLabel } };
+  if (categoryLabel || identityChanged) operations.push({ op: "set_identity", value: nextIdentity });
   if (optionGroupsChanged) operations.push({ op: "replace_option_groups", value: nextGroups });
   if (pricingChanged) operations.push({ op: "set_pricing", value: nextPricing });
+  if (workflowChanged) operations.push({ op: "set_workflow", value: nextWorkflow });
   if (Object.keys(metadata).length) operations.push({ op: "merge_field_metadata", value: metadata });
   if (!operations.length) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_EMPTY");
   return { contractVersion: 1, baseRevision, preserveUnchanged: true, operations };

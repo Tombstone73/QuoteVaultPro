@@ -205,6 +205,64 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(corrected.card.fields["Category provenance"]).toBe("User supplied");
   });
 
+  test("preserves a trusted Flatbed UI selection, then applies a natural-language Roll correction as one next revision", async () => {
+    const payload = structuredClone(translucentVinylPayload);
+    const provider = jest.fn(async (input: any) => {
+      const request = JSON.parse(input.user);
+      return request.currentIntent
+        ? { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_category", category: "roll" }] }), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} }
+        : { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} };
+    });
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), {
+      categories: [{ id: "flatbed", label: "Flatbed Printing" }, { id: "roll", label: "Roll Printing" }], materials: [], productionRoutes: [],
+    });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "trusted-ui-roll-correction", compilerInput: { ...compilerInput(), request: "Create Translucent Vinyl - Multilayer Print Test 6." } });
+    if (!created.ok) throw new Error("Expected active product proposal.");
+    const flatbedAction = created.card.candidateResolutions.find((action) => action.kind === "select_category" && action.candidate?.id === "flatbed");
+    if (!flatbedAction) throw new Error("Expected signed Flatbed UI action.");
+    const selected = await service.applyCandidateAction({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, actionId: flatbedAction.id });
+    if (!selected.outcome?.ok) throw new Error("Expected trusted Flatbed selection.");
+    const before = selected.outcome.session.specification.session.revisions.at(-1)!.intent;
+    expect(before.identity.category).toEqual({ state: "resolved", id: "flatbed", label: "Flatbed Printing" });
+    expect(before.fieldMetadata["identity.category"]).toEqual({ source: "explicit_user" });
+
+    const corrected = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "I accidentally selected flatbed and it is supposed to be roll", compilerInput: { ...compilerInput(), candidateLabels: { categories: ["Flatbed Printing", "Roll Printing"] } } });
+    if (!corrected.ok) throw new Error("Expected Roll correction.");
+    const revisions = corrected.session.specification.session.revisions;
+    const after = revisions.at(-1)!.intent;
+    expect(corrected.session.proposalId).toBe(created.session.proposalId);
+    expect(revisions).toHaveLength(3);
+    expect(after.revision).toBe(2);
+    expect(after.identity.category).toEqual({ state: "resolved", id: "roll", label: "Roll Printing" });
+    expect(after.fieldMetadata["identity.category"]).toEqual({ source: "explicit_user" });
+    expect(after.pricing).toEqual(before.pricing);
+    expect(after.optionGroups).toEqual(before.optionGroups);
+    expect(after.material).toEqual(before.material);
+    expect(after.production).toEqual(before.production);
+    expect(corrected.card.fields["Category provenance"]).toBe("User supplied");
+  });
+
+  test("applies mixed explicit semantic corrections while unrelated questions remain open", async () => {
+    const payload = structuredClone(translucentVinylPayload);
+    payload.intent.optionGroups.push({ key: "weed_tape", label: "Weeding and Taping", required: false, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: true }, { key: "yes", label: "Yes", isDefault: false }] } as any);
+    const provider = jest.fn(async (input: any) => JSON.parse(input.user).currentIntent
+      ? { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_matrix_rate", optionGroup: "Layers", value: "3 Layers", priceCents: 450 }, { op: "set_option_default", optionGroup: "Layers", value: "5 Layers" }, { op: "remove_option_group", optionGroup: "Weeding and Taping" }, { op: "set_product_name", name: "Backlit Multilayer Vinyl" }, { op: "set_proof_requirement", requiresProofApproval: true }] }), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} }
+      : { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} });
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [], productionRoutes: [] });
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "mixed-semantic-corrections", compilerInput: compilerInput() });
+    if (!created.ok) throw new Error("Expected active product proposal.");
+    const corrected = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Make 3 Layer $4.50 instead. Make 5 Layer the default. Remove Weeding and Taping. Change product name to Backlit Multilayer Vinyl. Actually require proof approval.", compilerInput: compilerInput() });
+    if (!corrected.ok) throw new Error("Expected mixed semantic correction.");
+    const next = corrected.session.specification.session.revisions.at(-1)!.intent;
+    expect(corrected.session.specification.session.revisions).toHaveLength(2);
+    if (next.pricing.model !== "two_dimensional_matrix") throw new Error("Expected matrix pricing.");
+    expect(next.pricing.cells.filter((cell) => cell.row === "3_layers").map((cell) => cell.priceCents)).toEqual([450, 450]);
+    expect(next.optionGroups.find((group) => group.key === "layers")?.values.find((value) => value.isDefault)?.key).toBe("5_layers");
+    expect(next.optionGroups.some((group) => group.key === "weed_tape")).toBe(false);
+    expect(next.identity.name).toBe("Backlit Multilayer Vinyl");
+    expect(next.workflow.requiresProofApproval).toBe(true);
+  });
+
   test("answers one option-default question with a revision-bound patch and preserves all unrelated complex pricing", async () => {
     const payload = structuredClone(translucentVinylPayload);
     payload.intent.identity.category = { state: "resolved", id: "signs", label: "Signs" };

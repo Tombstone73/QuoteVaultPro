@@ -79,6 +79,8 @@ export type ProductIntentCompilerDiagnostics = {
   schemaIssueCodes?: string[];
   missingRequiredKeys?: string[];
   unknownKeys?: string[];
+  /** Protocol tokens only; never raw provider output or business content. */
+  providerResponseKinds?: string[];
 };
 
 export type ProductIntentCompilerFailureStage =
@@ -198,18 +200,34 @@ const providerPayloadGuide = {
   },
 };
 
+const canonicalCompilerResultKinds = ["complete_intent", "intent_patch", "unresolved_questions", "compiler_error"] as const;
+
+function providerResponseContract(continuation: boolean) {
+  return continuation
+    ? {
+      providerRootKinds: ["semantic_operations"],
+      postNormalizationCompilerResultKinds: canonicalCompilerResultKinds,
+      instruction: "For a continuation, semantic_operations is a provider-only protocol. The server converts it into a canonical intent_patch after strict business-label resolution.",
+    }
+    : {
+      providerRootKinds: ["complete_intent"],
+      postNormalizationCompilerResultKinds: canonicalCompilerResultKinds,
+      instruction: "For an initial request, return a complete_intent. The server supplies all server-owned fields before canonical validation.",
+    };
+}
+
 function promptForCompilation(input: ProductIntentCompilerInput): { system: string; user: string } {
   const continuation = input.currentIntent != null;
   return {
     system: [
       "You are the PrintersHero Product Intent Compiler.",
       "Return exactly one strict JSON object and no markdown, commentary, or code fences.",
-      "Your JSON must validate against the supplied canonical compiler-result contract.",
+      "Your JSON must follow the supplied provider response contract. The server alone validates and constructs the canonical compiler-result contract.",
       "Interpret natural language only; do not execute commands, create products, invent tenant IDs, or claim that a database lookup succeeded.",
       "Use only candidate labels supplied by the server for tenant-scoped entities. If no supplied label is an unambiguous match, return an unresolved-question result.",
       "For continuations and corrections, preserve every existing authoritative intent field unless the request explicitly changes it.",
       continuation
-        ? "This is a continuation. Return only { kind: 'semantic_operations', operations: [...] }. Never return a complete intent or a canonical patch. Resolve every unambiguous active required issue answered by this message in one operation set; use business labels only and preserve every unrelated field. A category correction uses set_category with an exact tenant category label explicitly stated by the user."
+        ? "This is a continuation. Return only { kind: 'semantic_operations', operations: [...] }. Never return a complete intent or a canonical patch. Resolve every unambiguous active required issue answered by this message in one operation set; use business labels only and preserve every unrelated field. For set_category, return the user's category phrase; the server resolves it only when one supplied tenant category unambiguously contains that phrase."
         : "For an initial request, return { kind: 'complete_intent', intent: { ... } }.",
       "Do not turn preservation instructions into product options, materials, or entity references.",
       "Never set an active or published lifecycle. Confidence never makes a value execution-authorizing.",
@@ -221,10 +239,11 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
       operationContext: input.operationContext,
       canonicalSchema: input.schemaDescription,
       providerPayloadGuide,
+      providerResponseContract: providerResponseContract(continuation),
       allowedEnums: input.allowedEnums,
       supportedArchetypes: input.supportedArchetypes,
       candidateLabels: candidateLabelsForPrompt(input.candidateLabels),
-      ...(continuation ? { activeRequiredIssues: input.activeRequiredIssues ?? [], semanticOperationContract: { operations: "Use set_option_default with optionGroup and value display labels for each answered default; use set_pricing_basis with per_piece or per_square_foot when answering a matrix pricing basis; use set_category only for an explicit user correction to an exact tenant category label. Do not use canonical keys, paths, ProductDraftIntentPatch operations, revisions, IDs, or PBV2 structures." } } : {}),
+      ...(continuation ? { activeRequiredIssues: input.activeRequiredIssues ?? [], semanticOperationContract: { operations: "Use set_option_default with optionGroup and value display labels; set_pricing_basis with per_piece or per_square_foot; set_matrix_rate with option group, value, and integer cents; set_category with the user's category phrase; remove_option_value or remove_option_group using a business option-group label; set_product_name with the explicitly requested name; and set_proof_requirement when the user explicitly changes proof approval. Do not use canonical keys, paths, ProductDraftIntentPatch operations, revisions, IDs, or PBV2 structures." } } : {}),
       serverConstraints: input.serverConstraints ?? [],
     }),
   };
@@ -232,14 +251,22 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
 
 function repairPrompt(input: ProductIntentCompilerInput, invalidOutput: string, validationIssuePaths: readonly string[], stage: ProductIntentCompilerFailureStage): { system: string; user: string } {
   const original = promptForCompilation(input);
+  const continuation = input.currentIntent != null;
+  const contract = providerResponseContract(continuation);
+  const invalidRootKind = safeProviderRootKindFromRaw(invalidOutput);
   return {
-    system: `${original.system} Repair the previous response into valid JSON only. Do not add facts not supported by the original request or current intent. Do not add commentary, Markdown, or code fences. Preserve unresolved fields explicitly rather than using null, an empty string, or an invented default.`,
+    system: `${original.system} Repair the previous response into valid JSON only. Do not add facts not supported by the original request or current intent. Do not add commentary, Markdown, or code fences. Preserve unresolved fields explicitly rather than using null, an empty string, or an invented default. ${continuation ? "This is a continuation: return the provider-only semantic_operations protocol, never a post-normalization canonical compiler-result kind. If the failure is the root kind, preserve the intended business operation details and correct only the protocol shape." : "Return the initial provider complete_intent protocol."}`,
     user: JSON.stringify({
       originalInput: JSON.parse(original.user),
       invalidOutput: invalidOutput.slice(0, 24_000),
       validationIssuePaths,
       failedStage: stage,
-      instruction: "Return a single compiler-result object that conforms exactly to providerPayloadGuide and canonicalSchema. Unknown keys are forbidden.",
+      invalidRootKind,
+      allowedProviderRootKinds: contract.providerRootKinds,
+      postNormalizationCompilerResultKinds: contract.postNormalizationCompilerResultKinds,
+      instruction: continuation
+        ? "Return exactly one semantic_operations provider-protocol object. The server, not you, creates intent_patch. Preserve the business operation target unless its shape itself is invalid. Unknown keys are forbidden."
+        : "Return exactly one complete_intent provider-protocol object. The server, not you, supplies canonical server-owned fields. Unknown keys are forbidden.",
     }),
   };
 }
@@ -251,6 +278,14 @@ function parsedObject(candidate: string): unknown | null {
   } catch {
     return null;
   }
+}
+
+/** Extract only a bounded protocol token suitable for diagnostics and repair.
+ * Do not retain arbitrary provider text, object values, or business content. */
+function safeProviderRootKind(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const kind = (value as Record<string, unknown>).kind;
+  return typeof kind === "string" && /^[A-Za-z][A-Za-z0-9_-]{0,79}$/.test(kind) ? kind : null;
 }
 
 function strictJsonObject(rawText: string): unknown {
@@ -287,6 +322,14 @@ function strictJsonObject(rawText: string): unknown {
     }
   }
   throw new Error("Provider response did not contain one JSON object.");
+}
+
+function safeProviderRootKindFromRaw(rawText: string): string | null {
+  try {
+    return safeProviderRootKind(strictJsonObject(rawText));
+  } catch {
+    return null;
+  }
 }
 
 function invalidResultMessage(result: z.SafeParseError<unknown>): string {
@@ -506,7 +549,7 @@ function normalizeSemanticContinuation(input: ProductIntentCompilerInput, value:
   if (!input.currentIntent || input.currentRevision == null || !value || typeof value !== "object" || Array.isArray(value)) return value;
   const parsed = semanticProductOperationsResultSchema.safeParse(value);
   if (!parsed.success) return value;
-  return { kind: "intent_patch", patch: compileSemanticProductOperations(input.currentIntent, parsed.data, input.currentRevision, input.request) };
+  return { kind: "intent_patch", patch: compileSemanticProductOperations(input.currentIntent, parsed.data, input.currentRevision, input.request, { categoryLabels: input.candidateLabels?.categories }) };
 }
 
 function providerFailureStage(error: unknown): ProductIntentCompilerFailureStage {
@@ -534,7 +577,7 @@ async function persistCompilerDiagnostic(input: ProductIntentCompilerInput, diag
     const referenceId = diagnostics?.correlationId ?? input.diagnosticReferenceId;
     if (!referenceId) return;
     const repaired = (diagnostics?.attempts ?? 0) > 1;
-    const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId, correlationId: referenceId, diagnosticType: "product_intent_compiler", tenantId: input.orgId, actorId: input.diagnosticContext?.actorId ?? null, conversationId: input.diagnosticContext?.conversationId ?? null, provider: diagnostics?.provider ?? null, model: diagnostics?.model ?? null, providerRequestId: diagnostics?.requestMetadata.providerRequestId ?? null, stage, errorCode, providerResponseState: stage === "json_extraction_failure" ? "parse_failed" : stage.includes("schema") ? "contract_failed" : "not_received", parseMethod: stage === "json_extraction_failure" ? "none" : repaired ? "repaired_json" : "raw_json", repairAttempted: repaired, repairResult: repaired ? "failed" : "not_attempted", validationSchema: stage.includes("schema") ? "ProductIntentCompilerResult" : null, validationIssuePaths: diagnostics?.schemaIssuePaths ?? [], validationIssueCodes: diagnostics?.schemaIssueCodes ?? [], returnedTopLevelKeys: [], missingRequiredKeys: diagnostics?.missingRequiredKeys ?? [], unknownKeys: diagnostics?.unknownKeys ?? [], plannerOperation: null, selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler", optionNormalizationStage: null, resolverStage: null, persistenceAttempted: true, persistenceResult: "succeeded", createdAt: new Date().toISOString(), sessionId: input.diagnosticContext?.sessionId ?? null, currentRevision: input.diagnosticContext?.currentRevision ?? null, patchOperationCount: null, patchPaths: [] });
+    const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId, correlationId: referenceId, diagnosticType: "product_intent_compiler", tenantId: input.orgId, actorId: input.diagnosticContext?.actorId ?? null, conversationId: input.diagnosticContext?.conversationId ?? null, provider: diagnostics?.provider ?? null, model: diagnostics?.model ?? null, providerRequestId: diagnostics?.requestMetadata.providerRequestId ?? null, stage, errorCode, providerResponseState: stage === "json_extraction_failure" ? "parse_failed" : stage.includes("schema") ? "contract_failed" : "not_received", parseMethod: stage === "json_extraction_failure" ? "none" : repaired ? "repaired_json" : "raw_json", repairAttempted: repaired, repairResult: repaired ? "failed" : "not_attempted", validationSchema: stage.includes("schema") ? "ProductIntentCompilerResult" : null, validationIssuePaths: diagnostics?.schemaIssuePaths ?? [], validationIssueCodes: diagnostics?.schemaIssueCodes ?? [], returnedTopLevelKeys: [], providerResponseKinds: diagnostics?.providerResponseKinds ?? [], missingRequiredKeys: diagnostics?.missingRequiredKeys ?? [], unknownKeys: diagnostics?.unknownKeys ?? [], plannerOperation: null, selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler", optionNormalizationStage: null, resolverStage: null, persistenceAttempted: true, persistenceResult: "succeeded", createdAt: new Date().toISOString(), sessionId: input.diagnosticContext?.sessionId ?? null, currentRevision: input.diagnosticContext?.currentRevision ?? null, patchOperationCount: null, patchPaths: [] });
     await persistAiDiagnostic(envelope);
   } catch { /* Diagnostics must never conceal the original compiler failure. */ }
 }
@@ -555,6 +598,7 @@ export class ProductIntentCompiler {
     let invalidOutput = "";
     let validationIssuePaths: string[] = [];
     let failureStage: ProductIntentCompilerFailureStage = "json_extraction_failure";
+    let providerResponseKinds: string[] = [];
 
     for (let attempt = 0; attempt <= PRODUCT_INTENT_COMPILER_MAX_REPAIR_ATTEMPTS; attempt += 1) {
       const prompt = attempt === 0 ? promptForCompilation(input) : repairPrompt(input, invalidOutput, validationIssuePaths, failureStage);
@@ -616,6 +660,12 @@ export class ProductIntentCompiler {
         continue;
       }
 
+      const providerRootKind = safeProviderRootKind(parsedJson);
+      if (providerRootKind) {
+        providerResponseKinds = Array.from(new Set([...providerResponseKinds, providerRootKind])).slice(0, 2);
+        lastDiagnostics = { ...lastDiagnostics, providerResponseKinds };
+      }
+
       try {
         parsedJson = normalizeContinuationPatch(input, normalizeSemanticContinuation(input, normalizeInitialCompleteIntent(input, parsedJson, initialIntentId)));
       } catch {
@@ -649,7 +699,7 @@ export class ProductIntentCompiler {
       ok: false,
       error: {
         code: invalidOutput.trim().startsWith("{") ? "invalid_contract" : "invalid_json",
-        message: `I couldn't safely interpret that product request. Nothing was changed. Please try again. Reference: ${correlationId}.`,
+        message: `Product Builder could not prepare that correction because its AI response did not match the required internal contract. Nothing was changed. Please try again. Reference: ${correlationId}.`,
         retryable: true,
         diagnosticCode: correlationId,
       },

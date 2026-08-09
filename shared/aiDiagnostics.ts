@@ -14,6 +14,9 @@ export const aiDiagnosticEnvelopeSchema = z.object({
   parseMethod: z.enum(["none", "raw_json", "extracted_json", "repaired_json"]), repairAttempted: z.boolean(), repairResult: z.enum(["not_attempted", "succeeded", "failed"]),
   validationSchema: safeText.nullable(), validationIssuePaths: z.array(safeText).max(20), validationIssueCodes: z.array(safeText).max(20),
   returnedTopLevelKeys: z.array(safeText).max(30), missingRequiredKeys: z.array(safeText).max(30), unknownKeys: z.array(safeText).max(30),
+  /** Safe protocol tokens only (for example a root `kind`); raw provider
+   * output is never retained in diagnostics. */
+  providerResponseKinds: z.array(safeText).max(2).optional(),
   plannerOperation: safeText.nullable(), selectedCapability: safeText.nullable(), specialistName: safeText.nullable(),
   optionNormalizationStage: safeText.nullable(), resolverStage: safeText.nullable(), persistenceAttempted: z.boolean(), persistenceResult: z.enum(["not_attempted", "succeeded", "failed"]), createdAt: z.string().datetime(),
   /** Continuation-only context. These are server-owned identifiers and
