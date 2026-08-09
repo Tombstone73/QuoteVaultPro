@@ -90,6 +90,7 @@ export type AssistantProductManagementCard = {
   validationErrors: string[];
   warnings: string[];
   unsupportedReasons: string[];
+  errorCode: string | null;
   editorPath: string | null;
   draftStatus: string | null;
 };
@@ -159,6 +160,7 @@ export function toAssistantProductManagementCard(card: unknown): AssistantProduc
     validationErrors: list(details.validationErrors ?? details.errors),
     warnings: list(details.warnings ?? details.validationWarnings),
     unsupportedReasons: list(details.unsupportedReasons ?? details.unsupportedChanges),
+    errorCode: text(details.code),
     editorPath: safePath(details.editorPath ?? details.reviewUrl ?? details.sourceLink ?? details.productEditorPath),
     draftStatus: draftStatus(details.draftStatus ?? details.status),
   };
@@ -185,7 +187,7 @@ export function AssistantProductManagementCardView({ card }: { card: AssistantPr
     {activeUnsupported ? <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2">This product is active. Conversational editing is available only for inactive drafts; use the existing product editor for active-product changes.</p> : null}
     {updateUnsupported ? <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2">This requested draft change is not available through the assistant. Review it in the existing product editor instead.</p> : null}
     {failed ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2">The draft was not fully updated. Review the reported issue in the existing editor before proposing another change.</p> : null}
-    {errors ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2">Validation must be resolved before a draft can be confirmed.</p> : null}
+    {errors ? <p className="mt-2 rounded border border-destructive/30 bg-destructive/5 p-2">{card.errorCode ? "The product draft could not be prepared. Review the reported issue and reference." : "Validation must be resolved before a draft can be confirmed."}</p> : null}
     {missing ? <p className="mt-2 rounded bg-muted/60 p-2">Answer these questions in the conversation. The server maintains the intake state.</p> : null}
     {card.fields.length ? <dl className="mt-2 grid gap-1 sm:grid-cols-2">{card.fields.map((field) => <div key={field.label}><dt className="inline font-medium">{field.label}: </dt><dd className="inline">{field.value}</dd></div>)}</dl> : null}
     {card.changes.length ? <div className="mt-3 overflow-x-auto"><p className="font-medium">Exact proposed changes</p><table className="mt-1 w-full min-w-[28rem] border-collapse text-left"><thead className="text-muted-foreground"><tr><th className="border-b p-1 font-medium">Field</th><th className="border-b p-1 font-medium">Before</th><th className="border-b p-1 font-medium">After</th></tr></thead><tbody>{card.changes.map((change) => <tr key={`${change.label}-${change.before}-${change.after}`}><th className="border-b p-1 align-top font-medium">{change.label}</th><td className="border-b p-1 align-top">{change.before ?? "Unchanged / not set"}</td><td className="border-b p-1 align-top">{change.after ?? "Cleared"}</td></tr>)}</tbody></table></div> : null}

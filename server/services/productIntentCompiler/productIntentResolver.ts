@@ -142,7 +142,7 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
   if (intent.production.route.state === "unresolved") issues.push({ code: "ROUTE_UNRESOLVED", path: "production.route", severity: "question", message: "Which production route should this product use?" });
   if (intent.production.route.state === "resolved" && !includesLabel(context.productionRouteLabels, intent.production.route.label)) issues.push({ code: "ROUTE_NOT_FOUND", path: "production.route", severity: "question", message: `The production route ${intent.production.route.label} is not available for this tenant.` });
   if (intent.pricing.model === "unresolved") issues.push({ code: "PRICING_UNRESOLVED", path: "pricing.model", severity: "question", message: "Should pricing be per piece, per square foot, a matrix, or quantity tiers?" });
-  if (intent.pricing.model === "two_dimensional_matrix" && intent.pricing.unit === "unresolved") issues.push({ code: "PRICING_UNIT_UNRESOLVED", path: "pricing.unit", severity: "question", message: "Are these matrix prices per piece or per square foot?" });
+  if ((intent.pricing.model === "one_dimensional_matrix" || intent.pricing.model === "two_dimensional_matrix") && intent.pricing.unit === "unresolved") issues.push({ code: "PRICING_UNIT_UNRESOLVED", path: "pricing.unit", severity: "question", message: "Are these matrix prices per piece or per square foot?" });
   for (const group of intent.optionGroups) {
     if (group.required && group.selectionMode === "single" && group.values.every((value) => !value.isDefault)) {
       issues.push({ code: "OPTION_DEFAULT_UNRESOLVED", path: optionDefaultPath(group.key), severity: "question", message: optionDefaultQuestion(group) });

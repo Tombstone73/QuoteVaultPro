@@ -375,6 +375,15 @@ describe("configured AI provider", () => {
     expect(result.requestMetadata.latencyMs).toEqual(expect.any(Number));
   });
 
+  test("passes the compiler's dedicated bounded output request through the DeepSeek Chat Completions path", async () => {
+    const fetchMock = jest.fn(async () => jsonResponse({ id: "chat_compiler_1", choices: [{ message: { content: "{}" }, finish_reason: "stop" }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const provider = new OpenAiCompatibleBugReviewProvider();
+    await provider.generateJson(baseRequest({ feature: "feature_review", maxTokens: 4096, timeoutUseCase: "product_intent_compiler" }));
+    const body = JSON.parse(String(fetchMock.mock.calls[0]?.[1]?.body));
+    expect(body).toMatchObject({ model: "deepseek-v4-flash", max_tokens: 4096, response_format: { type: "json_object" }, thinking: { type: "disabled" } });
+  });
+
   test("non-DeepSeek OpenAI-compatible requests do not include thinking", async () => {
     const fetchMock = jest.fn(async () => jsonResponse({
       id: "chatcmpl_generic",

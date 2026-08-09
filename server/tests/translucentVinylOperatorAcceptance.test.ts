@@ -3,6 +3,33 @@ import { productDraftIntentSchema } from "@shared/productDraftIntent";
 import { projectProductDraftIntentToProductBuilderDraft } from "../services/productIntentCompiler/productIntentProjection";
 
 describe("Translucent Vinyl semantic PBV2 projection", () => {
+  test("projects the exact one-axis layer-rate request without inventing a Surface option", () => {
+    const intent = productDraftIntentSchema.parse({
+      contractVersion: 1, intentId: "translucent_live_shape", organizationId: "org_1", revision: 0, state: "ready_for_review", operation: "new_product",
+      identity: { name: "Translucent Vinyl - backlit with multilayer printing", description: "", category: { state: "resolved", id: "category_1", label: "Print Products" } }, lifecycle: { productStatus: "inactive", published: false },
+      measurement: { mode: "dimensions_required" }, quantity: { behavior: "customer_entered", minimum: 1 },
+      pricing: { model: "one_dimensional_matrix", unit: "per_square_foot", optionKey: "layers", cells: [{ option: "three", priceCents: 400 }, { option: "five", priceCents: 500 }] }, material: { state: "explicitly_unset" },
+      optionGroups: [
+        { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "three", label: "3 Layer", isDefault: true }, { key: "five", label: "5 Layer", isDefault: false }] },
+        { key: "contour", label: "Contour Cutting", required: true, selectionMode: "single", values: [{ key: "no", label: "No", isDefault: true }, { key: "yes", label: "Yes", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }] },
+        { key: "weed_tape", label: "Weeding and Taping", required: false, selectionMode: "single", availableWhen: { optionGroupKey: "contour", optionValueKey: "yes" }, values: [{ key: "no", label: "No", isDefault: true }, { key: "yes", label: "Yes", isDefault: false, totalPercentOfBaseWhenEnabled: { percent: 30, prerequisite: { optionGroupKey: "contour", optionValueKey: "yes" } } }] },
+      ], workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true }, production: { route: { state: "explicitly_unset" }, configuration: {} }, visibility: { catalogVisible: false }, unresolvedFields: [], fieldMetadata: { "identity.category": { source: "structured_candidate" }, material: { source: "unresolved" }, "production.route": { source: "unresolved" }, "optionGroups.layers.default": { source: "explicit_user" }, "optionGroups.contour.default": { source: "explicit_user" } }, revisionMetadata: { parentRevision: null }, operationContext: {},
+    });
+    const projected = projectProductDraftIntentToProductBuilderDraft(intent);
+    const tree = projected.treeJson as any;
+    expect(tree.pricingMatrix.dimensions).toEqual(["layers"]);
+    expect(tree.pricingMatrix.rows).toEqual(expect.arrayContaining([
+      expect.objectContaining({ when: { layers: "three" }, variables: { base_price: 400 } }),
+      expect.objectContaining({ when: { layers: "five" }, variables: { base_price: 500 } }),
+    ]));
+    expect(Object.values(tree.nodes).some((node: any) => node.key === "surface")).toBe(false);
+    const contour = Object.values(tree.nodes).find((node: any) => node.key === "contour") as any;
+    const weed = Object.values(tree.nodes).find((node: any) => node.key === "weed_tape") as any;
+    expect(weed.visibility.rules).toEqual([{ type: "equals", selectionKey: "contour", value: "yes" }]);
+    expect(contour.choices.find((choice: any) => choice.value === "yes").pricingImpact[0].percent).toBe(10);
+    expect(weed.choices.find((choice: any) => choice.value === "yes").pricingImpact[0].percent).toBe(20);
+  });
+
   test("enforces the Contour → Weed/Tape dependency and derives +30% total, never +40%", () => {
     const intent = productDraftIntentSchema.parse({
       contractVersion: 1, intentId: "translucent_1", organizationId: "org_1", revision: 0, state: "ready_for_review", operation: "new_product",

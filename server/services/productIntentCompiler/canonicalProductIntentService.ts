@@ -47,7 +47,7 @@ export type CanonicalProductIntentInspection = {
 
 function answerContract(intent: ProductDraftIntent, issue: ProductIntentIssue): UnresolvedQuestionAnswer | undefined {
   if (issue.id == null) return undefined;
-  if (issue.path === "pricing.matrix.unit" && issue.code === "PRICING_UNIT_UNRESOLVED" && intent.pricing.model === "two_dimensional_matrix" && intent.pricing.unit === "unresolved") {
+  if (issue.path === "pricing.matrix.unit" && issue.code === "PRICING_UNIT_UNRESOLVED" && (intent.pricing.model === "one_dimensional_matrix" || intent.pricing.model === "two_dimensional_matrix") && intent.pricing.unit === "unresolved") {
     return {
       issueId: issue.id, canonicalPath: "pricing.matrix.unit", answerType: "choice",
       allowedChoices: [
@@ -105,7 +105,12 @@ function resolvedSemanticAnswers(intent: ProductDraftIntent, answers: readonly U
     const groupTokens = group ? normalizeAnswer(group.label).split(" ").filter(Boolean) : [];
     const choices = answer.allowedChoices.filter((choice) => {
       const variants = new Set<string>([choice.displayLabel, choice.canonicalValue, ...choice.safeAliases].map(normalizeAnswer).filter(Boolean));
-      if (Array.from(variants).some((variant) => includesTokenSequence(requestTokens, variant.split(" ")))) return true;
+      const directMatch = Array.from(variants).some((variant) => includesTokenSequence(requestTokens, variant.split(" ")));
+      // Generic answers such as Yes/No are not unique across an intent. They
+      // require their option-group wording so one natural multi-answer reply
+      // cannot silently set a dependent group's default too.
+      const genericOnly = Array.from(variants).every((variant) => ["yes", "no", "none"].includes(variant));
+      if (directMatch && (!genericOnly || !groupTokens.length || includesTokenSequence(requestTokens, groupTokens))) return true;
       if (!groupTokens.length || !includesTokenSequence(requestTokens, groupTokens)) return false;
       // Display labels commonly contain a useful group-qualified prefix, such
       // as "1st Surface (Right Reading)".  Matching that prefix accepts a
@@ -134,7 +139,7 @@ function deterministicAnswersPatch(intent: ProductDraftIntent, answers: readonly
   let unresolvedFields = intent.unresolvedFields;
   let unresolvedChanged = false;
   for (const { answer, choice } of resolved) {
-    if (answer.canonicalPath === "pricing.matrix.unit" && intent.pricing.model === "two_dimensional_matrix" && (choice.canonicalValue === "per_piece" || choice.canonicalValue === "per_square_foot")) {
+    if (answer.canonicalPath === "pricing.matrix.unit" && (intent.pricing.model === "one_dimensional_matrix" || intent.pricing.model === "two_dimensional_matrix") && (choice.canonicalValue === "per_piece" || choice.canonicalValue === "per_square_foot")) {
       nextPricing = { ...intent.pricing, unit: choice.canonicalValue };
       pricingChanged = true;
       unresolvedFields = unresolvedFields.filter((field) => field.path !== "pricing.unit" && field.path !== answer.canonicalPath);
@@ -166,7 +171,7 @@ function deterministicAnswerPatch(intent: ProductDraftIntent, answers: readonly 
   if (matches.length !== 1) return null;
   const { answer, choice } = matches[0]!;
   if (answer.baseRevision !== intent.revision) return null;
-  if (answer.canonicalPath === "pricing.matrix.unit" && (choice.canonicalValue === "per_piece" || choice.canonicalValue === "per_square_foot") && intent.pricing.model === "two_dimensional_matrix" && intent.pricing.unit === "unresolved") {
+  if (answer.canonicalPath === "pricing.matrix.unit" && (choice.canonicalValue === "per_piece" || choice.canonicalValue === "per_square_foot") && (intent.pricing.model === "one_dimensional_matrix" || intent.pricing.model === "two_dimensional_matrix") && intent.pricing.unit === "unresolved") {
     return {
       issueId: answer.issueId,
       patch: {
@@ -240,9 +245,9 @@ function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch:
       continue;
     }
     if (operation.op === "set_pricing") {
-      if (!pricingAnswer || intent.pricing.model !== "two_dimensional_matrix" || pricingUpdated) return false;
+      if (!pricingAnswer || (intent.pricing.model !== "one_dimensional_matrix" && intent.pricing.model !== "two_dimensional_matrix") || pricingUpdated) return false;
       pricingUpdated = true;
-      if (!(operation.value.model === "two_dimensional_matrix"
+      if (!((operation.value.model === "one_dimensional_matrix" || operation.value.model === "two_dimensional_matrix")
         && (operation.value.unit === "per_piece" || operation.value.unit === "per_square_foot")
         && JSON.stringify({ ...operation.value, unit: "unresolved" }) === JSON.stringify(intent.pricing))) return false;
       touchedPaths.add(pricingAnswer.canonicalPath);
@@ -341,15 +346,18 @@ async function continuationFailure(input: {
 
 type CanonicalIntentPipelineStage = "tenant_reference_resolution" | "canonical_validation" | "presentation" | "persistence_preparation";
 
-function pipelineFailure(input: {
+async function pipelineFailure(input: {
   stage: CanonicalIntentPipelineStage;
   error: unknown;
   correlationId: string;
+  organizationId: string;
+  actorUserId: string;
+  conversationId: string;
   provider: string;
   model: string;
   repairAttempted: boolean;
   revision: number;
-}): CanonicalProductIntentOutcome {
+}): Promise<CanonicalProductIntentOutcome> {
   const schemaIssuePaths = input.error instanceof z.ZodError
     ? input.error.issues.slice(0, 20).map((issue) => issue.path.join(".") || "intent")
     : [];
@@ -369,6 +377,21 @@ function pipelineFailure(input: {
     revision: input.revision,
     schemaIssuePaths,
   });
+  try {
+    await persistAiDiagnostic(sanitizeAiDiagnosticEnvelope({
+      version: 1, referenceId: input.correlationId, correlationId: input.correlationId,
+      diagnosticType: "product_intent_compiler", tenantId: input.organizationId, actorId: input.actorUserId, conversationId: input.conversationId,
+      provider: input.provider, model: input.model, providerRequestId: null, stage: input.stage, errorCode: code,
+      providerResponseState: "accepted", parseMethod: input.repairAttempted ? "repaired_json" : "raw_json",
+      repairAttempted: input.repairAttempted, repairResult: input.repairAttempted ? "succeeded" : "not_attempted",
+      validationSchema: input.error instanceof z.ZodError ? "ProductDraftIntent" : null,
+      validationIssuePaths: schemaIssuePaths, validationIssueCodes: input.error instanceof z.ZodError ? Array.from(new Set(input.error.issues.slice(0, 20).map((issue) => issue.code))) : [],
+      returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [], plannerOperation: null,
+      selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler",
+      optionNormalizationStage: null, resolverStage: input.stage, persistenceAttempted: true, persistenceResult: "succeeded",
+      createdAt: new Date().toISOString(), currentRevision: input.revision, patchOperationCount: null, patchPaths: [],
+    }));
+  } catch { /* The original safe failure remains available even if diagnostics cannot be inserted. */ }
   return {
     ok: false,
     code: "PRODUCT_INTENT_SESSION_CREATION_FAILED",
@@ -454,10 +477,13 @@ export class CanonicalProductIntentService {
       const session = await this.persistence.create({ organizationId: input.organizationId, actorUserId: input.actorUserId, conversationId: input.conversationId, intent, compilerResult: compiled.result, unresolvedQuestions: questionsFrom(intent, issues), resolutionMetadata: { architecture: "canonical_product_intent", dismissedRecommendationIds: [] } });
       return { ok: true, session, issues, card };
     } catch (error) {
-      return pipelineFailure({
+      return await pipelineFailure({
         stage,
         error,
         correlationId: diagnostics.correlationId,
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        conversationId: input.conversationId,
         provider: diagnostics.provider,
         model: diagnostics.model,
         repairAttempted: diagnostics.attempts > 1,

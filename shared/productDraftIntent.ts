@@ -46,12 +46,16 @@ const optionGroupSchema = z.object({ key: nonEmpty, label: nonEmpty, required: z
   // a default merely to make an AI-authored product executable.
 });
 const matrixCellSchema = z.object({ row: nonEmpty, column: nonEmpty, priceCents: centsSchema }).strict();
+/** A single customer choice can select an authoritative base rate. This
+ * preserves stated rates without inventing another customer-facing axis. */
+const oneDimensionalMatrixCellSchema = z.object({ option: nonEmpty, priceCents: centsSchema }).strict();
 const pricingSchema = z.discriminatedUnion("model", [
   z.object({ model: z.literal("scalar"), unit: z.enum(["per_piece", "per_square_foot", "flat_fee"]), priceCents: centsSchema, minimumChargeCents: centsSchema.optional() }).strict(),
   // A matrix can be fully captured before its pricing basis is known.  The
   // explicit sentinel preserves the typed cells without inventing a unit; the
   // resolver and projection gate keep it non-executable until it is answered.
   z.object({ model: z.literal("two_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), rowOptionKey: nonEmpty, columnOptionKey: nonEmpty, cells: z.array(matrixCellSchema).min(1), minimumChargeCents: centsSchema.optional() }).strict(),
+  z.object({ model: z.literal("one_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), optionKey: nonEmpty, cells: z.array(oneDimensionalMatrixCellSchema).min(1), minimumChargeCents: centsSchema.optional() }).strict(),
   z.object({ model: z.literal("quantity_tiers"), unit: z.enum(["per_piece", "per_square_foot"]), tiers: z.array(z.object({ minimumQuantity: z.number().int().positive(), maximumQuantity: z.number().int().positive().nullable(), priceCents: z.number().int().positive() }).strict()).min(1), minimumChargeCents: centsSchema.optional() }).strict(),
   z.object({ model: z.literal("unresolved") }).strict(),
 ]).superRefine((pricing, ctx) => {

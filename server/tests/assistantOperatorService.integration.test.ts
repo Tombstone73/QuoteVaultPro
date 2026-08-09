@@ -52,6 +52,22 @@ function semanticOnlyExecutor(_audit: unknown, semanticTools: readonly any[]) {
 }
 
 describe("AssistantService Operator Runtime integration", () => {
+  test("the exact complex Translucent Vinyl request reaches the canonical proposal tool from createTurn", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore();
+    const exactRequest = "Let's add a new product called \"Translucent Vinyl - backlit with multilayer printing\". It should have an option for 3 layer or 5 layer. 3 layer is $4 sq ft and 5 layer is $5 sq ft. Another option is contour cutting. Contour cutting adds 10% to the total price. If the answer is yes, then an additional option appears that is for weeding and taping. If they want weeding and taping, instead of a 10% increase, the price increase 30%.";
+    const product = { respondPlannedCanonicalProductIntent: jest.fn(async () => ({ handled: true, response: "I created a canonical product intent and will ask only its remaining questions.", cards: [{ kind: "canonical_product_intent_proposal", title: "Create inactive draft: Translucent Vinyl - backlit with multilayer printing", summary: "Canonical product intent needs the remaining decisions.", sourceLinks: [], details: { proposalId: "proposal_translucent", canonicalProductIntent: { readiness: { ready: false, blockers: [], questions: ["Choose a product category."] } } }] })) };
+    const provider = { decide: jest.fn(async ({ observations }: any) => observations.length
+      ? ({ kind: "complete", response: "I created a canonical product intent and will ask only its remaining questions." })
+      : ({ kind: "call_tools", calls: [{ toolName: "products.manage_intent", arguments: { operation: "auto" } }] })) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.create_inactive_draft"] }, { message: exactRequest, context });
+
+    expect(product.respondPlannedCanonicalProductIntent).toHaveBeenCalledWith(expect.objectContaining({ operation: "create", message: exactRequest }));
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ mode: "ai_operator_runtime", structuredCards: expect.arrayContaining([expect.objectContaining({ kind: "canonical_product_intent_proposal" })]) }));
+  });
+
   test("ordinary free text enters the Operator Runtime instead of the legacy planner", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore();

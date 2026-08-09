@@ -1,6 +1,8 @@
 import {
+  DEFAULT_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS,
   PRODUCT_INTENT_COMPILER_MAX_REPAIR_ATTEMPTS,
   ProductIntentCompiler,
+  resolveProductIntentCompilerMaxOutputTokens,
 } from "../services/productIntentCompiler/productIntentCompiler";
 import { jest } from "@jest/globals";
 
@@ -42,6 +44,15 @@ function providerResponse(rawText: string) {
 }
 
 describe("ProductIntentCompiler", () => {
+  test("uses a dedicated bounded structured-output budget for complex product intent", async () => {
+    const generateJson = jest.fn(async () => providerResponse(JSON.stringify(yardSignsPayload)));
+    const compiler = new ProductIntentCompiler({ generateJson });
+    await compiler.compile(compilerInput);
+    expect(generateJson).toHaveBeenCalledWith(expect.objectContaining({ maxTokens: DEFAULT_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS, timeoutUseCase: "product_intent_compiler" }));
+    expect(resolveProductIntentCompilerMaxOutputTokens({ AI_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS: "99999" } as NodeJS.ProcessEnv)).toBe(DEFAULT_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS);
+    expect(resolveProductIntentCompilerMaxOutputTokens({ AI_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS: "128" } as NodeJS.ProcessEnv)).toBe(512);
+  });
+
   test("uses one bounded repair attempt after malformed provider JSON without interpreting prose", async () => {
     const requests: any[] = [];
     const compiler = new ProductIntentCompiler({
@@ -115,7 +126,7 @@ describe("ProductIntentCompiler", () => {
     expect(result).toMatchObject({ ok: true, result: { kind: "intent_patch", patch: { contractVersion: 1, baseRevision: 0, preserveUnchanged: true, operations: [expect.objectContaining({ op: "set_pricing", value: expect.objectContaining({ unit: "per_piece" }) })] } } });
     expect(requests[0].system).toContain("This is a continuation");
     expect(requests[0].user).toContain("0:pricing.matrix.unit:required");
-    expect(requests[0].user).toContain("canonicalPatchContract");
+    expect(requests[0].user).toContain("semanticOperationContract");
   });
 
   test("repairs invalid JSON once with issue paths and preserves the Yard Signs matrix", async () => {

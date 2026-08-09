@@ -108,6 +108,39 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(result.card.candidateResolutions.filter((action) => action.kind === "select_category")).toHaveLength(1);
   });
 
+  test("creates the exact live one-axis Translucent Vinyl intent and asks only genuine missing decisions", async () => {
+    const payload = structuredClone(translucentVinylPayload);
+    payload.intent.identity.name = "Translucent Vinyl - backlit with multilayer printing";
+    payload.intent.pricing = { model: "one_dimensional_matrix", unit: "per_square_foot", optionKey: "layers", cells: [{ option: "three", priceCents: 400 }, { option: "five", priceCents: 500 }] } as any;
+    payload.intent.optionGroups = [
+      { key: "layers", label: "Layers", required: true, selectionMode: "single", values: [{ key: "three", label: "3 Layer", isDefault: false }, { key: "five", label: "5 Layer", isDefault: false }] },
+      { key: "contour", label: "Contour Cutting", required: true, selectionMode: "single", values: [{ key: "no", label: "No", isDefault: false }, { key: "yes", label: "Yes", isDefault: false, priceImpact: { kind: "percentage_of_base", percent: 10 } }] },
+      { key: "weed_tape", label: "Weeding and Taping", required: false, selectionMode: "single", availableWhen: { optionGroupKey: "contour", optionValueKey: "yes" }, values: [{ key: "no", label: "No", isDefault: false }, { key: "yes", label: "Yes", isDefault: false, totalPercentOfBaseWhenEnabled: { percent: 30, prerequisite: { optionGroupKey: "contour", optionValueKey: "yes" } } }] },
+    ] as any;
+    payload.intent.fieldMetadata = { material: { source: "unresolved" }, "production.route": { source: "unresolved" } };
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: jest.fn(async () => ({ rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} })) }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [{ id: "print-products", label: "Print Products" }], materials: [], productionRoutes: [] });
+    const request = "Let's add a new product called \"Translucent Vinyl - backlit with multilayer printing\". It should have an option for 3 layer or 5 layer. 3 layer is $4 sq ft and 5 layer is $5 sq ft. Another option is contour cutting. Contour cutting adds 10% to the total price. If the answer is yes, then an additional option appears that is for weeding and taping. If they want weeding and taping, instead of a 10% increase, the price increase 30%.";
+
+    const result = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "exact-live-translucent", compilerInput: { ...compilerInput(), request } });
+
+    expect(result).toMatchObject({ ok: true, card: { readiness: { ready: false } } });
+    if (!result.ok) throw new Error("Expected a canonical intent.");
+    const intent = result.session.specification.session.revisions[0]!.intent;
+    expect(intent).toMatchObject({ state: "needs_answers", lifecycle: { productStatus: "inactive", published: false }, measurement: { mode: "dimensions_required" }, pricing: { model: "one_dimensional_matrix", unit: "per_square_foot", optionKey: "layers", cells: [{ option: "three", priceCents: 400 }, { option: "five", priceCents: 500 }] }, material: { state: "explicitly_unset" }, production: { route: { state: "explicitly_unset" } } });
+    expect(intent.optionGroups.map((group) => group.key)).toEqual(["layers", "contour", "weed_tape"]);
+    expect(result.issues).toEqual(expect.arrayContaining([expect.objectContaining({ code: "CATEGORY_UNRESOLVED" }), expect.objectContaining({ path: "optionGroups.layers.default" }), expect.objectContaining({ path: "optionGroups.contour.default" })]));
+    expect(result.issues).not.toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.weed_tape.default" })]));
+
+    const followUp = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: result.session.proposalId, request: "3 layer should be the default and contour cutting should default to no.", compilerInput: compilerInput() });
+    expect(followUp).toMatchObject({ ok: true });
+    if (!followUp.ok) throw new Error("Expected both requested defaults to persist.");
+    const revised = followUp.session.specification.session.revisions.at(-1)!.intent;
+    expect(followUp.session.specification.session.revisions).toHaveLength(2);
+    expect(revised.optionGroups.find((group) => group.key === "layers")?.values.find((value) => value.isDefault)?.key).toBe("three");
+    expect(revised.optionGroups.find((group) => group.key === "contour")?.values.find((value) => value.isDefault)?.key).toBe("no");
+    expect(revised.optionGroups.find((group) => group.key === "weed_tape")?.values.some((value) => value.isDefault)).toBe(false);
+  });
+
   test("does not turn an AI-suggested category into canonical state when the user did not name that capability", async () => {
     const payload = structuredClone(translucentVinylPayload);
     payload.intent.identity.category = { state: "resolved", id: "flatbed-printing", label: "Flatbed Printing" };

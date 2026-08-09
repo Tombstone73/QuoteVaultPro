@@ -48,21 +48,26 @@ export function compileSemanticProductOperations(
       continue;
     }
     if (operation.op === "set_pricing_basis") {
-      if (current.pricing.model !== "two_dimensional_matrix") throw new Error("PRODUCT_INTENT_SEMANTIC_PRICING_BASIS_UNSUPPORTED");
+      if (current.pricing.model !== "one_dimensional_matrix" && current.pricing.model !== "two_dimensional_matrix") throw new Error("PRODUCT_INTENT_SEMANTIC_PRICING_BASIS_UNSUPPORTED");
       nextPricing = { ...current.pricing, unit: operation.basis };
       pricingChanged = true;
       metadata["pricing.matrix.unit"] = { source: "explicit_user" };
       continue;
     }
     if (operation.op === "set_matrix_rate") {
-      if (current.pricing.model !== "two_dimensional_matrix") throw new Error("PRODUCT_INTENT_SEMANTIC_MATRIX_RATE_UNSUPPORTED");
+      if (current.pricing.model !== "one_dimensional_matrix" && current.pricing.model !== "two_dimensional_matrix") throw new Error("PRODUCT_INTENT_SEMANTIC_MATRIX_RATE_UNSUPPORTED");
       const group = nextGroups.filter((candidate) => normalized(candidate.label) === normalized(operation.optionGroup));
       if (group.length !== 1) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_GROUP_UNRESOLVED");
       const match = group[0]!.values.filter((value) => normalized(value.label) === normalized(operation.value));
       if (match.length !== 1) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_VALUE_UNRESOLVED");
-      const axis = group[0]!.key === current.pricing.rowOptionKey ? "row" : group[0]!.key === current.pricing.columnOptionKey ? "column" : null;
-      if (!axis) throw new Error("PRODUCT_INTENT_SEMANTIC_MATRIX_AXIS_UNRESOLVED");
-      nextPricing = { ...current.pricing, cells: current.pricing.cells.map((cell) => cell[axis] === match[0]!.key ? { ...cell, priceCents: operation.priceCents } : cell) };
+      if (current.pricing.model === "one_dimensional_matrix") {
+        if (group[0]!.key !== current.pricing.optionKey) throw new Error("PRODUCT_INTENT_SEMANTIC_MATRIX_AXIS_UNRESOLVED");
+        nextPricing = { ...current.pricing, cells: current.pricing.cells.map((cell) => cell.option === match[0]!.key ? { ...cell, priceCents: operation.priceCents } : cell) };
+      } else {
+        const axis = group[0]!.key === current.pricing.rowOptionKey ? "row" : group[0]!.key === current.pricing.columnOptionKey ? "column" : null;
+        if (!axis) throw new Error("PRODUCT_INTENT_SEMANTIC_MATRIX_AXIS_UNRESOLVED");
+        nextPricing = { ...current.pricing, cells: current.pricing.cells.map((cell) => cell[axis] === match[0]!.key ? { ...cell, priceCents: operation.priceCents } : cell) };
+      }
       pricingChanged = true;
       metadata["pricing.matrix"] = { source: "explicit_user" };
       continue;

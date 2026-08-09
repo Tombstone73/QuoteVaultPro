@@ -2,7 +2,7 @@ import { expect, jest, test } from "@jest/globals";
 
 const persisted: unknown[] = [];
 const persistAiDiagnostic = jest.fn(async (value: unknown) => { persisted.push(value); return value; });
-jest.unstable_mockModule("../services/aiDiagnosticsService", () => ({ persistAiDiagnostic }));
+jest.mock("../services/aiDiagnosticsService", () => ({ persistAiDiagnostic }));
 
 const current = {
   proposalId: "proposal_1", organizationId: "org_1", actorUserId: "user_1", conversationId: "conversation_1",
@@ -64,4 +64,19 @@ test("persists a continuation compiler JSON failure under its caller-issued pic 
   expect(persistAiDiagnostic).toHaveBeenCalledTimes(1);
   expect(persisted[0]).toMatchObject({ referenceId: "pic-11111111-1111-4111-8111-111111111111", correlationId: "pic-11111111-1111-4111-8111-111111111111", stage: "json_extraction_failure", parseMethod: "none", repairAttempted: true, repairResult: "failed", sessionId: "proposal_1", currentRevision: 4 });
   expect(JSON.stringify(persisted[0])).not.toContain("never-persist");
+});
+
+test("persists an initial canonical pipeline failure under the displayed compiler reference", async () => {
+  persisted.length = 0; persistAiDiagnostic.mockClear();
+  const { CanonicalProductIntentService } = await import("../services/productIntentCompiler/canonicalProductIntentService");
+  const compiler = { compile: jest.fn(async () => ({ ok: true, result: { kind: "complete_intent", intent: { revision: 0 } }, diagnostics: { correlationId: "pic-22222222-2222-4222-8222-222222222222", provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {}, attempts: 1, stage: "success" } })) } as any;
+  const persistence = { create: jest.fn(async () => { const error: any = new Error("write conflict"); error.code = "PRODUCT_INTENT_CREATE_CONFLICT"; throw error; }) } as any;
+  const service = new CanonicalProductIntentService(compiler, persistence, { categories: [], materials: [], productionRoutes: [] });
+  (service as any).validate = jest.fn(async () => ({ intent: { revision: 0 }, issues: [] }));
+  (service as any).presentation = jest.fn(async () => ({ readiness: { ready: true, blockers: [], questions: [] } }));
+
+  const outcome = await service.create({ organizationId: "org_1", actorUserId: "user_1", conversationId: "conversation_1", compilerInput: { orgId: "org_1", request: "Create a product", operationContext: {}, schemaDescription: "schema", allowedEnums: {}, supportedArchetypes: [] } });
+
+  expect(outcome).toMatchObject({ ok: false, code: "PRODUCT_INTENT_SESSION_CREATION_FAILED" });
+  expect(persistAiDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ referenceId: "pic-22222222-2222-4222-8222-222222222222", stage: "persistence_preparation", errorCode: "PRODUCT_INTENT_CREATE_CONFLICT", tenantId: "org_1", actorId: "user_1", conversationId: "conversation_1", persistenceAttempted: true, persistenceResult: "succeeded" }));
 });

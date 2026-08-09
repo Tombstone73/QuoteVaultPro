@@ -18,6 +18,17 @@ export const PRODUCT_INTENT_COMPILER_MAX_REPAIR_ATTEMPTS = 1;
 const DEFAULT_COMPILER_TIMEOUT_MS = 45_000;
 const MIN_COMPILER_TIMEOUT_MS = 5_000;
 const MAX_COMPILER_TIMEOUT_MS = 90_000;
+export const DEFAULT_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS = 4_096;
+const MIN_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS = 512;
+const MAX_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS = 4_096;
+
+/** Product intent is the largest structured response we request. Keep its
+ * bounded budget separate from unrelated small JSON features. */
+export function resolveProductIntentCompilerMaxOutputTokens(env: NodeJS.ProcessEnv = process.env): number {
+  const configured = Number(env.AI_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS);
+  if (!Number.isFinite(configured) || configured <= 0) return DEFAULT_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS;
+  return Math.min(MAX_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS, Math.max(MIN_PRODUCT_INTENT_COMPILER_MAX_OUTPUT_TOKENS, Math.floor(configured)));
+}
 
 export type ProductIntentCandidateLabels = {
   categories?: string[];
@@ -114,6 +125,7 @@ export interface ProductIntentCompilerProvider {
     repairAttempt: boolean;
     timeoutMs: number;
     timeoutUseCase: string;
+    maxTokens: number;
   }): Promise<{ rawText: string; provider: string; model: string; requestMetadata: Record<string, unknown> }>;
 }
 
@@ -162,7 +174,7 @@ const providerPayloadGuide = {
     lifecycle: { productStatus: "inactive", published: false },
     measurement: "{ mode: 'dimensions_required' } | { mode: 'fixed_size', dimensions: { widthIn, heightIn, allowRotation? } } | { mode: 'quantity_only' }",
     quantity: "{ behavior: 'customer_entered', minimum?, maximum? } | { behavior: 'fixed', quantity } | { behavior: 'not_applicable' }",
-    pricing: "{ model: 'scalar', unit: 'per_piece'|'per_square_foot'|'flat_fee', priceCents } | { model: 'two_dimensional_matrix', unit: 'per_piece'|'per_square_foot'|'unresolved', rowOptionKey, columnOptionKey, cells: [{ row, column, priceCents }] } | { model: 'quantity_tiers', unit: 'per_piece'|'per_square_foot', tiers: [{ minimumQuantity: positive integer, maximumQuantity: positive integer | null, priceCents: positive integer }] } | { model: 'unresolved' }. Quantity tiers are ordered, continuous inclusive ranges beginning at 1; only the final tier may be open ended and it must use maximumQuantity: null. Prices are integer cents. For an option-controlled rate, use the existing two_dimensional_matrix and include every row/column combination; repeat a rate across an unrelated axis rather than creating a second product.",
+    pricing: "{ model: 'scalar', unit: 'per_piece'|'per_square_foot'|'flat_fee', priceCents } | { model: 'one_dimensional_matrix', unit: 'per_piece'|'per_square_foot'|'unresolved', optionKey, cells: [{ option, priceCents }] } | { model: 'two_dimensional_matrix', unit: 'per_piece'|'per_square_foot'|'unresolved', rowOptionKey, columnOptionKey, cells: [{ row, column, priceCents }] } | { model: 'quantity_tiers', unit: 'per_piece'|'per_square_foot', tiers: [{ minimumQuantity: positive integer, maximumQuantity: positive integer | null, priceCents: positive integer }] } | { model: 'unresolved' }. Quantity tiers are ordered, continuous inclusive ranges beginning at 1; only the final tier may be open ended and it must use maximumQuantity: null. Prices are integer cents. Use one_dimensional_matrix when one option alone controls the rate; use two_dimensional_matrix only when two independently requested option groups control it. Never invent an unrelated option merely to make a matrix rectangular.",
     material: "{ state: 'resolved', id, label } | { state: 'unresolved', label } | { state: 'explicitly_unset' }",
     optionGroups: "[{ key, label, required, selectionMode: 'single'|'multiple', availableWhen?: { optionGroupKey, optionValueKey }, values: [{ key, label, isDefault, priceImpact?: { kind: 'percentage_of_base', percent }, totalPercentOfBaseWhenEnabled?: { percent, prerequisite: { optionGroupKey, optionValueKey } } }] }]. Use priceImpact only for an explicit percentage of the resolved base price. For a dependent total, use totalPercentOfBaseWhenEnabled: e.g. Contour has priceImpact 10, Weed and Tape has totalPercentOfBaseWhenEnabled percent 30 with prerequisite Contour. The server derives +20, so selection totals +30 rather than +40. A dependent group must use availableWhen with the same prerequisite. Never invent a material or route.",
     workflow: "{ kind: 'standard_production'|'fulfillment_only'|'service_fee', requiresProofApproval, requiresProductionJob }",
@@ -522,7 +534,7 @@ async function persistCompilerDiagnostic(input: ProductIntentCompilerInput, diag
     const referenceId = diagnostics?.correlationId ?? input.diagnosticReferenceId;
     if (!referenceId) return;
     const repaired = (diagnostics?.attempts ?? 0) > 1;
-    const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId, correlationId: referenceId, diagnosticType: "product_intent_compiler", tenantId: input.orgId, actorId: input.diagnosticContext?.actorId ?? null, conversationId: input.diagnosticContext?.conversationId ?? null, provider: diagnostics?.provider ?? null, model: diagnostics?.model ?? null, providerRequestId: diagnostics?.requestMetadata.providerRequestId ?? null, stage, errorCode, providerResponseState: stage === "json_extraction_failure" ? "parse_failed" : stage.includes("schema") ? "contract_failed" : "not_received", parseMethod: stage === "json_extraction_failure" ? "none" : repaired ? "repaired_json" : "raw_json", repairAttempted: repaired, repairResult: repaired ? "failed" : "not_attempted", validationSchema: stage.includes("schema") ? "ProductIntentCompilerResult" : null, validationIssuePaths: diagnostics?.schemaIssuePaths ?? [], validationIssueCodes: diagnostics?.schemaIssueCodes ?? [], returnedTopLevelKeys: [], missingRequiredKeys: diagnostics?.missingRequiredKeys ?? [], unknownKeys: diagnostics?.unknownKeys ?? [], plannerOperation: null, selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler", optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString(), sessionId: input.diagnosticContext?.sessionId ?? null, currentRevision: input.diagnosticContext?.currentRevision ?? null, patchOperationCount: null, patchPaths: [] });
+    const envelope = sanitizeAiDiagnosticEnvelope({ version: 1, referenceId, correlationId: referenceId, diagnosticType: "product_intent_compiler", tenantId: input.orgId, actorId: input.diagnosticContext?.actorId ?? null, conversationId: input.diagnosticContext?.conversationId ?? null, provider: diagnostics?.provider ?? null, model: diagnostics?.model ?? null, providerRequestId: diagnostics?.requestMetadata.providerRequestId ?? null, stage, errorCode, providerResponseState: stage === "json_extraction_failure" ? "parse_failed" : stage.includes("schema") ? "contract_failed" : "not_received", parseMethod: stage === "json_extraction_failure" ? "none" : repaired ? "repaired_json" : "raw_json", repairAttempted: repaired, repairResult: repaired ? "failed" : "not_attempted", validationSchema: stage.includes("schema") ? "ProductIntentCompilerResult" : null, validationIssuePaths: diagnostics?.schemaIssuePaths ?? [], validationIssueCodes: diagnostics?.schemaIssueCodes ?? [], returnedTopLevelKeys: [], missingRequiredKeys: diagnostics?.missingRequiredKeys ?? [], unknownKeys: diagnostics?.unknownKeys ?? [], plannerOperation: null, selectedCapability: "canonical_product_intent_compiler", specialistName: "product_intent_compiler", optionNormalizationStage: null, resolverStage: null, persistenceAttempted: true, persistenceResult: "succeeded", createdAt: new Date().toISOString(), sessionId: input.diagnosticContext?.sessionId ?? null, currentRevision: input.diagnosticContext?.currentRevision ?? null, patchOperationCount: null, patchPaths: [] });
     await persistAiDiagnostic(envelope);
   } catch { /* Diagnostics must never conceal the original compiler failure. */ }
 }
@@ -557,6 +569,7 @@ export class ProductIntentCompiler {
           repairAttempt: attempt > 0,
           timeoutMs,
           timeoutUseCase: "product_intent_compiler",
+          maxTokens: resolveProductIntentCompilerMaxOutputTokens(),
         });
       } catch (error) {
         const unavailable = isProviderUnavailable(error);
