@@ -33,6 +33,17 @@ function repo() {
   };
 }
 
+function bannerPricingConfiguration(overrides: Record<string, unknown> = {}) {
+  return {
+    treeVersionId: "tree-1", lifecycle: "ACTIVE", pricingBasis: "per_square_foot" as const,
+    measurementMode: "dimensions_required" as const, dimensionsRequired: true, fixedDimensions: null,
+    baseRates: { perSquareFootCents: 125, perPieceCents: null, minimumChargeCents: null },
+    quantityBehavior: "linear" as const, quantityTiers: [], matrix: null,
+    optionGroups: [{ selectionKey: "finishing", label: "Finishing", required: false, defaultValue: "hem", choices: [{ value: "hem", label: "Hemmed", pricingImpactSummary: null }, { value: "grommets", label: "Grommets", pricingImpactSummary: "+$0.00 per selection" }] }],
+    ...overrides,
+  };
+}
+
 describe("assistant order/product/operational tools", () => {
   test("order summary reduces canonical records and omits invoices without finance permission", async () => {
     const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow });
@@ -244,26 +255,52 @@ describe("assistant order/product/operational tools", () => {
       breakdown: { pricingMethod: "per_piece" },
       pbv2SnapshotJson: { pricing: { pricingMethod: "per_piece" }, dimensions: { widthIn: 36, heightIn: 72 } },
     }));
-    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice });
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });
 
-    const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", quantity: 3, widthIn: 36, heightIn: 72, optionSelections: { finishing: { value: "grommets" } } });
+    const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", quantity: 3, width: 3, height: 6, unit: "ft", optionSelections: { Finishing: "Grommets" } });
 
     expect(projectProductPrice).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org-a", productId: "product-1", quantity: 3, widthIn: 36, heightIn: 72 }));
     expect(result.data.pricing).toMatchObject({ status: "priced", treeVersionId: "tree-1", totalCents: 5400, averageUnitCents: 1800, dimensions: { widthIn: 36, heightIn: 72 } });
+    expect(projectProductPrice).toHaveBeenCalledWith(expect.objectContaining({ pbv2ExplicitSelections: { finishing: { value: "grommets" } } }));
     expect(JSON.stringify(result.data)).not.toContain("treeJson");
   });
 
   test("does not fabricate a price when PBV2 needs a scenario", async () => {
-    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice: jest.fn(async () => { throw new Error("dimensions required"); }) });
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice: jest.fn(async () => { throw new Error("dimensions required"); }), getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });
 
     const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes" });
 
-    expect(result.data.pricing).toMatchObject({ status: "requires_input", totalCents: null, averageUnitCents: null });
+    expect(result.data.pricing).toMatchObject({ status: "configuration", totalCents: null, averageUnitCents: null, configuration: { baseRates: { perSquareFootCents: 125 } } });
+  });
+
+  test("returns semantic configuration without requiring a projection", async () => {
+    const projectProductPrice = jest.fn();
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration({ quantityBehavior: "tiered", quantityTiers: [{ minimumQuantity: 10, maximumQuantity: null, minimumSquareFeet: null, perSquareFootCents: 100, perPieceCents: null, minimumChargeCents: null }] })) });
+    const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes" });
+    expect(result.data.pricing).toMatchObject({ status: "configuration", configuration: { pricingBasis: "per_square_foot", quantityBehavior: "tiered", options: [{ label: "Finishing", defaultSelection: "Hemmed" }] } });
+    expect(projectProductPrice).not.toHaveBeenCalled();
+  });
+
+  test("normalizes inch dimensions, applies defaults, and reports required options semantically", async () => {
+    const projectProductPrice = jest.fn(async () => ({ pbv2TreeVersionId: "tree-1", lineTotalCents: 2250, breakdown: { pricingMethod: "per_square_foot" }, pbv2SnapshotJson: { pricing: { pricingMethod: "per_square_foot" }, dimensions: { widthIn: 36, heightIn: 72 } } }));
+    const configuration = bannerPricingConfiguration({ optionGroups: [{ selectionKey: "sides", label: "Sides", required: true, defaultValue: undefined, choices: [{ value: "single", label: "Single Sided", pricingImpactSummary: null }, { value: "double", label: "Double Sided", pricingImpactSummary: "+$0.25 per sq ft" }] }, { selectionKey: "finishing", label: "Finishing", required: false, defaultValue: "hem", choices: [{ value: "hem", label: "Hemmed", pricingImpactSummary: null }] }] });
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice, getProductPricingConfiguration: jest.fn(async () => configuration) });
+    const missing = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", width: 36, height: 72, unit: "in" });
+    expect(missing.data.pricing).toMatchObject({ status: "input_needed", inputNeeded: [expect.objectContaining({ label: "Sides", allowedValues: ["Single Sided", "Double Sided"] })] });
+    const priced = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", width: 36, height: 72, unit: "in", optionSelections: { Sides: "Single Sided" } });
+    expect(priced.data.pricing.status).toBe("priced");
+    expect(projectProductPrice).toHaveBeenLastCalledWith(expect.objectContaining({ widthIn: 36, heightIn: 72, pbv2ExplicitSelections: { sides: { value: "single" }, finishing: { value: "hem" } } }));
+  });
+
+  test("returns a clear semantic request for invalid dimensions", async () => {
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });
+    const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", width: -3, height: 8, unit: "ft" });
+    expect(result.data.pricing).toMatchObject({ status: "input_needed", inputNeeded: [expect.objectContaining({ label: "Dimensions", reason: expect.stringContaining("positive") })] });
   });
 
   test("does not disclose another tenant's product pricing", async () => {
     const projectProductPrice = jest.fn();
-    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice });
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });
 
     const result = await tools.productsGetPricing.execute({ ...invocation, organizationId: "org-b" }, { productId: "product-1" });
 

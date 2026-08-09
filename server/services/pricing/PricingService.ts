@@ -458,6 +458,102 @@ export function getPbv2PricingVariableDefinitions(): PricingVariableDefinition[]
   return PBV2_PRICING_VARIABLES;
 }
 
+/** A deliberately reduced view of an active PBV2 tree for trusted assistant
+ * reads. It explains pricing without exposing tree JSON, node IDs, formula
+ * source, or storage-only selection paths to the model. */
+export type ProductPricingIntrospection = {
+  treeVersionId: string;
+  lifecycle: string;
+  pricingBasis: "per_square_foot" | "per_piece" | "mixed" | "formula" | "configured";
+  measurementMode: "dimensions_required" | "quantity_only";
+  dimensionsRequired: boolean;
+  fixedDimensions: { widthIn: number; heightIn: number } | null;
+  baseRates: { perSquareFootCents: number | null; perPieceCents: number | null; minimumChargeCents: number | null };
+  quantityBehavior: "linear" | "tiered" | "matrix_tiered";
+  quantityTiers: Array<{ minimumQuantity: number | null; maximumQuantity: number | null; minimumSquareFeet: number | null; perSquareFootCents: number | null; perPieceCents: number | null; minimumChargeCents: number | null }>;
+  matrix: { dimensions: string[]; rowCount: number; pricingUnit: "per_square_foot" | "per_piece" } | null;
+  optionGroups: Array<{ selectionKey: string; label: string; required: boolean; defaultValue: unknown; choices: Array<{ value: string; label: string; pricingImpactSummary: string | null }> }>;
+};
+
+function nonNegativeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function pricingImpactSummary(choice: any): string | null {
+  if (typeof choice?.priceDeltaCents === "number" && Number.isFinite(choice.priceDeltaCents)) {
+    const sign = choice.priceDeltaCents >= 0 ? "+" : "-";
+    return `${sign}$${(Math.abs(choice.priceDeltaCents) / 100).toFixed(2)} per selection`;
+  }
+  const impacts = Array.isArray(choice?.pricingImpact) ? choice.pricingImpact : [];
+  const descriptions = impacts.flatMap((impact: any) => {
+    if (!impact || typeof impact !== "object") return [];
+    if (impact.mode === "addFlat" && Number.isFinite(impact.amountCents)) return [`+$${(impact.amountCents / 100).toFixed(2)} per line`];
+    if (impact.mode === "addPerQty" && Number.isFinite(impact.amountCents)) return [`+$${(impact.amountCents / 100).toFixed(2)} per piece`];
+    if (impact.mode === "addPerSqft" && Number.isFinite(impact.amountCents)) return [`+$${(impact.amountCents / 100).toFixed(2)} per sq ft`];
+    if (impact.mode === "multiplyTotal" && Number.isFinite(impact.multiplier)) return [`${impact.multiplier}x total`];
+    return [];
+  });
+  return descriptions.length ? descriptions.join("; ") : null;
+}
+
+export async function inspectProductPricing(input: { organizationId: string; productId: string }): Promise<ProductPricingIntrospection> {
+  const product = await loadProduct(input.organizationId, input.productId);
+  const treeVersionId = resolvePbv2Override(product) || product.pbv2ActiveTreeVersionId;
+  if (!treeVersionId) throw new Error("This product has no active PBV2 pricing tree.");
+  const treeVersion = await loadTreeVersion(input.organizationId, treeVersionId);
+  const tree = treeVersion.treeJson as any;
+  const meta = tree?.meta && typeof tree.meta === "object" ? tree.meta : {};
+  const pricingV2 = meta.pricingV2 && typeof meta.pricingV2 === "object" ? meta.pricingV2 : {};
+  const base = pricingV2.base && typeof pricingV2.base === "object" ? pricingV2.base : {};
+  const perSquareFootCents = nonNegativeNumber(base.perSqftCents);
+  const perPieceCents = nonNegativeNumber(base.perPieceCents);
+  const minimumChargeCents = nonNegativeNumber(base.minimumChargeCents);
+  const matrix = extractProductOptionPricingMatrix(tree);
+  const rawNodes = tree?.nodes && typeof tree.nodes === "object" ? Object.values(tree.nodes) : Array.isArray(tree?.nodes) ? tree.nodes : [];
+  const optionGroups: ProductPricingIntrospection["optionGroups"] = rawNodes.flatMap((rawNode: any) => {
+    if (!rawNode || typeof rawNode !== "object" || rawNode.kind === "group") return [];
+    const selectionKey = typeof rawNode?.input?.selectionKey === "string" && rawNode.input.selectionKey.trim()
+      ? rawNode.input.selectionKey.trim()
+      : typeof rawNode.key === "string" && rawNode.key.trim() ? rawNode.key.trim() : typeof rawNode.id === "string" ? rawNode.id : "";
+    const label = typeof rawNode.label === "string" && rawNode.label.trim() ? rawNode.label.trim() : selectionKey;
+    if (!selectionKey || !label) return [];
+    return [{
+      selectionKey,
+      label,
+      required: rawNode?.input?.required === true,
+      defaultValue: rawNode?.input?.defaultValue,
+      choices: Array.isArray(rawNode.choices) ? rawNode.choices.flatMap((choice: any) => typeof choice?.value === "string" && typeof choice?.label === "string"
+        ? [{ value: choice.value, label: choice.label, pricingImpactSummary: pricingImpactSummary(choice) }]
+        : []) : [],
+    }];
+  }).slice(0, 40);
+  const tierRows = [...(Array.isArray(pricingV2.qtyTiers) ? pricingV2.qtyTiers : []), ...(Array.isArray(pricingV2.sqftTiers) ? pricingV2.sqftTiers : [])]
+    .flatMap((tier: any) => tier && typeof tier === "object" ? [{
+      minimumQuantity: Number.isInteger(tier.minQty) ? tier.minQty : null,
+      maximumQuantity: Number.isInteger(tier.maxQty) ? tier.maxQty : null,
+      minimumSquareFeet: typeof tier.minSqft === "number" && Number.isFinite(tier.minSqft) ? tier.minSqft : null,
+      perSquareFootCents: nonNegativeNumber(tier.perSqftCents), perPieceCents: nonNegativeNumber(tier.perPieceCents), minimumChargeCents: nonNegativeNumber(tier.minimumChargeCents),
+    }] : []);
+  const fixed = meta.fixedDimensions && typeof meta.fixedDimensions === "object" && Number(meta.fixedDimensions.widthIn) > 0 && Number(meta.fixedDimensions.heightIn) > 0
+    ? { widthIn: Number(meta.fixedDimensions.widthIn), heightIn: Number(meta.fixedDimensions.heightIn) } : null;
+  const basis = perSquareFootCents !== null && perPieceCents !== null ? "mixed"
+    : perSquareFootCents !== null ? "per_square_foot" : perPieceCents !== null ? "per_piece"
+    : typeof meta.pricingFormula === "string" && meta.pricingFormula.trim() ? "formula" : "configured";
+  return {
+    treeVersionId,
+    lifecycle: typeof treeVersion.status === "string" ? treeVersion.status : "ACTIVE",
+    pricingBasis: basis,
+    measurementMode: product.measurementMode === "quantity_only" ? "quantity_only" : "dimensions_required",
+    dimensionsRequired: product.measurementMode !== "quantity_only" && meta.requiresDimensions !== false && !fixed,
+    fixedDimensions: fixed,
+    baseRates: { perSquareFootCents, perPieceCents, minimumChargeCents },
+    quantityBehavior: matrix?.rows.some((row) => Array.isArray(row.qtyTiers) && row.qtyTiers.length) ? "matrix_tiered" : tierRows.length ? "tiered" : "linear",
+    quantityTiers: tierRows.slice(0, 30),
+    matrix: matrix ? { dimensions: matrix.dimensions.map((key) => optionGroups.find((group) => group.selectionKey === key)?.label ?? key).slice(0, 12), rowCount: matrix.rows.length, pricingUnit: pricingV2.optionMatrixPricingUnit === "per_piece" ? "per_piece" : "per_square_foot" } : null,
+    optionGroups,
+  };
+}
+
 // ============================================================================
 // Main Pricing Function
 // ============================================================================

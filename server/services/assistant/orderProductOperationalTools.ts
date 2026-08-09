@@ -25,6 +25,7 @@ import {
 import { QuoteInternalNotesRepository, type QuoteInternalReference } from "../../storage/quoteInternalNotes.repo";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
 import { AssistantToolExecutionError } from "./orchestration";
+import type { ProductPricingIntrospection } from "../pricing/PricingService";
 
 const identifierSchema = z.string().trim().min(1).max(128).regex(/^[A-Za-z0-9:_-]+$/);
 const isoDateSchema = z.string().datetime({ offset: true });
@@ -49,8 +50,12 @@ export const productPricingToolInputSchema = z.object({
   productId: identifierSchema.optional(),
   query: z.string().trim().min(1).max(160).optional(),
   quantity: z.number().int().min(1).max(100_000).optional(),
-  widthIn: z.number().finite().positive().max(10_000).optional(),
-  heightIn: z.number().finite().positive().max(10_000).optional(),
+  /** Legacy inch inputs remain accepted; semantic width/height/unit is preferred. */
+  widthIn: z.number().finite().max(10_000).optional(),
+  heightIn: z.number().finite().max(10_000).optional(),
+  width: z.number().finite().max(10_000).optional(),
+  height: z.number().finite().max(10_000).optional(),
+  unit: z.enum(["in", "ft"]).optional(),
   optionSelections: z.record(z.unknown()).optional(),
 }).strict().refine((value) => Boolean(value.productId || value.query), {
   message: "A product ID or product name is required",
@@ -151,13 +156,25 @@ export const productSummaryToolResultSchema = toolEnvelopeSchema(z.object({
 export const productPricingToolResultSchema = toolEnvelopeSchema(z.object({
   product: z.object({ id: identifierSchema, name: z.string().min(1).max(255), active: z.boolean(), pricingMethod: z.string().min(1) }).nullable(),
   pricing: z.object({
-    status: z.enum(["priced", "requires_input", "unavailable"]),
+    status: z.enum(["configuration", "priced", "input_needed", "unavailable"]),
     pricingMethod: z.string().min(1).max(160).nullable(),
     treeVersionId: identifierSchema.nullable(),
     quantity: z.number().int().positive(),
     dimensions: z.object({ widthIn: z.number().finite().positive(), heightIn: z.number().finite().positive() }).strict().nullable(),
     totalCents: z.number().int().nonnegative().nullable(),
     averageUnitCents: z.number().int().nonnegative().nullable(),
+    configuration: z.object({
+      pricingBasis: z.enum(["per_square_foot", "per_piece", "mixed", "formula", "configured"]),
+      measurementMode: z.enum(["dimensions_required", "quantity_only"]),
+      dimensionsRequired: z.boolean(), fixedDimensions: z.object({ widthIn: z.number().positive(), heightIn: z.number().positive() }).strict().nullable(),
+      baseRates: z.object({ perSquareFootCents: z.number().nonnegative().nullable(), perPieceCents: z.number().nonnegative().nullable(), minimumChargeCents: z.number().nonnegative().nullable() }).strict(),
+      quantityBehavior: z.enum(["linear", "tiered", "matrix_tiered"]),
+      quantityTiers: z.array(z.object({ minimumQuantity: z.number().int().positive().nullable(), maximumQuantity: z.number().int().positive().nullable(), minimumSquareFeet: z.number().positive().nullable(), perSquareFootCents: z.number().nonnegative().nullable(), perPieceCents: z.number().nonnegative().nullable(), minimumChargeCents: z.number().nonnegative().nullable() }).strict()).max(30),
+      matrix: z.object({ dimensions: z.array(z.string().min(1)).max(12), rowCount: z.number().int().nonnegative(), pricingUnit: z.enum(["per_square_foot", "per_piece"]) }).strict().nullable(),
+      options: z.array(z.object({ label: z.string().min(1), required: z.boolean(), defaultSelection: z.string().nullable(), choices: z.array(z.object({ label: z.string().min(1), pricingImpactSummary: z.string().nullable() }).strict()).max(30) }).strict()).max(40),
+      treeVersionId: identifierSchema, lifecycle: z.string().min(1).max(40),
+    }).strict().nullable(),
+    inputNeeded: z.array(z.object({ field: z.string().min(1).max(160), label: z.string().min(1).max(160), reason: z.string().min(1).max(500), allowedValues: z.array(z.string().min(1).max(160)).max(30) }).strict()).max(20),
     message: z.string().min(1).max(500),
   }).strict(),
 }).strict());
@@ -254,6 +271,7 @@ export interface AssistantOrderProductToolDependencies {
   logOrderSummaryStep?: (event: OrderSummaryStepLog) => void;
   /** Bound each independent optional read so it cannot consume the core tool deadline. */
   optionalOrderEnrichmentTimeoutMs?: number;
+  getProductPricingConfiguration?: (input: { organizationId: string; productId: string }) => Promise<import("../pricing/PricingService").ProductPricingIntrospection>;
   projectProductPrice?: (input: { organizationId: string; productId: string; quantity: number; widthIn?: number; heightIn?: number; pbv2ExplicitSelections: Record<string, unknown> }) => Promise<{
     pbv2TreeVersionId: string;
     lineTotalCents: number;
@@ -531,6 +549,88 @@ function productionOverview(production: Array<z.infer<typeof normalizedProductio
   };
 }
 
+type PricingInputNeeded = { field: string; label: string; reason: string; allowedValues: string[] };
+
+function normalizedPricingLabel(value: string): string {
+  return value.trim().toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function publicPricingConfiguration(configuration: ProductPricingIntrospection) {
+  return {
+    pricingBasis: configuration.pricingBasis,
+    measurementMode: configuration.measurementMode,
+    dimensionsRequired: configuration.dimensionsRequired,
+    fixedDimensions: configuration.fixedDimensions,
+    baseRates: configuration.baseRates,
+    quantityBehavior: configuration.quantityBehavior,
+    quantityTiers: configuration.quantityTiers,
+    matrix: configuration.matrix,
+    options: configuration.optionGroups.map((group) => ({
+      label: group.label,
+      required: group.required,
+      defaultSelection: typeof group.defaultValue === "string" ? (group.choices.find((choice) => choice.value === group.defaultValue)?.label ?? group.defaultValue) : null,
+      choices: group.choices.map((choice) => ({ label: choice.label, pricingImpactSummary: choice.pricingImpactSummary })),
+    })),
+    treeVersionId: configuration.treeVersionId,
+    lifecycle: configuration.lifecycle,
+  };
+}
+
+function pricingInputNeeded(configuration: ProductPricingIntrospection, field: string, label: string, reason: string, allowedValues: string[] = []): PricingInputNeeded {
+  return { field, label, reason, allowedValues: allowedValues.slice(0, 30) };
+}
+
+function normalizePricingScenario(input: z.infer<typeof productPricingToolInputSchema>, configuration: ProductPricingIntrospection): {
+  dimensions: { widthIn?: number; heightIn?: number };
+  selections: Record<string, { value: unknown }>;
+  inputNeeded: PricingInputNeeded[];
+} {
+  const inputNeeded: PricingInputNeeded[] = [];
+  const semanticDimensionsPresent = input.width !== undefined || input.height !== undefined || input.unit !== undefined;
+  const legacyDimensionsPresent = input.widthIn !== undefined || input.heightIn !== undefined;
+  if (semanticDimensionsPresent && legacyDimensionsPresent) {
+    inputNeeded.push(pricingInputNeeded(configuration, "dimensions", "Dimensions", "Provide either width/height/unit or legacy inch dimensions, not both."));
+  }
+  const usesFeet = input.unit === "ft";
+  const rawWidth = semanticDimensionsPresent ? input.width : input.widthIn;
+  const rawHeight = semanticDimensionsPresent ? input.height : input.heightIn;
+  if (configuration.dimensionsRequired && (rawWidth === undefined || rawHeight === undefined)) {
+    inputNeeded.push(pricingInputNeeded(configuration, "dimensions", "Dimensions", "This product is priced from width and height. Supply both dimensions in inches or feet.", ["in", "ft"]));
+  }
+  const widthIn = rawWidth === undefined ? undefined : rawWidth * (usesFeet ? 12 : 1);
+  const heightIn = rawHeight === undefined ? undefined : rawHeight * (usesFeet ? 12 : 1);
+  if ((widthIn !== undefined && (!Number.isFinite(widthIn) || widthIn <= 0)) || (heightIn !== undefined && (!Number.isFinite(heightIn) || heightIn <= 0))) {
+    inputNeeded.push(pricingInputNeeded(configuration, "dimensions", "Dimensions", "Width and height must be positive numbers."));
+  }
+  if ((widthIn !== undefined && widthIn > 10_000) || (heightIn !== undefined && heightIn > 10_000)) {
+    inputNeeded.push(pricingInputNeeded(configuration, "dimensions", "Dimensions", "Each dimension must not exceed 10,000 inches."));
+  }
+  const selections: Record<string, { value: unknown }> = {};
+  for (const group of configuration.optionGroups) {
+    if (group.defaultValue !== undefined && group.defaultValue !== null && group.defaultValue !== "") selections[group.selectionKey] = { value: group.defaultValue };
+  }
+  for (const [requestedGroup, rawSelection] of Object.entries(input.optionSelections ?? {})) {
+    const group = configuration.optionGroups.find((candidate) => normalizedPricingLabel(candidate.label) === normalizedPricingLabel(requestedGroup) || normalizedPricingLabel(candidate.selectionKey) === normalizedPricingLabel(requestedGroup));
+    if (!group) {
+      inputNeeded.push(pricingInputNeeded(configuration, `optionSelections.${requestedGroup}`, requestedGroup, "No pricing-relevant option with that label exists for this product.", configuration.optionGroups.map((candidate) => candidate.label)));
+      continue;
+    }
+    const requestedValue = rawSelection && typeof rawSelection === "object" && !Array.isArray(rawSelection) && "value" in rawSelection
+      ? (rawSelection as { value?: unknown }).value : rawSelection;
+    const choice = typeof requestedValue === "string" ? group.choices.find((candidate) => normalizedPricingLabel(candidate.label) === normalizedPricingLabel(requestedValue) || normalizedPricingLabel(candidate.value) === normalizedPricingLabel(requestedValue)) : undefined;
+    if (!choice) {
+      inputNeeded.push(pricingInputNeeded(configuration, `optionSelections.${group.label}`, group.label, "Choose one of this product's allowed pricing selections.", group.choices.map((candidate) => candidate.label)));
+      continue;
+    }
+    selections[group.selectionKey] = { value: choice.value };
+  }
+  for (const group of configuration.optionGroups) {
+    if (!group.required || selections[group.selectionKey]?.value !== undefined) continue;
+    inputNeeded.push(pricingInputNeeded(configuration, `optionSelections.${group.label}`, group.label, "This pricing selection is required and has no authoritative default.", group.choices.map((choice) => choice.label)));
+  }
+  return { dimensions: { ...(widthIn !== undefined ? { widthIn } : {}), ...(heightIn !== undefined ? { heightIn } : {}) }, selections, inputNeeded };
+}
+
 export function createOrderProductOperationalTools(deps: AssistantOrderProductToolDependencies = {}) {
   const repository = deps.repository ?? new AssistantOrderProductRepository();
   const projectProductPrice = deps.projectProductPrice ?? (async (input) => {
@@ -541,6 +641,10 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       breakdown: { pricingMethod?: string };
       pbv2SnapshotJson: { pricing?: { pricingMethod?: string }; dimensions?: { widthIn?: number; heightIn?: number } };
     }>;
+  });
+  const getProductPricingConfiguration = deps.getProductPricingConfiguration ?? (async (input) => {
+    const { inspectProductPricing } = await import("../pricing/PricingService");
+    return inspectProductPricing(input);
   });
   const customerRepository = new DrizzleAssistantSearchCustomerRepository();
   const quoteRepository = new QuoteInternalNotesRepository();
@@ -682,20 +786,42 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       const retrievedAt = now();
       if (!record) return productPricingToolResultSchema.parse({
         status: "not_found",
-        data: { product: null, pricing: { status: "unavailable", pricingMethod: null, treeVersionId: null, quantity: input.quantity ?? 1, dimensions: null, totalCents: null, averageUnitCents: null, message: "No tenant-scoped product matched that reference." } },
+        data: { product: null, pricing: { status: "unavailable", pricingMethod: null, treeVersionId: null, quantity: input.quantity ?? 1, dimensions: null, totalCents: null, averageUnitCents: null, configuration: null, inputNeeded: [], message: "No tenant-scoped product matched that reference." } },
         sourceLinks: [], freshness: notFoundFreshness(retrievedAt),
       });
       const quantity = input.quantity ?? 1;
       const pricingMethod = record.product.pricingProfileKey ?? record.product.pricingEngine ?? record.product.pricingMode;
       const sourceLinks = [{ label: record.product.name, href: `/products/${record.product.id}/edit`, entityType: "product" as const, entityId: record.product.id, capturedAt: toIso(record.product.updatedAt) ?? retrievedAt.toISOString() }];
+      let configuration: ProductPricingIntrospection;
+      try {
+        configuration = await getProductPricingConfiguration({ organizationId: invocation.organizationId, productId: record.product.id });
+      } catch {
+        return productPricingToolResultSchema.parse({
+          status: "ok",
+          data: { product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod }, pricing: { status: "unavailable", pricingMethod, treeVersionId: record.product.pbv2ActiveTreeVersionId ?? null, quantity, dimensions: null, totalCents: null, averageUnitCents: null, configuration: null, inputNeeded: [], message: "Authoritative PBV2 pricing configuration is unavailable for this product." } },
+          sourceLinks, freshness: { retrievedAt: retrievedAt.toISOString() },
+        });
+      }
+      const publicConfiguration = publicPricingConfiguration(configuration);
+      const scenarioRequested = input.quantity !== undefined || input.width !== undefined || input.height !== undefined || input.unit !== undefined || input.widthIn !== undefined || input.heightIn !== undefined || input.optionSelections !== undefined;
+      if (!scenarioRequested) return productPricingToolResultSchema.parse({
+        status: "ok",
+        data: { product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod }, pricing: { status: "configuration", pricingMethod, treeVersionId: configuration.treeVersionId, quantity, dimensions: configuration.fixedDimensions, totalCents: null, averageUnitCents: null, configuration: publicConfiguration, inputNeeded: [], message: "Authoritative PBV2 pricing configuration. Provide a semantic scenario only when a calculated price is needed." } },
+        sourceLinks, freshness: { retrievedAt: retrievedAt.toISOString() },
+      });
+      const scenario = normalizePricingScenario(input, configuration);
+      if (scenario.inputNeeded.length) return productPricingToolResultSchema.parse({
+        status: "ok",
+        data: { product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod }, pricing: { status: "input_needed", pricingMethod, treeVersionId: configuration.treeVersionId, quantity, dimensions: scenario.dimensions.widthIn && scenario.dimensions.widthIn > 0 && scenario.dimensions.heightIn && scenario.dimensions.heightIn > 0 ? { widthIn: scenario.dimensions.widthIn, heightIn: scenario.dimensions.heightIn } : configuration.fixedDimensions, totalCents: null, averageUnitCents: null, configuration: publicConfiguration, inputNeeded: scenario.inputNeeded, message: "Pricing needs the listed business inputs before an authoritative PBV2 projection can run." } },
+        sourceLinks, freshness: { retrievedAt: retrievedAt.toISOString() },
+      });
       try {
         const projection = await projectProductPrice({
           organizationId: invocation.organizationId,
           productId: record.product.id,
           quantity,
-          ...(input.widthIn ? { widthIn: input.widthIn } : {}),
-          ...(input.heightIn ? { heightIn: input.heightIn } : {}),
-          pbv2ExplicitSelections: input.optionSelections ?? {},
+          ...scenario.dimensions,
+          pbv2ExplicitSelections: scenario.selections,
         });
         const dimensions = projection.pbv2SnapshotJson.dimensions;
         const widthIn = Number(dimensions?.widthIn);
@@ -712,26 +838,34 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
               dimensions: Number.isFinite(widthIn) && widthIn > 0 && Number.isFinite(heightIn) && heightIn > 0 ? { widthIn, heightIn } : null,
               totalCents: projection.lineTotalCents,
               averageUnitCents: Math.round(projection.lineTotalCents / quantity),
+              configuration: publicConfiguration,
+              inputNeeded: [],
               message: "Authoritative PBV2 pricing projection for the requested scenario.",
             },
           },
           sourceLinks, freshness: { retrievedAt: retrievedAt.toISOString() },
         });
-      } catch {
-        const missingScenarioInput = input.widthIn == null || input.heightIn == null;
+      } catch (error) {
+        const details = error && typeof error === "object" && Array.isArray((error as { details?: unknown }).details) ? (error as { details: Array<{ optionGroup?: unknown; message?: unknown }> }).details : [];
+        const inputNeeded = details.flatMap((detail) => {
+          const group = typeof detail.optionGroup === "string" ? configuration.optionGroups.find((candidate) => candidate.selectionKey === detail.optionGroup) : undefined;
+          return group ? [pricingInputNeeded(configuration, `optionSelections.${group.label}`, group.label, typeof detail.message === "string" ? detail.message : "PBV2 requires this pricing selection.", group.choices.map((choice) => choice.label))] : [];
+        });
         return productPricingToolResultSchema.parse({
           status: "ok",
           data: {
             product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod },
             pricing: {
-              status: missingScenarioInput ? "requires_input" : "unavailable",
+              status: inputNeeded.length ? "input_needed" : "unavailable",
               pricingMethod,
-              treeVersionId: record.product.pbv2ActiveTreeVersionId ?? null,
+              treeVersionId: configuration.treeVersionId,
               quantity,
-              dimensions: input.widthIn && input.heightIn ? { widthIn: input.widthIn, heightIn: input.heightIn } : null,
+              dimensions: scenario.dimensions.widthIn && scenario.dimensions.widthIn > 0 && scenario.dimensions.heightIn && scenario.dimensions.heightIn > 0 ? { widthIn: scenario.dimensions.widthIn, heightIn: scenario.dimensions.heightIn } : configuration.fixedDimensions,
               totalCents: null,
               averageUnitCents: null,
-              message: missingScenarioInput ? "This product needs a size and possibly pricing options before PBV2 can calculate an authoritative customer price." : "PBV2 could not calculate an authoritative customer price for that scenario.",
+              configuration: publicConfiguration,
+              inputNeeded,
+              message: inputNeeded.length ? "Pricing needs the listed business inputs before an authoritative PBV2 projection can run." : "PBV2 could not calculate an authoritative customer price for that scenario.",
             },
           },
           sourceLinks, freshness: { retrievedAt: retrievedAt.toISOString() },
