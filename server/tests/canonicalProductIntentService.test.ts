@@ -179,7 +179,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     payload.intent.fieldMetadata["identity.category"] = { source: "explicit_user" };
     const provider = jest.fn(async (input: any) => {
       const request = JSON.parse(input.user);
-      return request.currentIntent
+      return request.currentBusinessContext
         ? { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_category", category: "Roll Printing" }] }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }
         : { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
     });
@@ -209,7 +209,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const payload = structuredClone(translucentVinylPayload);
     const provider = jest.fn(async (input: any) => {
       const request = JSON.parse(input.user);
-      return request.currentIntent
+      return request.currentBusinessContext
         ? { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_category", category: "roll" }] }), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} }
         : { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} };
     });
@@ -245,7 +245,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
   test("applies mixed explicit semantic corrections while unrelated questions remain open", async () => {
     const payload = structuredClone(translucentVinylPayload);
     payload.intent.optionGroups.push({ key: "weed_tape", label: "Weeding and Taping", required: false, selectionMode: "single", values: [{ key: "none", label: "None", isDefault: true }, { key: "yes", label: "Yes", isDefault: false }] } as any);
-    const provider = jest.fn(async (input: any) => JSON.parse(input.user).currentIntent
+    const provider = jest.fn(async (input: any) => JSON.parse(input.user).currentBusinessContext
       ? { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_matrix_rate", optionGroup: "Layers", value: "3 Layers", priceCents: 450 }, { op: "set_option_default", optionGroup: "Layers", value: "5 Layers" }, { op: "remove_option_group", optionGroup: "Weeding and Taping" }, { op: "set_product_name", name: "Backlit Multilayer Vinyl" }, { op: "set_proof_requirement", requiresProofApproval: true }] }), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} }
       : { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} });
     const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [], productionRoutes: [] });
@@ -301,16 +301,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const payload = structuredClone(translucentVinylPayload);
     payload.intent.identity.category = { state: "resolved", id: "signs", label: "Signs" };
     payload.intent.fieldMetadata["identity.category"] = { source: "explicit_user" };
-    const provider = jest.fn(async (input: any) => {
-      const compilerRequest = JSON.parse(input.user);
-      if (!compilerRequest.currentIntent) return { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
-      const current = compilerRequest.currentIntent;
-      return {
-        rawText: JSON.stringify({ kind: "intent_patch", patch: { operations: [
-          { op: "replace_option_groups", value: current.optionGroups.map((group: any) => group.key === "surface" ? { ...group, values: group.values.map((value: any) => ({ ...value, isDefault: value.key === "first_surface" })) } : group.key === "layers" ? { ...group, values: group.values.map((value: any) => ({ ...value, isDefault: value.key === "3_layers" })) } : group) },
-          { op: "merge_field_metadata", value: { "optionGroups.surface.default": { source: "explicit_user" }, "optionGroups.layers.default": { source: "explicit_user" } } },
-        ] } }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
-    });
+    const provider = jest.fn(async () => ({ rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }));
     const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), {
       categories: [{ id: "signs", label: "Signs" }], materials: [], productionRoutes: [],
     });
@@ -346,17 +337,13 @@ describe("CanonicalProductIntentService compiler failures", () => {
     let continuationCount = 0;
     const provider = jest.fn(async (input: any) => {
       const compilerRequest = JSON.parse(input.user);
-      if (!compilerRequest.currentIntent) return { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
+      if (!compilerRequest.currentBusinessContext) return { rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
       continuationCount += 1;
-      const current = compilerRequest.currentIntent;
       const selectedByGroup: Record<string, string> = continuationCount === 1
         ? { surface: "not_a_choice" }
         : { surface: "first_surface", layers: "3_layers", mounting: "permanent" };
       return {
-        rawText: JSON.stringify({ kind: "intent_patch", patch: { operations: [
-          { op: "replace_option_groups", value: current.optionGroups.map((group: any) => selectedByGroup[group.key] ? { ...group, values: group.values.map((value: any) => ({ ...value, isDefault: value.key === selectedByGroup[group.key] })) } : group) },
-          { op: "merge_field_metadata", value: Object.fromEntries(Object.keys(selectedByGroup).map((key) => [`optionGroups.${key}.default`, { source: "explicit_user" }])) },
-        ] } }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
+        rawText: JSON.stringify({ kind: "semantic_operations", operations: Object.entries(selectedByGroup).map(([optionGroup, value]) => ({ op: "set_option_default", optionGroup: optionGroup === "surface" ? "Surface" : optionGroup === "layers" ? "Layers" : "Mounting", value })) }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
     });
     const store = new MemoryStore();
     const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(store), {
@@ -367,7 +354,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(created.card.requiredQuestions).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.surface.default" }), expect.objectContaining({ path: "optionGroups.layers.default" }), expect.objectContaining({ path: "optionGroups.mounting.default" })]));
 
     const invalid = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Change the surface default to an unsupported choice.", compilerInput: compilerInput() });
-    expect(invalid).toMatchObject({ ok: false, code: "PRODUCT_INTENT_PATCH_OUT_OF_SCOPE" });
+    expect(invalid).toMatchObject({ ok: false, code: "invalid_contract" });
     expect(store.rows.get(created.session.proposalId)?.specification.session.revisions).toHaveLength(1);
 
     const continued = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Use 1st Surface, 3 Layers, and Permanent Mount as the defaults.", compilerInput: compilerInput() });
@@ -453,8 +440,8 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-unmatched", compilerInput: compilerInput() });
     if (!created.ok) throw new Error("Expected canonical session creation.");
     const unrelated = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Make it excellent", compilerInput: compilerInput() });
-    expect(unrelated).toMatchObject({ ok: false, code: "PRODUCT_INTENT_REQUIRED_ANSWER_UNMATCHED" });
-    expect(provider).toHaveBeenCalledTimes(2);
+    expect(unrelated).toMatchObject({ ok: false, code: "invalid_contract" });
+    expect(provider).toHaveBeenCalledTimes(3);
   });
 
   test("uses a scoped provider patch fallback when an answer is not an exact server alias", async () => {
@@ -462,8 +449,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const provider = jest.fn(async (request) => {
       calls += 1;
       if (calls === 1) return { rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
-      const currentIntent = JSON.parse(request.user).currentIntent;
-      return { rawText: JSON.stringify({ kind: "intent_patch", patch: { operations: [{ op: "set_pricing", value: { ...currentIntent.pricing, unit: "per_piece" } }, { op: "set_unresolved_fields", value: [] }, { op: "merge_field_metadata", value: { "pricing.unit": { source: "explicit_user" } } }] } }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
+      return { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_pricing_basis", basis: "per_piece" }] }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
     });
     const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [], productionRoutes: [] });
     const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-provider-patch", compilerInput: compilerInput() });

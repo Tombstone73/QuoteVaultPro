@@ -109,4 +109,47 @@ describe("semantic product operations", () => {
     expect(result.diagnostics.providerResponseKinds).toEqual(["one_dimensional_matrix", "semantic_operations"]);
     expect(result.result.patch.operations).toEqual(expect.arrayContaining([expect.objectContaining({ op: "set_identity", value: expect.objectContaining({ category: { state: "unresolved", label: "Roll Printing" } }) })]));
   });
+
+  test("repairs a live-shaped canonical-state echo without exposing server-owned state to the repair", async () => {
+    const requests: any[] = [];
+    const current = productDraftIntentSchema.parse({ ...translucentIntent, identity: { ...translucentIntent.identity, category: { state: "resolved", id: "flatbed", label: "Flatbed Printing" } } });
+    const compiler = new ProductIntentCompiler({ generateJson: async (input) => {
+      requests.push(input);
+      return requests.length === 1
+        ? { rawText: JSON.stringify({ kind: "complete_intent", intent: { contractVersion: 1, intentId: "provider-intent", organizationId: "provider-org", revision: 99, state: "compiling", revisionMetadata: { parentRevision: null }, operationContext: {}, identity: { name: "should-not-be-read" } } }), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} }
+        : { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_category", category: "roll" }] }), provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {} };
+    } });
+    const result = await compiler.compile({ orgId: "org_1", request: "I accidentally selected flatbed when it should have been roll", currentIntent: current, currentRevision: 4, operationContext: {}, schemaDescription: "ProductIntentCompilerResult", allowedEnums: {}, supportedArchetypes: [], candidateLabels: { categories: ["Flatbed Printing", "Roll Printing"] } });
+    expect(result.ok).toBe(true);
+    expect(requests).toHaveLength(2);
+    expect(requests[0]!.user).toContain("currentBusinessContext");
+    expect(requests[0]!.user).not.toContain("currentIntent");
+    expect(requests[0]!.user).not.toContain("provider-intent");
+    expect(requests[0]!.user).not.toContain("currentRevision");
+    expect(requests[0]!.user).not.toContain("canonicalSchema");
+    const repair = JSON.parse(requests[1]!.user);
+    expect(repair.validationIssuePaths).toEqual(["intent.serverOwnedFields"]);
+    expect(repair.invalidOutput).toBe(JSON.stringify({ kind: "complete_intent" }));
+    expect(JSON.stringify(repair)).not.toContain("provider-intent");
+    expect(JSON.stringify(repair)).not.toContain("provider-org");
+    if (!result.ok || result.result.kind !== "intent_patch") throw new Error("Expected a semantic correction patch.");
+    expect(result.result.patch.operations).toEqual(expect.arrayContaining([expect.objectContaining({ op: "set_identity", value: expect.objectContaining({ category: { state: "unresolved", label: "Roll Printing" } }) })]));
+  });
+
+  test("rejects extra canonical state on a semantic envelope before it can affect the revision", async () => {
+    const requests: any[] = [];
+    const current = productDraftIntentSchema.parse({ ...translucentIntent, identity: { ...translucentIntent.identity, category: { state: "resolved", id: "flatbed", label: "Flatbed Printing" } } });
+    const compiler = new ProductIntentCompiler({ generateJson: async (input) => {
+      requests.push(input);
+      return requests.length === 1
+        ? { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_category", category: "roll" }], intent: { revision: 999, organizationId: "provider-org" } }), provider: "test", model: "test", requestMetadata: {} }
+        : { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_category", category: "roll" }] }), provider: "test", model: "test", requestMetadata: {} };
+    } });
+    const result = await compiler.compile({ orgId: "org_1", request: "Change Flatbed to roll.", currentIntent: current, currentRevision: 4, operationContext: {}, schemaDescription: "test", allowedEnums: {}, supportedArchetypes: [], candidateLabels: { categories: ["Flatbed Printing", "Roll Printing"] } });
+    expect(result.ok).toBe(true);
+    const repair = JSON.parse(requests[1]!.user);
+    expect(repair.validationIssuePaths).toEqual(["intent.serverOwnedFields"]);
+    expect(repair.invalidOutput).toBe(JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_category", category: "roll" }] }));
+    expect(JSON.stringify(repair)).not.toContain("provider-org");
+  });
 });

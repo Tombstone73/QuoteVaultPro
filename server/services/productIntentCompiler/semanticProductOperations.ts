@@ -60,6 +60,7 @@ export function compileSemanticProductOperations(
   let optionGroupsChanged = false;
   let nextPricing = current.pricing;
   let pricingChanged = false;
+  let pricingBasisChanged = false;
   let nextIdentity = current.identity;
   let identityChanged = false;
   let nextWorkflow = current.workflow;
@@ -109,7 +110,8 @@ export function compileSemanticProductOperations(
       if (current.pricing.model !== "one_dimensional_matrix" && current.pricing.model !== "two_dimensional_matrix") throw new Error("PRODUCT_INTENT_SEMANTIC_PRICING_BASIS_UNSUPPORTED");
       nextPricing = { ...current.pricing, unit: operation.basis };
       pricingChanged = true;
-      metadata["pricing.matrix.unit"] = { source: "explicit_user" };
+      pricingBasisChanged = true;
+      metadata["pricing.unit"] = { source: "explicit_user" };
       continue;
     }
     if (operation.op === "set_matrix_rate") {
@@ -155,6 +157,7 @@ export function compileSemanticProductOperations(
   if (pricingChanged) operations.push({ op: "set_pricing", value: nextPricing });
   if (workflowChanged) operations.push({ op: "set_workflow", value: nextWorkflow });
   if (Object.keys(metadata).length) operations.push({ op: "merge_field_metadata", value: metadata });
+  if (pricingBasisChanged) operations.push({ op: "set_unresolved_fields", value: current.unresolvedFields.filter((field) => field.path !== "pricing.unit" && field.path !== "pricing.matrix.unit") });
   if (!operations.length) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_EMPTY");
   return { contractVersion: 1, baseRevision, preserveUnchanged: true, operations };
 }

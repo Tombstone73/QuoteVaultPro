@@ -2,7 +2,7 @@ import { expect, jest, test } from "@jest/globals";
 
 const persisted: unknown[] = [];
 const persistAiDiagnostic = jest.fn(async (value: unknown) => { persisted.push(value); return value; });
-jest.mock("../services/aiDiagnosticsService", () => ({ persistAiDiagnostic }));
+jest.unstable_mockModule("../services/aiDiagnosticsService", () => ({ persistAiDiagnostic }));
 
 const current = {
   proposalId: "proposal_1", organizationId: "org_1", actorUserId: "user_1", conversationId: "conversation_1",

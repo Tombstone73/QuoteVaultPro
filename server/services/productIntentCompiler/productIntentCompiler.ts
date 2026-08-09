@@ -216,8 +216,60 @@ function providerResponseContract(continuation: boolean) {
     };
 }
 
+function businessReference(reference: ProductDraftIntent["identity"]["category"] | ProductDraftIntent["material"] | ProductDraftIntent["production"]["route"]): string {
+  const businessReference = reference as { state: string; label?: string };
+  return businessReference.state === "explicitly_unset" ? "Not selected" : businessReference.label ?? "Not selected";
+}
+
+/** Continuations receive the facts needed to interpret a correction, never
+ * canonical IDs, revisions, lifecycle state, fingerprints, or patch shape. */
+function continuationBusinessContext(intent: ProductDraftIntent) {
+  const groupByKey = new Map(intent.optionGroups.map((group) => [group.key, group]));
+  const labelFor = (groupKey: string, valueKey: string) => groupByKey.get(groupKey)?.values.find((value) => value.key === valueKey)?.label ?? valueKey;
+  const currentPricing = intent.pricing;
+  const pricing = currentPricing.model === "one_dimensional_matrix"
+    ? { model: currentPricing.model, unit: currentPricing.unit, rates: currentPricing.cells.map((cell) => ({ option: labelFor(currentPricing.optionKey, cell.option), priceCents: cell.priceCents })) }
+    : currentPricing.model === "two_dimensional_matrix"
+      ? { model: currentPricing.model, unit: currentPricing.unit, rates: currentPricing.cells.map((cell) => ({ row: labelFor(currentPricing.rowOptionKey, cell.row), column: labelFor(currentPricing.columnOptionKey, cell.column), priceCents: cell.priceCents })) }
+      : currentPricing.model === "scalar"
+        ? { model: currentPricing.model, unit: currentPricing.unit, priceCents: currentPricing.priceCents }
+        : { model: currentPricing.model };
+  return {
+    product: { name: intent.identity.name, description: intent.identity.description, category: businessReference(intent.identity.category) },
+    measurement: intent.measurement, quantity: intent.quantity, pricing,
+    optionGroups: intent.optionGroups.map((group) => ({ label: group.label, required: group.required, selectionMode: group.selectionMode, values: group.values.map((value) => ({ label: value.label, isDefault: value.isDefault, priceImpact: value.priceImpact ?? null, totalPercentOfBaseWhenEnabled: value.totalPercentOfBaseWhenEnabled?.percent ?? null })), availableWhen: group.availableWhen ? `${labelFor(group.availableWhen.optionGroupKey, group.availableWhen.optionValueKey)}` : null })),
+    material: businessReference(intent.material), workflow: { kind: intent.workflow.kind, requiresProofApproval: intent.workflow.requiresProofApproval, requiresProductionJob: intent.workflow.requiresProductionJob }, productionRoute: businessReference(intent.production.route),
+  };
+}
+
+function continuationQuestions(input: ProductIntentCompilerInput) {
+  return (input.activeRequiredIssues ?? []).map((issue) => ({
+    choices: issue.allowedChoices.map((choice) => choice.displayLabel),
+  }));
+}
+
 function promptForCompilation(input: ProductIntentCompilerInput): { system: string; user: string } {
   const continuation = input.currentIntent != null;
+  const user = continuation
+    ? {
+      request: input.request,
+      currentBusinessContext: continuationBusinessContext(input.currentIntent!),
+      providerResponseContract: providerResponseContract(true),
+      semanticOperationContract: { operations: "Use set_option_default with optionGroup and value display labels; set_pricing_basis with per_piece or per_square_foot; set_matrix_rate with option group, value, and integer cents; set_category with the user's category phrase; remove_option_value or remove_option_group using a business option-group label; set_product_name with the explicitly requested name; and set_proof_requirement when the user explicitly changes proof approval. Do not use canonical keys, paths, patch operations, revisions, IDs, audit data, lifecycle data, or PBV2 structures." },
+      activeRequiredQuestions: continuationQuestions(input),
+      candidateLabels: candidateLabelsForPrompt(input.candidateLabels),
+    }
+    : {
+      request: input.request,
+      operationContext: input.operationContext,
+      canonicalSchema: input.schemaDescription,
+      providerPayloadGuide,
+      providerResponseContract: providerResponseContract(false),
+      allowedEnums: input.allowedEnums,
+      supportedArchetypes: input.supportedArchetypes,
+      candidateLabels: candidateLabelsForPrompt(input.candidateLabels),
+      serverConstraints: input.serverConstraints ?? [],
+    };
   return {
     system: [
       "You are the PrintersHero Product Intent Compiler.",
@@ -225,27 +277,14 @@ function promptForCompilation(input: ProductIntentCompilerInput): { system: stri
       "Your JSON must follow the supplied provider response contract. The server alone validates and constructs the canonical compiler-result contract.",
       "Interpret natural language only; do not execute commands, create products, invent tenant IDs, or claim that a database lookup succeeded.",
       "Use only candidate labels supplied by the server for tenant-scoped entities. If no supplied label is an unambiguous match, return an unresolved-question result.",
-      "For continuations and corrections, preserve every existing authoritative intent field unless the request explicitly changes it.",
+      "For continuations and corrections, preserve every existing business field unless the request explicitly changes it.",
       continuation
         ? "This is a continuation. Return only { kind: 'semantic_operations', operations: [...] }. Never return a complete intent or a canonical patch. Resolve every unambiguous active required issue answered by this message in one operation set; use business labels only and preserve every unrelated field. For set_category, return the user's category phrase; the server resolves it only when one supplied tenant category unambiguously contains that phrase."
         : "For an initial request, return { kind: 'complete_intent', intent: { ... } }.",
       "Do not turn preservation instructions into product options, materials, or entity references.",
       "Never set an active or published lifecycle. Confidence never makes a value execution-authorizing.",
     ].join(" "),
-    user: JSON.stringify({
-      request: input.request,
-      currentIntent: input.currentIntent ?? null,
-      currentRevision: input.currentRevision ?? null,
-      operationContext: input.operationContext,
-      canonicalSchema: input.schemaDescription,
-      providerPayloadGuide,
-      providerResponseContract: providerResponseContract(continuation),
-      allowedEnums: input.allowedEnums,
-      supportedArchetypes: input.supportedArchetypes,
-      candidateLabels: candidateLabelsForPrompt(input.candidateLabels),
-      ...(continuation ? { activeRequiredIssues: input.activeRequiredIssues ?? [], semanticOperationContract: { operations: "Use set_option_default with optionGroup and value display labels; set_pricing_basis with per_piece or per_square_foot; set_matrix_rate with option group, value, and integer cents; set_category with the user's category phrase; remove_option_value or remove_option_group using a business option-group label; set_product_name with the explicitly requested name; and set_proof_requirement when the user explicitly changes proof approval. Do not use canonical keys, paths, ProductDraftIntentPatch operations, revisions, IDs, or PBV2 structures." } } : {}),
-      serverConstraints: input.serverConstraints ?? [],
-    }),
+    user: JSON.stringify(user),
   };
 }
 
@@ -255,7 +294,7 @@ function repairPrompt(input: ProductIntentCompilerInput, invalidOutput: string, 
   const contract = providerResponseContract(continuation);
   const invalidRootKind = safeProviderRootKindFromRaw(invalidOutput);
   return {
-    system: `${original.system} Repair the previous response into valid JSON only. Do not add facts not supported by the original request or current intent. Do not add commentary, Markdown, or code fences. Preserve unresolved fields explicitly rather than using null, an empty string, or an invented default. ${continuation ? "This is a continuation: return the provider-only semantic_operations protocol, never a post-normalization canonical compiler-result kind. If the failure is the root kind, preserve the intended business operation details and correct only the protocol shape." : "Return the initial provider complete_intent protocol."}`,
+    system: `${original.system} Repair the previous response into valid JSON only. Do not add facts not supported by the original request or current business context. Do not add commentary, Markdown, or code fences. Preserve unresolved fields explicitly rather than using null, an empty string, or an invented default. ${continuation ? "This is a continuation: return the provider-only semantic_operations protocol, never a complete intent or canonical patch. Server-owned fields are prohibited and unavailable to you. Preserve the intended business operation details and correct only the provider protocol shape." : "Return the initial provider complete_intent protocol."}`,
     user: JSON.stringify({
       originalInput: JSON.parse(original.user),
       invalidOutput: invalidOutput.slice(0, 24_000),
@@ -265,7 +304,7 @@ function repairPrompt(input: ProductIntentCompilerInput, invalidOutput: string, 
       allowedProviderRootKinds: contract.providerRootKinds,
       postNormalizationCompilerResultKinds: contract.postNormalizationCompilerResultKinds,
       instruction: continuation
-        ? "Return exactly one semantic_operations provider-protocol object. The server, not you, creates intent_patch. Preserve the business operation target unless its shape itself is invalid. Unknown keys are forbidden."
+        ? "Return exactly one semantic_operations provider-protocol object. The server, not you, creates intent_patch and all canonical state. Server-owned fields are prohibited. Preserve the business operation target unless its shape itself is invalid. Unknown keys are forbidden."
         : "Return exactly one complete_intent provider-protocol object. The server, not you, supplies canonical server-owned fields. Unknown keys are forbidden.",
     }),
   };
@@ -352,9 +391,9 @@ function schemaIssueMetadata(result: z.SafeParseError<unknown>) {
   const path = (issue: z.ZodIssue) => issue.path.join(".") || "result";
   return {
     paths: schemaIssuePaths(result),
-    codes: [...new Set(issues.map((issue) => issue.code))],
-    missing: [...new Set(issues.filter((issue) => issue.code === "invalid_type" && "received" in issue && issue.received === "undefined").map(path))],
-    unknown: [...new Set(issues.flatMap((issue) => issue.code === "unrecognized_keys" && "keys" in issue && Array.isArray(issue.keys) ? issue.keys.map((key) => `${path(issue)}.${key}`) : []))],
+    codes: Array.from(new Set(issues.map((issue) => issue.code))),
+    missing: Array.from(new Set(issues.filter((issue) => issue.code === "invalid_type" && "received" in issue && issue.received === "undefined").map(path))),
+    unknown: Array.from(new Set(issues.flatMap((issue) => issue.code === "unrecognized_keys" && "keys" in issue && Array.isArray(issue.keys) ? issue.keys.map((key) => `${path(issue)}.${key}`) : []))),
   };
 }
 
@@ -552,6 +591,45 @@ function normalizeSemanticContinuation(input: ProductIntentCompilerInput, value:
   return { kind: "intent_patch", patch: compileSemanticProductOperations(input.currentIntent, parsed.data, input.currentRevision, input.request, { categoryLabels: input.candidateLabels?.categories }) };
 }
 
+const forbiddenContinuationStateFields = new Set(["contractVersion", "intentId", "organizationId", "revision", "state", "revisionMetadata", "operationContext", "serverOwnedFields", "fingerprint", "proposalId", "sessionId", "actorUserId", "createdAt", "updatedAt"]);
+
+/** A continuation provider is never allowed to provide an intent or patch.
+ * Detect this before any canonical normalizer can observe its values. */
+function forbiddenContinuationStatePath(value: unknown): string | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const root = value as Record<string, unknown>;
+  const intent = root.intent;
+  if (intent && typeof intent === "object" && !Array.isArray(intent)
+    && Object.keys(intent as Record<string, unknown>).some((key) => forbiddenContinuationStateFields.has(key))) return "intent.serverOwnedFields";
+  if ("intent" in root || "patch" in root || Object.keys(root).some((key) => forbiddenContinuationStateFields.has(key))) return "provider_output.server_owned_fields";
+  return null;
+}
+
+function safeContinuationOperation(operation: unknown): Record<string, unknown> | null {
+  if (!operation || typeof operation !== "object" || Array.isArray(operation)) return null;
+  const source = operation as Record<string, unknown>;
+  const op = source.op;
+  if (op === "set_category") return typeof source.category === "string" ? { op, category: source.category } : null;
+  if (op === "set_pricing_basis") return typeof source.basis === "string" ? { op, basis: source.basis } : null;
+  if (op === "set_product_name") return typeof source.name === "string" ? { op, name: source.name } : null;
+  if (op === "set_proof_requirement") return typeof source.requiresProofApproval === "boolean" ? { op, requiresProofApproval: source.requiresProofApproval } : null;
+  if (op === "set_option_default" || op === "remove_option_value") return typeof source.optionGroup === "string" && typeof source.value === "string" ? { op, optionGroup: source.optionGroup, value: source.value } : null;
+  if (op === "remove_option_group") return typeof source.optionGroup === "string" ? { op, optionGroup: source.optionGroup } : null;
+  if (op === "set_matrix_rate") return typeof source.optionGroup === "string" && typeof source.value === "string" && typeof source.priceCents === "number" ? { op, optionGroup: source.optionGroup, value: source.value, priceCents: source.priceCents } : null;
+  return null;
+}
+
+/** Repair receives only business-level continuation content. In particular it
+ * never receives a model-supplied canonical intent for it to echo again. */
+function safeContinuationRepairOutput(value: unknown): string {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return JSON.stringify({ kind: "invalid_provider_envelope" });
+  const root = value as Record<string, unknown>;
+  if (root.kind === "semantic_operations" && Array.isArray(root.operations)) {
+    return JSON.stringify({ kind: "semantic_operations", operations: root.operations.map(safeContinuationOperation).filter((operation): operation is Record<string, unknown> => operation != null) });
+  }
+  return JSON.stringify({ kind: safeProviderRootKind(root) ?? "invalid_provider_envelope" });
+}
+
 function providerFailureStage(error: unknown): ProductIntentCompilerFailureStage {
   const kind = error && typeof error === "object" ? (error as { kind?: unknown }).kind : null;
   if (kind === "empty_response") return "provider_empty_response";
@@ -655,6 +733,7 @@ export class ProductIntentCompiler {
       } catch {
         failureStage = "json_extraction_failure";
         validationIssuePaths = ["result"];
+        if (input.currentIntent) invalidOutput = JSON.stringify({ kind: "invalid_json" });
         lastDiagnostics = { ...lastDiagnostics, stage: failureStage, parseFailureType: "json_extraction", schemaIssuePaths: validationIssuePaths };
         logCompilerFailure(input, correlationId, lastDiagnostics, failureStage, { parseFailureType: "json_extraction", parseResult: "failed" });
         continue;
@@ -666,11 +745,24 @@ export class ProductIntentCompiler {
         lastDiagnostics = { ...lastDiagnostics, providerResponseKinds };
       }
 
+      const forbiddenStatePath = input.currentIntent ? forbiddenContinuationStatePath(parsedJson) : null;
+      if (forbiddenStatePath) {
+        failureStage = attempt === 0 ? "runtime_schema_rejection" : "repair_response_schema_rejection";
+        validationIssuePaths = [forbiddenStatePath];
+        invalidOutput = safeContinuationRepairOutput(parsedJson);
+        lastDiagnostics = { ...lastDiagnostics, stage: failureStage, schemaIssuePaths: validationIssuePaths };
+        logCompilerFailure(input, correlationId, lastDiagnostics, failureStage, { parseResult: "success", schemaIssuePaths: validationIssuePaths });
+        continue;
+      }
+
       try {
-        parsedJson = normalizeContinuationPatch(input, normalizeSemanticContinuation(input, normalizeInitialCompleteIntent(input, parsedJson, initialIntentId)));
+        parsedJson = input.currentIntent
+          ? normalizeContinuationPatch(input, normalizeSemanticContinuation(input, parsedJson))
+          : normalizeInitialCompleteIntent(input, parsedJson, initialIntentId);
       } catch {
         failureStage = attempt === 0 ? "runtime_schema_rejection" : "repair_response_schema_rejection";
         validationIssuePaths = ["intent.serverOwnedFields"];
+        if (input.currentIntent) invalidOutput = safeContinuationRepairOutput(parsedJson);
         lastDiagnostics = { ...lastDiagnostics, stage: failureStage, schemaIssuePaths: validationIssuePaths };
         logCompilerFailure(input, correlationId, lastDiagnostics, failureStage, { parseResult: "success", schemaIssuePaths: validationIssuePaths });
         continue;
@@ -684,6 +776,7 @@ export class ProductIntentCompiler {
       failureStage = attempt === 0 ? "runtime_schema_rejection" : "repair_response_schema_rejection";
       const issueMetadata = schemaIssueMetadata(result);
       validationIssuePaths = issueMetadata.paths;
+      if (input.currentIntent) invalidOutput = safeContinuationRepairOutput(parsedJson);
       lastDiagnostics = { ...lastDiagnostics, stage: failureStage, schemaIssuePaths: validationIssuePaths, schemaIssueCodes: issueMetadata.codes, missingRequiredKeys: issueMetadata.missing, unknownKeys: issueMetadata.unknown };
       logCompilerFailure(input, correlationId, lastDiagnostics, failureStage, {
         issueCount: result.error.issues.length,
