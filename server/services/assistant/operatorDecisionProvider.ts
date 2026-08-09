@@ -4,7 +4,7 @@ import { aiProviderResolver, type ResolvedAiProvider } from "../ai/aiProviderRes
 import { resolveAiOperatorProviderTimeoutMs } from "../ai/providers/configuredProvider";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS } from "@shared/assistantContracts";
-import type { AssistantOperatorDecisionProvider } from "./operatorRuntime";
+import { parseAssistantOperatorDecisionText, type AssistantOperatorDecisionProvider } from "./operatorRuntime";
 
 export interface AssistantOperatorProviderResolver {
   resolveProvider(input: { orgId: string; feature: "assistant" }): Promise<ResolvedAiProvider>;
@@ -92,8 +92,8 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       this.responseContinuation = Array.isArray(continuation?.items) ? [...this.responseContinuation, ...continuation.items] : this.responseContinuation;
       this.pendingFunctionCalls = Array.isArray(continuation?.functionCalls) ? continuation.functionCalls : [];
       this.pendingObservationStart = input.observations.length;
-      try { return this.withNativeSources(JSON.parse(response.rawText), response.requestMetadata.nativeWebSources); }
-      catch {
+      const decision = parseAssistantOperatorDecisionText(response.rawText);
+      if (!decision) {
         console.warn("[AI_PROVIDER] DeepSeek Responses Operator decision could not be parsed.", {
           requestSequence: response.requestMetadata.requestSequence ?? null,
           apiSurface: response.requestMetadata.apiSurface ?? null,
@@ -103,6 +103,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
         });
         return { kind: "fail", response: "The AI provider returned an unusable investigation result." };
       }
+      return this.withNativeSources(decision, response.requestMetadata.nativeWebSources);
     }
     const response = await this.provider.generateJson({
       orgId: this.organizationId,
@@ -113,11 +114,9 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       providerConfig: config,
       system, user,
     });
-    try {
-      return JSON.parse(response.rawText);
-    } catch {
-      throw new Error("ASSISTANT_OPERATOR_INVALID_JSON");
-    }
+    const decision = parseAssistantOperatorDecisionText(response.rawText);
+    if (!decision) throw new Error("ASSISTANT_OPERATOR_INVALID_JSON");
+    return decision;
   }
 
   private appendFunctionOutputs(observations: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]["observations"]): void {

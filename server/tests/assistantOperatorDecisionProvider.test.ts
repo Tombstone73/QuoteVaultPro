@@ -92,6 +92,14 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     expect(generateOperatorDecision.mock.calls[1]?.[0].responseContinuation).toEqual([expect.objectContaining({ type: "web_search_call" })]);
   });
 
+  test("keeps a one-level JSON-string-wrapped continuation inside the Operator lifecycle", async () => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const rawText = JSON.stringify(JSON.stringify({ kind: "continue", workingSummary: "Continuing to check whether the product exists and establish a trusted product reference before configuring the new product." }));
+    const generateOperatorDecision = jest.fn(async () => ({ rawText, requestMetadata: {}, operatorContinuation: { items: [], functionCalls: [] } }));
+    const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson: jest.fn(), generateOperatorDecision } as any, { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "test", model: "deepseek-v4-flash" })) } as any);
+    await expect(provider.decide({ goal: "Create Translucent Vinyl.", taskId: "task_wrapped", step: 1, remainingSteps: 15, toolCatalog: [], observations: [], safeWorkingSummary: null })).resolves.toEqual({ kind: "continue", workingSummary: "Continuing to check whether the product exists and establish a trusted product reference before configuring the new product." });
+  });
+
   test("keeps provider-verified sources on a long researched response", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const response = `Long comparison: ${"commercial-print evidence. ".repeat(430)}`;

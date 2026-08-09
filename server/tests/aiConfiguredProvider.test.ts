@@ -174,6 +174,18 @@ describe("configured AI provider", () => {
     expect(result.requestMetadata).toMatchObject({ terminalClassification: "operator_decision", parseClassification: "operator_decision" });
   });
 
+  test("preserves a one-level JSON-string-wrapped Operator decision instead of rendering it", async () => {
+    const wrapped = JSON.stringify(JSON.stringify({ kind: "continue", workingSummary: "Continuing to check whether the product exists and establish a trusted product reference before configuring the new product." }));
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{
+      type: "message", content: [{ type: "output_text", text: wrapped }],
+    }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "continue", workingSummary: "Continuing to check whether the product exists and establish a trusted product reference before configuring the new product." });
+    expect(result.requestMetadata).toMatchObject({ terminalClassification: "operator_decision", parseClassification: "operator_decision" });
+  });
+
   test("keeps malformed or unrelated JSON as ordinary terminal content", async () => {
     global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{
       type: "message", content: [{ type: "output_text", text: '{"kind":"continue"' }],

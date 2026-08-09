@@ -22,6 +22,13 @@ describe("AssistantOperatorRuntime", () => {
     expect(parseAssistantOperatorDecisionText('{"kind":"continue"')).toBeNull();
     expect(parseAssistantOperatorDecisionText('{"kind":"unknown","response":"No."}')).toBeNull();
     expect(parseAssistantOperatorDecisionText('{"requested":"json"}')).toBeNull();
+    expect(parseAssistantOperatorDecisionText('"{\\"kind\\":\\"continue\\",\\"workingSummary\\":\\"Continuing to check whether the product exists and establish a trusted product reference before configuring the new product.\\"}"')).toEqual({ kind: "continue", workingSummary: "Continuing to check whether the product exists and establish a trusted product reference before configuring the new product." });
+    expect(parseAssistantOperatorDecisionText('"{\\"kind\\":\\"complete\\",\\"response\\":\\"Done.\\"}"')).toMatchObject({ kind: "complete", response: "Done." });
+    expect(parseAssistantOperatorDecisionText('"{\\"kind\\":\\"ask_user\\",\\"question\\":\\"Which size?\\",\\"missingInformation\\":[\\"size\\"]}"')).toMatchObject({ kind: "ask_user" });
+    expect(parseAssistantOperatorDecisionText('"{\\"kind\\":\\"fail\\",\\"response\\":\\"Unavailable.\\"}"')).toMatchObject({ kind: "fail" });
+    expect(parseAssistantOperatorDecisionText('"{\\"kind\\":\\"call_tools\\",\\"calls\\":[{\\"toolName\\":\\"search.global\\",\\"arguments\\":{}}]}"')).toMatchObject({ kind: "call_tools" });
+    expect(parseAssistantOperatorDecisionText('"{not valid}"')).toBeNull();
+    expect(parseAssistantOperatorDecisionText('{"example":"ordinary JSON remains visible"}')).toBeNull();
   });
 
   test("composes an alternate investigation after incomplete evidence", async () => {

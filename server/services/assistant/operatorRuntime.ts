@@ -42,7 +42,12 @@ export function parseAssistantOperatorDecisionText(value: string): AssistantOper
   const trimmed = value.trim();
   if (!trimmed) return null;
   try {
-    const parsed = assistantOperatorDecisionSchema.safeParse(JSON.parse(trimmed));
+    const first = JSON.parse(trimmed) as unknown;
+    // Some Responses payloads have returned the protocol JSON as one JSON
+    // string value. Accept exactly one additional layer, never an unbounded
+    // recursive decoder, and only consume a schema-valid control message.
+    const normalized = typeof first === "string" ? JSON.parse(first) : first;
+    const parsed = assistantOperatorDecisionSchema.safeParse(normalized);
     return parsed.success ? parsed.data : null;
   } catch {
     return null;
