@@ -263,6 +263,35 @@ const trustedObservationStorageKey = "trustedReadObservations";
 const MAX_TRUSTED_OPERATOR_OBSERVATIONS = 5;
 const MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES = 16_000;
 
+/** The only Product Builder structure exposed to an Operator function call.
+ * It deliberately contains business labels and values, never patch paths,
+ * IDs, revisions, fingerprints, serverOwnedFields, or PBV2 state. The
+ * canonical semantic-operation schema remains the execution authority. */
+const semanticProductOperationsToolInputSchema: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["operations"],
+  properties: {
+    operations: {
+      type: "array",
+      minItems: 1,
+      maxItems: 12,
+      items: {
+        oneOf: [
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "set_option_default" }, optionGroup: { type: "string" }, value: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "category"], properties: { op: { const: "set_category" }, category: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "basis"], properties: { op: { const: "set_pricing_basis" }, basis: { enum: ["per_piece", "per_square_foot"] } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value", "priceCents"], properties: { op: { const: "set_matrix_rate" }, optionGroup: { type: "string" }, value: { type: "string" }, priceCents: { type: "integer", minimum: 0 } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "remove_option_value" }, optionGroup: { type: "string" }, value: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup"], properties: { op: { const: "remove_option_group" }, optionGroup: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "name"], properties: { op: { const: "set_product_name" }, name: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "requiresProofApproval"], properties: { op: { const: "set_proof_requirement" }, requiresProofApproval: { type: "boolean" } } },
+        ],
+      },
+    },
+  },
+};
+
 /** Financial reads require authorization at every retrieval. Never retain an
  * analytics observation for a later direct-answer turn, because a user's role
  * may have changed since the original read. */
@@ -318,7 +347,7 @@ export class AssistantService {
     private readonly intentPlanner: AssistantIntentPlannerProvider = new ConfiguredAssistantIntentPlannerProvider(new OpenAiCompatibleBugReviewProvider()),
     /** Injectable only for composition and isolated routing tests; production
      * always uses the canonical compiler-backed singleton. */
-    private readonly productIntentDispatcher: Pick<typeof productManagementSkillService, "respondPlannedCanonicalProductIntent"> = productManagementSkillService,
+    private readonly productIntentDispatcher: Pick<typeof productManagementSkillService, "respondPlannedCanonicalProductIntent" | "applyCanonicalProductOperations"> = productManagementSkillService,
     /** Ordinary free text always enters this provider/runtime path. Tests can
      * supply deterministic decisions without initializing a real provider. */
     private readonly operatorDecisionProvider: (organizationId: string) => AssistantOperatorDecisionProvider =
@@ -585,7 +614,7 @@ export class AssistantService {
       || hasPermission(actor, "assistant.products.update_inactive_draft_batch");
     const productIntentTools: AssistantOperatorSemanticTool[] = mayManageProducts ? [{
       name: "products.manage_intent",
-      description: "Start or continue an inactive Product Builder only when the user is asking to create or change a product. With an active unfinished canonical product task, use auto for its additions, corrections, defaults, prices, category changes, or removals; it preserves that task and its configuration. Use start_new only when the user explicitly asks for a distinct additional product while keeping the current one unfinished. Do not use for questions about available product capabilities; answer those directly from this permission-aware catalog. Arguments: operation optional auto|continue|start_new. Never supplies product IDs, patch paths, or persistence metadata.",
+      description: "Start a new inactive Product Builder intent only when the user asks to create a product, or use start_new when they explicitly request another distinct product while an unfinished product is active. For a correction to an active product, use products.apply_operations instead. Arguments: operation optional auto|continue|start_new. Never supplies product IDs, patch paths, or persistence metadata.",
       execute: async ({ arguments: args, context }) => {
         const operation = args.operation === "start_new" || args.operation === "continue" ? args.operation : "auto";
         if (operation === "start_new" && context.task?.canonicalProductIntentProposalId) {
@@ -599,7 +628,24 @@ export class AssistantService {
         const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? null;
         return { status: "succeeded", result: { status: "succeeded", data: { response: product.response, cards: product.cards, proposalId, taskDomain: "products" } } as any };
       },
-    }] : [];
+    }, ...(task.canonicalProductIntentProposalId ? ([{
+      name: "products.apply_operations",
+      description: "Apply one or more semantic business changes to the current unfinished Product Builder draft. Use this for corrections, defaults, pricing-basis changes, matrix-rate changes, category changes, product-name changes, proof requirement changes, and safe option removals. Pass only operations using displayed business labels; do not pass product IDs, draft paths, canonical intent, PBV2 structures, revisions, fingerprints, serverOwnedFields, or persistence metadata.",
+      inputSchema: semanticProductOperationsToolInputSchema,
+      execute: async ({ arguments: args, context }) => {
+        const operations = Array.isArray(args.operations) ? args.operations : null;
+        if (!operations) return { status: "rejected" as const, warning: "The product change must contain one or more semantic operations." };
+        const product = await this.productIntentDispatcher.applyCanonicalProductOperations({
+          organizationId: context.scope.organizationId,
+          userId: context.actor.userId,
+          conversationId: conversation.id,
+          message: context.goal,
+          operations,
+        });
+        const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? context.task?.canonicalProductIntentProposalId ?? null;
+        return { status: "succeeded" as const, result: { status: "succeeded", data: { response: product.response, cards: product.cards, proposalId, taskDomain: "products" } } as any };
+      },
+    }] satisfies AssistantOperatorSemanticTool[]) : [])] : [];
     const semanticTools: AssistantOperatorSemanticTool[] = [...productIntentTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
@@ -619,7 +665,7 @@ export class AssistantService {
       initialWorkingSummary: task.workingSummary,
       trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
     });
-    const productObservation = [...run.observations].reverse().find((item) => item.toolName === "products.manage_intent" && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
+    const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.manage_intent" || item.toolName === "products.apply_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; cards?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
     const compositeCards = run.observations.flatMap((observation) => observation.presentation?.cards ?? []);
     const cards = Array.isArray(productData?.cards)

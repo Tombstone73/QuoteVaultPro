@@ -566,4 +566,36 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(after.specification.session.revisions).toHaveLength(before.specification.session.revisions.length);
     expect(provider).toHaveBeenCalledTimes(1);
   });
+
+  test("applies an Operator semantic category correction without a continuation compiler call or canonical model patch", async () => {
+    const payload = structuredClone(translucentVinylPayload);
+    payload.intent.identity.category = { state: "resolved", id: "flatbed", label: "Flatbed Printing" };
+    payload.intent.fieldMetadata["identity.category"] = { source: "explicit_user" };
+    const provider = jest.fn(async () => ({ rawText: JSON.stringify(payload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }));
+    const persistence = new ProductIntentPersistenceService(new MemoryStore());
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), persistence, {
+      categories: [{ id: "flatbed", label: "Flatbed Printing" }, { id: "roll", label: "Roll Printing" }], materials: [], productionRoutes: [],
+    });
+    const created = await service.create({
+      organizationId: "org-1", actorUserId: "user-1", conversationId: "semantic-category-correction",
+      compilerInput: { ...compilerInput(), request: "Create this product in Flatbed Printing." },
+    });
+    if (!created.ok) throw new Error("Expected canonical session creation.");
+    const before = created.session.specification.session.revisions.at(-1)!.intent;
+
+    const corrected = await service.applySemanticOperations({
+      organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId,
+      request: "I accidentally selected flatbed when it should have been roll.",
+      operations: [{ op: "set_category", category: "roll" }],
+    });
+
+    expect(corrected).toMatchObject({ ok: true, session: { specification: { session: { currentRevision: 1 } } } });
+    if (!corrected.ok) throw new Error("Expected semantic correction to persist.");
+    const after = corrected.session.specification.session.revisions.at(-1)!.intent;
+    expect(after.identity.category).toEqual({ state: "resolved", id: "roll", label: "Roll Printing" });
+    expect(after.fieldMetadata["identity.category"]).toEqual({ source: "explicit_user" });
+    expect(after.optionGroups).toEqual(before.optionGroups);
+    expect(after.pricing).toEqual(before.pricing);
+    expect(provider).toHaveBeenCalledTimes(1);
+  });
 });

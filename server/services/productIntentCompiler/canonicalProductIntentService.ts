@@ -11,6 +11,7 @@ import { z } from "zod";
 import { sanitizeAiDiagnosticEnvelope } from "@shared/aiDiagnostics";
 import { persistAiDiagnostic } from "../aiDiagnosticsService";
 import { ProductIntentCompiler, type ProductIntentCompilerInput } from "./productIntentCompiler";
+import { compileSemanticProductOperations, semanticProductOperationsResultSchema } from "./semanticProductOperations";
 import {
   ProductIntentPersistenceService,
   type CanonicalProductIntentSession,
@@ -648,6 +649,88 @@ export class CanonicalProductIntentService {
       const persistenceFailure = continuationStage === "revision_persistence";
       const stale = error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "PRODUCT_INTENT_STALE_REVISION";
       return await continuationFailure({ referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, stage: stale ? "stale_revision" : continuationStage, current, activeIssueIds, deterministicAttempted, providerRequested, provider, model, patch: sourcePatch, error, validationSchema: error instanceof z.ZodError ? (continuationStage === "patch_application" ? "ProductDraftIntentPatch" : "ProductDraftIntent") : null, resolverStage: continuationStage === "resolver_validation" ? "canonical_resolver" : null, persistenceAttempted: persistenceFailure, persistenceResult: persistenceFailure ? "failed" : "not_attempted", code: stale ? "PRODUCT_INTENT_STALE_REVISION" : "PRODUCT_INTENT_CONTINUATION_REJECTED", message: `I could not apply that answer to the current product question. Please review the available choices and try again. Reference: ${referenceId}.` });
+    }
+  }
+
+  /**
+   * Applies an Operator-authored business operation to the current canonical
+   * draft. The model never receives or constructs a ProductDraftIntentPatch,
+   * revisions, fingerprints, or PBV2 state; this service owns all of that
+   * translation and persistence work.
+   *
+   * This is intentionally separate from `continue`: the latter remains a
+   * compatibility path for callers that still need the legacy compiler-based
+   * natural-language continuation contract.
+   */
+  async applySemanticOperations(input: {
+    organizationId: string;
+    actorUserId: string;
+    proposalId: string;
+    request: string;
+    operations: unknown;
+  }): Promise<CanonicalProductIntentOutcome> {
+    const referenceId = `pso-${randomUUID()}`;
+    let current: CanonicalProductIntentSession | undefined;
+    let sourcePatch: ProductDraftIntentPatch | undefined;
+    let stage = "active_session_lookup";
+    try {
+      current = await this.persistence.load({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId });
+      const draft = current.specification.session.revisions.at(-1)?.intent;
+      if (!draft) {
+        return await continuationFailure({
+          referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId,
+          stage: "missing_base_revision", current, activeIssueIds: [], deterministicAttempted: true, providerRequested: false,
+          code: "PRODUCT_SEMANTIC_OPERATION_MISSING_BASE_REVISION",
+          message: `I could not apply that product change because the active draft is unavailable. Please refresh and try again. Reference: ${referenceId}.`,
+        });
+      }
+      stage = "semantic_operation_validation";
+      const semantic = semanticProductOperationsResultSchema.parse({ kind: "semantic_operations", operations: input.operations });
+      sourcePatch = compileSemanticProductOperations(
+        draft,
+        semantic,
+        current.specification.session.currentRevision,
+        input.request,
+        { categoryLabels: this.candidates.categories.map((candidate) => candidate.label) },
+      );
+      stage = "canonical_translation";
+      const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
+      const patched = applyProductDraftIntentPatch(draft, sourcePatch, { actorUserId: input.actorUserId });
+      const { intent, issues } = await this.validate(patched, (nextStage) => { stage = nextStage; });
+      if (productDraftIntentFingerprint(draft) === productDraftIntentFingerprint(intent)) {
+        return await continuationFailure({
+          referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId,
+          stage: "semantic_operation_validation", current, activeIssueIds: [], deterministicAttempted: true, providerRequested: false,
+          patch: sourcePatch, code: "PRODUCT_SEMANTIC_OPERATION_NO_CHANGE",
+          message: `That product change does not alter the current draft. Review the current configuration and try again. Reference: ${referenceId}.`,
+        });
+      }
+      stage = "revision_persistence";
+      const session = await this.persistence.appendPatch({
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        proposalId: input.proposalId,
+        expectedRevision: current.specification.session.currentRevision,
+        expectedFingerprint: current.fingerprint,
+        patch: replacementPatch(intent, current.specification.session.currentRevision),
+        reason: "correction",
+        unresolvedQuestions: questionsFrom(intent, issues),
+      });
+      return { ok: true, session, issues, card: await this.presentation(intent, issues) };
+    } catch (error) {
+      const stale = error && typeof error === "object" && "code" in error && (error as { code?: unknown }).code === "PRODUCT_INTENT_STALE_REVISION";
+      return await continuationFailure({
+        referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId,
+        stage: stale ? "stale_revision" : stage, current, activeIssueIds: [], deterministicAttempted: true, providerRequested: false,
+        patch: sourcePatch, error,
+        validationSchema: error instanceof z.ZodError ? "SemanticProductOperations" : null,
+        resolverStage: stage === "canonical_validation" || stage === "tenant_reference_resolution" ? "canonical_resolver" : null,
+        persistenceAttempted: stage === "revision_persistence", persistenceResult: stage === "revision_persistence" ? "failed" : "not_attempted",
+        code: stale ? "PRODUCT_INTENT_STALE_REVISION" : "PRODUCT_SEMANTIC_OPERATION_REJECTED",
+        message: stale
+          ? `The product draft changed before this correction could be saved. Review the latest draft and try again. Reference: ${referenceId}.`
+          : `I could not apply that product change safely. Review the current configuration and try again. Reference: ${referenceId}.`,
+      });
     }
   }
 

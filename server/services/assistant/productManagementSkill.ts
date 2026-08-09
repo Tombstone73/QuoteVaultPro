@@ -92,6 +92,9 @@ export interface CanonicalProductIntentRouter {
   loadForConversation(input: { organizationId: string; actorUserId: string; conversationId: string }): Promise<CanonicalProductIntentSession | null>;
   create(input: { organizationId: string; actorUserId: string; conversationId: string; request: string }): Promise<CanonicalProductIntentOutcome>;
   continue(input: { organizationId: string; actorUserId: string; proposalId: string; request: string }): Promise<CanonicalProductIntentOutcome>;
+  /** Semantic active-draft changes bypass the provider-only compiler protocol.
+   * The router still reloads tenant-scoped canonical state server-side. */
+  applySemanticOperations?(input: { organizationId: string; actorUserId: string; proposalId: string; request: string; operations: unknown }): Promise<CanonicalProductIntentOutcome>;
   inspect?(input: { organizationId: string; actorUserId: string; proposalId: string }): Promise<CanonicalProductIntentInspection>;
   interact?(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; cloneProductId?: string } }>;
 }
@@ -131,6 +134,12 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
       duplicateName: async (name) => candidates.existingProducts.some((product) => normalizeProductReference(product.name) === normalizeProductReference(name)),
     }) };
   }
+  private async semanticService(organizationId: string) {
+    const candidates = await this.candidates(organizationId);
+    return new CanonicalProductIntentService(null, this.persistence, candidates, {
+      duplicateName: async (name) => candidates.existingProducts.some((product) => normalizeProductReference(product.name) === normalizeProductReference(name)),
+    });
+  }
   loadForConversation(input: { organizationId: string; actorUserId: string; conversationId: string }) { return this.persistence.loadForConversation(input); }
   async inspect(input: { organizationId: string; actorUserId: string; proposalId: string }) {
     // Inspection deliberately avoids provider configuration and compiler use.
@@ -148,6 +157,9 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
     const configured = await this.service(input.organizationId);
     if (!configured) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interpretation is unavailable until a compatible AI provider is configured." };
     return configured.service.continue({ ...input, compilerInput: compilerInput(input.organizationId, input.request, configured.candidates) });
+  }
+  async applySemanticOperations(input: { organizationId: string; actorUserId: string; proposalId: string; request: string; operations: unknown }): Promise<CanonicalProductIntentOutcome> {
+    return (await this.semanticService(input.organizationId)).applySemanticOperations(input);
   }
   async interact(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; cloneProductId?: string } }> {
     const configured = await this.service(input.organizationId);
@@ -238,6 +250,44 @@ export class ProductManagementSkillService {
     } catch (error) {
       const message = error instanceof Error ? error.message : "The canonical product intent could not be updated safely.";
       return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: [message] } }] };
+    }
+  }
+
+  /** Active Product Builder semantic boundary for the Operator Runtime. This
+   * keeps a provider's operation list separate from canonical patching and
+   * allows direct server translation even if a compiler provider is down. */
+  async applyCanonicalProductOperations(input: {
+    organizationId: string;
+    userId: string;
+    conversationId: string;
+    message: string;
+    operations: unknown;
+  }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    const router = this.deps.canonicalProductIntent;
+    if (!router?.applySemanticOperations) return { handled: true, response: "Semantic Product Builder changes are not available in this deployment.", cards: [] };
+    let current: CanonicalProductIntentSession | null;
+    try {
+      current = await router.loadForConversation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The active product draft could not be loaded safely.";
+      return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Product draft unavailable", summary: "No product revision was created.", sourceLinks: [], details: { errors: [message] } }] };
+    }
+    if (!current) return { handled: true, response: "No unfinished canonical product draft is active for this conversation.", cards: [] };
+    if (["executed", "expired", "abandoned"].includes(current.specification.session.state)) return { handled: true, response: `This canonical product-intent session is ${current.specification.session.state} and cannot be changed.`, cards: [] };
+    try {
+      const outcome = await router.applySemanticOperations({
+        organizationId: input.organizationId,
+        actorUserId: input.userId,
+        proposalId: current.proposalId,
+        request: input.message,
+        operations: input.operations,
+      });
+      return outcome.ok
+        ? { handled: true, response: outcome.card.readiness.ready ? "I saved the product revision. It is ready for review." : "I saved the product revision and kept only its remaining questions.", cards: canonicalCards(outcome) }
+        : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product change could not be applied", summary: "No new revision was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The semantic product change could not be applied safely.";
+      return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Product change unavailable", summary: "No new revision was created.", sourceLinks: [], details: { errors: [message] } }] };
     }
   }
 

@@ -42,7 +42,7 @@ function continuingTaskStore(): AssistantOperatorTaskStore & { updates: any[]; t
 function semanticOnlyExecutor(_audit: unknown, semanticTools: readonly any[]) {
   const tools = new Map(semanticTools.map((tool) => [tool.name, tool]));
   return {
-    catalog: () => semanticTools.map((tool) => ({ name: tool.name, description: tool.description })),
+    catalog: () => semanticTools.map((tool) => ({ name: tool.name, description: tool.description, ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}) })),
     execute: async ({ toolName, arguments: args, context: trusted }: any) => {
       const tool = tools.get(toolName);
       if (!tool) throw new Error(`Unexpected integration tool: ${toolName}`);
@@ -92,6 +92,36 @@ describe("AssistantService Operator Runtime integration", () => {
     const correction = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => correctionProvider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
     await correction.createTurn(scope, "conversation_1", actor, { message: "Make the 3 layer price $5.50 instead.", context });
     expect(product.respondPlannedCanonicalProductIntent).toHaveBeenCalledWith(expect.objectContaining({ operation: "continue_session", message: "Make the 3 layer price $5.50 instead." }));
+  });
+
+  test("an active product correction uses the direct semantic operation capability instead of the continuation compiler adapter", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore("proposal_1");
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(),
+      applyCanonicalProductOperations: jest.fn(async () => ({
+        handled: true,
+        response: "I saved the product revision and kept only its remaining questions.",
+        cards: [{ kind: "canonical_product_intent_proposal", title: "Product", summary: "Needs category review", sourceLinks: [], details: { proposalId: "proposal_1" } }],
+      })),
+    };
+    const provider = { decide: jest.fn(async ({ observations, toolCatalog }: any) => observations.length
+      ? ({ kind: "complete", response: "I saved the product revision." })
+      : (expect(toolCatalog).toEqual(expect.arrayContaining([expect.objectContaining({ name: "products.apply_operations", inputSchema: expect.objectContaining({ required: ["operations"] }) })])), {
+        kind: "call_tools",
+        calls: [{ toolName: "products.apply_operations", arguments: { operations: [{ op: "set_category", category: "roll" }] } }],
+      })) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", actor, { message: "I accidentally selected flatbed when it should have been roll.", context });
+
+    expect(product.applyCanonicalProductOperations).toHaveBeenCalledWith(expect.objectContaining({
+      conversationId: "conversation_1",
+      message: "I accidentally selected flatbed when it should have been roll.",
+      operations: [{ op: "set_category", category: "roll" }],
+    }));
+    expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "I saved the product revision and kept only its remaining questions." }));
   });
 
   test("normal free text can select the registered composite semantic capability and persist one confirmation card", async () => {

@@ -463,9 +463,10 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
               name: providerName,
               description: tool.description,
               // The registered server tool boundary remains the authority for
-              // precise validation; this permissive schema avoids claiming an
-              // incomplete schema for the legacy catalog.
-              parameters: { type: "object", additionalProperties: true },
+              // validation. Semantic tools may additionally expose a compact
+              // business-operation schema so capable providers need not infer
+              // application internals from prose alone.
+              parameters: tool.inputSchema ?? { type: "object", additionalProperties: true },
             })),
             { type: "web_search" },
           ],

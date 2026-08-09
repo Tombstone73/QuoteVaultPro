@@ -75,7 +75,7 @@ export type AssistantOperatorTrustedObservation = {
 };
 
 export interface AssistantOperatorToolExecutor {
-  catalog(): ReadonlyArray<{ name: string; description: string }>;
+  catalog(): ReadonlyArray<{ name: string; description: string; inputSchema?: Record<string, unknown> }>;
   execute(input: { toolName: string; arguments: Record<string, unknown>; context: AssistantOperatorTrustedContext }): Promise<Omit<AssistantOperatorObservation, "step">>;
 }
 
@@ -115,7 +115,7 @@ export interface AssistantOperatorDecisionProvider {
     taskId: string;
     step: number;
     remainingSteps: number;
-    toolCatalog: ReadonlyArray<{ name: string; description: string }>;
+    toolCatalog: ReadonlyArray<{ name: string; description: string; inputSchema?: Record<string, unknown> }>;
     observations: readonly AssistantOperatorObservation[];
     safeWorkingSummary: string | null;
     task?: AssistantOperatorTrustedContext["task"];

@@ -6,6 +6,10 @@ import type { AssistantOperatorObservation, AssistantOperatorToolExecutor, Assis
 export type AssistantOperatorSemanticTool = {
   name: string;
   description: string;
+  /** Optional provider-function JSON schema. Execution remains validated by
+   * the semantic service; this only helps capable providers express the small
+   * business operation contract without internal persistence fields. */
+  inputSchema?: Record<string, unknown>;
   execute(input: { arguments: Record<string, unknown>; context: AssistantOperatorTrustedContext }): Promise<Omit<AssistantOperatorObservation, "step" | "toolName">>;
 };
 
@@ -18,7 +22,7 @@ export function createAssistantOperatorToolExecutor(
   const orchestration = new AssistantOrchestrationService(createStage2AssistantToolAdapters(), writeAudit);
   const semantic = new Map(semanticTools.map((tool) => [tool.name, tool]));
   return {
-    catalog: () => [...orchestration.catalog(), ...semanticTools.map((tool) => ({ name: tool.name, description: tool.description }))],
+    catalog: () => [...orchestration.catalog(), ...semanticTools.map((tool) => ({ name: tool.name, description: tool.description, ...(tool.inputSchema ? { inputSchema: tool.inputSchema } : {}) }))],
     async execute({ toolName, arguments: args, context }) {
       const semanticTool = semantic.get(toolName);
       if (semanticTool) return { toolName, ...(await semanticTool.execute({ arguments: args, context })) };
