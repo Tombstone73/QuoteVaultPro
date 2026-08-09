@@ -7,6 +7,7 @@ process.env.DATABASE_URL ??= "postgresql://readonly:readonly@127.0.0.1:1/quoteva
 const context = assistantContextEnvelopeSchema.parse({ contextVersion: "v1", route: "/products", pageTitle: "Products", selectedRecordIds: [], activeFilters: [], capturedAt: "2026-08-07T12:00:00.000Z", unsavedChanges: false });
 const scope = { organizationId: "org_1", userId: "user_1" };
 const actor = { userId: "user_1", email: "user@example.test", ipAddress: null, userAgent: null, permissions: ["assistant.products.create_inactive_draft"] };
+const operatorProviderResolver = { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com", apiKey: "test", model: "deepseek-v4-flash" })) };
 
 function repository() {
   const conversation: any = { id: "conversation_1", organizationId: "org_1", userId: "user_1", title: "New", status: "active", lastActivityAt: new Date(), createdAt: new Date(), updatedAt: new Date(), messages: [] };
@@ -35,13 +36,28 @@ function continuingTaskStore(): AssistantOperatorTaskStore & { updates: any[]; t
   };
 }
 
+/** Keep integration tests at the AssistantService boundary: semantic tools
+ * are exercised, while unrelated database-backed read adapters are not
+ * initialized unless a test explicitly supplies one. */
+function semanticOnlyExecutor(_audit: unknown, semanticTools: readonly any[]) {
+  const tools = new Map(semanticTools.map((tool) => [tool.name, tool]));
+  return {
+    catalog: () => semanticTools.map((tool) => ({ name: tool.name, description: tool.description })),
+    execute: async ({ toolName, arguments: args, context: trusted }: any) => {
+      const tool = tools.get(toolName);
+      if (!tool) throw new Error(`Unexpected integration tool: ${toolName}`);
+      return { toolName, ...(await tool.execute({ arguments: args, context: trusted })) };
+    },
+  };
+}
+
 describe("AssistantService Operator Runtime integration", () => {
   test("ordinary free text enters the Operator Runtime instead of the legacy planner", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore();
     const legacyPlanner = { plan: jest.fn(async () => { throw new Error("legacy planner must not run"); }) };
     const provider = { decide: jest.fn(async () => ({ kind: "complete", response: "I can help with that.", workingSummary: "General assistance complete." })) };
-    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, legacyPlanner as any, undefined, () => provider, tasks);
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, legacyPlanner as any, undefined, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
     await service.createTurn(scope, "conversation_1", actor, { message: "What can you help with?", context });
     expect(provider.decide).toHaveBeenCalledTimes(1);
     expect(legacyPlanner.plan).not.toHaveBeenCalled();
@@ -53,11 +69,11 @@ describe("AssistantService Operator Runtime integration", () => {
     const repo = repository(); const tasks = taskStore("proposal_1");
     const product = { respondPlannedCanonicalProductIntent: jest.fn(async () => ({ handled: true, response: "Saved product revision.", cards: [{ kind: "canonical_product_intent_proposal", title: "Product", summary: "Ready", sourceLinks: [], details: { proposalId: "proposal_1" } }] })) };
     const detourProvider = { decide: jest.fn(async () => ({ kind: "complete", response: "Regular translucent vinyl pricing could not be verified.", workingSummary: "Read-only detour completed." })) };
-    const detour = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => detourProvider, tasks);
+    const detour = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => detourProvider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
     await detour.createTurn(scope, "conversation_1", actor, { message: "How much do we charge for regular translucent vinyl?", context });
     expect(tasks.updates.at(-1).patch.status).toBe("active");
     const correctionProvider = { decide: jest.fn(async ({ observations }: any) => observations.length ? ({ kind: "complete", response: "Done.", workingSummary: "Product revised." }) : ({ kind: "call_tools", calls: [{ toolName: "products.manage_intent", arguments: { operation: "continue" } }] })) };
-    const correction = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => correctionProvider, tasks);
+    const correction = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => correctionProvider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
     await correction.createTurn(scope, "conversation_1", actor, { message: "Make the 3 layer price $5.50 instead.", context });
     expect(product.respondPlannedCanonicalProductIntent).toHaveBeenCalledWith(expect.objectContaining({ operation: "continue_session", message: "Make the 3 layer price $5.50 instead." }));
   });
@@ -73,7 +89,7 @@ describe("AssistantService Operator Runtime integration", () => {
     const provider = { decide: jest.fn(async ({ observations, toolCatalog }: any) => observations.length
       ? ({ kind: "complete", response: "I prepared one confirmation for 2 eligible open quotes." })
       : (expect(toolCatalog).toEqual(expect.arrayContaining([expect.objectContaining({ name: "quotes.plan_internal_notes" })])), { kind: "call_tools", calls: [{ toolName: "quotes.plan_internal_notes", arguments: { customerName: "Acme Printing", noteText: "Waiting on revised artwork" } }] })) };
-    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, () => compositeTool);
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, () => compositeTool, semanticOnlyExecutor as any, operatorProviderResolver as any);
 
     await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.quotes.add_internal_note"] }, { message: "Add an internal note to Acme's open quotes.", context });
 
@@ -134,7 +150,7 @@ describe("AssistantService Operator Runtime integration", () => {
           : { kind: "call_tools", calls: [{ toolName: "customers.get_summary", arguments: { customerId: "customer_new" } }] };
       }),
     };
-    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, () => executor as any);
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, () => executor as any, operatorProviderResolver as any);
 
     await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "Find my 5 most recent open quotes. Give me the quote number, customer, total, and status. Don't change anything.", context });
     expect(tasks.updates.at(-1).patch).toEqual(expect.objectContaining({ domain: "quotes", status: "active", entityReferences: expect.arrayContaining([expect.objectContaining({ type: "quote", id: "quote_new" }), expect.objectContaining({ type: "customer", id: "customer_new" })]) }));
@@ -164,7 +180,7 @@ describe("AssistantService Operator Runtime integration", () => {
       if (goal === "Which one has the largest total?") return { kind: "complete", response: "Four quotes are tied for the largest total at $8.88: QT-910321, QT-910320, QT-910319, and QT-910318." };
       return { kind: "complete", response: "**QT-910322**\nCustomer: TEST WORKFLOW BROWSER RUN 2026-05-23T13-37-13-356Z\nTotal: $0.00\nStatus: Draft\n\n**QT-910321**\nCustomer: 55 Twin Lane\nTotal: $8.88\nStatus: Draft\n\n**QT-910320**\nCustomer: 55 Twin Lane\nTotal: $8.88\nStatus: Draft\n\n**QT-910319**\nCustomer: 55 Twin Lane\nTotal: $8.88\nStatus: Draft\n\n**QT-910318**\nCustomer: 55 Twin Lane\nTotal: $8.88\nStatus: Draft" };
     }) };
-    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, () => executor as any);
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, () => executor as any, operatorProviderResolver as any);
     await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "Find my 5 most recent open quotes. Give me the quote number, customer, total, and status. Don't change anything.", context });
     await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "Which one has the largest total?", context });
     expect(repo.createFoundationTurn).toHaveBeenLastCalledWith(expect.objectContaining({ response: "Four quotes are tied for the largest total at $8.88: QT-910321, QT-910320, QT-910319, and QT-910318.", mode: "ai_operator_runtime" }));
