@@ -171,7 +171,7 @@ export const productPricingToolResultSchema = toolEnvelopeSchema(z.object({
       quantityBehavior: z.enum(["linear", "tiered", "matrix_tiered"]),
       quantityTiers: z.array(z.object({ minimumQuantity: z.number().int().positive().nullable(), maximumQuantity: z.number().int().positive().nullable(), minimumSquareFeet: z.number().positive().nullable(), perSquareFootCents: z.number().nonnegative().nullable(), perPieceCents: z.number().nonnegative().nullable(), minimumChargeCents: z.number().nonnegative().nullable() }).strict()).max(30),
       matrix: z.object({ dimensions: z.array(z.string().min(1)).max(12), rowCount: z.number().int().nonnegative(), pricingUnit: z.enum(["per_square_foot", "per_piece"]) }).strict().nullable(),
-      options: z.array(z.object({ label: z.string().min(1), required: z.boolean(), defaultSelection: z.string().nullable(), choices: z.array(z.object({ label: z.string().min(1), pricingImpactSummary: z.string().nullable() }).strict()).max(30) }).strict()).max(40),
+      options: z.array(z.object({ label: z.string().min(1), required: z.boolean(), defaultSelection: z.string().nullable(), availableWhen: z.object({ optionGroup: z.string().min(1), value: z.string().min(1) }).strict().nullable(), choices: z.array(z.object({ label: z.string().min(1), pricingImpactSummary: z.string().nullable() }).strict()).max(30) }).strict()).max(40),
       treeVersionId: identifierSchema, lifecycle: z.string().min(1).max(40),
     }).strict().nullable(),
     inputNeeded: z.array(z.object({ field: z.string().min(1).max(160), label: z.string().min(1).max(160), reason: z.string().min(1).max(500), allowedValues: z.array(z.string().min(1).max(160)).max(30) }).strict()).max(20),
@@ -272,7 +272,7 @@ export interface AssistantOrderProductToolDependencies {
   /** Bound each independent optional read so it cannot consume the core tool deadline. */
   optionalOrderEnrichmentTimeoutMs?: number;
   getProductPricingConfiguration?: (input: { organizationId: string; productId: string }) => Promise<import("../pricing/PricingService").ProductPricingIntrospection>;
-  projectProductPrice?: (input: { organizationId: string; productId: string; quantity: number; widthIn?: number; heightIn?: number; pbv2ExplicitSelections: Record<string, unknown> }) => Promise<{
+  projectProductPrice?: (input: { organizationId: string; productId: string; quantity: number; widthIn?: number; heightIn?: number; pbv2ExplicitSelections: Record<string, unknown>; pbv2TreeVersionIdOverride?: string }) => Promise<{
     pbv2TreeVersionId: string;
     lineTotalCents: number;
     breakdown: { pricingMethod?: string };
@@ -569,6 +569,7 @@ function publicPricingConfiguration(configuration: ProductPricingIntrospection) 
       label: group.label,
       required: group.required,
       defaultSelection: typeof group.defaultValue === "string" ? (group.choices.find((choice) => choice.value === group.defaultValue)?.label ?? group.defaultValue) : null,
+      availableWhen: group.availableWhen ?? null,
       choices: group.choices.map((choice) => ({ label: choice.label, pricingImpactSummary: choice.pricingImpactSummary })),
     })),
     treeVersionId: configuration.treeVersionId,
@@ -795,10 +796,14 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       let configuration: ProductPricingIntrospection;
       try {
         configuration = await getProductPricingConfiguration({ organizationId: invocation.organizationId, productId: record.product.id });
-      } catch {
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : null;
+        const message = code === "PBV2_DRAFT_AMBIGUOUS"
+          ? "This inactive product has multiple PBV2 DRAFT versions, so current pricing cannot be selected safely."
+          : "Authoritative PBV2 pricing configuration is unavailable for this product.";
         return productPricingToolResultSchema.parse({
           status: "ok",
-          data: { product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod }, pricing: { status: "unavailable", pricingMethod, treeVersionId: record.product.pbv2ActiveTreeVersionId ?? null, quantity, dimensions: null, totalCents: null, averageUnitCents: null, configuration: null, inputNeeded: [], message: "Authoritative PBV2 pricing configuration is unavailable for this product." } },
+          data: { product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod }, pricing: { status: "unavailable", pricingMethod, treeVersionId: record.product.pbv2ActiveTreeVersionId ?? null, quantity, dimensions: null, totalCents: null, averageUnitCents: null, configuration: null, inputNeeded: [], message } },
           sourceLinks, freshness: { retrievedAt: retrievedAt.toISOString() },
         });
       }
@@ -806,7 +811,7 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       const scenarioRequested = input.quantity !== undefined || input.width !== undefined || input.height !== undefined || input.unit !== undefined || input.widthIn !== undefined || input.heightIn !== undefined || input.optionSelections !== undefined;
       if (!scenarioRequested) return productPricingToolResultSchema.parse({
         status: "ok",
-        data: { product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod }, pricing: { status: "configuration", pricingMethod, treeVersionId: configuration.treeVersionId, quantity, dimensions: configuration.fixedDimensions, totalCents: null, averageUnitCents: null, configuration: publicConfiguration, inputNeeded: [], message: "Authoritative PBV2 pricing configuration. Provide a semantic scenario only when a calculated price is needed." } },
+        data: { product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod }, pricing: { status: "configuration", pricingMethod, treeVersionId: configuration.treeVersionId, quantity, dimensions: configuration.fixedDimensions, totalCents: null, averageUnitCents: null, configuration: publicConfiguration, inputNeeded: [], message: !record.product.isActive && configuration.lifecycle === "DRAFT" ? "This product is inactive and its pricing is in PBV2 DRAFT status. Here is the current draft configuration." : "Authoritative PBV2 pricing configuration. Provide a semantic scenario only when a calculated price is needed." } },
         sourceLinks, freshness: { retrievedAt: retrievedAt.toISOString() },
       });
       const scenario = normalizePricingScenario(input, configuration);
@@ -822,6 +827,7 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
           quantity,
           ...scenario.dimensions,
           pbv2ExplicitSelections: scenario.selections,
+          ...(configuration.lifecycle === "DRAFT" ? { pbv2TreeVersionIdOverride: configuration.treeVersionId } : {}),
         });
         const dimensions = projection.pbv2SnapshotJson.dimensions;
         const widthIn = Number(dimensions?.widthIn);

@@ -508,7 +508,7 @@ export const assistantProductPricingResultSchema = z.object({
       quantityBehavior: z.enum(["linear", "tiered", "matrix_tiered"]),
       quantityTiers: z.array(z.object({ minimumQuantity: z.number().int().positive().nullable(), maximumQuantity: z.number().int().positive().nullable(), minimumSquareFeet: z.number().positive().nullable(), perSquareFootCents: z.number().nonnegative().nullable(), perPieceCents: z.number().nonnegative().nullable(), minimumChargeCents: z.number().nonnegative().nullable() }).strict()).max(30),
       matrix: z.object({ dimensions: z.array(z.string().min(1)).max(12), rowCount: z.number().int().nonnegative(), pricingUnit: z.enum(["per_square_foot", "per_piece"]) }).strict().nullable(),
-      options: z.array(z.object({ label: z.string().min(1), required: z.boolean(), defaultSelection: z.string().nullable(), choices: z.array(z.object({ label: z.string().min(1), pricingImpactSummary: z.string().nullable() }).strict()).max(30) }).strict()).max(40),
+      options: z.array(z.object({ label: z.string().min(1), required: z.boolean(), defaultSelection: z.string().nullable(), availableWhen: z.object({ optionGroup: z.string().min(1), value: z.string().min(1) }).strict().nullable(), choices: z.array(z.object({ label: z.string().min(1), pricingImpactSummary: z.string().nullable() }).strict()).max(30) }).strict()).max(40),
       treeVersionId: assistantSafeIdentifierSchema, lifecycle: z.string().min(1).max(40),
     }).strict().nullable(),
     inputNeeded: z.array(z.object({ field: z.string().min(1).max(160), label: z.string().min(1).max(160), reason: z.string().min(1).max(500), allowedValues: z.array(z.string().min(1).max(160)).max(30) }).strict()).max(20),

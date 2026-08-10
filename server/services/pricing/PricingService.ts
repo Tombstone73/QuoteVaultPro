@@ -7,7 +7,7 @@
 
 import { db } from '../../db';
 import { products, pbv2TreeVersions, materials, pricingFormulas } from '../../../shared/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { evaluate } from 'mathjs';
 import { evaluateOptionTreeV2, pbv2ToWeightTotal } from '../optionTreeV2Evaluator';
 import { buildFlatGoodsInput, flatGoodsCalculator, getProfile, type FlatGoodsConfig } from '../../../shared/pricingProfiles';
@@ -472,14 +472,22 @@ export type ProductPricingIntrospection = {
   quantityBehavior: "linear" | "tiered" | "matrix_tiered";
   quantityTiers: Array<{ minimumQuantity: number | null; maximumQuantity: number | null; minimumSquareFeet: number | null; perSquareFootCents: number | null; perPieceCents: number | null; minimumChargeCents: number | null }>;
   matrix: { dimensions: string[]; rowCount: number; pricingUnit: "per_square_foot" | "per_piece" } | null;
-  optionGroups: Array<{ selectionKey: string; label: string; required: boolean; defaultValue: unknown; choices: Array<{ value: string; label: string; pricingImpactSummary: string | null }> }>;
+  optionGroups: Array<{ selectionKey: string; label: string; required: boolean; defaultValue: unknown; availableWhen: { optionGroup: string; value: string } | null; choices: Array<{ value: string; label: string; pricingImpactSummary: string | null }> }>;
 };
+
+/** Safe, read-only resolution failures for a product's authoritative PBV2
+ * configuration. They intentionally reveal no tree content. */
+export class ProductPricingReadError extends Error {
+  constructor(readonly code: "PBV2_PRICING_UNAVAILABLE" | "PBV2_DRAFT_AMBIGUOUS", message: string) {
+    super(message);
+  }
+}
 
 function nonNegativeNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
 }
 
-function pricingImpactSummary(choice: any): string | null {
+function pricingImpactSummary(choice: any, conditionalTotal: { optionGroup: string; value: string; priorPercent: number } | null = null): string | null {
   if (typeof choice?.priceDeltaCents === "number" && Number.isFinite(choice.priceDeltaCents)) {
     const sign = choice.priceDeltaCents >= 0 ? "+" : "-";
     return `${sign}$${(Math.abs(choice.priceDeltaCents) / 100).toFixed(2)} per selection`;
@@ -490,16 +498,42 @@ function pricingImpactSummary(choice: any): string | null {
     if (impact.mode === "addFlat" && Number.isFinite(impact.amountCents)) return [`+$${(impact.amountCents / 100).toFixed(2)} per line`];
     if (impact.mode === "addPerQty" && Number.isFinite(impact.amountCents)) return [`+$${(impact.amountCents / 100).toFixed(2)} per piece`];
     if (impact.mode === "addPerSqft" && Number.isFinite(impact.amountCents)) return [`+$${(impact.amountCents / 100).toFixed(2)} per sq ft`];
+    if (impact.mode === "addPercent" && Number.isFinite(impact.percent)) {
+      const own = `+${impact.percent}% of base`;
+      return conditionalTotal ? [`${own}; +${conditionalTotal.priorPercent + impact.percent}% total when ${conditionalTotal.optionGroup} is ${conditionalTotal.value}`] : [own];
+    }
     if (impact.mode === "multiplyTotal" && Number.isFinite(impact.multiplier)) return [`${impact.multiplier}x total`];
     return [];
   });
   return descriptions.length ? descriptions.join("; ") : null;
 }
 
+async function readablePbv2TreeVersionId(product: any, organizationId: string): Promise<string> {
+  const activeOrOverride = resolvePbv2Override(product) || product.pbv2ActiveTreeVersionId;
+  if (activeOrOverride) return activeOrOverride;
+  if (product.isActive) throw new ProductPricingReadError("PBV2_PRICING_UNAVAILABLE", "This active product has no PBV2 pricing tree.");
+
+  // Product Builder GO intentionally leaves an inactive product without an
+  // active-tree pointer. Its DRAFT is readable only when the product-linked
+  // relationship is unambiguous; never select an arbitrary latest draft.
+  const drafts = await db.select({ id: pbv2TreeVersions.id })
+    .from(pbv2TreeVersions)
+    .where(and(
+      eq(pbv2TreeVersions.organizationId, organizationId),
+      eq(pbv2TreeVersions.productId, product.id),
+      eq(pbv2TreeVersions.status, "DRAFT"),
+      eq(pbv2TreeVersions.schemaVersion, 2),
+    ))
+    .orderBy(desc(pbv2TreeVersions.updatedAt), desc(pbv2TreeVersions.id))
+    .limit(2);
+  if (drafts.length === 1) return drafts[0]!.id;
+  if (drafts.length > 1) throw new ProductPricingReadError("PBV2_DRAFT_AMBIGUOUS", "This inactive product has multiple PBV2 DRAFT versions; its current pricing cannot be selected safely.");
+  throw new ProductPricingReadError("PBV2_PRICING_UNAVAILABLE", "This inactive product has no PBV2 pricing configuration.");
+}
+
 export async function inspectProductPricing(input: { organizationId: string; productId: string }): Promise<ProductPricingIntrospection> {
   const product = await loadProduct(input.organizationId, input.productId);
-  const treeVersionId = resolvePbv2Override(product) || product.pbv2ActiveTreeVersionId;
-  if (!treeVersionId) throw new Error("This product has no active PBV2 pricing tree.");
+  const treeVersionId = await readablePbv2TreeVersionId(product, input.organizationId);
   const treeVersion = await loadTreeVersion(input.organizationId, treeVersionId);
   const tree = treeVersion.treeJson as any;
   const meta = tree?.meta && typeof tree.meta === "object" ? tree.meta : {};
@@ -510,23 +544,44 @@ export async function inspectProductPricing(input: { organizationId: string; pro
   const minimumChargeCents = nonNegativeNumber(base.minimumChargeCents);
   const matrix = extractProductOptionPricingMatrix(tree);
   const rawNodes = tree?.nodes && typeof tree.nodes === "object" ? Object.values(tree.nodes) : Array.isArray(tree?.nodes) ? tree.nodes : [];
-  const optionGroups: ProductPricingIntrospection["optionGroups"] = rawNodes.flatMap((rawNode: any) => {
+  const rawOptionGroups = rawNodes.flatMap((rawNode: any) => {
     if (!rawNode || typeof rawNode !== "object" || rawNode.kind === "group") return [];
     const selectionKey = typeof rawNode?.input?.selectionKey === "string" && rawNode.input.selectionKey.trim()
       ? rawNode.input.selectionKey.trim()
       : typeof rawNode.key === "string" && rawNode.key.trim() ? rawNode.key.trim() : typeof rawNode.id === "string" ? rawNode.id : "";
     const label = typeof rawNode.label === "string" && rawNode.label.trim() ? rawNode.label.trim() : selectionKey;
     if (!selectionKey || !label) return [];
+    const visibilityRule = Array.isArray(rawNode?.visibility?.rules)
+      ? rawNode.visibility.rules.find((rule: any) => rule?.type === "equals" && typeof rule.selectionKey === "string" && typeof rule.value === "string")
+      : null;
     return [{
       selectionKey,
       label,
       required: rawNode?.input?.required === true,
       defaultValue: rawNode?.input?.defaultValue,
+      availability: visibilityRule ? { selectionKey: visibilityRule.selectionKey, value: visibilityRule.value } : null,
       choices: Array.isArray(rawNode.choices) ? rawNode.choices.flatMap((choice: any) => typeof choice?.value === "string" && typeof choice?.label === "string"
-        ? [{ value: choice.value, label: choice.label, pricingImpactSummary: pricingImpactSummary(choice) }]
+        ? [{ value: choice.value, label: choice.label, raw: choice }]
         : []) : [],
     }];
   }).slice(0, 40);
+  const optionGroups: ProductPricingIntrospection["optionGroups"] = rawOptionGroups.map((group: any) => {
+    const prerequisiteGroup = group.availability ? rawOptionGroups.find((candidate: any) => candidate.selectionKey === group.availability!.selectionKey) : undefined;
+    const prerequisiteChoice = prerequisiteGroup?.choices.find((candidate: any) => candidate.value === group.availability?.value);
+    const priorImpact = Array.isArray(prerequisiteChoice?.raw?.pricingImpact)
+      ? prerequisiteChoice.raw.pricingImpact.find((impact: any) => impact?.mode === "addPercent" && Number.isFinite(impact.percent))
+      : null;
+    const availableWhen = group.availability && prerequisiteGroup && prerequisiteChoice
+      ? { optionGroup: prerequisiteGroup.label, value: prerequisiteChoice.label }
+      : null;
+    return {
+      selectionKey: group.selectionKey, label: group.label, required: group.required, defaultValue: group.defaultValue, availableWhen,
+      choices: group.choices.map((choice: any) => ({
+        value: choice.value, label: choice.label,
+        pricingImpactSummary: pricingImpactSummary(choice.raw, availableWhen && priorImpact ? { ...availableWhen, priorPercent: priorImpact.percent } : null),
+      })),
+    };
+  });
   const tierRows = [...(Array.isArray(pricingV2.qtyTiers) ? pricingV2.qtyTiers : []), ...(Array.isArray(pricingV2.sqftTiers) ? pricingV2.sqftTiers : [])]
     .flatMap((tier: any) => tier && typeof tier === "object" ? [{
       minimumQuantity: Number.isInteger(tier.minQty) ? tier.minQty : null,
