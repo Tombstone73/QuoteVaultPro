@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 import {
   extractProductOptionPricingMatrix,
+  resolveProductOptionPricingMatrixBaseRateCents,
   resolveProductOptionPricingMatrix,
   type ProductOptionPricingMatrix,
 } from "../productOptionPricingMatrix";
@@ -80,6 +81,12 @@ describe("product option pricing matrix resolution", () => {
 
     expect(result.errors).toHaveLength(0);
     expect(result.variables.base_price).toBe(5.75);
+  });
+
+  test("projects matrix base_price cells as cents without requiring a global scalar rate", () => {
+    expect(resolveProductOptionPricingMatrixBaseRateCents({ when: { layers: "three" }, variables: { base_price: 400 } })).toBe(400);
+    expect(resolveProductOptionPricingMatrixBaseRateCents({ when: { layers: "five" }, variables: { base_price: 5 } })).toBe(500);
+    expect(resolveProductOptionPricingMatrixBaseRateCents({ when: { layers: "missing" }, variables: {} })).toBeNull();
   });
 
   test("extracts top-level pricingMatrix from tree JSON", () => {

@@ -29,6 +29,7 @@ import { validateQuantityOnlyPerPieceTierFamily } from '../../../shared/pbv2/val
 import type { Finding } from '../../../shared/pbv2/findings';
 import {
   extractProductOptionPricingMatrix,
+  resolveProductOptionPricingMatrixBaseRateCents,
   resolveProductOptionPricingMatrix,
   type ProductOptionPricingMatrixErrorDetail,
   type ProductOptionPricingMatrixRow,
@@ -464,6 +465,7 @@ export function getPbv2PricingVariableDefinitions(): PricingVariableDefinition[]
 export type ProductPricingIntrospection = {
   treeVersionId: string;
   lifecycle: string;
+  pricingStrategy: "scalar" | "matrix" | "tiered" | "formula" | "configured";
   pricingBasis: "per_square_foot" | "per_piece" | "mixed" | "formula" | "configured";
   measurementMode: "dimensions_required" | "quantity_only";
   dimensionsRequired: boolean;
@@ -471,7 +473,12 @@ export type ProductPricingIntrospection = {
   baseRates: { perSquareFootCents: number | null; perPieceCents: number | null; minimumChargeCents: number | null };
   quantityBehavior: "linear" | "tiered" | "matrix_tiered";
   quantityTiers: Array<{ minimumQuantity: number | null; maximumQuantity: number | null; minimumSquareFeet: number | null; perSquareFootCents: number | null; perPieceCents: number | null; minimumChargeCents: number | null }>;
-  matrix: { dimensions: string[]; rowCount: number; pricingUnit: "per_square_foot" | "per_piece" } | null;
+  matrix: {
+    dimensions: string[];
+    rowCount: number;
+    pricingUnit: "per_square_foot" | "per_piece";
+    cells: Array<{ selections: Array<{ axis: string; value: string }>; rateCents: number | null }>;
+  } | null;
   optionGroups: Array<{ selectionKey: string; label: string; required: boolean; defaultValue: unknown; availableWhen: { optionGroup: string; value: string } | null; choices: Array<{ value: string; label: string; pricingImpactSummary: string | null }> }>;
 };
 
@@ -608,10 +615,25 @@ export async function inspectProductPricing(input: { organizationId: string; pro
     ? { widthIn: Number(meta.fixedDimensions.widthIn), heightIn: Number(meta.fixedDimensions.heightIn) } : null;
   const basis = perSquareFootCents !== null && perPieceCents !== null ? "mixed"
     : perSquareFootCents !== null ? "per_square_foot" : perPieceCents !== null ? "per_piece"
+    : matrix ? (pricingV2.optionMatrixPricingUnit === "per_piece" ? "per_piece" : "per_square_foot")
     : typeof meta.pricingFormula === "string" && meta.pricingFormula.trim() ? "formula" : "configured";
+  const matrixCells = matrix?.rows.slice(0, 120).map((row) => {
+    const match = row.when ?? row.match ?? row.combination ?? {};
+    return {
+      selections: matrix.dimensions.slice(0, 12).flatMap((selectionKey) => {
+        const rawValue = match[selectionKey];
+        if (typeof rawValue !== "string" && typeof rawValue !== "number") return [];
+        const group = optionGroups.find((candidate) => candidate.selectionKey === selectionKey);
+        const value = group?.choices.find((choice) => choice.value === rawValue)?.label ?? String(rawValue);
+        return [{ axis: group?.label ?? selectionKey, value }];
+      }),
+      rateCents: resolveProductOptionPricingMatrixBaseRateCents(row),
+    };
+  }) ?? [];
   return {
     treeVersionId,
     lifecycle: typeof treeVersion.status === "string" ? treeVersion.status : "ACTIVE",
+    pricingStrategy: matrix ? "matrix" : tierRows.length ? "tiered" : typeof meta.pricingFormula === "string" && meta.pricingFormula.trim() ? "formula" : perSquareFootCents !== null || perPieceCents !== null ? "scalar" : "configured",
     pricingBasis: basis,
     measurementMode: product.measurementMode === "quantity_only" ? "quantity_only" : "dimensions_required",
     dimensionsRequired: product.measurementMode !== "quantity_only" && meta.requiresDimensions !== false && !fixed,
@@ -619,7 +641,7 @@ export async function inspectProductPricing(input: { organizationId: string; pro
     baseRates: { perSquareFootCents, perPieceCents, minimumChargeCents },
     quantityBehavior: matrix?.rows.some((row) => Array.isArray(row.qtyTiers) && row.qtyTiers.length) ? "matrix_tiered" : tierRows.length ? "tiered" : "linear",
     quantityTiers: tierRows.slice(0, 30),
-    matrix: matrix ? { dimensions: matrix.dimensions.map((key) => optionGroups.find((group) => group.selectionKey === key)?.label ?? key).slice(0, 12), rowCount: matrix.rows.length, pricingUnit: pricingV2.optionMatrixPricingUnit === "per_piece" ? "per_piece" : "per_square_foot" } : null,
+    matrix: matrix ? { dimensions: matrix.dimensions.map((key) => optionGroups.find((group) => group.selectionKey === key)?.label ?? key).slice(0, 12), rowCount: matrix.rows.length, pricingUnit: pricingV2.optionMatrixPricingUnit === "per_piece" ? "per_piece" : "per_square_foot", cells: matrixCells } : null,
     optionGroups,
   };
 }

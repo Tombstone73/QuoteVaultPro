@@ -35,7 +35,7 @@ function repo() {
 
 function bannerPricingConfiguration(overrides: Record<string, unknown> = {}) {
   return {
-    treeVersionId: "tree-1", lifecycle: "ACTIVE", pricingBasis: "per_square_foot" as const,
+    treeVersionId: "tree-1", lifecycle: "ACTIVE", pricingStrategy: "scalar" as const, pricingBasis: "per_square_foot" as const,
     measurementMode: "dimensions_required" as const, dimensionsRequired: true, fixedDimensions: null,
     baseRates: { perSquareFootCents: 125, perPieceCents: null, minimumChargeCents: null },
     quantityBehavior: "linear" as const, quantityTiers: [], matrix: null,
@@ -342,6 +342,43 @@ describe("assistant order/product/operational tools", () => {
     expect(read.data.pricing.message).toContain("PBV2 DRAFT");
     expect(read.data.pricing.message).not.toContain("unavailable");
     expect(getProductPricingConfiguration).toHaveBeenCalledWith({ organizationId: "org-a", productId: "active-draft-product" });
+  });
+
+  test("exposes semantic matrix cell rates without requiring a global per-square-foot rate", async () => {
+    const matrixConfiguration = bannerPricingConfiguration({
+      pricingStrategy: "matrix", pricingBasis: "per_square_foot", baseRates: { perSquareFootCents: null, perPieceCents: null, minimumChargeCents: null },
+      matrix: {
+        dimensions: ["Layers"], rowCount: 2, pricingUnit: "per_square_foot",
+        cells: [
+          { selections: [{ axis: "Layers", value: "3 Layer" }], rateCents: 400 },
+          { selections: [{ axis: "Layers", value: "5 Layer" }], rateCents: 500 },
+        ],
+      },
+      optionGroups: [
+        { selectionKey: "layers", label: "Layers", required: true, defaultValue: "five", availableWhen: null, choices: [{ value: "three", label: "3 Layer", pricingImpactSummary: null }, { value: "five", label: "5 Layer", pricingImpactSummary: null }] },
+        { selectionKey: "contour", label: "Contour Cutting", required: false, defaultValue: "no", availableWhen: null, choices: [{ value: "no", label: "No", pricingImpactSummary: null }, { value: "yes", label: "Yes", pricingImpactSummary: "+10% of base" }] },
+        { selectionKey: "weed_tape", label: "Weeding and Taping", required: false, defaultValue: "no", availableWhen: { optionGroup: "Contour Cutting", value: "Yes" }, choices: [{ value: "no", label: "No", pricingImpactSummary: null }, { value: "yes", label: "Yes", pricingImpactSummary: "+20% of base; +30% total when Contour Cutting is Yes" }] },
+      ],
+    });
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, getProductPricingConfiguration: jest.fn(async () => matrixConfiguration) });
+
+    const result = await tools.productsGetPricing.execute(invocation, { productId: "product-1" });
+
+    expect(result.data.pricing).toMatchObject({
+      status: "configuration",
+      configuration: {
+        pricingStrategy: "matrix", pricingBasis: "per_square_foot",
+        baseRates: { perSquareFootCents: null },
+        matrix: {
+          dimensions: ["Layers"], pricingUnit: "per_square_foot",
+          cells: [
+            { selections: [{ axis: "Layers", value: "3 Layer" }], rateCents: 400 },
+            { selections: [{ axis: "Layers", value: "5 Layer" }], rateCents: 500 },
+          ],
+        },
+      },
+    });
+    expect(result.data.pricing.message).not.toContain("unavailable");
   });
 
   test("keeps an active product on its active PBV2 tree", async () => {

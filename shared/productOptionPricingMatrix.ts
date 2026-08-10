@@ -106,6 +106,17 @@ function resolveMatrixVariableValue(key: string, rawValue: unknown): number {
   return value;
 }
 
+/**
+ * Returns the row's authoritative base-price rate in cents using the same
+ * matrix currency representation consumed by the PBV2 evaluator. It is a
+ * read-only semantic projection; it does not calculate a customer total.
+ */
+export function resolveProductOptionPricingMatrixBaseRateCents(row: ProductOptionPricingMatrixRow): number | null {
+  const rawValue = getRowVariables(row).base_price;
+  const rate = resolveMatrixVariableValue("base_price", rawValue);
+  return Number.isFinite(rate) && rate >= 0 ? Math.round(rate * 100) : null;
+}
+
 export function extractProductOptionPricingMatrix(tree: unknown): ProductOptionPricingMatrix | null {
   if (!isRecord(tree)) return null;
   const meta = isRecord(tree.meta) ? tree.meta : {};

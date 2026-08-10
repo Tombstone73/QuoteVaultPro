@@ -164,13 +164,14 @@ export const productPricingToolResultSchema = toolEnvelopeSchema(z.object({
     totalCents: z.number().int().nonnegative().nullable(),
     averageUnitCents: z.number().int().nonnegative().nullable(),
     configuration: z.object({
+      pricingStrategy: z.enum(["scalar", "matrix", "tiered", "formula", "configured"]),
       pricingBasis: z.enum(["per_square_foot", "per_piece", "mixed", "formula", "configured"]),
       measurementMode: z.enum(["dimensions_required", "quantity_only"]),
       dimensionsRequired: z.boolean(), fixedDimensions: z.object({ widthIn: z.number().positive(), heightIn: z.number().positive() }).strict().nullable(),
       baseRates: z.object({ perSquareFootCents: z.number().nonnegative().nullable(), perPieceCents: z.number().nonnegative().nullable(), minimumChargeCents: z.number().nonnegative().nullable() }).strict(),
       quantityBehavior: z.enum(["linear", "tiered", "matrix_tiered"]),
       quantityTiers: z.array(z.object({ minimumQuantity: z.number().int().positive().nullable(), maximumQuantity: z.number().int().positive().nullable(), minimumSquareFeet: z.number().positive().nullable(), perSquareFootCents: z.number().nonnegative().nullable(), perPieceCents: z.number().nonnegative().nullable(), minimumChargeCents: z.number().nonnegative().nullable() }).strict()).max(30),
-      matrix: z.object({ dimensions: z.array(z.string().min(1)).max(12), rowCount: z.number().int().nonnegative(), pricingUnit: z.enum(["per_square_foot", "per_piece"]) }).strict().nullable(),
+      matrix: z.object({ dimensions: z.array(z.string().min(1)).max(12), rowCount: z.number().int().nonnegative(), pricingUnit: z.enum(["per_square_foot", "per_piece"]), cells: z.array(z.object({ selections: z.array(z.object({ axis: z.string().min(1), value: z.string().min(1) }).strict()).max(12), rateCents: z.number().int().nonnegative().nullable() }).strict()).max(120) }).strict().nullable(),
       options: z.array(z.object({ label: z.string().min(1), required: z.boolean(), defaultSelection: z.string().nullable(), availableWhen: z.object({ optionGroup: z.string().min(1), value: z.string().min(1) }).strict().nullable(), choices: z.array(z.object({ label: z.string().min(1), pricingImpactSummary: z.string().nullable() }).strict()).max(30) }).strict()).max(40),
       treeVersionId: identifierSchema, lifecycle: z.string().min(1).max(40),
     }).strict().nullable(),
@@ -557,6 +558,7 @@ function normalizedPricingLabel(value: string): string {
 
 function publicPricingConfiguration(configuration: ProductPricingIntrospection) {
   return {
+    pricingStrategy: configuration.pricingStrategy,
     pricingBasis: configuration.pricingBasis,
     measurementMode: configuration.measurementMode,
     dimensionsRequired: configuration.dimensionsRequired,
