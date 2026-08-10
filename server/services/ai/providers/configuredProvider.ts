@@ -466,7 +466,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
               // validation. Semantic tools may additionally expose a compact
               // business-operation schema so capable providers need not infer
               // application internals from prose alone.
-              parameters: tool.inputSchema ?? { type: "object", additionalProperties: true },
+              parameters: deepSeekFunctionParameters(tool.inputSchema),
             })),
             { type: "web_search" },
           ],
@@ -502,6 +502,14 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       const webSearchActions = nativeWebSearchCalls.filter((item: any) => item.action && typeof item.action === "object").map((item: any) => item.action);
       const webSources = nativeWebSources(output);
       const finalText = output.filter((item: any) => item?.type === "message").flatMap((item: any) => Array.isArray(item.content) ? item.content : []).filter((part: any) => part?.type === "output_text" && typeof part.text === "string").map((part: any) => part.text).join("\n");
+      if (!functionCalls.length && hasProviderControlProtocol(finalText)) {
+        console.warn("[AI_PROVIDER] DeepSeek Responses returned unconsumed control protocol.", {
+          provider: config.provider, model: config.model, apiSurface: "deepseek_responses", providerRequestId,
+          responseStatus, outputItemTypes, responseItemCount: output.length, structuredToolCallDetected: false,
+          textualControlProtocolDetected: true, protocolStage: "message_output_text",
+        });
+        throw new AiProviderResponseError({ kind: "provider_protocol_failure", status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek returned an unconsumed tool-control protocol." });
+      }
       // A valid Operator decision is a control protocol, not native terminal
       // prose.  Preserve it for the runtime so `continue`, `ask_user`, and
       // `call_tools` cannot leak into the persisted assistant response.
@@ -591,6 +599,30 @@ function normalizeDeepSeekOperatorTerminal(finalText: string): { response: strin
   const trimmed = finalText.trim();
   if (!trimmed) return null;
   return { response: trimmed, classification: "provider_message" };
+}
+
+/** DeepSeek V4's tool transport is less reliable with discriminated oneOf
+ * arrays. This adapter-only projection preserves all business fields while
+ * using one permissive object envelope; runtime schemas remain authoritative. */
+function deepSeekFunctionParameters(schema: Record<string, unknown> | undefined): Record<string, unknown> {
+  const transform = (value: unknown): unknown => {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return value;
+    const record = value as Record<string, unknown>;
+    if (Array.isArray(record.oneOf)) {
+      const variants = record.oneOf.filter((item): item is Record<string, unknown> => Boolean(item) && typeof item === "object" && !Array.isArray(item));
+      const properties = Object.assign({}, ...variants.map((variant) => transform(variant.properties) as Record<string, unknown>));
+      // Do not copy a branch-specific discriminator const: the final branch
+      // would otherwise make all earlier operations impossible to emit.
+      properties.op = { type: "string" };
+      return { type: "object", additionalProperties: false, required: ["op"], properties };
+    }
+    return Object.fromEntries(Object.entries(record).map(([key, item]) => [key, transform(item)]));
+  };
+  return (transform(schema ?? { type: "object", additionalProperties: true }) ?? { type: "object", additionalProperties: true }) as Record<string, unknown>;
+}
+
+function hasProviderControlProtocol(text: string): boolean {
+  return /DSML|<think\b|<\/?[|｜][^>]*(?:thinking|tool_calls|invoke|parameter)|<\/?[|｜]/i.test(text);
 }
 
 function nativeWebSources(output: readonly any[]): Array<{ title: string; url: string; domain: string; providerSourceReference?: string }> {

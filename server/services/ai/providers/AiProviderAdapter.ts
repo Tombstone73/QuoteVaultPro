@@ -87,7 +87,8 @@ export type AiProviderFailureKind =
   | "rate_limit"
   | "malformed_response"
   | "empty_response"
-  | "truncated_output";
+  | "truncated_output"
+  | "provider_protocol_failure";
 
 export class AiProviderResponseError extends Error {
   kind: AiProviderFailureKind;

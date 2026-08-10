@@ -107,6 +107,10 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
         });
         return { kind: "fail", response: "The AI provider returned an unusable investigation result." };
       }
+      if (hasProviderControlProtocol(decision)) {
+        console.warn("[AI_PROVIDER] Blocking provider control protocol from Operator terminal output.", { requestSequence: response.requestMetadata.requestSequence ?? null, apiSurface: response.requestMetadata.apiSurface ?? null, outputItemTypes: response.requestMetadata.outputItemTypes ?? [] });
+        return { kind: "fail", response: "The AI provider returned an unusable investigation result." };
+      }
       return this.withNativeSources(decision, response.requestMetadata.nativeWebSources);
     }
     const response = await this.provider.generateJson({
@@ -120,7 +124,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
     });
     const decision = parseAssistantOperatorDecisionText(response.rawText);
     if (!decision) throw new Error("ASSISTANT_OPERATOR_INVALID_JSON");
-    return decision;
+    return hasProviderControlProtocol(decision) ? { kind: "fail", response: "The AI provider returned an unusable investigation result." } : decision;
   }
 
   private appendFunctionOutputs(observations: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]["observations"]): void {
@@ -163,6 +167,12 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
     }
     return included.length ? { ...complete, response: `${complete.response}${heading}${included.join("\n")}` } : decision;
   }
+}
+
+function hasProviderControlProtocol(decision: unknown): boolean {
+  if (!decision || typeof decision !== "object" || (decision as { kind?: unknown }).kind !== "complete") return false;
+  const response = (decision as { response?: unknown }).response;
+  return typeof response === "string" && /DSML|<think\b|<\/?[|｜][^>]*(?:thinking|tool_calls|invoke|parameter)|<\/?[|｜]/i.test(response);
 }
 
 function providerFailureDecision(error: unknown): { kind: "fail"; response: string } {

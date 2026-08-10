@@ -265,6 +265,30 @@ describe("configured AI provider", () => {
     expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "products.get_summary" }] });
   });
 
+  test("transports nested initial operations as a structured DeepSeek function call", async () => {
+    const initialOperations = [{ op: "set_option_price_impact", optionGroup: "Weeding and Taping", value: "Yes", percent: 30, replacesPercentageWhen: { optionGroup: "Contour Cutting", value: "Yes" } }];
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "function_call", call_id: "call_initial", name: "ph_0_products_begin_draft", arguments: JSON.stringify({ initialOperations }) }] })) as unknown as typeof fetch;
+    const schema = {
+      type: "object",
+      properties: {
+        initialOperations: {
+          type: "array",
+          items: { oneOf: [{ type: "object", required: ["op", "percent"], properties: { op: { const: "set_option_price_impact" }, percent: { type: "number" }, replacesPercentageWhen: { type: "object", properties: { optionGroup: { type: "string" }, value: { type: "string" } } } } }] },
+        },
+      },
+    } as any;
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [{ name: "products.begin_draft", description: "Begin product draft", inputSchema: schema }] });
+    expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: { initialOperations } }] });
+    const body = JSON.parse(String((global.fetch as any).mock.calls[0][1].body));
+    expect(body.tools[0].parameters.properties.initialOperations.items).not.toHaveProperty("oneOf");
+    expect(body.tools[0].parameters.properties.initialOperations.items.properties.op).toEqual({ type: "string" });
+  });
+
+  test("rejects DSML control text instead of returning it as a chat response", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "<｜DSML｜tool_calls><｜DSML｜invoke name=\"ph_0_products_begin_draft\">" }] }] })) as unknown as typeof fetch;
+    await expect(new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] })).rejects.toMatchObject({ name: "AiProviderResponseError", kind: "provider_protocol_failure" });
+  });
+
   test("accepts a long native-web terminal response and preserves source metadata", async () => {
     const longAnswer = `Research summary: ${"current commercial-print comparison. ".repeat(420)}`.trim();
     expect(longAnswer.length).toBeGreaterThan(8_000);
