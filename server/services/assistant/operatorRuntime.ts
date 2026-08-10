@@ -23,6 +23,24 @@ const operatorToolCallSchema = z.object({
   arguments: z.record(z.unknown()),
 }).strict();
 
+/** Safe structural facts about a provider result. This deliberately excludes
+ * provider text, arguments, reasoning, and any business payload. */
+const providerDecisionShapeSchema = z.object({
+  responseItemCount: z.number().int().nonnegative().max(64).nullable(),
+  responseItemTypes: z.array(z.string().trim().min(1).max(80)).max(32),
+  unknownItemTypes: z.array(z.string().trim().min(1).max(80)).max(16),
+  outputTextPresent: z.boolean(),
+  finalTextLength: z.number().int().nonnegative().max(1_000_000).nullable(),
+  functionCallCount: z.number().int().nonnegative().max(24).nullable(),
+  functionArgumentDecodeSucceeded: z.boolean().nullable(),
+  responseStatus: z.string().trim().min(1).max(80).nullable(),
+  terminalClassification: z.string().trim().min(1).max(80).nullable(),
+  parseClassification: z.string().trim().min(1).max(80).nullable(),
+  controlProtocolDetected: z.boolean(),
+  decisionParseStage: z.literal("operator_decision_parse"),
+}).strict();
+export type ProviderDecisionShape = z.infer<typeof providerDecisionShapeSchema>;
+
 export const assistantOperatorDecisionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("call_tools"), calls: z.array(operatorToolCallSchema).min(1).max(3), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   /** A provider-native capability made progress but needs another Responses
@@ -30,7 +48,7 @@ export const assistantOperatorDecisionSchema = z.discriminatedUnion("kind", [
   z.object({ kind: z.literal("continue"), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("ask_user"), question: z.string().trim().min(1).max(1_000), missingInformation: z.array(z.string().trim().min(1).max(160)).min(1).max(12), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   z.object({ kind: z.literal("complete"), response: z.string().trim().min(1).max(ASSISTANT_MESSAGE_MAX_CONTENT_CHARS), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
-  z.object({ kind: z.literal("fail"), response: z.string().trim().min(1).max(1_000), recoverySummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
+  z.object({ kind: z.literal("fail"), response: z.string().trim().min(1).max(1_000), recoverySummary: z.string().trim().min(1).max(2_000).optional(), providerDecisionShape: providerDecisionShapeSchema.optional() }).strict(),
 ]);
 export type AssistantOperatorDecision = z.infer<typeof assistantOperatorDecisionSchema>;
 
@@ -163,6 +181,7 @@ export type AssistantOperatorRunResult = {
     printersHeroToolDecisionCount: number;
     continuationCount: number;
     finalSynthesisUsed: boolean;
+    providerDecisionShape?: ProviderDecisionShape;
   };
 };
 
@@ -269,7 +288,7 @@ export class AssistantOperatorRuntime {
         }
         return { status: "awaiting_input", response: decision.question, observations, safeWorkingSummary, missingInformation: decision.missingInformation, diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       }
-      if (decision.kind === "fail") return { status: "failed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
+      if (decision.kind === "fail") return { status: "failed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false, ...(decision.providerDecisionShape ? { providerDecisionShape: decision.providerDecisionShape } : {}) }) };
 
       printersHeroToolDecisionCount += 1;
       for (const call of decision.calls) {

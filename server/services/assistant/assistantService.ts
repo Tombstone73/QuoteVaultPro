@@ -918,6 +918,7 @@ export class AssistantService {
           handlerEntered: run.observations.length > 0, observationReturned: run.observations.length > 0,
           continuationStarted: run.diagnostics.providerDecisionCount > 1,
           finalResultAccepted: false, failureKind: operatorFailureKind(run.response),
+          providerDecisionShape: run.diagnostics.providerDecisionShape ?? null,
         },
       }).catch(() => null)
       : null;

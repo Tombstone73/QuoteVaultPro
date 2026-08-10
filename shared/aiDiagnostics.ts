@@ -43,6 +43,11 @@ export const aiDiagnosticEnvelopeSchema = z.object({
     argumentValidationSucceeded: z.boolean(), handlerEntered: z.boolean(),
     observationReturned: z.boolean(), continuationStarted: z.boolean(),
     finalResultAccepted: z.boolean(), failureKind: safeText.nullable(),
+    providerDecisionShape: z.object({
+      responseItemCount: z.number().int().nonnegative().max(64).nullable(), responseItemTypes: z.array(safeText).max(32), unknownItemTypes: z.array(safeText).max(16),
+      outputTextPresent: z.boolean(), finalTextLength: z.number().int().nonnegative().max(1_000_000).nullable(), functionCallCount: z.number().int().nonnegative().max(24).nullable(), functionArgumentDecodeSucceeded: z.boolean().nullable(),
+      responseStatus: safeText.nullable(), terminalClassification: safeText.nullable(), parseClassification: safeText.nullable(), controlProtocolDetected: z.boolean(), decisionParseStage: z.literal("operator_decision_parse"),
+    }).strict().nullable().optional(),
   }).strict().optional(),
   /** Runtime identity is safe operational metadata. It lets an administrator
    * distinguish an old deployment from the current Operator architecture

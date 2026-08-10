@@ -303,6 +303,18 @@ describe("configured AI provider", () => {
     expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "products.get_summary" }] });
   });
 
+  test("records only safe structure for a six-scenario pricing tool batch", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: Array.from({ length: 6 }, (_, index) => ({
+      type: "function_call", call_id: `call_${index + 1}`, name: "ph_0_products_get_pricing", arguments: JSON.stringify({ productId: "product_translucent", scenario: index + 1 }),
+    })) })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [{ name: "products.get_pricing", description: "Read persisted pricing." }] });
+
+    expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: expect.arrayContaining([expect.objectContaining({ toolName: "products.get_pricing" })]) });
+    expect(result.requestMetadata).toMatchObject({ outputItemCount: 6, outputItemTypes: ["function_call", "function_call", "function_call", "function_call", "function_call", "function_call"], functionCallCount: 6, functionArgumentDecodeSucceeded: true, messageOutputTextPresent: false, finalTextLength: 0, controlProtocolDetected: false });
+    expect(JSON.stringify(result.requestMetadata)).not.toContain("product_translucent");
+  });
+
   test("transports nested initial operations as a structured DeepSeek function call", async () => {
     const initialOperations = [{ op: "set_option_price_impact", optionGroup: "Weeding and Taping", value: "Yes", percent: 30, replacesPercentageWhen: { optionGroup: "Contour Cutting", value: "Yes" } }];
     global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "function_call", call_id: "call_initial", name: "ph_0_products_begin_draft", arguments: JSON.stringify({ initialOperations }) }] })) as unknown as typeof fetch;

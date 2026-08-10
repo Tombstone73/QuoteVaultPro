@@ -4,7 +4,7 @@ import { aiProviderResolver, type ResolvedAiProvider } from "../ai/aiProviderRes
 import { resolveAiOperatorProviderTimeoutMs } from "../ai/providers/configuredProvider";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS } from "@shared/assistantContracts";
-import { parseAssistantOperatorDecisionText, type AssistantOperatorDecisionProvider } from "./operatorRuntime";
+import { parseAssistantOperatorDecisionText, type AssistantOperatorDecisionProvider, type ProviderDecisionShape } from "./operatorRuntime";
 
 export interface AssistantOperatorProviderResolver {
   resolveProvider(input: { orgId: string; feature: "assistant" }): Promise<ResolvedAiProvider>;
@@ -114,7 +114,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
           requestSequence: response.requestMetadata.requestSequence ?? null,
           succeeded: false, reason: "provider_operator_decision_json",
         });
-        return { kind: "fail", response: "The AI provider returned an unusable investigation result." };
+        return { kind: "fail", response: "The AI provider returned an unusable investigation result.", providerDecisionShape: safeProviderDecisionShape(response.requestMetadata) };
       }
       if (hasProviderControlProtocol(decision)) {
         console.warn("[AI_PROVIDER] Blocking provider control protocol from Operator terminal output.", { requestSequence: response.requestMetadata.requestSequence ?? null, apiSurface: response.requestMetadata.apiSurface ?? null, outputItemTypes: response.requestMetadata.outputItemTypes ?? [] });
@@ -223,4 +223,26 @@ function providerFailureDecision(error: unknown, context: { taskId: string; auth
     return { kind: "fail", response: "The AI provider did not return a usable investigation result." };
   }
   throw error;
+}
+
+/** Convert adapter-owned metadata into a small persisted diagnostic shape.
+ * Never retain provider text, tool arguments, reasoning, or sources. */
+function safeProviderDecisionShape(metadata: Record<string, unknown>): ProviderDecisionShape {
+  const strings = (value: unknown, maximum: number, length = 80) => Array.isArray(value)
+    ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0).map((item) => item.trim().slice(0, length)).slice(0, maximum)
+    : [];
+  const number = (value: unknown, maximum: number) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= maximum ? value : null;
+  const text = (value: unknown) => typeof value === "string" && value.trim().length > 0 ? value.trim().slice(0, 80) : null;
+  const responseItemTypes = strings(metadata.outputItemTypes, 32);
+  const knownItemTypes = new Set(["message", "function_call", "web_search_call", "reasoning"]);
+  return {
+    responseItemCount: number(metadata.outputItemCount, 64), responseItemTypes,
+    unknownItemTypes: responseItemTypes.filter((item) => !knownItemTypes.has(item)).slice(0, 16),
+    outputTextPresent: metadata.messageOutputTextPresent === true,
+    finalTextLength: number(metadata.finalTextLength, 1_000_000),
+    functionCallCount: number(metadata.functionCallCount, 24),
+    functionArgumentDecodeSucceeded: typeof metadata.functionArgumentDecodeSucceeded === "boolean" ? metadata.functionArgumentDecodeSucceeded : null,
+    responseStatus: text(metadata.responseStatus), terminalClassification: text(metadata.terminalClassification), parseClassification: text(metadata.parseClassification),
+    controlProtocolDetected: metadata.controlProtocolDetected === true, decisionParseStage: "operator_decision_parse",
+  };
 }
