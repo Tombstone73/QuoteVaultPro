@@ -283,6 +283,7 @@ const semanticProductOperationsToolInputSchema: Record<string, unknown> = {
           { type: "object", additionalProperties: false, required: ["op", "mode"], properties: { op: { const: "set_measurement_mode" }, mode: { enum: ["dimensions_required", "quantity_only"] } } },
           { type: "object", additionalProperties: false, required: ["op", "basis"], properties: { op: { const: "set_pricing_basis" }, basis: { enum: ["per_piece", "per_square_foot"] } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "required", "selectionMode"], properties: { op: { const: "add_option_group" }, optionGroup: { type: "string" }, required: { type: "boolean" }, selectionMode: { enum: ["single", "multiple"] } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "name"], properties: { op: { const: "rename_option_group" }, optionGroup: { type: "string" }, name: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "add_option_value" }, optionGroup: { type: "string" }, value: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value", "priceCents"], properties: { op: { const: "set_option_rate" }, optionGroup: { type: "string" }, value: { type: "string" }, priceCents: { type: "integer", minimum: 0 }, basis: { enum: ["per_piece", "per_square_foot"] } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value", "percent"], properties: { op: { const: "set_option_price_impact" }, optionGroup: { type: "string" }, value: { type: "string" }, percent: { type: "number", minimum: -100, maximum: 100 }, replacesPercentageWhen: { type: "object", additionalProperties: false, required: ["optionGroup", "value"], properties: { optionGroup: { type: "string" }, value: { type: "string" } } } } },
@@ -352,7 +353,7 @@ export class AssistantService {
     private readonly intentPlanner: AssistantIntentPlannerProvider = new ConfiguredAssistantIntentPlannerProvider(new OpenAiCompatibleBugReviewProvider()),
     /** Injectable only for composition and isolated routing tests; production
      * always uses the canonical compiler-backed singleton. */
-    private readonly productIntentDispatcher: Pick<typeof productManagementSkillService, "respondPlannedCanonicalProductIntent" | "applyCanonicalProductOperations" | "beginCanonicalProductDraft"> = productManagementSkillService,
+    private readonly productIntentDispatcher: Pick<typeof productManagementSkillService, "respondPlannedCanonicalProductIntent" | "applyCanonicalProductOperations" | "beginCanonicalProductDraft"> & Partial<Pick<typeof productManagementSkillService, "getActiveSemanticProductDraftContext">> = productManagementSkillService,
     /** Ordinary free text always enters this provider/runtime path. Tests can
      * supply deterministic decisions without initializing a real provider. */
     private readonly operatorDecisionProvider: (organizationId: string) => AssistantOperatorDecisionProvider =
@@ -618,6 +619,23 @@ export class AssistantService {
     const mayApplyProductOperations = mayBeginProductDraft
       || hasPermission(actor, "assistant.products.update_inactive_draft")
       || hasPermission(actor, "assistant.products.update_inactive_draft_batch");
+    const activeProductProposalIdForContext = task.canonicalProductIntentProposalId;
+    const activeSemanticProductDraft = activeProductProposalIdForContext
+      ? await (async () => {
+        try {
+          if (!this.productIntentDispatcher.getActiveSemanticProductDraftContext) return null;
+          return await this.productIntentDispatcher.getActiveSemanticProductDraftContext({
+            organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, proposalId: activeProductProposalIdForContext,
+          });
+        } catch { return null; }
+      })()
+      : null;
+    console.info("[ASSISTANT_OPERATOR_PRODUCT_CONTINUITY]", {
+      correlationId, conversationId: conversation.id, taskId: task.id,
+      activeSemanticDraft: Boolean(activeSemanticProductDraft),
+      outstandingDecisionCount: activeSemanticProductDraft?.outstandingDecisions.length ?? 0,
+      compatibilityFallback: "bypassed",
+    });
     // Ordinary Operator product creation uses these direct business doors.
     // The legacy compiler router remains callable only by legacy callers; it
     // is intentionally absent from the Operator catalog.
@@ -672,7 +690,7 @@ export class AssistantService {
       goal: request.message,
       taskId: task.id,
       initialWorkingSummary: task.workingSummary,
-      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
     });
     const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; cards?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;

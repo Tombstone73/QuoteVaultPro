@@ -123,12 +123,11 @@ describe("CanonicalProductIntentService compiler failures", () => {
       expect.objectContaining({ path: "pricing.model" }),
     ]));
 
-    const request = "Let's add a new product called Translucent Vinyl - backlit with multilayer printing. It requires dimensions. Layers are 3 Layer and 5 Layer. 3 Layer is $4 per square foot and 5 Layer is $5 per square foot. Contour Cutting adds 10%. Weeding and Taping appears only when Contour Cutting is Yes, and is 30% total instead of the 10% increase.";
+    const request = "Let's add a new product called \"Translucent Vinyl - backlit with multilayer printing\". Layers are 3 Layer and 5 Layer. 3 Layer is $4 per square foot and 5 Layer is $5 per square foot. Contour Cutting adds 10%. Weeding and Taping appears only when Contour Cutting is Yes, and is 30% total instead of the 10% increase.";
     const created = await service.applySemanticOperations({
       organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId, request,
       operations: [
-        { op: "set_product_name", name: "Translucent Vinyl - backlit with multilayer printing" },
-        { op: "set_measurement_mode", mode: "dimensions_required" },
+        { op: "set_product_name", name: "Translucent Vinyl - backlit" },
         { op: "add_option_group", optionGroup: "Layers", required: true, selectionMode: "single" },
         { op: "add_option_value", optionGroup: "Layers", value: "3 Layer" },
         { op: "add_option_value", optionGroup: "Layers", value: "5 Layer" },
@@ -166,12 +165,20 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(created.issues.map((issue) => issue.path)).toEqual(expect.arrayContaining(["identity.category", "optionGroups.layers.default"]));
     expect(created.issues.map((issue) => issue.path)).not.toEqual(expect.arrayContaining(["identity.name", "measurement.mode", "pricing.model", "pricing.unit", "material", "production.route"]));
 
+    const defaulted = await service.applySemanticOperations({ organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId, request: "3 layer is default", operations: [{ op: "set_option_default", optionGroup: "Layers", value: "3 Layer" }] });
+    expect(defaulted.ok).toBe(true);
+    if (!defaulted.ok) throw new Error("Expected the outstanding Layers default to persist directly.");
+    const afterDefault = defaulted.session.specification.session.revisions.at(-1)!.intent;
+    expect(afterDefault.optionGroups.find((group) => group.key === "layers")?.values.find((value) => value.isDefault)?.label).toBe("3 Layer");
+    expect(afterDefault.pricing).toEqual(intent.pricing);
+    expect(afterDefault.optionGroups.find((group) => group.key === "contour_cutting")).toEqual(intent.optionGroups.find((group) => group.key === "contour_cutting"));
+
     const flatbed = await service.applySemanticOperations({ organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId, request: "Use Flatbed Printing.", operations: [{ op: "set_category", category: "Flatbed Printing" }] });
     expect(flatbed.ok).toBe(true);
     const corrected = await service.applySemanticOperations({ organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId, request: "I accidentally selected Flatbed Printing; use Roll Printing.", operations: [{ op: "set_category", category: "Roll Printing" }] });
     expect(corrected.ok).toBe(true);
     if (!corrected.ok) throw new Error("Expected direct Roll correction to persist.");
-    expect(corrected.session.specification.session.revisions).toHaveLength(4);
+    expect(corrected.session.specification.session.revisions).toHaveLength(5);
     expect(corrected.session.specification.session.revisions.at(-1)!.intent.identity.category).toEqual({ state: "resolved", id: "roll", label: "Roll Printing" });
   });
 

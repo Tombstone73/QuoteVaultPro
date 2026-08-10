@@ -2,6 +2,7 @@ import { and, eq } from "drizzle-orm";
 import { randomUUID } from "node:crypto";
 import { materials, pbv2OptionGroupTemplates, pbv2TreeVersions, products, productTypes, stations } from "@shared/schema";
 import { CanonicalProductIntentService, type CanonicalProductIntentInspection, type CanonicalProductIntentOutcome } from "../productIntentCompiler/canonicalProductIntentService";
+import type { ProductDraftIntent } from "@shared/productDraftIntent";
 import { createConfiguredProductIntentCompiler, type ProductIntentCompilerInput } from "../productIntentCompiler/productIntentCompiler";
 import { DrizzleCanonicalProductIntentProposalStore, ProductIntentPersistenceService, type CanonicalProductIntentSession } from "../productIntentCompiler/productIntentPersistence";
 import {
@@ -77,6 +78,19 @@ export type ProductManagementCard = {
   sourceLinks: Array<{ label: string; href: string }>;
   details?: Record<string, unknown>;
   plan?: Record<string, unknown>;
+};
+
+/** Reduced server-derived product state for a later Operator turn. It carries
+ * only business labels and outstanding decisions, never canonical patches,
+ * tenant record IDs, fingerprints, or PBV2 structures. */
+export type ActiveSemanticProductDraftContext = {
+  name: string;
+  category: { state: "resolved" | "unresolved"; label: string };
+  measurementMode: "dimensions_required" | "quantity_only" | "fixed_size";
+  pricing: { model: string; basis: string | null; optionGroup: string | null; rates: Array<{ option: string; priceCents: number }> };
+  optionGroups: Array<{ label: string; required: boolean; selectionMode: "single" | "multiple"; defaultValue: string | null; values: string[]; availableWhen: { optionGroup: string; value: string } | null }>;
+  outstandingDecisions: Array<{ path: string; question: string; choices: string[] }>;
+  readyForReview: boolean;
 };
 
 export interface ProductManagementSkillDependencies {
@@ -179,12 +193,48 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
 
 function canonicalCards(outcome: Extract<CanonicalProductIntentOutcome, { ok: true }>): ProductManagementCard[] {
   const proposal = { proposalId: outcome.session.proposalId, revision: outcome.card.revision, fingerprint: outcome.card.fingerprint };
-  const cards: ProductManagementCard[] = [{ kind: "canonical_product_intent_proposal", title: outcome.card.title, summary: outcome.card.readiness.ready ? "Canonical product intent is ready for review." : "Canonical product intent needs the remaining decisions.", sourceLinks: [], details: { canonicalProductIntent: outcome.card, ...proposal } }];
+  const title = outcome.card.title.replace(/^Create inactive draft:\s*/i, "Product draft: ");
+  const cards: ProductManagementCard[] = [{ kind: "canonical_product_intent_proposal", title, summary: outcome.card.readiness.ready ? "The product draft is ready for review." : "The product draft needs the remaining business decisions.", sourceLinks: [], details: { canonicalProductIntent: outcome.card, ...proposal } }];
   // The action payload is server-authored and intentionally contains only the
   // persisted proposal identity. The browser can request a plan by turn id,
   // but never selects an operation or reconstructs a product from this card.
   if (outcome.card.readiness.ready) cards.push({ kind: "action_proposal", title: outcome.card.title, summary: "Review the canonical intent, then use the dedicated GO control to create exactly one inactive PBV2 DRAFT.", sourceLinks: [], plan: { action: canonicalProductIntentDraftCommandName, ...proposal } });
   return cards;
+}
+
+function activeSemanticProductDraftContext(intent: ProductDraftIntent, inspection: CanonicalProductIntentInspection | null): ActiveSemanticProductDraftContext {
+  const groups = new Map(intent.optionGroups.map((group) => [group.key, group]));
+  const labelFor = (groupKey: string, valueKey: string) => {
+    const group = groups.get(groupKey);
+    const value = group?.values.find((candidate) => candidate.key === valueKey);
+    return { optionGroup: group?.label ?? groupKey, value: value?.label ?? valueKey };
+  };
+  let pricing: ActiveSemanticProductDraftContext["pricing"];
+  const pricingIntent = intent.pricing;
+  if (pricingIntent.model === "one_dimensional_matrix") {
+    pricing = { model: pricingIntent.model, basis: pricingIntent.unit === "unresolved" ? null : pricingIntent.unit, optionGroup: groups.get(pricingIntent.optionKey)?.label ?? pricingIntent.optionKey, rates: pricingIntent.cells.map((cell) => ({ option: labelFor(pricingIntent.optionKey, cell.option).value, priceCents: cell.priceCents })) };
+  } else if (pricingIntent.model === "scalar") {
+    pricing = { model: pricingIntent.model, basis: pricingIntent.unit, optionGroup: null, rates: [{ option: "Base", priceCents: pricingIntent.priceCents }] };
+  } else {
+    pricing = { model: pricingIntent.model, basis: "unit" in pricingIntent && pricingIntent.unit !== "unresolved" ? pricingIntent.unit : null, optionGroup: null, rates: [] };
+  }
+  return {
+    name: intent.identity.name,
+    category: { state: intent.identity.category.state, label: intent.identity.category.label },
+    measurementMode: intent.measurement.mode,
+    pricing,
+    optionGroups: intent.optionGroups.map((group) => ({
+      label: group.label, required: group.required, selectionMode: group.selectionMode,
+      defaultValue: group.values.find((value) => value.isDefault)?.label ?? null,
+      values: group.values.map((value) => value.label),
+      availableWhen: group.availableWhen ? labelFor(group.availableWhen.optionGroupKey, group.availableWhen.optionValueKey) : null,
+    })),
+    outstandingDecisions: (inspection?.card.requiredQuestions ?? []).map((question) => ({
+      path: question.path, question: question.question,
+      choices: question.answer?.allowedChoices.map((choice) => choice.displayLabel) ?? [],
+    })),
+    readyForReview: inspection?.card.readiness.ready ?? false,
+  };
 }
 
 function normalizeProductReference(value: string): string {
@@ -231,8 +281,8 @@ export class ProductManagementSkillService {
           request: input.message,
         });
         return outcome.ok
-          ? { handled: true, response: outcome.card.readiness.ready ? "I created a canonical product intent ready for review. No product has been created." : "I created a canonical product intent and will ask only its remaining questions.", cards: canonicalCards(outcome) }
-          : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent could not be created", summary: "No legacy Product Intake session or product was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
+          ? { handled: true, response: outcome.card.readiness.ready ? "I prepared the product draft for review. No product has been created yet." : "I started the product draft and will ask only for the business information still needed.", cards: canonicalCards(outcome) }
+          : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product draft could not be created", summary: "No legacy Product Intake session or product was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
       } catch (error) {
         const message = error instanceof Error ? error.message : "The canonical product intent could not be created safely.";
         return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent unavailable", summary: "No product intent was changed.", sourceLinks: [], details: { errors: [message] } }] };
@@ -251,8 +301,8 @@ export class ProductManagementSkillService {
     try {
       const outcome = await router.continue({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: current.proposalId, request: input.message });
       return outcome.ok
-        ? { handled: true, response: outcome.card.readiness.ready ? "I saved the canonical revision. It is ready for review." : "I saved the canonical revision and kept only its remaining questions.", cards: canonicalCards(outcome) }
-        : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
+        ? { handled: true, response: outcome.card.readiness.ready ? "I updated the product draft. It is ready for review." : "I updated the product draft and kept only its remaining business questions.", cards: canonicalCards(outcome) }
+        : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product draft needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : "The canonical product intent could not be updated safely.";
       return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: [message] } }] };
@@ -295,6 +345,25 @@ export class ProductManagementSkillService {
       const message = error instanceof Error ? error.message : "The semantic product change could not be applied safely.";
       return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Product change unavailable", summary: "No new revision was created.", sourceLinks: [], details: { errors: [message] } }] };
     }
+  }
+
+  /** Loads the durable business context for an active direct Product Builder
+   * task. The model receives this reduced read, never canonical state. */
+  async getActiveSemanticProductDraftContext(input: {
+    organizationId: string;
+    userId: string;
+    conversationId: string;
+    proposalId: string;
+  }): Promise<ActiveSemanticProductDraftContext | null> {
+    const router = this.deps.canonicalProductIntent;
+    if (!router) return null;
+    const current = await router.loadForConversation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
+    if (!current || current.proposalId !== input.proposalId || current.specification.resolutionMetadata.architecture !== "operator_business_operations") return null;
+    if (["executed", "expired", "abandoned"].includes(current.specification.session.state)) return null;
+    const inspection = router.inspect
+      ? await router.inspect({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: input.proposalId })
+      : null;
+    return activeSemanticProductDraftContext(current.specification.session.revisions.at(-1)!.intent, inspection);
   }
 
   /** Starts an unfinished inactive product intent owned by the server. The

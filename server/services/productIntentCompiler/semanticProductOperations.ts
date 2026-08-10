@@ -12,6 +12,7 @@ export const semanticProductOperationsResultSchema = z.object({
     z.object({ op: z.literal("set_measurement_mode"), mode: z.enum(["dimensions_required", "quantity_only"]) }).strict(),
     z.object({ op: z.literal("set_pricing_basis"), basis: z.enum(["per_piece", "per_square_foot"]) }).strict(),
     z.object({ op: z.literal("add_option_group"), optionGroup: z.string().trim().min(1).max(160), required: z.boolean(), selectionMode: z.enum(["single", "multiple"]) }).strict(),
+    z.object({ op: z.literal("rename_option_group"), optionGroup: z.string().trim().min(1).max(160), name: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("add_option_value"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("set_option_rate"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160), priceCents: z.number().int().min(0).max(10_000_000), basis: z.enum(["per_piece", "per_square_foot"]).optional() }).strict(),
     // Retained for legacy compiler continuation compatibility. New Operator
@@ -38,8 +39,30 @@ function containsWholePhrase(source: string, phrase: string): boolean {
   return phraseTokens.length > 0 && sourceTokens.some((_, index) => phraseTokens.every((token, offset) => sourceTokens[index + offset] === token));
 }
 
+function normalizeWhitespace(value: string): string { return value.trim().replace(/\s+/g, " "); }
+
+/** A quoted name introduced with ordinary product-naming language is direct
+ * user evidence. The server preserves it rather than accepting a shortened
+ * model paraphrase of the same name. */
+function explicitProductNameFromRequest(request: string | undefined): string | null {
+  if (!request) return null;
+  const match = /\b(?:called|named)\s*["“]([^"”]+)["”]/i.exec(request);
+  return match?.[1] ? normalizeWhitespace(match[1]) : null;
+}
+
+function requestUniquelyIdentifiesCandidate(request: string | undefined, candidate: string, labels: readonly string[]): boolean {
+  if (!request) return false;
+  const requestTokens = new Set(normalized(request).split(" ").filter(Boolean));
+  const candidateTokens = new Set(normalized(candidate).split(" ").filter(Boolean));
+  return Array.from(candidateTokens).some((token) => requestTokens.has(token)
+    && labels.filter((label) => normalized(label).split(" ").includes(token)).length === 1);
+}
+
 function resolveCategoryLabel(category: string, request: string | undefined, labels: readonly string[] | undefined): string {
-  if (request && !containsWholePhrase(request, category)) throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
+  const exactCandidate = (labels ?? []).find((label) => normalized(label) === normalized(category));
+  if (request && !containsWholePhrase(request, category) && !(exactCandidate && requestUniquelyIdentifiesCandidate(request, exactCandidate, labels ?? []))) {
+    throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
+  }
   const candidates = Array.from(new Set((labels ?? []).map((label) => label.trim()).filter(Boolean))).filter((label) => containsWholePhrase(label, category));
   if (candidates.length === 1) return candidates[0]!;
   if (candidates.length > 1) throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_AMBIGUOUS");
@@ -78,7 +101,7 @@ export function compileSemanticProductOperations(
   const semantic = semanticProductOperationsResultSchema.parse(raw);
   if (baseRevision !== current.revision) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_STALE");
   const nextGroups = structuredClone(current.optionGroups);
-  const metadata: Record<string, { source: "explicit_user" }> = {};
+  const metadata: Record<string, ProductDraftIntent["fieldMetadata"][string]> = {};
   let groupsChanged = false;
   let nextPricing = structuredClone(current.pricing);
   let pricingChanged = false;
@@ -124,6 +147,17 @@ export function compileSemanticProductOperations(
       unresolvedChanged = true;
     }
   };
+  const inferMeasurementFromPricingBasis = (basis: string | undefined) => {
+    if (basis !== "per_square_foot") return;
+    if (nextMeasurement.mode !== "dimensions_required") {
+      nextMeasurement = { mode: "dimensions_required" };
+      measurementChanged = true;
+      clearUnresolved("measurement.mode");
+    }
+    // Square-foot pricing is authoritative business evidence for the
+    // structural measurement rule; it is not a model-created default.
+    metadata["measurement.mode"] = { source: "explicit_user" };
+  };
 
   for (const operation of semantic.operations) {
     if (operation.op === "set_category") {
@@ -135,7 +169,7 @@ export function compileSemanticProductOperations(
     }
     if (operation.op === "set_product_name") {
       if (request && !containsWholePhrase(request, operation.name)) throw new Error("PRODUCT_INTENT_SEMANTIC_PRODUCT_NAME_UNRESOLVED");
-      nextIdentity = { ...nextIdentity, name: operation.name };
+      nextIdentity = { ...nextIdentity, name: explicitProductNameFromRequest(request) ?? operation.name };
       identityChanged = true;
       clearUnresolved("identity.name");
       mark("identity.name");
@@ -176,6 +210,14 @@ export function compileSemanticProductOperations(
       mark(`optionGroups.${group.key}.${value.key}`);
       continue;
     }
+    if (operation.op === "rename_option_group") {
+      const group = findGroup(operation.optionGroup);
+      if (nextGroups.some((candidate) => candidate.key !== group.key && normalized(candidate.label) === normalized(operation.name))) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_GROUP_EXISTS");
+      group.label = operation.name;
+      groupsChanged = true;
+      mark(`optionGroups.${group.key}.label`);
+      continue;
+    }
     if (operation.op === "set_option_group_availability") {
       const group = findGroup(operation.optionGroup);
       const prerequisiteGroup = findGroup(operation.whenOptionGroup);
@@ -208,6 +250,7 @@ export function compileSemanticProductOperations(
       pricingChanged = true;
       clearUnresolved("pricing.unit");
       mark("pricing.unit");
+      inferMeasurementFromPricingBasis(operation.basis);
       continue;
     }
     if (operation.op === "set_option_rate" || operation.op === "set_matrix_rate") {
@@ -233,6 +276,7 @@ export function compileSemanticProductOperations(
       clearRateQuestion(group.key, value.key);
       pricingChanged = true;
       mark("pricing.matrix");
+      inferMeasurementFromPricingBasis(basis ?? (nextPricing.model === "one_dimensional_matrix" || nextPricing.model === "two_dimensional_matrix" ? nextPricing.unit : undefined));
       continue;
     }
     if (operation.op === "remove_option_group") {

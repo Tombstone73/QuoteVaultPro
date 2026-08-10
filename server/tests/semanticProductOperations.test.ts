@@ -53,6 +53,45 @@ describe("semantic product operations", () => {
     expect(() => compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [{ op: "set_category", category: "roll" }] }, 4, "It is supposed to be roll.", { categoryLabels: ["Roll Printing", "Roll Labels"] })).toThrow("CATEGORY_AMBIGUOUS");
   });
 
+  test("accepts a model-selected category label when the user uniquely identifies it in active context", () => {
+    const current = productDraftIntentSchema.parse({ ...translucentIntent, identity: { ...translucentIntent.identity, category: { state: "resolved", id: "flatbed", label: "Flatbed Printing" } } });
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [{ op: "set_category", category: "Roll Printing" }] }, 4, "I accidentally pressed flatbed. This is a roll product.", { categoryLabels: ["Flatbed Printing", "Roll Printing"] });
+    const next = applyProductDraftIntentPatch(current, patch);
+    expect(next.identity.category).toEqual({ state: "unresolved", label: "Roll Printing" });
+    expect(next.material).toEqual(current.material);
+    expect(next.pricing).toEqual(current.pricing);
+  });
+
+  test("preserves an explicit quoted product name and infers dimensions from square-foot pricing", () => {
+    const current = productDraftIntentSchema.parse({
+      ...translucentIntent,
+      identity: { ...translucentIntent.identity, name: "Unfinished product draft" },
+      measurement: { mode: "quantity_only" }, pricing: { model: "unresolved" }, optionGroups: [],
+      unresolvedFields: [{ path: "identity.name", code: "PRODUCT_NAME_UNRESOLVED" }, { path: "measurement.mode", code: "MEASUREMENT_UNRESOLVED" }],
+      fieldMetadata: { "identity.name": { source: "unresolved" }, "measurement.mode": { source: "unresolved" } },
+    });
+    const request = "Let's add a new product called \"Translucent Vinyl - backlit with multilayer printing\". 3 Layer is $4 per square foot and 5 Layer is $5 per square foot.";
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [
+      { op: "set_product_name", name: "Translucent Vinyl - backlit" },
+      { op: "add_option_group", optionGroup: "Layers", required: true, selectionMode: "single" },
+      { op: "add_option_value", optionGroup: "Layers", value: "3 Layer" },
+      { op: "add_option_value", optionGroup: "Layers", value: "5 Layer" },
+      { op: "set_option_rate", optionGroup: "Layers", value: "3 Layer", priceCents: 400, basis: "per_square_foot" },
+      { op: "set_option_rate", optionGroup: "Layers", value: "5 Layer", priceCents: 500, basis: "per_square_foot" },
+    ] }, 4, request);
+    const next = applyProductDraftIntentPatch(current, patch);
+    expect(next.identity.name).toBe("Translucent Vinyl - backlit with multilayer printing");
+    expect(next.measurement).toEqual({ mode: "dimensions_required" });
+    expect(next.unresolvedFields.map((field) => field.path)).not.toEqual(expect.arrayContaining(["identity.name", "measurement.mode"]));
+  });
+
+  test("renames an option group without changing its pricing axis or values", () => {
+    const patch = compileSemanticProductOperations(translucentIntent, { kind: "semantic_operations", operations: [{ op: "rename_option_group", optionGroup: "Layers", name: "Print Layers" }] }, 4, "Call the option Print Layers instead.");
+    const next = applyProductDraftIntentPatch(translucentIntent, patch);
+    expect(next.optionGroups.find((group) => group.key === "layers")?.label).toBe("Print Layers");
+    expect(next.pricing).toEqual(translucentIntent.pricing);
+  });
+
   test("compiles broad semantic corrections through the same continuation contract", () => {
     const current = productDraftIntentSchema.parse({
       ...translucentIntent,

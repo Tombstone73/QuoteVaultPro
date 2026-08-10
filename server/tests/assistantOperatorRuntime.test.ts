@@ -261,4 +261,55 @@ describe("AssistantOperatorRuntime", () => {
     expect(result).toMatchObject({ status: "failed", missingInformation: [] });
     expect(result.response).toContain("won't repeat");
   });
+
+  test("keeps a recoverable active semantic product draft in context instead of forcing a restart", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: async () => ({ kind: "ask_user", question: "Which Layers option should be the default?", missingInformation: ["Layers default"] }) };
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute: async () => { throw new Error("not called"); } }).run({
+      goal: "yes", taskId: "task_product_recovery", trustedContext: {
+        ...trustedContext,
+        task: {
+          id: "task_product_recovery", domain: "products", canonicalProductIntentProposalId: "proposal_1", entityReferences: [], trustedObservations: [], missingInformation: ["Layers default"],
+          activeSemanticProductDraft: {
+            name: "Translucent Vinyl", category: { state: "unresolved", label: "Product category" }, measurementMode: "dimensions_required",
+            pricing: { model: "one_dimensional_matrix", basis: "per_square_foot", optionGroup: "Layers", rates: [{ option: "3 Layer", priceCents: 400 }] },
+            optionGroups: [{ label: "Layers", required: true, selectionMode: "single", defaultValue: null, values: ["3 Layer", "5 Layer"], availableWhen: null }],
+            outstandingDecisions: [{ path: "optionGroups.layers.default", question: "Which Layers option should be the default?", choices: ["3 Layer", "5 Layer"] }], readyForReview: false,
+          },
+        },
+      },
+    });
+    expect(result).toMatchObject({ status: "awaiting_input", missingInformation: ["Layers default"] });
+    expect(result.response).not.toContain("start a new request");
+  });
+
+  test("binds an unambiguous yes to durable semantic product clarification context", async () => {
+    const provider: AssistantOperatorDecisionProvider = { decide: async ({ observations, safeWorkingSummary, task }) => {
+      if (!observations.length) {
+        expect(safeWorkingSummary).toBe("Waiting for confirmation to require proof approval on the active product draft.");
+        expect(task?.activeSemanticProductDraft?.name).toBe("Translucent Vinyl");
+        return { kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations: [{ op: "set_proof_requirement", requiresProofApproval: true }] } }] };
+      }
+      return { kind: "complete", response: "I updated the product draft." };
+    } };
+    const execute = jest.fn(async ({ toolName, arguments: args }: any) => {
+      expect(toolName).toBe("products.apply_operations");
+      expect(args).toEqual({ operations: [{ op: "set_proof_requirement", requiresProofApproval: true }] });
+      return { toolName, status: "succeeded" as const, result: { status: "succeeded" as const, data: { response: "Draft updated." } } as any };
+    });
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [{ name: "products.apply_operations", description: "Apply an active product business operation." }], execute }).run({
+      goal: "yes", taskId: "task_product_yes", initialWorkingSummary: "Waiting for confirmation to require proof approval on the active product draft.", trustedContext: {
+        ...trustedContext,
+        task: {
+          id: "task_product_yes", domain: "products", canonicalProductIntentProposalId: "proposal_1", entityReferences: [], trustedObservations: [], missingInformation: ["proof approval"],
+          activeSemanticProductDraft: {
+            name: "Translucent Vinyl", category: { state: "unresolved", label: "Product category" }, measurementMode: "dimensions_required",
+            pricing: { model: "one_dimensional_matrix", basis: "per_square_foot", optionGroup: "Layers", rates: [{ option: "3 Layer", priceCents: 400 }] },
+            optionGroups: [], outstandingDecisions: [{ path: "workflow.requiresProofApproval", question: "Require proof approval?", choices: ["Yes", "No"] }], readyForReview: false,
+          },
+        },
+      },
+    });
+    expect(result).toMatchObject({ status: "completed", response: "I updated the product draft." });
+    expect(execute).toHaveBeenCalledTimes(1);
+  });
 });

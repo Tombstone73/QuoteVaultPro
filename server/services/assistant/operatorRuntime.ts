@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS, type AssistantContextEnvelope, type AssistantStructuredCard, type AssistantToolResultEnvelope } from "@shared/assistantContracts";
+import type { ActiveSemanticProductDraftContext } from "./productManagementSkill";
 
 /**
  * The operator loop is intentionally separate from provider transport and
@@ -94,6 +95,10 @@ export interface AssistantOperatorTrustedContext {
     id: string;
     domain: string | null;
     canonicalProductIntentProposalId: string | null;
+    /** Server-derived business state for an active direct Product Builder
+     * draft. It is enough for a capable provider to answer outstanding
+     * decisions without regenerating or re-reading the product. */
+    activeSemanticProductDraft?: ActiveSemanticProductDraftContext | null;
     /** Reduced, server-derived references from prior observations in this
      * conversation. They support unambiguous follow-ups, never authorization. */
     entityReferences: Array<{ type: string; id: string; label?: string }>;
@@ -200,6 +205,16 @@ export class AssistantOperatorRuntime {
       if (decision.kind === "complete") return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       if (decision.kind === "ask_user") {
         if (repeatsPriorClarification(input.trustedContext.task?.missingInformation ?? [], decision.missingInformation)) {
+          if (input.trustedContext.task?.activeSemanticProductDraft) {
+            return {
+              status: "awaiting_input",
+              response: decision.question,
+              observations,
+              safeWorkingSummary,
+              missingInformation: decision.missingInformation,
+              diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }),
+            };
+          }
           return {
             status: "failed",
             response: "I couldn't reconcile the information already provided with the outstanding request. I won't repeat the same clarification; please start a new request if you still need help.",

@@ -153,29 +153,64 @@ describe("AssistantService Operator Runtime integration", () => {
     const repo = repository(); const tasks = taskStore("proposal_1");
     const product = {
       respondPlannedCanonicalProductIntent: jest.fn(),
+      getActiveSemanticProductDraftContext: jest.fn(async () => ({
+        name: "Translucent Vinyl - backlit with multilayer printing",
+        category: { state: "resolved", label: "Flatbed Printing" }, measurementMode: "dimensions_required",
+        pricing: { model: "one_dimensional_matrix", basis: "per_square_foot", optionGroup: "Layers", rates: [{ option: "3 Layer", priceCents: 400 }, { option: "5 Layer", priceCents: 500 }] },
+        optionGroups: [{ label: "Layers", required: true, selectionMode: "single", defaultValue: null, values: ["3 Layer", "5 Layer"], availableWhen: null }],
+        outstandingDecisions: [{ path: "optionGroups.layers.default", question: "Which Layers option should be the default?", choices: ["3 Layer", "5 Layer"] }], readyForReview: false,
+      })),
       applyCanonicalProductOperations: jest.fn(async () => ({
         handled: true,
         response: "I saved the product revision and kept only its remaining questions.",
         cards: [{ kind: "canonical_product_intent_proposal", title: "Product", summary: "Needs category review", sourceLinks: [], details: { proposalId: "proposal_1" } }],
       })),
     };
-    const provider = { decide: jest.fn(async ({ observations, toolCatalog }: any) => observations.length
+    const provider = { decide: jest.fn(async ({ observations, toolCatalog, task }: any) => observations.length
       ? ({ kind: "complete", response: "I saved the product revision." })
-      : (expect(toolCatalog).toEqual(expect.arrayContaining([expect.objectContaining({ name: "products.apply_operations", inputSchema: expect.objectContaining({ required: ["operations"] }) })])), {
+      : (expect(task.activeSemanticProductDraft).toMatchObject({ category: { label: "Flatbed Printing" }, outstandingDecisions: [expect.objectContaining({ path: "optionGroups.layers.default" })] }), expect(toolCatalog).toEqual(expect.arrayContaining([expect.objectContaining({ name: "products.apply_operations", inputSchema: expect.objectContaining({ required: ["operations"] }) })])), {
         kind: "call_tools",
-        calls: [{ toolName: "products.apply_operations", arguments: { operations: [{ op: "set_category", category: "roll" }] } }],
+        calls: [{ toolName: "products.apply_operations", arguments: { operations: [{ op: "set_category", category: "Roll Printing" }] } }],
       })) };
     const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
 
-    await service.createTurn(scope, "conversation_1", actor, { message: "I accidentally selected flatbed when it should have been roll.", context });
+    await service.createTurn(scope, "conversation_1", actor, { message: "I accidentally pressed flatbed. This is a roll product.", context });
 
     expect(product.applyCanonicalProductOperations).toHaveBeenCalledWith(expect.objectContaining({
       conversationId: "conversation_1",
-      message: "I accidentally selected flatbed when it should have been roll.",
-      operations: [{ op: "set_category", category: "roll" }],
+      message: "I accidentally pressed flatbed. This is a roll product.",
+      operations: [{ op: "set_category", category: "Roll Printing" }],
     }));
     expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "I saved the product revision and kept only its remaining questions." }));
+  });
+
+  test("an outstanding Layers default answer continues the same semantic draft without compiler continuation", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore("proposal_1");
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(),
+      getActiveSemanticProductDraftContext: jest.fn(async () => ({
+        name: "Translucent Vinyl - backlit with multilayer printing",
+        category: { state: "unresolved", label: "Product category" }, measurementMode: "dimensions_required",
+        pricing: { model: "one_dimensional_matrix", basis: "per_square_foot", optionGroup: "Layers", rates: [{ option: "3 Layer", priceCents: 400 }, { option: "5 Layer", priceCents: 500 }] },
+        optionGroups: [{ label: "Layers", required: true, selectionMode: "single", defaultValue: null, values: ["3 Layer", "5 Layer"], availableWhen: null }],
+        outstandingDecisions: [{ path: "optionGroups.layers.default", question: "Which Layers option should be the default: 3 Layer or 5 Layer?", choices: ["3 Layer", "5 Layer"] }], readyForReview: false,
+      })),
+      applyCanonicalProductOperations: jest.fn(async () => ({ handled: true, response: "I updated the product draft and kept only its remaining business questions.", cards: [{ kind: "canonical_product_intent_proposal", title: "Product draft", summary: "Needs category", sourceLinks: [], details: { proposalId: "proposal_1" } }] })),
+    };
+    const provider = { decide: jest.fn(async ({ observations, task }: any) => observations.length
+      ? ({ kind: "complete", response: "I set 3 Layer as the default and kept the remaining product questions." })
+      : (expect(task.activeSemanticProductDraft.outstandingDecisions).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.layers.default", choices: ["3 Layer", "5 Layer"] })])), {
+        kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations: [{ op: "set_option_default", optionGroup: "Layers", value: "3 Layer" }] } }],
+      })) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", actor, { message: "3 layer is default", context });
+
+    expect(product.applyCanonicalProductOperations).toHaveBeenCalledWith(expect.objectContaining({ message: "3 layer is default", operations: [{ op: "set_option_default", optionGroup: "Layers", value: "3 Layer" }] }));
+    expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "I updated the product draft and kept only its remaining business questions." }));
   });
 
   test("normal free text can select the registered composite semantic capability and persist one confirmation card", async () => {

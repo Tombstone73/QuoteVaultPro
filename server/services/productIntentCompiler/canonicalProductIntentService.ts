@@ -733,6 +733,13 @@ export class CanonicalProductIntentService {
       }
       stage = "semantic_operation_validation";
       const semantic = semanticProductOperationsResultSchema.parse({ kind: "semantic_operations", operations: input.operations });
+      console.info("[PRODUCT_SEMANTIC_CONTINUITY]", {
+        referenceId,
+        proposalId: input.proposalId,
+        activeDraft: true,
+        operationNames: semantic.operations.map((operation) => operation.op),
+        compatibilityFallback: "bypassed",
+      });
       sourcePatch = compileSemanticProductOperations(
         draft,
         semantic,
@@ -744,6 +751,13 @@ export class CanonicalProductIntentService {
       const { applyProductDraftIntentPatch } = await import("@shared/productDraftIntent");
       const patched = applyProductDraftIntentPatch(draft, sourcePatch, { actorUserId: input.actorUserId });
       const { intent, issues } = await this.validate(patched, (nextStage) => { stage = nextStage; });
+      console.info("[PRODUCT_SEMANTIC_CONTINUITY]", {
+        referenceId,
+        proposalId: input.proposalId,
+        operationValidation: "accepted",
+        canonicalReadiness: issues.length === 0 ? "ready_for_review" : "needs_answers",
+        outstandingDecisionCount: issues.length,
+      });
       if (productDraftIntentFingerprint(draft) === productDraftIntentFingerprint(intent)) {
         return await continuationFailure({
           referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId,
