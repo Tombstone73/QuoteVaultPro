@@ -349,6 +349,16 @@ describe("configured AI provider", () => {
     await expect(new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] })).rejects.toMatchObject({ name: "AiProviderResponseError", kind: "provider_protocol_failure" });
   });
 
+  test("normalizes DeepSeek's lone trailing parameter marker after a terminal decision", async () => {
+    const terminalDecision = { kind: "complete", response: "The persisted pricing is available.", workingSummary: "Pricing inspection complete." };
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: `${JSON.stringify(terminalDecision)}</parameter>` }] }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual(terminalDecision);
+    expect(result.requestMetadata.terminalClassification).toBe("operator_decision_parameter_suffix");
+  });
+
   test("accepts a long native-web terminal response and preserves source metadata", async () => {
     const longAnswer = `Research summary: ${"current commercial-print comparison. ".repeat(420)}`.trim();
     expect(longAnswer.length).toBeGreaterThan(8_000);

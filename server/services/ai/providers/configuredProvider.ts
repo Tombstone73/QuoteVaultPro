@@ -543,9 +543,10 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       // A valid Operator decision is a control protocol, not native terminal
       // prose.  Preserve it for the runtime so `continue`, `ask_user`, and
       // `call_tools` cannot leak into the persisted assistant response.
-      const terminalDecision = parseAssistantOperatorDecisionText(finalText);
+      const parsedTerminalDecision = parseDeepSeekTerminalDecision(finalText);
+      const terminalDecision = parsedTerminalDecision?.decision ?? null;
       const terminalCompletion = terminalDecision ? null : normalizeDeepSeekOperatorTerminal(finalText);
-      const terminalClassification = terminalDecision ? "operator_decision" : terminalCompletion?.classification ?? null;
+      const terminalClassification = parsedTerminalDecision?.classification ?? terminalCompletion?.classification ?? null;
       const hasTerminalDecision = Boolean(terminalDecision || terminalCompletion);
       if (responseStatus !== "unknown" && responseStatus !== "completed") {
         const failureKind = responseStatus === "incomplete" && incompleteReason === "max_output_tokens" ? "truncated_output" : "malformed_response";
@@ -633,6 +634,26 @@ function normalizeDeepSeekOperatorTerminal(finalText: string): { response: strin
   const trimmed = finalText.trim();
   if (!trimmed) return null;
   return { response: trimmed, classification: "provider_message" };
+}
+
+/**
+ * DeepSeek Responses has occasionally appended a lone `</parameter>` marker
+ * after an otherwise schema-valid terminal Operator decision.  Accept only
+ * that exact, bounded transport artifact; arbitrary markup or prose remains
+ * a normal provider message and cannot become an Operator control decision.
+ */
+function parseDeepSeekTerminalDecision(finalText: string): {
+  decision: ReturnType<typeof parseAssistantOperatorDecisionText> extends infer T ? Exclude<T, null> : never;
+  classification: "operator_decision" | "operator_decision_parameter_suffix";
+} | null {
+  const direct = parseAssistantOperatorDecisionText(finalText);
+  if (direct) return { decision: direct, classification: "operator_decision" };
+
+  const trimmed = finalText.trim();
+  const withoutParameterSuffix = trimmed.replace(/<\/parameter>\s*$/i, "").trim();
+  if (withoutParameterSuffix === trimmed) return null;
+  const normalized = parseAssistantOperatorDecisionText(withoutParameterSuffix);
+  return normalized ? { decision: normalized, classification: "operator_decision_parameter_suffix" } : null;
 }
 
 /** DeepSeek V4's tool transport is less reliable with discriminated oneOf
