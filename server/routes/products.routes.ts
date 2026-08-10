@@ -793,26 +793,26 @@ export function registerProductRoutes(
       if (!product) return res.status(404).json({ success: false, message: "Product not found" });
 
       // Read DRAFT from pbv2_tree_versions table
-      const draftQuery = db
-        .select()
-        .from(pbv2TreeVersions)
-        .where(
-          requestedDraftTreeVersionId
-            ? and(
-              eq(pbv2TreeVersions.organizationId, organizationId),
-              eq(pbv2TreeVersions.productId, productId),
-              eq(pbv2TreeVersions.id, requestedDraftTreeVersionId),
-              eq(pbv2TreeVersions.status, "DRAFT")
-            )
-            : and(
-              eq(pbv2TreeVersions.organizationId, organizationId),
-              eq(pbv2TreeVersions.productId, productId),
-              eq(pbv2TreeVersions.status, "DRAFT")
-            )
-        )
-        .orderBy(desc(pbv2TreeVersions.updatedAt))
-        .limit(1);
-      const [draft] = await draftQuery;
+      let draft: typeof pbv2TreeVersions.$inferSelect | null;
+      if (requestedDraftTreeVersionId) {
+        const [requestedDraft] = await db
+          .select()
+          .from(pbv2TreeVersions)
+          .where(and(
+            eq(pbv2TreeVersions.organizationId, organizationId),
+            eq(pbv2TreeVersions.productId, productId),
+            eq(pbv2TreeVersions.id, requestedDraftTreeVersionId),
+            eq(pbv2TreeVersions.status, "DRAFT")
+          ))
+          .limit(1);
+        draft = requestedDraft ?? null;
+      } else {
+        // The AI pricing read uses this same resolver for an inactive product,
+        // preventing the editor and AI from disagreeing about current PBV2 DRAFT
+        // availability.
+        const { loadCurrentPbv2DraftTreeVersion } = await import("../services/pricing/PricingService");
+        draft = await loadCurrentPbv2DraftTreeVersion({ organizationId, productId });
+      }
       if (requestedDraftTreeVersionId && !draft) {
         return res.status(404).json({
           success: false,

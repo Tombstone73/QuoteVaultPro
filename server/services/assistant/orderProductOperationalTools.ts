@@ -797,10 +797,7 @@ export function createOrderProductOperationalTools(deps: AssistantOrderProductTo
       try {
         configuration = await getProductPricingConfiguration({ organizationId: invocation.organizationId, productId: record.product.id });
       } catch (error) {
-        const code = error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : null;
-        const message = code === "PBV2_DRAFT_AMBIGUOUS"
-          ? "This inactive product has multiple PBV2 DRAFT versions, so current pricing cannot be selected safely."
-          : "Authoritative PBV2 pricing configuration is unavailable for this product.";
+        const message = "Authoritative PBV2 pricing configuration is unavailable for this product.";
         return productPricingToolResultSchema.parse({
           status: "ok",
           data: { product: { id: record.product.id, name: record.product.name, active: record.product.isActive, pricingMethod }, pricing: { status: "unavailable", pricingMethod, treeVersionId: record.product.pbv2ActiveTreeVersionId ?? null, quantity, dimensions: null, totalCents: null, averageUnitCents: null, configuration: null, inputNeeded: [], message } },

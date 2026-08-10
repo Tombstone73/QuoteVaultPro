@@ -313,15 +313,12 @@ describe("assistant order/product/operational tools", () => {
     expect(projectProductPrice).toHaveBeenCalledWith(expect.objectContaining({ productId: "draft-product", pbv2TreeVersionIdOverride: "draft-tree", pbv2ExplicitSelections: { layers: { value: "five" }, contour: { value: "yes" }, weed_tape: { value: "yes" } } }));
   });
 
-  test("keeps an active product on its active PBV2 tree and fails ambiguous draft reads safely", async () => {
+  test("keeps an active product on its active PBV2 tree", async () => {
     const activeProjection = jest.fn(async () => ({ pbv2TreeVersionId: "tree-1", lineTotalCents: 1250, breakdown: {}, pbv2SnapshotJson: { dimensions: { widthIn: 12, heightIn: 12 } } }));
     const activeTools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice: activeProjection, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });
     await activeTools.productsGetPricing.execute(invocation, { productId: "product-1", width: 1, height: 1, unit: "ft" });
     expect(activeProjection).toHaveBeenCalledWith(expect.not.objectContaining({ pbv2TreeVersionIdOverride: expect.anything() }));
 
-    const ambiguousTools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, getProductPricingConfiguration: jest.fn(async () => { const error: any = new Error("ambiguous"); error.code = "PBV2_DRAFT_AMBIGUOUS"; throw error; }) });
-    const ambiguous = await ambiguousTools.productsGetPricing.execute(invocation, { productId: "product-1" });
-    expect(ambiguous.data.pricing).toMatchObject({ status: "unavailable", configuration: null, message: expect.stringContaining("multiple PBV2 DRAFT") });
   });
 
   test("normalizes inch dimensions, applies defaults, and reports required options semantically", async () => {

@@ -478,7 +478,7 @@ export type ProductPricingIntrospection = {
 /** Safe, read-only resolution failures for a product's authoritative PBV2
  * configuration. They intentionally reveal no tree content. */
 export class ProductPricingReadError extends Error {
-  constructor(readonly code: "PBV2_PRICING_UNAVAILABLE" | "PBV2_DRAFT_AMBIGUOUS", message: string) {
+  constructor(readonly code: "PBV2_PRICING_UNAVAILABLE", message: string) {
     super(message);
   }
 }
@@ -508,26 +508,38 @@ function pricingImpactSummary(choice: any, conditionalTotal: { optionGroup: stri
   return descriptions.length ? descriptions.join("; ") : null;
 }
 
+/**
+ * Resolves the current persisted DRAFT exactly as the Product Editor does when
+ * opening Pricing Preview: the latest linked DRAFT for this tenant/product.
+ * This is intentionally a read-only lookup; it neither publishes nor changes
+ * the product's active-tree pointer.
+ */
+export async function loadCurrentPbv2DraftTreeVersion(
+  input: { organizationId: string; productId: string },
+  database: any = db,
+) {
+  const [draft] = await database.select()
+    .from(pbv2TreeVersions)
+    .where(and(
+      eq(pbv2TreeVersions.organizationId, input.organizationId),
+      eq(pbv2TreeVersions.productId, input.productId),
+      eq(pbv2TreeVersions.status, "DRAFT"),
+    ))
+    .orderBy(desc(pbv2TreeVersions.updatedAt))
+    .limit(1);
+  return draft ?? null;
+}
+
 async function readablePbv2TreeVersionId(product: any, organizationId: string): Promise<string> {
   const activeOrOverride = resolvePbv2Override(product) || product.pbv2ActiveTreeVersionId;
   if (activeOrOverride) return activeOrOverride;
   if (product.isActive) throw new ProductPricingReadError("PBV2_PRICING_UNAVAILABLE", "This active product has no PBV2 pricing tree.");
 
   // Product Builder GO intentionally leaves an inactive product without an
-  // active-tree pointer. Its DRAFT is readable only when the product-linked
-  // relationship is unambiguous; never select an arbitrary latest draft.
-  const drafts = await db.select({ id: pbv2TreeVersions.id })
-    .from(pbv2TreeVersions)
-    .where(and(
-      eq(pbv2TreeVersions.organizationId, organizationId),
-      eq(pbv2TreeVersions.productId, product.id),
-      eq(pbv2TreeVersions.status, "DRAFT"),
-      eq(pbv2TreeVersions.schemaVersion, 2),
-    ))
-    .orderBy(desc(pbv2TreeVersions.updatedAt), desc(pbv2TreeVersions.id))
-    .limit(2);
-  if (drafts.length === 1) return drafts[0]!.id;
-  if (drafts.length > 1) throw new ProductPricingReadError("PBV2_DRAFT_AMBIGUOUS", "This inactive product has multiple PBV2 DRAFT versions; its current pricing cannot be selected safely.");
+  // active-tree pointer. Use the same current-DRAFT resolution that feeds the
+  // Product Editor's Pricing Preview, rather than treating DRAFT as missing.
+  const draft = await loadCurrentPbv2DraftTreeVersion({ organizationId, productId: product.id });
+  if (draft) return draft.id;
   throw new ProductPricingReadError("PBV2_PRICING_UNAVAILABLE", "This inactive product has no PBV2 pricing configuration.");
 }
 
