@@ -156,6 +156,12 @@ describe("configured AI provider", () => {
     expect(result.requestMetadata).toMatchObject({ terminalClassification: "operator_decision", parseClassification: "operator_decision" });
   });
 
+  test("accepts an ordinary direct terminal answer without requiring a tool call", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "Weeding and Taping is already limited to Contour Cutting = Yes, and its default is No. I did not change anything." }] }] })) as unknown as typeof fetch;
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "Weeding and Taping is already limited to Contour Cutting = Yes, and its default is No. I did not change anything." });
+  });
+
   test("uses a separate bounded output budget for Operator Responses", () => {
     expect(resolveAiOperatorMaxOutputTokens({} as NodeJS.ProcessEnv)).toBe(8192);
     expect(resolveAiOperatorMaxOutputTokens({ AI_OPERATOR_MAX_OUTPUT_TOKENS: "12000" } as NodeJS.ProcessEnv)).toBe(12000);

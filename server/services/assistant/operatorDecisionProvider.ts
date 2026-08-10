@@ -28,6 +28,8 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
   ) {}
 
   async decide(input: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]): Promise<unknown> {
+    const contextTrace = trustedContextTrace(input);
+    console.info("[AI_OPERATOR_TRACE]", { stage: "authoritative_context_available", taskId: input.taskId, ...contextTrace });
     const config = await this.resolver.resolveProvider({ orgId: this.organizationId, feature: "assistant" });
     if (!config.enabled || !config.endpoint || !config.apiKey || !config.model || (config.provider !== "openai" && config.provider !== "openai_compatible")) {
       throw new AiProviderUnavailableError("AI Operator is unavailable.");
@@ -57,6 +59,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       "Use an unambiguous trusted active-task entity reference for a follow-up instead of asking the user to repeat it.",
       "Every active task includes a server-derived businessContext. Treat its identity, state summary, unresolved decisions, recent operations, trusted selections and provenance, readiness, constraints, and capabilities as the continuity contract for this turn. Use it to continue the task after a detour or provider swap; do not infer missing business facts, regenerate a draft, or treat it as authorization.",
       "When activeTask.activeSemanticProductDraft is present, it is the authoritative unfinished Product Builder business context. For a user answer, correction, or requested draft edit, call products.apply_operations with the smallest valid business operation. Resolve an outstanding decision from that context instead of regenerating a product, asking the user to restate it, or asking an edit-only confirmation. Do not ask for dimensions when the active or requested pricing basis is per square foot. Only ask one question when the requested business change is genuinely ambiguous; draft edits do not require GO, while final product creation does.",
+      "For a read-only question about the active product draft, answer directly from activeSemanticProductDraft when it contains the requested current business facts; no tool is required. If a conditional request says not to change anything unless current state is wrong and the authoritative context shows it is already correct, complete with that no-op outcome and do not request a mutation.",
       "Protected mutations are represented only by semantic planning tools and must never execute a mutation directly.",
       input.finalSynthesis
         ? "Investigation capacity is exhausted. Produce one truthful final synthesis using only supplied observations and active-task context. You have no tools in this response: do not return call_tools or continue, do not claim unobserved research, and clearly state evidence gaps."
@@ -90,7 +93,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
           operatorRequestSequence: ++this.responseRequestSequence,
         });
       } catch (error) {
-        return providerFailureDecision(error);
+        return providerFailureDecision(error, { taskId: input.taskId, ...contextTrace });
       }
       const continuation = response.operatorContinuation;
       this.responseContinuation = Array.isArray(continuation?.items) ? [...this.responseContinuation, ...continuation.items] : this.responseContinuation;
@@ -121,7 +124,13 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
         });
         return { kind: "fail", response: "The AI provider returned an unusable investigation result." };
       }
-      if (decision.kind === "complete") console.info("[AI_OPERATOR_TRACE]", { stage: "final_result_validation", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, succeeded: true });
+      if (decision.kind === "complete") {
+        console.info("[AI_OPERATOR_TRACE]", { stage: "direct_answer_decision", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, directAnswer: true, toolCallRequested: false, mutationRequested: false, revisionCreated: false, ...contextTrace });
+        console.info("[AI_OPERATOR_TRACE]", { stage: "final_result_validation", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, succeeded: true });
+      } else if (decision.kind === "call_tools") {
+        const toolNames = decision.calls.map((call) => call.toolName);
+        console.info("[AI_OPERATOR_TRACE]", { stage: "tool_call_requested", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, directAnswer: false, toolCallRequested: true, toolNames, mutationRequested: toolNames.some((name) => name === "products.begin_draft" || name === "products.apply_operations"), ...contextTrace });
+      }
       return this.withNativeSources(decision, response.requestMetadata.nativeWebSources);
     }
     const response = await this.provider.generateJson({
@@ -186,9 +195,28 @@ function hasProviderControlProtocol(decision: unknown): boolean {
   return typeof response === "string" && /DSML|<think\b|<\/?[|｜][^>]*(?:thinking|tool_calls|invoke|parameter)|<\/?[|｜]/i.test(response);
 }
 
-function providerFailureDecision(error: unknown): { kind: "fail"; response: string } {
+function trustedContextTrace(input: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]): { authoritativeBusinessContextAvailable: boolean; activeProductDraftAvailable: boolean; relevantTrustedFactsFound: boolean } {
+  const active = input.task?.activeSemanticProductDraft;
+  const labels = active ? [
+    active.name,
+    active.category.label,
+    active.pricing.optionGroup ?? "",
+    ...active.pricing.rates.map((rate) => rate.option),
+    ...active.optionGroups.flatMap((group) => [group.label, group.defaultValue ?? "", group.availableWhen?.optionGroup ?? "", group.availableWhen?.value ?? "", ...group.values.map((value) => value.label)]),
+  ] : [];
+  const requestTerms = input.goal.toLocaleLowerCase().match(/[a-z0-9]+/g) ?? [];
+  const labelTerms = labels.flatMap((label) => label.toLocaleLowerCase().match(/[a-z0-9]+/g) ?? []);
+  return {
+    authoritativeBusinessContextAvailable: Boolean(input.task?.businessContext),
+    activeProductDraftAvailable: Boolean(active),
+    relevantTrustedFactsFound: requestTerms.some((term) => term.length >= 4 && labelTerms.some((label) => label === term || label.startsWith(term) || term.startsWith(label))),
+  };
+}
+
+function providerFailureDecision(error: unknown, context: { taskId: string; authoritativeBusinessContextAvailable: boolean; activeProductDraftAvailable: boolean; relevantTrustedFactsFound: boolean }): { kind: "fail"; response: string } {
   if (error instanceof AiProviderTimeoutError) return { kind: "fail", response: "The AI provider did not finish the investigation before the request timed out." };
   if (error instanceof AiProviderResponseError) {
+    console.warn("[AI_OPERATOR_TRACE]", { stage: "provider_response_failure", ...context, providerFailureKind: error.kind, providerStatus: error.status, toolCallRequested: false, directAnswerDecision: false, finalAnswerAccepted: false });
     if (error.kind === "truncated_output") return { kind: "fail", response: "The AI provider did not return a complete investigation result before its output limit." };
     if (error.kind === "rate_limit") return { kind: "fail", response: "The AI provider is temporarily busy and could not complete the investigation." };
     return { kind: "fail", response: "The AI provider did not return a usable investigation result." };

@@ -178,6 +178,41 @@ describe("AssistantService Operator Runtime integration", () => {
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", response: "The AI provider returned an unusable investigation result." }));
   });
 
+  test("answers active-draft configuration reads directly from authoritative context without a tool or revision", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore("proposal_1");
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(), applyCanonicalProductOperations: jest.fn(),
+      getActiveSemanticProductDraftContext: jest.fn(async () => ({
+        name: "Translucent Vinyl - backlit with multilayer printing", category: { state: "resolved", label: "Roll Printing", provenance: "explicit_user" }, measurementMode: "dimensions_required",
+        pricing: { model: "one_dimensional_matrix", basis: "per_square_foot", optionGroup: "Layers", rates: [{ option: "3 Layer", priceCents: 400 }, { option: "5 Layer", priceCents: 500 }] },
+        optionGroups: [
+          { label: "Layers", required: true, selectionMode: "single", defaultValue: "3 Layer", values: [{ label: "3 Layer", priceImpactPercent: null, totalPercentWhenEnabled: null }, { label: "5 Layer", priceImpactPercent: null, totalPercentWhenEnabled: null }], availableWhen: null },
+          { label: "Contour Cutting", required: false, selectionMode: "single", defaultValue: "No", values: [{ label: "No", priceImpactPercent: null, totalPercentWhenEnabled: null }, { label: "Yes", priceImpactPercent: 10, totalPercentWhenEnabled: null }], availableWhen: null },
+          { label: "Weeding and Taping", required: false, selectionMode: "single", defaultValue: "No", values: [{ label: "No", priceImpactPercent: null, totalPercentWhenEnabled: null }, { label: "Yes", priceImpactPercent: null, totalPercentWhenEnabled: { percent: 30, prerequisite: { optionGroup: "Contour Cutting", value: "Yes" } } }], availableWhen: { optionGroup: "Contour Cutting", value: "Yes" } },
+        ], outstandingDecisions: [], recentBusinessOperations: [], trustedSelections: [{ field: "Weeding and Taping default", label: "No", provenance: "explicit_user" }], readyForReview: true,
+      })),
+    };
+    const provider = { decide: jest.fn(async ({ goal, observations, task }: any) => {
+      expect(observations).toEqual([]);
+      expect(task.activeSemanticProductDraft.optionGroups).toEqual(expect.arrayContaining([expect.objectContaining({ label: "Weeding and Taping", defaultValue: "No", availableWhen: { optionGroup: "Contour Cutting", value: "Yes" } })]));
+      if (goal.startsWith("Verify")) return { kind: "complete", response: "Weeding and Taping is already limited to Contour Cutting = Yes, and its default is No. I did not change anything." };
+      if (goal.startsWith("What is the current Layers")) return { kind: "complete", response: "The current Layers default is 3 Layer." };
+      return { kind: "complete", response: "The product is currently in the Roll Printing category." };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+    const actorWithDraftAccess = { ...actor, permissions: ["assistant.products.update_inactive_draft"] };
+
+    await service.createTurn(scope, "conversation_1", actorWithDraftAccess, { message: "Verify the actual current product configuration for Weeding and Taping. It should only be available when Contour Cutting is Yes, and when it appears its default should be No. Don't change anything unless the current configuration is wrong.", context });
+    await service.createTurn(scope, "conversation_1", actorWithDraftAccess, { message: "What is the current Layers default?", context });
+    await service.createTurn(scope, "conversation_1", actorWithDraftAccess, { message: "What category is this product currently in?", context });
+
+    expect(provider.decide).toHaveBeenCalledTimes(3);
+    expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+    expect(tasks.updates.at(-1).patch.status).toBe("active");
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "Weeding and Taping is already limited to Contour Cutting = Yes, and its default is No. I did not change anything." }));
+  });
+
   test("offers one read-only batch pricing preview for an active product draft", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore("proposal_1");
