@@ -406,6 +406,8 @@ export class ProductManagementSkillService {
     organizationId: string;
     userId: string;
     conversationId: string;
+    message: string;
+    initialOperations?: unknown;
   }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
     const router = this.deps.canonicalProductIntent;
     if (!router?.begin) return { handled: true, response: "Incremental Product Builder creation is not available in this deployment.", cards: [] };
@@ -415,6 +417,12 @@ export class ProductManagementSkillService {
         return { handled: true, response: "An unfinished product draft is already active in this conversation.", cards: [] };
       }
       const outcome = await router.begin({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
+      if (outcome.ok && input.initialOperations) {
+        if (!router.applySemanticOperations) return { handled: true, response: "The initial product details could not be applied in this deployment.", cards: canonicalCards(outcome) };
+        const applied = await router.applySemanticOperations({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: outcome.session.proposalId, request: input.message, operations: input.initialOperations });
+        if (applied.ok) return { handled: true, response: applied.card.readiness.ready ? "I prepared the product draft for review. No product has been created yet." : "I started the product draft and applied the supplied business details.", cards: canonicalCards(applied) };
+        return { handled: true, response: applied.message, cards: [...canonicalCards(outcome), { kind: "product_validation_errors", title: "Product draft needs correction", summary: "The initial business details were not applied; the unfinished draft remains available for correction.", sourceLinks: [], details: { errors: [applied.message], code: applied.code } }] };
+      }
       return outcome.ok
         ? { handled: true, response: "I started an unfinished product draft. I’ll add the requested business details and ask only for information that is still needed.", cards: canonicalCards(outcome) }
         : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product draft could not be started", summary: "No product or draft was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };

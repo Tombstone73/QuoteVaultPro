@@ -104,6 +104,19 @@ describe("AssistantService Operator Runtime integration", () => {
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ mode: "ai_operator_runtime", structuredCards: expect.arrayContaining([expect.objectContaining({ kind: "canonical_product_intent_proposal" })]) }));
   });
 
+  test("allows a provider to populate an initial draft in its begin call", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore();
+    const initialOperations = [{ op: "set_product_name", name: "Translucent Vinyl - backlit with multilayer printing" }, { op: "set_pricing_basis", basis: "per_square_foot" }, { op: "set_measurement_mode", mode: "dimensions_required" }];
+    const cards = [{ kind: "canonical_product_intent_proposal", title: "Product draft", summary: "Needs category", sourceLinks: [], details: { proposalId: "proposal_one_call" } }];
+    const product = { respondPlannedCanonicalProductIntent: jest.fn(), beginCanonicalProductDraft: jest.fn(async () => ({ handled: true, response: "Draft populated.", cards })), applyCanonicalProductOperations: jest.fn() };
+    const provider = { decide: jest.fn(async ({ observations }: any) => observations.length ? ({ kind: "complete", response: "I applied the supplied details." }) : ({ kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: { initialOperations } }] })) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+    await service.createTurn(scope, "conversation_1", actor, { message: "Create the supplied Translucent Vinyl product.", context });
+    expect(product.beginCanonicalProductDraft).toHaveBeenCalledWith(expect.objectContaining({ initialOperations, message: "Create the supplied Translucent Vinyl product." }));
+    expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+  });
+
   test("does not expose direct product-draft tools without a product-draft permission", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore();

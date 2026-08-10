@@ -299,6 +299,12 @@ const semanticProductOperationsToolInputSchema: Record<string, unknown> = {
     },
   },
 };
+/** The initial-create capability deliberately reuses the exact operation-array
+ * schema published by products.apply_operations. */
+const beginProductDraftToolInputSchema: Record<string, unknown> = {
+  type: "object", additionalProperties: false,
+  properties: { initialOperations: (semanticProductOperationsToolInputSchema.properties as Record<string, unknown>).operations },
+};
 
 /** Financial reads require authorization at every retrieval. Never retain an
  * analytics observation for a later direct-answer turn, because a user's role
@@ -687,11 +693,12 @@ export class AssistantService {
     let activeProductProposalId = task.canonicalProductIntentProposalId;
     const beginProductIntentTools: AssistantOperatorSemanticTool[] = mayBeginProductDraft ? [{
       name: "products.begin_draft",
-      description: "Establish one new authoritative unfinished product draft. This is an intermediate action, not completion of a detailed product request: after it succeeds, continue this same task with products.apply_operations for the business facts already supplied by the user before asking for missing information. Multiple related operations may be applied together. Draft edits do not require GO; final product creation remains review/GO-gated. Do not use if an unfinished draft is already active.",
-      inputSchema: { type: "object", additionalProperties: false },
-      execute: async ({ context }) => {
+      description: "Establish one new authoritative unfinished product draft. When the user already supplied product details, include the understood business changes as initialOperations so the draft is populated in this call; use the same business operations as products.apply_operations. This remains an intermediate action, so continue this task when useful. Draft edits do not require GO; final product creation remains review/GO-gated. Do not use if an unfinished draft is already active.",
+      inputSchema: beginProductDraftToolInputSchema,
+      execute: async ({ arguments: args, context }) => {
         if (activeProductProposalId) return { status: "partial" as const, warning: "An unfinished product draft is already active." };
-        const product = await this.productIntentDispatcher.beginCanonicalProductDraft({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id });
+        const initialOperations = Array.isArray(args.initialOperations) ? args.initialOperations : undefined;
+        const product = await this.productIntentDispatcher.beginCanonicalProductDraft({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, message: context.goal, ...(initialOperations?.length ? { initialOperations } : {}) });
         const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? null;
         if (proposalId) activeProductProposalId = proposalId;
         const draftContext = proposalId && this.productIntentDispatcher.getActiveSemanticProductDraftContext
