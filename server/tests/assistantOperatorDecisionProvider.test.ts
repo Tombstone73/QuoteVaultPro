@@ -166,12 +166,12 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
   test("keeps a rejected provider decision's safe response shape", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson: jest.fn(), generateOperatorDecision: jest.fn(async () => ({
-      rawText: JSON.stringify({ kind: "call_tools", calls: Array.from({ length: 6 }, () => ({ toolName: "products.get_pricing", arguments: {} })) }),
-      requestMetadata: { outputItemCount: 6, outputItemTypes: ["function_call", "function_call"], functionCallCount: 6, functionArgumentDecodeSucceeded: true, messageOutputTextPresent: false, finalTextLength: 0, responseStatus: "completed", terminalClassification: "operator_decision", parseClassification: "function_calls", controlProtocolDetected: false },
+      rawText: JSON.stringify({ kind: "call_tools", calls: Array.from({ length: 13 }, () => ({ toolName: "products.get_pricing", arguments: {} })) }),
+      requestMetadata: { outputItemCount: 13, outputItemTypes: ["function_call", "function_call"], functionCallCount: 13, functionArgumentDecodeSucceeded: true, messageOutputTextPresent: false, finalTextLength: 0, responseStatus: "completed", terminalClassification: "operator_decision", parseClassification: "function_calls", controlProtocolDetected: false },
       operatorContinuation: { items: [], functionCalls: [] },
     })) } as any, { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "test", model: "deepseek-v4-flash" })) } as any);
 
     await expect(provider.decide({ goal: "Show six persisted pricing scenarios.", taskId: "task_pricing", step: 1, remainingSteps: 15, toolCatalog: [], observations: [], safeWorkingSummary: null }))
-      .resolves.toEqual(expect.objectContaining({ kind: "fail", providerDecisionShape: expect.objectContaining({ responseItemCount: 6, functionCallCount: 6, outputTextPresent: false, decisionParseStage: "operator_decision_parse" }) }));
+      .resolves.toEqual(expect.objectContaining({ kind: "fail", providerDecisionShape: expect.objectContaining({ responseItemCount: 13, functionCallCount: 13, outputTextPresent: false, decisionParseStage: "operator_decision_parse" }) }));
   });
 });
