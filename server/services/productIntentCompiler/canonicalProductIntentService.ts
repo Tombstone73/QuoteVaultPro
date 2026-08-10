@@ -768,7 +768,7 @@ export class CanonicalProductIntentService {
         return await continuationFailure({
           referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId,
           stage: "semantic_operation_validation", current, activeIssueIds: [], deterministicAttempted: true, providerRequested: false,
-          patch: sourcePatch, code: "PRODUCT_SEMANTIC_OPERATION_NO_CHANGE",
+          patch: sourcePatch, requestedOperations, code: "PRODUCT_SEMANTIC_OPERATION_NO_CHANGE",
           message: `That product change does not alter the current draft. Review the current configuration and try again. Reference: ${referenceId}.`,
         });
       }

@@ -398,7 +398,7 @@ export class AssistantService {
     private readonly intentPlanner: AssistantIntentPlannerProvider = new ConfiguredAssistantIntentPlannerProvider(new OpenAiCompatibleBugReviewProvider()),
     /** Injectable only for composition and isolated routing tests; production
      * always uses the canonical compiler-backed singleton. */
-    private readonly productIntentDispatcher: Pick<typeof productManagementSkillService, "respondPlannedCanonicalProductIntent" | "applyCanonicalProductOperations" | "beginCanonicalProductDraft"> & Partial<Pick<typeof productManagementSkillService, "getActiveSemanticProductDraftContext">> = productManagementSkillService,
+    private readonly productIntentDispatcher: Pick<typeof productManagementSkillService, "respondPlannedCanonicalProductIntent" | "applyCanonicalProductOperations" | "beginCanonicalProductDraft"> & Partial<Pick<typeof productManagementSkillService, "getActiveSemanticProductDraftContext" | "previewActiveSemanticProductDraftPricing">> = productManagementSkillService,
     /** Ordinary free text always enters this provider/runtime path. Tests can
      * supply deterministic decisions without initializing a real provider. */
     private readonly operatorDecisionProvider: (organizationId: string) => AssistantOperatorDecisionProvider =
@@ -723,7 +723,23 @@ export class AssistantService {
         return { status: "succeeded" as const, result: { status: "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { mayApplyBusinessOperations: true } } } as any, presentation: { cards: product.cards as AssistantStructuredCard[] } };
       },
       }] : [];
-    const productIntentTools: AssistantOperatorSemanticTool[] = [...beginProductIntentTools, ...applyProductIntentTools];
+    const previewProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{
+      name: "products.preview_draft_pricing",
+      description: "Calculate a read-only PBV2 price scenario for the current unfinished product draft before GO. Provide squareFeet, optional quantity, and selected business option labels. Use this when the user asks how the active draft will price; do not ask them to restate pricing rules already shown in the draft context.",
+      inputSchema: { type: "object", additionalProperties: false, required: ["squareFeet"], properties: { squareFeet: { type: "number", exclusiveMinimum: 0 }, quantity: { type: "integer", minimum: 1 }, selections: { type: "array", maxItems: 12, items: { type: "object", additionalProperties: false, required: ["optionGroup", "value"], properties: { optionGroup: { type: "string", minLength: 1, maxLength: 160 }, value: { type: "string", minLength: 1, maxLength: 160 } } } } } },
+      execute: async ({ arguments: args, context }) => {
+        if (!activeProductProposalId || !this.productIntentDispatcher.previewActiveSemanticProductDraftPricing) return { status: "rejected" as const, warning: "An active product draft is required for draft pricing." };
+        const squareFeet = typeof args.squareFeet === "number" && Number.isFinite(args.squareFeet) && args.squareFeet > 0 ? args.squareFeet : null;
+        const quantity = typeof args.quantity === "number" && Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined;
+        const selections = Array.isArray(args.selections) && args.selections.every((item) => item && typeof item === "object" && typeof (item as any).optionGroup === "string" && typeof (item as any).value === "string") ? args.selections as Array<{ optionGroup: string; value: string }> : undefined;
+        if (squareFeet === null) return { status: "rejected" as const, warning: "Draft pricing requires a positive square-foot scenario." };
+        try {
+          const data = await this.productIntentDispatcher.previewActiveSemanticProductDraftPricing({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId: activeProductProposalId, squareFeet, quantity, selections });
+          return { status: "succeeded" as const, result: { status: "succeeded", data, provenance: { sourceLinks: [], freshness: { capturedAt: new Date().toISOString() } } } as any };
+        } catch (error) { return { status: "rejected" as const, warning: error instanceof Error ? error.message : "The active product draft could not be priced." }; }
+      },
+    }] : [];
+    const productIntentTools: AssistantOperatorSemanticTool[] = [...beginProductIntentTools, ...applyProductIntentTools, ...previewProductIntentTools];
     const semanticTools: AssistantOperatorSemanticTool[] = [...productIntentTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",

@@ -55,8 +55,12 @@ function normalizeWhitespace(value: string): string { return value.trim().replac
  * model paraphrase of the same name. */
 function explicitProductNameFromRequest(request: string | undefined): string | null {
   if (!request) return null;
+  const singleQuoted = /\b(?:called|named)\s*'([^']+)'/i.exec(request);
+  if (singleQuoted?.[1]) return normalizeWhitespace(singleQuoted[1]);
   const match = /\b(?:called|named)\s*["“]([^"”]+)["”]/i.exec(request);
-  return match?.[1] ? normalizeWhitespace(match[1]) : null;
+  if (match?.[1]) return normalizeWhitespace(match[1]);
+  const unquoted = /\b(?:called|named)\s+(.+?)(?=\s*[.!?](?:\s|$)|$)/i.exec(request);
+  return unquoted?.[1] ? normalizeWhitespace(unquoted[1]) : null;
 }
 
 function requestUniquelyIdentifiesCandidate(request: string | undefined, candidate: string, labels: readonly string[]): boolean {

@@ -3,6 +3,8 @@ import { randomUUID } from "node:crypto";
 import { materials, pbv2OptionGroupTemplates, pbv2TreeVersions, products, productTypes, stations } from "@shared/schema";
 import { CanonicalProductIntentService, type CanonicalProductIntentInspection, type CanonicalProductIntentOutcome } from "../productIntentCompiler/canonicalProductIntentService";
 import type { ProductDraftIntent } from "@shared/productDraftIntent";
+import { projectProductDraftIntentToProductBuilderDraft } from "../productIntentCompiler/productIntentProjection";
+import { evaluatePricingPreviewFromTree } from "../pricing/PricingService";
 import { createConfiguredProductIntentCompiler, type ProductIntentCompilerInput } from "../productIntentCompiler/productIntentCompiler";
 import { DrizzleCanonicalProductIntentProposalStore, ProductIntentPersistenceService, type CanonicalProductIntentSession } from "../productIntentCompiler/productIntentPersistence";
 import {
@@ -88,7 +90,7 @@ export type ActiveSemanticProductDraftContext = {
   category: { state: "resolved" | "unresolved"; label: string; provenance: "explicit_user" | "structured_candidate" | "ai_interpreted" | "selected_template" | "canonical_default" | "unresolved" };
   measurementMode: "dimensions_required" | "quantity_only" | "fixed_size";
   pricing: { model: string; basis: string | null; optionGroup: string | null; rates: Array<{ option: string; priceCents: number }> };
-  optionGroups: Array<{ label: string; required: boolean; selectionMode: "single" | "multiple"; defaultValue: string | null; values: string[]; availableWhen: { optionGroup: string; value: string } | null }>;
+  optionGroups: Array<{ label: string; required: boolean; selectionMode: "single" | "multiple"; defaultValue: string | null; values: Array<{ label: string; priceImpactPercent: number | null; totalPercentWhenEnabled: { percent: number; prerequisite: { optionGroup: string; value: string } } | null }>; availableWhen: { optionGroup: string; value: string } | null }>;
   outstandingDecisions: Array<{ path: string; question: string; choices: string[] }>;
   /** Server-derived labels of the business fields most recently established
    * in this draft. This is reflection context, never a patch/revision API. */
@@ -202,7 +204,7 @@ function canonicalCards(outcome: Extract<CanonicalProductIntentOutcome, { ok: tr
   // The action payload is server-authored and intentionally contains only the
   // persisted proposal identity. The browser can request a plan by turn id,
   // but never selects an operation or reconstructs a product from this card.
-  if (outcome.card.readiness.ready) cards.push({ kind: "action_proposal", title: outcome.card.title, summary: "Review the canonical intent, then use the dedicated GO control to create exactly one inactive PBV2 DRAFT.", sourceLinks: [], plan: { action: canonicalProductIntentDraftCommandName, ...proposal } });
+  if (outcome.card.readiness.ready) cards.push({ kind: "action_proposal", title: outcome.card.title, summary: "Review this product draft, then use the dedicated GO control to create one inactive PBV2 draft.", sourceLinks: [], plan: { action: canonicalProductIntentDraftCommandName, ...proposal } });
   return cards;
 }
 
@@ -230,7 +232,7 @@ function activeSemanticProductDraftContext(intent: ProductDraftIntent, inspectio
     optionGroups: intent.optionGroups.map((group) => ({
       label: group.label, required: group.required, selectionMode: group.selectionMode,
       defaultValue: group.values.find((value) => value.isDefault)?.label ?? null,
-      values: group.values.map((value) => value.label),
+      values: group.values.map((value) => ({ label: value.label, priceImpactPercent: value.priceImpact?.percent ?? null, totalPercentWhenEnabled: value.totalPercentOfBaseWhenEnabled ? { percent: value.totalPercentOfBaseWhenEnabled.percent, prerequisite: labelFor(value.totalPercentOfBaseWhenEnabled.prerequisite.optionGroupKey, value.totalPercentOfBaseWhenEnabled.prerequisite.optionValueKey) } : null })),
       availableWhen: group.availableWhen ? labelFor(group.availableWhen.optionGroupKey, group.availableWhen.optionValueKey) : null,
     })),
     outstandingDecisions: (inspection?.card.requiredQuestions ?? []).map((question) => ({
@@ -376,6 +378,25 @@ export class ProductManagementSkillService {
       ? await router.inspect({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: input.proposalId })
       : null;
     return activeSemanticProductDraftContext(current.specification.session.revisions.at(-1)!.intent, inspection);
+  }
+
+  async previewActiveSemanticProductDraftPricing(input: { organizationId: string; userId: string; conversationId: string; proposalId: string; squareFeet: number; quantity?: number; selections?: Array<{ optionGroup: string; value: string }> }) {
+    const router = this.deps.canonicalProductIntent;
+    if (!router) throw new Error("The active product draft is unavailable.");
+    const current = await router.loadForConversation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
+    if (!current || current.proposalId !== input.proposalId || current.specification.resolutionMetadata.architecture !== "operator_business_operations") throw new Error("The active product draft is unavailable.");
+    const intent = current.specification.session.revisions.at(-1)!.intent;
+    const groups = new Map(intent.optionGroups.map((group) => [group.label.trim().toLocaleLowerCase(), group]));
+    const selected: Record<string, { value: string }> = {};
+    for (const selection of input.selections ?? []) {
+      const group = groups.get(selection.optionGroup.trim().toLocaleLowerCase());
+      const value = group?.values.find((candidate) => candidate.label.trim().toLocaleLowerCase() === selection.value.trim().toLocaleLowerCase());
+      if (!group || !value) throw new Error("A requested pricing selection is not available on the active product draft.");
+      selected[group.key] = { value: value.key };
+    }
+    const projected = projectProductDraftIntentToProductBuilderDraft(intent);
+    const result = evaluatePricingPreviewFromTree({ treeJson: projected.treeJson, widthIn: input.squareFeet * 144, heightIn: 1, quantity: input.quantity ?? 1, pbv2ExplicitSelections: selected });
+    return { productName: intent.identity.name, revision: intent.revision, totalCents: Math.round(result.totalPrice * 100), baseCents: Math.round(result.breakdown.basePrice * 100), optionsCents: Math.round(result.breakdown.optionsPrice * 100) };
   }
 
   /** Starts an unfinished inactive product intent owned by the server. The

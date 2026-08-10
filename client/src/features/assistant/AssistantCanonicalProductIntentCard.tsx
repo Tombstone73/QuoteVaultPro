@@ -127,7 +127,7 @@ export function CanonicalProductIntentCardView({ card, onInteraction }: { card: 
       <div><p className="font-semibold">{currentCard.title}</p><p className="mt-0.5 text-muted-foreground">Product configuration</p></div>
       <span className="shrink-0 rounded bg-muted px-2 py-1 font-medium text-muted-foreground">Revision {currentCard.revision}</span>
     </div>
-    {currentCard.fields.length ? <dl className="mt-3 grid gap-1 sm:grid-cols-2">{currentCard.fields.map((field) => <div key={field.label}><dt className="inline font-medium">{field.label}: </dt><dd className="inline">{field.value}</dd></div>)}</dl> : <p className="mt-3 text-muted-foreground">The latest canonical revision is still being prepared.</p>}
+    {currentCard.fields.length ? <dl className="mt-3 grid gap-1 sm:grid-cols-2">{currentCard.fields.map((field) => <div key={field.label}><dt className="inline font-medium">{field.label}: </dt><dd className="inline">{field.value}</dd></div>)}</dl> : <p className="mt-3 text-muted-foreground">The latest product revision is still being prepared.</p>}
     <IssueList title="Required decisions" values={currentCard.questions} tone="question" />
     {currentCard.candidates.length ? <div className="mt-3 rounded border border-amber-500/30 bg-amber-500/10 p-2"><p className="font-medium">Required to continue</p><ul className="mt-1 list-disc space-y-1 pl-4">{currentCard.candidates.map((action) => <li key={action.id}><span className="font-medium">{action.label}:</span> {action.description}{action.input === "new_product_name" ? <span className="mt-1 flex gap-1"><input className="rounded border bg-background px-1" value={rename} onChange={(event) => setRename(event.target.value)} placeholder="New product name" /><Button size="sm" disabled={!rename.trim() || busy !== null} onClick={() => void interact("apply_candidate", action.id, rename)}>Rename</Button></span> : onInteraction ? <Button className="ml-1" size="sm" disabled={busy !== null} onClick={() => void interact("apply_candidate", action.id)}>{busy === action.id ? "Applying…" : action.href ? "Open existing" : "Select"}</Button> : action.href ? <a className="ml-1 text-primary underline" href={action.href}>Open existing</a> : null}</li>)}</ul></div> : null}
     <IssueList title="Blocking validation" values={currentCard.blockers} tone="blocker" />
@@ -141,9 +141,9 @@ export function CanonicalProductIntentCardView({ card, onInteraction }: { card: 
 export function CanonicalProductIntentReviewProposalCard({ proposal, onCreatePlan, creating, stale = false }: { proposal: CanonicalProductIntentProposal; onCreatePlan: (turnId: string) => Promise<unknown> | void; creating?: boolean; stale?: boolean }) {
   return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Product draft review: ${proposal.title}`}>
     <p className="font-semibold">{proposal.title}</p>
-    <p className="mt-1 text-muted-foreground">Review the canonical revision before confirming creation of one inactive product and one PBV2 DRAFT.</p>
+    <p className="mt-1 text-muted-foreground">Review this product draft before confirming creation of one inactive product and one PBV2 draft.</p>
     <p className="mt-2 text-muted-foreground">Revision {proposal.revision} is bound to this review. Later corrections require a new review.</p>
-    {stale ? <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2" role="status">A newer canonical revision is available. This review is stale and cannot be used.</p> : null}
+    {stale ? <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2" role="status">A newer product revision is available. This review is stale and cannot be used.</p> : null}
     <div className="mt-2"><Button type="button" size="sm" disabled={creating || stale} onClick={() => void onCreatePlan(proposal.turnId)}>{stale ? "Review stale — refresh required" : creating ? "Preparing plan…" : "Review product plan"}</Button></div>
   </section>;
 }

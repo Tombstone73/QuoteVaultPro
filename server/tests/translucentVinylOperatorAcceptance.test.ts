@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 import { productDraftIntentSchema } from "@shared/productDraftIntent";
 import { projectProductDraftIntentToProductBuilderDraft } from "../services/productIntentCompiler/productIntentProjection";
+import { evaluatePricingPreviewFromTree } from "../services/pricing/PricingService";
 
 describe("Translucent Vinyl semantic PBV2 projection", () => {
   test("projects the exact one-axis layer-rate request without inventing a Surface option", () => {
@@ -28,6 +29,13 @@ describe("Translucent Vinyl semantic PBV2 projection", () => {
     expect(weed.visibility.rules).toEqual([{ type: "equals", selectionKey: "contour", value: "yes" }]);
     expect(contour.choices.find((choice: any) => choice.value === "yes").pricingImpact[0].percent).toBe(10);
     expect(weed.choices.find((choice: any) => choice.value === "yes").pricingImpact[0].percent).toBe(20);
+    const price = (layers: string, contour: string, weedTape: string) => evaluatePricingPreviewFromTree({ treeJson: tree, widthIn: 120, heightIn: 12, quantity: 1, pbv2ExplicitSelections: { layers: { value: layers }, contour: { value: contour }, weed_tape: { value: weedTape } } }).totalPrice;
+    expect(price("three", "no", "no")).toBe(40);
+    expect(price("three", "yes", "no")).toBe(44);
+    expect(price("three", "yes", "yes")).toBe(52);
+    expect(price("five", "no", "no")).toBe(50);
+    expect(price("five", "yes", "no")).toBe(55);
+    expect(price("five", "yes", "yes")).toBe(65);
   });
 
   test("enforces the Contour → Weed/Tape dependency and derives +30% total, never +40%", () => {
