@@ -1,7 +1,8 @@
 import { expect, jest, test } from "@jest/globals";
+import { sanitizeAiDiagnosticEnvelope } from "@shared/aiDiagnostics";
 
 const persisted: unknown[] = [];
-const persistAiDiagnostic = jest.fn(async (value: unknown) => { persisted.push(value); return value; });
+const persistAiDiagnostic = jest.fn(async (value: unknown) => { const sanitized = sanitizeAiDiagnosticEnvelope(value); persisted.push(sanitized); return sanitized; });
 jest.unstable_mockModule("../services/aiDiagnosticsService", () => ({ persistAiDiagnostic }));
 
 const current = {
@@ -79,4 +80,38 @@ test("persists an initial canonical pipeline failure under the displayed compile
 
   expect(outcome).toMatchObject({ ok: false, code: "PRODUCT_INTENT_SESSION_CREATION_FAILED" });
   expect(persistAiDiagnostic).toHaveBeenCalledWith(expect.objectContaining({ referenceId: "pic-22222222-2222-4222-8222-222222222222", stage: "persistence_preparation", errorCode: "PRODUCT_INTENT_CREATE_CONFLICT", tenantId: "org_1", actorId: "user_1", conversationId: "conversation_1", persistenceAttempted: true, persistenceResult: "succeeded" }));
+});
+
+test("records safe ordered-batch failure evidence without persisting a revision", async () => {
+  persisted.length = 0; persistAiDiagnostic.mockClear();
+  const { CanonicalProductIntentService } = await import("../services/productIntentCompiler/canonicalProductIntentService");
+  const semanticCurrent = {
+    ...current,
+    specification: { session: { currentRevision: 4, revisions: [{ intent: { revision: 4, optionGroups: [] } }] } },
+  } as any;
+  const appendPatch = jest.fn();
+  const service = new CanonicalProductIntentService(null, { load: jest.fn(async () => semanticCurrent), appendPatch } as any, { categories: [], materials: [], productionRoutes: [] });
+
+  const outcome = await service.applySemanticOperations({
+    organizationId: "org_1", actorUserId: "user_1", proposalId: "proposal_1", request: "Add the group, then make No its default.",
+    operations: [
+      { op: "add_option_group", optionGroup: "Weeding and Taping", required: false, selectionMode: "single" },
+      { op: "set_option_default", optionGroup: "Weeding and Taping", value: "No" },
+    ],
+  });
+
+  expect(outcome).toMatchObject({ ok: false, code: "PRODUCT_SEMANTIC_OPERATION_REJECTED" });
+  expect(appendPatch).not.toHaveBeenCalled();
+  expect(persistAiDiagnostic).toHaveBeenCalledWith(expect.objectContaining({
+    semanticBatch: {
+      operationCount: 2,
+      operationTypes: ["add_option_group", "set_option_default"],
+      failingOperation: {
+        index: 2, type: "set_option_default", targetLabels: ["Weeding and Taping", "No"],
+        validationStage: "semantic_operation_validation", dependsOnPriorBatchOperation: true,
+        failureCode: "PRODUCT_INTENT_SEMANTIC_OPTION_VALUE_UNRESOLVED",
+      },
+      originalRevisionUnchanged: true,
+    },
+  }));
 });

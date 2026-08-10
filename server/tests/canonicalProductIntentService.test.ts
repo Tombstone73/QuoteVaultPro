@@ -672,4 +672,112 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(after.pricing).toEqual(before.pricing);
     expect(provider).toHaveBeenCalledTimes(1);
   });
+
+  test("atomically repairs the exact yes-only Weed/Tape draft through ordered Operator operations", async () => {
+    const store = new MemoryStore();
+    const service = new CanonicalProductIntentService(null, new ProductIntentPersistenceService(store), {
+      categories: [{ id: "print-products", label: "Print Products" }], materials: [], productionRoutes: [],
+    });
+    const begun = await service.begin({ organizationId: "org-1", actorUserId: "user-1", conversationId: "ordered-weed-tape-correction" });
+    if (!begun.ok) throw new Error("Expected an unfinished draft.");
+    const initial = await service.applySemanticOperations({
+      organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
+      request: "Create Translucent Vinyl with Layers, Contour Cutting, and Weeding and Taping.",
+      operations: [
+        { op: "set_product_name", name: "Translucent Vinyl" },
+        { op: "set_pricing_basis", basis: "per_square_foot" },
+        { op: "add_option_group", optionGroup: "Layers", required: true, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Layers", value: "3 Layer" },
+        { op: "add_option_value", optionGroup: "Layers", value: "5 Layer" },
+        { op: "set_option_rate", optionGroup: "Layers", value: "3 Layer", priceCents: 400, basis: "per_square_foot" },
+        { op: "set_option_rate", optionGroup: "Layers", value: "5 Layer", priceCents: 500, basis: "per_square_foot" },
+        { op: "add_option_group", optionGroup: "Contour Cutting", required: true, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Contour Cutting", value: "No" },
+        { op: "add_option_value", optionGroup: "Contour Cutting", value: "Yes" },
+        { op: "add_option_group", optionGroup: "Weeding and Taping", required: false, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Weeding and Taping", value: "Yes" },
+        { op: "set_option_group_availability", optionGroup: "Weeding and Taping", whenOptionGroup: "Contour Cutting", whenValue: "Yes" },
+      ],
+    });
+    if (!initial.ok) throw new Error("Expected the yes-only draft to persist.");
+    const before = initial.session.specification.session.revisions.at(-1)!.intent;
+    expect(before.optionGroups.find((group) => group.label === "Weeding and Taping")?.values.map((value) => value.label)).toEqual(["Yes"]);
+
+    const corrected = await service.applySemanticOperations({
+      organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
+      request: "3 layer should be the default. Contour cutting should default to no, and weeding and taping should default to no. Weeding and taping should only be available when contour cutting is yes.",
+      operations: [
+        { op: "set_option_default", optionGroup: "Layers", value: "3 Layer" },
+        { op: "set_option_default", optionGroup: "Contour Cutting", value: "No" },
+        { op: "add_option_value", optionGroup: "Weeding and Taping", value: "No" },
+        { op: "set_option_default", optionGroup: "Weeding and Taping", value: "No" },
+        { op: "set_option_group_availability", optionGroup: "Weeding and Taping", whenOptionGroup: "Contour Cutting", whenValue: "Yes" },
+      ],
+    });
+
+    expect(corrected).toMatchObject({ ok: true, session: { specification: { session: { currentRevision: 2 } } } });
+    if (!corrected.ok) throw new Error("Expected one atomic correction revision.");
+    const intent = corrected.session.specification.session.revisions.at(-1)!.intent;
+    const layers = intent.optionGroups.find((group) => group.label === "Layers");
+    const contour = intent.optionGroups.find((group) => group.label === "Contour Cutting");
+    const weedTape = intent.optionGroups.find((group) => group.label === "Weeding and Taping");
+    expect(layers?.values.find((value) => value.isDefault)?.label).toBe("3 Layer");
+    expect(contour?.values.find((value) => value.isDefault)?.label).toBe("No");
+    expect(weedTape).toMatchObject({ availableWhen: { optionGroupKey: contour?.key, optionValueKey: contour?.values.find((value) => value.label === "Yes")?.key } });
+    expect(weedTape?.values.map((value) => value.label)).toEqual(["Yes", "No"]);
+    expect(weedTape?.values.find((value) => value.isDefault)?.label).toBe("No");
+    expect(corrected.session.specification.session.revisions).toHaveLength(3);
+    expect(corrected.issues.map((issue) => issue.path)).not.toEqual(expect.arrayContaining([
+      "optionGroups.layers.default", "optionGroups.contour_cutting.default", "optionGroups.weeding_and_taping.default",
+    ]));
+
+    const failed = await service.applySemanticOperations({
+      organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
+      request: "Add another option, then select a value that does not exist.",
+      operations: [
+        { op: "add_option_value", optionGroup: "Weeding and Taping", value: "Maybe" },
+        { op: "set_option_default", optionGroup: "Weeding and Taping", value: "Missing" },
+      ],
+    });
+    expect(failed).toMatchObject({ ok: false, code: "PRODUCT_SEMANTIC_OPERATION_REJECTED" });
+    const afterFailure = await service.inspect({ organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId });
+    expect(afterFailure.session.specification.session.currentRevision).toBe(2);
+    expect(afterFailure.session.specification.session.revisions).toHaveLength(3);
+    expect(afterFailure.session.specification.session.revisions.at(-1)!.intent.optionGroups.find((group) => group.label === "Weeding and Taping")?.values.map((value) => value.label)).toEqual(["Yes", "No"]);
+  });
+
+  test("accepts new groups, values, rates, defaults, and prerequisites in one ordered revision", async () => {
+    const service = new CanonicalProductIntentService(null, new ProductIntentPersistenceService(new MemoryStore()), {
+      categories: [], materials: [], productionRoutes: [],
+    });
+    const begun = await service.begin({ organizationId: "org-1", actorUserId: "user-1", conversationId: "ordered-semantic-creation" });
+    if (!begun.ok) throw new Error("Expected an unfinished draft.");
+
+    const created = await service.applySemanticOperations({
+      organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
+      request: "Create Atomic Vinyl with Layers, Contour Cutting, and Weeding and Taping.",
+      operations: [
+        { op: "set_product_name", name: "Atomic Vinyl" },
+        { op: "set_pricing_basis", basis: "per_square_foot" },
+        { op: "add_option_group", optionGroup: "Layers", required: true, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Layers", value: "3 Layer" },
+        { op: "set_option_rate", optionGroup: "Layers", value: "3 Layer", priceCents: 400, basis: "per_square_foot" },
+        { op: "set_option_default", optionGroup: "Layers", value: "3 Layer" },
+        { op: "add_option_group", optionGroup: "Contour Cutting", required: false, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Contour Cutting", value: "Yes" },
+        { op: "add_option_group", optionGroup: "Weeding and Taping", required: false, selectionMode: "single" },
+        { op: "set_option_group_availability", optionGroup: "Weeding and Taping", whenOptionGroup: "Contour Cutting", whenValue: "Yes" },
+      ],
+    });
+
+    expect(created).toMatchObject({ ok: true, session: { specification: { session: { currentRevision: 1, revisions: expect.any(Array) } } } });
+    if (!created.ok) throw new Error("Expected the ordered batch to persist.");
+    const intent = created.session.specification.session.revisions.at(-1)!.intent;
+    const layers = intent.optionGroups.find((group) => group.label === "Layers");
+    const contour = intent.optionGroups.find((group) => group.label === "Contour Cutting");
+    const weedTape = intent.optionGroups.find((group) => group.label === "Weeding and Taping");
+    expect(layers?.values.find((value) => value.isDefault)?.label).toBe("3 Layer");
+    expect(intent.pricing).toMatchObject({ model: "one_dimensional_matrix", unit: "per_square_foot", cells: [{ priceCents: 400 }] });
+    expect(weedTape?.availableWhen).toEqual({ optionGroupKey: contour?.key, optionValueKey: contour?.values[0]?.key });
+  });
 });

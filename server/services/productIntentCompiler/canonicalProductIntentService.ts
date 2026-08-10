@@ -11,7 +11,7 @@ import { z } from "zod";
 import { sanitizeAiDiagnosticEnvelope } from "@shared/aiDiagnostics";
 import { persistAiDiagnostic } from "../aiDiagnosticsService";
 import { ProductIntentCompiler, type ProductIntentCompilerInput } from "./productIntentCompiler";
-import { compileSemanticProductOperations, SemanticProductOperationError, semanticProductOperationsResultSchema } from "./semanticProductOperations";
+import { compileSemanticProductOperations, SemanticProductOperationError, semanticProductOperationsResultSchema, type SemanticProductOperationsResult } from "./semanticProductOperations";
 import {
   ProductIntentPersistenceService,
   type CanonicalProductIntentSession,
@@ -404,6 +404,60 @@ function continuationPatchPaths(patch: ProductDraftIntentPatch | undefined): str
   }))).slice(0, 30);
 }
 
+type SemanticBatchDiagnostic = {
+  operationCount: number;
+  operationTypes: string[];
+  failingOperation: { index: number; type: string; targetLabels: string[]; validationStage: string; dependsOnPriorBatchOperation: boolean; failureCode: string | null } | null;
+  originalRevisionUnchanged: boolean;
+};
+
+function sameBusinessLabel(left: string, right: string): boolean {
+  return left.normalize("NFKC").toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim()
+    === right.normalize("NFKC").toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+}
+
+function semanticOperationTargetLabels(operation: SemanticProductOperationsResult["operations"][number]): string[] {
+  const source = operation as unknown as Record<string, unknown>;
+  return [source.optionGroup, source.value, source.whenOptionGroup, source.whenValue, source.name, source.category]
+    .filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+    .filter((value, index, values) => values.findIndex((candidate) => sameBusinessLabel(candidate, value)) === index)
+    .slice(0, 4);
+}
+
+function semanticOperationDependsOnPriorBatchOperation(operations: SemanticProductOperationsResult["operations"], failingIndex: number): boolean {
+  const targetLabels = semanticOperationTargetLabels(operations[failingIndex]!);
+  return operations.slice(0, failingIndex).some((prior) => {
+    if (prior.op === "add_option_group") return targetLabels.some((label) => sameBusinessLabel(label, prior.optionGroup));
+    if (prior.op !== "add_option_value") return false;
+    const target = operations[failingIndex]! as unknown as Record<string, unknown>;
+    return (typeof target.optionGroup === "string" && typeof target.value === "string" && sameBusinessLabel(target.optionGroup, prior.optionGroup) && sameBusinessLabel(target.value, prior.value))
+      || (typeof target.whenOptionGroup === "string" && typeof target.whenValue === "string" && sameBusinessLabel(target.whenOptionGroup, prior.optionGroup) && sameBusinessLabel(target.whenValue, prior.value));
+  });
+}
+
+function semanticFailureCode(error: unknown): string | null {
+  const candidate = error instanceof SemanticProductOperationError ? error.message : error && typeof error === "object" && "code" in error ? (error as { code?: unknown }).code : null;
+  return typeof candidate === "string" && /^[A-Z0-9_]{1,160}$/.test(candidate) ? candidate : null;
+}
+
+function semanticBatchDiagnostic(input: { operations?: SemanticProductOperationsResult["operations"]; error?: unknown; stage: string; originalRevisionUnchanged: boolean }): SemanticBatchDiagnostic | undefined {
+  if (!input.operations) return undefined;
+  const failure = input.error instanceof SemanticProductOperationError ? input.error : null;
+  return {
+    operationCount: input.operations.length,
+    operationTypes: input.operations.map((operation) => operation.op),
+    failingOperation: failure ? {
+      index: failure.operationIndex + 1,
+      type: failure.operationType,
+      targetLabels: semanticOperationTargetLabels(input.operations[failure.operationIndex]!),
+      validationStage: input.stage,
+      dependsOnPriorBatchOperation: semanticOperationDependsOnPriorBatchOperation(input.operations, failure.operationIndex),
+      failureCode: semanticFailureCode(failure),
+    } : null,
+    originalRevisionUnchanged: input.originalRevisionUnchanged,
+  };
+}
+
 async function continuationFailure(input: {
   referenceId: string; organizationId: string; actorUserId: string; proposalId: string;
   stage: string; current?: CanonicalProductIntentSession; activeIssueIds: readonly string[];
@@ -411,6 +465,7 @@ async function continuationFailure(input: {
   providerResultType?: string; patch?: ProductDraftIntentPatch; error?: unknown;
   requestedOperations?: string[];
   failingOperation?: { index: number; type: string } | null;
+  semanticBatch?: SemanticBatchDiagnostic;
   validationSchema?: string | null; repairAttempted?: boolean; repairResult?: "not_attempted" | "succeeded" | "failed";
   parseMethod?: "none" | "raw_json" | "extracted_json" | "repaired_json";
   providerResponseState?: "not_received" | "received" | "empty" | "parse_failed" | "contract_failed" | "accepted";
@@ -437,13 +492,14 @@ async function continuationFailure(input: {
       currentRevision: current?.specification.session.currentRevision ?? null,
       patchOperationCount: input.patch?.operations.length ?? input.requestedOperations?.length ?? null,
       patchPaths: [...continuationPatchPaths(input.patch), ...(input.requestedOperations ?? []).map((operation, index) => `operations.${index}.${operation}`)].slice(0, 30),
+      ...(input.semanticBatch ? { semanticBatch: input.semanticBatch } : {}),
     }));
   } catch { /* Diagnostic persistence is fail-soft and cannot replace the safe continuation error. */ }
   console.warn("[PRODUCT_INTENT_CONTINUATION] Canonical continuation failed.", {
     referenceId: input.referenceId, stage: input.stage, sessionId: current?.proposalId ?? input.proposalId, currentRevision: current?.specification.session.currentRevision ?? null,
     activeIssueIds: input.activeIssueIds, deterministicAttempted: input.deterministicAttempted, providerRequested: input.providerRequested,
     providerResultType: input.providerResultType ?? null, patchSchemaPaths: issue.paths, requestedOperationCount: input.requestedOperations?.length ?? null,
-    requestedOperationTypes: input.requestedOperations ?? [], failingOperation: input.failingOperation ?? null, code: input.code,
+    requestedOperationTypes: input.requestedOperations ?? [], failingOperation: input.failingOperation ?? null, semanticBatch: input.semanticBatch ?? null, code: input.code,
   });
   return { ok: false as const, code: input.code, message: input.message };
 }
@@ -724,6 +780,7 @@ export class CanonicalProductIntentService {
     let current: CanonicalProductIntentSession | undefined;
     let sourcePatch: ProductDraftIntentPatch | undefined;
     let requestedOperations: string[] | undefined;
+    let semanticOperations: SemanticProductOperationsResult["operations"] | undefined;
     let stage = "active_session_lookup";
     try {
       current = await this.persistence.load({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId });
@@ -738,6 +795,7 @@ export class CanonicalProductIntentService {
       }
       stage = "semantic_operation_validation";
       const semantic = semanticProductOperationsResultSchema.parse({ kind: "semantic_operations", operations: input.operations });
+      semanticOperations = semantic.operations;
       requestedOperations = semantic.operations.map((operation) => operation.op);
       console.info("[PRODUCT_SEMANTIC_CONTINUITY]", {
         referenceId,
@@ -768,7 +826,7 @@ export class CanonicalProductIntentService {
         return await continuationFailure({
           referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId,
           stage: "semantic_operation_validation", current, activeIssueIds: [], deterministicAttempted: true, providerRequested: false,
-          patch: sourcePatch, requestedOperations, code: "PRODUCT_SEMANTIC_OPERATION_NO_CHANGE",
+          patch: sourcePatch, requestedOperations, semanticBatch: semanticBatchDiagnostic({ operations: semanticOperations, stage, originalRevisionUnchanged: true }), code: "PRODUCT_SEMANTIC_OPERATION_NO_CHANGE",
           message: `That product change does not alter the current draft. Review the current configuration and try again. Reference: ${referenceId}.`,
         });
       }
@@ -791,6 +849,7 @@ export class CanonicalProductIntentService {
         stage: stale ? "stale_revision" : stage, current, activeIssueIds: [], deterministicAttempted: true, providerRequested: false,
         patch: sourcePatch, error, requestedOperations,
         failingOperation: error instanceof SemanticProductOperationError ? { index: error.operationIndex, type: error.operationType } : null,
+        semanticBatch: semanticBatchDiagnostic({ operations: semanticOperations, error, stage: stale ? "stale_revision" : stage, originalRevisionUnchanged: stage !== "revision_persistence" }),
         validationSchema: error instanceof z.ZodError ? "SemanticProductOperations" : null,
         resolverStage: stage === "canonical_validation" || stage === "tenant_reference_resolution" ? "canonical_resolver" : null,
         persistenceAttempted: stage === "revision_persistence", persistenceResult: stage === "revision_persistence" ? "failed" : "not_attempted",

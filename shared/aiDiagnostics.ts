@@ -23,6 +23,17 @@ export const aiDiagnosticEnvelopeSchema = z.object({
    * structural summaries; neither provider output nor customer content is kept. */
   sessionId: safeId.nullable().optional(), currentRevision: z.number().int().nonnegative().nullable().optional(),
   patchOperationCount: z.number().int().nonnegative().max(50).nullable().optional(), patchPaths: z.array(safeText).max(30).optional(),
+  /** Safe server-derived details for an Operator Product Builder batch. This
+   * makes a failed dependent edit diagnosable without persisting model prose. */
+  semanticBatch: z.object({
+    operationCount: z.number().int().nonnegative().max(24),
+    operationTypes: z.array(safeText).max(24),
+    failingOperation: z.object({
+      index: z.number().int().positive(), type: safeText, targetLabels: z.array(safeText).max(4),
+      validationStage: safeText, dependsOnPriorBatchOperation: z.boolean(), failureCode: safeText.nullable(),
+    }).strict().nullable(),
+    originalRevisionUnchanged: z.boolean(),
+  }).strict().optional(),
   /** Runtime identity is safe operational metadata. It lets an administrator
    * distinguish an old deployment from the current Operator architecture
    * without retaining prompts, provider output, URLs, or credentials. */
