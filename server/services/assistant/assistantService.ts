@@ -911,10 +911,18 @@ export class AssistantService {
         plannerOperation: null, selectedCapability: null, specialistName: "operator_runtime", optionNormalizationStage: null, resolverStage: null,
         persistenceAttempted: true, persistenceResult: "succeeded", createdAt: new Date().toISOString(),
         operatorRuntime: {
+          ...(() => {
+            const toolObservations = run.observations.slice(-12).map((observation) => ({ toolName: observation.toolName.slice(0, 160), status: observation.status }));
+            const firstFailed = run.observations.find((observation) => observation.status === "rejected" || observation.status === "failed" || observation.status === "timed_out");
+            return {
+              toolObservations,
+              firstFailedTool: firstFailed ? { toolName: firstFailed.toolName.slice(0, 160), status: firstFailed.status } : null,
+            };
+          })(),
           step: Math.max(1, Math.min(25, run.diagnostics.stepsConsumed)),
           decisionType: run.response === "I couldn't complete the request because the AI Operator could not complete its investigation." ? null : "fail",
           toolName: run.observations.at(-1)?.toolName ?? null,
-          argumentValidationSucceeded: run.observations.length > 0 && run.observations.at(-1)?.status !== "rejected",
+          argumentValidationSucceeded: run.observations.length > 0 && !run.observations.some((observation) => observation.status === "rejected"),
           handlerEntered: run.observations.length > 0, observationReturned: run.observations.length > 0,
           continuationStarted: run.diagnostics.providerDecisionCount > 1,
           finalResultAccepted: false, failureKind: operatorFailureKind(run.response),
