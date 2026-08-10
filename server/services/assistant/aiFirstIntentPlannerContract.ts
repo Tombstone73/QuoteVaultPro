@@ -59,6 +59,7 @@ export const assistantIntentCapabilityIdValues = [
   "products_workflow",
   "clone_product",
   "update_inactive_product",
+  "update_existing_product",
   "replace_product_matrix",
   "replace_product_tiers",
   "create_quote",

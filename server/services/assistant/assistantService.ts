@@ -27,6 +27,7 @@ import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredPro
 import { aiProviderResolver } from "../ai/aiProviderResolver";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { productManagementSkillService, type ActiveSemanticProductDraftContext } from "./productManagementSkill";
+import { existingProductEditOperationsSchema, existingProductEditService, type TrustedExistingProductEditContext } from "./existingProductEditService";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
 import { crmManagementService } from "./crmManagementService";
@@ -181,6 +182,14 @@ function hasPermission(actor: AssistantActor | undefined, permission: string): b
   return Boolean(actor?.permissions?.includes(permission));
 }
 
+/** Prefer the current Product Editor context, then one retained trusted product
+ * reference. This is a server-selected target; a provider never supplies it. */
+function trustedExistingProductId(context: AssistantContextEnvelope, references: readonly { type: string; id: string }[]): string | null {
+  if (context.entityType === "product" && typeof context.entityId === "string") return context.entityId;
+  const productIds = Array.from(new Set(references.filter((reference) => reference.type === "product" && typeof reference.id === "string").map((reference) => reference.id)));
+  return productIds.length === 1 ? productIds[0]! : null;
+}
+
 export function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
@@ -303,7 +312,7 @@ const semanticProductOperationsToolInputSchema: Record<string, unknown> = {
  * schema published by products.apply_operations. */
 const beginProductDraftToolInputSchema: Record<string, unknown> = {
   type: "object", additionalProperties: false,
-  properties: { initialOperations: (semanticProductOperationsToolInputSchema.properties as Record<string, unknown>).operations },
+  properties: { target: { enum: ["new_product"] }, initialOperations: (semanticProductOperationsToolInputSchema.properties as Record<string, unknown>).operations },
 };
 
 /** Read-only draft pricing accepts business labels only. A single bounded
@@ -383,28 +392,35 @@ function operatorBusinessContext(input: {
   activeSemanticProductDraft: ActiveSemanticProductDraftContext | null;
   canBeginProductDraft: boolean;
   canApplyProductOperations: boolean;
+  existingProduct: TrustedExistingProductEditContext | null;
+  canEditExistingProduct: boolean;
 }): AssistantOperatorBusinessContext {
   const product = input.activeSemanticProductDraft;
   const unresolvedDecisions = product
     ? product.outstandingDecisions.map((decision) => ({ item: decision.path, question: decision.question, choices: decision.choices }))
     : input.missingInformation.map((item) => ({ item }));
   return {
-    taskType: product ? "product_draft" : input.domain ?? "general_assistance",
+    taskType: input.existingProduct ? "existing_product" : product ? "product_draft" : input.domain ?? "general_assistance",
     businessStateSummary: product
       ? `Product draft \"${product.name}\" is ${product.readyForReview ? "ready for review" : "still collecting business decisions"}.`
-      : input.workingSummary,
+      : input.existingProduct ? `Existing persisted product \"${input.existingProduct.name}\" is ${input.existingProduct.lifecycle}; its current pricing configuration is PBV2 ${input.existingProduct.pricingLifecycle}.`
+        : input.workingSummary,
     unresolvedDecisions,
     recentOperations: product?.recentBusinessOperations ?? persistedRecentOperatorOperations(input.semanticChanges),
     trustedSelections: product?.trustedSelections ?? [],
     readiness: product ? (product.readyForReview ? "ready" : product.outstandingDecisions.length ? "needs_input" : "in_progress") : unresolvedDecisions.length ? "needs_input" : "unknown",
-    constraints: product
+    constraints: input.existingProduct
+      ? ["This is an existing persisted product, not a new Product Builder draft.", "Use products.apply_existing_operations for a requested edit; it creates a protected preview and requires GO.", "Use products.begin_draft only when the user intends to create a new product, including a new product based on this one."]
+      : product
       ? ["Use only products.apply_operations for a draft edit.", "Do not regenerate the product or expose canonical persistence data.", "Product creation remains review/GO-gated."]
       : ["Use registered, permission-aware tools only.", "Trusted observations are not authorization or freshness authority."],
     capabilities: [
       ...(input.canBeginProductDraft ? ["products.begin_draft"] : []),
       ...(input.canApplyProductOperations ? ["products.apply_operations"] : []),
       ...(input.canApplyProductOperations ? ["products.preview_draft_pricing"] : []),
+      ...(input.canEditExistingProduct && input.existingProduct ? ["products.apply_existing_operations"] : []),
     ],
+    existingProduct: input.existingProduct,
   };
 }
 
@@ -500,7 +516,7 @@ export class AssistantService {
       externalResearchEnabled: Boolean(resolved.enabled && resolved.externalResearchEnabled),
       mcpEnabled: false,
       productActivationEnabled: false,
-      activeProductEditingEnabled: false,
+      activeProductEditingEnabled: hasPermission(actor, "assistant.products.update_existing_product"),
       diagnosticsEnabled: hasPermission(actor, "assistant.diagnostics.view"),
       composerHelperText: !readToolsEnabled
         ? "System Guide help is available. " + (resolved.unavailableReason ?? "Business record questions are unavailable until AI configuration is complete.")
@@ -723,6 +739,11 @@ export class AssistantService {
     const mayApplyProductOperations = mayBeginProductDraft
       || hasPermission(actor, "assistant.products.update_inactive_draft")
       || hasPermission(actor, "assistant.products.update_inactive_draft_batch");
+    const existingProductId = trustedExistingProductId(request.context, task.entityReferences);
+    const mayEditExistingProduct = hasPermission(actor, "assistant.products.update_existing_product");
+    const existingProduct = existingProductId && mayEditExistingProduct
+      ? await existingProductEditService.trustedContext({ organizationId: scope.organizationId, productId: existingProductId }).catch(() => null)
+      : null;
     const activeProductProposalIdForContext = task.canonicalProductIntentProposalId;
     const activeSemanticProductDraft = activeProductProposalIdForContext
       ? await (async () => {
@@ -738,6 +759,7 @@ export class AssistantService {
       correlationId, conversationId: conversation.id, taskId: task.id,
       activeSemanticDraft: Boolean(activeSemanticProductDraft),
       outstandingDecisionCount: activeSemanticProductDraft?.outstandingDecisions.length ?? 0,
+      trustedExistingProduct: Boolean(existingProduct),
       compatibilityFallback: "bypassed",
     });
     // Ordinary Operator product creation uses these direct business doors.
@@ -746,9 +768,10 @@ export class AssistantService {
     let activeProductProposalId = task.canonicalProductIntentProposalId;
     const beginProductIntentTools: AssistantOperatorSemanticTool[] = mayBeginProductDraft ? [{
       name: "products.begin_draft",
-      description: "Establish one new authoritative unfinished product draft. When the user already supplied product details, include the understood business changes as initialOperations so the draft is populated in this call; use the same business operations as products.apply_operations. This remains an intermediate action, so continue this task when useful. Draft edits do not require GO; final product creation remains review/GO-gated. Do not use if an unfinished draft is already active.",
+      description: "Establish one NEW authoritative unfinished product draft. Use only when the user intends to create a new product. Never use this to modify an existing persisted product; use products.apply_existing_operations for that. When a trusted existing product is in context and the user explicitly wants a new product based on it, set target to new_product. When the user already supplied product details, include the understood business changes as initialOperations so the new draft is populated in this call. Do not use if an unfinished new-product draft is already active.",
       inputSchema: beginProductDraftToolInputSchema,
       execute: async ({ arguments: args, context }) => {
+        if (existingProduct && args.target !== "new_product") return { status: "rejected" as const, warning: "A trusted existing product is in context. Use the existing-product edit capability unless the request explicitly creates a new product." };
         if (activeProductProposalId) return { status: "partial" as const, warning: "An unfinished product draft is already active." };
         const initialOperations = Array.isArray(args.initialOperations) ? args.initialOperations : undefined;
         const product = await this.productIntentDispatcher.beginCanonicalProductDraft({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, message: context.goal, ...(initialOperations?.length ? { initialOperations } : {}) });
@@ -801,7 +824,31 @@ export class AssistantService {
         } catch (error) { return { status: "rejected" as const, warning: error instanceof Error ? error.message : "The active product draft could not be priced." }; }
       },
     }] : [];
-    const productIntentTools: AssistantOperatorSemanticTool[] = [...beginProductIntentTools, ...applyProductIntentTools, ...previewProductIntentTools];
+    const existingProductEditTools: AssistantOperatorSemanticTool[] = existingProduct && existingProductId && mayEditExistingProduct ? [{
+      name: "products.apply_existing_operations",
+      description: "Prepare a protected edit to the trusted existing persisted product's current PBV2 DRAFT. Use this for an existing-product mutation such as changing an option default. This is not new-product creation: it never calls Product Builder begin_draft, creates no product, makes no change before GO, and the server revalidates the current DRAFT at GO. Pass business labels only; product identity is supplied by trusted context.",
+      inputSchema: {
+        type: "object", additionalProperties: false, required: ["operations"],
+        properties: {
+          operations: {
+            type: "array", minItems: 1, maxItems: 12,
+            items: { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "set_option_default" }, optionGroup: { type: "string" }, value: { type: "string" } } },
+          },
+        },
+      },
+      execute: async ({ arguments: args, context }) => {
+        const parsed = existingProductEditOperationsSchema.safeParse({ operations: args.operations });
+        if (!parsed.success) return { status: "rejected" as const, warning: "Existing-product edits require one or more supported business operations." };
+        try {
+          const proposal = await existingProductEditService.buildProposal({ organizationId: context.scope.organizationId, productId: existingProductId, operations: parsed.data });
+          const summary = proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}`).join("; ");
+          return { status: "succeeded" as const, result: { status: "succeeded", data: { response: `Prepared protected existing-product edit: ${summary}. GO is required before any change.`, taskDomain: "products", targetType: "existing_product" }, provenance: { sourceLinks: [{ label: proposal.productName, href: `/products/${encodeURIComponent(proposal.productId)}/edit`, entityType: "product", entityId: proposal.productId }], freshness: { capturedAt: new Date().toISOString() } } } as any, presentation: { cards: [{ kind: "action_proposal", title: `Review existing product edit: ${proposal.productName}`, summary: `${summary}. No change has been made; GO is required.`, sourceLinks: [{ label: `Open ${proposal.productName}`, href: `/products/${encodeURIComponent(proposal.productId)}/edit`, entityType: "product", entityId: proposal.productId }], plan: { action: "products.update_existing_product", productId: proposal.productId, operations: parsed.data.operations, proposalFingerprint: proposal.fingerprint } } as any] } };
+        } catch (error) {
+          return { status: "rejected" as const, warning: error instanceof Error ? error.message : "The existing product could not be prepared for editing." };
+        }
+      },
+    }] : [];
+    const productIntentTools: AssistantOperatorSemanticTool[] = [...beginProductIntentTools, ...applyProductIntentTools, ...previewProductIntentTools, ...existingProductEditTools];
     const semanticTools: AssistantOperatorSemanticTool[] = [...productIntentTools, {
       name: "analysis.run",
       description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
@@ -819,9 +866,9 @@ export class AssistantService {
       goal: request.message,
       taskId: task.id,
       initialWorkingSummary: task.workingSummary,
-      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations }), entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations, existingProduct, canEditExistingProduct: mayEditExistingProduct }), entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
     });
-    const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
+    const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations" || item.toolName === "products.apply_existing_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
     const compositeCards = run.observations.flatMap((observation) => observation.presentation?.cards ?? []);
     const cards = Array.isArray(productObservation?.presentation?.cards)

@@ -47,6 +47,7 @@ export const assistantCapabilityCommandPermissions = {
   "products.create_inactive_draft": "assistant.products.create_inactive_draft",
   "products.update_inactive_draft": "assistant.products.update_inactive_draft",
   "products.update_inactive_draft_batch": "assistant.products.update_inactive_draft_batch",
+  "products.update_existing_product": "assistant.products.update_existing_product",
 } as const;
 
 export const assistantCapabilityCommandDescriptions = {
@@ -79,6 +80,7 @@ export const assistantCapabilityCommandDescriptions = {
   "products.create_inactive_draft": "help create an inactive product draft after your confirmation",
   "products.update_inactive_draft": "update an inactive product draft after your confirmation",
   "products.update_inactive_draft_batch": "update a bounded set of inactive product drafts after your confirmation",
+  "products.update_existing_product": "update an existing product's current PBV2 DRAFT after your confirmation",
 } as const;
 
 export type AssistantCapabilityProductionCommand = keyof typeof assistantCapabilityCommandPermissions;

@@ -43,6 +43,7 @@ export const assistantProductionCommandAllowlist = [
   "products.clone_to_inactive_draft",
   "products.replace_inactive_matrix",
   "products.replace_inactive_quantity_tiers",
+  "products.update_existing_product",
   "quotes.create_draft",
   "quotes.update_draft",
   "orders.create",

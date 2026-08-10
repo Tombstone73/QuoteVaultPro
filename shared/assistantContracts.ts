@@ -121,7 +121,7 @@ export const assistantCapabilitySchema = z.object({
   externalResearchEnabled: z.boolean(),
   mcpEnabled: z.literal(false),
   productActivationEnabled: z.literal(false),
-  activeProductEditingEnabled: z.literal(false),
+  activeProductEditingEnabled: z.boolean(),
   /** Enables expandable implementation details for authorized staff only. */
   diagnosticsEnabled: z.boolean(),
   /** Presentation text derived from this exact server object. */

@@ -87,6 +87,9 @@ export type AssistantOperatorBusinessContext = {
   readiness: "ready" | "needs_input" | "in_progress" | "unknown";
   constraints: string[];
   capabilities: string[];
+  /** A server-refreshed existing product, intentionally label-only. Product
+   * identity stays in the trusted execution context, never a model argument. */
+  existingProduct?: { name: string; lifecycle: "active" | "inactive"; pricingLifecycle: "DRAFT" | "ACTIVE"; optionGroups: Array<{ label: string; defaultValue: string | null; values: string[] }> } | null;
 };
 
 export interface AssistantOperatorToolExecutor {

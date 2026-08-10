@@ -61,6 +61,7 @@ function buildActor(req: Request, userId: string): AssistantActor {
         ...(role === "owner" || role === "admin" ? [
           "assistant.products.create_inactive_draft",
           "assistant.products.update_inactive_draft",
+          "assistant.products.update_existing_product",
           "assistant.diagnostics.view",
           // Financial reporting is deliberately derived from the server-owned
           // tenant role, never a browser supplied capability or model input.

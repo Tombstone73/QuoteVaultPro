@@ -1,0 +1,37 @@
+import { describe, expect, jest, test } from "@jest/globals";
+import { createExistingProductEditExecutionCommand } from "../services/assistant/execution/existingProductEditCommand";
+
+const fingerprint = "a".repeat(64);
+const proposal = { productId: "product_1", productName: "Translucent Vinyl", productActive: true, treeId: "tree_1", treeUpdatedAt: "2026-08-10T00:00:00.000Z", changes: [{ field: "Layer default", before: "5 Layer", after: "3 Layer" }], fingerprint };
+const input = { productId: "product_1", operations: [{ op: "set_option_default", optionGroup: "Layer", value: "3 Layer" }], proposalFingerprint: fingerprint };
+const scope = { organizationId: "org_1", userId: "user_1", permissions: ["assistant.products.update_existing_product"], environment: "test" } as const;
+
+describe("existing product edit execution command", () => {
+  test("creates a targeted preview, revalidates stale state, and makes no mutation before GO", async () => {
+    const service = {
+      revalidateProposal: jest.fn(async () => ({ valid: true as const, proposal })),
+      execute: jest.fn(async () => proposal),
+    } as any;
+    const command = createExistingProductEditExecutionCommand(service);
+    const built = await command.buildPreview({ scope, arguments: input, context: {} as any });
+
+    expect(service.execute).not.toHaveBeenCalled();
+    expect(built.preview.title).toContain("Update existing product");
+    expect(built.preview.summary).toContain("Layer default: 5 Layer → 3 Layer");
+    expect(built.preview.summary).toContain("before GO");
+
+    const stale = await command.revalidate({ plan: { sanitizedArguments: input } as any, scope });
+    expect(stale).toEqual({ valid: true, proposal });
+
+    const result = await command.execute({ plan: { sanitizedArguments: input, id: "plan_1", idempotencyKey: "key", correlationId: "correlation" } as any, scope });
+    expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ productId: "product_1", expectedFingerprint: fingerprint }));
+    expect(result.status).toBe("succeeded");
+  });
+
+  test("fails closed when the current PBV2 DRAFT no longer matches the preview", async () => {
+    const service = { revalidateProposal: jest.fn(async () => ({ valid: false as const, code: "EXISTING_PRODUCT_EDIT_STALE", summary: "Changed" })), execute: jest.fn() } as any;
+    const command = createExistingProductEditExecutionCommand(service);
+    await expect(command.buildPreview({ scope, arguments: input, context: {} as any })).rejects.toThrow("EXISTING_PRODUCT_EDIT_STALE");
+    expect(service.execute).not.toHaveBeenCalled();
+  });
+});
