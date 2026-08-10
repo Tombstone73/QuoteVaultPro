@@ -232,7 +232,7 @@ function mergeOperatorEntityReferences(
 ): Array<{ type: string; id: string; label?: string }> {
   const references = new Map<string, { type: string; id: string; label?: string }>();
   const add = (type: unknown, id: unknown, label?: unknown) => {
-    if (typeof type !== "string" || !/^(?:quote|customer|order)$/.test(type)) return;
+    if (typeof type !== "string" || !/^(?:quote|customer|order|product|invoice)$/.test(type)) return;
     if (typeof id !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/.test(id)) return;
     references.set(`${type}:${id}`, { type, id, ...(typeof label === "string" && label.trim() ? { label: label.trim().slice(0, 240) } : {}) });
   };
@@ -430,6 +430,15 @@ function mergeTrustedOperatorObservations(
     .map((observation) => observation.toolName)]
     .slice(-MAX_RECENT_OPERATOR_OPERATIONS);
   return { ...semanticChanges, [trustedObservationStorageKey]: [...retained, ...additions].slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS), [recentOperationStorageKey]: recent };
+}
+
+function operatorFailureKind(response: string): string {
+  if (/provider did not return (?:a )?usable investigation result/i.test(response)) return "provider_result_unusable";
+  if (/provider returned an unusable investigation result/i.test(response)) return "provider_operator_result_invalid";
+  if (/provider did not finish.*timed out/i.test(response)) return "provider_timeout";
+  if (/could not complete.*Operator could not complete its investigation/i.test(response)) return "operator_decision_unavailable";
+  if (/within the configured safety limit/i.test(response)) return "operator_step_limit";
+  return "operator_failed";
 }
 
 export class AssistantService {
@@ -827,12 +836,14 @@ export class AssistantService {
     // never duplicates its canonical Product Intent state.
     const entityReferences = mergeOperatorEntityReferences(task.entityReferences, run.observations);
     const quoteInvestigation = run.observations.some((observation) => observation.toolName === "quotes.search" && observation.status === "succeeded");
+    const productInvestigation = task.domain === "products" || run.observations.some((observation) => observation.toolName.startsWith("products.") || observation.result?.provenance?.sourceLinks.some((link) => link.entityType === "product"));
     const continuesQuoteInvestigation = task.domain === "quotes" || quoteInvestigation;
-    const activeStatus = run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || (continuesQuoteInvestigation && entityReferences.length > 0)
+    const continuesTrustedEntityInvestigation = entityReferences.length > 0 && (task.entityReferences.length > 0 || run.observations.some((observation) => observation.status === "succeeded"));
+    const activeStatus = run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
       ? "active"
       : run.status === "completed" ? "completed" : "blocked";
     await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: {
-      ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : quoteInvestigation ? { domain: "quotes" } : {}),
+      ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
       workingSummary: run.safeWorkingSummary,
       entityReferences,
       semanticChanges: mergeTrustedOperatorObservations(task.semanticChanges, run.observations),
@@ -841,8 +852,30 @@ export class AssistantService {
       lastObservationSummary: run.observations.at(-1)?.warning ?? null,
       status: activeStatus,
     } });
+    const diagnostic = run.status === "failed"
+      ? await persistAiDiagnostic({
+        version: 1, referenceId: correlationId, correlationId, diagnosticType: "operator_runtime",
+        tenantId: scope.organizationId, actorId: actor.userId, conversationId: conversation.id,
+        provider: providerConfig.provider ?? null, model: providerConfig.model ?? null, providerRequestId: null,
+        stage: "operator_runtime_failure", errorCode: operatorFailureKind(run.response),
+        providerResponseState: run.observations.length ? "received" : "not_received",
+        parseMethod: "none", repairAttempted: false, repairResult: "not_attempted",
+        validationSchema: null, validationIssuePaths: [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [],
+        plannerOperation: null, selectedCapability: null, specialistName: "operator_runtime", optionNormalizationStage: null, resolverStage: null,
+        persistenceAttempted: true, persistenceResult: "succeeded", createdAt: new Date().toISOString(),
+        operatorRuntime: {
+          step: Math.max(1, Math.min(25, run.diagnostics.stepsConsumed)),
+          decisionType: run.response === "I couldn't complete the request because the AI Operator could not complete its investigation." ? null : "fail",
+          toolName: run.observations.at(-1)?.toolName ?? null,
+          argumentValidationSucceeded: run.observations.length > 0 && run.observations.at(-1)?.status !== "rejected",
+          handlerEntered: run.observations.length > 0, observationReturned: run.observations.length > 0,
+          continuationStarted: run.diagnostics.providerDecisionCount > 1,
+          finalResultAccepted: false, failureKind: operatorFailureKind(run.response),
+        },
+      }).catch(() => null)
+      : null;
     console.info("[ASSISTANT_OPERATOR_RUNTIME] Ordinary free-text turn handled.", { correlationId, conversationId: conversation.id, taskId: task.id, outcome: run.status, toolCount: run.observations.length, ...run.diagnostics, legacyFallback: false });
-    return this.persistOperatorResponse(input, { response, status, cards, errorCode: run.status === "failed" ? "operator_failed" : null, audits });
+    return this.persistOperatorResponse(input, { response, status, cards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits });
   }
 
   /**

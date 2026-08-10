@@ -143,6 +143,38 @@ describe("configured AI provider", () => {
     expect(JSON.stringify(result.requestMetadata)).not.toContain("private");
   });
 
+  test("continues a product search into a pricing function call without leaking control text", async () => {
+    const fetchMock = jest.fn()
+      .mockResolvedValueOnce(jsonResponse({ status: "completed", output: [{
+        type: "function_call", call_id: "call_search", name: "ph_0_search_global", arguments: '{"query":"Translucent Vinyl - backlit with multilayer printing"}',
+      }] }))
+      .mockResolvedValueOnce(jsonResponse({ status: "completed", output: [{
+        type: "function_call", call_id: "call_pricing", name: "ph_1_products_get_pricing", arguments: '{"productId":"product_translucent"}',
+      }] }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+    const provider = new OpenAiCompatibleBugReviewProvider();
+    const toolCatalog = [
+      { name: "search.global", description: "Search authorized products." },
+      { name: "products.get_pricing", description: "Read current pricing for trusted productId." },
+    ];
+
+    const first = await provider.generateOperatorDecision!({ ...baseRequest(), toolCatalog });
+    const second = await provider.generateOperatorDecision!({
+      ...baseRequest(),
+      toolCatalog,
+      responseContinuation: [
+        ...(first.operatorContinuation?.items ?? []),
+        { type: "function_call_output", call_id: "call_search", output: '{"status":"succeeded","data":{"productId":"product_translucent"}}' },
+      ],
+    });
+
+    expect(JSON.parse(first.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "search.global", arguments: { query: "Translucent Vinyl - backlit with multilayer printing" } }] });
+    expect(JSON.parse(second.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: { productId: "product_translucent" } }] });
+    const continuationBody = JSON.parse(String(fetchMock.mock.calls[1]?.[1]?.body));
+    expect(continuationBody.input).toEqual(expect.arrayContaining([expect.objectContaining({ type: "function_call_output", call_id: "call_search" })]));
+    expect(`${first.rawText}${second.rawText}`).not.toMatch(/<think|DSML/i);
+  });
+
   test("returns a direct Responses API answer without exposing reasoning", async () => {
     global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [
       { type: "reasoning", content: [{ type: "reasoning_text", text: "hidden chain" }] },

@@ -415,6 +415,50 @@ describe("AssistantService Operator Runtime integration", () => {
     expect(repo.createFoundationTurn).toHaveBeenLastCalledWith(expect.objectContaining({ response: "Acme is the customer on the newest quote.", mode: "ai_operator_runtime" }));
   });
 
+  test("composes product discovery, summary, and pricing and reuses the trusted product on a follow-up", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository();
+    const tasks = continuingTaskStore();
+    const productId = "product_translucent";
+    const executor = {
+      catalog: () => [
+        { name: "search.global", description: "Search tenant-scoped products." },
+        { name: "products.get_summary", description: "Return one trusted product summary." },
+        { name: "products.get_pricing", description: "Return rates, defaults, dependencies, and impacts for a trusted productId." },
+      ],
+      execute: jest.fn(async ({ toolName, arguments: args }: any) => {
+        if (toolName === "search.global") return { toolName, status: "succeeded", result: { status: "succeeded", data: { products: [{ id: productId, label: "Translucent Vinyl - backlit with multilayer printing" }] }, provenance: { sourceLinks: [{ label: "Translucent Vinyl - backlit with multilayer printing", href: `/products/${productId}/edit`, entityType: "product", entityId: productId, capturedAt: "2026-08-10T00:00:00.000Z" }], freshness: { capturedAt: "2026-08-10T00:00:00.000Z" } } } };
+        if (toolName === "products.get_summary") {
+          expect(args).toEqual({ productId });
+          return { toolName, status: "succeeded", result: { status: "succeeded", data: { product: { recordId: productId, label: "Translucent Vinyl - backlit with multilayer printing", entityType: "product" }, active: true, category: "Roll Printing" }, provenance: { sourceLinks: [{ label: "Translucent Vinyl - backlit with multilayer printing", href: `/products/${productId}/edit`, entityType: "product", entityId: productId, capturedAt: "2026-08-10T00:00:00.000Z" }], freshness: { capturedAt: "2026-08-10T00:00:00.000Z" } } } };
+        }
+        expect(toolName).toBe("products.get_pricing");
+        expect(args).toEqual({ productId });
+        return { toolName, status: "succeeded", result: { status: "succeeded", data: { product: { recordId: productId, label: "Translucent Vinyl - backlit with multilayer printing", entityType: "product" }, active: true, pricing: { status: "configuration", lifecycle: "DRAFT", configuration: { baseRates: { perSquareFootCents: 500 }, options: [{ label: "Layers", defaultSelection: "5 Layer", choices: [{ label: "3 Layer", pricingImpactSummary: "$4.00 per sq ft" }, { label: "5 Layer", pricingImpactSummary: "$5.00 per sq ft" }] }, { label: "Contour Cutting", defaultSelection: "No", choices: [{ label: "Yes", pricingImpactSummary: "+10% of base" }] }, { label: "Weeding and Taping", defaultSelection: "No", availableWhen: { optionGroup: "Contour Cutting", value: "Yes" }, choices: [{ label: "Yes", pricingImpactSummary: "+20% of base; +30% total when Contour Cutting is Yes" }] }] } } }, provenance: { sourceLinks: [{ label: "Translucent Vinyl - backlit with multilayer printing", href: `/products/${productId}/edit`, entityType: "product", entityId: productId, capturedAt: "2026-08-10T00:00:00.000Z" }], freshness: { capturedAt: "2026-08-10T00:00:00.000Z" } } } };
+      }),
+    };
+    const provider = { decide: jest.fn(async ({ goal, observations, task }: any) => {
+      if (goal.startsWith("Look up")) {
+        if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "search.global", arguments: { query: "Translucent Vinyl - backlit with multilayer printing" } }] };
+        if (observations.length === 1) return { kind: "call_tools", calls: [{ toolName: "products.get_summary", arguments: { productId } }] };
+        if (observations.length === 2) return { kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: { productId } }] };
+        return { kind: "complete", response: "The active Translucent Vinyl product has current PBV2 DRAFT pricing: 3 Layer is $4 and 5 Layer is $5 per square foot; 5 Layer defaults, Contour defaults to No and adds 10%, and Weed/Tape defaults to No and is available only with Contour Yes for a 30% combined total impact." };
+      }
+      expect(task.entityReferences).toEqual(expect.arrayContaining([expect.objectContaining({ type: "product", id: productId })]));
+      return observations.length
+        ? { kind: "complete", response: "The same product uses the trusted current PBV2 pricing configuration." }
+        : { kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: { productId } }] };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, () => executor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff", "assistant.finance.read"] }, { message: "Look up the Translucent Vinyl - backlit with multilayer printing product we just created and show me its current pricing, defaults, and option dependencies.", context });
+    expect(tasks.updates.at(-1).patch).toEqual(expect.objectContaining({ domain: "products", status: "active", entityReferences: expect.arrayContaining([expect.objectContaining({ type: "product", id: productId })]) }));
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff", "assistant.finance.read"] }, { message: "That's the product I'm talking about. Show me its pricing.", context });
+    expect(executor.execute.mock.calls.map(([call]: any[]) => call.toolName)).toEqual(["search.global", "products.get_summary", "products.get_pricing", "products.get_pricing"]);
+    expect(repo.createFoundationTurn).toHaveBeenLastCalledWith(expect.objectContaining({ response: "The same product uses the trusted current PBV2 pricing configuration.", mode: "ai_operator_runtime" }));
+  });
+
   test("the exact quote-formatting follow-up answers from retained observations without another lookup", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = continuingTaskStore();

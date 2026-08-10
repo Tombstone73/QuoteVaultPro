@@ -7,7 +7,7 @@ const safeText = z.string().trim().min(1).max(160);
  * model output, credentials, headers, URLs, and stack traces are excluded. */
 export const aiDiagnosticEnvelopeSchema = z.object({
   version: z.literal(1), referenceId: safeId, correlationId: safeId,
-  diagnosticType: z.enum(["ai_planner", "product_intent_compiler", "specialist_dispatch"]),
+  diagnosticType: z.enum(["ai_planner", "product_intent_compiler", "specialist_dispatch", "operator_runtime"]),
   tenantId: safeId, actorId: safeId.nullable(), conversationId: safeId.nullable(),
   provider: safeText.nullable(), model: safeText.nullable(), providerRequestId: safeId.nullable(),
   stage: safeText, errorCode: safeText.nullable(), providerResponseState: z.enum(["not_received", "received", "empty", "parse_failed", "contract_failed", "accepted"]),
@@ -33,6 +33,16 @@ export const aiDiagnosticEnvelopeSchema = z.object({
       validationStage: safeText, dependsOnPriorBatchOperation: z.boolean(), failureCode: safeText.nullable(),
     }).strict().nullable(),
     originalRevisionUnchanged: z.boolean(),
+  }).strict().optional(),
+  /** Safe structural facts for an ordinary Operator failure. These identify
+   * the rejected boundary without retaining prompts, arguments, observations,
+   * or provider reasoning. */
+  operatorRuntime: z.object({
+    step: z.number().int().positive().max(25),
+    decisionType: safeText.nullable(), toolName: safeText.nullable(),
+    argumentValidationSucceeded: z.boolean(), handlerEntered: z.boolean(),
+    observationReturned: z.boolean(), continuationStarted: z.boolean(),
+    finalResultAccepted: z.boolean(), failureKind: safeText.nullable(),
   }).strict().optional(),
   /** Runtime identity is safe operational metadata. It lets an administrator
    * distinguish an old deployment from the current Operator architecture

@@ -31,6 +31,48 @@ describe("AI diagnostic persistence", () => {
     expect(inserted[0]).toEqual(expect.objectContaining({ orgId: "org_1", correlationId: result.ok ? "" : result.error.correlationId, metadata: expect.objectContaining({ referenceId: result.ok ? "" : result.error.correlationId, correlationId: result.ok ? "" : result.error.correlationId, diagnosticType: "ai_planner" }) }));
   });
 
+  test("persists the displayed Operator failure reference with safe runtime-stage metadata", async () => {
+    const referenceId = "opr-22222222-2222-4222-8222-222222222222";
+    const result = await persistAiDiagnostic({
+      ...diagnostic(referenceId),
+      diagnosticType: "operator_runtime",
+      stage: "operator_runtime_failure",
+      errorCode: "provider_result_unusable",
+      providerResponseState: "not_received",
+      parseMethod: "none",
+      repairAttempted: false,
+      repairResult: "not_attempted",
+      validationSchema: null,
+      validationIssuePaths: [],
+      validationIssueCodes: [],
+      specialistName: "operator_runtime",
+      persistenceAttempted: true,
+      persistenceResult: "succeeded",
+      operatorRuntime: {
+        step: 2,
+        decisionType: "fail",
+        toolName: "products.get_summary",
+        argumentValidationSucceeded: true,
+        handlerEntered: true,
+        observationReturned: true,
+        continuationStarted: true,
+        finalResultAccepted: false,
+        failureKind: "provider_result_unusable",
+      },
+    });
+
+    expect(result).toMatchObject({ referenceId, correlationId: referenceId, diagnosticType: "operator_runtime" });
+    expect(inserted).toHaveLength(1);
+    expect(inserted[0]).toEqual(expect.objectContaining({
+      correlationId: referenceId,
+      metadata: expect.objectContaining({
+        referenceId,
+        diagnosticType: "operator_runtime",
+        operatorRuntime: expect.objectContaining({ toolName: "products.get_summary", failureKind: "provider_result_unusable" }),
+      }),
+    }));
+  });
+
   test("uses only allowlisted deployment identity values in diagnostic metadata", () => {
     expect(resolveAiDiagnosticDeploymentFingerprint({ RAILWAY_GIT_COMMIT_SHA: "8823776c", RAILWAY_DEPLOYMENT_ID: "deployment_1", RAILWAY_ENVIRONMENT: "development", SECRET_URL: "postgres://hidden" })).toEqual({
       gitSha: "8823776c", buildId: "deployment_1", environment: "development", operatorArchitectureVersion: "operator-business-operations-v1",
