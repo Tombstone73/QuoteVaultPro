@@ -2,6 +2,7 @@ import { useState } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { ArrowDown, ArrowUp, ArrowUpDown, Plus, FileText, DollarSign, Mail } from "lucide-react";
 import { useAuth } from "@/hooks/useAuth";
 import { useBatchSendInvoices, useInvoices, type InvoiceEmailStatus } from "@/hooks/useInvoices";
