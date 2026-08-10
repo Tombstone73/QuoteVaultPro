@@ -508,6 +508,11 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       const webSources = nativeWebSources(output);
       const outputTextFragments = deepSeekOutputTextFragments(output);
       const finalText = outputTextFragments.join("");
+      // DeepSeek can put a complete reasoning block in the same visible
+      // message item as its terminal answer. It is never user-facing output.
+      // Remove it only when a non-empty, control-free terminal payload remains;
+      // incomplete or unknown control text stays on the safe-rejection path.
+      const normalizedTerminalText = normalizeDeepSeekTerminalText(finalText);
       console.info("[AI_OPERATOR_TRACE]", {
         stage: "provider_decision_received", requestSequence: request.operatorRequestSequence ?? null,
         responseStatus, outputItemTypes, structuredToolCallDetected: decodedFunctionCalls.length > 0,
@@ -529,9 +534,9 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       // A valid Operator decision is a control protocol, not native terminal
       // prose. Normalize known DeepSeek transport artifacts before deciding
       // whether remaining text is unsafe control leakage.
-      const parsedTerminalDecision = parseDeepSeekTerminalDecision(finalText);
+      const parsedTerminalDecision = parseDeepSeekTerminalDecision(normalizedTerminalText);
       const terminalDecision = parsedTerminalDecision?.decision ?? null;
-      const terminalCompletion = terminalDecision ? null : normalizeDeepSeekOperatorTerminal(finalText);
+      const terminalCompletion = terminalDecision ? null : normalizeDeepSeekOperatorTerminal(normalizedTerminalText);
       const terminalClassification = parsedTerminalDecision?.classification ?? terminalCompletion?.classification ?? null;
       const hasTerminalDecision = Boolean(terminalDecision || terminalCompletion);
       const parseClassification = functionCalls.length ? "function_calls" : terminalDecision ? "operator_decision" : nativeWebSearchCalls.length && !hasTerminalDecision ? "native_web_continuation" : terminalCompletion ? "terminal_completion" : "empty_response";
@@ -539,7 +544,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         output, outputItemTypes, outputItemStatuses, functionCallItems, functionCalls, decodedFunctionCalls,
         outputTextFragments, finalText, responseStatus, terminalDecision, terminalClassification, parseClassification,
       });
-      if (!functionCalls.length && !terminalDecision && hasProviderControlProtocol(finalText)) {
+      if (!functionCalls.length && !terminalDecision && hasProviderControlProtocol(normalizedTerminalText)) {
         console.warn("[AI_PROVIDER] DeepSeek Responses returned unconsumed control protocol.", {
           provider: config.provider, model: config.model, apiSurface: "deepseek_responses", providerRequestId,
           responseStatus, outputItemTypes, responseItemCount: output.length, structuredToolCallDetected: false,
@@ -655,6 +660,19 @@ function stripKnownDeepSeekTransportSuffix(value: string): { text: string; strip
   const trimmed = value.trim();
   const text = trimmed.replace(/<\/parameter>\s*$/i, "").trim();
   return { text, stripped: text !== trimmed };
+}
+
+/**
+ * Remove only complete reasoning blocks when an ordinary terminal response
+ * remains. An unclosed marker, a reasoning-only output, or any other control
+ * protocol remains untouched so the established safe-rejection boundary owns
+ * it. This never exposes the removed provider reasoning to the Operator.
+ */
+function normalizeDeepSeekTerminalText(value: string): string {
+  const trimmed = value.trim();
+  const withoutCompleteReasoning = trimmed.replace(/<think(?:\s[^>]*)?>[\s\S]*?<\/think>/gi, "").trim();
+  if (withoutCompleteReasoning === trimmed || !withoutCompleteReasoning || hasProviderControlProtocol(withoutCompleteReasoning)) return trimmed;
+  return withoutCompleteReasoning;
 }
 
 function deepSeekOperatorResponseMetadata(input: {

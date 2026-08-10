@@ -194,6 +194,16 @@ describe("configured AI provider", () => {
     expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "Weeding and Taping is already limited to Contour Cutting = Yes, and its default is No. I did not change anything." });
   });
 
+  test("strips a complete DeepSeek reasoning block when a valid terminal decision remains", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: '<think>private provider reasoning</think>{"kind":"complete","response":"Pricing inspection complete."}' }] }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "Pricing inspection complete." });
+    expect(result.rawText).not.toContain("private provider reasoning");
+    expect(JSON.stringify(result.requestMetadata)).not.toContain("private provider reasoning");
+  });
+
   test("uses a separate bounded output budget for Operator Responses", () => {
     expect(resolveAiOperatorMaxOutputTokens({} as NodeJS.ProcessEnv)).toBe(8192);
     expect(resolveAiOperatorMaxOutputTokens({ AI_OPERATOR_MAX_OUTPUT_TOKENS: "12000" } as NodeJS.ProcessEnv)).toBe(12000);
