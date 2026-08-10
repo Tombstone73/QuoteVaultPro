@@ -144,6 +144,10 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
   if (intent.pricing.model === "unresolved") issues.push({ code: "PRICING_UNRESOLVED", path: "pricing.model", severity: "question", message: "Should pricing be per piece, per square foot, a matrix, or quantity tiers?" });
   if ((intent.pricing.model === "one_dimensional_matrix" || intent.pricing.model === "two_dimensional_matrix") && intent.pricing.unit === "unresolved") issues.push({ code: "PRICING_UNIT_UNRESOLVED", path: "pricing.unit", severity: "question", message: "Are these matrix prices per piece or per square foot?" });
   for (const group of intent.optionGroups) {
+    if (group.values.length === 0) {
+      issues.push({ code: "OPTION_GROUP_VALUES_UNRESOLVED", path: `optionGroups.${group.key}.values`, severity: "question", message: `${group.label} needs at least one option value.` });
+      continue;
+    }
     if (group.required && group.selectionMode === "single" && group.values.every((value) => !value.isDefault)) {
       issues.push({ code: "OPTION_DEFAULT_UNRESOLVED", path: optionDefaultPath(group.key), severity: "question", message: optionDefaultQuestion(group) });
     }
@@ -155,7 +159,7 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
     issues.push({ code: field.code || "UNRESOLVED_FIELD", path: field.path, severity: "question", message: field.question ?? "This field needs a decision." });
   }
   validateTiers(intent, issues);
-  if (await context.duplicateName?.(intent.identity.name)) issues.push({ code: "DUPLICATE_PRODUCT_NAME", path: "identity.name", severity: "blocker", message: "A product with this name already exists; select it or explicitly request a clone." });
+  if (intent.fieldMetadata["identity.name"]?.source !== "unresolved" && await context.duplicateName?.(intent.identity.name)) issues.push({ code: "DUPLICATE_PRODUCT_NAME", path: "identity.name", severity: "blocker", message: "A product with this name already exists; select it or explicitly request a clone." });
   // PBV2 projection is meaningful only after canonical resolution succeeds;
   // otherwise it repeats ordinary unanswered-field feedback as a blocker.
   if (issues.length === 0) issues.push(...(await context.validatePbv2Compatibility?.(intent) ?? []));

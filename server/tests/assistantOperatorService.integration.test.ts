@@ -52,20 +52,70 @@ function semanticOnlyExecutor(_audit: unknown, semanticTools: readonly any[]) {
 }
 
 describe("AssistantService Operator Runtime integration", () => {
-  test("the exact complex Translucent Vinyl request reaches the canonical proposal tool from createTurn", async () => {
+  test("the exact complex Translucent Vinyl request begins a direct draft and applies only business operations", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore();
     const exactRequest = "Let's add a new product called \"Translucent Vinyl - backlit with multilayer printing\". It should have an option for 3 layer or 5 layer. 3 layer is $4 sq ft and 5 layer is $5 sq ft. Another option is contour cutting. Contour cutting adds 10% to the total price. If the answer is yes, then an additional option appears that is for weeding and taping. If they want weeding and taping, instead of a 10% increase, the price increase 30%.";
-    const product = { respondPlannedCanonicalProductIntent: jest.fn(async () => ({ handled: true, response: "I created a canonical product intent and will ask only its remaining questions.", cards: [{ kind: "canonical_product_intent_proposal", title: "Create inactive draft: Translucent Vinyl - backlit with multilayer printing", summary: "Canonical product intent needs the remaining decisions.", sourceLinks: [], details: { proposalId: "proposal_translucent", canonicalProductIntent: { readiness: { ready: false, blockers: [], questions: ["Choose a product category."] } } }] })) };
-    const provider = { decide: jest.fn(async ({ observations }: any) => observations.length
-      ? ({ kind: "complete", response: "I created a canonical product intent and will ask only its remaining questions." })
-      : ({ kind: "call_tools", calls: [{ toolName: "products.manage_intent", arguments: { operation: "auto" } }] })) };
+    const cards = [{ kind: "canonical_product_intent_proposal", title: "Create inactive draft: Translucent Vinyl - backlit with multilayer printing", summary: "Canonical product intent needs the remaining decisions.", sourceLinks: [], details: { proposalId: "proposal_translucent", canonicalProductIntent: { readiness: { ready: false, blockers: [], questions: ["Choose a product category."] } } }];
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(),
+      beginCanonicalProductDraft: jest.fn(async () => ({ handled: true, response: "I started an unfinished product draft.", cards })),
+      applyCanonicalProductOperations: jest.fn(async () => ({ handled: true, response: "I created a canonical product intent and will ask only its remaining questions.", cards })),
+    };
+    const operations = [
+      { op: "set_product_name", name: "Translucent Vinyl - backlit with multilayer printing" },
+      { op: "set_measurement_mode", mode: "dimensions_required" },
+      { op: "add_option_group", optionGroup: "Layers", required: true, selectionMode: "single" },
+      { op: "add_option_value", optionGroup: "Layers", value: "3 Layer" },
+      { op: "add_option_value", optionGroup: "Layers", value: "5 Layer" },
+      { op: "set_option_rate", optionGroup: "Layers", value: "3 Layer", priceCents: 400, basis: "per_square_foot" },
+      { op: "set_option_rate", optionGroup: "Layers", value: "5 Layer", priceCents: 500, basis: "per_square_foot" },
+      { op: "add_option_group", optionGroup: "Contour Cutting", required: false, selectionMode: "single" },
+      { op: "add_option_value", optionGroup: "Contour Cutting", value: "No" },
+      { op: "add_option_value", optionGroup: "Contour Cutting", value: "Yes" },
+      { op: "set_option_price_impact", optionGroup: "Contour Cutting", value: "Yes", percent: 10 },
+      { op: "add_option_group", optionGroup: "Weeding and Taping", required: false, selectionMode: "single" },
+      { op: "add_option_value", optionGroup: "Weeding and Taping", value: "No" },
+      { op: "add_option_value", optionGroup: "Weeding and Taping", value: "Yes" },
+      { op: "set_option_group_availability", optionGroup: "Weeding and Taping", whenOptionGroup: "Contour Cutting", whenValue: "Yes" },
+      { op: "set_option_price_impact", optionGroup: "Weeding and Taping", value: "Yes", percent: 30, replacesPercentageWhen: { optionGroup: "Contour Cutting", value: "Yes" } },
+    ];
+    const provider = { decide: jest.fn(async ({ observations, toolCatalog }: any) => {
+      expect(toolCatalog).not.toEqual(expect.arrayContaining([expect.objectContaining({ name: "products.manage_intent" })]));
+      const operationTool = toolCatalog.find((tool: any) => tool.name === "products.apply_operations");
+      expect(operationTool?.inputSchema).toMatchObject({ properties: { operations: { maxItems: 24 } } });
+      expect(JSON.stringify(operationTool?.inputSchema)).not.toMatch(/patch|revision|fingerprint|serverOwnedFields|pbv2/i);
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: {} }] };
+      if (observations.length === 1) return { kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations } }] };
+      return { kind: "complete", response: "I created a canonical product intent and will ask only its remaining questions." };
+    }) };
     const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
 
     await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.create_inactive_draft"] }, { message: exactRequest, context });
 
-    expect(product.respondPlannedCanonicalProductIntent).toHaveBeenCalledWith(expect.objectContaining({ operation: "create", message: exactRequest }));
+    expect(product.beginCanonicalProductDraft).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "conversation_1" }));
+    expect(product.applyCanonicalProductOperations).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "conversation_1", message: exactRequest, operations }));
+    expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ mode: "ai_operator_runtime", structuredCards: expect.arrayContaining([expect.objectContaining({ kind: "canonical_product_intent_proposal" })]) }));
+  });
+
+  test("does not expose direct product-draft tools without a product-draft permission", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore();
+    const product = { beginCanonicalProductDraft: jest.fn(), applyCanonicalProductOperations: jest.fn(), respondPlannedCanonicalProductIntent: jest.fn() };
+    const provider = { decide: jest.fn(async ({ toolCatalog }: any) => {
+      expect(toolCatalog).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({ name: "products.begin_draft" }),
+        expect.objectContaining({ name: "products.apply_operations" }),
+      ]));
+      return { kind: "complete", response: "I do not have permission to create a product draft." };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.internal_staff"] }, { message: "Begin a new product draft.", context });
+
+    expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
+    expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
   });
 
   test("ordinary free text enters the Operator Runtime instead of the legacy planner", async () => {
@@ -83,15 +133,19 @@ describe("AssistantService Operator Runtime integration", () => {
   test("a product task survives a read-only detour and a later semantic continuation", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore("proposal_1");
-    const product = { respondPlannedCanonicalProductIntent: jest.fn(async () => ({ handled: true, response: "Saved product revision.", cards: [{ kind: "canonical_product_intent_proposal", title: "Product", summary: "Ready", sourceLinks: [], details: { proposalId: "proposal_1" } }] })) };
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(),
+      applyCanonicalProductOperations: jest.fn(async () => ({ handled: true, response: "Saved product revision.", cards: [{ kind: "canonical_product_intent_proposal", title: "Product", summary: "Ready", sourceLinks: [], details: { proposalId: "proposal_1" } }] })),
+    };
     const detourProvider = { decide: jest.fn(async () => ({ kind: "complete", response: "Regular translucent vinyl pricing could not be verified.", workingSummary: "Read-only detour completed." })) };
     const detour = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => detourProvider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
     await detour.createTurn(scope, "conversation_1", actor, { message: "How much do we charge for regular translucent vinyl?", context });
     expect(tasks.updates.at(-1).patch.status).toBe("active");
-    const correctionProvider = { decide: jest.fn(async ({ observations }: any) => observations.length ? ({ kind: "complete", response: "Done.", workingSummary: "Product revised." }) : ({ kind: "call_tools", calls: [{ toolName: "products.manage_intent", arguments: { operation: "continue" } }] })) };
+    const correctionProvider = { decide: jest.fn(async ({ observations }: any) => observations.length ? ({ kind: "complete", response: "Done.", workingSummary: "Product revised." }) : ({ kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations: [{ op: "set_option_rate", optionGroup: "Layers", value: "3 Layer", priceCents: 550, basis: "per_square_foot" }] } }] })) };
     const correction = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => correctionProvider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
     await correction.createTurn(scope, "conversation_1", actor, { message: "Make the 3 layer price $5.50 instead.", context });
-    expect(product.respondPlannedCanonicalProductIntent).toHaveBeenCalledWith(expect.objectContaining({ operation: "continue_session", message: "Make the 3 layer price $5.50 instead." }));
+    expect(product.applyCanonicalProductOperations).toHaveBeenCalledWith(expect.objectContaining({ message: "Make the 3 layer price $5.50 instead.", operations: [{ op: "set_option_rate", optionGroup: "Layers", value: "3 Layer", priceCents: 550, basis: "per_square_foot" }] }));
+    expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
   });
 
   test("an active product correction uses the direct semantic operation capability instead of the continuation compiler adapter", async () => {

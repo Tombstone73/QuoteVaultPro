@@ -90,6 +90,7 @@ export interface ProductManagementSkillDependencies {
  * testable, while this skill only selects it after operation classification. */
 export interface CanonicalProductIntentRouter {
   loadForConversation(input: { organizationId: string; actorUserId: string; conversationId: string }): Promise<CanonicalProductIntentSession | null>;
+  begin?(input: { organizationId: string; actorUserId: string; conversationId: string }): Promise<CanonicalProductIntentOutcome>;
   create(input: { organizationId: string; actorUserId: string; conversationId: string; request: string }): Promise<CanonicalProductIntentOutcome>;
   continue(input: { organizationId: string; actorUserId: string; proposalId: string; request: string }): Promise<CanonicalProductIntentOutcome>;
   /** Semantic active-draft changes bypass the provider-only compiler protocol.
@@ -141,6 +142,9 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
     });
   }
   loadForConversation(input: { organizationId: string; actorUserId: string; conversationId: string }) { return this.persistence.loadForConversation(input); }
+  async begin(input: { organizationId: string; actorUserId: string; conversationId: string }): Promise<CanonicalProductIntentOutcome> {
+    return (await this.semanticService(input.organizationId)).begin(input);
+  }
   async inspect(input: { organizationId: string; actorUserId: string; proposalId: string }) {
     // Inspection deliberately avoids provider configuration and compiler use.
     const candidates = await this.candidates(input.organizationId);
@@ -162,11 +166,13 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
     return (await this.semanticService(input.organizationId)).applySemanticOperations(input);
   }
   async interact(input: { organizationId: string; actorUserId: string; proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }): Promise<CanonicalProductIntentOutcome | { navigation: { href: string; abandon: boolean; cloneProductId?: string } }> {
-    const configured = await this.service(input.organizationId);
-    if (!configured) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interactions are unavailable until the canonical service is configured." };
-    if (input.action === "accept_recommendation") return configured.service.acceptRecommendation({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, recommendationId: input.actionId });
-    if (input.action === "dismiss_recommendation") return configured.service.dismissRecommendation({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, recommendationId: input.actionId });
-    const result = await configured.service.applyCandidateAction(input);
+    // Candidate actions and recommendations are server-authored revisions of
+    // an existing draft. They must remain available to the direct Operator
+    // creation path even when no compiler provider is configured.
+    const service = await this.semanticService(input.organizationId);
+    if (input.action === "accept_recommendation") return service.acceptRecommendation({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, recommendationId: input.actionId });
+    if (input.action === "dismiss_recommendation") return service.dismissRecommendation({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId, recommendationId: input.actionId });
+    const result = await service.applyCandidateAction(input);
     return result.outcome ?? { navigation: result.navigation! };
   }
 }
@@ -288,6 +294,31 @@ export class ProductManagementSkillService {
     } catch (error) {
       const message = error instanceof Error ? error.message : "The semantic product change could not be applied safely.";
       return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Product change unavailable", summary: "No new revision was created.", sourceLinks: [], details: { errors: [message] } }] };
+    }
+  }
+
+  /** Starts an unfinished inactive product intent owned by the server. The
+   * Operator follows with business operations; this path never invokes the
+   * ProductIntentCompiler or asks a provider for canonical structures. */
+  async beginCanonicalProductDraft(input: {
+    organizationId: string;
+    userId: string;
+    conversationId: string;
+  }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+    const router = this.deps.canonicalProductIntent;
+    if (!router?.begin) return { handled: true, response: "Incremental Product Builder creation is not available in this deployment.", cards: [] };
+    try {
+      const current = await router.loadForConversation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
+      if (current && !["executed", "expired", "abandoned"].includes(current.specification.session.state)) {
+        return { handled: true, response: "An unfinished product draft is already active in this conversation.", cards: [] };
+      }
+      const outcome = await router.begin({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
+      return outcome.ok
+        ? { handled: true, response: "I started an unfinished product draft. I’ll add the requested business details and ask only for information that is still needed.", cards: canonicalCards(outcome) }
+        : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product draft could not be started", summary: "No product or draft was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "The unfinished product draft could not be started safely.";
+      return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Product draft unavailable", summary: "No product or draft was created.", sourceLinks: [], details: { errors: [message] } }] };
     }
   }
 

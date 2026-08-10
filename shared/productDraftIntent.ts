@@ -39,7 +39,10 @@ const optionPriceImpactSchema = z.object({ kind: z.literal("percentage_of_base")
 const totalPercentImpactSchema = z.object({ percent: z.number().finite().min(-100).max(100), prerequisite: z.object({ optionGroupKey: nonEmpty, optionValueKey: nonEmpty }).strict() }).strict();
 const optionAvailabilitySchema = z.object({ optionGroupKey: nonEmpty, optionValueKey: nonEmpty }).strict();
 const optionValueSchema = z.object({ key: nonEmpty, label: nonEmpty, isDefault: z.boolean().default(false), priceImpact: optionPriceImpactSchema.optional(), totalPercentOfBaseWhenEnabled: totalPercentImpactSchema.optional() }).strict();
-const optionGroupSchema = z.object({ key: nonEmpty, label: nonEmpty, required: z.boolean(), selectionMode: z.enum(["single", "multiple"]), values: z.array(optionValueSchema).min(1), availableWhen: optionAvailabilitySchema.optional() }).strict().superRefine((group, ctx) => {
+/** Unfinished server-owned drafts may contain an empty option group while the
+ * Operator is still assembling it. Resolver readiness turns that temporary
+ * state into a business question; PBV2 projection never sees it as ready. */
+const optionGroupSchema = z.object({ key: nonEmpty, label: nonEmpty, required: z.boolean(), selectionMode: z.enum(["single", "multiple"]), values: z.array(optionValueSchema), availableWhen: optionAvailabilitySchema.optional() }).strict().superRefine((group, ctx) => {
   if (new Set(group.values.map((value) => value.key.toLocaleLowerCase())).size !== group.values.length) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Option value keys must be unique.", path: ["values"] });
   if (group.selectionMode === "single" && group.values.filter((value) => value.isDefault).length > 1) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Single-select groups may have one default.", path: ["values"] });
   // PBV2 supports required choices without a preselected value. Do not invent
@@ -54,8 +57,8 @@ const pricingSchema = z.discriminatedUnion("model", [
   // A matrix can be fully captured before its pricing basis is known.  The
   // explicit sentinel preserves the typed cells without inventing a unit; the
   // resolver and projection gate keep it non-executable until it is answered.
-  z.object({ model: z.literal("two_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), rowOptionKey: nonEmpty, columnOptionKey: nonEmpty, cells: z.array(matrixCellSchema).min(1), minimumChargeCents: centsSchema.optional() }).strict(),
-  z.object({ model: z.literal("one_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), optionKey: nonEmpty, cells: z.array(oneDimensionalMatrixCellSchema).min(1), minimumChargeCents: centsSchema.optional() }).strict(),
+  z.object({ model: z.literal("two_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), rowOptionKey: nonEmpty, columnOptionKey: nonEmpty, cells: z.array(matrixCellSchema), minimumChargeCents: centsSchema.optional() }).strict(),
+  z.object({ model: z.literal("one_dimensional_matrix"), unit: z.enum(["per_piece", "per_square_foot", "unresolved"]), optionKey: nonEmpty, cells: z.array(oneDimensionalMatrixCellSchema), minimumChargeCents: centsSchema.optional() }).strict(),
   z.object({ model: z.literal("quantity_tiers"), unit: z.enum(["per_piece", "per_square_foot"]), tiers: z.array(z.object({ minimumQuantity: z.number().int().positive(), maximumQuantity: z.number().int().positive().nullable(), priceCents: z.number().int().positive() }).strict()).min(1), minimumChargeCents: centsSchema.optional() }).strict(),
   z.object({ model: z.literal("unresolved") }).strict(),
 ]).superRefine((pricing, ctx) => {

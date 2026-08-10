@@ -562,6 +562,53 @@ export class CanonicalProductIntentService {
     return { session, issues: validation.issues, card: await this.presentation(validation.intent, validation.issues, dismissed) };
   }
 
+  /** Begins a server-owned unfinished draft without asking any provider to
+   * reproduce a canonical Product Intent. Every placeholder is explicitly
+   * unresolved and cannot reach PBV2/GO until replaced by a business action. */
+  async begin(input: { organizationId: string; actorUserId: string; conversationId: string }): Promise<CanonicalProductIntentOutcome> {
+    const initial = productDraftIntentSchema.parse({
+      contractVersion: 1,
+      intentId: randomUUID(),
+      organizationId: input.organizationId,
+      revision: 0,
+      state: "compiling",
+      operation: "new_product",
+      identity: { name: "Unfinished product draft", description: "", category: { state: "unresolved", label: "Product category" } },
+      lifecycle: { productStatus: "inactive", published: false },
+      measurement: { mode: "quantity_only" },
+      quantity: { behavior: "customer_entered", minimum: 1 },
+      pricing: { model: "unresolved" },
+      material: { state: "explicitly_unset" },
+      optionGroups: [],
+      workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true },
+      production: { route: { state: "explicitly_unset" }, configuration: {} },
+      visibility: { catalogVisible: false },
+      unresolvedFields: [
+        { path: "identity.name", code: "PRODUCT_NAME_UNRESOLVED", question: "What should this product be called?" },
+        { path: "measurement.mode", code: "MEASUREMENT_UNRESOLVED", question: "Does this product require width and height, or is it quantity only?" },
+      ],
+      fieldMetadata: { "identity.name": { source: "unresolved" }, "measurement.mode": { source: "unresolved" }, "identity.category": { source: "unresolved" } },
+      revisionMetadata: { parentRevision: null },
+      operationContext: {},
+    });
+    try {
+      const { intent, issues } = await this.validate(initial);
+      const card = await this.presentation(intent, issues);
+      const session = await this.persistence.create({
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        conversationId: input.conversationId,
+        intent,
+        unresolvedQuestions: questionsFrom(intent, issues),
+        resolutionMetadata: { architecture: "operator_business_operations", dismissedRecommendationIds: [] },
+      });
+      return { ok: true, session, issues, card };
+    } catch (error) {
+      console.warn("[PRODUCT_SEMANTIC_DRAFT] Unable to begin unfinished draft.", { organizationId: input.organizationId, actorUserId: input.actorUserId, errorCode: error instanceof Error ? error.name : "unknown" });
+      return { ok: false, code: "PRODUCT_SEMANTIC_DRAFT_CREATION_FAILED", message: "I could not begin the unfinished product draft safely. Nothing was created." };
+    }
+  }
+
   async create(input: { organizationId: string; actorUserId: string; conversationId: string; compilerInput: ProductIntentCompilerInput }): Promise<CanonicalProductIntentOutcome> {
     if (!this.compiler) return { ok: false, code: "PRODUCT_INTENT_PROVIDER_UNAVAILABLE", message: "Product interpretation is unavailable until a compatible AI provider is configured." };
     const compiled = await this.compiler.compile(input.compilerInput);

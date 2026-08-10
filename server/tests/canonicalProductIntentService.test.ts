@@ -108,6 +108,73 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(result.card.candidateResolutions.filter((action) => action.kind === "select_category")).toHaveLength(1);
   });
 
+  test("builds the exact Translucent Vinyl draft through direct Operator business operations without a compiler", async () => {
+    const store = new MemoryStore();
+    const service = new CanonicalProductIntentService(null, new ProductIntentPersistenceService(store), {
+      categories: [{ id: "flatbed", label: "Flatbed Printing" }, { id: "roll", label: "Roll Printing" }], materials: [], productionRoutes: [],
+    });
+    const begun = await service.begin({ organizationId: "org-1", actorUserId: "user-1", conversationId: "operator-translucent-vinyl" });
+    expect(begun).toMatchObject({ ok: true, card: { readiness: { ready: false } } });
+    if (!begun.ok) throw new Error("Expected a server-owned unfinished draft.");
+    expect(begun.issues).toEqual(expect.arrayContaining([
+      expect.objectContaining({ path: "identity.name" }),
+      expect.objectContaining({ path: "measurement.mode" }),
+      expect.objectContaining({ path: "identity.category" }),
+      expect.objectContaining({ path: "pricing.model" }),
+    ]));
+
+    const request = "Let's add a new product called Translucent Vinyl - backlit with multilayer printing. It requires dimensions. Layers are 3 Layer and 5 Layer. 3 Layer is $4 per square foot and 5 Layer is $5 per square foot. Contour Cutting adds 10%. Weeding and Taping appears only when Contour Cutting is Yes, and is 30% total instead of the 10% increase.";
+    const created = await service.applySemanticOperations({
+      organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId, request,
+      operations: [
+        { op: "set_product_name", name: "Translucent Vinyl - backlit with multilayer printing" },
+        { op: "set_measurement_mode", mode: "dimensions_required" },
+        { op: "add_option_group", optionGroup: "Layers", required: true, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Layers", value: "3 Layer" },
+        { op: "add_option_value", optionGroup: "Layers", value: "5 Layer" },
+        { op: "set_option_rate", optionGroup: "Layers", value: "3 Layer", priceCents: 400, basis: "per_square_foot" },
+        { op: "set_option_rate", optionGroup: "Layers", value: "5 Layer", priceCents: 500, basis: "per_square_foot" },
+        { op: "add_option_group", optionGroup: "Contour Cutting", required: false, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Contour Cutting", value: "No" },
+        { op: "add_option_value", optionGroup: "Contour Cutting", value: "Yes" },
+        { op: "set_option_price_impact", optionGroup: "Contour Cutting", value: "Yes", percent: 10 },
+        { op: "add_option_group", optionGroup: "Weeding and Taping", required: false, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Weeding and Taping", value: "No" },
+        { op: "add_option_value", optionGroup: "Weeding and Taping", value: "Yes" },
+        { op: "set_option_group_availability", optionGroup: "Weeding and Taping", whenOptionGroup: "Contour Cutting", whenValue: "Yes" },
+        { op: "set_option_price_impact", optionGroup: "Weeding and Taping", value: "Yes", percent: 30, replacesPercentageWhen: { optionGroup: "Contour Cutting", value: "Yes" } },
+      ],
+    });
+    expect(created.ok).toBe(true);
+    if (!created.ok) throw new Error("Expected direct business operations to persist.");
+    const intent = created.session.specification.session.revisions.at(-1)!.intent;
+    expect(intent).toMatchObject({
+      identity: { name: "Translucent Vinyl - backlit with multilayer printing", category: { state: "unresolved", label: "Product category" } },
+      lifecycle: { productStatus: "inactive", published: false },
+      measurement: { mode: "dimensions_required" },
+      pricing: { model: "one_dimensional_matrix", unit: "per_square_foot", optionKey: "layers", cells: [{ option: "3_layer", priceCents: 400 }, { option: "5_layer", priceCents: 500 }] },
+      material: { state: "explicitly_unset" }, production: { route: { state: "explicitly_unset" } },
+    });
+    const contour = intent.optionGroups.find((group) => group.key === "contour_cutting");
+    const weedTape = intent.optionGroups.find((group) => group.key === "weeding_and_taping");
+    expect(contour?.values.find((value) => value.key === "yes")?.priceImpact).toEqual({ kind: "percentage_of_base", percent: 10 });
+    expect(weedTape).toMatchObject({ availableWhen: { optionGroupKey: "contour_cutting", optionValueKey: "yes" } });
+    expect(weedTape?.values.find((value) => value.key === "yes")).toMatchObject({
+      totalPercentOfBaseWhenEnabled: { percent: 30, prerequisite: { optionGroupKey: "contour_cutting", optionValueKey: "yes" } },
+    });
+    expect(weedTape?.values.find((value) => value.key === "yes")?.priceImpact).toBeUndefined();
+    expect(created.issues.map((issue) => issue.path)).toEqual(expect.arrayContaining(["identity.category", "optionGroups.layers.default"]));
+    expect(created.issues.map((issue) => issue.path)).not.toEqual(expect.arrayContaining(["identity.name", "measurement.mode", "pricing.model", "pricing.unit", "material", "production.route"]));
+
+    const flatbed = await service.applySemanticOperations({ organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId, request: "Use Flatbed Printing.", operations: [{ op: "set_category", category: "Flatbed Printing" }] });
+    expect(flatbed.ok).toBe(true);
+    const corrected = await service.applySemanticOperations({ organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId, request: "I accidentally selected Flatbed Printing; use Roll Printing.", operations: [{ op: "set_category", category: "Roll Printing" }] });
+    expect(corrected.ok).toBe(true);
+    if (!corrected.ok) throw new Error("Expected direct Roll correction to persist.");
+    expect(corrected.session.specification.session.revisions).toHaveLength(4);
+    expect(corrected.session.specification.session.revisions.at(-1)!.intent.identity.category).toEqual({ state: "resolved", id: "roll", label: "Roll Printing" });
+  });
+
   test("creates the exact live one-axis Translucent Vinyl intent and asks only genuine missing decisions", async () => {
     const payload = structuredClone(translucentVinylPayload);
     payload.intent.identity.name = "Translucent Vinyl - backlit with multilayer printing";
