@@ -18,6 +18,14 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
         toolName: "quotes.search",
         data: expect.objectContaining({ totalMatchingQuotes: 5 }),
       })]);
+      expect(body.activeTask.businessContext).toMatchObject({
+        taskType: "quote_investigation",
+        businessStateSummary: "Five open quotes found.",
+        unresolvedDecisions: [{ item: "quote selection" }],
+        recentOperations: ["quotes.search"],
+        trustedSelections: [{ field: "customer", label: "Acme", provenance: "trusted_read" }],
+        readiness: "needs_input",
+      });
       return { rawText: JSON.stringify({ kind: "complete", response: "**QT-1**\nCustomer: Acme\n\n**QT-2**\nCustomer: Beta" }) };
     });
     const provider = new ConfiguredAssistantOperatorDecisionProvider(
@@ -38,6 +46,12 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
         id: "task_quotes",
         domain: "quotes",
         canonicalProductIntentProposalId: null,
+        businessContext: {
+          taskType: "quote_investigation", businessStateSummary: "Five open quotes found.",
+          unresolvedDecisions: [{ item: "quote selection" }], recentOperations: ["quotes.search"],
+          trustedSelections: [{ field: "customer", label: "Acme", provenance: "trusted_read" }], readiness: "needs_input",
+          constraints: ["Use registered tools only."], capabilities: ["quotes.search"],
+        },
         entityReferences: [],
         trustedObservations: [{
           toolName: "quotes.search",

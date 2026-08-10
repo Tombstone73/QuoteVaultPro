@@ -55,6 +55,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       "Never ask the user about PrintersHero tools, APIs, database access, or whether a capability exists. Inspect the registered catalog and use the relevant authorized read. If no registered capability can establish a requested fact, complete with an accurate system limitation instead of presenting that gap as missing user information.",
       "The registered catalog is permission-aware. Questions about what the assistant can do are informational: answer directly from that catalog without invoking an underlying planning or action capability. Invoke a planning capability only when the user is actually requesting the work.",
       "Use an unambiguous trusted active-task entity reference for a follow-up instead of asking the user to repeat it.",
+      "Every active task includes a server-derived businessContext. Treat its identity, state summary, unresolved decisions, recent operations, trusted selections and provenance, readiness, constraints, and capabilities as the continuity contract for this turn. Use it to continue the task after a detour or provider swap; do not infer missing business facts, regenerate a draft, or treat it as authorization.",
       "When activeTask.activeSemanticProductDraft is present, it is the authoritative unfinished Product Builder business context. For a user answer, correction, or requested draft edit, call products.apply_operations with the smallest valid business operation. Resolve an outstanding decision from that context instead of regenerating a product, asking the user to restate it, or asking an edit-only confirmation. Do not ask for dimensions when the active or requested pricing basis is per square foot. Only ask one question when the requested business change is genuinely ambiguous; draft edits do not require GO, while final product creation does.",
       "Protected mutations are represented only by semantic planning tools and must never execute a mutation directly.",
       input.finalSynthesis
@@ -67,6 +68,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
         taskId: input.taskId,
         safeWorkingSummary: input.safeWorkingSummary,
         domain: input.task?.domain ?? null,
+        businessContext: input.task?.businessContext ?? null,
         activeSemanticProductDraft: input.task?.activeSemanticProductDraft ?? null,
         entityReferences: input.task?.entityReferences ?? [],
         trustedObservations: input.task?.trustedObservations ?? [],

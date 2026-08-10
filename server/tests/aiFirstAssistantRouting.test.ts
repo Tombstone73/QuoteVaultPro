@@ -46,22 +46,31 @@ describe("AI Operator routing (replacement for retired AI-first planner coverage
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ mode: "ai_operator_runtime", provider: "operator_runtime" }));
   });
 
-  test("a semantic product tool call keeps the original goal server-trusted and persists no legacy fallback", async () => {
+  test("a normal product request cannot reach the legacy compiler adapter", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository();
-    const product = { respondPlannedCanonicalProductIntent: jest.fn(async () => ({ handled: true, response: "Product draft is ready for review.", cards: [{ kind: "canonical_product_intent_proposal", title: "Product", summary: "Ready", sourceLinks: [], details: { proposalId: "proposal_1" } }] })) };
-    const provider = { decide: jest.fn(async ({ observations }: any) => observations.length
-      ? ({ kind: "complete", response: "Product draft is ready for review.", workingSummary: "Draft prepared." })
-      : ({ kind: "call_tools", calls: [{ toolName: "products.manage_intent", arguments: { operation: "start_new" } }] })) };
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(),
+      beginCanonicalProductDraft: jest.fn(async () => ({ handled: true, response: "I started an unfinished product draft.", cards: [{ kind: "canonical_product_intent_proposal", title: "Product", summary: "Needs details", sourceLinks: [], details: { proposalId: "proposal_1" } }] })),
+      applyCanonicalProductOperations: jest.fn(),
+    };
+    const provider = { decide: jest.fn(async ({ observations, toolCatalog }: any) => {
+      expect(toolCatalog.map((tool: { name: string }) => tool.name)).not.toContain("products.manage_intent");
+      expect(toolCatalog.map((tool: { name: string }) => tool.name)).not.toContain("canonical_product_intent_compiler");
+      return observations.length
+        ? { kind: "complete", response: "I started an unfinished product draft.", workingSummary: "Draft started." }
+        : { kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: {} }] };
+    }) };
     const legacyPlanner = { plan: jest.fn() };
     const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, legacyPlanner as any, product, () => provider, tasks(), undefined, undefined, operatorProviderResolver() as any);
     const message = "Create a new Translucent Vinyl product with a 3 mm hem.";
 
     await service.createTurn(scope, "conversation_1", actor, { message, context });
 
-    expect(product.respondPlannedCanonicalProductIntent).toHaveBeenCalledWith(expect.objectContaining({ message, operation: "create", conversationId: "conversation_1" }));
+    expect(product.beginCanonicalProductDraft).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "conversation_1" }));
+    expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
     expect(legacyPlanner.plan).not.toHaveBeenCalled();
-    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "Product draft is ready for review.", mode: "ai_operator_runtime" }));
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ response: "I started an unfinished product draft.", mode: "ai_operator_runtime" }));
   });
 
   test("a product capability question is answered from the permission-aware catalog without starting Product Builder", async () => {

@@ -155,10 +155,10 @@ describe("AssistantService Operator Runtime integration", () => {
       respondPlannedCanonicalProductIntent: jest.fn(),
       getActiveSemanticProductDraftContext: jest.fn(async () => ({
         name: "Translucent Vinyl - backlit with multilayer printing",
-        category: { state: "resolved", label: "Flatbed Printing" }, measurementMode: "dimensions_required",
+        category: { state: "resolved", label: "Flatbed Printing", provenance: "explicit_user" }, measurementMode: "dimensions_required",
         pricing: { model: "one_dimensional_matrix", basis: "per_square_foot", optionGroup: "Layers", rates: [{ option: "3 Layer", priceCents: 400 }, { option: "5 Layer", priceCents: 500 }] },
         optionGroups: [{ label: "Layers", required: true, selectionMode: "single", defaultValue: null, values: ["3 Layer", "5 Layer"], availableWhen: null }],
-        outstandingDecisions: [{ path: "optionGroups.layers.default", question: "Which Layers option should be the default?", choices: ["3 Layer", "5 Layer"] }], readyForReview: false,
+        outstandingDecisions: [{ path: "optionGroups.layers.default", question: "Which Layers option should be the default?", choices: ["3 Layer", "5 Layer"] }], recentBusinessOperations: ["identity.category", "pricing.matrix"], trustedSelections: [{ field: "category", label: "Flatbed Printing", provenance: "explicit_user" }], readyForReview: false,
       })),
       applyCanonicalProductOperations: jest.fn(async () => ({
         handled: true,
@@ -168,7 +168,7 @@ describe("AssistantService Operator Runtime integration", () => {
     };
     const provider = { decide: jest.fn(async ({ observations, toolCatalog, task }: any) => observations.length
       ? ({ kind: "complete", response: "I saved the product revision." })
-      : (expect(task.activeSemanticProductDraft).toMatchObject({ category: { label: "Flatbed Printing" }, outstandingDecisions: [expect.objectContaining({ path: "optionGroups.layers.default" })] }), expect(toolCatalog).toEqual(expect.arrayContaining([expect.objectContaining({ name: "products.apply_operations", inputSchema: expect.objectContaining({ required: ["operations"] }) })])), {
+      : (expect(task.activeSemanticProductDraft).toMatchObject({ category: { label: "Flatbed Printing", provenance: "explicit_user" }, outstandingDecisions: [expect.objectContaining({ path: "optionGroups.layers.default" })] }), expect(task.businessContext).toMatchObject({ taskType: "product_draft", trustedSelections: [expect.objectContaining({ field: "category", label: "Flatbed Printing", provenance: "explicit_user" })], recentOperations: ["identity.category", "pricing.matrix"], readiness: "needs_input" }), expect(toolCatalog).toEqual(expect.arrayContaining([expect.objectContaining({ name: "products.apply_operations", inputSchema: expect.objectContaining({ required: ["operations"] }) })])), {
         kind: "call_tools",
         calls: [{ toolName: "products.apply_operations", arguments: { operations: [{ op: "set_category", category: "Roll Printing" }] } }],
       })) };
@@ -192,10 +192,10 @@ describe("AssistantService Operator Runtime integration", () => {
       respondPlannedCanonicalProductIntent: jest.fn(),
       getActiveSemanticProductDraftContext: jest.fn(async () => ({
         name: "Translucent Vinyl - backlit with multilayer printing",
-        category: { state: "unresolved", label: "Product category" }, measurementMode: "dimensions_required",
+        category: { state: "unresolved", label: "Product category", provenance: "unresolved" }, measurementMode: "dimensions_required",
         pricing: { model: "one_dimensional_matrix", basis: "per_square_foot", optionGroup: "Layers", rates: [{ option: "3 Layer", priceCents: 400 }, { option: "5 Layer", priceCents: 500 }] },
         optionGroups: [{ label: "Layers", required: true, selectionMode: "single", defaultValue: null, values: ["3 Layer", "5 Layer"], availableWhen: null }],
-        outstandingDecisions: [{ path: "optionGroups.layers.default", question: "Which Layers option should be the default: 3 Layer or 5 Layer?", choices: ["3 Layer", "5 Layer"] }], readyForReview: false,
+        outstandingDecisions: [{ path: "optionGroups.layers.default", question: "Which Layers option should be the default: 3 Layer or 5 Layer?", choices: ["3 Layer", "5 Layer"] }], recentBusinessOperations: ["pricing.matrix"], trustedSelections: [], readyForReview: false,
       })),
       applyCanonicalProductOperations: jest.fn(async () => ({ handled: true, response: "I updated the product draft and kept only its remaining business questions.", cards: [{ kind: "canonical_product_intent_proposal", title: "Product draft", summary: "Needs category", sourceLinks: [], details: { proposalId: "proposal_1" } }] })),
     };

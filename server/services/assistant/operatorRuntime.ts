@@ -75,6 +75,20 @@ export type AssistantOperatorTrustedObservation = {
   capturedAt: string;
 };
 
+/** The durable, reduced task contract supplied on every Operator turn. It is
+ * descriptive rather than executable: canonical product state, command
+ * plans, and authorization remain behind server-owned tool boundaries. */
+export type AssistantOperatorBusinessContext = {
+  taskType: string;
+  businessStateSummary: string | null;
+  unresolvedDecisions: Array<{ item: string; question?: string; choices?: string[] }>;
+  recentOperations: string[];
+  trustedSelections: Array<{ field: string; label: string; provenance: string }>;
+  readiness: "ready" | "needs_input" | "in_progress" | "unknown";
+  constraints: string[];
+  capabilities: string[];
+};
+
 export interface AssistantOperatorToolExecutor {
   catalog(): ReadonlyArray<{ name: string; description: string; inputSchema?: Record<string, unknown> }>;
   execute(input: { toolName: string; arguments: Record<string, unknown>; context: AssistantOperatorTrustedContext }): Promise<Omit<AssistantOperatorObservation, "step">>;
@@ -99,6 +113,9 @@ export interface AssistantOperatorTrustedContext {
      * draft. It is enough for a capable provider to answer outstanding
      * decisions without regenerating or re-reading the product. */
     activeSemanticProductDraft?: ActiveSemanticProductDraftContext | null;
+    /** Safe task context common to every domain. It is regenerated from
+     * durable state at the start of each turn, never model-written state. */
+    businessContext?: AssistantOperatorBusinessContext;
     /** Reduced, server-derived references from prior observations in this
      * conversation. They support unambiguous follow-ups, never authorization. */
     entityReferences: Array<{ type: string; id: string; label?: string }>;

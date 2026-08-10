@@ -85,11 +85,15 @@ export type ProductManagementCard = {
  * tenant record IDs, fingerprints, or PBV2 structures. */
 export type ActiveSemanticProductDraftContext = {
   name: string;
-  category: { state: "resolved" | "unresolved"; label: string };
+  category: { state: "resolved" | "unresolved"; label: string; provenance: "explicit_user" | "structured_candidate" | "ai_interpreted" | "selected_template" | "canonical_default" | "unresolved" };
   measurementMode: "dimensions_required" | "quantity_only" | "fixed_size";
   pricing: { model: string; basis: string | null; optionGroup: string | null; rates: Array<{ option: string; priceCents: number }> };
   optionGroups: Array<{ label: string; required: boolean; selectionMode: "single" | "multiple"; defaultValue: string | null; values: string[]; availableWhen: { optionGroup: string; value: string } | null }>;
   outstandingDecisions: Array<{ path: string; question: string; choices: string[] }>;
+  /** Server-derived labels of the business fields most recently established
+   * in this draft. This is reflection context, never a patch/revision API. */
+  recentBusinessOperations: string[];
+  trustedSelections: Array<{ field: string; label: string; provenance: string }>;
   readyForReview: boolean;
 };
 
@@ -220,7 +224,7 @@ function activeSemanticProductDraftContext(intent: ProductDraftIntent, inspectio
   }
   return {
     name: intent.identity.name,
-    category: { state: intent.identity.category.state, label: intent.identity.category.label },
+    category: { state: intent.identity.category.state, label: intent.identity.category.label, provenance: intent.fieldMetadata["identity.category"]?.source ?? "unresolved" },
     measurementMode: intent.measurement.mode,
     pricing,
     optionGroups: intent.optionGroups.map((group) => ({
@@ -233,6 +237,14 @@ function activeSemanticProductDraftContext(intent: ProductDraftIntent, inspectio
       path: question.path, question: question.question,
       choices: question.answer?.allowedChoices.map((choice) => choice.displayLabel) ?? [],
     })),
+    recentBusinessOperations: Object.entries(intent.fieldMetadata)
+      .filter(([, metadata]) => metadata.source !== "unresolved")
+      .map(([path]) => path)
+      .slice(-16),
+    trustedSelections: [
+      ...(intent.identity.category.state === "resolved" ? [{ field: "category", label: intent.identity.category.label, provenance: intent.fieldMetadata["identity.category"]?.source ?? "structured_candidate" }] : []),
+      ...intent.optionGroups.flatMap((group) => group.values.filter((value) => value.isDefault).map((value) => ({ field: `${group.label} default`, label: value.label, provenance: intent.fieldMetadata[`optionGroups.${group.key}.default`]?.source ?? "explicit_user" }))),
+    ],
     readyForReview: inspection?.card.readiness.ready ?? false,
   };
 }

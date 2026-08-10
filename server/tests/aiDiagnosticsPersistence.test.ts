@@ -6,6 +6,7 @@ jest.unstable_mockModule("../db", () => ({ db: { insert: jest.fn(() => ({ values
 jest.unstable_mockModule("@shared/schema", () => ({ aiAuditEvents: {} }));
 
 let persistAiDiagnostic: typeof import("../services/aiDiagnosticsService").persistAiDiagnostic;
+let resolveAiDiagnosticDeploymentFingerprint: typeof import("../services/aiDiagnosticsService").resolveAiDiagnosticDeploymentFingerprint;
 let ConfiguredAssistantIntentPlannerProvider: typeof import("../services/assistant/intentPlannerProvider").ConfiguredAssistantIntentPlannerProvider;
 
 const diagnostic = (referenceId = "aip-11111111-1111-4111-8111-111111111111") => ({
@@ -14,7 +15,7 @@ const diagnostic = (referenceId = "aip-11111111-1111-4111-8111-111111111111") =>
 });
 
 beforeAll(async () => {
-  ({ persistAiDiagnostic } = await import("../services/aiDiagnosticsService"));
+  ({ persistAiDiagnostic, resolveAiDiagnosticDeploymentFingerprint } = await import("../services/aiDiagnosticsService"));
   ({ ConfiguredAssistantIntentPlannerProvider } = await import("../services/assistant/intentPlannerProvider"));
 });
 
@@ -28,6 +29,12 @@ describe("AI diagnostic persistence", () => {
     expect(result).toMatchObject({ ok: false, error: { correlationId: expect.stringMatching(/^aip-/) } });
     expect(inserted).toHaveLength(1);
     expect(inserted[0]).toEqual(expect.objectContaining({ orgId: "org_1", correlationId: result.ok ? "" : result.error.correlationId, metadata: expect.objectContaining({ referenceId: result.ok ? "" : result.error.correlationId, correlationId: result.ok ? "" : result.error.correlationId, diagnosticType: "ai_planner" }) }));
+  });
+
+  test("uses only allowlisted deployment identity values in diagnostic metadata", () => {
+    expect(resolveAiDiagnosticDeploymentFingerprint({ RAILWAY_GIT_COMMIT_SHA: "8823776c", RAILWAY_DEPLOYMENT_ID: "deployment_1", RAILWAY_ENVIRONMENT: "development", SECRET_URL: "postgres://hidden" })).toEqual({
+      gitSha: "8823776c", buildId: "deployment_1", environment: "development", operatorArchitectureVersion: "operator-business-operations-v1",
+    });
   });
 
   test("logs only safe persistence identifiers when an audit insert fails", async () => {

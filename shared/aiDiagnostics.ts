@@ -23,6 +23,10 @@ export const aiDiagnosticEnvelopeSchema = z.object({
    * structural summaries; neither provider output nor customer content is kept. */
   sessionId: safeId.nullable().optional(), currentRevision: z.number().int().nonnegative().nullable().optional(),
   patchOperationCount: z.number().int().nonnegative().max(50).nullable().optional(), patchPaths: z.array(safeText).max(30).optional(),
+  /** Runtime identity is safe operational metadata. It lets an administrator
+   * distinguish an old deployment from the current Operator architecture
+   * without retaining prompts, provider output, URLs, or credentials. */
+  deployment: z.object({ gitSha: safeText.nullable(), buildId: safeText.nullable(), environment: safeText.nullable(), operatorArchitectureVersion: safeText.nullable() }).strict().optional(),
 }).strict();
 export type AiDiagnosticEnvelope = z.infer<typeof aiDiagnosticEnvelopeSchema>;
 

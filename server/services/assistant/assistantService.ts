@@ -15,7 +15,7 @@ import { assistantReportResolutionCancelRequestSchema, assistantReportResolution
 import { AssistantOrchestrationService, type AssistantToolExecutionAudit } from "./orchestration";
 import { ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
-import { AssistantOperatorRuntime, parseAssistantOperatorDecisionText, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation, type AssistantOperatorTrustedObservation } from "./operatorRuntime";
+import { AssistantOperatorRuntime, parseAssistantOperatorDecisionText, type AssistantOperatorBusinessContext, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation, type AssistantOperatorTrustedObservation } from "./operatorRuntime";
 import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionProvider";
 import { runOperatorAnalysis } from "./operatorAnalysisWorkspace";
 import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
@@ -26,7 +26,7 @@ import { createPublicWebResearchTools, isPublicWebResearchConfigured } from "./p
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
-import { productManagementSkillService } from "./productManagementSkill";
+import { productManagementSkillService, type ActiveSemanticProductDraftContext } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
 import { crmManagementService } from "./crmManagementService";
@@ -262,6 +262,8 @@ const registeredReadToolNames = new Set<string>([...assistantToolNameValues, "an
 const trustedObservationStorageKey = "trustedReadObservations";
 const MAX_TRUSTED_OPERATOR_OBSERVATIONS = 5;
 const MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES = 16_000;
+const recentOperationStorageKey = "recentOperatorOperations";
+const MAX_RECENT_OPERATOR_OPERATIONS = 12;
 
 /** The only Product Builder structure exposed to an Operator function call.
  * It deliberately contains business labels and values, never patch paths,
@@ -317,6 +319,45 @@ function persistedTrustedObservations(semanticChanges: Record<string, unknown>):
   }).slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS);
 }
 
+function persistedRecentOperatorOperations(semanticChanges: Record<string, unknown>): string[] {
+  const candidate = semanticChanges[recentOperationStorageKey];
+  return Array.isArray(candidate)
+    ? candidate.filter((item): item is string => typeof item === "string" && item.length > 0 && item.length <= 160).slice(-MAX_RECENT_OPERATOR_OPERATIONS)
+    : [];
+}
+
+function operatorBusinessContext(input: {
+  domain: string | null;
+  workingSummary: string | null;
+  missingInformation: string[];
+  semanticChanges: Record<string, unknown>;
+  activeSemanticProductDraft: ActiveSemanticProductDraftContext | null;
+  canBeginProductDraft: boolean;
+  canApplyProductOperations: boolean;
+}): AssistantOperatorBusinessContext {
+  const product = input.activeSemanticProductDraft;
+  const unresolvedDecisions = product
+    ? product.outstandingDecisions.map((decision) => ({ item: decision.path, question: decision.question, choices: decision.choices }))
+    : input.missingInformation.map((item) => ({ item }));
+  return {
+    taskType: product ? "product_draft" : input.domain ?? "general_assistance",
+    businessStateSummary: product
+      ? `Product draft \"${product.name}\" is ${product.readyForReview ? "ready for review" : "still collecting business decisions"}.`
+      : input.workingSummary,
+    unresolvedDecisions,
+    recentOperations: product?.recentBusinessOperations ?? persistedRecentOperatorOperations(input.semanticChanges),
+    trustedSelections: product?.trustedSelections ?? [],
+    readiness: product ? (product.readyForReview ? "ready" : product.outstandingDecisions.length ? "needs_input" : "in_progress") : unresolvedDecisions.length ? "needs_input" : "unknown",
+    constraints: product
+      ? ["Use only products.apply_operations for a draft edit.", "Do not regenerate the product or expose canonical persistence data.", "Product creation remains review/GO-gated."]
+      : ["Use registered, permission-aware tools only.", "Trusted observations are not authorization or freshness authority."],
+    capabilities: [
+      ...(input.canBeginProductDraft ? ["products.begin_draft"] : []),
+      ...(input.canApplyProductOperations ? ["products.apply_operations"] : []),
+    ],
+  };
+}
+
 /** Persist only validated static read results. Semantic planning output and
  * presentation/action cards are intentionally excluded. */
 function mergeTrustedOperatorObservations(
@@ -334,7 +375,11 @@ function mergeTrustedOperatorObservations(
       return [];
     }
   });
-  return { ...semanticChanges, [trustedObservationStorageKey]: [...retained, ...additions].slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS) };
+  const recent = [...persistedRecentOperatorOperations(semanticChanges), ...observations
+    .filter((observation) => observation.status === "succeeded" || observation.status === "partial")
+    .map((observation) => observation.toolName)]
+    .slice(-MAX_RECENT_OPERATOR_OPERATIONS);
+  return { ...semanticChanges, [trustedObservationStorageKey]: [...retained, ...additions].slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS), [recentOperationStorageKey]: recent };
 }
 
 export class AssistantService {
@@ -690,7 +735,7 @@ export class AssistantService {
       goal: request.message,
       taskId: task.id,
       initialWorkingSummary: task.workingSummary,
-      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations }), entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
     });
     const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
     const productData = productObservation?.result?.data as { response?: unknown; cards?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
