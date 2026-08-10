@@ -45,8 +45,8 @@ export const aiDiagnosticEnvelopeSchema = z.object({
     finalResultAccepted: z.boolean(), failureKind: safeText.nullable(),
     providerDecisionShape: z.object({
       responseItemCount: z.number().int().nonnegative().max(64).nullable(), responseItemTypes: z.array(safeText).max(32), unknownItemTypes: z.array(safeText).max(16),
-      outputTextPresent: z.boolean(), finalTextLength: z.number().int().nonnegative().max(1_000_000).nullable(), functionCallCount: z.number().int().nonnegative().max(24).nullable(), functionArgumentDecodeSucceeded: z.boolean().nullable(),
-      responseStatus: safeText.nullable(), terminalClassification: safeText.nullable(), parseClassification: safeText.nullable(), controlProtocolDetected: z.boolean(), decisionParseStage: z.literal("operator_decision_parse"),
+      outputTextPresent: z.boolean(), outputTextItemCount: z.number().int().nonnegative().max(64).nullable().optional().default(null), outputTextLengths: z.array(z.number().int().nonnegative().max(1_000_000)).max(32).optional().default([]), textBeginsKnownTransportMarker: z.boolean().optional().default(false), textEndsKnownTransportMarker: z.boolean().optional().default(false), finalTextRemainingAfterTransportStripping: z.boolean().optional().default(false), finalTextLength: z.number().int().nonnegative().max(1_000_000).nullable(), functionCallItemCount: z.number().int().nonnegative().max(24).nullable().optional().default(null), functionCallCount: z.number().int().nonnegative().max(24).nullable(), functionArgumentDecodeSucceeded: z.boolean().nullable(),
+      responseStatus: safeText.nullable(), terminalClassification: safeText.nullable(), decisionDiscriminator: safeText.nullable().optional().default(null), structuredDecisionPresent: z.boolean().optional().default(false), parseClassification: safeText.nullable(), controlProtocolDetected: z.boolean(), decisionParseStage: z.literal("operator_decision_parse"),
     }).strict().nullable().optional(),
   }).strict().optional(),
   /** Runtime identity is safe operational metadata. It lets an administrator

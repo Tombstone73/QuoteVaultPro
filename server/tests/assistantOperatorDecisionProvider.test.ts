@@ -141,18 +141,18 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
   test("keeps a malformed or empty provider result as a safe failure", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const provider = new ConfiguredAssistantOperatorDecisionProvider(
-      "org_1", { generateJson: jest.fn(), generateOperatorDecision: jest.fn(async () => { throw new AiProviderResponseError({ kind: "empty_response", message: "empty" }); }) } as any,
+      "org_1", { generateJson: jest.fn(), generateOperatorDecision: jest.fn(async () => { throw new AiProviderResponseError({ kind: "empty_response", message: "empty", responseMetadata: { outputItemCount: 1, outputItemTypes: ["provider_metadata"], outputTextItemCount: 0, outputTextLengths: [], functionCallItemCount: 0, functionCallCount: 0, messageOutputTextPresent: false, finalTextLength: 0, responseStatus: "completed", terminalClassification: null, decisionDiscriminator: null, structuredDecisionPresent: false, parseClassification: "empty_response", controlProtocolDetected: false }; }); }) } as any,
       { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "test", model: "deepseek-v4-flash" })) } as any,
     );
 
     await expect(provider.decide({ goal: "Verify the active draft", taskId: "task_empty_provider", step: 1, remainingSteps: 2, toolCatalog: [], observations: [], safeWorkingSummary: null }))
-      .resolves.toEqual({ kind: "fail", response: "The AI provider did not return a usable investigation result." });
+      .resolves.toEqual(expect.objectContaining({ kind: "fail", response: "The AI provider did not return a usable investigation result.", providerDecisionShape: expect.objectContaining({ responseItemTypes: ["provider_metadata"], functionCallItemCount: 0, outputTextItemCount: 0, decisionParseStage: "operator_decision_parse" }) }));
   });
 
   test("never returns provider control protocol as terminal assistant text", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson: jest.fn(), generateOperatorDecision: jest.fn(async () => ({ rawText: JSON.stringify({ kind: "complete", response: "<｜DSML｜tool_calls>" }), requestMetadata: {}, operatorContinuation: { items: [], functionCalls: [] } })) } as any, { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "test", model: "deepseek-v4-flash" })) } as any);
-    await expect(provider.decide({ goal: "Create product", taskId: "task_protocol", step: 1, remainingSteps: 15, toolCatalog: [], observations: [], safeWorkingSummary: null })).resolves.toEqual({ kind: "fail", response: "The AI provider returned an unusable investigation result." });
+    await expect(provider.decide({ goal: "Create product", taskId: "task_protocol", step: 1, remainingSteps: 15, toolCatalog: [], observations: [], safeWorkingSummary: null })).resolves.toEqual(expect.objectContaining({ kind: "fail", response: "The AI provider returned an unusable investigation result.", providerDecisionShape: expect.objectContaining({ decisionParseStage: "operator_decision_parse" }) }));
   });
 
   test("accepts a bounded six-call pricing decision from a native provider", async () => {

@@ -96,6 +96,9 @@ export class AiProviderResponseError extends Error {
   provider: string | null;
   model: string | null;
   providerRequestId: string | null;
+  /** Adapter-owned, safe structural facts only. Never include provider text,
+   * arguments, reasoning, credentials, or customer data. */
+  responseMetadata: Record<string, unknown> | null;
 
   constructor(args: {
     kind: AiProviderFailureKind;
@@ -104,6 +107,7 @@ export class AiProviderResponseError extends Error {
     provider?: string | null;
     model?: string | null;
     providerRequestId?: string | null;
+    responseMetadata?: Record<string, unknown> | null;
   }) {
     super(args.message);
     this.name = "AiProviderResponseError";
@@ -112,5 +116,6 @@ export class AiProviderResponseError extends Error {
     this.provider = args.provider ?? null;
     this.model = args.model ?? null;
     this.providerRequestId = args.providerRequestId ?? null;
+    this.responseMetadata = args.responseMetadata ?? null;
   }
 }

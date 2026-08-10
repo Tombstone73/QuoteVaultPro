@@ -359,6 +359,59 @@ describe("configured AI provider", () => {
     expect(result.requestMetadata.terminalClassification).toBe("operator_decision_parameter_suffix");
   });
 
+  test("preserves a known native call when its arguments are structured and trailing text is a transport marker", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [
+      { type: "function_call", call_id: "call_pricing", name: "ph_0_products_get_pricing", arguments: { productId: "product_translucent" } },
+      { type: "message", content: [{ type: "output_text", text: "</parameter>" }] },
+    ] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [{ name: "products.get_pricing", description: "Read persisted pricing." }] });
+
+    expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: { productId: "product_translucent" } }] });
+    expect(result.requestMetadata).toMatchObject({ functionCallItemCount: 1, functionCallCount: 1, functionArgumentDecodeSucceeded: true, outputTextItemCount: 1, textEndsKnownTransportMarker: true });
+    expect(JSON.stringify(result.requestMetadata)).not.toContain("product_translucent");
+  });
+
+  test("reassembles split output_text fragments before validating a terminal decision", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [
+      { type: "output_text", text: '{"kind":"complete","response":"Pricing' },
+      { type: "output_text", text: ' ready."}' },
+    ] }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "Pricing ready." });
+    expect(result.requestMetadata).toMatchObject({ outputTextItemCount: 2, outputTextLengths: [expect.any(Number), expect.any(Number)], structuredDecisionPresent: true, decisionDiscriminator: "complete" });
+  });
+
+  test("uses top-level output_text fragments without reading provider reasoning", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [
+      { type: "reasoning", content: [{ type: "reasoning_text", text: "private reasoning" }] },
+      { type: "output_text", text: '{"kind":"complete","response":"Ready."}' },
+    ] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "Ready." });
+    expect(JSON.stringify(result.requestMetadata)).not.toContain("private reasoning");
+  });
+
+  test("rejects reasoning/control text and records only its safe response structure", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "<think>private reasoning</think>" }] }] })) as unknown as typeof fetch;
+
+    await expect(new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] })).rejects.toMatchObject({
+      name: "AiProviderResponseError", kind: "provider_protocol_failure", responseMetadata: { outputTextItemCount: 1, controlProtocolDetected: true },
+    });
+  });
+
+  test("fails an unknown Responses item safely with structural metadata only", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "provider_metadata", status: "completed" }] })) as unknown as typeof fetch;
+
+    await expect(new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] })).rejects.toMatchObject({
+      name: "AiProviderResponseError", kind: "empty_response", responseMetadata: expect.objectContaining({ outputItemCount: 1, outputItemTypes: ["provider_metadata"], outputTextItemCount: 0, functionCallItemCount: 0 }),
+    });
+  });
+
   test("accepts a long native-web terminal response and preserves source metadata", async () => {
     const longAnswer = `Research summary: ${"current commercial-print comparison. ".repeat(420)}`.trim();
     expect(longAnswer.length).toBeGreaterThan(8_000);

@@ -3,6 +3,7 @@ import { apiFetch } from "@/lib/queryClient";
 
 export type RuntimeKind = "local" | "deployed-dev" | "production" | "unknown";
 export type DatabaseRuntimeKind = "local" | "dev-cloud" | "production-cloud" | "unknown";
+export type RuntimeBuildFingerprint = { gitSha: string | null; buildId: string | null; environment: string | null; operatorArchitectureVersion: string };
 
 export type RuntimeEnvironmentSummary = {
   appRuntime: RuntimeKind;
@@ -12,6 +13,7 @@ export type RuntimeEnvironmentSummary = {
   canMutateSharedDevData: boolean;
   migrationRunsOnStartup: boolean;
   warningMessage: string | null;
+  buildFingerprint: RuntimeBuildFingerprint;
 };
 
 type RuntimeEnvironmentResponse =

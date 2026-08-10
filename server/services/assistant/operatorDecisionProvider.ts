@@ -123,7 +123,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
           requestSequence: response.requestMetadata.requestSequence ?? null,
           succeeded: false, reason: "provider_control_protocol",
         });
-        return { kind: "fail", response: "The AI provider returned an unusable investigation result." };
+        return { kind: "fail", response: "The AI provider returned an unusable investigation result.", providerDecisionShape: safeProviderDecisionShape(response.requestMetadata) };
       }
       if (decision.kind === "complete") {
         console.info("[AI_OPERATOR_TRACE]", { stage: "direct_answer_decision", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, directAnswer: true, toolCallRequested: false, mutationRequested: false, revisionCreated: false, ...contextTrace });
@@ -214,13 +214,14 @@ function trustedContextTrace(input: Parameters<AssistantOperatorDecisionProvider
   };
 }
 
-function providerFailureDecision(error: unknown, context: { taskId: string; authoritativeBusinessContextAvailable: boolean; activeProductDraftAvailable: boolean; relevantTrustedFactsFound: boolean }): { kind: "fail"; response: string } {
+function providerFailureDecision(error: unknown, context: { taskId: string; authoritativeBusinessContextAvailable: boolean; activeProductDraftAvailable: boolean; relevantTrustedFactsFound: boolean }): { kind: "fail"; response: string; providerDecisionShape?: ProviderDecisionShape } {
   if (error instanceof AiProviderTimeoutError) return { kind: "fail", response: "The AI provider did not finish the investigation before the request timed out." };
   if (error instanceof AiProviderResponseError) {
     console.warn("[AI_OPERATOR_TRACE]", { stage: "provider_response_failure", ...context, providerFailureKind: error.kind, providerStatus: error.status, toolCallRequested: false, directAnswerDecision: false, finalAnswerAccepted: false });
-    if (error.kind === "truncated_output") return { kind: "fail", response: "The AI provider did not return a complete investigation result before its output limit." };
-    if (error.kind === "rate_limit") return { kind: "fail", response: "The AI provider is temporarily busy and could not complete the investigation." };
-    return { kind: "fail", response: "The AI provider did not return a usable investigation result." };
+    const providerDecisionShape = error.responseMetadata ? safeProviderDecisionShape(error.responseMetadata) : undefined;
+    if (error.kind === "truncated_output") return { kind: "fail", response: "The AI provider did not return a complete investigation result before its output limit.", ...(providerDecisionShape ? { providerDecisionShape } : {}) };
+    if (error.kind === "rate_limit") return { kind: "fail", response: "The AI provider is temporarily busy and could not complete the investigation.", ...(providerDecisionShape ? { providerDecisionShape } : {}) };
+    return { kind: "fail", response: "The AI provider did not return a usable investigation result.", ...(providerDecisionShape ? { providerDecisionShape } : {}) };
   }
   throw error;
 }
@@ -234,15 +235,21 @@ function safeProviderDecisionShape(metadata: Record<string, unknown>): ProviderD
   const number = (value: unknown, maximum: number) => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= maximum ? value : null;
   const text = (value: unknown) => typeof value === "string" && value.trim().length > 0 ? value.trim().slice(0, 80) : null;
   const responseItemTypes = strings(metadata.outputItemTypes, 32);
-  const knownItemTypes = new Set(["message", "function_call", "web_search_call", "reasoning"]);
+  const knownItemTypes = new Set(["message", "output_text", "function_call", "web_search_call", "reasoning"]);
   return {
     responseItemCount: number(metadata.outputItemCount, 64), responseItemTypes,
     unknownItemTypes: responseItemTypes.filter((item) => !knownItemTypes.has(item)).slice(0, 16),
     outputTextPresent: metadata.messageOutputTextPresent === true,
+    outputTextItemCount: number(metadata.outputTextItemCount, 64),
+    outputTextLengths: (Array.isArray(metadata.outputTextLengths) ? metadata.outputTextLengths : []).filter((value): value is number => typeof value === "number" && Number.isInteger(value) && value >= 0 && value <= 1_000_000).slice(0, 32),
+    textBeginsKnownTransportMarker: metadata.textBeginsKnownTransportMarker === true,
+    textEndsKnownTransportMarker: metadata.textEndsKnownTransportMarker === true,
+    finalTextRemainingAfterTransportStripping: metadata.finalTextRemainingAfterTransportStripping === true,
     finalTextLength: number(metadata.finalTextLength, 1_000_000),
+    functionCallItemCount: number(metadata.functionCallItemCount, 24),
     functionCallCount: number(metadata.functionCallCount, 24),
     functionArgumentDecodeSucceeded: typeof metadata.functionArgumentDecodeSucceeded === "boolean" ? metadata.functionArgumentDecodeSucceeded : null,
-    responseStatus: text(metadata.responseStatus), terminalClassification: text(metadata.terminalClassification), parseClassification: text(metadata.parseClassification),
+    responseStatus: text(metadata.responseStatus), terminalClassification: text(metadata.terminalClassification), decisionDiscriminator: text(metadata.decisionDiscriminator), structuredDecisionPresent: metadata.structuredDecisionPresent === true, parseClassification: text(metadata.parseClassification),
     controlProtocolDetected: metadata.controlProtocolDetected === true, decisionParseStage: "operator_decision_parse",
   };
 }

@@ -1,5 +1,6 @@
 import {
   detectDatabaseRuntime,
+  getRuntimeBuildFingerprint,
   getRuntimeEnvironmentSummary,
 } from "../lib/runtimeEnvironment";
 
@@ -81,5 +82,12 @@ describe("runtime environment detection", () => {
 
     expect(enabled.migrationRunsOnStartup).toBe(true);
     expect(disabled.migrationRunsOnStartup).toBe(false);
+  });
+
+  test("exposes only allowlisted deployment identity fields", () => {
+    const fingerprint = getRuntimeBuildFingerprint({ RAILWAY_GIT_COMMIT_SHA: "99db691e", RAILWAY_DEPLOYMENT_ID: "deployment_1", RAILWAY_ENVIRONMENT: "development", SECRET_URL: "postgres://hidden" });
+
+    expect(fingerprint).toEqual({ gitSha: "99db691e", buildId: "deployment_1", environment: "development", operatorArchitectureVersion: "operator-business-operations-v1" });
+    expect(JSON.stringify(fingerprint)).not.toContain("hidden");
   });
 });

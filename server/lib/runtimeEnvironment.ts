@@ -1,5 +1,11 @@
 export type RuntimeKind = "local" | "deployed-dev" | "production" | "unknown";
 export type DatabaseRuntimeKind = "local" | "dev-cloud" | "production-cloud" | "unknown";
+export type RuntimeBuildFingerprint = {
+  gitSha: string | null;
+  buildId: string | null;
+  environment: string | null;
+  operatorArchitectureVersion: string;
+};
 
 export type RuntimeEnvironmentSummary = {
   appRuntime: RuntimeKind;
@@ -9,6 +15,7 @@ export type RuntimeEnvironmentSummary = {
   canMutateSharedDevData: boolean;
   migrationRunsOnStartup: boolean;
   warningMessage: string | null;
+  buildFingerprint: RuntimeBuildFingerprint;
 };
 
 type RuntimeEnvironmentOptions = {
@@ -23,6 +30,22 @@ const DEV_NEON_HOSTS = new Set([
 
 function normalize(value: string | undefined | null): string {
   return (value ?? "").trim().toLowerCase();
+}
+
+function safeBuildValue(value: unknown): string | null {
+  return typeof value === "string" && /^[A-Za-z0-9._:-]{1,160}$/.test(value) ? value : null;
+}
+
+/** Safe deployment identity for authenticated diagnostics and the runtime
+ * badge. It intentionally excludes configuration, URLs, and credentials. */
+export function getRuntimeBuildFingerprint(env: RuntimeEnvironmentOptions["env"] = process.env): RuntimeBuildFingerprint {
+  const source = env ?? process.env;
+  return {
+    gitSha: safeBuildValue(source.RAILWAY_GIT_COMMIT_SHA ?? source.VERCEL_GIT_COMMIT_SHA ?? source.GIT_SHA ?? source.SOURCE_VERSION),
+    buildId: safeBuildValue(source.RAILWAY_DEPLOYMENT_ID ?? source.VERCEL_DEPLOYMENT_ID ?? source.BUILD_ID),
+    environment: safeBuildValue(source.RAILWAY_ENVIRONMENT ?? source.VERCEL_ENV ?? source.NODE_ENV),
+    operatorArchitectureVersion: "operator-business-operations-v1",
+  };
 }
 
 function hostnameFromMaybeUrl(value: string | undefined | null): string | null {
@@ -170,6 +193,7 @@ export function getRuntimeEnvironmentSummary(
     canMutateSharedDevData,
     migrationRunsOnStartup: migrationRuns,
     warningMessage,
+    buildFingerprint: getRuntimeBuildFingerprint(env),
   };
 }
 

@@ -39,6 +39,9 @@ function getRuntimeBadgeTitle(environment: RuntimeEnvironmentSummary): string {
     `API: ${environment.apiRuntime}`,
     `Database: ${environment.databaseLabel}`,
     migrationText,
+    `Backend SHA: ${environment.buildFingerprint.gitSha ?? "unavailable"}`,
+    `Build: ${environment.buildFingerprint.buildId ?? "unavailable"}`,
+    `Operator: ${environment.buildFingerprint.operatorArchitectureVersion}`,
   ].join(" | ");
 }
 
