@@ -220,7 +220,7 @@ function activeSemanticProductDraftContext(intent: ProductDraftIntent, inspectio
   } else if (pricingIntent.model === "scalar") {
     pricing = { model: pricingIntent.model, basis: pricingIntent.unit, optionGroup: null, rates: [{ option: "Base", priceCents: pricingIntent.priceCents }] };
   } else {
-    pricing = { model: pricingIntent.model, basis: "unit" in pricingIntent && pricingIntent.unit !== "unresolved" ? pricingIntent.unit : null, optionGroup: null, rates: [] };
+    pricing = { model: pricingIntent.model, basis: "unit" in pricingIntent && pricingIntent.unit && pricingIntent.unit !== "unresolved" ? pricingIntent.unit : null, optionGroup: null, rates: [] };
   }
   return {
     name: intent.identity.name,
@@ -340,8 +340,8 @@ export class ProductManagementSkillService {
       const message = error instanceof Error ? error.message : "The active product draft could not be loaded safely.";
       return { handled: true, response: message, cards: [{ kind: "product_validation_errors", title: "Product draft unavailable", summary: "No product revision was created.", sourceLinks: [], details: { errors: [message] } }] };
     }
-    if (!current) return { handled: true, response: "No unfinished canonical product draft is active for this conversation.", cards: [] };
-    if (["executed", "expired", "abandoned"].includes(current.specification.session.state)) return { handled: true, response: `This canonical product-intent session is ${current.specification.session.state} and cannot be changed.`, cards: [] };
+    if (!current) return { handled: true, response: "No unfinished product draft is active for this conversation.", cards: [] };
+    if (["executed", "expired", "abandoned"].includes(current.specification.session.state)) return { handled: true, response: `This product draft is ${current.specification.session.state} and cannot be changed.`, cards: [] };
     try {
       const outcome = await router.applySemanticOperations({
         organizationId: input.organizationId,

@@ -61,6 +61,7 @@ describe("AssistantService Operator Runtime integration", () => {
       respondPlannedCanonicalProductIntent: jest.fn(),
       beginCanonicalProductDraft: jest.fn(async () => ({ handled: true, response: "I started an unfinished product draft.", cards })),
       applyCanonicalProductOperations: jest.fn(async () => ({ handled: true, response: "I created a canonical product intent and will ask only its remaining questions.", cards })),
+      getActiveSemanticProductDraftContext: jest.fn(async () => ({ name: "Unfinished product draft", category: { state: "unresolved", label: "Product category", provenance: "unresolved" }, measurementMode: "quantity_only", pricing: { model: "unresolved", basis: null, optionGroup: null, rates: [] }, optionGroups: [], outstandingDecisions: [{ path: "identity.name", question: "What should this product be called?", choices: [] }], recentBusinessOperations: [], trustedSelections: [], readyForReview: false })),
     };
     const operations = [
       { op: "set_product_name", name: "Translucent Vinyl - backlit with multilayer printing" },
@@ -86,7 +87,11 @@ describe("AssistantService Operator Runtime integration", () => {
       expect(operationTool?.inputSchema).toMatchObject({ properties: { operations: { maxItems: 24 } } });
       expect(JSON.stringify(operationTool?.inputSchema)).not.toMatch(/patch|revision|fingerprint|serverOwnedFields|pbv2/i);
       if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: {} }] };
-      if (observations.length === 1) return { kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations } }] };
+      if (observations.length === 1) {
+        expect(observations[0]?.result?.data).toMatchObject({ continuation: { draftEstablished: true, mayApplyBusinessOperations: true }, draftContext: { name: "Unfinished product draft" } });
+        expect(JSON.stringify(observations[0]?.result?.data)).not.toContain("canonicalProductIntent");
+        return { kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations } }] };
+      }
       return { kind: "complete", response: "I created a canonical product intent and will ask only its remaining questions." };
     }) };
     const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);

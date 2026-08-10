@@ -77,7 +77,7 @@ export function toCanonicalProductIntentCard(value: unknown): CanonicalProductIn
 
   return {
     proposalId,
-    title: text(dto.title) ?? text(outer.title) ?? "Canonical product intent",
+    title: text(dto.title) ?? text(outer.title) ?? "Product draft",
     revision: revision as number,
     fingerprint,
     ready: readiness.ready,
@@ -122,9 +122,9 @@ export function CanonicalProductIntentCardView({ card, onInteraction }: { card: 
   const needsInput = currentCard.questions.length > 0 || currentCard.blockers.length > 0;
   const [rename, setRename] = React.useState(""); const [busy, setBusy] = React.useState<string | null>(null);
   const interact = async (action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate", actionId: string, newProductName?: string) => { if (!onInteraction || !currentCard.proposalId) return; setBusy(actionId); try { const result = await onInteraction({ proposalId: currentCard.proposalId, action, actionId, newProductName }); const raw = record(result); const next = raw?.card ? toCanonicalProductIntentCard({ kind: "canonical_product_intent_proposal", details: { canonicalProductIntent: raw.card, proposalId: currentCard.proposalId } }) : null; if (next) setOverride(next); } finally { setBusy(null); } };
-  return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Canonical product intent: ${currentCard.title}`}>
+  return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Product draft: ${currentCard.title}`}>
     <div className="flex items-start justify-between gap-3">
-      <div><p className="font-semibold">{currentCard.title}</p><p className="mt-0.5 text-muted-foreground">Canonical product configuration</p></div>
+      <div><p className="font-semibold">{currentCard.title}</p><p className="mt-0.5 text-muted-foreground">Product configuration</p></div>
       <span className="shrink-0 rounded bg-muted px-2 py-1 font-medium text-muted-foreground">Revision {currentCard.revision}</span>
     </div>
     {currentCard.fields.length ? <dl className="mt-3 grid gap-1 sm:grid-cols-2">{currentCard.fields.map((field) => <div key={field.label}><dt className="inline font-medium">{field.label}: </dt><dd className="inline">{field.value}</dd></div>)}</dl> : <p className="mt-3 text-muted-foreground">The latest canonical revision is still being prepared.</p>}
@@ -139,11 +139,11 @@ export function CanonicalProductIntentCardView({ card, onInteraction }: { card: 
 }
 
 export function CanonicalProductIntentReviewProposalCard({ proposal, onCreatePlan, creating, stale = false }: { proposal: CanonicalProductIntentProposal; onCreatePlan: (turnId: string) => Promise<unknown> | void; creating?: boolean; stale?: boolean }) {
-  return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Canonical Product Intent review: ${proposal.title}`}>
+  return <section className="mt-2 rounded-md border border-primary/25 bg-background/80 p-3 text-xs" aria-label={`Product draft review: ${proposal.title}`}>
     <p className="font-semibold">{proposal.title}</p>
     <p className="mt-1 text-muted-foreground">Review the canonical revision before confirming creation of one inactive product and one PBV2 DRAFT.</p>
     <p className="mt-2 text-muted-foreground">Revision {proposal.revision} is bound to this review. Later corrections require a new review.</p>
     {stale ? <p className="mt-2 rounded border border-amber-500/30 bg-amber-500/10 p-2" role="status">A newer canonical revision is available. This review is stale and cannot be used.</p> : null}
-    <div className="mt-2"><Button type="button" size="sm" disabled={creating || stale} onClick={() => void onCreatePlan(proposal.turnId)}>{stale ? "Review stale — refresh required" : creating ? "Preparing plan…" : "Review canonical product plan"}</Button></div>
+    <div className="mt-2"><Button type="button" size="sm" disabled={creating || stale} onClick={() => void onCreatePlan(proposal.turnId)}>{stale ? "Review stale — refresh required" : creating ? "Preparing plan…" : "Review product plan"}</Button></div>
   </section>;
 }

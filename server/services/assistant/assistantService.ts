@@ -687,19 +687,22 @@ export class AssistantService {
     let activeProductProposalId = task.canonicalProductIntentProposalId;
     const beginProductIntentTools: AssistantOperatorSemanticTool[] = mayBeginProductDraft ? [{
       name: "products.begin_draft",
-      description: "Begin one new unfinished inactive Product Builder draft when the user asks to create a product. Then use products.apply_operations to add the requested business details. Do not use if an unfinished product draft is already active.",
+      description: "Establish one new authoritative unfinished product draft. This is an intermediate action, not completion of a detailed product request: after it succeeds, continue this same task with products.apply_operations for the business facts already supplied by the user before asking for missing information. Multiple related operations may be applied together. Draft edits do not require GO; final product creation remains review/GO-gated. Do not use if an unfinished draft is already active.",
       inputSchema: { type: "object", additionalProperties: false },
       execute: async ({ context }) => {
         if (activeProductProposalId) return { status: "partial" as const, warning: "An unfinished product draft is already active." };
         const product = await this.productIntentDispatcher.beginCanonicalProductDraft({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id });
         const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? null;
         if (proposalId) activeProductProposalId = proposalId;
-        return { status: "succeeded" as const, result: { status: "succeeded", data: { response: product.response, cards: product.cards, proposalId, taskDomain: "products" } } as any };
+        const draftContext = proposalId && this.productIntentDispatcher.getActiveSemanticProductDraftContext
+          ? await this.productIntentDispatcher.getActiveSemanticProductDraftContext({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId }).catch(() => null)
+          : null;
+        return { status: "succeeded" as const, result: { status: "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { draftEstablished: Boolean(proposalId), mayApplyBusinessOperations: Boolean(proposalId) } } } as any, presentation: { cards: product.cards as AssistantStructuredCard[] } };
       },
       }] : [];
     const applyProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{
       name: "products.apply_operations",
-      description: "Apply one or more business changes to the current unfinished Product Builder draft. Use operations for name, category, dimensions, pricing, option groups and values, defaults, option price impacts, conditional availability, proof, and safe removals. Begin a draft first when none is active. Pass only displayed business labels and values; never pass IDs, patch paths, canonical intent, PBV2 structures, revisions, fingerprints, serverOwnedFields, or persistence metadata.",
+      description: "Apply one atomic batch of one or more business changes to the current unfinished product draft. Use the original user request and current draft context to include all relevant name, category, dimensions, pricing, options, defaults, price impacts, availability, proof, or safe removals; do not make the user repeat supplied facts. All operations validate together and either create one next revision or none. Begin a draft first when none is active. Draft edits do not require GO; final product creation remains review/GO-gated. Pass only displayed business labels and values; never pass IDs, patch paths, persistence data, or PBV2 structures.",
       inputSchema: semanticProductOperationsToolInputSchema,
       execute: async ({ arguments: args, context }) => {
         const operations = Array.isArray(args.operations) ? args.operations : null;
@@ -714,7 +717,10 @@ export class AssistantService {
         });
         const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? activeProductProposalId;
         activeProductProposalId = proposalId;
-        return { status: "succeeded" as const, result: { status: "succeeded", data: { response: product.response, cards: product.cards, proposalId, taskDomain: "products" } } as any };
+        const draftContext = this.productIntentDispatcher.getActiveSemanticProductDraftContext
+          ? await this.productIntentDispatcher.getActiveSemanticProductDraftContext({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId }).catch(() => null)
+          : null;
+        return { status: "succeeded" as const, result: { status: "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { mayApplyBusinessOperations: true } } } as any, presentation: { cards: product.cards as AssistantStructuredCard[] } };
       },
       }] : [];
     const productIntentTools: AssistantOperatorSemanticTool[] = [...beginProductIntentTools, ...applyProductIntentTools];
@@ -738,10 +744,10 @@ export class AssistantService {
       trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations }), entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
     });
     const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
-    const productData = productObservation?.result?.data as { response?: unknown; cards?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
+    const productData = productObservation?.result?.data as { response?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
     const compositeCards = run.observations.flatMap((observation) => observation.presentation?.cards ?? []);
-    const cards = Array.isArray(productData?.cards)
-      ? productData.cards as AssistantStructuredCard[]
+    const cards = Array.isArray(productObservation?.presentation?.cards)
+      ? productObservation.presentation.cards
       : [...renderToolResults(run.observations).cards, ...compositeCards];
     const compositeResponse = [...run.observations].reverse().map((observation) => observation.result?.data).find((data): data is { response?: unknown } => Boolean(data && typeof data === "object" && typeof (data as any).response === "string"));
     const response = typeof productData?.response === "string" ? productData.response : typeof compositeResponse?.response === "string" ? compositeResponse.response : run.response;

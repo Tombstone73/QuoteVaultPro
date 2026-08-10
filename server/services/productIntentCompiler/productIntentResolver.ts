@@ -141,7 +141,9 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
   if (intent.material.state === "resolved" && !includesLabel(context.materialLabels, intent.material.label)) issues.push({ code: "MATERIAL_NOT_FOUND", path: "material", severity: "question", message: `The material ${intent.material.label} is not available for this tenant.` });
   if (intent.production.route.state === "unresolved") issues.push({ code: "ROUTE_UNRESOLVED", path: "production.route", severity: "question", message: "Which production route should this product use?" });
   if (intent.production.route.state === "resolved" && !includesLabel(context.productionRouteLabels, intent.production.route.label)) issues.push({ code: "ROUTE_NOT_FOUND", path: "production.route", severity: "question", message: `The production route ${intent.production.route.label} is not available for this tenant.` });
-  if (intent.pricing.model === "unresolved") issues.push({ code: "PRICING_UNRESOLVED", path: "pricing.model", severity: "question", message: "Should pricing be per piece, per square foot, a matrix, or quantity tiers?" });
+  if (intent.pricing.model === "unresolved") issues.push({ code: "PRICING_UNRESOLVED", path: "pricing.model", severity: "question", message: intent.pricing.unit
+    ? `What pricing structure should use the stated ${intent.pricing.unit === "per_square_foot" ? "per-square-foot" : "per-piece"} basis?`
+    : "Should pricing be per piece, per square foot, a matrix, or quantity tiers?" });
   if ((intent.pricing.model === "one_dimensional_matrix" || intent.pricing.model === "two_dimensional_matrix") && intent.pricing.unit === "unresolved") issues.push({ code: "PRICING_UNIT_UNRESOLVED", path: "pricing.unit", severity: "question", message: "Are these matrix prices per piece or per square foot?" });
   for (const group of intent.optionGroups) {
     if (group.values.length === 0) {

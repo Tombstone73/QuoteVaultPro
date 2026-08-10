@@ -11,7 +11,7 @@ import { z } from "zod";
 import { sanitizeAiDiagnosticEnvelope } from "@shared/aiDiagnostics";
 import { persistAiDiagnostic } from "../aiDiagnosticsService";
 import { ProductIntentCompiler, type ProductIntentCompilerInput } from "./productIntentCompiler";
-import { compileSemanticProductOperations, semanticProductOperationsResultSchema } from "./semanticProductOperations";
+import { compileSemanticProductOperations, SemanticProductOperationError, semanticProductOperationsResultSchema } from "./semanticProductOperations";
 import {
   ProductIntentPersistenceService,
   type CanonicalProductIntentSession,
@@ -409,6 +409,8 @@ async function continuationFailure(input: {
   stage: string; current?: CanonicalProductIntentSession; activeIssueIds: readonly string[];
   deterministicAttempted: boolean; providerRequested: boolean; provider?: string | null; model?: string | null;
   providerResultType?: string; patch?: ProductDraftIntentPatch; error?: unknown;
+  requestedOperations?: string[];
+  failingOperation?: { index: number; type: string } | null;
   validationSchema?: string | null; repairAttempted?: boolean; repairResult?: "not_attempted" | "succeeded" | "failed";
   parseMethod?: "none" | "raw_json" | "extracted_json" | "repaired_json";
   providerResponseState?: "not_received" | "received" | "empty" | "parse_failed" | "contract_failed" | "accepted";
@@ -433,13 +435,15 @@ async function continuationFailure(input: {
       persistenceAttempted: input.persistenceAttempted ?? false, persistenceResult: input.persistenceResult ?? "not_attempted",
       createdAt: new Date().toISOString(), sessionId: current?.proposalId ?? input.proposalId,
       currentRevision: current?.specification.session.currentRevision ?? null,
-      patchOperationCount: input.patch?.operations.length ?? null, patchPaths: continuationPatchPaths(input.patch),
+      patchOperationCount: input.patch?.operations.length ?? input.requestedOperations?.length ?? null,
+      patchPaths: [...continuationPatchPaths(input.patch), ...(input.requestedOperations ?? []).map((operation, index) => `operations.${index}.${operation}`)].slice(0, 30),
     }));
   } catch { /* Diagnostic persistence is fail-soft and cannot replace the safe continuation error. */ }
   console.warn("[PRODUCT_INTENT_CONTINUATION] Canonical continuation failed.", {
     referenceId: input.referenceId, stage: input.stage, sessionId: current?.proposalId ?? input.proposalId, currentRevision: current?.specification.session.currentRevision ?? null,
     activeIssueIds: input.activeIssueIds, deterministicAttempted: input.deterministicAttempted, providerRequested: input.providerRequested,
-    providerResultType: input.providerResultType ?? null, patchSchemaPaths: issue.paths, code: input.code,
+    providerResultType: input.providerResultType ?? null, patchSchemaPaths: issue.paths, requestedOperationCount: input.requestedOperations?.length ?? null,
+    requestedOperationTypes: input.requestedOperations ?? [], failingOperation: input.failingOperation ?? null, code: input.code,
   });
   return { ok: false as const, code: input.code, message: input.message };
 }
@@ -719,6 +723,7 @@ export class CanonicalProductIntentService {
     const referenceId = `pso-${randomUUID()}`;
     let current: CanonicalProductIntentSession | undefined;
     let sourcePatch: ProductDraftIntentPatch | undefined;
+    let requestedOperations: string[] | undefined;
     let stage = "active_session_lookup";
     try {
       current = await this.persistence.load({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId });
@@ -733,6 +738,7 @@ export class CanonicalProductIntentService {
       }
       stage = "semantic_operation_validation";
       const semantic = semanticProductOperationsResultSchema.parse({ kind: "semantic_operations", operations: input.operations });
+      requestedOperations = semantic.operations.map((operation) => operation.op);
       console.info("[PRODUCT_SEMANTIC_CONTINUITY]", {
         referenceId,
         proposalId: input.proposalId,
@@ -783,7 +789,8 @@ export class CanonicalProductIntentService {
       return await continuationFailure({
         referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId,
         stage: stale ? "stale_revision" : stage, current, activeIssueIds: [], deterministicAttempted: true, providerRequested: false,
-        patch: sourcePatch, error,
+        patch: sourcePatch, error, requestedOperations,
+        failingOperation: error instanceof SemanticProductOperationError ? { index: error.operationIndex, type: error.operationType } : null,
         validationSchema: error instanceof z.ZodError ? "SemanticProductOperations" : null,
         resolverStage: stage === "canonical_validation" || stage === "tenant_reference_resolution" ? "canonical_resolver" : null,
         persistenceAttempted: stage === "revision_persistence", persistenceResult: stage === "revision_persistence" ? "failed" : "not_attempted",

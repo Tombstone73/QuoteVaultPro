@@ -150,8 +150,8 @@ export class AssistantOrchestrationService {
 
   /** Safe catalog for an Operator model. Schemas, permissions, tenant scope,
    * and execution metadata deliberately remain server-side. */
-  catalog(): Array<{ name: AssistantToolName; description: string }> {
-    return Array.from(this.registry.values()).map((tool) => ({ name: tool.name, description: tool.description }));
+  catalog(): Array<{ name: AssistantToolName; description: string; inputSchema?: Record<string, unknown> }> {
+    return Array.from(this.registry.values()).map((tool) => ({ name: tool.name, description: tool.description, ...(tool.providerInputSchema ? { inputSchema: tool.providerInputSchema } : {}) }));
   }
 
   /** Low-level bounded read invocation for the iterative Operator Runtime.

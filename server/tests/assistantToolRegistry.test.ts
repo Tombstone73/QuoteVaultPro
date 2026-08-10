@@ -84,6 +84,13 @@ describe("assistant tool registry", () => {
     expect(registry.get("products.get_pricing")?.description).toContain("search.global");
   });
 
+  test("publishes the same simple search.global contract used by runtime validation", () => {
+    const search = createAssistantToolRegistry().get("search.global")!;
+    expect(search.providerInputSchema).toEqual(expect.objectContaining({ required: ["query"], properties: expect.objectContaining({ query: expect.any(Object), limit: expect.any(Object), entityType: expect.any(Object) }) }));
+    expect(search.inputSchema.parse({ query: "banner" })).toEqual({ query: "banner" });
+    expect(search.inputSchema.parse({ query: "banner", entityType: "product", limit: 5 })).toEqual({ query: "banner", entityType: "product", limit: 5 });
+  });
+
   test("normalizes only a safe numeric order summary number at the registered-tool boundary", () => {
     expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: 1112 })).toEqual({ orderNumber: "1112" });
     expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: "ORD-1112" })).toEqual({ orderNumber: "ORD-1112" });

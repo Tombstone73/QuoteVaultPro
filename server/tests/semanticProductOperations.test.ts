@@ -85,6 +85,27 @@ describe("semantic product operations", () => {
     expect(next.unresolvedFields.map((field) => field.path)).not.toEqual(expect.arrayContaining(["identity.name", "measurement.mode"]));
   });
 
+  test("atomically retains a stated pricing basis while applying the exact multi-change follow-up", () => {
+    const current = productDraftIntentSchema.parse({
+      ...translucentIntent,
+      identity: { ...translucentIntent.identity, name: "Unfinished product draft" },
+      measurement: { mode: "quantity_only" }, pricing: { model: "unresolved" }, optionGroups: [],
+      unresolvedFields: [{ path: "identity.name", code: "PRODUCT_NAME_UNRESOLVED" }, { path: "measurement.mode", code: "MEASUREMENT_UNRESOLVED" }],
+      fieldMetadata: { "identity.name": { source: "unresolved" }, "measurement.mode": { source: "unresolved" } },
+    });
+    const request = "this is per square foot. It should be called 'Translucent Vinyl - Multilayer Print'. It does require width and height to compute the square footage";
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [
+      { op: "set_pricing_basis", basis: "per_square_foot" },
+      { op: "set_product_name", name: "Translucent Vinyl - Multilayer Print" },
+      { op: "set_measurement_mode", mode: "dimensions_required" },
+    ] }, 4, request);
+    const next = applyProductDraftIntentPatch(current, patch);
+    expect(next.identity.name).toBe("Translucent Vinyl - Multilayer Print");
+    expect(next.measurement).toEqual({ mode: "dimensions_required" });
+    expect(next.pricing).toEqual({ model: "unresolved", unit: "per_square_foot" });
+    expect(next.revision).toBe(5);
+  });
+
   test("renames an option group without changing its pricing axis or values", () => {
     const patch = compileSemanticProductOperations(translucentIntent, { kind: "semantic_operations", operations: [{ op: "rename_option_group", optionGroup: "Layers", name: "Print Layers" }] }, 4, "Call the option Print Layers instead.");
     const next = applyProductDraftIntentPatch(translucentIntent, patch);

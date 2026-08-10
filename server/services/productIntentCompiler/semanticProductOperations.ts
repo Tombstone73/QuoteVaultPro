@@ -29,6 +29,15 @@ export const semanticProductOperationsResultSchema = z.object({
 export type SemanticProductOperationsResult = z.infer<typeof semanticProductOperationsResultSchema>;
 export type SemanticProductOperationOptions = { categoryLabels?: readonly string[] };
 
+/** Safe, structured failure metadata for server diagnostics. It deliberately
+ * identifies only the attempted operation shape, never its business values. */
+export class SemanticProductOperationError extends Error {
+  constructor(readonly operationIndex: number, readonly operationType: string, cause: unknown) {
+    super(cause instanceof Error ? cause.message : "PRODUCT_INTENT_SEMANTIC_OPERATION_REJECTED");
+    this.name = "SemanticProductOperationError";
+  }
+}
+
 function normalized(value: string): string {
   return value.normalize("NFKC").toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
 }
@@ -159,7 +168,9 @@ export function compileSemanticProductOperations(
     metadata["measurement.mode"] = { source: "explicit_user" };
   };
 
-  for (const operation of semantic.operations) {
+  for (let operationIndex = 0; operationIndex < semantic.operations.length; operationIndex += 1) {
+    const operation = semantic.operations[operationIndex];
+    try {
     if (operation.op === "set_category") {
       if (identityChanged) throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
       nextIdentity = { ...nextIdentity, category: { state: "unresolved", label: resolveCategoryLabel(operation.category, request, options.categoryLabels) } };
@@ -245,7 +256,7 @@ export function compileSemanticProductOperations(
       continue;
     }
     if (operation.op === "set_pricing_basis") {
-      if (nextPricing.model !== "one_dimensional_matrix" && nextPricing.model !== "two_dimensional_matrix") throw new Error("PRODUCT_INTENT_SEMANTIC_PRICING_BASIS_UNSUPPORTED");
+      if (nextPricing.model !== "one_dimensional_matrix" && nextPricing.model !== "two_dimensional_matrix" && nextPricing.model !== "unresolved") throw new Error("PRODUCT_INTENT_SEMANTIC_PRICING_BASIS_UNSUPPORTED");
       nextPricing = { ...nextPricing, unit: operation.basis };
       pricingChanged = true;
       clearUnresolved("pricing.unit");
@@ -260,7 +271,7 @@ export function compileSemanticProductOperations(
       if (nextPricing.model === "unresolved") {
         nextPricing = {
           model: "one_dimensional_matrix",
-          unit: basis ?? "unresolved",
+          unit: basis ?? nextPricing.unit ?? "unresolved",
           optionKey: group.key,
           cells: group.values.map((candidate) => ({ option: candidate.key, priceCents: candidate.key === value.key ? operation.priceCents : 0 })),
         };
@@ -302,6 +313,11 @@ export function compileSemanticProductOperations(
       group.values = group.values.map((candidate) => ({ ...candidate, isDefault: candidate.key === value.key }));
       groupsChanged = true;
       mark(`optionGroups.${group.key}.default`);
+    }
+    }
+    catch (error) {
+      if (error instanceof SemanticProductOperationError) throw error;
+      throw new SemanticProductOperationError(operationIndex, operation.op, error);
     }
   }
 

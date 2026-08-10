@@ -77,6 +77,9 @@ export interface AssistantToolDefinition<TInput = unknown> {
   requiredPermission: AssistantToolPermissionPolicy;
   requiredContext: readonly ("trusted_actor" | "page_context")[];
   inputSchema: ZodTypeAny;
+  /** Compact provider-facing schema. The Zod schema remains the execution
+   * authority; this prevents native function callers from guessing names. */
+  providerInputSchema?: Record<string, unknown>;
   resultSchema: ZodTypeAny;
   maxResults: number;
   timeoutMs: number;
@@ -91,10 +94,11 @@ export type AssistantToolAdapters = Partial<Record<AssistantToolName, AssistantT
 
 const toolMetadata = {
   "search.global": {
-    description: "Find bounded tenant-scoped customers, orders, products, and other approved business records. Use this to establish a trusted product reference by name before a product summary or pricing request.",
+    description: "Find bounded tenant-scoped business records. Arguments: query (required text), optional entityType customer|product, optional limit 1–20. Use this to establish a trusted product reference before a product summary or pricing request; investigate likely catalog matches before asking the user for an exact product name.",
     requiredPermission: "internal_staff",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantGlobalSearchInputSchema,
+    providerInputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: { query: { type: "string", minLength: 1, maxLength: 160 }, entityType: { enum: ["customer", "product"] }, limit: { type: "integer", minimum: 1, maximum: 20 } } },
     resultSchema: assistantGlobalSearchResultSchema,
     maxResults: 20,
     timeoutMs: 3_000,
