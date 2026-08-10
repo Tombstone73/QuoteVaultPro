@@ -9,6 +9,9 @@ import type { ActiveSemanticProductDraftContext } from "./productManagementSkill
  */
 export const DEFAULT_ASSISTANT_OPERATOR_MAX_STEPS = 16;
 export const ASSISTANT_OPERATOR_MAX_STEPS = 24;
+/** Native providers may return one bounded call per requested comparison.
+ * Keep this aligned with the largest supported pricing scenario batch. */
+export const ASSISTANT_OPERATOR_MAX_TOOL_CALLS_PER_DECISION = 12;
 
 /** Optional per-deployment investigation budget. It stays finite even when
  * configured incorrectly, while the default permits real multi-source work. */
@@ -42,7 +45,7 @@ const providerDecisionShapeSchema = z.object({
 export type ProviderDecisionShape = z.infer<typeof providerDecisionShapeSchema>;
 
 export const assistantOperatorDecisionSchema = z.discriminatedUnion("kind", [
-  z.object({ kind: z.literal("call_tools"), calls: z.array(operatorToolCallSchema).min(1).max(3), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
+  z.object({ kind: z.literal("call_tools"), calls: z.array(operatorToolCallSchema).min(1).max(ASSISTANT_OPERATOR_MAX_TOOL_CALLS_PER_DECISION), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
   /** A provider-native capability made progress but needs another Responses
    * request before it can produce a user-visible decision. */
   z.object({ kind: z.literal("continue"), workingSummary: z.string().trim().min(1).max(2_000).optional() }).strict(),
