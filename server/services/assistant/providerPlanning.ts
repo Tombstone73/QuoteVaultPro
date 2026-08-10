@@ -29,9 +29,22 @@ export interface AssistantProviderResolver {
   resolveProvider(input: { orgId: string; feature: "assistant" }): Promise<ResolvedAiProvider>;
 }
 
+const DEFAULT_ASSISTANT_PLANNING_TIMEOUT_MS = 20_000;
+const MIN_ASSISTANT_PLANNING_TIMEOUT_MS = 5_000;
+const MAX_ASSISTANT_PLANNING_TIMEOUT_MS = 60_000;
+
+export function resolveAssistantPlanningTimeoutMs(env: NodeJS.ProcessEnv = process.env): number {
+  const raw = env.AI_ASSISTANT_PLANNING_TIMEOUT_MS;
+  if (raw == null || raw.trim() === "") return DEFAULT_ASSISTANT_PLANNING_TIMEOUT_MS;
+  const parsed = Number(raw);
+  if (!Number.isFinite(parsed) || parsed <= 0) return DEFAULT_ASSISTANT_PLANNING_TIMEOUT_MS;
+  return Math.min(MAX_ASSISTANT_PLANNING_TIMEOUT_MS, Math.max(MIN_ASSISTANT_PLANNING_TIMEOUT_MS, Math.floor(parsed)));
+}
+
 const PLANNER_SYSTEM_PROMPT = `You are the PrintersHero read-only assistant planner. Return one strict JSON object only, with no markdown or prose.
 You may choose only these read-only tools: search.global, customers.get_summary, orders.get_summary, orders.get_due_summary, production.get_completed_jobs, products.get_summary, reports.operational_summary, navigation.get_current_context, production.get_queue_summary, operations.get_attention_summary, analytics.resolve_customer, analytics.customer_product_sales, analytics.customer_uninvoiced_orders.
 Allowed arguments only: search.global {query,limit?}; customers.get_summary {customerId?,query?}; orders.get_summary {orderId?,orderNumber?}; orders.get_due_summary {due?,dueWithinDays?,dateRange?,customer?:{id?,name?},status?,limit?,includeOperationalSummary?}; production.get_completed_jobs {completed:"last_week_through_current_week",customer:{id?,name?},limit?}; products.get_summary {productId?,query?}; reports.operational_summary {timezone?,date?}; navigation.get_current_context {}; production.get_queue_summary {stationKey?,status?,due?,includeOverdue?,limit?}; operations.get_attention_summary {filter?,dueWithinDays?,stationKey?,limit?}; analytics.resolve_customer {query}; analytics.customer_product_sales {customer:{id?,name?},dateRange:{start,end},rankingMetric?,limit?,grouping?,includeQuantities?,includeInvoiceCounts?,includeOrderCounts?,includeAverageUnitPrice?}; analytics.customer_uninvoiced_orders {customer:{id?,name?},dateRange:{start,end},limit?}.
+For orders.get_summary, send either orderId or orderNumber. orderNumber must be a JSON string, for example {"orderNumber":"1112"}; never send it as a numeric JSON value and never invent number, id, order, or displayNumber fields.
 For production.get_queue_summary, stationKey is only an untrusted human station phrase such as "Flatbed printing"; the server resolves it within the organization. Never invent a station ID or canonical key. Omit stationKey for all-station and comparison questions. Use production.get_queue_summary for a station queue, first due job, backlog, or station comparison. Use operations.get_attention_summary for what needs attention, overdue work, due-today/tomorrow work, proof/prepress/artwork/fulfillment attention, and urgent production jobs. Its filter must be one of overdue, due_today, due_tomorrow, waiting_artwork, waiting_proof, waiting_prepress, in_production, ready_for_fulfillment, urgent, or all_attention.
 Production questions apply to the whole organization. Do not use passive customer, order, or page context as a filter unless the user explicitly says "this customer", "their jobs", "this order", "this station", or "this board". These are read-only reporting questions, never mutations.
 Preserve the user's reporting scope. Use orders.get_due_summary for explicit order due/overdue questions; use production tools only when the user explicitly asks about production jobs, stations, or production work. Never headline an order question with a production-job count.
@@ -96,26 +109,6 @@ function withBoundedAnalyticsPlan(plan: AssistantProviderPlan): AssistantProvide
   return plan;
 }
 
-/** A conservative refusal gate protects the common mutation/confirmation
- * phrasing even if a provider is misconfigured or returns an invalid plan. */
-export function isExplicitAssistantWriteRequest(message: string): boolean {
-  const normalized = message.trim().toLowerCase();
-  if (/^go[!.\s]*$/.test(normalized)) return true;
-  return /\b(change|edit|update|delete|remove|create|save|approve|confirm|cancel|adjust|activate|deactivate)\b/.test(normalized)
-    || /\b(change|update|set)\b.{0,48}\b(price|pricing|status|payment|invoice|inventory|product|customer|order)\b/.test(normalized);
-}
-
-export function directWriteRefusalPlan(): AssistantProviderPlan {
-  return assistantProviderPlanSchema.parse({
-    intent: "unsupported_write",
-    selectedSkill: null,
-    toolCalls: [],
-    clarificationRequired: false,
-    clarificationQuestion: null,
-    responseStyle: "concise",
-  });
-}
-
 export class ConfiguredAssistantPlanner implements AssistantPlanner {
   constructor(
     private readonly provider: AiProviderAdapter,
@@ -123,15 +116,6 @@ export class ConfiguredAssistantPlanner implements AssistantPlanner {
   ) {}
 
   async plan(input: AssistantPlanningInput) {
-    if (isExplicitAssistantWriteRequest(input.message)) {
-      return {
-        plan: directWriteRefusalPlan(),
-        provider: "local_policy",
-        model: "none",
-        metadata: { refusal: "read_only" },
-      };
-    }
-
     const config = await this.resolver.resolveProvider({ orgId: input.organizationId, feature: "assistant" });
     // Existing configured adapter guarantees strict JSON-object mode only for
     // OpenAI-compatible provider mode. Do not parse prose from other providers.
@@ -154,7 +138,7 @@ export class ConfiguredAssistantPlanner implements AssistantPlanner {
           currentContext: contextForPlanner(input.context),
         }),
         promptVersion: "assistant-stage-2-planner-v1",
-        timeoutMs: 12_000,
+        timeoutMs: resolveAssistantPlanningTimeoutMs(),
         timeoutUseCase: "assistant_planning",
         providerConfig: config,
       });

@@ -4,13 +4,20 @@ import {
   assistantEntitySummarySchema,
   assistantGlobalSearchInputSchema,
   assistantGlobalSearchResultSchema,
+  assistantQuoteSearchInputSchema,
+  assistantQuoteSearchResultSchema,
+  assistantQuoteDetailInputSchema,
+  assistantQuoteDetailResultSchema,
   type AssistantSourceLink,
   type AssistantToolResultEnvelope,
 } from "@shared/assistantContracts";
 import { createCustomerSummaryTool, createSearchGlobalTool, customerSummaryToolResultSchema } from "./searchCustomerTools";
+import { createQuoteSearchTool } from "./quoteSearchTools";
+import { createQuoteDetailTool } from "./quoteDetailTools";
 import { createStage2OrderProductToolAdapters } from "./orderProductOperationalTools";
 import { createAssistantProductionReportingToolAdapters } from "./productionReportingTools";
 import { createAssistantAnalyticsReportingToolAdapters } from "./analyticsReportingTools";
+import { createAssistantInvoiceActivityToolAdapters } from "./invoiceActivityTools";
 import { createAssistantOrderDueSummaryToolAdapters } from "./orderDueSummaryTools";
 import { createAssistantCompletedJobReportingToolAdapters } from "./completedJobReportingTools";
 import type { AssistantToolAdapters, AssistantTrustedToolContext } from "./toolRegistry";
@@ -44,12 +51,15 @@ function contextForLegacyAdapter(context: AssistantTrustedToolContext) {
 export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
   const search = createSearchGlobalTool();
   const customer = createCustomerSummaryTool();
+  const quoteSearch = createQuoteSearchTool();
+  const quoteDetail = createQuoteDetailTool();
   return {
     ...createStage2OrderProductToolAdapters(),
     ...createAssistantProductionReportingToolAdapters(),
     ...createAssistantOrderDueSummaryToolAdapters(),
     ...createAssistantCompletedJobReportingToolAdapters(),
     ...createAssistantAnalyticsReportingToolAdapters(),
+    ...createAssistantInvoiceActivityToolAdapters(),
     "search.global": {
       async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
         const input = assistantGlobalSearchInputSchema.parse(rawInput);
@@ -76,6 +86,30 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
             freshness: { capturedAt: result.freshness },
           },
         };
+      },
+    },
+    "quotes.search": {
+      async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        const input = assistantQuoteSearchInputSchema.parse(rawInput);
+        const result = await quoteSearch.execute(contextForLegacyAdapter(context), input);
+        const data = assistantQuoteSearchResultSchema.parse(result.data);
+        return {
+          status: "succeeded",
+          data,
+          provenance: {
+            sourceLinks: result.sourceLinks.map((link) => sourceLink(link, link.entityType, result.freshness)),
+            freshness: { capturedAt: result.freshness },
+          },
+        };
+      },
+    },
+    "quotes.get_detail": {
+      async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
+        const input = assistantQuoteDetailInputSchema.parse(rawInput);
+        const result = await quoteDetail.execute(contextForLegacyAdapter(context), input);
+        if (result.status === "not_found") return { status: "not_found", data: null };
+        const data = assistantQuoteDetailResultSchema.parse(result.data);
+        return { status: "succeeded", data, provenance: { sourceLinks: result.sourceLinks.map((link) => ({ ...link, capturedAt: result.freshness })), freshness: { capturedAt: result.freshness } } };
       },
     },
     "customers.get_summary": {

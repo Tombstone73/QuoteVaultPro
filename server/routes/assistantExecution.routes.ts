@@ -33,6 +33,14 @@ import { productPricingChangeSetCommandService } from "../services/assistant/exe
 import { productPricingChangeSetStore } from "../services/assistant/productPricingChangeSetDb";
 import { configurableProductDraftCommandName, createConfigurableProductDraftCommandDefinition } from "../services/assistant/execution/configurableProductDraftCommand";
 import { createConfigurableProductDraftExecutionCommand } from "../services/assistant/execution/configurableProductDraftExecutionCommand";
+import { canonicalProductIntentDraftCommandName, createCanonicalProductIntentDraftCommandDefinition } from "../services/assistant/execution/canonicalProductIntentDraftCommand";
+import { createCanonicalProductIntentDraftExecutionCommand, createCanonicalProductIntentDraftService } from "../services/assistant/execution/canonicalProductIntentDraftExecutionCommand";
+import { cloneInactiveProductDraftCommandName, createCloneInactiveProductDraftCommandDefinition } from "../services/assistant/execution/cloneInactiveProductDraftCommand";
+import { createCloneInactiveProductDraftExecutionCommand } from "../services/assistant/execution/cloneInactiveProductDraftExecutionCommand";
+import { createInactivePbv2PricingMatrixEditCommandDefinition, inactivePbv2PricingMatrixEditCommandName } from "../services/assistant/execution/inactivePbv2PricingMatrixEditCommand";
+import { createInactivePbv2PricingMatrixEditExecutionCommand } from "../services/assistant/execution/inactivePbv2PricingMatrixEditExecutionCommand";
+import { createInactivePbv2QuantityTierEditCommandDefinition, inactivePbv2QuantityTierEditCommandName } from "../services/assistant/execution/inactivePbv2QuantityTierEditCommand";
+import { createInactivePbv2QuantityTierEditExecutionCommand } from "../services/assistant/execution/inactivePbv2QuantityTierEditExecutionCommand";
 import { createQuoteDraftCreateCommandDefinition, quoteDraftCreateCommandName } from "../services/assistant/execution/quoteDraftCreateCommand";
 import { createQuoteDraftCreateExecutionCommand } from "../services/assistant/execution/quoteDraftCreateExecutionCommand";
 import { createQuoteDraftUpdateCommandDefinition, quoteDraftUpdateCommandName } from "../services/assistant/execution/quoteDraftUpdateCommand";
@@ -49,6 +57,8 @@ import { fulfillmentOperationCommandNames, fulfillmentOperationsService } from "
 import { billingInvoiceOperationCommandNames, billingInvoiceOperationsService } from "../services/assistant/billingInvoiceOperationsService";
 import { createBillingInvoiceOperationCommandDefinition, createBillingInvoiceOperationExecutionCommand } from "../services/assistant/execution/billingInvoiceOperationsCommands";
 import { paymentOperationCommandNames, paymentOperationsService } from "../services/assistant/paymentOperationsService";
+import { CompositeExecutionPlanningService } from "../services/assistant/execution/compositeExecutionPlanningService";
+import { createQuoteInternalNoteCompositeExecutionService } from "../services/assistant/execution/quoteInternalNoteCompositeTool";
 import { createPaymentOperationCommandDefinition, createPaymentOperationExecutionCommand } from "../services/assistant/execution/paymentOperationsCommands";
 
 function userId(req: Request): string | null {
@@ -64,7 +74,7 @@ function scope(req: Request): ExecutionActorScope {
   const internal = ["owner", "admin", "manager", "member", "employee"].includes(role);
   return {
     organizationId: getRequestOrganizationId(req), userId: id,
-    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", "assistant.orders.create", "assistant.orders.update_editable", "assistant.quotes.convert_to_order", "assistant.customers.create", "assistant.customers.update_profile", "assistant.customers.update_commercial_terms", "assistant.contacts.create", "assistant.contacts.update", "assistant.production.intake_line_items", "assistant.production.send_to_prepress", "assistant.production.update_job_status", "assistant.production.add_job_note", "assistant.fulfillment.create_shipment", "assistant.fulfillment.update_shipment_details", "assistant.fulfillment.mark_shipped", "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.add_note", "assistant.billing.create_invoice", "assistant.billing.update_invoice_draft", "assistant.billing.send_invoice", "assistant.billing.add_invoice_note", "assistant.payments.record_manual_payment", "assistant.payments.add_payment_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch", "assistant.products.adjust_pricing"] : [])] : [],
+    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", "assistant.orders.create", "assistant.orders.update_editable", "assistant.quotes.convert_to_order", "assistant.customers.create", "assistant.customers.update_profile", "assistant.customers.update_commercial_terms", "assistant.contacts.create", "assistant.contacts.update", "assistant.production.intake_line_items", "assistant.production.send_to_prepress", "assistant.production.update_job_status", "assistant.production.add_job_note", "assistant.fulfillment.create_shipment", "assistant.fulfillment.update_shipment_details", "assistant.fulfillment.mark_shipped", "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.add_note", "assistant.billing.create_invoice", "assistant.billing.update_invoice_draft", "assistant.billing.send_invoice", "assistant.billing.add_invoice_note", "assistant.payments.record_manual_payment", "assistant.payments.add_payment_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch", "assistant.products.adjust_pricing", "assistant.products.clone_to_inactive_draft", "assistant.products.replace_inactive_matrix", "assistant.products.replace_inactive_quantity_tiers"] : [])] : [],
     environment: process.env.NODE_ENV || "development",
   };
 }
@@ -77,17 +87,26 @@ function planDto(plan: ExecutionPlanRecord, executionStarted = false): Assistant
   const productInactiveDraftUpdate = plan.preview.productInactiveDraftUpdate;
   const productPricingChangeSet = plan.preview.productPricingChangeSet;
   const configurableProduct = plan.preview.configurableProduct;
+  const cloneInactiveDraft = plan.preview.cloneInactiveDraft;
+  const inactivePbv2MatrixEdit = plan.preview.inactivePbv2MatrixEdit;
+  const inactivePbv2TierEdit = plan.preview.inactivePbv2TierEdit;
+  const orderCreate = plan.preview.orderCreate;
+  const affectedEntities = orderCreate ? [
+    ...(orderCreate.customer.id ? [{ entityType: "customer" as const, entityId: orderCreate.customer.id, label: `Customer: ${orderCreate.customer.name}` }] : [{ entityType: "customer" as const, entityId: `selected:${plan.id}`, label: `Customer/contact: ${orderCreate.customer.name}` }]),
+    { entityType: "order" as const, entityId: `new:${plan.id}`, label: "One new order will be created" },
+    ...orderCreate.lines.map((line) => ({ entityType: "product" as const, entityId: line.productId, label: `Product: ${line.productName}` })),
+  ] : plan.affectedRecords.map((record) => ({
+    entityType: record.entityType as any,
+    entityId: record.entityId,
+    label: quoteInternalNote?.quoteId === record.entityId ? `Quote ${quoteInternalNote.quoteNumber}` : productInactiveDraft?.intakeSessionId === record.entityId ? `Product Intake: ${productInactiveDraft.productName}` : productInactiveDraftUpdate?.productId === record.entityId ? `Inactive draft: ${productInactiveDraftUpdate.productName}` : `${record.entityType} ${record.entityId}`,
+    ...(quoteInternalNote?.quoteId === record.entityId ? { sourceLink: quoteInternalNote.sourceLink } : productInactiveDraft?.intakeSessionId === record.entityId ? { sourceLink: productInactiveDraft.sourceLink } : productInactiveDraftUpdate?.productId === record.entityId ? { sourceLink: { label: "Open inactive draft", href: productInactiveDraftUpdate.editorLink, entityType: "product" as const, entityId: productInactiveDraftUpdate.productId } } : {}),
+  }));
   return {
     id: plan.id, conversationId: plan.conversationId, turnId: plan.turnId ?? null, action: plan.normalizedAction,
     commandVersion: plan.commandVersion, status, riskLevel: plan.riskLevel as AssistantExecutionPlan["riskLevel"],
     planVersion: plan.version, contextVersion: "v1", preview: {
       title: plan.preview.title, summary: plan.preview.summary,
-      affectedEntities: plan.affectedRecords.map((record) => ({
-        entityType: record.entityType as any,
-        entityId: record.entityId,
-        label: quoteInternalNote?.quoteId === record.entityId ? `Quote ${quoteInternalNote.quoteNumber}` : productInactiveDraft?.intakeSessionId === record.entityId ? `Product Intake: ${productInactiveDraft.productName}` : productInactiveDraftUpdate?.productId === record.entityId ? `Inactive draft: ${productInactiveDraftUpdate.productName}` : `${record.entityType} ${record.entityId}`,
-        ...(quoteInternalNote?.quoteId === record.entityId ? { sourceLink: quoteInternalNote.sourceLink } : productInactiveDraft?.intakeSessionId === record.entityId ? { sourceLink: productInactiveDraft.sourceLink } : productInactiveDraftUpdate?.productId === record.entityId ? { sourceLink: { label: "Open inactive draft", href: productInactiveDraftUpdate.editorLink, entityType: "product" as const, entityId: productInactiveDraftUpdate.productId } } : {}),
-      })),
+      affectedEntities,
       sideEffects: plan.preview.sideEffects.map((description) => ({ label: "Planned side effect", description, affectedRecordCount: plan.affectedRecords.length, reversible: false })),
       undo: { available: false, label: null, expiresAt: null },
       ...(quoteInternalNote ? { quoteInternalNote: { ...quoteInternalNote, unchanged: [...quoteInternalNote.unchanged] } } : {}),
@@ -95,6 +114,10 @@ function planDto(plan: ExecutionPlanRecord, executionStarted = false): Assistant
       ...(productInactiveDraftUpdate ? { productInactiveDraftUpdate: { ...productInactiveDraftUpdate, changes: productInactiveDraftUpdate.changes.map((change) => ({ ...change })), warnings: [...productInactiveDraftUpdate.warnings], validationErrors: [...productInactiveDraftUpdate.validationErrors], unchanged: [...productInactiveDraftUpdate.unchanged] } } : {}),
       ...(productPricingChangeSet ? { productPricingChangeSet: { ...productPricingChangeSet, excluded: productPricingChangeSet.excluded.map((row) => ({ ...row })), rows: productPricingChangeSet.rows.map((row) => ({ ...row, before: { ...row.before }, after: { ...row.after } })), unchanged: [...productPricingChangeSet.unchanged] } } : {}),
       ...(configurableProduct ? { configurableProduct } : {}),
+      ...(cloneInactiveDraft ? { cloneInactiveDraft } : {}),
+      ...(inactivePbv2MatrixEdit ? { inactivePbv2MatrixEdit } : {}),
+      ...(inactivePbv2TierEdit ? { inactivePbv2TierEdit } : {}),
+      ...(orderCreate ? { orderCreate: { ...orderCreate, warnings: [...orderCreate.warnings], lines: orderCreate.lines.map((line) => ({ ...line, selections: line.selections.map((selection) => ({ ...selection })), warnings: [...line.warnings] })) } } : {}),
     },
     missingInformation: (plan.preview.missingInformation ?? []).map((label) => ({ field: label, label, description: label })),
     // Execution state comes only from the server-created plan and its stored
@@ -122,6 +145,22 @@ function safeError(res: Response, error: unknown) {
 
 export interface AssistantExecutionRouteDependencies {
   service?: ExecutionPlanningService;
+  compositeService?: CompositeExecutionPlanningService;
+}
+
+function compositePlanDto(plan: any) {
+  return {
+    id: plan.id, conversationId: plan.conversationId, turnId: null, action: "composite_protected_mutation", commandVersion: "v1",
+    status: plan.status, riskLevel: "low", planVersion: plan.version, contextVersion: "v1",
+    preview: {
+      title: `${plan.operations.length} approved operations`, summary: "One confirmation covers the displayed internal-only note operations.",
+      affectedEntities: plan.operations.flatMap((operation: any) => operation.affectedRecords.map((record: any) => ({ entityType: record.entityType, entityId: record.entityId, label: `${record.entityType} ${record.entityId}` }))),
+      sideEffects: plan.operations.map((operation: any) => ({ label: operation.commandName, description: operation.summary, affectedRecordCount: operation.affectedRecords.length, reversible: false })),
+      undo: { available: false, label: null, expiresAt: null },
+    },
+    missingInformation: [], executable: plan.status === "awaiting_confirmation", confirmationAvailable: plan.status === "awaiting_confirmation", cancellationAvailable: false,
+    expiresAt: plan.expiresAt.toISOString(), staleReason: plan.status === "invalidated" ? "Plan inputs changed." : null, failureSummary: null, steps: [], correlationId: plan.correlationId, createdAt: null, updatedAt: null,
+  };
 }
 
 function createProductionExecutionService(): ExecutionPlanningService {
@@ -129,6 +168,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
   const productBatchService = createProductInactiveDraftBatchCanonicalService(productService);
   const productUpdateService = createProductInactiveDraftUpdateCanonicalService();
   const productBulkUpdateService = createProductInactiveDraftBulkUpdateCanonicalService(productUpdateService, productInactiveDraftBulkUpdateHistoryService);
+  const canonicalProductIntentService = createCanonicalProductIntentDraftService();
   const metadataRegistry = createProductionAssistantCommandRegistry(
     createQuoteInternalNoteCommandDefinition(quoteInternalNotesService),
     createProductInactiveDraftCommandDefinition(productService),
@@ -138,6 +178,10 @@ function createProductionExecutionService(): ExecutionPlanningService {
     createProductPricingChangeSetCommandDefinition(productPricingChangeSetCommandService),
     createProductPricingRollbackCommandDefinition(productPricingChangeSetCommandService),
     createConfigurableProductDraftCommandDefinition(),
+    createCanonicalProductIntentDraftCommandDefinition(canonicalProductIntentService),
+    createCloneInactiveProductDraftCommandDefinition(),
+    createInactivePbv2PricingMatrixEditCommandDefinition(),
+    createInactivePbv2QuantityTierEditCommandDefinition(),
     createQuoteDraftCreateCommandDefinition(quoteDraftIntakeService),
     createQuoteDraftUpdateCommandDefinition(quoteDraftIntakeService),
     createDeferredOrderCommandDefinition(orderIntakeService),
@@ -158,6 +202,10 @@ function createProductionExecutionService(): ExecutionPlanningService {
     [productPricingChangeSetCommandName, createProductPricingChangeSetExecutionCommand(productPricingChangeSetCommandService, productPricingChangeSetStore)],
     [productPricingRollbackCommandName, createProductPricingRollbackExecutionCommand(productPricingChangeSetCommandService, productPricingChangeSetStore)],
     [configurableProductDraftCommandName, createConfigurableProductDraftExecutionCommand()],
+    [canonicalProductIntentDraftCommandName, createCanonicalProductIntentDraftExecutionCommand(canonicalProductIntentService)],
+    [cloneInactiveProductDraftCommandName, createCloneInactiveProductDraftExecutionCommand()],
+    [inactivePbv2PricingMatrixEditCommandName, createInactivePbv2PricingMatrixEditExecutionCommand()],
+    [inactivePbv2QuantityTierEditCommandName, createInactivePbv2QuantityTierEditExecutionCommand()],
     [quoteDraftCreateCommandName, createQuoteDraftCreateExecutionCommand(quoteDraftIntakeService)],
     [quoteDraftUpdateCommandName, createQuoteDraftUpdateExecutionCommand(quoteDraftIntakeService)],
     [assistantOrderCreateCommandName, createDeferredOrderExecutionCommand(assistantOrderCreateCommandName, orderIntakeService)],
@@ -185,6 +233,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
 
 export function registerAssistantExecutionRoutes(app: Express, middleware: { isAuthenticated: RequestHandler; tenantContext: RequestHandler }, dependencies: AssistantExecutionRouteDependencies = {}): void {
   const service = dependencies.service ?? createProductionExecutionService();
+  const compositeService = dependencies.compositeService ?? createQuoteInternalNoteCompositeExecutionService();
   const guarded = [middleware.isAuthenticated, middleware.tenantContext];
 
   app.post("/api/assistant/conversations/:conversationId/plans", ...guarded, async (req, res) => {
@@ -223,6 +272,18 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
         : null;
       const configurableProductProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === configurableProductDraftCommandName)?.plan
+        : null;
+      const canonicalProductIntentProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === canonicalProductIntentDraftCommandName)?.plan
+        : null;
+      const cloneInactiveDraftProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === cloneInactiveProductDraftCommandName)?.plan
+        : null;
+      const matrixProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === inactivePbv2PricingMatrixEditCommandName)?.plan
+        : null;
+      const tierProposal = Array.isArray(assistantMessage.structuredCards)
+        ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === inactivePbv2QuantityTierEditCommandName)?.plan
         : null;
       const quoteDraftCreateProposal = Array.isArray(assistantMessage.structuredCards)
         ? (assistantMessage.structuredCards as any[]).find((card: any) => card?.kind === "action_proposal" && card?.plan?.action === quoteDraftCreateCommandName)?.plan
@@ -315,6 +376,23 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
         const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: configurableProductDraftCommandName, arguments: { proposalId: configurableProductProposal.proposalId, fingerprint: configurableProductProposal.fingerprint }, context: input.context, reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: configurableProductProposal.proposalId, fingerprint: configurableProductProposal.fingerprint } });
         const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
       }
+      if (canonicalProductIntentProposal && typeof canonicalProductIntentProposal.proposalId === "string" && typeof canonicalProductIntentProposal.revision === "number" && typeof canonicalProductIntentProposal.fingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: canonicalProductIntentDraftCommandName, arguments: { proposalId: canonicalProductIntentProposal.proposalId, revision: canonicalProductIntentProposal.revision, fingerprint: canonicalProductIntentProposal.fingerprint }, context: input.context, reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: canonicalProductIntentProposal.proposalId, fingerprint: canonicalProductIntentProposal.fingerprint } });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
+      if (cloneInactiveDraftProposal && typeof cloneInactiveDraftProposal.proposalId === "string" && typeof cloneInactiveDraftProposal.proposalFingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: cloneInactiveProductDraftCommandName, arguments: { proposalId: cloneInactiveDraftProposal.proposalId, proposalFingerprint: cloneInactiveDraftProposal.proposalFingerprint }, context: input.context, reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: cloneInactiveDraftProposal.proposalId, fingerprint: cloneInactiveDraftProposal.proposalFingerprint } });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version);
+        return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
+      if (matrixProposal && typeof matrixProposal.proposalId === "string" && typeof matrixProposal.proposalFingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: inactivePbv2PricingMatrixEditCommandName, arguments: { proposalId: matrixProposal.proposalId, proposalFingerprint: matrixProposal.proposalFingerprint }, context: input.context, reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: matrixProposal.proposalId, fingerprint: matrixProposal.proposalFingerprint } });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
+      if (tierProposal && typeof tierProposal.proposalId === "string" && typeof tierProposal.proposalFingerprint === "string") {
+        const plan = await service.createPlan(actor, { conversationId: req.params.conversationId, turnId: input.turnId, commandName: inactivePbv2QuantityTierEditCommandName, arguments: { proposalId: tierProposal.proposalId, proposalFingerprint: tierProposal.proposalFingerprint }, context: input.context, reuseAwaitingPlan: true, supersedeAwaitingProposal: { proposalId: tierProposal.proposalId, fingerprint: tierProposal.proposalFingerprint } });
+        const confirmation = await service.issueConfirmation(actor, plan.id, plan.version); return res.status(201).json({ success: true, data: { plan: planDto(confirmation.plan), confirmationToken: confirmation.token } });
+      }
       if (productProposal && typeof productProposal.intakeSessionId === "string" && typeof productProposal.proposalFingerprint === "string") {
         const plan = await service.createPlan(actor, {
           conversationId: req.params.conversationId,
@@ -360,7 +438,7 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
 
   app.get("/api/assistant/plans/:planId", ...guarded, async (req, res) => {
     try { return res.json({ success: true, data: planDto(await service.getPlan(scope(req), req.params.planId)) }); }
-    catch (error) { return safeError(res, error); }
+    catch (error) { if (error instanceof ExecutionPlanError && error.code === "PLAN_NOT_FOUND") { try { return res.json({ success: true, data: compositePlanDto(await compositeService.getPlan(scope(req), req.params.planId)) }); } catch (compositeError) { return safeError(res, compositeError); } } return safeError(res, error); }
   });
   app.get("/api/assistant/plans/:planId/status", ...guarded, async (req, res) => {
     try { return res.json({ success: true, data: planDto(await service.getPlan(scope(req), req.params.planId)) }); }
@@ -377,7 +455,14 @@ export function registerAssistantExecutionRoutes(app: Express, middleware: { isA
       const input = assistantConfirmationRequestSchema.parse(req.body ?? {});
       const result = await service.confirmAndExecute(scope(req), { planId: req.params.planId, expectedVersion: input.expectedPlanVersion, token: input.confirmationToken, context: input.context });
       return res.json({ success: true, data: { plan: planDto(result.plan, Boolean(result.result)), result: result.result ?? null, accepted: true, executionStarted: Boolean(result.result) } });
-    } catch (error) { return safeError(res, error); }
+    } catch (error) {
+      if (!(error instanceof ExecutionPlanError) || error.code !== "PLAN_NOT_FOUND") return safeError(res, error);
+      try {
+        const input = assistantConfirmationRequestSchema.parse(req.body ?? {});
+        const result = await compositeService.confirmAndExecute(scope(req), { planId: req.params.planId, expectedVersion: input.expectedPlanVersion, token: input.confirmationToken, context: input.context });
+        return res.json({ success: true, data: { plan: compositePlanDto(result.plan), result: result.result, accepted: true, executionStarted: true } });
+      } catch (compositeError) { return safeError(res, compositeError); }
+    }
   };
   app.post("/api/assistant/plans/:planId/confirmations", ...guarded, confirm);
   // Retain the Stage 3 singular endpoint as a safe compatibility alias.

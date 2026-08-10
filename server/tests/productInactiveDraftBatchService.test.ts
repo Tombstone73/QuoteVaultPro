@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { applyProductDraftBatchCollisions, fingerprintProductInactiveDraftBatch, normalizeProductDraftBatchName, parseProductInactiveDraftBatch, productInactiveDraftBatchMaxSize } from "../services/assistant/productInactiveDraftBatchService";
+import { applyProductDraftBatchCollisions, classifyProductIntakeRouting, fingerprintProductInactiveDraftBatch, normalizeProductDraftBatchName, parseProductInactiveDraftBatch, productInactiveDraftBatchMaxSize } from "../services/assistant/productInactiveDraftBatchService";
 
 describe("Product inactive draft batch intake", () => {
   test("parses markdown tables without silently truncating rows", () => {
@@ -37,5 +37,24 @@ describe("Product inactive draft batch intake", () => {
     expect(parsed.sharedDefaults).toMatchObject({ category: { value: "Rigid Substrates", source: "shared_default" }, pricingModel: { value: "per_sqft" }, route: { value: "Flatbed" }, minimumChargeCents: { value: 2500 }, allowRotation: { value: true } });
     expect(parsed.rows).toHaveLength(2);
     expect(parsed.rows.every((row) => row.provenance.description === "shared")).toBe(true);
+  });
+
+  test("keeps one named multiline product with option-value bullets on the single-product route", () => {
+    const source = "Create a new inactive product called DEV Test Vinyl Options 080326B.\n\nUse the Print Products category.\nCustomers must enter width and height.\nPrice it at $3.00 per square foot.\n\nAdd one required single-select option named Lamination with these choices:\n- None\n- Gloss\n- Matte\n\nSet None as the default.\nDo not set production routing, sheet settings, rotation, or a minimum charge.\nShow me the complete product before GO.";
+    expect(classifyProductIntakeRouting(source)).toBe("single");
+  });
+
+  test("recognizes only clear multi-product structures as batch and fails ambiguous wording closed", () => {
+    expect(classifyProductIntakeRouting("Name,Description\nBanner,13oz banner\nYard Sign,4mm coroplast")).toBe("batch");
+    expect(classifyProductIntakeRouting("Products:\n- Banner - 13oz banner\n- Yard Sign - 4mm coroplast")).toBe("batch");
+    expect(classifyProductIntakeRouting("Create a product called Banner. Create a product called Yard Sign.")).toBe("batch");
+    expect(classifyProductIntakeRouting("1. Product name: Banner\n2. Product name: Yard Sign")).toBe("batch");
+    expect(classifyProductIntakeRouting("Create several products with these settings.")).toBe("ambiguous");
+  });
+
+  test("does not accept configuration prose or option values as batch identities", () => {
+    const parsed = parseProductInactiveDraftBatch("- Use the Print Products category\n- Gloss\n- Matte");
+    expect(parsed.rows.every((row) => row.status === "clarification")).toBe(true);
+    expect(parsed.rows.every((row) => row.reasons.join(" ").includes("product identity"))).toBe(true);
   });
 });

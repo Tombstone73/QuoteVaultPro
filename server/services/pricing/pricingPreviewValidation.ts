@@ -39,6 +39,15 @@ export interface NormalizedPreviewRequest {
   pbv2ExplicitSelections: Record<string, any>;
 }
 
+function previewDoesNotUseDimensions(treeJson: unknown): boolean {
+  if (!treeJson || typeof treeJson !== "object" || Array.isArray(treeJson)) return false;
+  const meta = (treeJson as { meta?: unknown }).meta;
+  if (!meta || typeof meta !== "object" || Array.isArray(meta)) return false;
+  const pricingV2 = (meta as { pricingV2?: unknown }).pricingV2;
+  return Boolean(pricingV2 && typeof pricingV2 === "object" && (pricingV2 as { optionMatrixPricingUnit?: unknown }).optionMatrixPricingUnit === "per_piece")
+    || (meta as { pricingProfileKey?: unknown }).pricingProfileKey === "qty_only";
+}
+
 export type PreviewRequestValidation =
   | { ok: true; normalized: NormalizedPreviewRequest }
   | { ok: false; status: number; envelope: PreviewErrorEnvelope };
@@ -123,13 +132,20 @@ export function validatePricingPreviewRequest(body: any): PreviewRequestValidati
     });
   }
 
-  const runtimeDimensions = resolvePbv2RuntimeDimensions({ treeJson, widthIn: width, heightIn: height });
-  const widthNum = runtimeDimensions.fixedDimensions
-    ? runtimeDimensions.widthIn
-    : validatePositiveNumber(width, "width", "Width", details);
-  const heightNum = runtimeDimensions.fixedDimensions
-    ? runtimeDimensions.heightIn
-    : validatePositiveNumber(height, "height", "Height", details);
+  const dimensionsAreIrrelevant = previewDoesNotUseDimensions(treeJson);
+  const runtimeDimensions = dimensionsAreIrrelevant
+    ? { widthIn: 0, heightIn: 0, fixedDimensions: null }
+    : resolvePbv2RuntimeDimensions({ treeJson, widthIn: width, heightIn: height });
+  const widthNum = dimensionsAreIrrelevant
+    ? 0
+    : runtimeDimensions.fixedDimensions
+      ? runtimeDimensions.widthIn
+      : validatePositiveNumber(width, "width", "Width", details);
+  const heightNum = dimensionsAreIrrelevant
+    ? 0
+    : runtimeDimensions.fixedDimensions
+      ? runtimeDimensions.heightIn
+      : validatePositiveNumber(height, "height", "Height", details);
   const quantityNum = validatePositiveNumber(quantity, "quantity", "Quantity", details);
 
   let pbv2ExplicitSelections: Record<string, any> = {};

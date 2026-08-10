@@ -38,7 +38,7 @@ export function createProductInactiveDraftUpdateCanonicalService(
         },
       });
       return {
-        product: { id: updated.productId, name: updated.productName, active: false, sourceLink: `/products/${updated.productId}` },
+        product: { id: updated.productId, name: updated.productName, active: false, sourceLink: `/products/${encodeURIComponent(updated.productId)}/edit?draftTreeVersionId=${encodeURIComponent(updated.pbv2TreeVersionId)}` },
         productIntakeSession: { id: updated.sessionId, sourceLink: updated.editorLink },
         pbv2DraftTreeVersionId: updated.pbv2TreeVersionId,
         readiness: updated.readiness.status === "ready" ? "ready" as const : "not_ready" as const,

@@ -209,8 +209,8 @@ describe("PricingValidationPanel fixed-size preview", () => {
       schemaVersion: 2,
       rootNodeIds: [],
       nodes: {},
-      meta: { requiresDimensions: true, geometry: { trimAllowanceX: 1, trimAllowanceY: 1 } },
-    }, "quantity_only");
+      meta: { requiresDimensions: true, pricingProfileKey: "qty_only", pricingV2: { optionMatrixPricingUnit: "per_piece", base: { perSqftCents: null } }, geometry: { trimAllowanceX: 1, trimAllowanceY: 1 } },
+    });
 
     expect(container.textContent).not.toContain("Width (in)");
     expect(container.textContent).not.toContain("Height (in)");
@@ -222,8 +222,8 @@ describe("PricingValidationPanel fixed-size preview", () => {
 
     const fetchCalls = fetchMock.mock.calls as unknown as Array<[string, RequestInit]>;
     const body = JSON.parse(String(fetchCalls[0]?.[1]?.body));
-    expect(body.width).toBe(1);
-    expect(body.height).toBe(1);
+    expect(body.width).toBeUndefined();
+    expect(body.height).toBeUndefined();
     expect(body.treeJson.meta.geometry.trimAllowanceX).toBe(0);
     expect(body.treeJson.meta.geometry.trimAllowanceY).toBe(0);
 

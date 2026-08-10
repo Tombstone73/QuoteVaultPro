@@ -176,6 +176,150 @@ describe("Product Intake draft service", () => {
     expect(values.pbv2ActiveTreeVersionId).toBeNull();
   });
 
+  test("lets an explicit Product Intake correction clear earlier sheet and rotation settings", () => {
+    const sourceText = [
+      "3mm PVC, 48x96 sheets, allow rotation, flatbed route, $3.00 per square foot with $10 minimum charge.",
+      "Explicit Product Intake correction (new explicit values override all prior assumptions):",
+      "Set the price to $2.00 per square foot with a $25.00 minimum charge. Leave production routing, sheet settings, and rotation unset.",
+    ].join("\n\n");
+    const correctedBrief = brief({ pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$2.00 per square foot; minimum charge $25.00", evidence: [] } });
+    const values = buildProductIntakeProductValues({ organizationId: "org_1", productId: "prod_correction", brief: correctedBrief, productTypeId: "ptype_rigid", sourceText });
+    const tree = buildProductIntakeDraftTree({ brief: correctedBrief, sessionId: "sess_correction", productName: "13oz Banner", userId: "user_1", sourceText });
+
+    expect(values.pricingProfileConfig).toBeNull();
+    expect(tree.meta?.pricingV2?.base).toMatchObject({ perSqftCents: 200, minimumChargeCents: 2500 });
+  });
+
+  test("keeps explicit quantity-only service requests out of dimensioned production", () => {
+    const values = buildProductIntakeProductValues({
+      organizationId: "org_1", productId: "prod_service", brief: brief(), productTypeId: null,
+      sourceText: "Create an inactive service product priced at $20 per piece. This is a quantity-only service fee and requires proof approval.",
+    });
+    expect(values).toMatchObject({
+      measurementMode: "quantity_only",
+      workflowIntent: "service_fee",
+      isService: true,
+      requiresProductionJob: false,
+      requiresProofApproval: true,
+      isActive: false,
+      pbv2ActiveTreeVersionId: null,
+    });
+  });
+
+  test("builds a quantity-only service fee with arbitrary line-item quantities at the stated per-piece rate", () => {
+    const sourceText = "Create an inactive quantity-only service fee at $20 per piece. It must not create production work.";
+    const canonicalBrief = brief({
+      sizeBehavior: { behavior: "none", confidence: 100, evidence: [] },
+      quantityBehavior: { behavior: "per_piece", confidence: 100, evidence: [] },
+      pricingAnalysis: { behavior: "per_piece", confidence: 100, notes: "$20 per piece", evidence: [] },
+      workflowIntent: "service_fee",
+      requiresProductionJob: false,
+    } as any);
+    const tree = buildProductIntakeDraftTree({ brief: canonicalBrief, sessionId: "sess_service_fee", productName: "Service Fee", userId: "user_1", sourceText });
+    const values = buildProductIntakeProductValues({ organizationId: "org_1", productId: "prod_service_fee", brief: canonicalBrief, productTypeId: null, sourceText });
+    expect(tree.meta).toMatchObject({ pricingProfileKey: "qty_only", requiresDimensions: false, pricingV2: { tierBasis: "line_item_quantity", base: { perPieceCents: 2000 } } });
+    expect(values).toMatchObject({ measurementMode: "quantity_only", workflowIntent: "service_fee", requiresProductionJob: false, pricingProfileKey: "qty_only", pricingFormula: null, pricingFormulaId: null, pricingProfileConfig: null, primaryMaterialId: null, isActive: false });
+    expect(nodes(tree).some((node) => /review required/i.test(String(node.label)))).toBe(false);
+    for (const [quantity, total] of [[1, 20], [2, 40], [10, 200]] as const) {
+      expect(evaluatePricingPreviewFromTree({ treeJson: tree, widthIn: undefined as unknown as number, heightIn: undefined as unknown as number, quantity }).totalPrice).toBeCloseTo(total, 2);
+    }
+  });
+
+  test("does not add dimension requirements to an explicit quantity-only service PBV2 draft", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief(), sessionId: "sess_service", productName: "Service Fee", userId: "user_1",
+      sourceText: "Create a quantity-only service product priced at $20 per piece.",
+    });
+    expect(tree.meta?.requiresDimensions).toBe(false);
+    expect(tree.meta?.productIntake?.quantity).toMatchObject({ quantityOnly: true });
+  });
+
+  test("builds a quantity-only per-piece tier draft without dimension, formula, production, or review defaults", () => {
+    const quantityTierBrief = brief({
+      productIdentity: {
+        likelyProductName: { value: "Sticker Packs", confidence: 95, evidence: [] },
+        category: { value: "Stickers", confidence: 90, evidence: [] },
+        productType: { value: "Sticker", confidence: 88, evidence: [] },
+      },
+      sizeBehavior: { behavior: "none", confidence: 96, notes: "Quantity only", evidence: [] },
+      quantityBehavior: { behavior: "quantity_tiers", confidence: 94, evidence: [] },
+      pricingAnalysis: { behavior: "per_piece", confidence: 94, evidence: [] },
+      requiredOptions: [],
+      optionalOptions: [],
+    });
+    const sourceText = [
+      "Create an inactive quantity-only Sticker Packs product.",
+      "1-24 stickers are $3 each; 25-49 are $2.50 each; 50+ are $2 each.",
+    ].join(" ");
+    const tree = buildProductIntakeDraftTree({
+      brief: quantityTierBrief, sessionId: "sess_quantity_tiers", productName: "Sticker Packs", userId: "user_1", sourceText,
+    });
+    const values = buildProductIntakeProductValues({
+      organizationId: "org_1", productId: "prod_quantity_tiers", brief: quantityTierBrief, productTypeId: null, sourceText,
+      formulaAssignment: {
+        code: "STALE_SQFT", name: "Stale square foot formula", pricingProfileKey: "default", expression: "total_sqft * p", config: {},
+      },
+    });
+
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
+    expect(tree.meta).toMatchObject({ pricingProfileKey: "qty_only", requiresDimensions: false });
+    expect(tree.meta?.pricingFormula).toBeUndefined();
+    expect(tree.meta?.pricingV2).toMatchObject({ tierBasis: "line_item_quantity", base: {} });
+    expect(tree.meta?.pricingV2?.qtyTiers).toEqual([
+      { id: "qty_1", label: "1-24", minQty: 1, perPieceCents: 300 },
+      { id: "qty_25", label: "25-49", minQty: 25, perPieceCents: 250 },
+      { id: "qty_50", label: "50+", minQty: 50, perPieceCents: 200 },
+    ]);
+    expect(tree.meta?.pricingV2?.qtyTiers?.every((tier) => tier.perSqftCents === undefined)).toBe(true);
+    expect(nodes(tree).filter((node) => node.type === "INPUT")).toEqual([]);
+    expect(nodes(tree).some((node) => /review required/i.test(String(node.label)))).toBe(false);
+    expect(values).toMatchObject({
+      measurementMode: "quantity_only", pricingEngine: "pricingProfile", pricingProfileKey: "qty_only",
+      pricingFormula: null, pricingFormulaId: null, requiresProductionJob: false, isActive: false,
+    });
+    expect(values.pricingProfileConfig).toBeNull();
+  });
+
+  test.each([
+    [1, 3], [24, 72], [25, 62.5], [49, 122.5], [50, 100], [100, 200],
+  ])("evaluates quantity-only tier pricing for quantity %i without dimensions", (quantity, expectedTotal) => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief({
+        sizeBehavior: { behavior: "none", confidence: 96, notes: "Quantity only", evidence: [] },
+        quantityBehavior: { behavior: "quantity_tiers", confidence: 94, evidence: [] },
+        pricingAnalysis: { behavior: "per_piece", confidence: 94, evidence: [] },
+        requiredOptions: [], optionalOptions: [],
+      }),
+      sessionId: "sess_quantity_preview", productName: "Sticker Packs", userId: "user_1",
+      sourceText: "Quantity-only product: 1-24 at $3 each, 25-49 at $2.50 each, and 50+ at $2 each.",
+    });
+    const preview = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: undefined as unknown as number,
+      heightIn: undefined as unknown as number,
+      quantity,
+    });
+    expect(preview.totalPrice).toBeCloseTo(expectedTotal, 2);
+  });
+
+  test("honors an explicit production-job request for a quantity-only product", () => {
+    const values = buildProductIntakeProductValues({
+      organizationId: "org_1", productId: "prod_quantity_production", productTypeId: null,
+      brief: brief({ sizeBehavior: { behavior: "none", confidence: 96, evidence: [] } }),
+      sourceText: "Create a quantity-only product that requires a production job.",
+    });
+    expect(values.requiresProductionJob).toBe(true);
+  });
+
+  test("stores an explicit fixed-size request as fixed PBV2 metadata", () => {
+    const tree = buildProductIntakeDraftTree({
+      brief: brief(), sessionId: "sess_fixed", productName: "Yard Sign", userId: "user_1",
+      sourceText: "Create a 24 by 18 yard sign product that does not ask for dimensions.",
+    });
+    expect(tree.meta?.requiresDimensions).toBe(false);
+    expect(tree.meta?.fixedDimensions).toMatchObject({ widthIn: 24, heightIn: 18 });
+  });
+
   test("builds a valid PBV2 DRAFT tree from intake options and behaviors", () => {
     const tree = buildProductIntakeDraftTree({
       brief: brief(),
@@ -237,6 +381,32 @@ describe("Product Intake draft service", () => {
     ]);
     expect(tree.meta?.productIntake?.materialWarnings).toEqual(["Material association required."]);
     expect(tree.meta?.productIntake?.draftQuality?.warnings).toEqual(expect.arrayContaining(["Material match needs review."]));
+  });
+
+  test("preserves explicit unset material and workflow gates in the inactive draft", () => {
+    const correctedBrief = brief({
+      materialSelection: "unset",
+      requiresProofApproval: true,
+      requiresProductionJob: true,
+      productionRoute: "Flatbed",
+      minimumChargeExplicitlyUnset: true,
+      requiredOptions: [],
+      optionalOptions: [],
+      pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$5.00 per square foot", evidence: [] },
+    });
+    const tree = buildProductIntakeDraftTree({
+      brief: correctedBrief,
+      sessionId: "sess_explicit_workflow",
+      productName: "Flatbed Proof Product",
+      userId: "user_1",
+      sourceText: "Original request had a $25 minimum. Explicit Product Intake correction (new explicit values override all prior assumptions): Do not select a material. Leave material unset. Require customer proof approval. Require a production job and route it to Flatbed. Leave sheet settings, rotation, and minimum charge unset. Keep pricing at $5 per square foot.",
+    });
+    const productValues = buildProductIntakeProductValues({ organizationId: "org_1", productId: "prod_explicit_workflow", brief: correctedBrief, productTypeId: "ptype_banner" });
+
+    expect(productValues).toMatchObject({ primaryMaterialId: null, requiresProofApproval: true, requiresProductionJob: true, isActive: false });
+    expect(tree.meta?.pricingV2?.base).toEqual({ perSqftCents: 500 });
+    expect(tree.meta?.productIntake).toMatchObject({ materialSelection: "unset", materialMatch: null, materialAssociationRequired: false, requiresProofApproval: true, requiresProductionJob: true, productionRoute: "Flatbed" });
+    expect(validateOptionTreeV2(tree).ok).toBe(true);
   });
 
   test("extracts explicit source pricing into PBV2 base pricing metadata", () => {

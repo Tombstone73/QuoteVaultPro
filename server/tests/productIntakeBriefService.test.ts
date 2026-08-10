@@ -90,6 +90,105 @@ const sourceJson = {
 };
 
 describe("Product Intake Wizard schemas", () => {
+  test("normalizes an explicit quantity-only service fee before readiness is calculated", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org-service-fee",
+      request: productIntakeWizardAnalyzeRequestSchema.parse({
+        sourceType: "text_description",
+        description: "Create a new inactive product called DEV Test Service 080426. It is quantity-only and costs $20 per piece. It is a service fee and must not create production work. Use the Print Products category.",
+      }),
+      analyzer: null,
+      templates: [],
+      materials: [],
+      provider: null,
+    });
+    const questions = generateProductIntakeQuestions(brief);
+    const readiness = computeProductIntakeReadiness({
+      session: { id: "session-service-fee", organizationId: "org-service-fee", sourceType: "text_description", sourceFingerprint: "service-fee", brief, confidence: null, missingDecisions: brief.missingDecisions, status: "ready_for_draft", createdProductId: null, createdPbv2TreeVersionId: null, createdByUserId: null, updatedByUserId: null, createdAt: "2026-08-04T00:00:00.000Z", updatedAt: "2026-08-04T00:00:00.000Z", abandonedAt: null },
+      questions: questions.map((question, index) => ({ ...question, id: `question-${index}`, organizationId: "org-service-fee", sessionId: "session-service-fee", createdAt: "2026-08-04T00:00:00.000Z" })),
+      answers: [],
+    });
+    expect(brief).toMatchObject({ sizeBehavior: { behavior: "none" }, quantityBehavior: { behavior: "per_piece" }, pricingAnalysis: { behavior: "per_piece" }, workflowIntent: "service_fee", requiresProductionJob: false });
+    expect(questions.filter((question) => question.required)).toEqual([]);
+    expect(readiness.canCreateDraft).toBe(true);
+  });
+
+  test("persists an initial dimensions-required workflow without measurement options or material questions", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_routed_acrylic",
+      request: productIntakeWizardAnalyzeRequestSchema.parse({
+        sourceType: "text_description",
+        description: "Create a new inactive product called DEV Test Routed Acrylic 080426B. Customers must enter width and height. Price it at $5.00 per square foot. Use the Print Products category. Require customer proof approval and require a production job routed to Flatbed. Do not select a material. Do not set sheet settings, rotation, options, or a minimum charge. Show me the complete product before GO.",
+      }),
+      analyzer: null,
+      templates: [],
+      materials: [{ id: "mat_acrylic", sku: "ACR", name: "Acrylic" }],
+      provider: null,
+    });
+
+    expect(brief).toMatchObject({
+      productIdentity: { likelyProductName: { value: "DEV Test Routed Acrylic 080426B" }, category: { value: "Print Products" } },
+      sizeBehavior: { behavior: "custom_size" }, pricingAnalysis: { behavior: "square_foot" },
+      materialSelection: "unset", requiresProofApproval: true, requiresProductionJob: true, productionRoute: "Flatbed",
+      requiredOptions: [], optionalOptions: [],
+    });
+    expect(brief.missingDecisions.some((decision) => decision.id === "select-material")).toBe(false);
+    expect(brief.draftWarnings.map((warning) => warning.code)).not.toEqual(expect.arrayContaining(["proof_required", "routing_signal"]));
+    expect(generateProductIntakeQuestions(brief).map((question) => question.questionKey)).not.toEqual(expect.arrayContaining(["select-material"]));
+    const readiness = computeProductIntakeReadiness({
+      session: { id: "session-routed-acrylic", organizationId: "org_routed_acrylic", sourceType: "text_description", sourceFingerprint: "routed-acrylic", brief, confidence: null, missingDecisions: brief.missingDecisions, status: "ready_for_draft", createdProductId: null, createdPbv2TreeVersionId: null, createdByUserId: null, updatedByUserId: null, createdAt: "2026-08-04T00:00:00.000Z", updatedAt: "2026-08-04T00:00:00.000Z", abandonedAt: null },
+      questions: generateProductIntakeQuestions(brief).map((question, index) => ({ ...question, id: `question-${index}`, organizationId: "org_routed_acrylic", sessionId: "session-routed-acrylic", createdAt: "2026-08-04T00:00:00.000Z" })),
+      answers: [],
+    });
+    expect(readiness.canCreateDraft).toBe(true);
+  });
+
+  test.each(["Custom dimensions.", "Width and height required."])("normalizes %s as dimensions-required without selectable measurement options", async (measurementInstruction) => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_dimensions",
+      request: productIntakeWizardAnalyzeRequestSchema.parse({
+        sourceType: "text_description",
+        description: `Create a product called Dimension Test. ${measurementInstruction} Price it at $5 per square foot. Use Print Products category.`,
+      }),
+      analyzer: null,
+      templates: [],
+      materials: [],
+      provider: null,
+    });
+
+    expect(brief.sizeBehavior.behavior).toBe("custom_size");
+    expect([...brief.requiredOptions, ...brief.optionalOptions].map((option) => option.normalizedGroup)).not.toEqual(expect.arrayContaining(["Dimensions", "Width", "Height", "Size"]));
+    expect(generateProductIntakeQuestions(brief).map((question) => question.question)).not.toEqual(expect.arrayContaining([expect.stringMatching(/what choices should (?:dimensions|width|height|size) have/i)]));
+  });
+
+  test("removes a live-AI Dimensions option after canonical measurement normalization", async () => {
+    const request = productIntakeWizardAnalyzeRequestSchema.parse({
+      sourceType: "text_description",
+      description: "Create a product called Live Dimension Test. Customers must enter width and height. Price it at $5 per square foot. Use Print Products category.",
+    });
+    const fallback = await generateProductIntakeBrief({ orgId: "org_live_dimensions", request, analyzer: null, templates: [], materials: [], provider: null });
+    const optionSource = await generateProductIntakeBrief({
+      orgId: "org_live_dimensions",
+      request: { sourceType: "text_description", description: "Create a vinyl product with lamination choices None, Gloss, and Matte." },
+      analyzer: null,
+      templates: [],
+      materials: [],
+      provider: null,
+    });
+    const dimensionsOption = { ...optionSource.optionalOptions[0], label: "Dimensions", normalizedGroup: "Dimensions", required: true };
+    const provider = {
+      generateJson: async () => ({ rawText: JSON.stringify({ ...fallback, requiredOptions: [dimensionsOption], optionalOptions: [], templateMatches: [] }), provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateBugReview: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+      generateTriageBrief: async () => ({ rawText: "{}", provider: "openai", model: "test-model", requestMetadata: {} }),
+    };
+    const brief = await generateProductIntakeBrief({ orgId: "org_live_dimensions", request, analyzer: null, templates: [], materials: [], provider });
+
+    expect(brief.source).toBe("live_ai");
+    expect(brief.sizeBehavior.behavior).toBe("custom_size");
+    expect([...brief.requiredOptions, ...brief.optionalOptions]).toEqual([]);
+    expect(generateProductIntakeQuestions(brief).map((question) => question.question)).not.toEqual(expect.arrayContaining([expect.stringMatching(/what choices should dimensions have/i)]));
+  });
+
   test("accepts JSON and text-description requests", () => {
     expect(productIntakeWizardAnalyzeRequestSchema.parse({
       sourceType: "pasted_json",
@@ -117,6 +216,35 @@ describe("Product Intake Brief service", () => {
     expect(brief.productIdentity.likelyProductName.value).toBe("AI VALIDATION 19I 3mm PVC");
     expect(brief.pricingAnalysis).toMatchObject({ behavior: "square_foot", confidence: 94 });
     expect(generateProductIntakeQuestions(brief).map((question) => question.questionKey)).not.toContain("choose-pricing-model");
+  });
+
+  test("preserves an explicit option group, values, and default from normal assistant wording", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "Create an inactive vinyl product with lamination choices None, Gloss, and Matte, defaulting to None." },
+      analyzer: null,
+      templates,
+      provider: null,
+    });
+    const lamination = brief.optionalOptions.find((option) => option.normalizedGroup === "Lamination");
+    expect(lamination).toMatchObject({ sampleValues: ["None", "Gloss", "Matte"], defaultChoice: "None" });
+  });
+
+  test("gives an explicit continuation correction precedence over inferred category and generic finishing", async () => {
+    const brief = await generateProductIntakeBrief({
+      orgId: "org_1",
+      request: { sourceType: "text_description", description: "Create product named DEV Test Vinyl Options 080326. Vinyl product with custom width and height at $3 per square foot.\n\nExplicit Product Intake correction: Use Print Products as category. Add Lamination single-select required custom option group with choices None, Gloss, Matte, defaulting to None. No production route and no minimum charge." },
+      analyzer: null,
+      templates,
+      provider: null,
+    });
+
+    const lamination = brief.requiredOptions.find((option) => option.normalizedGroup === "Lamination");
+    expect(brief.productIdentity.category).toMatchObject({ value: "Print Products", confidence: 100 });
+    expect(brief.sizeBehavior.behavior).toBe("custom_size");
+    expect(brief.pricingAnalysis.behavior).toBe("square_foot");
+    expect(lamination).toMatchObject({ required: true, selectionMode: "single", sampleValues: ["None", "Gloss", "Matte"], defaultChoice: "None", source: "product_specific" });
+    expect(brief.optionalOptions.some((option) => /laminat/i.test(option.label))).toBe(false);
   });
 
   test("matches existing option templates with threshold recommendations", () => {
@@ -271,7 +399,9 @@ describe("Product Intake Brief service", () => {
     expect(brief.pricingAnalysis.behavior).toBe("quantity_tiers");
     expect(brief.requiredOptions.find((option) => option.normalizedGroup === "Printed Sides")?.sampleValues).toContain("Single sided");
     expect(brief.optionalOptions.map((option) => option.normalizedGroup)).toEqual(expect.arrayContaining(["Hemming", "Grommets", "Pole pockets"]));
-    expect(brief.draftWarnings.map((warning) => warning.code)).toEqual(expect.arrayContaining(["proof_required", "routing_signal"]));
+    expect(brief.requiresProofApproval).toBe(true);
+    expect(brief.draftWarnings.map((warning) => warning.code)).toEqual(expect.arrayContaining(["routing_signal"]));
+    expect(brief.draftWarnings.map((warning) => warning.code)).not.toContain("proof_required");
     expect(generateProductIntakeQuestions(brief).some((question) => question.questionKey === "confirm-routing-proof-prepress")).toBe(false);
   });
 
@@ -325,7 +455,7 @@ describe("Product Intake Brief service", () => {
       materials: [{ id: "mat_banner", sku: "BAN13", name: "13oz Scrim Banner" }],
       expectedName: "13oz Banner",
       expectedMaterialId: "mat_banner",
-      expectedRequired: ["Size", "Printed Sides"],
+      expectedRequired: ["Printed Sides"],
       expectedOptional: ["Grommets", "Pole pockets"],
     },
     {
@@ -343,7 +473,7 @@ describe("Product Intake Brief service", () => {
       materials: [{ id: "mat_vinyl", sku: "VINYL", name: "White Print Vinyl" }],
       expectedName: "Contour-Cut Stickers",
       expectedMaterialId: "mat_vinyl",
-      expectedRequired: ["Size"],
+      expectedRequired: [],
       expectedOptional: ["Printing", "Laminate"],
     },
     {

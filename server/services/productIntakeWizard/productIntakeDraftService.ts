@@ -32,9 +32,11 @@ import type { Pbv2FixedDimensions } from "@shared/pbv2/fixedDimensions";
 import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
 import type { ProductOptionRule } from "@shared/productOptionRules";
 import { cloneTemplateIntoTree } from "@shared/pbv2/optionGroupTemplates";
+import { buildProductIntakeQuantityMetadata, type ProductIntakeQuantityPricingBehavior } from "@shared/productIntakeQuantityMetadata";
 import { db as defaultDb } from "../../db";
 import { normalizeChoicePricingAnswer, stripDefaultChoiceAnnotation } from "./productIntakeOptionHelpers";
-import { ProductIntakeSessionError } from "./productIntakeSessionService";
+import { correctedStateBlockers, ProductIntakeSessionError } from "./productIntakeSessionService";
+import { parseNaturalLanguageQuantityTiers } from "./quantityTierParsing";
 
 export type ProductIntakeDraftTemplateRow = {
   id: string;
@@ -73,6 +75,7 @@ type IntakePricingBase = {
 
 type IntakePricingAnalysis = {
   base: IntakePricingBase;
+  qtyTiers: PricingV2Tier[];
   sources: string[];
   warnings: string[];
   likelyMatrixPricing: boolean;
@@ -134,14 +137,24 @@ function compactText(value: string | null | undefined, fallback: string): string
 }
 
 /** Only persist a nesting setting when the intake source stated it explicitly. */
+function latestExplicitCorrection(sourceText: string): string {
+  const marker = "Explicit Product Intake correction (new explicit values override all prior assumptions):";
+  const markerIndex = sourceText.lastIndexOf(marker);
+  return markerIndex >= 0 ? sourceText.slice(markerIndex) : sourceText;
+}
+
 function explicitAllowRotation(sourceText: string): boolean | null {
-  if (/\b(?:allow|allows|allowed)\s+rotation\b|\brotation\s+(?:allowed|enabled)\b/i.test(sourceText)) return true;
-  if (/\b(?:do not allow|no)\s+rotation\b|\brotation\s+(?:not allowed|disabled)\b/i.test(sourceText)) return false;
+  const explicit = latestExplicitCorrection(sourceText);
+  if (/\b(?:leave|clear|unset)\b[\s\S]{0,100}\brotation\b[\s\S]{0,40}\b(?:unset|clear|not set)\b|\bleave\s+rotation\s+unset\b/i.test(explicit)) return null;
+  if (/\b(?:allow|allows|allowed)\s+rotation\b|\brotation\s+(?:allowed|enabled)\b/i.test(explicit)) return true;
+  if (/\b(?:do not allow|no)\s+rotation\b|\brotation\s+(?:not allowed|disabled)\b/i.test(explicit)) return false;
   return null;
 }
 
 function explicitSheetOrRollConfig(sourceText: string): Record<string, unknown> {
-  const match = sourceText.match(/\b(\d{1,3}(?:\.\d+)?)\s*[x×]\s*(\d{1,3}(?:\.\d+)?)\s*(sheets?|sheet|rolls?|roll)\b/i);
+  const explicit = latestExplicitCorrection(sourceText);
+  if (/\b(?:leave|clear|unset)\b[\s\S]{0,100}\bsheet(?:\s+settings?)?\b[\s\S]{0,40}\b(?:unset|clear|not set)\b|\bleave\s+sheet(?:\s+settings?)?\s+unset\b/i.test(explicit)) return {};
+  const match = explicit.match(/\b(\d{1,3}(?:\.\d+)?)\s*[x×]\s*(\d{1,3}(?:\.\d+)?)\s*(sheets?|sheet|rolls?|roll)\b/i);
   if (!match) return {};
   const width = Number(match[1]);
   const height = Number(match[2]);
@@ -198,9 +211,10 @@ function positiveCentsFromAnswer(value: unknown): number | null {
 }
 
 function firstPriceMatch(text: string, patterns: RegExp[]): { cents: number; source: string } | null {
+  const authoritativeText = latestExplicitCorrection(text);
   for (const pattern of patterns) {
     pattern.lastIndex = 0;
-    const match = pattern.exec(text);
+    const match = pattern.exec(authoritativeText);
     const amount = match?.[1];
     if (!amount) continue;
     const cents = dollarsToCents(amount);
@@ -264,6 +278,10 @@ function mergeAnswerPricing(base: IntakePricingBase, answers: ProductIntakeAnswe
 
 function hasBasePricing(base: IntakePricingBase): boolean {
   return Number(base.perSqftCents) > 0 || Number(base.perPieceCents) > 0 || Number(base.minimumChargeCents) > 0;
+}
+
+function hasConfiguredPricing(base: IntakePricingBase, qtyTiers: PricingV2Tier[]): boolean {
+  return hasBasePricing(base) || qtyTiers.some((tier) => Number(tier.perPieceCents) > 0);
 }
 
 const NO_MATRIX_READINESS: ProductIntakeMatrixReadiness = {
@@ -412,6 +430,23 @@ function formulaAssignmentForBrief(brief: ProductIntakeBrief, text: string): Pro
   return STICKER_ADJUSTED_ROUNDED_SQFT_FORMULA;
 }
 
+/**
+ * Quantity-only is a product measurement contract, not merely a presentation
+ * hint.  Prefer the normalized brief when it is available so an AI-derived
+ * brief and its source text cannot disagree about whether dimensions apply.
+ */
+function isQuantityOnlyIntake(brief: ProductIntakeBrief, sourceText: string): boolean {
+  return brief.workflowIntent === "service_fee"
+    || brief.sizeBehavior.behavior === "none"
+    || /\b(?:quantity[-\s]?only|service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
+}
+
+function explicitlyRequiresProductionJob(sourceText: string): boolean {
+  const explicitRequirement = /\b(?:(?:requires?|needs?)\s+(?:a\s+)?production\s+job|production\s+job\s+(?:is\s+)?required)\b/i;
+  const explicitExclusion = /\b(?:does\s+not|doesn't|do\s+not|no)\s+(?:require|need|have)\s+(?:a\s+)?production\s+job\b/i;
+  return explicitRequirement.test(sourceText) && !explicitExclusion.test(sourceText);
+}
+
 function optionTextForMatrix(brief: ProductIntakeBrief): string {
   return [...brief.requiredOptions, ...brief.optionalOptions]
     .map((option) => `${option.label} ${option.normalizedGroup} ${option.sampleValues.join(" ")}`)
@@ -550,16 +585,30 @@ function analyzeDraftPricing(args: {
   const text = collectBriefText(args.brief, args.sourceText, args.sourceJson);
   const detected = extractPricingFromText(text);
   const answered = mergeAnswerPricing(detected.base, args.answers);
+  const parsedTiers = parseNaturalLanguageQuantityTiers(text);
+  const qtyTiers: PricingV2Tier[] = parsedTiers.errors.length === 0 && parsedTiers.missingRateQuestions.length === 0
+    ? parsedTiers.tiers.map((tier) => ({
+      id: `qty_${tier.minQty}`,
+      label: tier.label,
+      minQty: tier.minQty,
+      perPieceCents: tier.perPieceCents,
+    }))
+    : [];
+  // A complete tier family is authoritative. Do not retain its first rate as a
+  // misleading scalar base price merely because the phrase contains "each".
+  const base = qtyTiers.length > 0 ? {} : answered.base;
   const matrix = detectMatrixPricing(args.brief, text);
   const warnings: string[] = [];
-  if (!hasBasePricing(answered.base)) {
+  if (!hasConfiguredPricing(base, qtyTiers)) {
     warnings.push("Base pricing was not found in the intake source. PBV2 publish will remain blocked until per sqft, per piece, or minimum charge pricing is configured.");
   }
+  warnings.push(...parsedTiers.errors, ...parsedTiers.missingRateQuestions);
   if (matrix.likelyMatrixPricing) {
     warnings.push("Likely matrix pricing detected. Product Intake will generate matrix rows only when explicit dimensions, tiers, and prices meet the confidence threshold.");
   }
   return {
-    base: answered.base,
+    base,
+    qtyTiers,
     sources: [...detected.sources, ...answered.sources],
     warnings,
     ...matrix,
@@ -1224,6 +1273,29 @@ function addQuestionNode(args: {
   });
 }
 
+/**
+ * PBV2 requires an enabled runtime root even when a product has no
+ * customer-selectable options. Quantity is supplied by the line item, so a
+ * no-op compute root preserves that graph invariant without inventing a
+ * customer-facing "Review Required" option.
+ */
+function addQuantityOnlyPricingRoot(tree: OptionTreeV2, usedNodeIds: Set<string>) {
+  const nodeId = uniqueKey("intake_quantity_pricing", usedNodeIds);
+  tree.nodes[nodeId] = {
+    id: nodeId,
+    kind: "computed",
+    type: "COMPUTE",
+    status: "ENABLED",
+    key: "quantity_pricing",
+    label: "Quantity pricing",
+    compute: {
+      outputs: { value: { type: "NUMBER" } },
+      expression: { op: "literal", value: 0 },
+    },
+  } as any;
+  tree.rootNodeIds.push(nodeId);
+}
+
 function selectionKeyForInputNode(node: any): string | null {
   const key = String(node?.input?.selectionKey ?? node?.key ?? "").trim();
   return key.length > 0 ? key : null;
@@ -1416,7 +1488,15 @@ function shouldCollectQuantity(brief: ProductIntakeBrief): boolean {
   return !/unknown|none|not applicable|fixed/.test(text);
 }
 
-function quantityMetadataForBrief(brief: ProductIntakeBrief) {
+function quantityPricingBehaviorForBrief(brief: ProductIntakeBrief): ProductIntakeQuantityPricingBehavior {
+  const text = `${brief.pricingAnalysis.behavior} ${brief.pricingAnalysis.notes ?? ""}`.toLowerCase();
+  if (/flat|fixed/.test(text)) return "flat_fee";
+  if (/tier/.test(text)) return "quantity_tiers";
+  if (/qty|quantity|piece|each/.test(text)) return "per_piece";
+  return "per_square_foot";
+}
+
+function quantityMetadataForBrief(brief: ProductIntakeBrief, quantityOnly: boolean) {
   const behavior = compactText(brief.quantityBehavior.behavior, "unknown");
   const notes = compactText(brief.quantityBehavior.notes, "");
   const sourceOptions = [...brief.requiredOptions, ...brief.optionalOptions]
@@ -1433,17 +1513,14 @@ function quantityMetadataForBrief(brief: ProductIntakeBrief) {
       sourcePaths: option.sourcePaths,
     }));
 
-  return {
+  return buildProductIntakeQuantityMetadata({
     behavior,
     confidence: brief.quantityBehavior.confidence,
     notes: notes || null,
-    lineItemQuantitySource: true,
-    customerFacingOptionGenerated: false,
+    quantityOnly,
     sourceOptions,
-    warning: shouldCollectQuantity(brief)
-      ? "Quantity is captured on quote/order line items. Intake quantity behavior is preserved as pricing metadata and must not create a PBV2 customer-facing option."
-      : null,
-  };
+    pricingBehavior: quantityPricingBehaviorForBrief(brief),
+  });
 }
 
 function pricingModeForBrief(brief: ProductIntakeBrief): "area" | "quantity" | "flat" {
@@ -1558,12 +1635,23 @@ function collectTreeConcepts(tree: OptionTreeV2): Set<string> {
 }
 
 function bestMaterialMatch(brief: ProductIntakeBrief) {
+  if (brief.materialSelection === "unset") return null;
   return brief.materialAnalysis.likelyMaterialMatches
     .filter((match) => match.materialId)
     .sort((a, b) => b.confidence - a.confidence)[0] ?? null;
 }
 
 function materialReviewMetadata(brief: ProductIntakeBrief, materialMatch: ReturnType<typeof bestMaterialMatch>) {
+  if (brief.materialSelection === "unset") {
+    return {
+      materialMatchStatus: "resolved" as const,
+      materialAssociationRequired: false,
+      sourceMaterialText: null,
+      candidateMatches: [],
+      confidence: 100,
+      warnings: [],
+    };
+  }
   const sourceMaterialText = unique(brief.materialAnalysis.detectedMaterialReferences.map((value) => value.trim()).filter(Boolean)).join(", ") || null;
   const candidateMatches = brief.materialAnalysis.likelyMaterialMatches
     .slice(0, 10)
@@ -1643,7 +1731,7 @@ function assessDraftQuality(args: {
     score -= 15;
     warnings.push("Pricing setup required.");
   }
-  if (!hasBasePricing(args.pricingReadiness.base)) {
+  if (!hasConfiguredPricing(args.pricingReadiness.base, args.pricingReadiness.qtyTiers)) {
     score -= 25;
     warnings.push("Base pricing is missing and must be configured before publish.");
   }
@@ -1714,9 +1802,11 @@ export function buildProductIntakeDraftTree(args: {
   const now = args.now ?? new Date();
   const usedNodeIds = new Set<string>();
   const usedEdgeIds = new Set<string>();
-  const sizeOption = [...args.brief.requiredOptions, ...args.brief.optionalOptions].find(isSizeOption) ?? null;
-  const sizeMode = resolveSizeMode(args.brief, sizeOption);
   const sourceText = collectBriefText(args.brief, args.sourceText, args.sourceJson);
+  const quantityOnly = isQuantityOnlyIntake(args.brief, sourceText);
+  const fixedDimensionsRequested = Boolean(parseFixedDimensionText(sourceText)) && /\b(?:fixed(?:[-\s]?size|\s+dimensions?)?|does\s+not\s+(?:ask\s+for|require)\s+dimensions)\b/i.test(sourceText);
+  const sizeOption = [...args.brief.requiredOptions, ...args.brief.optionalOptions].find(isSizeOption) ?? null;
+  const sizeMode = quantityOnly ? "none" as const : fixedDimensionsRequested ? "fixed_dropdown" as const : resolveSizeMode(args.brief, sizeOption);
   const fixedDimensions = fixedDimensionsForBrief(args.brief, sizeOption, sourceText, sizeMode);
   const sizeMetadata = sizeMetadataForBrief({ brief: args.brief, sizeOption, sizeMode, fixedDimensions });
   const materialMatch = bestMaterialMatch(args.brief);
@@ -1727,7 +1817,15 @@ export function buildProductIntakeDraftTree(args: {
     sourceJson: args.sourceJson,
     answers: args.answers,
   });
-  const formulaAssignment = args.formulaAssignment ?? formulaAssignmentForBrief(args.brief, sourceText);
+  if (args.brief.minimumChargeExplicitlyUnset) {
+    delete pricingReadiness.base.minimumChargeCents;
+    pricingReadiness.warnings = pricingReadiness.warnings.filter((warning) => !/minimum charge/i.test(warning));
+  }
+  // A quantity-only product is priced by line-item quantity and its selected
+  // tier. Never carry a category-derived square-foot formula into that tree.
+  const formulaAssignment = quantityOnly
+    ? null
+    : args.formulaAssignment ?? formulaAssignmentForBrief(args.brief, sourceText);
   let tree: OptionTreeV2 = {
     schemaVersion: 2,
     status: "DRAFT",
@@ -1739,14 +1837,14 @@ export function buildProductIntakeDraftTree(args: {
       updatedAt: now.toISOString(),
       updatedByUserId: args.userId ?? undefined,
       notes: `Generated from Product Intake session ${args.sessionId}. Product remains inactive until the normal publish flow is completed.`,
-      pricingProfileKey: "default",
+      pricingProfileKey: quantityOnly ? "qty_only" : "default",
       pricingV2: {
         unitSystem: "imperial",
         tierBasis: "line_item_quantity",
         base: pricingReadiness.base,
-        qtyTiers: [],
+        qtyTiers: pricingReadiness.qtyTiers,
       },
-      requiresDimensions: sizeMode === "custom_dimension",
+      requiresDimensions: !quantityOnly && sizeMode === "custom_dimension",
       ...(fixedDimensions ? { fixedDimensions } : {}),
       productIntake: {
         sessionId: args.sessionId,
@@ -1755,12 +1853,12 @@ export function buildProductIntakeDraftTree(args: {
         sizeMode,
         ...(fixedDimensions ? { fixedDimensions } : {}),
         size: sizeMetadata,
-        quantity: quantityMetadataForBrief(args.brief),
+        quantity: quantityMetadataForBrief(args.brief, quantityOnly),
         pricingReadiness: {
           base: pricingReadiness.base,
           sources: pricingReadiness.sources,
           warnings: pricingReadiness.warnings,
-          basePricingConfigured: hasBasePricing(pricingReadiness.base),
+          basePricingConfigured: hasConfiguredPricing(pricingReadiness.base, pricingReadiness.qtyTiers),
           likelyMatrixPricing: pricingReadiness.likelyMatrixPricing,
           candidateDimensions: pricingReadiness.candidateDimensions,
           matrixEvidence: pricingReadiness.matrixEvidence,
@@ -1784,6 +1882,10 @@ export function buildProductIntakeDraftTree(args: {
         sourceMaterialText: materialReview.sourceMaterialText,
         materialCandidateMatches: materialReview.candidateMatches,
         materialWarnings: materialReview.warnings,
+        materialSelection: args.brief.materialSelection ?? "auto",
+        requiresProofApproval: args.brief.requiresProofApproval === true,
+        requiresProductionJob: args.brief.requiresProductionJob ?? null,
+        productionRoute: args.brief.productionRoute ?? null,
         missingDecisions: args.brief.missingDecisions.map((decision) => ({
           id: decision.id,
           question: decision.question,
@@ -1882,7 +1984,9 @@ export function buildProductIntakeDraftTree(args: {
     });
   }
 
-  if (tree.rootNodeIds.length === 0) {
+  if (tree.rootNodeIds.length === 0 && quantityOnly) {
+    addQuantityOnlyPricingRoot(tree, usedNodeIds);
+  } else if (tree.rootNodeIds.length === 0) {
     addQuestionNode({
       tree,
       key: "review_required",
@@ -1930,7 +2034,7 @@ export function buildProductIntakeDraftTree(args: {
           base: pricingReadiness.base,
           sources: pricingReadiness.sources,
           warnings: pricingReadiness.warnings,
-          basePricingConfigured: hasBasePricing(pricingReadiness.base),
+          basePricingConfigured: hasConfiguredPricing(pricingReadiness.base, pricingReadiness.qtyTiers),
           likelyMatrixPricing: true,
           candidateDimensions: generatedMatrix.readiness.matrixDimensions,
           matrixEvidence: generatedMatrix.readiness.reasoning,
@@ -1988,9 +2092,12 @@ export function buildProductIntakeProductValues(args: {
   sourceJson?: unknown;
 }) {
   const productName = compactText(args.brief.productIdentity.likelyProductName.value, "Product Intake Draft");
-  const material = args.brief.materialAnalysis.likelyMaterialMatches
+  // A candidate can be retained as review metadata, but it is never a product
+  // association until both confidence thresholds are met (or when an explicit
+  // correction deliberately leaves material unset).
+  const material = args.brief.materialSelection === "unset" ? null : args.brief.materialAnalysis.likelyMaterialMatches
     .filter((match) => match.materialId && args.brief.materialAnalysis.confidence >= 65 && match.confidence >= 65)
-    .sort((a, b) => b.confidence - a.confidence)[0];
+    .sort((a, b) => b.confidence - a.confidence)[0] ?? null;
   const summaryEvidence = args.brief.sourceEvidence
     .map((evidence) => `${evidence.label}: ${evidence.value ?? ""}`.trim())
     .filter(Boolean)
@@ -1999,7 +2106,16 @@ export function buildProductIntakeProductValues(args: {
   const sourceText = collectBriefText(args.brief, args.sourceText, args.sourceJson);
   const allowRotation = explicitAllowRotation(sourceText);
   const sheetOrRollConfig = explicitSheetOrRollConfig(sourceText);
-  const formulaConfig = args.formulaAssignment?.config ?? {};
+  // Keep the persisted product lifecycle semantics aligned with the PBV2 DRAFT
+  // generated from the same explicit intake text. The assistant must not turn a
+  // service/quantity-only request into a dimensioned production product.
+  const serviceFee = args.brief.workflowIntent === "service_fee" || /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
+  const quantityOnly = isQuantityOnlyIntake(args.brief, sourceText);
+  const proofRequired = args.brief.requiresProofApproval ?? /\b(?:proof\s+(?:required|needed|mandatory)|requires?\s+proof)\b/i.test(sourceText);
+  // The tree and product record must agree: quantity-only pricing uses the
+  // canonical PBV2 quantity profile and cannot retain an area formula.
+  const formulaAssignment = quantityOnly ? null : args.formulaAssignment;
+  const formulaConfig = formulaAssignment?.config ?? {};
   const pricingProfileConfig = Object.keys({ ...formulaConfig, ...sheetOrRollConfig }).length > 0 || allowRotation !== null
     ? { ...formulaConfig, ...sheetOrRollConfig, ...(allowRotation === null ? {} : { allowRotation }) }
     : null;
@@ -2012,18 +2128,20 @@ export function buildProductIntakeProductValues(args: {
     productTypeId: args.productTypeId,
     category: args.brief.productIdentity.category.value,
     pricingMode: pricingModeForBrief(args.brief),
-    pricingEngine: args.formulaAssignment
-      ? (args.formulaAssignment.pricingFormulaId ? "formulaLibrary" as const : "pricingFormula" as const)
+    pricingEngine: formulaAssignment
+      ? (formulaAssignment.pricingFormulaId ? "formulaLibrary" as const : "pricingFormula" as const)
       : "pricingProfile" as const,
-    pricingFormulaId: args.formulaAssignment?.pricingFormulaId ?? null,
-    pricingFormula: args.formulaAssignment?.expression ?? null,
-    pricingProfileKey: args.formulaAssignment?.pricingProfileKey ?? "default",
-    pricingProfileConfig,
-    primaryMaterialId: material?.materialId ?? null,
-    requiresProductionJob: true,
-    requiresProofApproval: false,
+    pricingFormulaId: formulaAssignment?.pricingFormulaId ?? null,
+    pricingFormula: formulaAssignment?.expression ?? null,
+    pricingProfileKey: quantityOnly ? "qty_only" : formulaAssignment?.pricingProfileKey ?? "default",
+    pricingProfileConfig: serviceFee ? null : pricingProfileConfig,
+    primaryMaterialId: serviceFee || args.brief.materialSelection === "unset" ? null : material?.materialId ?? null,
+    measurementMode: quantityOnly ? "quantity_only" as const : "dimensions_required" as const,
+    workflowIntent: serviceFee ? "service_fee" as const : args.brief.workflowIntent ?? "standard_production" as const,
+    requiresProductionJob: serviceFee ? false : args.brief.requiresProductionJob ?? (quantityOnly ? explicitlyRequiresProductionJob(sourceText) : true),
+    requiresProofApproval: proofRequired,
     isTaxable: true,
-    isService: false,
+    isService: serviceFee,
     isActive: false,
     optionTreeJson: null,
     pbv2ActiveTreeVersionId: null,
@@ -2059,6 +2177,14 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
         }
 
         const brief = productIntakeBriefSchema.parse(sessionRow.aiBriefJson);
+        const correctedStateErrors = correctedStateBlockers(brief, sessionRow.confidenceJson?.correctedStateContract);
+        if (correctedStateErrors.length > 0) {
+          throw new ProductIntakeSessionError(
+            409,
+            `The corrected Product Intake configuration is incomplete: ${correctedStateErrors.join(" ")}`,
+            "INCOMPLETE_CORRECTED_STATE",
+          );
+        }
         const productName = compactText(brief.productIdentity.likelyProductName.value, "Product Intake Draft");
         const productId = randomUUID();
         const pbv2TreeVersionId = randomUUID();
@@ -2101,7 +2227,9 @@ export function createDbProductIntakeDraftCreator(database: any = defaultDb): Pr
           .where(eq(productTypes.organizationId, organizationId));
         const productTypeId = resolveProductTypeId(brief, typeRows);
         const formulaSourceText = collectBriefText(brief, sessionRow.sourceText, sessionRow.sourceJson);
-        let formulaAssignment = formulaAssignmentForBrief(brief, formulaSourceText);
+        let formulaAssignment = isQuantityOnlyIntake(brief, formulaSourceText)
+          ? null
+          : formulaAssignmentForBrief(brief, formulaSourceText);
         if (formulaAssignment) {
           const requestedFormulaAssignment = formulaAssignment;
           const formulaRows = await tx

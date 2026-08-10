@@ -1,5 +1,4 @@
 import { resolveSystemGuideAnswer } from "../services/assistant/systemGuide";
-import { resolveDeterministicReadPlan } from "../services/assistant/deterministicReadRouting";
 
 const context = { contextVersion: "v1" as const, route: "/orders/order_1", pageTitle: "Order", entityType: "order" as const, entityId: "order_1", selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-23T00:00:00.000Z", unsavedChanges: false };
 
@@ -27,6 +26,5 @@ describe("System Guide routing", () => {
 
   it("uses the live order summary path for billing diagnosis", () => {
     expect(resolveSystemGuideAnswer("Why can't this order be invoiced?", context)).toBeNull();
-    expect(resolveDeterministicReadPlan("Why can't this order be invoiced?", context)?.selectedSkill).toBe("deterministic_current_order_blocking");
   });
 });

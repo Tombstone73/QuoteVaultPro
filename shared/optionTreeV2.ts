@@ -125,6 +125,7 @@ export type PricingV2Tier = {
   id?: string;
   label?: string;
   minQty?: number;
+  maxQty?: number | null;
   minSqft?: number;
   perSqftCents?: number;
   perPieceCents?: number;
@@ -132,9 +133,9 @@ export type PricingV2Tier = {
 };
 
 export type PricingV2Base = {
-  perSqftCents?: number;
-  perPieceCents?: number;
-  minimumChargeCents?: number;
+  perSqftCents?: number | null;
+  perPieceCents?: number | null;
+  minimumChargeCents?: number | null;
 };
 
 export type Pbv2TierBasis = "line_item_quantity" | "computed_sheet_usage";
@@ -145,6 +146,9 @@ export type PricingV2 = {
   base?: PricingV2Base;
   qtyTiers?: PricingV2Tier[];
   sqftTiers?: PricingV2Tier[];
+  /** The selected option-matrix rate is authoritative. This prevents a
+   * per-piece matrix from being interpreted as a square-foot rate. */
+  optionMatrixPricingUnit?: "per_piece" | "per_square_foot";
 };
 
 export type Effect =
@@ -265,9 +269,16 @@ export type OptionTreeV2 = {
       confidence?: number;
     };
     productIntake?: {
-      sessionId: string;
-      productName: string;
-      confidence: number;
+      /** Product Intake provenance is optional for legacy/manual PBV2 trees.
+       * When supplied, these fields are canonical evidence, not price inputs. */
+      architecture?: "product_draft_intent";
+      contractVersion?: number;
+      intentId?: string;
+      revision?: number;
+      fingerprint?: string;
+      sessionId?: string;
+      productName?: string;
+      confidence?: number;
       sizeMode?: "fixed_dropdown" | "custom_dimension" | "none";
       fixedDimensions?: {
         widthIn: number;
@@ -299,11 +310,13 @@ export type OptionTreeV2 = {
         warning: string | null;
       };
       quantity?: {
+        configured?: boolean;
         behavior: string;
         confidence: number;
         notes: string | null;
         lineItemQuantitySource: boolean;
         customerFacingOptionGenerated: boolean;
+        quantityOnly?: boolean;
         sourceOptions: Array<{
           label: string;
           normalizedGroup: string;
@@ -312,6 +325,16 @@ export type OptionTreeV2 = {
           sampleValues: string[];
           sourcePaths: string[];
         }>;
+        mapping?: {
+          source: "line_item_quantity" | "fixed_quantity" | "not_applicable";
+          variable: "q" | null;
+          pricingBehavior: "per_piece" | "quantity_tiers" | "flat_fee" | "per_square_foot";
+          pricingPreviewField: "quantity" | null;
+          quoteLineItemField: "quantity" | null;
+          orderLineItemField: "quantity" | null;
+          matrixAxes: string[];
+          fixedQuantity?: number;
+        };
         warning: string | null;
       };
       quantityWarnings?: string[];
@@ -406,6 +429,10 @@ export type OptionTreeV2 = {
         confidence: number;
       }>;
       materialWarnings?: string[];
+      materialSelection?: "auto" | "unset";
+      requiresProofApproval?: boolean;
+      requiresProductionJob?: boolean | null;
+      productionRoute?: string | null;
       missingDecisions?: Array<{
         id: string;
         question: string;
@@ -506,6 +533,7 @@ export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
   id: z.string().optional(),
   label: z.string().optional(),
   minQty: z.number().int().min(1).optional(),
+  maxQty: z.number().int().min(1).nullable().optional(),
   minSqft: z.number().positive().optional(),
   perSqftCents: z.number().finite().min(0).optional(),
   perPieceCents: z.number().finite().min(0).optional(),
@@ -513,9 +541,9 @@ export const pricingV2TierSchema: z.ZodType<PricingV2Tier> = z.object({
 });
 
 export const pricingV2BaseSchema: z.ZodType<PricingV2Base> = z.object({
-  perSqftCents: z.number().finite().min(0).optional(),
-  perPieceCents: z.number().finite().min(0).optional(),
-  minimumChargeCents: z.number().finite().min(0).optional(),
+  perSqftCents: z.number().finite().min(0).nullable().optional(),
+  perPieceCents: z.number().finite().min(0).nullable().optional(),
+  minimumChargeCents: z.number().finite().min(0).nullable().optional(),
 });
 
 export const pbv2TierBasisSchema: z.ZodType<Pbv2TierBasis> = z.enum(["line_item_quantity", "computed_sheet_usage"]);
@@ -526,6 +554,7 @@ export const pricingV2Schema: z.ZodType<PricingV2> = z.object({
   base: pricingV2BaseSchema.optional(),
   qtyTiers: z.array(pricingV2TierSchema).optional(),
   sqftTiers: z.array(pricingV2TierSchema).optional(),
+  optionMatrixPricingUnit: z.enum(["per_piece", "per_square_foot"]).optional(),
 });
 
 export const effectSchema: z.ZodType<Effect> = z.discriminatedUnion("type", [
@@ -682,9 +711,14 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
         confidence: z.number().min(0).max(100).optional(),
       }).optional(),
       productIntake: z.object({
-        sessionId: z.string(),
-        productName: z.string(),
-        confidence: z.number().min(0).max(100),
+        architecture: z.literal("product_draft_intent").optional(),
+        contractVersion: z.number().int().positive().optional(),
+        intentId: z.string().optional(),
+        revision: z.number().int().nonnegative().optional(),
+        fingerprint: z.string().optional(),
+        sessionId: z.string().optional(),
+        productName: z.string().optional(),
+        confidence: z.number().min(0).max(100).optional(),
         sizeMode: z.enum(["fixed_dropdown", "custom_dimension", "none"]).optional(),
         fixedDimensions: z.object({
           widthIn: z.number().positive(),
@@ -716,11 +750,13 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
           warning: z.string().nullable(),
         }).optional(),
         quantity: z.object({
+          configured: z.boolean().optional(),
           behavior: z.string(),
           confidence: z.number().min(0).max(100),
           notes: z.string().nullable(),
           lineItemQuantitySource: z.boolean(),
           customerFacingOptionGenerated: z.boolean(),
+          quantityOnly: z.boolean().optional(),
           sourceOptions: z.array(z.object({
             label: z.string(),
             normalizedGroup: z.string(),
@@ -729,6 +765,16 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
             sampleValues: z.array(z.string()),
             sourcePaths: z.array(z.string()),
           })),
+          mapping: z.object({
+            source: z.enum(["line_item_quantity", "fixed_quantity", "not_applicable"]),
+            variable: z.enum(["q"]).nullable(),
+            pricingBehavior: z.enum(["per_piece", "quantity_tiers", "flat_fee", "per_square_foot"]),
+            pricingPreviewField: z.literal("quantity").nullable(),
+            quoteLineItemField: z.literal("quantity").nullable(),
+            orderLineItemField: z.literal("quantity").nullable(),
+            matrixAxes: z.array(z.string()),
+            fixedQuantity: z.number().int().positive().optional(),
+          }).optional(),
           warning: z.string().nullable(),
         }).optional(),
         quantityWarnings: z.array(z.string()).optional(),
@@ -823,6 +869,10 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
           confidence: z.number().min(0).max(100),
         })).optional(),
         materialWarnings: z.array(z.string()).optional(),
+        materialSelection: z.enum(["auto", "unset"]).optional(),
+        requiresProofApproval: z.boolean().optional(),
+        requiresProductionJob: z.boolean().nullable().optional(),
+        productionRoute: z.string().nullable().optional(),
         missingDecisions: z.array(z.object({
           id: z.string(),
           question: z.string(),
@@ -834,6 +884,25 @@ export const optionTreeV2Schema: z.ZodType<OptionTreeV2> = z.object({
           reasons: z.array(z.string()),
           warnings: z.array(z.string()),
         }).optional(),
+      }).superRefine((productIntake, ctx) => {
+        // Legacy and manually-created trees predate this audit contract. New
+        // canonical Product Intent trees are intentionally strict: a draft is
+        // not a valid canonical quantity-only configuration without all of the
+        // line-item quantity evidence Product Builder needs to explain it.
+        if (productIntake.architecture !== "product_draft_intent" || !productIntake.quantity) return;
+        const quantity = productIntake.quantity;
+        for (const field of ["configured", "notes", "lineItemQuantitySource", "customerFacingOptionGenerated", "sourceOptions", "mapping"] as const) {
+          if (quantity[field] === undefined) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity", field], message: "Required" });
+        }
+        if (quantity.mapping?.source === "not_applicable" ? quantity.configured !== false : quantity.configured !== true) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity", "configured"], message: "Canonical Product Intent quantity configured state must agree with its source mapping." });
+        }
+        if (quantity.mapping?.source === "line_item_quantity" && ["per_piece", "quantity_tiers"].includes(quantity.mapping.pricingBehavior) && (quantity.mapping.variable !== "q" || quantity.lineItemQuantitySource !== true)) {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity", "mapping"], message: "Line-item quantity must map to q." });
+        }
+        if (quantity.quantityOnly && quantity.mapping?.pricingBehavior === "per_square_foot") {
+          ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["quantity", "mapping"], message: "Quantity-only metadata cannot use square-foot pricing." });
+        }
       }).optional(),
     })
     .optional(),

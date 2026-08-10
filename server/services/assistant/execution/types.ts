@@ -73,6 +73,8 @@ export interface ExecutionPlanPreview {
       sheetOrRollConstraints: string | null;
       allowRotation: boolean | null;
       quantityBehavior: string;
+      workflowIntent: "standard_production" | "fulfillment_only" | "service_fee" | null;
+      requiresProductionJob: boolean | null;
       taxable: true;
       commonOptions: string[];
       status: "inactive_draft";
@@ -104,6 +106,18 @@ export interface ExecutionPlanPreview {
     rows: Array<{ productId: string; productName: string; active: boolean; before: Record<string, unknown>; current: Record<string, unknown>; proposedRestore: Record<string, unknown>; state: string; reason?: string }>;
   };
   configurableProduct?: Record<string, unknown>;
+  /** Exact snapshot preview for a clone-to-inactive-draft command. */
+  cloneInactiveDraft?: {
+    action: "products.clone_to_inactive_draft";
+    proposalId: string;
+    proposalFingerprint: string;
+    fingerprint: string;
+    preview: Record<string, unknown>;
+  };
+  /** Authoritative, complete inactive-DRAFT matrix replacement preview. */
+  inactivePbv2MatrixEdit?: Record<string, unknown>;
+  /** Authoritative, complete inactive-DRAFT quantity-tier replacement preview. */
+  inactivePbv2TierEdit?: Record<string, unknown>;
   productInactiveDraftUpdate?: {
     productId: string;
     productName: string;
@@ -139,6 +153,27 @@ export interface ExecutionPlanPreview {
     validationErrors: readonly string[];
     warnings: readonly string[];
     downstreamActionsExcluded: readonly string[];
+  };
+  /** Server-priced, confirmation-ready presentation for one direct order. */
+  orderCreate?: {
+    customer: { id: string | null; name: string; contactName: string | null };
+    orderStatus: "new";
+    productionDeferred: true;
+    totalCents: number;
+    warnings: readonly string[];
+    lines: readonly {
+      productId: string;
+      productName: string;
+      quantity: number;
+      measurementMode: string | null;
+      dimensions: { widthIn: number; heightIn: number; unit: "in" } | null;
+      pbv2TreeVersionId: string;
+      selections: readonly { groupId: string; groupLabel: string; valueId: string; valueLabel: string; source: "explicit" | "default_accepted" | "system" }[];
+      unitPriceCents: number;
+      totalCents: number;
+      minimumChargeApplied: boolean;
+      warnings: readonly string[];
+    }[];
   };
   crmManagement?: {
     commandName: string;
@@ -203,7 +238,22 @@ export interface ExecutionCommandResult {
   summary: string;
   steps: readonly ExecutionStepResult[];
   /** Bounded post-execution presentation data. This never feeds another command. */
-  details?: { productDraft?: { id: string; name: string; sourceLink: string }; configurableProduct?: Record<string, unknown> };
+  details?: {
+    productDraft?: { id: string; name: string; sourceLink: string; pbv2TreeVersionId?: string; inactive?: boolean; published?: boolean };
+    configurableProduct?: Record<string, unknown>;
+    cloneInactiveDraft?: {
+      action: "products.clone_to_inactive_draft";
+      productId: string;
+      productName: string;
+      pbv2TreeVersionId: string;
+      editorLink: string;
+      inactive: true;
+      pbv2Status: "DRAFT";
+      reused: boolean;
+    };
+    inactivePbv2MatrixEdit?: Record<string, unknown>;
+    inactivePbv2TierEdit?: Record<string, unknown>;
+  };
 }
 
 export interface ExecutionCommandDefinition {

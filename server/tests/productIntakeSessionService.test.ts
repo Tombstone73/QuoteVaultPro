@@ -12,7 +12,12 @@ import {
 import {
   computeProductIntakeReadiness,
   generateProductIntakeQuestions,
+  applyProductIntakeAnswersToBrief,
+  buildCorrectedStateContract,
+  correctedStateBlockers,
+  parseProductIntakeChoiceAnswer,
   recalculateProductIntakeConfidence,
+  productIntakeReadinessTransition,
   resolveProductIntakeAnswersForPersistence,
   resolveProductIntakeSessionStatus,
 } from "../services/productIntakeWizard/productIntakeSessionService";
@@ -122,6 +127,102 @@ describe("Product Intake session schemas", () => {
       ],
     });
     expect(productIntakeAnswersPatchRequestSchema.parse({ answers: [] })).toEqual({ answers: [] });
+  });
+});
+
+describe("Product Intake pending option answers", () => {
+  test("binds a short choice answer to the exact existing Lamination group and preserves the corrected brief", () => {
+    const corrected = brief({
+      productIdentity: {
+        likelyProductName: { value: "DEV Test Vinyl Options 080326", confidence: 95, evidence: [] },
+        category: { value: "Print Products", confidence: 100, evidence: [] },
+        productType: { value: "product", confidence: 80, evidence: [] },
+      },
+      requiredOptions: [{
+        label: "Lamination", normalizedGroup: "Lamination", required: true, confidence: 95,
+        sampleValues: [], sourcePaths: ["$.correction.lamination"], templateMatches: [], evidence: [],
+        source: "product_specific", selectionMode: "single", defaultChoice: "None",
+      }],
+      optionalOptions: [],
+      sizeBehavior: { behavior: "custom_size", confidence: 95, evidence: [] },
+      pricingAnalysis: { behavior: "square_foot", confidence: 95, notes: "Explicit $3.00 per square foot", evidence: [] },
+    });
+
+    const applied = applyProductIntakeAnswersToBrief(corrected, [{ questionKey: "custom-option-lamination-choices", answer: "none, gloss, matte" }]);
+    const lamination = applied.requiredOptions.find((option) => option.normalizedGroup === "Lamination");
+    expect(applied.productIdentity.category.value).toBe("Print Products");
+    expect(applied.requiredOptions.some((option) => /^size$/i.test(option.label))).toBe(false);
+    expect(lamination).toMatchObject({ label: "Lamination", required: true, selectionMode: "single", sampleValues: ["None", "Gloss", "Matte"], defaultChoice: "None" });
+    expect(lamination?.choices?.map((choice) => choice.label)).toEqual(["None", "Gloss", "Matte"]);
+    expect(applied.pricingAnalysis.behavior).toBe("square_foot");
+    expect(applied.sizeBehavior.behavior).toBe("custom_size");
+  });
+
+  test("accepts comma, slash, bullet, and numbered choice answers without treating None as empty", () => {
+    expect(parseProductIntakeChoiceAnswer("none, gloss, matte")).toEqual(["None", "Gloss", "Matte"]);
+    expect(parseProductIntakeChoiceAnswer("None / Gloss / Matte")).toEqual(["None", "Gloss", "Matte"]);
+    expect(parseProductIntakeChoiceAnswer("- none\n- gloss\n- matte")).toEqual(["None", "Gloss", "Matte"]);
+    expect(parseProductIntakeChoiceAnswer("1. None\n2. Gloss\n3. Matte")).toEqual(["None", "Gloss", "Matte"]);
+  });
+});
+
+describe("Product Intake corrected-state readiness", () => {
+  test("blocks a ready-looking session when its corrected category or Lamination group is missing", () => {
+    const corrected = brief({
+      productIdentity: { ...brief().productIdentity, category: { value: "Print Products", confidence: 100, evidence: [] } },
+      requiredOptions: [{ label: "Lamination", normalizedGroup: "Lamination", required: true, confidence: 95, sampleValues: ["None", "Gloss", "Matte"], sourcePaths: [], templateMatches: [], evidence: [], source: "product_specific", selectionMode: "single", defaultChoice: "None" }],
+    });
+    const contract = buildCorrectedStateContract(corrected, "Replace category with Print Products. Remove the Size option.");
+    const reduced = brief({ productIdentity: { ...brief().productIdentity, category: { value: "", confidence: 0, evidence: [] } } });
+    expect(correctedStateBlockers(reduced, contract)).toEqual(expect.arrayContaining([
+      expect.stringContaining("category"),
+      expect.stringContaining("Lamination"),
+    ]));
+    expect(computeProductIntakeReadiness({ session: { ...session("ready_for_draft"), brief: reduced, confidence: { correctedStateContract: contract } }, questions: [], answers: [] })).toMatchObject({ status: "needs_answers", canCreateDraft: false });
+  });
+
+  test("blocks readiness if a later revision drops a corrected measurement mode or base pricing", () => {
+    const corrected = brief({
+      productIdentity: { ...brief().productIdentity, category: { value: "Print Products", confidence: 100, evidence: [] } },
+      sizeBehavior: { behavior: "custom_size", confidence: 100, evidence: [] },
+      pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$2.00 per square foot; minimum charge $25.00", evidence: [] },
+      requiredOptions: [], optionalOptions: [],
+    });
+    const sourceText = "Explicit Product Intake correction (new explicit values override all prior assumptions):\nRemove the Size option group. Keep the measurement mode as width and height required. Set the price to $2.00 per square foot with a $25.00 minimum charge.";
+    const contract = buildCorrectedStateContract(corrected, sourceText);
+    const reduced = brief({
+      productIdentity: corrected.productIdentity,
+      sizeBehavior: { behavior: "none", confidence: 100, evidence: [] },
+      pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$3.00 per square foot; minimum charge $10.00", evidence: [] },
+    });
+
+    expect(correctedStateBlockers(reduced, contract)).toEqual(expect.arrayContaining([
+      expect.stringContaining("measurement"),
+      expect.stringContaining("per-square-foot"),
+      expect.stringContaining("minimum charge"),
+    ]));
+  });
+
+  test("blocks readiness when an explicit proof, production-job, material, or Flatbed route decision is lost", () => {
+    const corrected = brief({
+      materialSelection: "unset",
+      requiresProofApproval: true,
+      requiresProductionJob: true,
+      productionRoute: "Flatbed",
+      minimumChargeExplicitlyUnset: true,
+      requiredOptions: [], optionalOptions: [],
+    });
+    const contract = buildCorrectedStateContract(corrected, "Explicit Product Intake correction (new explicit values override all prior assumptions): Leave material unset. Require customer proof approval. Require a production job and route it to Flatbed. Leave minimum charge unset.");
+    const reduced = brief({ ...corrected, materialSelection: "auto", requiresProofApproval: false, requiresProductionJob: false, productionRoute: "Roll printer", minimumChargeExplicitlyUnset: false });
+
+    expect(correctedStateBlockers(reduced, contract)).toEqual(expect.arrayContaining([
+      expect.stringContaining("unset material"),
+      expect.stringContaining("proof-approval"),
+      expect.stringContaining("production-job"),
+      expect.stringContaining("production route"),
+      expect.stringContaining("unset minimum charge"),
+    ]));
+    expect(computeProductIntakeReadiness({ session: { ...session("ready_for_draft"), brief: reduced, confidence: { correctedStateContract: contract } }, questions: [], answers: [] })).toMatchObject({ status: "needs_answers", canCreateDraft: false });
   });
 });
 
@@ -457,6 +558,38 @@ describe("Product Intake question generation", () => {
     expect(resolveProductIntakeSessionStatus(brief({ overallConfidence: 90 }), [])).toBe("ready_for_draft");
     expect(resolveProductIntakeSessionStatus(brief({ overallConfidence: 60 }), [])).toBe("analyzed");
     expect(resolveProductIntakeSessionStatus(brief({ overallConfidence: 90 }), [{ required: true }])).toBe("needs_answers");
+  });
+
+  test("persists the newest ready-for-draft transition when a complete analyzed session has no blockers", () => {
+    const routedAcrylic = brief({
+      overallConfidence: 60,
+      productIdentity: { likelyProductName: { value: "DEV Test Routed Acrylic 080426D", confidence: 100, evidence: [] }, category: { value: "Print Products", confidence: 100, evidence: [] }, productType: { value: null, confidence: 100, evidence: [] } },
+      sizeBehavior: { behavior: "custom_size", confidence: 100, evidence: [] },
+      pricingAnalysis: { behavior: "square_foot", confidence: 100, notes: "$5.00 per square foot", evidence: [] },
+      materialSelection: "unset",
+      requiresProofApproval: true,
+      requiresProductionJob: true,
+      productionRoute: "Flatbed",
+      requiredOptions: [], optionalOptions: [], missingDecisions: [], draftWarnings: [],
+    } as any);
+    const analyzed = { ...session("analyzed"), brief: routedAcrylic, confidence: { revision: 4, currentConfidence: 60 } };
+    const detail = { session: analyzed, brief: routedAcrylic, questions: [], answers: [], readiness: computeProductIntakeReadiness({ session: analyzed, questions: [], answers: [] }) } as ProductIntakeSessionDetail;
+    const transition = productIntakeReadinessTransition(detail);
+
+    expect(detail.readiness).toMatchObject({ status: "ready_for_draft", canCreateDraft: true });
+    expect(transition).toMatchObject({ status: "ready_for_draft", confidence: { revision: 5 } });
+    expect(transition?.confidence).toEqual(expect.objectContaining({ currentConfidence: expect.any(Number) }));
+    expect(detail.brief).toMatchObject({ materialSelection: "unset", requiresProofApproval: true, requiresProductionJob: true, productionRoute: "Flatbed", sizeBehavior: { behavior: "custom_size" }, pricingAnalysis: { behavior: "square_foot", notes: "$5.00 per square foot" } });
+  });
+
+  test("does not transition incomplete or terminal sessions to ready for draft", () => {
+    const incomplete = { ...session("analyzed"), brief: brief({ pricingAnalysis: { behavior: "unknown", confidence: 20, evidence: [] } as any }) };
+    const incompleteDetail = { session: incomplete, brief: incomplete.brief, questions: [], answers: [], readiness: computeProductIntakeReadiness({ session: incomplete, questions: [], answers: [] }) } as ProductIntakeSessionDetail;
+    expect(incompleteDetail.readiness.canCreateDraft).toBe(false);
+    expect(productIntakeReadinessTransition(incompleteDetail)?.status).toBe("needs_answers");
+    const terminal = { ...session("draft_created"), createdProductId: "product_1", createdPbv2TreeVersionId: "tree_1" };
+    const terminalDetail = { session: terminal, brief: terminal.brief, questions: [], answers: [], readiness: computeProductIntakeReadiness({ session: terminal, questions: [], answers: [] }) } as ProductIntakeSessionDetail;
+    expect(productIntakeReadinessTransition(terminalDetail)).toBeNull();
   });
 
   test("readiness updates after required answers are present", () => {

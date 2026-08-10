@@ -7,7 +7,7 @@
 
 import { db } from '../../db';
 import { products, pbv2TreeVersions, materials, pricingFormulas } from '../../../shared/schema';
-import { eq, and, inArray } from 'drizzle-orm';
+import { eq, and, desc, inArray } from 'drizzle-orm';
 import { evaluate } from 'mathjs';
 import { evaluateOptionTreeV2, pbv2ToWeightTotal } from '../optionTreeV2Evaluator';
 import { buildFlatGoodsInput, flatGoodsCalculator, getProfile, type FlatGoodsConfig } from '../../../shared/pricingProfiles';
@@ -25,9 +25,11 @@ import {
   type ProductOptionRuleEvaluationResult,
 } from '../../../shared/productOptionRules';
 import { DEFAULT_VALIDATE_OPTS, validateTreeForPublish } from '../../../shared/pbv2/validator';
+import { validateQuantityOnlyPerPieceTierFamily } from '../../../shared/pbv2/validator/validateBasePrice';
 import type { Finding } from '../../../shared/pbv2/findings';
 import {
   extractProductOptionPricingMatrix,
+  resolveProductOptionPricingMatrixBaseRateCents,
   resolveProductOptionPricingMatrix,
   type ProductOptionPricingMatrixErrorDetail,
   type ProductOptionPricingMatrixRow,
@@ -455,6 +457,193 @@ export type Pbv2DefinitionValidationError = Error & {
 
 export function getPbv2PricingVariableDefinitions(): PricingVariableDefinition[] {
   return PBV2_PRICING_VARIABLES;
+}
+
+/** A deliberately reduced view of the current readable PBV2 tree for trusted
+ * assistant reads. It explains pricing without exposing tree JSON, node IDs,
+ * formula source, or storage-only selection paths to the model. */
+export type ProductPricingIntrospection = {
+  treeVersionId: string;
+  lifecycle: string;
+  pricingStrategy: "scalar" | "matrix" | "tiered" | "formula" | "configured";
+  pricingBasis: "per_square_foot" | "per_piece" | "mixed" | "formula" | "configured";
+  measurementMode: "dimensions_required" | "quantity_only";
+  dimensionsRequired: boolean;
+  fixedDimensions: { widthIn: number; heightIn: number } | null;
+  baseRates: { perSquareFootCents: number | null; perPieceCents: number | null; minimumChargeCents: number | null };
+  quantityBehavior: "linear" | "tiered" | "matrix_tiered";
+  quantityTiers: Array<{ minimumQuantity: number | null; maximumQuantity: number | null; minimumSquareFeet: number | null; perSquareFootCents: number | null; perPieceCents: number | null; minimumChargeCents: number | null }>;
+  matrix: {
+    dimensions: string[];
+    rowCount: number;
+    pricingUnit: "per_square_foot" | "per_piece";
+    cells: Array<{ selections: Array<{ axis: string; value: string }>; rateCents: number | null }>;
+  } | null;
+  optionGroups: Array<{ selectionKey: string; label: string; required: boolean; defaultValue: unknown; availableWhen: { optionGroup: string; value: string } | null; choices: Array<{ value: string; label: string; pricingImpactSummary: string | null }> }>;
+};
+
+/** Safe, read-only resolution failures for a product's authoritative PBV2
+ * configuration. They intentionally reveal no tree content. */
+export class ProductPricingReadError extends Error {
+  constructor(readonly code: "PBV2_PRICING_UNAVAILABLE", message: string) {
+    super(message);
+  }
+}
+
+function nonNegativeNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+function pricingImpactSummary(choice: any, conditionalTotal: { optionGroup: string; value: string; priorPercent: number } | null = null): string | null {
+  if (typeof choice?.priceDeltaCents === "number" && Number.isFinite(choice.priceDeltaCents)) {
+    const sign = choice.priceDeltaCents >= 0 ? "+" : "-";
+    return `${sign}$${(Math.abs(choice.priceDeltaCents) / 100).toFixed(2)} per selection`;
+  }
+  const impacts = Array.isArray(choice?.pricingImpact) ? choice.pricingImpact : [];
+  const descriptions = impacts.flatMap((impact: any) => {
+    if (!impact || typeof impact !== "object") return [];
+    if (impact.mode === "addFlat" && Number.isFinite(impact.amountCents)) return [`+$${(impact.amountCents / 100).toFixed(2)} per line`];
+    if (impact.mode === "addPerQty" && Number.isFinite(impact.amountCents)) return [`+$${(impact.amountCents / 100).toFixed(2)} per piece`];
+    if (impact.mode === "addPerSqft" && Number.isFinite(impact.amountCents)) return [`+$${(impact.amountCents / 100).toFixed(2)} per sq ft`];
+    if (impact.mode === "addPercent" && Number.isFinite(impact.percent)) {
+      const own = `+${impact.percent}% of base`;
+      return conditionalTotal ? [`${own}; +${conditionalTotal.priorPercent + impact.percent}% total when ${conditionalTotal.optionGroup} is ${conditionalTotal.value}`] : [own];
+    }
+    if (impact.mode === "multiplyTotal" && Number.isFinite(impact.multiplier)) return [`${impact.multiplier}x total`];
+    return [];
+  });
+  return descriptions.length ? descriptions.join("; ") : null;
+}
+
+/**
+ * Resolves the current persisted DRAFT exactly as the Product Editor does when
+ * opening Pricing Preview: the latest linked DRAFT for this tenant/product.
+ * This is intentionally a read-only lookup; it neither publishes nor changes
+ * the product's active-tree pointer.
+ */
+export async function loadCurrentPbv2DraftTreeVersion(
+  input: { organizationId: string; productId: string },
+  database: any = db,
+) {
+  const [draft] = await database.select()
+    .from(pbv2TreeVersions)
+    .where(and(
+      eq(pbv2TreeVersions.organizationId, input.organizationId),
+      eq(pbv2TreeVersions.productId, input.productId),
+      eq(pbv2TreeVersions.status, "DRAFT"),
+    ))
+    .orderBy(desc(pbv2TreeVersions.updatedAt))
+    .limit(1);
+  return draft ?? null;
+}
+
+export async function readablePbv2TreeVersionId(
+  product: any,
+  organizationId: string,
+  loadCurrentDraft: typeof loadCurrentPbv2DraftTreeVersion = loadCurrentPbv2DraftTreeVersion,
+): Promise<string> {
+  const activeOrOverride = resolvePbv2Override(product) || product.pbv2ActiveTreeVersionId;
+  if (activeOrOverride) return activeOrOverride;
+
+  // A linked DRAFT is readable whether the product is active or inactive. The
+  // Product Editor Pricing Preview resolves it this way, and lifecycle is not
+  // evidence that a persisted pricing configuration is absent.
+  const draft = await loadCurrentDraft({ organizationId, productId: product.id });
+  if (draft) return draft.id;
+  throw new ProductPricingReadError("PBV2_PRICING_UNAVAILABLE", "This product has no readable PBV2 pricing configuration.");
+}
+
+export async function inspectProductPricing(input: { organizationId: string; productId: string }): Promise<ProductPricingIntrospection> {
+  const product = await loadProduct(input.organizationId, input.productId);
+  const treeVersionId = await readablePbv2TreeVersionId(product, input.organizationId);
+  const treeVersion = await loadTreeVersion(input.organizationId, treeVersionId);
+  const tree = treeVersion.treeJson as any;
+  const meta = tree?.meta && typeof tree.meta === "object" ? tree.meta : {};
+  const pricingV2 = meta.pricingV2 && typeof meta.pricingV2 === "object" ? meta.pricingV2 : {};
+  const base = pricingV2.base && typeof pricingV2.base === "object" ? pricingV2.base : {};
+  const perSquareFootCents = nonNegativeNumber(base.perSqftCents);
+  const perPieceCents = nonNegativeNumber(base.perPieceCents);
+  const minimumChargeCents = nonNegativeNumber(base.minimumChargeCents);
+  const matrix = extractProductOptionPricingMatrix(tree);
+  const rawNodes = tree?.nodes && typeof tree.nodes === "object" ? Object.values(tree.nodes) : Array.isArray(tree?.nodes) ? tree.nodes : [];
+  const rawOptionGroups = rawNodes.flatMap((rawNode: any) => {
+    if (!rawNode || typeof rawNode !== "object" || rawNode.kind === "group") return [];
+    const selectionKey = typeof rawNode?.input?.selectionKey === "string" && rawNode.input.selectionKey.trim()
+      ? rawNode.input.selectionKey.trim()
+      : typeof rawNode.key === "string" && rawNode.key.trim() ? rawNode.key.trim() : typeof rawNode.id === "string" ? rawNode.id : "";
+    const label = typeof rawNode.label === "string" && rawNode.label.trim() ? rawNode.label.trim() : selectionKey;
+    if (!selectionKey || !label) return [];
+    const visibilityRule = Array.isArray(rawNode?.visibility?.rules)
+      ? rawNode.visibility.rules.find((rule: any) => rule?.type === "equals" && typeof rule.selectionKey === "string" && typeof rule.value === "string")
+      : null;
+    return [{
+      selectionKey,
+      label,
+      required: rawNode?.input?.required === true,
+      defaultValue: rawNode?.input?.defaultValue,
+      availability: visibilityRule ? { selectionKey: visibilityRule.selectionKey, value: visibilityRule.value } : null,
+      choices: Array.isArray(rawNode.choices) ? rawNode.choices.flatMap((choice: any) => typeof choice?.value === "string" && typeof choice?.label === "string"
+        ? [{ value: choice.value, label: choice.label, raw: choice }]
+        : []) : [],
+    }];
+  }).slice(0, 40);
+  const optionGroups: ProductPricingIntrospection["optionGroups"] = rawOptionGroups.map((group: any) => {
+    const prerequisiteGroup = group.availability ? rawOptionGroups.find((candidate: any) => candidate.selectionKey === group.availability!.selectionKey) : undefined;
+    const prerequisiteChoice = prerequisiteGroup?.choices.find((candidate: any) => candidate.value === group.availability?.value);
+    const priorImpact = Array.isArray(prerequisiteChoice?.raw?.pricingImpact)
+      ? prerequisiteChoice.raw.pricingImpact.find((impact: any) => impact?.mode === "addPercent" && Number.isFinite(impact.percent))
+      : null;
+    const availableWhen = group.availability && prerequisiteGroup && prerequisiteChoice
+      ? { optionGroup: prerequisiteGroup.label, value: prerequisiteChoice.label }
+      : null;
+    return {
+      selectionKey: group.selectionKey, label: group.label, required: group.required, defaultValue: group.defaultValue, availableWhen,
+      choices: group.choices.map((choice: any) => ({
+        value: choice.value, label: choice.label,
+        pricingImpactSummary: pricingImpactSummary(choice.raw, availableWhen && priorImpact ? { ...availableWhen, priorPercent: priorImpact.percent } : null),
+      })),
+    };
+  });
+  const tierRows = [...(Array.isArray(pricingV2.qtyTiers) ? pricingV2.qtyTiers : []), ...(Array.isArray(pricingV2.sqftTiers) ? pricingV2.sqftTiers : [])]
+    .flatMap((tier: any) => tier && typeof tier === "object" ? [{
+      minimumQuantity: Number.isInteger(tier.minQty) ? tier.minQty : null,
+      maximumQuantity: Number.isInteger(tier.maxQty) ? tier.maxQty : null,
+      minimumSquareFeet: typeof tier.minSqft === "number" && Number.isFinite(tier.minSqft) ? tier.minSqft : null,
+      perSquareFootCents: nonNegativeNumber(tier.perSqftCents), perPieceCents: nonNegativeNumber(tier.perPieceCents), minimumChargeCents: nonNegativeNumber(tier.minimumChargeCents),
+    }] : []);
+  const fixed = meta.fixedDimensions && typeof meta.fixedDimensions === "object" && Number(meta.fixedDimensions.widthIn) > 0 && Number(meta.fixedDimensions.heightIn) > 0
+    ? { widthIn: Number(meta.fixedDimensions.widthIn), heightIn: Number(meta.fixedDimensions.heightIn) } : null;
+  const basis = perSquareFootCents !== null && perPieceCents !== null ? "mixed"
+    : perSquareFootCents !== null ? "per_square_foot" : perPieceCents !== null ? "per_piece"
+    : matrix ? (pricingV2.optionMatrixPricingUnit === "per_piece" ? "per_piece" : "per_square_foot")
+    : typeof meta.pricingFormula === "string" && meta.pricingFormula.trim() ? "formula" : "configured";
+  const matrixCells = matrix?.rows.slice(0, 120).map((row) => {
+    const match = row.when ?? row.match ?? row.combination ?? {};
+    return {
+      selections: matrix.dimensions.slice(0, 12).flatMap((selectionKey) => {
+        const rawValue = match[selectionKey];
+        if (typeof rawValue !== "string" && typeof rawValue !== "number") return [];
+        const group = optionGroups.find((candidate) => candidate.selectionKey === selectionKey);
+        const value = group?.choices.find((choice) => choice.value === rawValue)?.label ?? String(rawValue);
+        return [{ axis: group?.label ?? selectionKey, value }];
+      }),
+      rateCents: resolveProductOptionPricingMatrixBaseRateCents(row),
+    };
+  }) ?? [];
+  return {
+    treeVersionId,
+    lifecycle: typeof treeVersion.status === "string" ? treeVersion.status : "ACTIVE",
+    pricingStrategy: matrix ? "matrix" : tierRows.length ? "tiered" : typeof meta.pricingFormula === "string" && meta.pricingFormula.trim() ? "formula" : perSquareFootCents !== null || perPieceCents !== null ? "scalar" : "configured",
+    pricingBasis: basis,
+    measurementMode: product.measurementMode === "quantity_only" ? "quantity_only" : "dimensions_required",
+    dimensionsRequired: product.measurementMode !== "quantity_only" && meta.requiresDimensions !== false && !fixed,
+    fixedDimensions: fixed,
+    baseRates: { perSquareFootCents, perPieceCents, minimumChargeCents },
+    quantityBehavior: matrix?.rows.some((row) => Array.isArray(row.qtyTiers) && row.qtyTiers.length) ? "matrix_tiered" : tierRows.length ? "tiered" : "linear",
+    quantityTiers: tierRows.slice(0, 30),
+    matrix: matrix ? { dimensions: matrix.dimensions.map((key) => optionGroups.find((group) => group.selectionKey === key)?.label ?? key).slice(0, 12), rowCount: matrix.rows.length, pricingUnit: pricingV2.optionMatrixPricingUnit === "per_piece" ? "per_piece" : "per_square_foot", cells: matrixCells } : null,
+    optionGroups,
+  };
 }
 
 // ============================================================================
@@ -2600,12 +2789,30 @@ function calculateBasePriceDetails(
     : null;
   const hasMatrixBasePrice = matrixBasePriceRaw !== null && matrixBasePriceRaw > 0;
   const base = pricingV2.base && typeof pricingV2.base === 'object' ? pricingV2.base : {};
+  // Configurable-product option matrices are authoritative rates.  Their unit
+  // is explicit in the PBV2 tree, so a per-piece matrix cannot accidentally be
+  // multiplied by square footage at this downstream pricing boundary.
+  const optionMatrixPricingUnit = (pricingV2 as any)?.optionMatrixPricingUnit === "per_piece"
+    ? "per_piece" : "per_square_foot";
   const requestedPricingProfileKey = String(
     pricingContext?.pricingProfileKey
     ?? (meta as any)?.pricingProfileKey
     ?? "default",
   );
-  if (Object.keys(base).length === 0 && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee") {
+  const hasConfiguredBasePrice = Object.values(base).some((value) => typeof value === "number" && Number.isFinite(value) && value > 0);
+  const declaresProductQuantityTiers = Array.isArray((pricingV2 as any).qtyTiers);
+  const quantityOnlyTierValidation = requestedPricingProfileKey === "qty_only"
+    && !hasConfiguredBasePrice
+    && !hasMatrixBasePrice
+    && !hasMatrixRowQtyTiers
+    && declaresProductQuantityTiers
+    ? validateQuantityOnlyPerPieceTierFamily(pricingV2)
+    : null;
+  if (quantityOnlyTierValidation && !quantityOnlyTierValidation.ok) {
+    const finding = quantityOnlyTierValidation.errors[0]!;
+    throw Object.assign(new Error(finding.message), { code: finding.code, details: quantityOnlyTierValidation.errors });
+  }
+  if (!hasConfiguredBasePrice && !hasMatrixBasePrice && !hasMatrixRowQtyTiers && requestedPricingProfileKey !== "fee" && !quantityOnlyTierValidation?.ok) {
     throw new Error(
       'PBV2 tree base pricing (meta.pricingV2.base) not configured. Set at least one of: $/sqft, $/piece, or minimum charge.'
     );
@@ -2807,7 +3014,8 @@ function calculateBasePriceDetails(
       }];
 
       if (hasMatrixBasePrice) {
-        perSqftCents = matrixBasePrice * 100;
+        if (optionMatrixPricingUnit === "per_piece") perPieceCents = matrixBasePrice * 100;
+        else perSqftCents = matrixBasePrice * 100;
         basePriceSource = "pricing_matrix.base_price_fallback";
         rateUsedSource = "pricing_matrix.base_price_fallback";
         warnings.push({
@@ -2948,7 +3156,8 @@ function calculateBasePriceDetails(
     };
 
     if (hasMatrixBasePrice) {
-      perSqftCents = matrixBasePrice * 100;
+      if (optionMatrixPricingUnit === "per_piece") perPieceCents = matrixBasePrice * 100;
+      else perSqftCents = matrixBasePrice * 100;
       tierResolution = {
         ...tierResolution,
         matrixBasePriceOverride: true,

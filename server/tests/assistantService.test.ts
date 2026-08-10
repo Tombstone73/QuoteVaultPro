@@ -4,7 +4,6 @@ import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
 let AssistantService: any;
 let AssistantServiceError: any;
 let ASSISTANT_UNAVAILABLE_REPLY: string;
-let resolveAssistantCapabilityQuestion: any;
 let responseStateForCards: any;
 let titleFromMessage: any;
 let assistantCapabilityCommandPermissions: any;
@@ -15,7 +14,6 @@ beforeAll(async () => {
   AssistantService = module.AssistantService;
   AssistantServiceError = module.AssistantServiceError;
   ASSISTANT_UNAVAILABLE_REPLY = module.ASSISTANT_UNAVAILABLE_REPLY;
-  resolveAssistantCapabilityQuestion = module.resolveAssistantCapabilityQuestion;
   responseStateForCards = module.responseStateForCards;
   titleFromMessage = module.titleFromMessage;
   const capabilities = await import("../services/assistant/assistantCapabilities");
@@ -102,12 +100,16 @@ describe("AssistantService", () => {
       ],
     });
 
-    expect(capability.productionCommandsEnabled).toEqual([
+    expect(capability.productionCommandsEnabled).toEqual(expect.arrayContaining([
+      "quotes.add_internal_note",
+      "products.create_inactive_draft",
+      "products.update_inactive_draft",
+    ]));
+    expect(capability.productionCommandsPermittedForUser).toEqual([
       "quotes.add_internal_note",
       "products.create_inactive_draft",
       "products.update_inactive_draft",
     ]);
-    expect(capability.productionCommandsPermittedForUser).toEqual(capability.productionCommandsEnabled);
     expect(capability.composerHelperText).toBe("Business lookups and confirmed actions are enabled. Changes require a preview and the dedicated GO button. External research is disabled.");
     expect(capability).toMatchObject({
       providerConfigured: true,
@@ -123,6 +125,14 @@ describe("AssistantService", () => {
     expect((await service.getCapabilities(scope, { ...actor, permissions: ["assistant.diagnostics.view"] })).diagnosticsEnabled).toBe(true);
   });
 
+  test("advertises provider-native public research without requiring the server fallback key", async () => {
+    resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true, externalResearchEnabled: true });
+    const capability = await new AssistantService(makeRepo(), resolver).getCapabilities(scope, actor);
+
+    expect(capability).toMatchObject({ externalResearchEnabled: true, readToolsEnabled: true });
+    expect(capability.composerHelperText).toBe("Business lookups and external research are enabled. Write actions require additional permission.");
+  });
+
   test("keeps reviewed command permissions and capability wording explicit for inactive-draft updates", () => {
     expect(assistantCapabilityCommandPermissions["products.update_inactive_draft"])
       .toBe("assistant.products.update_inactive_draft");
@@ -132,29 +142,6 @@ describe("AssistantService", () => {
       .not.toBe(assistantCapabilityCommandPermissions["products.create_inactive_draft"]);
   });
 
-  test("answers capability questions locally from the server capability summary", async () => {
-    resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true });
-    const service = new AssistantService(makeRepo(), resolver);
-    const capability = await service.getCapabilities(scope, {
-      ...actor,
-      permissions: [
-        "assistant.quotes.add_internal_note",
-        "assistant.products.create_inactive_draft",
-        "assistant.products.update_inactive_draft",
-      ],
-    });
-
-    expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
-      .toContain("help create an inactive product draft after your confirmation");
-    expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
-      .toContain("update an inactive product draft after your confirmation");
-    expect(resolveAssistantCapabilityQuestion("What can you currently do?", capability)?.response)
-      .not.toMatch(/GO actions|tool names|read-only result/i);
-    expect(resolveAssistantCapabilityQuestion("What can't you do yet?", capability)?.response)
-      .toContain("product activation remains disabled");
-    expect(resolveAssistantCapabilityQuestion("Find order 20002", capability)).toBeNull();
-  });
-
   test("keeps successful capability answers and safe not-found results non-retryable", () => {
     expect(responseStateForCards([{ kind: "notice", title: "Assistant capabilities", body: "I can help.", tone: "info" }]))
       .toEqual({ kind: "success", retryable: false, diagnosticsAvailable: false });
@@ -162,6 +149,8 @@ describe("AssistantService", () => {
       .toEqual({ kind: "not_found", retryable: false, diagnosticsAvailable: false });
     expect(responseStateForCards([{ kind: "provider_unavailable", title: "Unavailable", summary: "Retry later.", sourceLinks: [], toolStatus: "failed" }]))
       .toEqual({ kind: "retryable_failure", retryable: true, diagnosticsAvailable: true });
+    expect(responseStateForCards([{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: ["Nothing was changed. Reference: pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca"] } }]))
+      .toEqual({ kind: "validation_error", retryable: false, diagnosticsAvailable: true });
   });
 
   test("derives safe, readable first-message conversation titles without provider input", () => {
@@ -169,17 +158,6 @@ describe("AssistantService", () => {
     expect(titleFromMessage("Find order ORD 20002!")).toBe("Find Order ORD-20002");
     expect(titleFromMessage("Find customer T3 Signs.")).toBe("T3 Signs Lookup");
     expect(titleFromMessage("\u0000**Create** a product draft")).toBe("Product Draft Setup");
-  });
-
-  test("explains missing write permission without advertising a read-only organization as mutable", async () => {
-    resolver.getCapabilities.mockResolvedValue({ enabled: true, toolsEnabled: true, providerConfigured: true });
-    const service = new AssistantService(makeRepo(), resolver);
-    const capability = await service.getCapabilities(scope, { ...actor, permissions: ["catalog.read"] });
-
-    expect(capability.writeActionsEnabled).toBe(false);
-    expect(capability.composerHelperText).toBe("Business lookups are enabled. Write actions and external research are disabled.");
-    expect(resolveAssistantCapabilityQuestion("What can't you do yet?", capability)?.response)
-      .toContain("your current role is not permitted");
   });
 
   test("uses both organization and user scope when loading a conversation", async () => {

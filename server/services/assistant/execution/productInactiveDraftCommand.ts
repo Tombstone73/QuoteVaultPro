@@ -21,7 +21,7 @@ export const productInactiveDraftCommandInputSchema = z.object({
 }).strict();
 export type ProductInactiveDraftCommandInput = z.infer<typeof productInactiveDraftCommandInputSchema>;
 
-const productSourceLinkSchema = z.string().regex(/^\/products\/[^\s/]+$/);
+const productSourceLinkSchema = z.string().regex(/^\/products\/[^\s/]+(?:\/edit\?draftTreeVersionId=[^\s/&]+)?$/);
 const productIntakeSourceLinkSchema = z.string().regex(/^\/(?:admin\/catalog-migration-lab(?:\/[^\s/]+)?|admin\/product-intake\/sessions\/[^\s/]+\/review)$/);
 
 export const productInactiveDraftPreviewSchema = z.object({
@@ -47,8 +47,19 @@ export const productInactiveDraftPreviewSchema = z.object({
     sheetOrRollConstraints: z.string().min(1).max(160).nullable(),
     allowRotation: z.boolean().nullable(),
     quantityBehavior: z.string().min(1).max(120),
+    workflowIntent: z.enum(["standard_production", "fulfillment_only", "service_fee"]).nullable(),
+    requiresProductionJob: z.boolean().nullable(),
+    requiresProofApproval: z.boolean().nullable(),
     taxable: z.literal(true),
     commonOptions: z.array(z.string().min(1).max(160)).max(12),
+    optionGroups: z.array(z.object({
+      key: z.string().min(1).max(160),
+      label: z.string().min(1).max(160),
+      required: z.boolean(),
+      selectionMode: z.enum(["single", "multi"]),
+      choices: z.array(z.string().min(1).max(160)).max(100),
+      defaultChoice: z.string().min(1).max(160).nullable(),
+    }).strict()).max(30),
     status: z.literal("inactive_draft"),
   }).strict(),
   sourceLinks: z.array(z.union([productSourceLinkSchema, productIntakeSourceLinkSchema])).min(1).max(50),

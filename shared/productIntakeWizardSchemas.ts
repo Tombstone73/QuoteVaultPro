@@ -232,6 +232,16 @@ export const productIntakeBriefSchema = z.object({
   sizeBehavior: productIntakeBehaviorSchema,
   quantityBehavior: productIntakeBehaviorSchema,
   pricingAnalysis: productIntakeBehaviorSchema,
+  // These optional fields are the normalized operational intent used by the
+  // inactive-draft builder. Older stored briefs deliberately remain readable.
+  workflowIntent: z.enum(["standard_production", "fulfillment_only", "service_fee"]).optional(),
+  requiresProductionJob: z.boolean().optional(),
+  // These are explicit decisions, not material/routing suggestions.  They stay
+  // optional so existing saved Product Intake sessions remain readable.
+  materialSelection: z.enum(["auto", "unset"]).optional(),
+  requiresProofApproval: z.boolean().optional(),
+  productionRoute: z.string().trim().min(1).max(120).nullable().optional(),
+  minimumChargeExplicitlyUnset: z.boolean().optional(),
   matrixReadiness: productIntakeMatrixReadinessSchema.optional(),
   requiredOptions: z.array(productIntakeOptionSchema),
   optionalOptions: z.array(productIntakeOptionSchema),

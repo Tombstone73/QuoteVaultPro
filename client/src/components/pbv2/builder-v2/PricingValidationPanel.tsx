@@ -556,7 +556,7 @@ function PreviewErrorBanner({
   );
 }
 
-export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", measurementMode = "dimensions_required", allowZeroPrice = false, productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
+export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode = "profile", pricingProfileKey, pricingProfileConfig, pricingMode = "basic", measurementMode, allowZeroPrice = false, productPrimaryMaterialId, findings }: PricingValidationPanelProps) {
   const currencyFormatter = useMemo(
     () =>
       new Intl.NumberFormat("en-US", {
@@ -587,7 +587,13 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
 
   const errors = findings.filter((f) => f.severity === "ERROR");
   const warnings = findings.filter((f) => f.severity === "WARNING");
-  const quantityOnly = measurementMode === "quantity_only";
+  const treeMeta = treeJson && typeof treeJson === "object" ? (treeJson as any).meta : null;
+  const treePricingV2 = treeMeta && typeof treeMeta === "object" ? treeMeta.pricingV2 : null;
+  // The persisted product measurement mode is primary, but the canonical PBV2
+  // per-piece matrix contract must also be safe for an older product row.
+  const quantityOnly = measurementMode === "quantity_only"
+    || treeMeta?.pricingProfileKey === "qty_only"
+    || treePricingV2?.optionMatrixPricingUnit === "per_piece";
   const feeService = pricingProfileKey === "fee";
   const nonDimensionalPricing = quantityOnly || feeService;
 
@@ -612,8 +618,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   }, [treeJson, pricingV2Override, nonDimensionalPricing]);
 
   const fixedDimensions = useMemo(() => getPbv2FixedDimensions(treeForPreview), [treeForPreview]);
-  const previewWidth = nonDimensionalPricing ? 1 : (fixedDimensions?.widthIn ?? previewState.width);
-  const previewHeight = nonDimensionalPricing ? 1 : (fixedDimensions?.heightIn ?? previewState.height);
+  const previewWidth = nonDimensionalPricing ? 0 : (fixedDimensions?.widthIn ?? previewState.width);
+  const previewHeight = nonDimensionalPricing ? 0 : (fixedDimensions?.heightIn ?? previewState.height);
 
   useEffect(() => {
     if (nonDimensionalPricing || !fixedDimensions) return;
@@ -1034,8 +1040,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
           signal: controller.signal,
           body: JSON.stringify({
             treeJson: treeForPreview,
-            width: previewWidth,
-            height: previewHeight,
+            ...(nonDimensionalPricing ? {} : { width: previewWidth, height: previewHeight }),
             quantity: previewState.quantity,
             pricingFormulaOverride,
             manualFormulaText,

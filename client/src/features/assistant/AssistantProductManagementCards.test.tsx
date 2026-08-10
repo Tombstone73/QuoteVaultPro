@@ -67,6 +67,14 @@ describe("AssistantProductManagementCards", () => {
     expect(container.querySelector("button")).toBeNull();
   });
 
+  it("shows every unresolved question as a numbered actionable list", () => {
+    const missing = toAssistantProductManagementCard({ kind: "product_missing_information", title: "Information needed", summary: "Two questions remain.", details: { questions: ["Which option should be listed down the left side of the pricing table?", "Should customers enter width and height for this product?"] } })!;
+    act(() => root.render(<AssistantProductManagementCardView card={missing} />));
+    expect(container.textContent).toContain("Two questions remain.");
+    expect(container.querySelectorAll("ol > li")).toHaveLength(2);
+    expect(container.textContent).not.toContain("confirm-matrix-dimension");
+  });
+
   it("rejects unrelated cards and only uses internal editor paths", () => {
     expect(toAssistantProductManagementCard({ kind: "action_plan" })).toBeNull();
     const unsafe = toAssistantProductManagementCard({ kind: "product_draft_created", title: "Draft created", details: { reviewUrl: "https://outside.example/draft" } })!;
@@ -82,5 +90,47 @@ describe("AssistantProductManagementCards", () => {
     expect(container.textContent).toContain("Option, material, and routing changes are not available through the assistant.");
     expect(container.querySelector("button")).toBeNull();
     expect(container.querySelector<HTMLAnchorElement>("a[href='/admin/products/live-banner']")?.textContent).toContain("existing editor");
+  });
+
+  it("keeps a required product-local option's selection, default, and choices visible", () => {
+    const card = toAssistantProductManagementCard({ kind: "product_options_summary", title: "Options", summary: "Product Intake is authoritative.", sourceLinks: [], details: { items: ["Lamination", "Type: Single select", "Required: Yes", "Default: None", "Choices: None, Gloss, Matte"] } });
+    expect(card?.items).toEqual(["Lamination", "Type: Single select", "Required: Yes", "Default: None", "Choices: None, Gloss, Matte"]);
+  });
+
+  it("renders the corrected category and complete option group in an inactive-draft preview", () => {
+    const card = toAssistantProductManagementCard({ kind: "product_draft_preview", title: "Inactive product draft preview", details: { proposedFields: { category: "Print Products", measurementMode: "custom_size", pricingModel: "square_foot", perSqftCents: 300, perPieceCents: null, minimumChargeCents: null, material: null, productionRoute: null, sheetOrRollConstraints: null, allowRotation: null, status: "inactive_draft", optionGroups: [{ key: "lamination", label: "Lamination", required: true, selectionMode: "single", choices: ["None", "Gloss", "Matte"], defaultChoice: "None" }] } } })!;
+    act(() => root.render(<AssistantProductManagementCardView card={card} />));
+    expect(container.textContent).toContain("Category: Print Products");
+    expect(container.textContent).toContain("Measurement: Width and height required");
+    expect(container.textContent).toContain("Minimum charge: Not set");
+    expect(container.textContent).toContain("Route: Not set");
+    expect(container.textContent).toContain("Lamination");
+    expect(container.textContent).toContain("Default: None");
+    expect(container.textContent).toContain("Choices: None, Gloss, Matte");
+  });
+
+  it("renders category once when both intake and proposed fields supply it", () => {
+    const card = toAssistantProductManagementCard({ kind: "product_draft_preview", title: "Inactive product draft preview", details: { category: "Print Products", proposedFields: { category: "Print Products" } } })!;
+    expect(card.fields.filter((field) => field.label === "Category")).toEqual([{ label: "Category", value: "Print Products" }]);
+  });
+
+  it("normalizes structured quantity behavior without rendering an object", () => {
+    const variable = toAssistantProductManagementCard({ kind: "product_draft_preview", title: "Draft", details: { proposedFields: { quantityBehavior: { behavior: "per_piece", confidence: 100 } } } })!;
+    const fixed = toAssistantProductManagementCard({ kind: "product_draft_preview", title: "Draft", details: { proposedFields: { quantityBehavior: { behavior: "fixed_quantity", quantity: 12 } } } })!;
+    expect(variable.fields).toEqual(expect.arrayContaining([{ label: "Quantity", value: "Customer enters quantity" }]));
+    expect(fixed.fields).toEqual(expect.arrayContaining([{ label: "Quantity", value: "Fixed quantity: 12" }]));
+    expect(JSON.stringify([...variable.fields, ...fixed.fields])).not.toContain("[object Object]");
+  });
+
+  it("renders a complete corrected intake proposal without inferred production settings", () => {
+    const intake = toAssistantProductManagementCard({ kind: "product_intake_summary", title: "Product Intake", details: { productName: "Corrected Banner", category: "Print Products", measurement: "Width and height required", draftStatus: "ready_for_draft" } })!;
+    const pricing = toAssistantProductManagementCard({ kind: "product_pricing_summary", title: "Pricing basis", details: { pricingBasis: "$2.00 per square foot", minimumCharge: "$25.00" } })!;
+    const routing = toAssistantProductManagementCard({ kind: "product_routing_summary", title: "Production routing", details: { routing: "Not set", fields: { "Sheet or roll constraints": "Not set", Rotation: "Not set" } } })!;
+    const options = toAssistantProductManagementCard({ kind: "product_options_summary", title: "Options", details: { items: ["None"] } })!;
+
+    expect(intake.fields).toEqual(expect.arrayContaining([{ label: "Measurement", value: "Width and height required" }, { label: "Category", value: "Print Products" }]));
+    expect(pricing.fields).toEqual(expect.arrayContaining([{ label: "Pricing", value: "$2.00 per square foot" }, { label: "Minimum charge", value: "$25.00" }]));
+    expect(routing.fields).toEqual(expect.arrayContaining([{ label: "Routing", value: "Not set" }, { label: "Sheet or roll constraints", value: "Not set" }, { label: "Rotation", value: "Not set" }]));
+    expect(options.items).toEqual(["None"]);
   });
 });

@@ -37,6 +37,79 @@ function hasFlatFeeFormula(meta: AnyRecord): boolean {
 }
 
 /**
+ * A quantity-only PBV2 product may be priced entirely by its line-item
+ * quantity tiers. The tier thresholds are canonical lower bounds: omitted
+ * maxQty values cover through the next threshold and the final one is open.
+ */
+export function validateQuantityOnlyPerPieceTierFamily(pricingV2: unknown): ValidationResult {
+  const pricing = asRecord(pricingV2);
+  if (!pricing) {
+    return toResult([errorFinding({
+      code: "PBV2_E_QTY_TIER_MISSING",
+      message: "Quantity tiers are missing.",
+      path: "tree.meta.pricingV2.qtyTiers",
+    })]);
+  }
+  if (pricing.tierBasis !== "line_item_quantity") {
+    return toResult([errorFinding({
+      code: "PBV2_E_QTY_TIER_BASIS_INVALID",
+      message: "Quantity-only tier pricing requires the Line Item Quantity tier basis.",
+      path: "tree.meta.pricingV2.tierBasis",
+    })]);
+  }
+  const tiers = Array.isArray(pricing.qtyTiers) ? pricing.qtyTiers : [];
+  if (tiers.length === 0) {
+    return toResult([errorFinding({
+      code: "PBV2_E_QTY_TIER_MISSING",
+      message: "Quantity tiers are missing.",
+      path: "tree.meta.pricingV2.qtyTiers",
+    })]);
+  }
+
+  let previousMin: number | null = null;
+  let previousMax: number | null | undefined = undefined;
+  for (let index = 0; index < tiers.length; index += 1) {
+    const tier = asRecord(tiers[index]);
+    const path = `tree.meta.pricingV2.qtyTiers[${index}]`;
+    const minQty = tier?.minQty;
+    const rate = tier?.perPieceCents;
+    const hasMax = Boolean(tier && Object.prototype.hasOwnProperty.call(tier, "maxQty"));
+    const maxQty = hasMax ? tier?.maxQty : undefined;
+
+    if (!Number.isInteger(minQty) || Number(minQty) < 1) {
+      return toResult([errorFinding({ code: "PBV2_E_QTY_TIER_COVERAGE_INVALID", message: "Quantity tier coverage must begin at 1 and use positive whole-number thresholds.", path: `${path}.minQty` })]);
+    }
+    if (typeof rate !== "number" || !Number.isFinite(rate) || rate <= 0) {
+      return toResult([errorFinding({ code: "PBV2_E_QTY_TIER_RATE_MISSING", message: "Every quantity tier must define a positive per-piece rate.", path: `${path}.perPieceCents` })]);
+    }
+    if (index === 0 && minQty !== 1) {
+      return toResult([errorFinding({ code: "PBV2_E_QTY_TIER_COVERAGE_INVALID", message: "Quantity tier coverage must begin at 1.", path: `${path}.minQty` })]);
+    }
+    if (previousMin !== null) {
+      if (previousMax === null || Number(minQty) <= previousMin || (typeof previousMax === "number" && Number(minQty) <= previousMax)) {
+        return toResult([errorFinding({ code: "PBV2_E_QTY_TIER_OVERLAP", message: "Quantity tiers overlap or are out of order.", path })]);
+      }
+      if (typeof previousMax === "number" && Number(minQty) !== previousMax + 1) {
+        return toResult([errorFinding({ code: "PBV2_E_QTY_TIER_COVERAGE_INVALID", message: "Quantity tiers must provide continuous coverage.", path })]);
+      }
+    }
+    if (maxQty !== undefined && maxQty !== null && (!Number.isInteger(maxQty) || Number(maxQty) < Number(minQty))) {
+      return toResult([errorFinding({ code: "PBV2_E_QTY_TIER_FINAL_INVALID", message: "Quantity tier maximums must be whole numbers no lower than their minimum.", path: `${path}.maxQty` })]);
+    }
+    if (index < tiers.length - 1 && maxQty === null) {
+      return toResult([errorFinding({ code: "PBV2_E_QTY_TIER_FINAL_INVALID", message: "An open-ended quantity tier must be the final tier.", path: `${path}.maxQty` })]);
+    }
+    if (index === tiers.length - 1 && typeof maxQty === "number") {
+      return toResult([errorFinding({ code: "PBV2_E_QTY_TIER_FINAL_INVALID", message: "The final quantity tier must be open-ended.", path: `${path}.maxQty` })]);
+    }
+    previousMin = Number(minQty);
+    previousMax = maxQty as number | null | undefined;
+  }
+
+  return toResult([]);
+}
+
+/**
  * Validate that PBV2 tree has base pricing configured
  * 
  * Checks that meta.pricingV2.base has at least one non-zero pricing field:
@@ -87,6 +160,13 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
   }
 
   const base = asRecord((pricingV2 as any).base);
+  const perSqftCents = typeof base?.perSqftCents === "number" ? base.perSqftCents : 0;
+  const perPieceCents = typeof base?.perPieceCents === "number" ? base.perPieceCents : 0;
+  const minimumChargeCents = typeof base?.minimumChargeCents === "number" ? base.minimumChargeCents : 0;
+  const hasScalarBasePrice = perSqftCents > 0 || perPieceCents > 0 || minimumChargeCents > 0;
+  const quantityOnlyTierPricing = meta.pricingProfileKey === "qty_only" && !hasScalarBasePrice;
+  if (quantityOnlyTierPricing) return validateQuantityOnlyPerPieceTierFamily(pricingV2);
+
   if (!base) {
     return toResult([
       errorFinding({
@@ -97,12 +177,15 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
     ]);
   }
 
-  // Check if at least ONE pricing field is non-zero
-  const perSqftCents = typeof base.perSqftCents === "number" ? base.perSqftCents : 0;
-  const perPieceCents = typeof base.perPieceCents === "number" ? base.perPieceCents : 0;
-  const minimumChargeCents = typeof base.minimumChargeCents === "number" ? base.minimumChargeCents : 0;
+  // Check if at least ONE pricing field is non-zero.
+  const quantityTierRates = Array.isArray((pricingV2 as any).qtyTiers)
+    ? (pricingV2 as any).qtyTiers.filter((tier: unknown) => {
+      const value = asRecord(tier)?.perPieceCents;
+      return typeof value === "number" && Number.isFinite(value) && value > 0;
+    })
+    : [];
 
-  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0) {
+  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && quantityTierRates.length === 0) {
     findings.push(
       errorFinding({
         code: "PBV2_E_BASE_PRICE_MISSING",
@@ -112,6 +195,7 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
           perSqftCents,
           perPieceCents,
           minimumChargeCents,
+          quantityTierRateCount: quantityTierRates.length,
         },
       })
     );

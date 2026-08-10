@@ -42,7 +42,7 @@ describe("assistant contracts", () => {
     })).toThrow();
   });
 
-  test("capabilities make all Stage 1 tool and write flags false", () => {
+  test("capabilities represent server-owned external-research availability", () => {
     const base = {
       enabled: true,
       conversationsEnabled: true,
@@ -66,9 +66,9 @@ describe("assistant contracts", () => {
     } as const;
     expect(assistantCapabilitySchema.parse(base).toolsEnabled).toBe(false);
 
-    expect(() => assistantCapabilitySchema.parse({
+    expect(assistantCapabilitySchema.parse({
       ...base,
       externalResearchEnabled: true,
-    })).toThrow();
+    }).externalResearchEnabled).toBe(true);
   });
 });

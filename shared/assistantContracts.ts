@@ -4,6 +4,8 @@ export {
   analyticsCustomerProductSalesResultSchema,
   analyticsCustomerUninvoicedOrdersInputSchema,
   analyticsCustomerUninvoicedOrdersResultSchema,
+  analyticsInvoiceActivityInputSchema,
+  analyticsInvoiceActivityResultSchema,
   analyticsResolveCustomerInputSchema,
   analyticsResolveCustomerResultSchema,
 } from "./aiReportingContracts";
@@ -35,9 +37,12 @@ export const assistantMessageRoleValues = ["user", "assistant", "system"] as con
 export const assistantToolExecutionStatusValues = ["not_run", "succeeded", "failed", "disabled"] as const;
 export const assistantToolNameValues = [
   "search.global",
+  "quotes.search",
+  "quotes.get_detail",
   "customers.get_summary",
   "orders.get_summary",
   "products.get_summary",
+  "products.get_pricing",
   "reports.operational_summary",
   "navigation.get_current_context",
   "production.get_queue_summary",
@@ -47,6 +52,7 @@ export const assistantToolNameValues = [
   "analytics.resolve_customer",
   "analytics.customer_product_sales",
   "analytics.customer_uninvoiced_orders",
+  "analytics.invoice_activity",
 ] as const;
 export const assistantPlannerIntentValues = ["lookup", "operational_summary", "production_reporting", "analytical_reporting", "navigation", "unsupported_write", "clarification"] as const;
 /** Reporting scope is independent from tool selection. Keeping it typed avoids
@@ -110,7 +116,9 @@ export const assistantCapabilitySchema = z.object({
     "products.create_inactive_draft",
     "products.update_inactive_draft",
   ])).max(3),
-  externalResearchEnabled: z.literal(false),
+  /** True when the selected provider offers native public research or the
+   * separately configured server-owned fallback is available. */
+  externalResearchEnabled: z.boolean(),
   mcpEnabled: z.literal(false),
   productActivationEnabled: z.literal(false),
   activeProductEditingEnabled: z.literal(false),
@@ -305,6 +313,82 @@ export const assistantCustomerSummaryResultSchema = z.object({
   }).strict().optional(),
 }).strict();
 
+/** A business-level quote investigation. The caller can supply a customer
+ * name when that is part of the question, but tenant-wide reads deliberately
+ * require no customer identifier. */
+export const assistantQuoteSearchInputSchema = z.object({
+  customer: z.string().trim().min(1).max(240).optional(),
+  quoteNumber: z.string().trim().min(1).max(64).optional(),
+  lifecycle: z.enum(["open", "closed"]).optional(),
+  status: z.enum(["draft", "pending_approval", "sent", "approved", "rejected", "expired", "converted"]).optional(),
+  createdAtRange: z.object({
+    start: assistantIsoDateTimeSchema,
+    end: assistantIsoDateTimeSchema,
+  }).strict().optional(),
+  sort: z.enum(["newest", "oldest", "total_desc", "total_asc"]).optional(),
+  limit: z.number().int().min(1).max(20).optional(),
+}).strict().superRefine((value, ctx) => {
+  if (value.lifecycle && value.status) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["status"], message: "lifecycle and status cannot be combined" });
+  }
+  if (value.createdAtRange && value.createdAtRange.start > value.createdAtRange.end) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: ["createdAtRange", "end"], message: "created date range end must not precede start" });
+  }
+});
+export const assistantQuoteSearchRowSchema = z.object({
+  quoteId: assistantSafeIdentifierSchema,
+  quoteNumber: z.string().trim().min(1).max(64),
+  customer: z.object({
+    id: assistantSafeIdentifierSchema.optional(),
+    name: z.string().trim().min(1).max(240),
+    sourceLink: assistantSourceLinkSchema.optional(),
+  }).strict(),
+  total: z.number().finite().nonnegative(),
+  status: z.enum(["draft", "pending_approval", "sent", "approved", "rejected", "expired", "converted"]),
+  open: z.boolean(),
+  createdAt: assistantIsoDateTimeSchema,
+  relatedOrderId: assistantSafeIdentifierSchema.optional(),
+  sourceLink: assistantSourceLinkSchema,
+}).strict();
+export const assistantQuoteSearchResultSchema = z.object({
+  totalMatchingQuotes: z.number().int().nonnegative(),
+  quotes: z.array(assistantQuoteSearchRowSchema).max(20),
+  appliedFilters: z.object({
+    lifecycle: z.enum(["open", "closed"]).optional(),
+    status: z.enum(["draft", "pending_approval", "sent", "approved", "rejected", "expired", "converted"]).optional(),
+    customer: z.string().trim().min(1).max(240).optional(),
+    recencyField: z.literal("createdAt"),
+    sentAtAvailable: z.literal(false),
+  }).strict(),
+}).strict();
+
+/** One tenant-authorized quote detail read.  It intentionally reports an
+ * authoritative relationship state instead of making a missing conversion
+ * look like a failed lookup. */
+export const assistantQuoteDetailInputSchema = z.object({
+  quoteId: assistantSafeIdentifierSchema,
+}).strict();
+export const assistantQuoteDetailLineItemSchema = z.object({
+  id: assistantSafeIdentifierSchema,
+  description: z.string().trim().min(1).max(500),
+  productName: z.string().trim().min(1).max(255).optional(),
+  quantity: z.number().int().positive(),
+  dimensions: z.object({ widthInches: z.number().positive(), heightInches: z.number().positive() }).strict().optional(),
+  options: z.array(z.string().trim().min(1).max(240)).max(12).optional(),
+}).strict();
+export const assistantQuoteDetailResultSchema = z.object({
+  quote: assistantEntitySummarySchema,
+  customer: assistantEntitySummarySchema.optional(),
+  contact: z.object({ name: z.string().trim().min(1).max(240), email: z.string().trim().email().max(320).optional(), phone: z.string().trim().min(1).max(80).optional() }).strict().optional(),
+  total: z.number().finite().nonnegative(),
+  status: z.enum(["draft", "pending_approval", "sent", "approved", "rejected", "expired", "converted"]),
+  lineItems: z.array(assistantQuoteDetailLineItemSchema).max(50),
+  relatedOrder: z.discriminatedUnion("state", [
+    z.object({ state: z.literal("linked"), order: assistantEntitySummarySchema }).strict(),
+    z.object({ state: z.literal("none") }).strict(),
+  ]),
+}).strict();
+
 export const assistantOrderSummaryInputSchema = z.object({
   orderId: assistantSafeIdentifierSchema.optional(),
   orderNumber: z.string().trim().min(1).max(64).regex(/^[A-Za-z0-9_-]+$/).optional(),
@@ -390,6 +474,47 @@ export const assistantProductSummaryResultSchema = z.object({
   materialSummary: z.array(z.string().trim().min(1).max(240)).max(20).optional(),
   optionSummary: z.string().trim().min(1).max(1_000).optional(),
   productionRoutingSummary: z.string().trim().min(1).max(1_000).optional(),
+}).strict();
+
+export const assistantProductPricingInputSchema = z.object({
+  productId: assistantSafeIdentifierSchema.optional(),
+  query: z.string().trim().min(1).max(160).optional(),
+  quantity: z.number().int().min(1).max(100_000).optional(),
+  widthIn: z.number().finite().max(10_000).optional(),
+  heightIn: z.number().finite().max(10_000).optional(),
+  width: z.number().finite().max(10_000).optional(),
+  height: z.number().finite().max(10_000).optional(),
+  unit: z.enum(["in", "ft"]).optional(),
+  optionSelections: z.record(z.unknown()).optional(),
+}).strict().refine((value) => Boolean(value.productId || value.query), {
+  message: "productId or query is required",
+});
+export const assistantProductPricingResultSchema = z.object({
+  product: assistantEntitySummarySchema,
+  active: z.boolean(),
+  pricing: z.object({
+    status: z.enum(["configuration", "priced", "input_needed", "unavailable"]),
+    pricingMethod: z.string().trim().min(1).max(160).nullable(),
+    treeVersionId: assistantSafeIdentifierSchema.nullable(),
+    quantity: z.number().int().positive(),
+    dimensions: z.object({ widthIn: z.number().finite().positive(), heightIn: z.number().finite().positive() }).strict().nullable(),
+    totalCents: z.number().int().nonnegative().nullable(),
+    averageUnitCents: z.number().int().nonnegative().nullable(),
+    configuration: z.object({
+      pricingStrategy: z.enum(["scalar", "matrix", "tiered", "formula", "configured"]),
+      pricingBasis: z.enum(["per_square_foot", "per_piece", "mixed", "formula", "configured"]),
+      measurementMode: z.enum(["dimensions_required", "quantity_only"]),
+      dimensionsRequired: z.boolean(), fixedDimensions: z.object({ widthIn: z.number().positive(), heightIn: z.number().positive() }).strict().nullable(),
+      baseRates: z.object({ perSquareFootCents: z.number().nonnegative().nullable(), perPieceCents: z.number().nonnegative().nullable(), minimumChargeCents: z.number().nonnegative().nullable() }).strict(),
+      quantityBehavior: z.enum(["linear", "tiered", "matrix_tiered"]),
+      quantityTiers: z.array(z.object({ minimumQuantity: z.number().int().positive().nullable(), maximumQuantity: z.number().int().positive().nullable(), minimumSquareFeet: z.number().positive().nullable(), perSquareFootCents: z.number().nonnegative().nullable(), perPieceCents: z.number().nonnegative().nullable(), minimumChargeCents: z.number().nonnegative().nullable() }).strict()).max(30),
+      matrix: z.object({ dimensions: z.array(z.string().min(1)).max(12), rowCount: z.number().int().nonnegative(), pricingUnit: z.enum(["per_square_foot", "per_piece"]), cells: z.array(z.object({ selections: z.array(z.object({ axis: z.string().min(1), value: z.string().min(1) }).strict()).max(12), rateCents: z.number().int().nonnegative().nullable() }).strict()).max(120) }).strict().nullable(),
+      options: z.array(z.object({ label: z.string().min(1), required: z.boolean(), defaultSelection: z.string().nullable(), availableWhen: z.object({ optionGroup: z.string().min(1), value: z.string().min(1) }).strict().nullable(), choices: z.array(z.object({ label: z.string().min(1), pricingImpactSummary: z.string().nullable() }).strict()).max(30) }).strict()).max(40),
+      treeVersionId: assistantSafeIdentifierSchema, lifecycle: z.string().min(1).max(40),
+    }).strict().nullable(),
+    inputNeeded: z.array(z.object({ field: z.string().min(1).max(160), label: z.string().min(1).max(160), reason: z.string().min(1).max(500), allowedValues: z.array(z.string().min(1).max(160)).max(30) }).strict()).max(20),
+    message: z.string().trim().min(1).max(500),
+  }).strict(),
 }).strict();
 
 export const assistantOperationalSummaryInputSchema = z.object({
@@ -749,6 +874,7 @@ export const assistantStage2CardKindValues = [
   "execution_result",
   "stale_plan",
   "action_proposal",
+  "order_option_selection",
   "product_intake_summary",
   "product_missing_information",
   "product_comparison",
@@ -871,10 +997,12 @@ export const assistantUsageCorrelationSchema = z.object({
 }).strict();
 export type AssistantUsageCorrelation = z.infer<typeof assistantUsageCorrelationSchema>;
 
+export const ASSISTANT_MESSAGE_MAX_CONTENT_CHARS = 32_000;
+
 export const assistantMessageSchema = z.object({
   id: assistantSafeIdentifierSchema,
   role: z.enum(assistantMessageRoleValues),
-  content: z.string().max(8_000),
+  content: z.string().max(ASSISTANT_MESSAGE_MAX_CONTENT_CHARS),
   /** Server-derived rendering intent; this is metadata, not a visible card. */
   presentation: z.enum(assistantResponsePresentationValues).optional(),
   /** Server-derived interaction state; never infer this from card titles. */
@@ -1023,6 +1151,8 @@ export const assistantExecutionPreviewSchema = z.object({
       sheetOrRollConstraints: z.string().trim().min(1).max(160).nullable(),
       allowRotation: z.boolean().nullable(),
       quantityBehavior: z.string().trim().min(1).max(120),
+      workflowIntent: z.enum(["standard_production", "fulfillment_only", "service_fee"]).nullable(),
+      requiresProductionJob: z.boolean().nullable(),
       taxable: z.literal(true),
       commonOptions: z.array(z.string().trim().min(1).max(160)).max(12),
       status: z.literal("inactive_draft"),
@@ -1043,6 +1173,9 @@ export const assistantExecutionPreviewSchema = z.object({
   }).strict().optional(),
   /** Versioned, fail-closed UI payload for configurable inactive PBV2 drafts. */
   configurableProduct: z.unknown().optional(),
+  cloneInactiveDraft: z.unknown().optional(),
+  inactivePbv2MatrixEdit: z.unknown().optional(),
+  inactivePbv2TierEdit: z.unknown().optional(),
 }).strict();
 export const assistantMissingInformationSchema = z.object({
   field: z.string().trim().min(1).max(120),

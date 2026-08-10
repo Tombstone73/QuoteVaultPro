@@ -2,6 +2,8 @@ import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globa
 import express from "express";
 import request from "supertest";
 
+process.env.DATABASE_URL ??= "postgresql://readonly:readonly@127.0.0.1:1/quotevault_test";
+
 jest.unstable_mockModule("../tenantContext", () => ({
   getRequestOrganizationId: (req: any) => req.organizationId,
 }));
@@ -80,7 +82,7 @@ function buildService() {
   };
 }
 
-function buildApp(service: any, options: { authenticated?: boolean; withTenant?: boolean; orgId?: string; reportResolutionService?: any } = {}) {
+function buildApp(service: any, options: { authenticated?: boolean; withTenant?: boolean; admin?: boolean; orgId?: string; reportResolutionService?: any } = {}) {
   const app = express();
   app.use(express.json());
   const authenticated = jest.fn((req: any, res: any, next: any) => {
@@ -93,11 +95,15 @@ function buildApp(service: any, options: { authenticated?: boolean; withTenant?:
     req.organizationId = options.orgId ?? "org_1";
     next();
   });
-  registerAssistantRoutes(app, { isAuthenticated: authenticated, tenantContext }, {
+  const isAdmin = jest.fn((req: any, res: any, next: any) => {
+    if (options.admin === false) return res.status(403).json({ error: { code: "forbidden", message: "Forbidden" } });
+    next();
+  });
+  registerAssistantRoutes(app, { isAuthenticated: authenticated, tenantContext, isAdmin }, {
     service,
     reportResolutionService: options.reportResolutionService,
   });
-  return { app, authenticated, tenantContext };
+  return { app, authenticated, tenantContext, isAdmin };
 }
 
 function turnBody(extra: Record<string, unknown> = {}) {
@@ -120,6 +126,14 @@ function turnBody(extra: Record<string, unknown> = {}) {
 
 describe("assistant routes", () => {
   beforeEach(() => jest.clearAllMocks());
+
+  test("rejects diagnostic lookup before database access for unauthenticated, non-admin, and malformed requests", async () => {
+    const service = buildService();
+    const admin = buildApp(service, { admin: true });
+    await request(buildApp(service, { authenticated: false, admin: true }).app).get("/api/assistant/diagnostics/pic-diagnostic-1").expect(401);
+    await request(buildApp(service, { admin: false }).app).get("/api/assistant/diagnostics/pic-diagnostic-1").expect(403);
+    await request(admin.app).get("/api/assistant/diagnostics/bad").expect(404);
+  });
 
   test("requires authentication and tenant context before exposing capabilities", async () => {
     const service = buildService();
@@ -241,6 +255,24 @@ describe("assistant routes", () => {
       expect.objectContaining({ userId: "user_1" }),
       expect.objectContaining({ context: expect.not.objectContaining({ organizationId: expect.anything() }) }),
     );
+  });
+
+  test("serializes a multiline operator response without flattening its content", async () => {
+    const service = buildService();
+    const multiline = "**QT-910322**\nCustomer: Test customer\n\n**QT-910321**\nCustomer: 55 Twin Lane";
+    service.createTurn.mockResolvedValue({
+      turnId: "turn_1",
+      correlationId: "correlation_1",
+      status: "responded",
+      conversation,
+      userMessage: { id: "message_1", conversationId: conversation.id, turnId: "turn_1", role: "user", content: "Format these quotes", createdAt: new Date(NOW) },
+      assistantMessage: { id: "message_2", conversationId: conversation.id, turnId: "turn_1", role: "assistant", content: multiline, structuredCards: [], createdAt: new Date(NOW) },
+    });
+    const { app } = buildApp(service);
+
+    const response = await request(app).post("/api/assistant/conversations/conversation_1/turns").send(turnBody()).expect(201);
+
+    expect(response.body.data.message.content).toBe(multiline);
   });
 
   test("disabled assistant rejects turns without calling any provider or domain dependency", async () => {

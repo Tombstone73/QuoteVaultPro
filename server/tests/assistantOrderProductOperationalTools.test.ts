@@ -33,6 +33,17 @@ function repo() {
   };
 }
 
+function bannerPricingConfiguration(overrides: Record<string, unknown> = {}) {
+  return {
+    treeVersionId: "tree-1", lifecycle: "ACTIVE", pricingStrategy: "scalar" as const, pricingBasis: "per_square_foot" as const,
+    measurementMode: "dimensions_required" as const, dimensionsRequired: true, fixedDimensions: null,
+    baseRates: { perSquareFootCents: 125, perPieceCents: null, minimumChargeCents: null },
+    quantityBehavior: "linear" as const, quantityTiers: [], matrix: null,
+    optionGroups: [{ selectionKey: "finishing", label: "Finishing", required: false, defaultValue: "hem", availableWhen: null, choices: [{ value: "hem", label: "Hemmed", pricingImpactSummary: null }, { value: "grommets", label: "Grommets", pricingImpactSummary: "+$0.00 per selection" }] }],
+    ...overrides,
+  };
+}
+
 describe("assistant order/product/operational tools", () => {
   test("order summary reduces canonical records and omits invoices without finance permission", async () => {
     const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow });
@@ -235,6 +246,174 @@ describe("assistant order/product/operational tools", () => {
     expect(result.data.product).toMatchObject({ name: "Economy Yard Sign Stakes", pricingMethod: "yard-sign" });
     expect(result.data.pbv2).toEqual([{ id: "tree-1", status: "ACTIVE", schemaVersion: 2, publishedAt: capturedAt }]);
     expect(result.sourceLinks[0]?.href).toBe("/products/product-1/edit");
+  });
+
+  test("projects tenant-scoped authoritative PBV2 pricing without exposing the tree", async () => {
+    const projectProductPrice = jest.fn(async () => ({
+      pbv2TreeVersionId: "tree-1",
+      lineTotalCents: 5400,
+      breakdown: { pricingMethod: "per_piece" },
+      pbv2SnapshotJson: { pricing: { pricingMethod: "per_piece" }, dimensions: { widthIn: 36, heightIn: 72 } },
+    }));
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });
+
+    const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", quantity: 3, width: 3, height: 6, unit: "ft", optionSelections: { Finishing: "Grommets" } });
+
+    expect(projectProductPrice).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org-a", productId: "product-1", quantity: 3, widthIn: 36, heightIn: 72 }));
+    expect(result.data.pricing).toMatchObject({ status: "priced", treeVersionId: "tree-1", totalCents: 5400, averageUnitCents: 1800, dimensions: { widthIn: 36, heightIn: 72 } });
+    expect(projectProductPrice).toHaveBeenCalledWith(expect.objectContaining({ pbv2ExplicitSelections: { finishing: { value: "grommets" } } }));
+    expect(JSON.stringify(result.data)).not.toContain("treeJson");
+  });
+
+  test("does not fabricate a price when PBV2 needs a scenario", async () => {
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice: jest.fn(async () => { throw new Error("dimensions required"); }), getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });
+
+    const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes" });
+
+    expect(result.data.pricing).toMatchObject({ status: "configuration", totalCents: null, averageUnitCents: null, configuration: { baseRates: { perSquareFootCents: 125 } } });
+  });
+
+  test("returns semantic configuration without requiring a projection", async () => {
+    const projectProductPrice = jest.fn();
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration({ quantityBehavior: "tiered", quantityTiers: [{ minimumQuantity: 10, maximumQuantity: null, minimumSquareFeet: null, perSquareFootCents: 100, perPieceCents: null, minimumChargeCents: null }] })) });
+    const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes" });
+    expect(result.data.pricing).toMatchObject({ status: "configuration", configuration: { pricingBasis: "per_square_foot", quantityBehavior: "tiered", options: [{ label: "Finishing", defaultSelection: "Hemmed" }] } });
+    expect(projectProductPrice).not.toHaveBeenCalled();
+  });
+
+  test("reads one inactive PBV2 DRAFT semantically and evaluates only that linked draft", async () => {
+    const repository = {
+      ...repo(),
+      getProduct: jest.fn(async () => ({
+        product: { ...((await repo().getProduct("org-a", {})) as any).product, id: "draft-product", name: "Translucent Vinyl", isActive: false, pbv2ActiveTreeVersionId: null },
+        versions: [{ id: "draft-tree", status: "DRAFT", schemaVersion: 2, publishedAt: null, updatedAt: capturedAt }], options: [], materials: [],
+      })),
+    };
+    const configuration = bannerPricingConfiguration({
+      treeVersionId: "draft-tree", lifecycle: "DRAFT",
+      optionGroups: [
+        { selectionKey: "layers", label: "Layers", required: true, defaultValue: "five", availableWhen: null, choices: [{ value: "three", label: "3 Layer", pricingImpactSummary: null }, { value: "five", label: "5 Layer", pricingImpactSummary: null }] },
+        { selectionKey: "contour", label: "Contour Cutting", required: false, defaultValue: "no", availableWhen: null, choices: [{ value: "no", label: "No", pricingImpactSummary: null }, { value: "yes", label: "Yes", pricingImpactSummary: "+10% of base" }] },
+        { selectionKey: "weed_tape", label: "Weeding and Taping", required: false, defaultValue: "no", availableWhen: { optionGroup: "Contour Cutting", value: "Yes" }, choices: [{ value: "no", label: "No", pricingImpactSummary: null }, { value: "yes", label: "Yes", pricingImpactSummary: "+20% of base; +30% total when Contour Cutting is Yes" }] },
+      ],
+    });
+    const projectProductPrice = jest.fn(async () => ({ pbv2TreeVersionId: "draft-tree", lineTotalCents: 6500, breakdown: { pricingMethod: "per_square_foot" }, pbv2SnapshotJson: { pricing: { pricingMethod: "per_square_foot" }, dimensions: { widthIn: 120, heightIn: 12 } } }));
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow, projectProductPrice, getProductPricingConfiguration: jest.fn(async () => configuration) });
+
+    const read = await tools.productsGetPricing.execute(invocation, { productId: "draft-product" });
+    expect(read.data).toMatchObject({ product: { active: false }, pricing: { status: "configuration", treeVersionId: "draft-tree", configuration: { lifecycle: "DRAFT" } } });
+    const options = read.data.pricing.configuration?.options ?? [];
+    expect(options.find((option) => option.label === "Layers")).toMatchObject({ defaultSelection: "5 Layer" });
+    expect(options.find((option) => option.label === "Weeding and Taping")).toMatchObject({ defaultSelection: "No", availableWhen: { optionGroup: "Contour Cutting", value: "Yes" }, choices: expect.arrayContaining([expect.objectContaining({ label: "Yes", pricingImpactSummary: expect.stringContaining("+30% total") })]) });
+    expect(read.data.pricing.message).toContain("inactive");
+    expect(read.data.pricing.message).toContain("PBV2 DRAFT");
+    expect(projectProductPrice).not.toHaveBeenCalled();
+
+    await tools.productsGetPricing.execute(invocation, { productId: "draft-product", width: 10, height: 1, unit: "ft", optionSelections: { Layers: "5 Layer", "Contour Cutting": "Yes", "Weeding and Taping": "Yes" } });
+    expect(projectProductPrice).toHaveBeenCalledWith(expect.objectContaining({ productId: "draft-product", pbv2TreeVersionIdOverride: "draft-tree", pbv2ExplicitSelections: { layers: { value: "five" }, contour: { value: "yes" }, weed_tape: { value: "yes" } } }));
+  });
+
+  test("returns an active default-method product's readable PBV2 DRAFT configuration", async () => {
+    const repository = {
+      ...repo(),
+      getProduct: jest.fn(async () => ({
+        product: { ...((await repo().getProduct("org-a", {})) as any).product, id: "active-draft-product", name: "Translucent Vinyl - backlit with multilayer printing", isActive: true, pricingMode: "default", pricingEngine: null, pricingProfileKey: null, pbv2ActiveTreeVersionId: null },
+        versions: [{ id: "draft-tree", status: "DRAFT", schemaVersion: 2, publishedAt: null, updatedAt: capturedAt }], options: [], materials: [],
+      })),
+    };
+    const configuration = bannerPricingConfiguration({
+      treeVersionId: "draft-tree", lifecycle: "DRAFT", baseRates: { perSquareFootCents: 500, perPieceCents: null, minimumChargeCents: null },
+      optionGroups: [
+        { selectionKey: "layers", label: "Layers", required: true, defaultValue: "five", availableWhen: null, choices: [{ value: "three", label: "3 Layer", pricingImpactSummary: "$4.00 per sq ft" }, { value: "five", label: "5 Layer", pricingImpactSummary: "$5.00 per sq ft" }] },
+        { selectionKey: "contour", label: "Contour Cutting", required: false, defaultValue: "no", availableWhen: null, choices: [{ value: "no", label: "No", pricingImpactSummary: null }, { value: "yes", label: "Yes", pricingImpactSummary: "+10% of base" }] },
+        { selectionKey: "weed_tape", label: "Weeding and Taping", required: false, defaultValue: "no", availableWhen: { optionGroup: "Contour Cutting", value: "Yes" }, choices: [{ value: "no", label: "No", pricingImpactSummary: null }, { value: "yes", label: "Yes", pricingImpactSummary: "+20% of base; +30% total when Contour Cutting is Yes" }] },
+      ],
+    });
+    const getProductPricingConfiguration = jest.fn(async () => configuration);
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow, projectProductPrice: jest.fn(), getProductPricingConfiguration });
+
+    const read = await tools.productsGetPricing.execute(invocation, { productId: "active-draft-product" });
+
+    expect(read.data).toMatchObject({
+      product: { active: true, pricingMethod: "default" },
+      pricing: { status: "configuration", treeVersionId: "draft-tree", configuration: { lifecycle: "DRAFT", baseRates: { perSquareFootCents: 500 } } },
+    });
+    expect(read.data.pricing.message).toContain("active");
+    expect(read.data.pricing.message).toContain("PBV2 DRAFT");
+    expect(read.data.pricing.message).not.toContain("unavailable");
+    expect(getProductPricingConfiguration).toHaveBeenCalledWith({ organizationId: "org-a", productId: "active-draft-product" });
+  });
+
+  test("exposes semantic matrix cell rates without requiring a global per-square-foot rate", async () => {
+    const matrixConfiguration = bannerPricingConfiguration({
+      pricingStrategy: "matrix", pricingBasis: "per_square_foot", baseRates: { perSquareFootCents: null, perPieceCents: null, minimumChargeCents: null },
+      matrix: {
+        dimensions: ["Layers"], rowCount: 2, pricingUnit: "per_square_foot",
+        cells: [
+          { selections: [{ axis: "Layers", value: "3 Layer" }], rateCents: 400 },
+          { selections: [{ axis: "Layers", value: "5 Layer" }], rateCents: 500 },
+        ],
+      },
+      optionGroups: [
+        { selectionKey: "layers", label: "Layers", required: true, defaultValue: "five", availableWhen: null, choices: [{ value: "three", label: "3 Layer", pricingImpactSummary: null }, { value: "five", label: "5 Layer", pricingImpactSummary: null }] },
+        { selectionKey: "contour", label: "Contour Cutting", required: false, defaultValue: "no", availableWhen: null, choices: [{ value: "no", label: "No", pricingImpactSummary: null }, { value: "yes", label: "Yes", pricingImpactSummary: "+10% of base" }] },
+        { selectionKey: "weed_tape", label: "Weeding and Taping", required: false, defaultValue: "no", availableWhen: { optionGroup: "Contour Cutting", value: "Yes" }, choices: [{ value: "no", label: "No", pricingImpactSummary: null }, { value: "yes", label: "Yes", pricingImpactSummary: "+20% of base; +30% total when Contour Cutting is Yes" }] },
+      ],
+    });
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, getProductPricingConfiguration: jest.fn(async () => matrixConfiguration) });
+
+    const result = await tools.productsGetPricing.execute(invocation, { productId: "product-1" });
+
+    expect(result.data.pricing).toMatchObject({
+      status: "configuration",
+      configuration: {
+        pricingStrategy: "matrix", pricingBasis: "per_square_foot",
+        baseRates: { perSquareFootCents: null },
+        matrix: {
+          dimensions: ["Layers"], pricingUnit: "per_square_foot",
+          cells: [
+            { selections: [{ axis: "Layers", value: "3 Layer" }], rateCents: 400 },
+            { selections: [{ axis: "Layers", value: "5 Layer" }], rateCents: 500 },
+          ],
+        },
+      },
+    });
+    expect(result.data.pricing.message).not.toContain("unavailable");
+  });
+
+  test("keeps an active product on its active PBV2 tree", async () => {
+    const activeProjection = jest.fn(async () => ({ pbv2TreeVersionId: "tree-1", lineTotalCents: 1250, breakdown: {}, pbv2SnapshotJson: { dimensions: { widthIn: 12, heightIn: 12 } } }));
+    const activeTools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice: activeProjection, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });
+    await activeTools.productsGetPricing.execute(invocation, { productId: "product-1", width: 1, height: 1, unit: "ft" });
+    expect(activeProjection).toHaveBeenCalledWith(expect.not.objectContaining({ pbv2TreeVersionIdOverride: expect.anything() }));
+
+  });
+
+  test("normalizes inch dimensions, applies defaults, and reports required options semantically", async () => {
+    const projectProductPrice = jest.fn(async () => ({ pbv2TreeVersionId: "tree-1", lineTotalCents: 2250, breakdown: { pricingMethod: "per_square_foot" }, pbv2SnapshotJson: { pricing: { pricingMethod: "per_square_foot" }, dimensions: { widthIn: 36, heightIn: 72 } } }));
+    const configuration = bannerPricingConfiguration({ optionGroups: [{ selectionKey: "sides", label: "Sides", required: true, defaultValue: undefined, choices: [{ value: "single", label: "Single Sided", pricingImpactSummary: null }, { value: "double", label: "Double Sided", pricingImpactSummary: "+$0.25 per sq ft" }] }, { selectionKey: "finishing", label: "Finishing", required: false, defaultValue: "hem", choices: [{ value: "hem", label: "Hemmed", pricingImpactSummary: null }] }] });
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice, getProductPricingConfiguration: jest.fn(async () => configuration) });
+    const missing = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", width: 36, height: 72, unit: "in" });
+    expect(missing.data.pricing).toMatchObject({ status: "input_needed", inputNeeded: [expect.objectContaining({ label: "Sides", allowedValues: ["Single Sided", "Double Sided"] })] });
+    const priced = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", width: 36, height: 72, unit: "in", optionSelections: { Sides: "Single Sided" } });
+    expect(priced.data.pricing.status).toBe("priced");
+    expect(projectProductPrice).toHaveBeenLastCalledWith(expect.objectContaining({ widthIn: 36, heightIn: 72, pbv2ExplicitSelections: { sides: { value: "single" }, finishing: { value: "hem" } } }));
+  });
+
+  test("returns a clear semantic request for invalid dimensions", async () => {
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });
+    const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", width: -3, height: 8, unit: "ft" });
+    expect(result.data.pricing).toMatchObject({ status: "input_needed", inputNeeded: [expect.objectContaining({ label: "Dimensions", reason: expect.stringContaining("positive") })] });
+  });
+
+  test("does not disclose another tenant's product pricing", async () => {
+    const projectProductPrice = jest.fn();
+    const tools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });
+
+    const result = await tools.productsGetPricing.execute({ ...invocation, organizationId: "org-b" }, { productId: "product-1" });
+
+    expect(result).toMatchObject({ status: "not_found", data: { product: null } });
+    expect(projectProductPrice).not.toHaveBeenCalled();
   });
 
   test("operational summary preserves only canonical service metrics", async () => {

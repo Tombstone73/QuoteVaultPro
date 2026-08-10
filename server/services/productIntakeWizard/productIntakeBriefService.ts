@@ -19,6 +19,7 @@ import { createConfiguredAiProvider } from "../ai/providers/configuredProvider";
 import { AiProviderTimeoutError, AiProviderUnavailableError, type AiProviderAdapter } from "../ai/providers/AiProviderAdapter";
 import type { ProductIntakeAiDiagnosticsStore } from "./productIntakeDiagnosticsService";
 import { normalizeChoiceLabels, stripDefaultChoiceAnnotation } from "./productIntakeOptionHelpers";
+import { hasCompleteNaturalLanguageQuantityTiers, parseNaturalLanguageQuantityTiers } from "./quantityTierParsing";
 
 export type ProductIntakeTemplateReference = {
   id: string;
@@ -149,20 +150,54 @@ type TextDescriptionSignals = {
   sides: string[];
   printOptions: string[];
   finishingOptions: string[];
-  customOptions: Array<{ label: string; choices: string[] }>;
+  customOptions: Array<{ label: string; choices: string[]; defaultChoice?: string | null; required?: boolean; selectionMode?: "single" | "multi" }>;
   quantityBasedPricing: boolean;
+  perPiecePricing: boolean;
+  quantityOnly: boolean;
+  serviceFee: boolean;
+  excludesProduction: boolean;
+  noOptions: boolean;
+  materialUnset: boolean;
+  requiresProofApproval: boolean;
+  requiresProductionJob: boolean;
+  productionRoute: string | null;
   proofSignals: string[];
   routingSignals: string[];
   evidence: ProductIntakeEvidence[];
 };
 
+/** Width and height are PBV2 measurement inputs, never option groups, unless
+ * the source explicitly asks for a selectable group with those names. */
+function isMeasurementInstructionOption(option: { normalizedGroup?: string | null; label?: string | null }): boolean {
+  return /^(?:size|width|height|dimensions?|custom\s+(?:width|height|dimensions?))$/i
+    .test(String(option.normalizedGroup ?? option.label ?? "").trim());
+}
+
+function hasExplicitSelectableMeasurementOption(sourceText: string): boolean {
+  return /\b(?:add|include|use)\s+(?:a\s+)?(?:size|width|height|dimensions?)\s+(?:single[\s-]*select|multi[\s-]*select)\s+(?:required\s+)?(?:custom\s+)?option(?:\s+group)?\b/i.test(sourceText);
+}
+
+function hasDimensionsRequiredInstruction(sourceText: string): boolean {
+  return /\bcustom\s+(?:width\s+and\s+height|dimensions?|size)\b|\b(?:customers?\s+)?(?:must\s+)?enter\s+width\s+and\s+height\b|\bwidth\s+and\s+height\s+required\b/i.test(sourceText);
+}
+
 function extractTextDescriptionSignals(description: string): TextDescriptionSignals {
   const normalized = normalizeText(description);
   const lines = description.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const calledProductName = description.match(/\b(?:new\s+)?product\s+called\s+["“]?(.+?)["”]?(?=[.!?]|$)/i)?.[1]?.trim() ?? null;
   const explicitProductName = description.match(/\b(?:product\s+draft|product)\s+named\s+["“]?(.+?)["”]?(?=(?:[.!?]\s*(?:sell|use|allow|route|with|add)\b)|$)/i)?.[1]?.trim() ?? null;
   const materialReferences: string[] = [];
-  const customSize = /custom\s+(?:width\s+and\s+height|size)|width\s+and\s+height/i.test(description);
-  const quantityBasedPricing = /quantity[\s-]*(?:based|tier|break|pricing)|qty[\s-]*(?:based|tier|break|pricing)/i.test(description);
+  const customSize = hasDimensionsRequiredInstruction(description);
+  const quantityBasedPricing = /quantity[\s-]*(?:based|tier|break|pricing)|qty[\s-]*(?:based|tier|break|pricing)/i.test(description) || hasCompleteNaturalLanguageQuantityTiers(description);
+  const perPiecePricing = /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i.test(description);
+  const quantityOnly = /\bquantity[-\s]?only\b/i.test(description);
+  const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(description);
+  const excludesProduction = /\b(?:must\s+not|does\s+not|doesn't|do\s+not)\s+(?:create|require|need|have)\s+(?:a\s+)?production(?:\s+work|\s+job)?\b/i.test(description);
+  const noOptions = /\b(?:do\s+not\s+set|leave)\s+(?:any\s+)?options?\b/i.test(description);
+  const materialUnset = /\b(?:do\s+not\s+select\s+(?:a\s+)?material|leave\s+material\s+unset)\b/i.test(description);
+  const requiresProofApproval = /\b(?:require|requires?)\s+(?:customer\s+)?proof\s+approval\b|\bproof\s+(?:required|needed|mandatory)\b/i.test(description);
+  const requiresProductionJob = /\b(?:require|requires?)\s+(?:a\s+)?production(?:\s+work|\s+job)\b/i.test(description) && !excludesProduction;
+  const productionRoute = /\b(?:route(?:d)?\s+(?:it\s+)?to\s+|production\s+route\s*(?:is|:)?\s*)flatbed\b/i.test(description) ? "Flatbed" : null;
   const sizeMatches = Array.from(description.matchAll(/\b(\d{1,3}(?:\.\d+)?)\s*(?:[xX]|\u00D7)\s*(\d{1,3}(?:\.\d+)?)\b/gi))
     .map((match) => `${match[1]}x${match[2]}`);
 
@@ -198,12 +233,43 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const printOptions: string[] = [];
   if (/full\s*color|4\s*color|cmyk/i.test(description)) printOptions.push("Full color printing");
 
+  const explicitCategory = description.match(/\b(?:use|set)\s+([a-z][a-z0-9 &/\-]{1,100}?)\s+as\s+(?:the\s+)?category\b/i)?.[1]?.trim()
+    ?? description.match(/\buse\s+(?:the\s+)?([a-z][a-z0-9 &/\-]{1,100}?)\s+category\b/i)?.[1]?.trim()
+    ?? null;
+  const explicitCustomOptionGroups = Array.from(description.matchAll(/\b(?:add|include|use)\s+(?:a\s+)?([a-z][a-z0-9 &/\-]{1,60}?)\s+(?:single[\s-]*select|multi[\s-]*select)\s+(?:required\s+)?(?:custom\s+)?option(?:\s+group)?\s+(?:with\s+)?(?:choices?|values?)\s*[:=]?\s*([^\.\n]+?)(?:,?\s*(?:with\s+)?default(?:ing)?\s*(?:to)?\s*([a-z][a-z0-9 &/\-]{0,60}))?(?:[\.\n]|$)/gi))
+    .map((match) => {
+      const label = titleCaseProductName(String(match[1] ?? "").trim());
+      const choices = String(match[2] ?? "").replace(/,?\s*(?:with\s+)?default(?:ing)?\s*(?:to)?\s+.*$/i, "")
+        .split(/\s*,\s*|\s+and\s+/i).map((choice) => stripDefaultChoiceAnnotation(choice).label).filter(Boolean);
+      const defaultChoice = stripDefaultChoiceAnnotation(match[3] ?? "").label || null;
+      const source = String(match[0] ?? "");
+      return label && choices.length ? {
+        label,
+        choices,
+        defaultChoice,
+        required: /\brequired\b/i.test(source),
+        selectionMode: /\bmulti[\s-]*select\b/i.test(source) ? "multi" as const : "single" as const,
+      } : null;
+    })
+    .filter(Boolean) as Array<{ label: string; choices: string[]; defaultChoice: string | null; required: boolean; selectionMode: "single" | "multi" }>;
+  const multilineCustomOptionGroups = Array.from(description.matchAll(/\b(?:add|include|use)\s+(?:one\s+)?(?:(required)\s+)?(?:(single|multi)[\s-]*select)\s+(?:custom\s+)?option(?:\s+group)?\s+named\s+([a-z][a-z0-9 &/\-]{1,60}?)(?:\s+with\s+(?:these\s+)?(?:choices?|values?))?\s*:\s*((?:\s*(?:[-*]|\d+[.)])\s*[^\n]+\n?)+)/gi))
+    .map((match) => {
+      const label = titleCaseProductName(String(match[3] ?? "").trim());
+      const choices = String(match[4] ?? "").split(/\r?\n/)
+        .map((line) => line.replace(/^\s*(?:[-*]|\d+[.)])\s*/, "").trim())
+        .filter(Boolean);
+      const trailingText = description.slice((match.index ?? 0) + String(match[0] ?? "").length, (match.index ?? 0) + String(match[0] ?? "").length + 180);
+      const defaultChoice = trailingText.match(/\b(?:set\s+)?([a-z][a-z0-9 &/\-]{0,60})\s+as\s+the\s+default\b|\bdefault(?:ing)?\s+(?:to\s+)?([a-z][a-z0-9 &/\-]{0,60})\b/i)?.slice(1).find(Boolean) ?? null;
+      return label && choices.length ? { label, choices, defaultChoice, required: Boolean(match[1]), selectionMode: match[2] === "multi" ? "multi" as const : "single" as const } : null;
+    })
+    .filter(Boolean) as Array<{ label: string; choices: string[]; defaultChoice: string | null; required: boolean; selectionMode: "single" | "multi" }>;
+  const hasExplicitLaminationGroup = explicitCustomOptionGroups.some((option) => normalizeText(option.label) === "lamination") || /\blamination\s+choices?\b/i.test(description);
   const finishingOptions: string[] = [];
   if (/rounded\s+corners?/i.test(description)) finishingOptions.push("Rounded corners");
   if (/\bhemm?ing\b/i.test(description)) finishingOptions.push("Hemming");
   if (/\bgrommets?\b/i.test(description)) finishingOptions.push("Grommets");
   if (/pole\s+pockets?/i.test(description)) finishingOptions.push("Pole pockets");
-  if (/\blaminate|lamination\b/i.test(description) && !/glossy[\s\S]{0,80}matte|matte[\s\S]{0,80}glossy/i.test(description)) finishingOptions.push("Laminate");
+  if (/\blaminate|lamination\b/i.test(description) && !hasExplicitLaminationGroup && !/glossy[\s\S]{0,80}matte|matte[\s\S]{0,80}glossy/i.test(description)) finishingOptions.push("Laminate");
   if (/\bh[\s-]?wire\b|\bstakes?\b/i.test(description)) finishingOptions.push("H-wire Stakes");
   if (/white\s+ink/i.test(description)) finishingOptions.push("White Ink");
   if (/contour[\s-]?cut/i.test(description) && !/\bcontour\s+cutting\b[\s\S]{0,120}\b(?:no|yes)\b/i.test(description)) finishingOptions.push("Contour Cut");
@@ -221,7 +287,17 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
       const booleanModifier = /contour|grommet|rounded|laminat|installation|mount|hem|pocket|corner/i.test(label);
       return { label, choices: colonChoices.length > 0 ? colonChoices : booleanModifier ? ["No", "Yes"] : [] };
     })
-    .filter(Boolean) as Array<{ label: string; choices: string[] }>;
+    .filter((entry): entry is { label: string; choices: string[] } => entry !== null && !/\b(?:single|multi)[\s-]*select\b|\brequired\b|\bcustom\b/i.test(entry.label));
+  const explicitChoiceOptions = Array.from(description.matchAll(/\b([a-z][a-z0-9 &\/-]{1,60}?)\s+choices?\s+(?:of\s+)?([^\.\n]+?)(?:,\s*default(?:ing)?\s+to\s+([^\.\n]+))?(?:[\.\n]|$)/gi))
+    .map((match) => {
+      const rawLabel = String(match[1] ?? "").trim();
+      const label = titleCaseProductName(rawLabel.split(/\b(?:with|add|include)\b/i).pop() ?? rawLabel);
+      const choicesText = String(match[2] ?? "").replace(/,\s*default(?:ing)?\s+to\s+.*$/i, "");
+      const choices = choicesText.split(/,\s*(?:and\s+)?|\s+and\s+/i).map((value) => stripDefaultChoiceAnnotation(value).label).filter(Boolean);
+      const defaultChoice = stripDefaultChoiceAnnotation(match[3] ?? "").label || null;
+      return label && choices.length ? { label, choices, defaultChoice } : null;
+    })
+    .filter((entry): entry is { label: string; choices: string[]; defaultChoice: string | null } => entry !== null && !/\boption\s+group\b/i.test(entry.label));
 
   const proofSignals: string[] = [];
   if (/proof\s+(required|needed|mandatory)|requires?\s+proof/i.test(description)) proofSignals.push("Proof required");
@@ -245,18 +321,19 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
   const acrylicName = isAcrylicSign ? titleCaseProductName(`${acrylicMm ? `${acrylicMm}mm ` : ""}Acrylic Signs`) : null;
   const pvcName = isPvcSign ? titleCaseProductName(`${pvcMm ? `${pvcMm}mm ` : ""}PVC Signs`) : null;
   const productName = explicitProductName
+    ?? calledProductName
     ?? styreneName
     ?? (isBanner ? (bannerOz ? `${bannerOz}oz Banner` : "Banner") : null)
     ?? coroplastName
     ?? (isContourCutSticker ? "Contour-Cut Stickers" : isSticker ? "Stickers" : null)
     ?? acrylicName
     ?? pvcName;
-  const category = isStyreneRigid || isAcrylicSign || isPvcSign ? "Rigid Signs" : isBanner ? "Banners" : isCoroplastYardSign ? "Coroplast / Yard Signs" : isSticker ? "Stickers" : null;
+  const category = explicitCategory || (isStyreneRigid || isAcrylicSign || isPvcSign ? "Rigid Signs" : isBanner ? "Banners" : isCoroplastYardSign ? "Coroplast / Yard Signs" : isSticker ? "Stickers" : null);
 
   return {
     productName,
     category,
-    categoryConfidence: category ? 86 : 20,
+    categoryConfidence: explicitCategory ? 100 : category ? 86 : 20,
     productType: isStyreneRigid || isCoroplastYardSign || isAcrylicSign || isPvcSign ? "rigid_signage" : isBanner ? "banner" : isSticker ? "stickers" : null,
     materialReferences: unique(materialReferences),
     sizes: unique(sizeMatches),
@@ -264,8 +341,17 @@ function extractTextDescriptionSignals(description: string): TextDescriptionSign
     sides: unique(sides),
     printOptions: unique(printOptions),
     finishingOptions: unique(finishingOptions),
-    customOptions: customOptions.filter((entry, index) => customOptions.findIndex((candidate) => normalizeText(candidate.label) === normalizeText(entry.label)) === index),
+    customOptions: [...explicitCustomOptionGroups, ...multilineCustomOptionGroups, ...customOptions, ...explicitChoiceOptions].filter((entry, index, all) => all.findIndex((candidate) => normalizeText(candidate.label) === normalizeText(entry.label)) === index),
     quantityBasedPricing,
+    perPiecePricing,
+    quantityOnly,
+    serviceFee,
+    excludesProduction,
+    noOptions,
+    materialUnset,
+    requiresProofApproval,
+    requiresProductionJob,
+    productionRoute,
     proofSignals,
     routingSignals,
     evidence: [
@@ -322,6 +408,7 @@ function textOptionGroup(args: {
   templates: ProductIntakeTemplateReference[];
   reason: string;
   defaultChoice?: string | null;
+  selectionMode?: "single" | "multi";
 }) {
   const normalizedChoices = normalizeChoiceLabels(args.sampleValues);
   const explicitDefaultChoice = args.defaultChoice ? stripDefaultChoiceAnnotation(args.defaultChoice).label : null;
@@ -341,7 +428,7 @@ function textOptionGroup(args: {
     templateMatches,
     evidence: [evidence(args.sourcePath, args.label, args.sampleValues.join(", "), args.reason)],
     source: "product_specific" as const,
-    selectionMode: "single" as const,
+    selectionMode: args.selectionMode ?? "single",
     ...(explicitDefaultChoice || normalizedChoices.defaultChoice ? { defaultChoice: explicitDefaultChoice ?? normalizedChoices.defaultChoice } : {}),
   };
 }
@@ -690,15 +777,15 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
   const analyzerRequiredOptions = buildOptions(product, input.templates, true);
   const analyzerOptionalOptions = buildOptions(product, input.templates, false);
   const textRequiredOptions = textSignals ? [
-    textSignals.sizes.length > 0 || textSignals.customSize ? textOptionGroup({
+    textSignals.sizes.length > 0 ? textOptionGroup({
       label: "Size",
       normalizedGroup: "Size",
       required: true,
-      sampleValues: textSignals.sizes.length > 0 ? textSignals.sizes : ["Custom width", "Custom height"],
+      sampleValues: textSignals.sizes,
       sourcePath: "$.description.sizes",
-      confidence: textSignals.sizes.length > 0 ? 90 : 84,
+      confidence: 90,
       templates: input.templates,
-      reason: textSignals.sizes.length > 0 ? "Fixed size options were listed in the text description." : "Custom width and height were stated in the text description.",
+      reason: "Fixed size options were listed in the text description.",
     }) : null,
     textSignals.sides.length > 0 ? textOptionGroup({
       label: "Printed Sides",
@@ -763,6 +850,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       reason: "An optional finishing choice was stated in the text description.",
     })),
     ...textSignals.customOptions
+      .filter((custom) => !custom.required)
       .filter((custom) => ![...textRequiredOptions, ...textSignals.finishingOptions.map((label) => ({ label }))]
         .some((existing) => normalizeText(existing.label) === normalizeText(custom.label)))
       .map((custom) => textOptionGroup({
@@ -774,16 +862,46 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
         confidence: custom.choices.length > 0 ? 82 : 68,
         templates: input.templates,
         reason: "The description explicitly asked Product Intake to add this product-specific option.",
+        defaultChoice: custom.defaultChoice,
+        selectionMode: custom.selectionMode,
       })),
   ].filter(Boolean) as ReturnType<typeof textOptionGroup>[] : [];
-  const requiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions];
-  const optionalOptions = [...analyzerOptionalOptions, ...textOptionalOptions];
+  const requiredCustomOptions = textSignals ? textSignals.customOptions
+    .filter((custom) => custom.required)
+    .filter((custom) => !textRequiredOptions.some((existing) => normalizeText(existing.label) === normalizeText(custom.label)))
+    .map((custom) => textOptionGroup({
+      label: custom.label,
+      normalizedGroup: custom.label,
+      required: true,
+      sampleValues: custom.choices,
+      sourcePath: `$.description.custom_options.${normalizeText(custom.label).replace(/\s+/g, "_")}`,
+      confidence: custom.choices.length > 0 ? 95 : 68,
+      templates: input.templates,
+      reason: "The description explicitly required this product-specific option.",
+      defaultChoice: custom.defaultChoice,
+      selectionMode: custom.selectionMode,
+    })) : [];
+  // Measurement fields are canonical PBV2 inputs, not customer-selectable
+  // option groups. An explicit no-options instruction also wins over inferred
+  // analyzer/template suggestions while preserving the separate size behavior.
+  const inferredRequiredOptions = [...analyzerRequiredOptions, ...textRequiredOptions, ...requiredCustomOptions];
+  const inferredOptionalOptions = [...analyzerOptionalOptions, ...textOptionalOptions];
+  const ignoreMeasurementInstructions = Boolean(textSignals?.customSize && !hasExplicitSelectableMeasurementOption(text));
+  const requiredOptions = textSignals?.noOptions ? [] : inferredRequiredOptions.filter((option) => !(ignoreMeasurementInstructions && isMeasurementInstructionOption(option)));
+  const optionalOptions = textSignals?.noOptions ? [] : inferredOptionalOptions.filter((option) => !(ignoreMeasurementInstructions && isMeasurementInstructionOption(option)));
   const templateMatches = unique([...requiredOptions, ...optionalOptions].flatMap((option) => option.templateMatches.map((match) => match.templateId)))
     .map((templateId) => [...requiredOptions, ...optionalOptions].flatMap((option) => option.templateMatches).find((match) => match.templateId === templateId)!)
     .filter(Boolean);
   const analyzerBehaviors = behaviorFromAnalyzer(product, input.analyzer);
   const behaviors = textSignals ? {
-    sizeBehavior: textSignals.sizes.length > 0
+    sizeBehavior: (textSignals.quantityOnly || textSignals.serviceFee)
+      ? {
+          behavior: "none",
+          confidence: 96,
+          notes: "Quantity-only product; width and height are not collected.",
+          evidence: [evidence("$.description.measurement", "Measurement", "Quantity only", "The description explicitly excludes width and height.")],
+        }
+      : textSignals.sizes.length > 0
       ? {
           behavior: "fixed_size",
           confidence: 90,
@@ -804,11 +922,12 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
           confidence: 84,
           evidence: [evidence("$.description.pricing", "Quantity", "Quantity based pricing", "Quantity-based pricing was stated in the text description.")],
         }
-      : textSignals.sizes.length > 0 || textSignals.customSize
+      : textSignals.perPiecePricing || textSignals.quantityOnly || textSignals.serviceFee || textSignals.sizes.length > 0 || textSignals.customSize
       ? {
           behavior: "per_piece",
-          confidence: 68,
-          evidence: [evidence("$.description.sizes", "Quantity", textSignals.sizes.join(", ") || "Custom size", "Product appears to be ordered per piece; confirm if needed.")],
+          confidence: textSignals.perPiecePricing || textSignals.quantityOnly || textSignals.serviceFee ? 100 : 68,
+          notes: textSignals.perPiecePricing || textSignals.quantityOnly || textSignals.serviceFee ? "Customers enter any positive quantity; pricing is per piece." : undefined,
+          evidence: [evidence("$.description.pricing", "Quantity", textSignals.perPiecePricing ? "Per piece" : textSignals.sizes.join(", ") || "Custom size", "Product quantity behavior was parsed from the text description.")],
         }
       : analyzerBehaviors.quantityBehavior,
     pricingAnalysis: /\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:sq\.?\s*ft|sqft|square\s*foot|square\s*feet|sf)\b/i.test(text)
@@ -826,6 +945,13 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
           notes: "Sticker-style adjusted rounded square-foot formula",
           evidence: [evidence("$.description.pricing_formula", "Pricing formula", "Adjusted rounded square footage", "Formula pricing instructions were stated in the text description.")],
         }
+      : textSignals.perPiecePricing
+      ? {
+          behavior: "per_piece",
+          confidence: 100,
+          notes: text.match(/\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i)?.[0] ?? "Explicit per-piece price",
+          evidence: [evidence("$.description.pricing", "Per-piece price", text.match(/\$\s*\d[\d,]*(?:\.\d{1,2})?\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i)?.[0] ?? null, "An explicit per-piece rate was stated in the text description.")],
+        }
       : textSignals.quantityBasedPricing
       ? {
           behavior: "quantity_tiers",
@@ -841,6 +967,8 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       : analyzerBehaviors.pricingAnalysis,
   } : analyzerBehaviors;
   const missingDecisions: ProductIntakeBrief["missingDecisions"] = [];
+  const parsedQuantityTiers = textSignals ? parseNaturalLanguageQuantityTiers(text) : null;
+  const completeQuantityTierProduct = Boolean(textSignals && hasCompleteNaturalLanguageQuantityTiers(text) && /\bquantity[-\s]?only\b/i.test(text));
 
   if (!categoryValue) {
     missingDecisions.push({
@@ -851,7 +979,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: [evidence(product?.sourcePath ?? "$.source", "category", null, "Category evidence was missing or weak.")],
     });
   }
-  if (materialMatches.length === 0) {
+  if (materialMatches.length === 0 && !completeQuantityTierProduct && !textSignals?.serviceFee && !textSignals?.materialUnset) {
     missingDecisions.push({
       id: "select-material",
       question: "Which material should this product use?",
@@ -859,7 +987,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       severity: "review",
       evidence: [evidence(product?.sourcePath ?? "$.description", "material", textSignals?.materialReferences.join(", ") || null, "Material evidence was missing or could not be matched.")],
     });
-  } else if (Math.max(...materialMatches.map((match) => match.confidence)) < 85) {
+  } else if (materialMatches.length > 0 && Math.max(...materialMatches.map((match) => match.confidence)) < 85 && !textSignals?.materialUnset) {
     missingDecisions.push({
       id: "select-material",
       question: "Which material should this product use?",
@@ -877,6 +1005,23 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: behaviors.pricingAnalysis.evidence,
     });
   }
+  if (parsedQuantityTiers?.missingRateQuestions.length) {
+    missingDecisions.push({
+      id: "complete-quantity-tier-pricing",
+      question: parsedQuantityTiers.missingRateQuestions[0]!,
+      reason: "A quantity range was supplied without a corresponding per-piece rate.",
+      severity: "blocker",
+      evidence: [evidence("$.description.pricing", "Quantity tiers", null, "A complete tier family requires a rate for every quantity range.")],
+    });
+  } else if (parsedQuantityTiers?.errors.length) {
+    missingDecisions.push({
+      id: "correct-quantity-tier-pricing",
+      question: parsedQuantityTiers.errors[0]!,
+      reason: "Quantity tiers must be a complete, non-overlapping ordered family.",
+      severity: "blocker",
+      evidence: [evidence("$.description.pricing", "Quantity tiers", null, "The supplied quantity-tier ranges could not be normalized safely.")],
+    });
+  }
 
   const sourceEvidence = [
     evidence(product?.sourcePath ?? "$.source", sourceName, product?.name ?? descriptionName ?? null, "Primary source used for the intake brief."),
@@ -889,7 +1034,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
     severity: warning.severity === "blocker" ? "warning" as const : warning.severity === "warning" ? "warning" as const : "info" as const,
     evidence: [evidence(warning.path ?? product?.sourcePath ?? "$.warnings", warning.fieldLabel ?? warning.code, warning.productName ?? null, "Analyzer warning retained for human review.")],
   }));
-  if (textSignals?.proofSignals.length) {
+  if (textSignals?.proofSignals.length && !textSignals.requiresProofApproval) {
     draftWarnings.push({
       code: "proof_required",
       message: "Source mentions proof required.",
@@ -897,7 +1042,7 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: [evidence("$.description.proof", "Proof", textSignals.proofSignals.join(", "), "Proof workflow signal parsed from the description.")],
     });
   }
-  if (textSignals?.routingSignals.length) {
+  if (textSignals?.routingSignals.length && !textSignals.productionRoute) {
     draftWarnings.push({
       code: "routing_signal",
       message: `Source mentions routing signals: ${textSignals.routingSignals.join(", ")}.`,
@@ -909,9 +1054,9 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
   const evidenceBackedConfidence = [
     product?.name || descriptionName ? 75 : 20,
     categoryValue ? categoryConfidence : 20,
-    materialMatches.length ? Math.max(...materialMatches.map((match) => match.confidence)) : 20,
+    materialMatches.length ? Math.max(...materialMatches.map((match) => match.confidence)) : completeQuantityTierProduct || textSignals?.serviceFee ? 75 : 20,
     behaviors.pricingAnalysis.confidence,
-    requiredOptions.length + optionalOptions.length > 0 ? 75 : 35,
+    requiredOptions.length + optionalOptions.length > 0 ? 75 : completeQuantityTierProduct || textSignals?.serviceFee ? 75 : 35,
   ];
   const matrixReadiness = fallbackMatrixReadiness({
     text,
@@ -953,6 +1098,10 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
       evidence: materialMatches.flatMap((match) => match.evidence),
     },
     ...behaviors,
+    ...(textSignals?.serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : textSignals?.excludesProduction ? { requiresProductionJob: false } : textSignals?.requiresProductionJob || textSignals?.productionRoute ? { workflowIntent: "standard_production" as const, requiresProductionJob: true } : {}),
+    ...(textSignals?.materialUnset ? { materialSelection: "unset" as const } : {}),
+    ...(textSignals?.requiresProofApproval ? { requiresProofApproval: true } : {}),
+    ...(textSignals?.productionRoute ? { productionRoute: textSignals.productionRoute } : {}),
     matrixReadiness,
     requiredOptions,
     optionalOptions,
@@ -962,6 +1111,47 @@ function fallbackBrief(input: ProductIntakeBriefInput, fallbackReason: string | 
     draftWarnings,
     sourceEvidence,
     overallConfidence: clampConfidence(evidenceBackedConfidence.reduce((sum, value) => sum + value, 0) / evidenceBackedConfidence.length),
+  });
+}
+
+/** Explicit operational wording is authoritative over an AI's incomplete
+ * descriptive classification. This keeps the persisted brief, readiness, and
+ * PBV2 builder aligned for service-fee requests. */
+function normalizeExplicitOperationalSemantics(brief: ProductIntakeBrief, sourceText: string): ProductIntakeBrief {
+  const quantityOnly = /\bquantity[-\s]?only\b/i.test(sourceText);
+  const serviceFee = /\b(?:service\s+(?:product|fee)|service[-\s]?fee)\b/i.test(sourceText);
+  const perPiece = sourceText.match(/\$\s*(\d[\d,]*(?:\.\d{1,2})?)\s*(?:\/|per\s+)?(?:each|piece|pc|item|unit)\b/i)?.[0] ?? null;
+  const materialUnset = /\b(?:do\s+not\s+select\s+(?:a\s+)?material|leave\s+material\s+unset)\b/i.test(sourceText);
+  const noOptions = /\b(?:do\s+not\s+set|leave)\s+(?:any\s+)?options?\b/i.test(sourceText);
+  const requiresProofApproval = /\b(?:require|requires?)\s+(?:customer\s+)?proof\s+approval\b|\bproof\s+(?:required|needed|mandatory)\b/i.test(sourceText);
+  const requiresProductionJob = /\b(?:require|requires?)\s+(?:a\s+)?production(?:\s+work|\s+job)\b/i.test(sourceText);
+  const productionRoute = /\b(?:route(?:d)?\s+(?:it\s+)?to\s+|production\s+route\s*(?:is|:)?\s*)flatbed\b/i.test(sourceText) ? "Flatbed" : null;
+  const dimensionsRequired = hasDimensionsRequiredInstruction(sourceText);
+  const ignoreMeasurementInstructions = dimensionsRequired && !hasExplicitSelectableMeasurementOption(sourceText);
+  if (!quantityOnly && !serviceFee && !perPiece && !materialUnset && !noOptions && !requiresProofApproval && !requiresProductionJob && !productionRoute && !dimensionsRequired) return brief;
+  const draftWarnings = brief.draftWarnings
+    .filter((warning) => !(requiresProofApproval && warning.code === "proof_required"))
+    .filter((warning) => !(productionRoute && warning.code === "routing_signal"));
+  return productIntakeBriefSchema.parse({
+    ...brief,
+    ...(quantityOnly || serviceFee ? {
+      sizeBehavior: { ...brief.sizeBehavior, behavior: "none", confidence: 100, notes: "Quantity-only product; width and height are not collected." },
+      quantityBehavior: { ...brief.quantityBehavior, behavior: "per_piece", confidence: 100, notes: "Customers enter any positive quantity." },
+    } : {}),
+    ...(dimensionsRequired ? {
+      sizeBehavior: { ...brief.sizeBehavior, behavior: "custom_size", confidence: 100, notes: "Customers enter width and height." },
+    } : {}),
+    ...(perPiece ? { pricingAnalysis: { ...brief.pricingAnalysis, behavior: "per_piece", confidence: 100, notes: perPiece } } : {}),
+    ...(serviceFee ? { workflowIntent: "service_fee" as const, requiresProductionJob: false } : requiresProductionJob || productionRoute ? { workflowIntent: "standard_production" as const, requiresProductionJob: true } : {}),
+    ...(materialUnset ? { materialSelection: "unset" as const, missingDecisions: brief.missingDecisions.filter((decision) => decision.id !== "select-material") } : {}),
+    ...(requiresProofApproval ? { requiresProofApproval: true } : {}),
+    ...(productionRoute ? { productionRoute } : {}),
+    ...(noOptions ? { requiredOptions: [], optionalOptions: [], templateMatches: [] } : ignoreMeasurementInstructions ? {
+      requiredOptions: brief.requiredOptions.filter((option) => !isMeasurementInstructionOption(option)),
+      optionalOptions: brief.optionalOptions.filter((option) => !isMeasurementInstructionOption(option)),
+      templateMatches: brief.templateMatches.filter((template) => !isMeasurementInstructionOption({ label: template.name })),
+    } : {}),
+    draftWarnings: Array.from(new Map(draftWarnings.map((warning) => [`${warning.code}:${warning.message}`, warning])).values()),
   });
 }
 
@@ -1635,12 +1825,12 @@ export async function generateProductIntakeBriefWithRun(input: ProductIntakeBrie
           repairActions: repair.actions,
         });
         return {
-          brief: {
+          brief: normalizeExplicitOperationalSemantics({
             ...repairedParsed.data,
             workflowState: "REVIEW_READY",
             source: "live_ai",
             fallbackReason: null,
-          },
+          }, input.request.description ?? input.request.jsonText ?? ""),
           aiRun: aiRun({
             attempted: true,
             reachedProvider: true,
@@ -1674,12 +1864,12 @@ export async function generateProductIntakeBriefWithRun(input: ProductIntakeBrie
       };
     }
     return {
-      brief: {
+      brief: normalizeExplicitOperationalSemantics({
         ...parsed.data,
         workflowState: "REVIEW_READY",
         source: "live_ai",
         fallbackReason: null,
-      },
+      }, input.request.description ?? input.request.jsonText ?? ""),
       aiRun: aiRun({
         attempted: true,
         reachedProvider: true,

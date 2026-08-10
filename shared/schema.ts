@@ -7819,6 +7819,32 @@ export const aiContextSnapshots = pgTable("ai_context_snapshots", {
   index("ai_context_snapshots_turn_id_idx").on(table.turnId),
 ]);
 
+/** Safe operator working context. This is not a second business source of
+ * truth: it stores only task identity, summaries, references, and state while
+ * canonical product/command records retain all authoritative mutation data. */
+export const aiOperatorTasks = pgTable("ai_operator_tasks", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  domain: varchar("domain", { length: 80 }),
+  goal: varchar("goal", { length: 2000 }).notNull(),
+  workingSummary: varchar("working_summary", { length: 2000 }),
+  entityReferences: jsonb("entity_references").$type<Array<{ type: string; id: string; label?: string }>>().notNull().default(sql.raw("'[]'::jsonb")),
+  missingInformation: jsonb("missing_information").$type<string[]>().notNull().default(sql.raw("'[]'::jsonb")),
+  semanticChanges: jsonb("semantic_changes").$type<Record<string, unknown>>().notNull().default(sql.raw("'{}'::jsonb")),
+  confirmationState: varchar("confirmation_state", { length: 64 }).notNull().default("none"),
+  status: varchar("status", { length: 64 }).notNull().default("active"),
+  canonicalProductIntentProposalId: varchar("canonical_product_intent_proposal_id", { length: 120 }),
+  lastObservationSummary: varchar("last_observation_summary", { length: 2000 }),
+  completedAt: timestamp("completed_at", { withTimezone: true }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_operator_tasks_org_conversation_status_idx").on(table.orgId, table.conversationId, table.status, table.updatedAt),
+  index("ai_operator_tasks_org_user_updated_idx").on(table.orgId, table.userId, table.updatedAt),
+]);
+
 export const aiToolExecutions = pgTable("ai_tool_executions", {
   id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
@@ -7906,9 +7932,36 @@ export const aiExecutionPlans = pgTable("ai_execution_plans", {
   index("ai_execution_plans_correlation_id_idx").on(table.correlationId),
 ]);
 
+/**
+ * A bounded, reviewable parent scope for several independently planned
+ * commands. Child plans remain the authoritative command records; this table
+ * records only the explicit composition and its one user-facing GO.
+ */
+export const aiCompositeExecutionPlans = pgTable("ai_composite_execution_plans", {
+  id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
+  orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  conversationId: varchar("conversation_id").notNull().references(() => aiConversations.id, { onDelete: "cascade" }),
+  contextHash: varchar("context_hash", { length: 128 }).notNull(),
+  compositeFingerprint: varchar("composite_fingerprint", { length: 128 }).notNull(),
+  operations: jsonb("operations").$type<Array<Record<string, unknown>>>().notNull().default(sql.raw("'[]'::jsonb")),
+  status: varchar("status", { length: 32 }).notNull().default("preview_ready"),
+  planVersion: integer("plan_version").notNull().default(1),
+  result: jsonb("result").$type<Record<string, unknown> | null>(),
+  correlationId: varchar("correlation_id", { length: 128 }).notNull(),
+  expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updated_at", { withTimezone: true }).defaultNow().notNull(),
+}, (table) => [
+  index("ai_composite_execution_plans_org_user_created_idx").on(table.orgId, table.userId, table.createdAt),
+  index("ai_composite_execution_plans_org_conversation_status_idx").on(table.orgId, table.conversationId, table.status),
+  index("ai_composite_execution_plans_correlation_id_idx").on(table.correlationId),
+]);
+
 export const aiConfirmations = pgTable("ai_confirmations", {
   id: varchar("id").primaryKey().default(sql.raw("gen_random_uuid()")),
-  planId: varchar("plan_id").notNull().references(() => aiExecutionPlans.id, { onDelete: "cascade" }),
+  planId: varchar("plan_id").references(() => aiExecutionPlans.id, { onDelete: "cascade" }),
+  compositePlanId: varchar("composite_plan_id").references(() => aiCompositeExecutionPlans.id, { onDelete: "cascade" }),
   orgId: varchar("org_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
   userId: varchar("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   tokenHash: varchar("token_hash", { length: 128 }).notNull(),
@@ -7926,6 +7979,7 @@ export const aiConfirmations = pgTable("ai_confirmations", {
   uniqueIndex("ai_confirmations_token_hash_uidx").on(table.tokenHash),
   index("ai_confirmations_org_user_plan_idx").on(table.orgId, table.userId, table.planId),
   index("ai_confirmations_plan_expires_idx").on(table.planId, table.expiresAt),
+  index("ai_confirmations_composite_plan_expires_idx").on(table.compositePlanId, table.expiresAt),
 ]);
 
 export const aiExecutionSteps = pgTable("ai_execution_steps", {

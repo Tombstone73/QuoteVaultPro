@@ -5,8 +5,9 @@ import { jest } from "@jest/globals";
 
 jest.mock("@/lib/apiConfig", () => ({ apiUrl: (path: string) => path }));
 jest.mock("./AssistantWorkspaceProvider", () => ({ useAssistantWorkspace: () => ({}) }));
+jest.mock("@/hooks/useAssistantApi", () => ({ useSubmitAssistantOrderOptionSelections: () => ({ mutate: jest.fn(), isPending: false, isError: false }) }));
 
-import { ResultCards, responsePresentationForCards } from "./AssistantWorkspace";
+import { AssistantMessageContent, ResultCards, responsePresentationForCards } from "./AssistantWorkspace";
 
 (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -15,7 +16,7 @@ const context = {
   selectedRecordIds: [], activeFilters: [], capturedAt: "2026-07-21T12:00:00.000Z", unsavedChanges: false,
 } as const;
 
-function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void; onCreatePlan?: (turnId: string) => Promise<unknown> } = {}) {
+function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlationId?: string; presentation?: any; responseState?: any; onRetry?: () => void; onSubmitSuggestion?: (prompt: string) => void; onCreatePlan?: (turnId: string) => Promise<unknown>; onConfirmPlan?: (input: any) => Promise<unknown>; executionPlans?: Record<string, any>; conversationId?: string } = {}) {
   const container = document.createElement("div");
   document.body.appendChild(container);
   const root = createRoot(container);
@@ -26,6 +27,21 @@ function render(cards: any[], options: { diagnosticsEnabled?: boolean; correlati
 describe("Assistant workspace presentation", () => {
   afterEach(() => document.body.innerHTML = "");
 
+  test("renders intentional multi-record line breaks without interpreting assistant text as HTML", () => {
+    const content = "**QT-910322**\nCustomer: Test customer\n\n**QT-910321**\nCustomer: 55 Twin Lane";
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    act(() => root.render(<AssistantMessageContent content={content} />));
+
+    const message = container.querySelector("[data-testid='assistant-message-content']") as HTMLDivElement;
+    expect(message).not.toBeNull();
+    expect(message.className).toContain("whitespace-pre-wrap");
+    expect(message.textContent).toBe(content);
+    expect(message.innerHTML).not.toContain("<strong>");
+    act(() => root.unmount());
+  });
+
   test("keeps current-record answers conversational and hides the tool name", () => {
     const { container, root } = render([
       { kind: "current_context", title: "navigation.get_current_context", summary: "You're viewing Order ORD-20003 for T3 Signs.", sourceLinks: [{ label: "View order", href: "/orders/order_1" }] },
@@ -33,6 +49,18 @@ describe("Assistant workspace presentation", () => {
     expect(container.textContent).toContain("View order");
     expect(container.textContent).not.toContain("navigation.get_current_context");
     expect(container.textContent).not.toContain("Response presentation");
+    act(() => root.unmount());
+  });
+
+  test("renders a structured PBV2 option card with unselected defaults", () => {
+    const { container, root } = render([{ kind: "order_option_selection", title: "Order options needed", summary: "Choose options.", sourceLinks: [], details: { orderOptionSelection: { orderIntakeSessionId: "session_1", productId: "product_1", productName: "ACM Tester", pbv2TreeVersionId: "tree_1", quantity: 1, dimensions: { widthIn: 12, heightIn: 12, unit: "in" }, helperText: "Validated before pricing.", groups: [{ nodeId: "thickness", selectionKey: "thickness", label: "Thickness", required: true, currentExplicitSelection: null, choices: [{ valueId: "3mm", label: "3mm", isDefault: true }, { valueId: "6mm", label: "6mm", isDefault: false }] }, { nodeId: "contour", selectionKey: "contour", label: "Contour Cutting", required: true, currentExplicitSelection: null, choices: [{ valueId: "no", label: "No", isDefault: true }, { valueId: "yes", label: "Yes", isDefault: false }] }] } } }], { conversationId: "conversation_1" });
+    expect(container.querySelector("[data-testid='assistant-order-option-selection-card']")).not.toBeNull();
+    expect(container.textContent).toContain("ACM Tester · Quantity: 1 · 12 × 12 in");
+    expect(container.textContent).toContain("Thickness");
+    expect(container.textContent).toContain("Contour Cutting");
+    expect(container.textContent).toContain("Default");
+    expect(container.textContent).toContain("Use remaining defaults");
+    expect(container.querySelector("button")?.textContent).not.toContain("session_1");
     act(() => root.unmount());
   });
 
@@ -57,12 +85,62 @@ describe("Assistant workspace presentation", () => {
     act(() => normal.root.unmount());
 
     const authorized = render(cards, { diagnosticsEnabled: true, correlationId: "corr_123", presentation: "diagnostic", responseState: { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true } });
-    expect(authorized.container.textContent).toContain("Show diagnostics");
+    expect(authorized.container.textContent).toContain("Technical diagnostics");
     const button = authorized.container.querySelector("button") as HTMLButtonElement;
     act(() => button.click());
     expect(authorized.container.textContent).toContain("navigation.get_current_context");
     expect(authorized.container.textContent).toContain("corr_123");
     act(() => authorized.root.unmount());
+  });
+
+  test("lazy-loads sanitized technical diagnostics for admins and keeps validation paths readable", async () => {
+    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({ success: true, data: [{ referenceId: "aip-card-1", correlationId: "corr-card-1", diagnosticType: "ai_planner", stage: "invalid_contract", provider: "test", model: "model", parseMethod: "repaired_json", repairResult: "failed", validationIssuePaths: ["intent.optionGroups.2.values.0.priceImpactPercent"], selectedCapability: "canonical_product_intent_compiler", persistenceResult: "not_attempted", createdAt: "2026-08-06T10:00:00.000Z" }] }) }));
+    (globalThis as any).fetch = fetchMock;
+    const { container, root } = render([{ kind: "provider_unavailable", title: "Planner unavailable", summary: "Please retry. Reference: aip-11111111-1111-4111-8111-111111111111.", sourceLinks: [], toolStatus: "failed" }], { diagnosticsEnabled: true, correlationId: "corr-card-1", presentation: "diagnostic", responseState: { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true }, onRetry: () => undefined });
+    expect(fetchMock).not.toHaveBeenCalled();
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Technical diagnostics") as HTMLButtonElement;
+    await act(async () => { button.click(); await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledWith("/api/assistant/diagnostics/aip-11111111-1111-4111-8111-111111111111", { credentials: "include" });
+    expect(container.textContent).toContain("aip-11111111-1111-4111-8111-111111111111");
+    expect(container.textContent).toContain("intent.optionGroups.2.values.0.priceImpactPercent");
+    expect(container.textContent).not.toContain("[object Object]");
+    expect(container.textContent).toContain("Try again");
+    act(() => root.unmount());
+  });
+
+  test("exposes a canonical continuation diagnostic by its visible pic reference only to admins", async () => {
+    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({ success: true, data: [{ referenceId: "pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca", correlationId: "pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca", diagnosticType: "product_intent_compiler", stage: "patch_application", provider: "openai_compatible", model: "deepseek-test", parseMethod: "raw_json", repairResult: "not_attempted", validationSchema: "ProductDraftIntentPatch", validationIssuePaths: ["operations.0.value"], validationIssueCodes: ["invalid_type"], persistenceResult: "not_attempted", createdAt: "2026-08-07T10:00:00.000Z", rawProviderOutput: "never-copy" }] }) }));
+    const copy = jest.fn(async () => undefined);
+    (globalThis as any).fetch = fetchMock;
+    Object.defineProperty(navigator, "clipboard", { configurable: true, value: { writeText: copy } });
+    const cards = [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: ["I couldn't safely interpret that product request. Reference: pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca"] } }];
+    const normal = render(cards, { correlationId: "aip-planner-reference", responseState: { kind: "validation_error", retryable: false, diagnosticsAvailable: true } });
+    expect(normal.container.textContent).not.toContain("Technical diagnostics");
+    act(() => normal.root.unmount());
+
+    const { container, root } = render(cards, { diagnosticsEnabled: true, correlationId: "aip-planner-reference", responseState: { kind: "validation_error", retryable: false, diagnosticsAvailable: true } });
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Technical diagnostics") as HTMLButtonElement;
+    await act(async () => { button.click(); await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledWith("/api/assistant/diagnostics/pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca", { credentials: "include" });
+    expect(container.textContent).toContain("patch_application");
+    expect(container.textContent).toContain("operations.0.value");
+    expect(container.textContent).toContain("invalid_type");
+    const copyButton = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Copy diagnostics") as HTMLButtonElement;
+    act(() => copyButton.click());
+    expect(copy).toHaveBeenCalledWith(expect.stringContaining("pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca"));
+    expect(JSON.stringify(copy.mock.calls)).not.toContain("never-copy");
+    act(() => root.unmount());
+  });
+
+  test("terminates a canonical continuation diagnostic load failure", async () => {
+    (globalThis as any).fetch = jest.fn(async () => ({ ok: false, json: async () => ({ success: false }) }));
+    const cards = [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: ["Reference: pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca"] } }];
+    const { container, root } = render(cards, { diagnosticsEnabled: true, responseState: { kind: "validation_error", retryable: false, diagnosticsAvailable: true } });
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Technical diagnostics") as HTMLButtonElement;
+    await act(async () => { button.click(); await Promise.resolve(); });
+    expect(container.textContent).toContain("Technical diagnostics are unavailable. Reference: pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca");
+    expect(container.textContent).not.toContain("Loading technical diagnostics");
+    act(() => root.unmount());
   });
 
   test("does not offer retry or diagnostics for a successful capability answer", () => {
@@ -75,7 +153,7 @@ describe("Assistant workspace presentation", () => {
       onRetry: () => undefined,
     });
     expect(container.textContent).not.toContain("Try again");
-    expect(container.textContent).not.toContain("Show diagnostics");
+    expect(container.textContent).not.toContain("Technical diagnostics");
     act(() => root.unmount());
   });
 
@@ -175,5 +253,38 @@ describe("Assistant workspace presentation", () => {
     act(() => review.click());
     expect(createdPlanTurns).toEqual(["turn_19k"]);
     act(() => root.unmount());
+  });
+
+  test("uses the generic server-bound adapter for registered CRM proposals and reports an expired confirmation", async () => {
+    const fingerprint = "a".repeat(64);
+    const onConfirmPlan = jest.fn(async () => { throw new Error('409: {"error":{"message":"The confirmation has expired."}}'); });
+    const cards = [
+      { kind: "crm_operation_proposal", title: "Customer preview", summary: "", sourceLinks: [{ label: "Open Acme", href: "/customers/customer_1" }], details: { commandName: "customers.update_profile", changes: [{ field: "phone", after: "555-0100" }], warnings: ["Verify the new number."] } },
+      { kind: "action_proposal", title: "Confirm customer change", summary: "Update one customer profile.", sourceLinks: [], plan: { action: "customers.update_profile", crmIntakeSessionId: "session_1", proposalFingerprint: fingerprint }, proposal: { action: "customers.update_profile", crmIntakeSessionId: "session_1", proposalFingerprint: fingerprint, turnId: "turn_crm" } },
+    ];
+    const executionPlans = { turn_crm: { turnId: "turn_crm", confirmationToken: "server-token", plan: { id: "plan_crm", action: "customers.update_profile", status: "awaiting_confirmation", planVersion: 1, riskLevel: "high", confirmationAvailable: true, expiresAt: "2030-01-01T00:10:00.000Z", preview: { summary: "Update one customer profile.", affectedEntities: [{ entityId: "customer_1", entityType: "customer", label: "Acme", sourceLink: { href: "/customers/customer_1" } }] }, missingInformation: [], cancellationAvailable: true, steps: [] } } };
+    const { container, root } = render(cards, { executionPlans, onConfirmPlan });
+    expect(container.textContent).toContain("Customers Update Profile");
+    const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: Customers Update Profile']");
+    expect(go).not.toBeNull();
+    await act(async () => { go?.click(); });
+    expect(onConfirmPlan).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan_crm", confirmationToken: "server-token" }));
+    expect(container.textContent).toContain("The confirmation has expired.");
+    act(() => root.unmount());
+  });
+
+  test("reports generic plan-creation failure and renders a replayed successful result", async () => {
+    const fingerprint = "b".repeat(64);
+    const card = { kind: "action_proposal", title: "Confirm invoice", summary: "Create one invoice.", sourceLinks: [], plan: { action: "billing.create_invoice", billingIntakeSessionId: "session_2", proposalFingerprint: fingerprint }, proposal: { action: "billing.create_invoice", billingIntakeSessionId: "session_2", proposalFingerprint: fingerprint, turnId: "turn_billing" } };
+    const failed = render([card], { onCreatePlan: async () => { throw new Error('409: {"error":{"message":"The invoice proposal changed."}}'); } });
+    const review = Array.from(failed.container.querySelectorAll("button")).find((button) => button.textContent === "Review server plan") as HTMLButtonElement;
+    await act(async () => { review.click(); });
+    expect(failed.container.textContent).toContain("The invoice proposal changed.");
+    act(() => failed.root.unmount());
+
+    const replayed = render([card], { executionPlans: { turn_billing: { turnId: "turn_billing", confirmationToken: null, plan: { id: "plan_billing", action: "billing.create_invoice", status: "succeeded", planVersion: 3, riskLevel: "high", confirmationAvailable: false, preview: { summary: "Created invoice INV-1." }, missingInformation: [], cancellationAvailable: false, steps: [{ id: "step_1", label: "billing.create_invoice@v1", status: "succeeded", summary: "Created once." }] } } } });
+    expect(replayed.container.textContent).toContain("Action completed successfully.");
+    expect(replayed.container.querySelector("button[aria-label^='GO:']")).toBeNull();
+    act(() => replayed.root.unmount());
   });
 });

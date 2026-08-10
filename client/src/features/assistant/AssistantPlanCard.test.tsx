@@ -63,6 +63,21 @@ const quoteNotePlanCard = {
   },
 };
 
+const orderCreatePlanCard = {
+  kind: "action_plan",
+  title: "Create order for Cool Cars",
+  plan: {
+    id: "plan-order-1", action: "orders.create", status: "awaiting_confirmation", planVersion: 1, riskLevel: "high", confirmationAvailable: true, confirmationToken: "server-issued-plan-bound-token",
+    preview: {
+      summary: "Create one order for Cool Cars.",
+      affectedEntities: [{ entityId: "customer-1", entityType: "customer", label: "Customer: Cool Cars" }, { entityId: "new:plan-order-1", entityType: "order", label: "One new order will be created" }, { entityId: "product-1", entityType: "product", label: "Product: ACM Tester" }],
+      orderCreate: { customer: { id: "customer-1", name: "Cool Cars", contactName: null }, orderStatus: "new", productionDeferred: true, totalCents: 1500, warnings: [], lines: [{ productId: "product-1", productName: "ACM Tester", quantity: 1, measurementMode: "area", dimensions: { widthIn: 12, heightIn: 12, unit: "in" }, pbv2TreeVersionId: "tree-1", selections: [{ groupId: "sides", groupLabel: "Sides", valueId: "single", valueLabel: "Single Sided", source: "explicit" }, { groupId: "thickness", groupLabel: "Thickness", valueId: "3mm", valueLabel: "3mm", source: "explicit" }, { groupId: "contour", groupLabel: "Contour Cutting", valueId: "no", valueLabel: "No", source: "default_accepted" }], unitPriceCents: 1500, totalCents: 1500, minimumChargeApplied: true, warnings: [] }, { productId: "product-2", productName: "Setup", quantity: 1, measurementMode: "quantity_only", dimensions: null, pbv2TreeVersionId: "tree-2", selections: [], unitPriceCents: 0, totalCents: 0, minimumChargeApplied: false, warnings: [] }] },
+      sideEffects: [], undo: { available: false, label: null, expiresAt: null },
+    },
+    missingInformation: [], expiresAt: "2030-01-01T00:10:00.000Z", contextBinding: { route: "/orders", entityType: null, entityId: null }, cancellationAvailable: true, steps: [],
+  },
+};
+
 describe("AssistantPlanCard", () => {
   let container: HTMLDivElement;
   let root: Root;
@@ -109,6 +124,23 @@ describe("AssistantPlanCard", () => {
   it("reports expiration accessibly without relying on a color", () => {
     expect(getPlanExpirationText("2030-01-01T00:00:01.000Z", Date.parse("2030-01-01T00:00:00.000Z"))).toBe("Expires in 1 minute");
     expect(getPlanExpirationText("2030-01-01T00:00:00.000Z", Date.parse("2030-01-01T00:00:01.000Z"))).toBe("Expired");
+  });
+
+  it("renders authoritative configured-order details without exposing the intake session", () => {
+    const confirmed = jest.fn();
+    const onConfirm: NonNullable<React.ComponentProps<typeof AssistantPlanCard>["onConfirm"]> = (input) => { confirmed(input); };
+    act(() => root.render(<AssistantPlanCard card={orderCreatePlanCard} context={buildSafeAssistantContext("/orders", "Order")} onConfirm={onConfirm} allowGenericConfirmation genericActionLabel="Orders Create" />));
+    expect(container.textContent).toContain("Cool Cars");
+    expect(container.textContent).toContain("ACM Tester");
+    expect(container.textContent).toContain("12 × 12 in");
+    expect(container.textContent).toContain("Sides: Single Sided");
+    expect(container.textContent).toContain("Thickness: 3mm");
+    expect(container.textContent).toContain("Contour Cutting: No (default accepted)");
+    expect(container.textContent).toContain("Unit price: $15.00");
+    expect(container.textContent).toContain("Minimum charge: Applied");
+    expect(container.textContent).not.toContain("assistant_order_intake_session");
+    expect(container.textContent).toContain("One new order will be created");
+    expect(container.querySelector("button[aria-label='GO: Orders Create']")).not.toBeNull();
   });
 
   it("renders the registered quote-note preview as internal-only text and confirms only through the dedicated control", () => {
@@ -163,7 +195,7 @@ describe("AssistantPlanCard", () => {
             category: "Banners", measurementMode: "custom_dimensions", requiresDimensions: true, fixedDimensions: null,
             pricingModel: "square_foot", perSqftCents: 450, perPieceCents: null, minimumChargeCents: 2500,
             material: "13 oz Banner", productionRoute: "Roll printer", sheetOrRollConstraints: "54in roll", allowRotation: true,
-            quantityBehavior: "per_piece", taxable: true, commonOptions: ["Lamination", "Grommets"], status: "inactive_draft",
+            quantityBehavior: { behavior: "per_piece", confidence: 100 }, workflowIntent: "standard_production", requiresProductionJob: true, requiresProofApproval: true, taxable: true, commonOptions: ["Lamination", "Grommets"], optionGroups: [{ key: "lamination", label: "Lamination", required: true, selectionMode: "single", choices: ["None", "Gloss", "Matte"], defaultChoice: "None" }], status: "inactive_draft",
           },
         } }, missingInformation: [], cancellationAvailable: true, steps: [],
       },
@@ -176,12 +208,60 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).toContain("$4.50");
     expect(container.textContent).toContain("$25.00");
     expect(container.textContent).toContain("Allowed");
-    expect(container.textContent).toContain("Inactive draft");
+    expect(container.textContent).toContain("Inactive PBV2 DRAFT");
+    expect(container.textContent).toContain("Default: None");
+    expect(container.textContent).toContain("Choices: None, Gloss, Matte");
+    expect(container.textContent).toContain("Customer proof approval required: Yes");
+    expect(container.textContent).toContain("Quantity: Customer enters quantity");
+    expect(container.textContent).not.toContain("[object Object]");
     expect(container.textContent).not.toMatch(/Activate|Publish/);
     const go = container.querySelector<HTMLButtonElement>("button[aria-label='GO: create inactive product draft']");
     expect(go).not.toBeNull();
     act(() => go?.click());
     expect(confirmed).toHaveBeenCalledWith(expect.objectContaining({ planId: "plan-product-1", expectedPlanVersion: 1, confirmationToken: "server-token" }));
+  });
+
+  it("renders service-fee workflow and non-production quantities in plain language", () => {
+    const servicePlan = {
+      kind: "action_plan", title: "Create service draft",
+      plan: {
+        id: "plan-service-1", action: "products.create_inactive_draft", status: "awaiting_confirmation", planVersion: 1, riskLevel: "high", confirmationAvailable: true, confirmationToken: "service-token", expiresAt: "2030-01-01T00:10:00.000Z", missingInformation: [], cancellationAvailable: true, steps: [],
+        preview: { summary: "Create one inactive service-fee draft.", productInactiveDraft: { productName: "DEV Test Service 080426", warnings: [], proposedFields: {
+          category: "Print Products", measurementMode: "quantity_only", requiresDimensions: false, fixedDimensions: null, pricingModel: "per_piece", perSqftCents: null, perPieceCents: 2000, minimumChargeCents: null, material: null, productionRoute: null, sheetOrRollConstraints: null, allowRotation: null, quantityBehavior: "customer_enters_quantity", workflowIntent: "service_fee", requiresProductionJob: false, requiresProofApproval: false, taxable: true, commonOptions: [], optionGroups: [], status: "inactive_draft",
+        } } },
+      },
+    };
+    act(() => root.render(<AssistantPlanCard card={servicePlan} context={buildSafeAssistantContext("/products", "Products")} onConfirm={() => undefined} />));
+    expect(container.textContent).toContain("Measurement: Quantity only");
+    expect(container.textContent).toContain("Pricing: $20.00 per piece");
+    expect(container.textContent).toContain("Workflow: Service fee");
+    expect(container.textContent).toContain("Production job required: No");
+    expect(container.textContent).toContain("Quantity: Customer enters quantity");
+    expect(container.textContent).not.toContain("fixed_quantity");
+  });
+
+  it("renders a clone's typed pricing before-and-after table without raw JSON", () => {
+    const clonePlan = {
+      kind: "action_plan", title: "Clone inactive product draft",
+      plan: {
+        id: "plan-clone-1", action: "products.clone_to_inactive_draft", status: "awaiting_confirmation", planVersion: 1, riskLevel: "high", confirmationAvailable: true, confirmationToken: "clone-token", expiresAt: "2030-01-01T00:10:00.000Z", missingInformation: [], cancellationAvailable: true, steps: [],
+        preview: { summary: "Clone one inactive product draft.", cloneInactiveDraft: { preview: {
+          source: { product: { name: "DEV Test Minimum Charge 080426", category: "Print Products", measurementMode: "dimensions_required", configuration: {} }, pbv2Tree: { treeJson: { meta: { optionGroups: [] } } } },
+          result: { product: { name: "DEV Test Minimum Charge Clone 080426" } },
+          basePricing: { before: { perSqftCents: 200, perPieceCents: null, minimumChargeCents: 2500 }, after: { perSqftCents: 250, perPieceCents: null, minimumChargeCents: 3000 } },
+        } } },
+      },
+    };
+    act(() => root.render(<AssistantPlanCard card={clonePlan} context={buildSafeAssistantContext("/products", "Products")} onConfirm={() => undefined} />));
+    expect(container.textContent).toContain("Source product: DEV Test Minimum Charge 080426");
+    expect(container.textContent).toContain("New product: DEV Test Minimum Charge Clone 080426");
+    expect(container.textContent).toContain("Price per square foot");
+    expect(container.textContent).toContain("$2.00");
+    expect(container.textContent).toContain("$2.50");
+    expect(container.textContent).toContain("$25.00");
+    expect(container.textContent).toContain("$30.00");
+    expect(container.textContent).toContain("Lifecycle: Inactive PBV2 DRAFT");
+    expect(container.textContent).not.toContain('"minimumChargeCents"');
   });
 
   it("renders an exact inactive-draft update preview and blocks GO for server validation errors", () => {
@@ -219,6 +299,19 @@ describe("AssistantPlanCard", () => {
     expect(container.textContent).toContain("Default choice must reference an existing option.");
     expect(container.textContent).toContain("Resolve validation errors before this draft update can be confirmed.");
     expect(container.querySelector("button[aria-label='GO: update inactive product draft']")).toBeNull();
+  });
+
+  it("opens the exact PBV2 DRAFT after an inactive-draft mutation succeeds", () => {
+    const completed = {
+      kind: "action_plan", title: "Update Banner draft",
+      plan: {
+        id: "plan-product-update-result", action: "products.update_inactive_draft", status: "succeeded", planVersion: 2,
+        riskLevel: "high", confirmationAvailable: false, missingInformation: [], steps: [],
+        executionResult: { details: { productDraft: { id: "banner_1", name: "Banner", sourceLink: "/products/banner_1/edit?draftTreeVersionId=tree_1" } } },
+      },
+    };
+    act(() => root.render(<AssistantPlanCard card={completed} context={buildSafeAssistantContext("/products", "Products")} onConfirm={() => undefined} />));
+    expect(container.querySelector('a[href="/products/banner_1/edit?draftTreeVersionId=tree_1"]')?.textContent).toContain("Open Banner");
   });
 
   it("renders only the dedicated configurable-product GO control for a complete typed preview", () => {

@@ -2,8 +2,10 @@ import * as React from "react";
 import { Bot, Expand, Maximize2, Minus, PanelBottom, PanelLeft, PanelRight, RefreshCw, Send } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSendAssistantTurn, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
+import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useCanonicalProductIntentInteraction, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSendAssistantTurn, useSubmitAssistantOrderOptionSelections, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
@@ -12,9 +14,12 @@ import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { AssistantPlanCard, AssistantProductDraftProposalCard, AssistantProductPricingProposalCard, AssistantQuoteDraftProposalCard, AssistantQuoteNoteProposalCard, toAssistantPlanCardModel, toAssistantProductDraftProposal, toAssistantProductPricingProposal, toAssistantQuoteDraftProposal, toAssistantQuoteNoteProposal } from "./AssistantPlanCard";
 import { AssistantProductManagementCardView, toAssistantProductManagementCard } from "./AssistantProductManagementCards";
 import { ConfigurableProductConfirmationCardView, toConfigurableProductConfirmation, toConfigurableProductProposal } from "./AssistantConfigurableProductCards";
+import { CanonicalProductIntentCardView, CanonicalProductIntentReviewProposalCard, toCanonicalProductIntentCard, toCanonicalProductIntentProposal } from "./AssistantCanonicalProductIntentCard";
+import { AssistantGenericActionProposalCard, toGenericActionProposal } from "./AssistantGenericActionProposalCard";
 import { assistantComposerHelper, assistantConversationLabel, visibleAssistantConversations } from "./assistantWorkspaceCore";
 import { useAssistantConversationScroll } from "./useAssistantConversationScroll";
 import { AssistantConversationSidebar } from "./AssistantConversationManagement";
+import { AssistantWorkingIndicator, resolveAssistantWorkingState } from "./AssistantWorkingIndicator";
 import type { AssistantMessage, AssistantResponseState } from "@shared/assistantContracts";
 
 type AssistantResponsePresentation = "conversational" | "collection" | "record_summary" | "analytical" | "proposed_action" | "execution_result" | "diagnostic";
@@ -43,6 +48,16 @@ function diagnosticDetails(card: AssistantStructuredCard): { category: string | 
     code: text(details?.failureCode),
     step: text(details?.failingStep),
   };
+}
+
+function actionErrorMessage(error: unknown, fallback: string) {
+  const message = error instanceof Error ? error.message : "";
+  try {
+    const parsed = JSON.parse(message.replace(/^\d+:\s*/, "")) as { error?: { message?: unknown } };
+    return typeof parsed.error?.message === "string" && parsed.error.message.trim() ? parsed.error.message : fallback;
+  } catch {
+    return message || fallback;
+  }
 }
 
 export function responsePresentationForCards(presentation: AssistantResponsePresentation | undefined): AssistantResponsePresentation {
@@ -218,6 +233,35 @@ function CustomerResolutionSelectionCard({ card }: { card: AssistantStructuredCa
   </section>;
 }
 
+function OrderOptionSelectionCard({ card, conversationId, context }: { card: AssistantStructuredCard; conversationId: string | null; context: AssistantContextEnvelope }) {
+  const submitSelection = useSubmitAssistantOrderOptionSelections();
+  const raw = card as unknown as Record<string, unknown>;
+  const details = isRecord(raw.details) ? raw.details : null;
+  const payload = details && isRecord(details.orderOptionSelection) ? details.orderOptionSelection : null;
+  const sessionId = text(payload?.orderIntakeSessionId); const productId = text(payload?.productId); const productName = text(payload?.productName); const treeId = text(payload?.pbv2TreeVersionId);
+  const quantity = numericValue(payload?.quantity); const dimensions = isRecord(payload?.dimensions) ? payload.dimensions : null;
+  const width = numericValue(dimensions?.widthIn); const height = numericValue(dimensions?.heightIn); const unit = text(dimensions?.unit) ?? "in";
+  const groups = Array.isArray(payload?.groups) ? payload.groups.filter(isRecord) : [];
+  const [values, setValues] = React.useState<Record<string, string>>({});
+  const [useDefaults, setUseDefaults] = React.useState(false);
+  if (!conversationId || !sessionId || !productId || !productName || !treeId || !groups.length) return null;
+  const complete = groups.every((group) => Boolean(values[text(group.nodeId) ?? ""]));
+  const submit = () => submitSelection.mutate({ conversationId, orderIntakeSessionId: sessionId, productId, pbv2TreeVersionId: treeId, selections: Object.entries(values).map(([nodeId, valueId]) => ({ nodeId, valueId })), useRemainingDefaults: useDefaults, context });
+  return <section className="mt-3 rounded-xl border border-primary/30 bg-primary/5 px-3 py-3 text-sm shadow-sm" data-testid="assistant-order-option-selection-card">
+    <p className="font-medium text-foreground">{text(raw.title) ?? "Order options needed"}</p>
+    <p className="mt-1 text-muted-foreground">{productName}{quantity !== null ? ` · Quantity: ${quantity}` : ""}{width !== null && height !== null ? ` · ${width} × ${height} ${unit}` : ""}</p>
+    <p className="mt-1 text-xs text-muted-foreground">{text(payload?.helperText) ?? text(raw.summary)}</p>
+    <div className="mt-3 space-y-3">{groups.map((group) => {
+      const nodeId = text(group.nodeId); const label = text(group.label) ?? "Option"; const choices = Array.isArray(group.choices) ? group.choices.filter(isRecord) : [];
+      if (!nodeId || !choices.length) return null;
+      const value = values[nodeId] ?? "";
+      return <fieldset key={nodeId} className="rounded-lg border border-border/60 bg-background/70 p-3"><legend className="px-1 font-medium">{label}</legend>{choices.length <= 4 ? <RadioGroup value={value} onValueChange={(next) => setValues((current) => ({ ...current, [nodeId]: next }))} className="mt-2 gap-2">{choices.map((choice) => { const valueId = text(choice.valueId); const choiceLabel = text(choice.label); if (!valueId || !choiceLabel) return null; return <label key={valueId} className="flex cursor-pointer items-center gap-2 rounded px-1 py-1 hover:bg-muted/60"><RadioGroupItem value={valueId} /><span>{choiceLabel}</span>{choice.isDefault === true ? <span className="text-xs text-muted-foreground">Default</span> : null}</label>; })}</RadioGroup> : <Select value={value} onValueChange={(next) => setValues((current) => ({ ...current, [nodeId]: next }))}><SelectTrigger className="mt-2"><SelectValue placeholder={`Choose ${label}`} /></SelectTrigger><SelectContent>{choices.map((choice) => { const valueId = text(choice.valueId); const choiceLabel = text(choice.label); return valueId && choiceLabel ? <SelectItem key={valueId} value={valueId}>{choiceLabel}{choice.isDefault === true ? " (Default)" : ""}</SelectItem> : null; })}</SelectContent></Select>}</fieldset>;
+    })}</div>
+    <div className="mt-3 flex flex-wrap gap-2"><Button type="button" size="sm" variant={useDefaults ? "secondary" : "outline"} disabled={submitSelection.isPending} onClick={() => setUseDefaults((value) => !value)}>{useDefaults ? "Remaining defaults will be used" : "Use remaining defaults"}</Button><Button type="button" size="sm" disabled={submitSelection.isPending || (!complete && !useDefaults)} onClick={submit}>{submitSelection.isPending ? "Continuing…" : "Continue"}</Button></div>
+    {submitSelection.isError ? <p role="status" className="mt-2 text-xs text-destructive">Unable to continue with these options. Refresh the request and try again.</p> : null}
+  </section>;
+}
+
 type AssistantSourceLink = { href: string; label: string };
 
 function sourceLink(value: unknown): AssistantSourceLink | null {
@@ -344,37 +388,83 @@ export function ResultCards({
   onCancelPlan,
   onConfirmPlan,
   onCreatePlan,
+  onCanonicalInteraction,
   executionPlans,
   cancellingPlanId,
   confirmingPlanId,
   diagnosticsEnabled = false,
-  correlationId = null,
+  correlationId: persistedCorrelationId = null,
+  diagnosticReference = null,
   presentation: serverPresentation,
   responseState,
   onRetry,
   onSubmitSuggestion,
+  conversationId,
 }: {
   cards: AssistantStructuredCard[];
   context: AssistantContextEnvelope;
   onCancelPlan: (planId: string, expectedPlanVersion: number) => Promise<unknown>;
   onConfirmPlan: (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => Promise<unknown>;
   onCreatePlan: (turnId: string) => Promise<unknown>;
+  onCanonicalInteraction?: (input: { proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }) => Promise<unknown>;
   executionPlans: Record<string, { turnId: string; plan: unknown; confirmationToken: string | null }>;
   cancellingPlanId?: string;
   confirmingPlanId?: string;
   diagnosticsEnabled?: boolean;
   correlationId?: string | null;
+  diagnosticReference?: string | null;
   presentation?: AssistantResponsePresentation;
   responseState?: AssistantResponseState;
   onRetry?: () => void;
   onSubmitSuggestion?: (prompt: string) => void;
+  conversationId?: string | null;
 }) {
   const [diagnosticsOpen, setDiagnosticsOpen] = React.useState(false);
+  const [technicalDiagnostics, setTechnicalDiagnostics] = React.useState<any[] | null>(null);
+  const [technicalDiagnosticsError, setTechnicalDiagnosticsErrorState] = React.useState<string | null>(null);
+  const [technicalDiagnosticsLoading, setTechnicalDiagnosticsLoading] = React.useState(false);
+  const [technicalDiagnosticsCopyStatus, setTechnicalDiagnosticsCopyStatus] = React.useState<"copied" | "failed" | null>(null);
+  const publicDiagnosticReference = cards.flatMap((card: any) => [card.summary, card.body, ...(Array.isArray(card.details?.errors) ? card.details.errors : [])]).find((value) => typeof value === "string" && /\b(?:aip|pic)-[0-9a-f-]{36}\b/i.test(value))?.match(/\b(?:aip|pic)-[0-9a-f-]{36}\b/i)?.[0] ?? null;
+  const correlationId = diagnosticReference ?? publicDiagnosticReference ?? persistedCorrelationId;
+  const diagnosticLookupReference = correlationId;
+  const setTechnicalDiagnosticsError = (message: string | null) => setTechnicalDiagnosticsErrorState(message ? (message.includes("Reference:") ? message : `${message} Reference: ${diagnosticLookupReference ?? "Unavailable"}`) : null);
+  const fetch = ((input: RequestInfo | URL, init?: RequestInit) => Promise.race([
+    globalThis.fetch(input, init),
+    new Promise<Response>((_, reject) => window.setTimeout(() => reject(new Error(`Diagnostic record could not be loaded. Reference: ${diagnosticLookupReference ?? "Unavailable"}`)), 10_000)),
+  ])) as typeof globalThis.fetch;
+  const [genericCreateErrors, setGenericCreateErrors] = React.useState<Record<string, string>>({});
+  const [genericConfirmErrors, setGenericConfirmErrors] = React.useState<Record<string, string>>({});
   const presentation = responsePresentationForCards(serverPresentation);
   // Defense in depth for turns persisted before the response-contract fix.
   const visibleCards = cards.filter((card) => (card as { kind: string }).kind !== "response_presentation");
+  const latestCanonicalRevision = new Map<string, { revision: number; fingerprint: string }>();
+  for (const card of visibleCards) {
+    const canonical = toCanonicalProductIntentCard(card);
+    if (!canonical?.proposalId) continue;
+    const current = latestCanonicalRevision.get(canonical.proposalId);
+    if (!current || canonical.revision > current.revision) latestCanonicalRevision.set(canonical.proposalId, { revision: canonical.revision, fingerprint: canonical.fingerprint });
+  }
   if (!visibleCards.length) return null;
-  const diagnosticCards = visibleCards.filter((card) => ["tool_warning", "provider_unavailable", "permission_denied", "not_found", "partial_result"].includes(card.kind));
+  const diagnosticCards = visibleCards.filter((card: any) => ["tool_warning", "provider_unavailable", "permission_denied", "not_found", "partial_result"].includes(card.kind)
+    || (card.kind === "product_validation_errors" && Array.isArray(card.details?.errors) && card.details.errors.some((value: unknown) => typeof value === "string" && /\bpic-[0-9a-f-]{36}\b/i.test(value))));
+  const createGenericPlan = async (turnId: string) => {
+    try {
+      await onCreatePlan(turnId);
+      setGenericCreateErrors((current) => { const { [turnId]: _removed, ...remaining } = current; return remaining; });
+    } catch (error) {
+      setGenericCreateErrors((current) => ({ ...current, [turnId]: actionErrorMessage(error, "The server could not prepare this plan.") }));
+    }
+  };
+  const confirmGenericPlan = async (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => {
+    try {
+      const result = await onConfirmPlan(input);
+      setGenericConfirmErrors((current) => { const { [input.planId]: _removed, ...remaining } = current; return remaining; });
+      return result;
+    } catch (error) {
+      setGenericConfirmErrors((current) => ({ ...current, [input.planId]: actionErrorMessage(error, "The server did not confirm this plan.") }));
+      return undefined;
+    }
+  };
   return <div className="mt-3 space-y-3">{visibleCards.map((card, index) => {
     const configurableProposal = toConfigurableProductProposal(card);
     if (configurableProposal) {
@@ -388,6 +478,20 @@ export function ResultCards({
     }
     const configurableBlocked = toConfigurableProductConfirmation((card as any)?.details?.configurableProduct);
     if (configurableBlocked && !configurableBlocked.ready) return <ConfigurableProductConfirmationCardView key={`configurable-blocked-${index}`} confirmation={configurableBlocked} />;
+    const canonicalProductIntent = toCanonicalProductIntentCard(card);
+    if (canonicalProductIntent) return <CanonicalProductIntentCardView key={`canonical-product-intent-${canonicalProductIntent.revision}-${index}`} card={canonicalProductIntent} onInteraction={onCanonicalInteraction} />;
+    const canonicalProductIntentProposal = toCanonicalProductIntentProposal(card);
+    if (canonicalProductIntentProposal) {
+      const created = executionPlans[canonicalProductIntentProposal.turnId];
+      if (created) {
+        const planCard = { kind: "action_plan", title: canonicalProductIntentProposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
+        const plan = toAssistantPlanCardModel(planCard);
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} /> : null;
+      }
+      const current = latestCanonicalRevision.get(canonicalProductIntentProposal.proposalId);
+      const stale = Boolean(current && (current.revision !== canonicalProductIntentProposal.revision || current.fingerprint !== canonicalProductIntentProposal.fingerprint));
+      return <CanonicalProductIntentReviewProposalCard key={`canonical-product-intent-proposal-${canonicalProductIntentProposal.turnId}-${index}`} proposal={canonicalProductIntentProposal} onCreatePlan={onCreatePlan} stale={stale} />;
+    }
     const productCard = toAssistantProductManagementCard(card);
     if (productCard) return <AssistantProductManagementCardView key={`product-${productCard.kind}-${index}`} card={productCard} />;
     const pricingProposal = toAssistantProductPricingProposal(card);
@@ -430,10 +534,21 @@ export function ResultCards({
       }
       return <AssistantQuoteNoteProposalCard key={`proposal-${proposal.turnId}-${index}`} proposal={proposal} onCreatePlan={onCreatePlan} />;
     }
+    const genericProposal = toGenericActionProposal(card, visibleCards);
+    if (genericProposal) {
+      const created = executionPlans[genericProposal.turnId];
+      if (created) {
+        const planCard = { kind: "action_plan", title: genericProposal.title, plan: { ...(created.plan as object), confirmationToken: created.confirmationToken } };
+        const plan = toAssistantPlanCardModel(planCard);
+        return plan ? <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={planCard} context={context} onCancel={onCancelPlan} onConfirm={confirmGenericPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} allowGenericConfirmation genericActionLabel={genericProposal.humanAction} confirmationError={genericConfirmErrors[plan.id]} /> : null;
+      }
+      return <AssistantGenericActionProposalCard key={`proposal-${genericProposal.turnId}-${index}`} proposal={genericProposal} onCreatePlan={createGenericPlan} error={genericCreateErrors[genericProposal.turnId]} />;
+    }
     const plan = toAssistantPlanCardModel(card);
     if (plan) return <AssistantPlanCard key={`plan-${plan.id}-${index}`} card={card} context={context} onCancel={onCancelPlan} onConfirm={onConfirmPlan} cancelling={cancellingPlanId === plan.id} confirming={confirmingPlanId === plan.id} />;
     if (card.kind === "notice" || card.kind === "tool_status" || card.kind === "source" || diagnosticCards.includes(card)) return null;
     if (card.kind === "customer_resolution") return <CustomerResolutionSelectionCard key={`${card.kind}-${index}`} card={card} />;
+    if (card.kind === "order_option_selection") return <OrderOptionSelectionCard key={`${card.kind}-${index}`} card={card} conversationId={conversationId ?? null} context={context} />;
     if (["production_queue_summary", "station_comparison", "attention_summary", "urgent_job_list"].includes(card.kind)) return <ProductionReportingDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (card.kind === "customer_product_sales") return <CustomerProductSalesDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} />;
     if (card.kind === "order_summary") return <OperationalOrderSummaryDetails key={`${card.kind}-${index}`} details={card.details} sources={card.sourceLinks} onSubmitSuggestion={onSubmitSuggestion} />;
@@ -448,7 +563,7 @@ export function ResultCards({
     </section>;
   })}
   {responseState?.retryable && onRetry ? <Button type="button" variant="outline" size="sm" onClick={onRetry}>Try again</Button> : null}
-  {diagnosticsEnabled && responseState?.diagnosticsAvailable && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => setDiagnosticsOpen((open) => !open)} aria-expanded={diagnosticsOpen}>{diagnosticsOpen ? "Hide diagnostics" : "Show diagnostics"}</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground"><p>Correlation ID: {correlationId ?? "Unavailable"}</p>{diagnosticCards.map((card, index) => { const details = diagnosticDetails(card); return <div key={`${diagnosticLabel(card)}-${index}`} className="mt-1"><p>Tool: {diagnosticLabel(card)}{diagnosticStatus(card) ? ` (${formatAssistantDisplayValue(diagnosticStatus(card))})` : ""}</p>{details.category ? <p>Category: {formatAssistantDisplayValue(details.category)}</p> : null}{details.code ? <p>Code: {formatAssistantDisplayValue(details.code)}</p> : null}{details.step ? <p>Step: {formatAssistantDisplayValue(details.step)}</p> : null}</div>; })}</div> : null}</div> : null}
+  {diagnosticsEnabled && responseState?.diagnosticsAvailable && diagnosticCards.length ? <div className="pt-1"><Button type="button" variant="ghost" size="sm" className="h-7 px-1 text-xs text-muted-foreground" onClick={() => { const open = !diagnosticsOpen; setDiagnosticsOpen(open); if (open && correlationId && !technicalDiagnostics && !technicalDiagnosticsLoading) { setTechnicalDiagnosticsLoading(true); setTechnicalDiagnosticsError(null); fetch(`/api/assistant/diagnostics/${encodeURIComponent(correlationId)}`, { credentials: "include" }).then(async (response) => { const body = await response.json(); if (!response.ok || !body.success) { const code = body?.error?.code; throw new Error(response.status === 403 ? "You do not have permission to view technical diagnostics." : code === "DIAGNOSTIC_NOT_FOUND" ? "No diagnostic record was persisted for this reference." : "Technical diagnostics could not be loaded."); } setTechnicalDiagnostics(Array.isArray(body.data) ? body.data : [body.data]); }).catch((error) => setTechnicalDiagnosticsError(error instanceof Error ? error.message : "Technical diagnostics could not be loaded.")).finally(() => setTechnicalDiagnosticsLoading(false)); } }} aria-expanded={diagnosticsOpen}>{diagnosticsOpen ? "Hide diagnostics" : "Technical diagnostics"}</Button>{diagnosticsOpen ? <div className="mt-1 rounded-md border border-border/60 bg-muted/20 p-2 text-xs text-muted-foreground"><p>Reference: {correlationId ?? "Unavailable"}</p>{technicalDiagnosticsLoading ? <p>Loading technical diagnostics…</p> : null}{technicalDiagnosticsError ? <p>{technicalDiagnosticsError}</p> : null}{technicalDiagnostics?.map((item, index) => <div key={`${item.referenceId}-${index}`} className="mt-2 border-t border-border/40 pt-2"><p className="font-medium text-foreground">{item.diagnosticType}: {item.stage}</p><p>Provider/model: {item.provider ?? "Unavailable"} / {item.model ?? "Unavailable"}</p><p>Parse / repair: {item.parseMethod} / {item.repairResult}</p><p>Validation schema: {item.validationSchema ?? "None"}</p><p>Validation paths: {(item.validationIssuePaths ?? []).join(", ") || "None"}</p><p>Validation codes: {(item.validationIssueCodes ?? []).join(", ") || "None"}</p><p>Capability: {item.selectedCapability ?? "None"}</p><p>Persistence: {item.persistenceResult}</p></div>)}{technicalDiagnostics?.length ? <Button type="button" variant="outline" size="sm" className="mt-2" onClick={() => void navigator.clipboard?.writeText(technicalDiagnostics.map((item) => `Reference: ${item.referenceId}\nCorrelation: ${item.correlationId}\nType: ${item.diagnosticType}\nStage: ${item.stage}\nError: ${item.errorCode ?? "None"}\nProvider/model: ${item.provider ?? "Unavailable"} / ${item.model ?? "Unavailable"}\nParse/repair: ${item.parseMethod} / ${item.repairResult}\nValidation schema: ${item.validationSchema ?? "None"}\nValidation paths: ${(item.validationIssuePaths ?? []).join(", ") || "None"}\nValidation codes: ${(item.validationIssueCodes ?? []).join(", ") || "None"}\nCapability: ${item.selectedCapability ?? "None"}\nSpecialist: ${item.specialistName ?? "None"}\nPersistence: ${item.persistenceResult}\nCreated: ${item.createdAt}`).join("\n\n") )}>Copy diagnostics</Button> : null}</div> : null}</div> : null}
   </div>;
 }
 
@@ -543,6 +658,13 @@ export function AssistantComposer({
   </div>;
 }
 
+/** Assistant content is trusted text from the server, not raw HTML. Preserve
+ * intentional provider line breaks while leaving the existing text-only
+ * rendering boundary intact. */
+export function AssistantMessageContent({ content }: { content: string }) {
+  return <div data-testid="assistant-message-content" className="whitespace-pre-wrap break-words text-[15px] leading-7 text-foreground sm:text-base">{content}</div>;
+}
+
 function ConversationContent() {
   const { capabilities, presentation, context, refreshContext, activeConversationId, setActiveConversationId, draft, setDraft, executionPlans, saveExecutionPlan, updateExecutionPlan } = useAssistantWorkspace();
   const enabled = Boolean(capabilities?.enabled && capabilities.conversationsEnabled);
@@ -556,6 +678,7 @@ function ConversationContent() {
   const cancelPlan = useCancelAssistantPlan();
   const confirmPlan = useConfirmAssistantQuoteInternalNote();
   const createExecutionPlan = useCreateAssistantExecutionPlan();
+  const canonicalInteraction = useCanonicalProductIntentInteraction();
   const [optimisticUserMessage, setOptimisticUserMessage] = React.useState<AssistantMessage | null>(null);
   React.useEffect(() => {
     if (!activeConversationId && conversations.data?.[0]) setActiveConversationId(conversations.data[0].id);
@@ -616,6 +739,12 @@ function ConversationContent() {
     const result = await createExecutionPlan.mutateAsync({ conversationId: activeConversationId, turnId, context });
     saveExecutionPlan({ turnId, plan: result.plan, confirmationToken: result.confirmationToken });
   };
+  const applyCanonicalInteraction = async (input: { proposalId: string; action: "accept_recommendation" | "dismiss_recommendation" | "apply_candidate"; actionId: string; newProductName?: string }) => {
+    if (!activeConversationId) return;
+    const result = await canonicalInteraction.mutateAsync({ conversationId: activeConversationId, ...input });
+    if (result.navigation?.href) window.location.assign(result.navigation.href);
+    return result;
+  };
 
   const confirmQuoteNotePlan = async (input: { planId: string; expectedPlanVersion: number; confirmationToken: string; context: AssistantContextEnvelope }) => {
     const result = await confirmPlan.mutateAsync(input);
@@ -644,6 +773,10 @@ function ConversationContent() {
     completionKey: sendTurn.isError ? "send-error" : sendTurn.isPending ? "sending" : latestMessage?.id ?? "",
   });
   const conversationItems = visibleAssistantConversations(conversations.data, activeConversationId);
+  // These are real client request lifecycles. The server does not publish
+  // safe per-tool progress, so ordinary Operator turns remain truthfully
+  // generic rather than inventing stages or exposing reasoning.
+  const assistantWorking = resolveAssistantWorkingState({ turnPending: sendTurn.isPending, planPreparationPending: createExecutionPlan.isPending, planExecutionPending: confirmPlan.isPending });
   const fullComposerHelper = capabilities?.composerHelperText || capabilities?.unavailableReason || "Business questions are unavailable until AI configuration is complete.";
   const composerHelper = assistantComposerHelper(fullComposerHelper, presentation);
 
@@ -652,7 +785,7 @@ function ConversationContent() {
   }
 
   return (
-    <div className="flex min-h-0 flex-1">
+    <div className="flex min-h-0 min-w-0 flex-1 overflow-hidden">
       <AssistantConversationSidebar
         conversations={conversationItems}
         archivedConversations={archivedConversations.data ?? []}
@@ -680,15 +813,15 @@ function ConversationContent() {
           ))}
         </div>
       */}
-      <section className="flex min-w-0 flex-1 flex-col">
-        <div className="flex items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground">
+      <section className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
+        <div className="flex shrink-0 items-center justify-between border-b px-3 py-2 text-xs text-muted-foreground">
           <span className="truncate">Context: {context.pageTitle}{context.entityType ? ` · ${context.entityType}${context.entityId ? ` ${context.entityId}` : ""}` : ""}</span>
           <Button type="button" variant="ghost" size="sm" className="h-7 gap-1 px-2" onClick={refreshContext} title="Refresh page context">
             <RefreshCw className="h-3.5 w-3.5" /> Refresh
           </Button>
         </div>
-        <div className="relative min-h-0 flex-1">
-        <div ref={conversationScroll.containerRef} onScroll={conversationScroll.onScroll} className="h-full space-y-5 overflow-y-auto px-4 py-5 sm:px-6" aria-live="polite">
+        <div className="relative flex min-h-0 flex-1 flex-col overflow-hidden">
+          <div ref={conversationScroll.containerRef} onScroll={conversationScroll.onScroll} className="min-h-0 flex-1 space-y-5 overflow-y-auto px-4 py-5 sm:px-6" aria-live="polite" data-testid="assistant-message-history">
           {detail.isLoading ? <p className="text-sm text-muted-foreground">Loading conversation…</p> : null}
           {!messages.length && !detail.isLoading ? (
             <div className="mx-auto mt-8 max-w-sm text-center">
@@ -699,13 +832,14 @@ function ConversationContent() {
           ) : messages.map((message, index) => {
             const previousUserMessage = [...messages.slice(0, index)].reverse().find((candidate) => candidate.role === "user")?.content;
             if (message.role === "user") return <article key={message.id} ref={message.id === latestMessage?.id ? conversationScroll.latestUserRef : undefined} className="ml-auto max-w-[85%]"><div className="rounded-2xl rounded-br-md bg-primary px-4 py-2.5 text-[15px] leading-6 text-primary-foreground shadow-sm">{message.content}</div><time className="mt-1 block text-right text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
-            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><div className="text-[15px] leading-7 text-foreground sm:text-base">{message.content}</div><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
+            return <article key={message.id} ref={message.id === latestAssistantMessage?.id ? conversationScroll.latestAssistantRef : undefined} className="max-w-3xl"><AssistantMessageContent content={message.content} /><ResultCards cards={message.structuredCards ?? []} presentation={message.presentation} responseState={message.responseState} context={context} conversationId={activeConversationId} onCancelPlan={(planId, expectedPlanVersion) => cancelPlan.mutateAsync({ planId, expectedPlanVersion })} onConfirmPlan={confirmQuoteNotePlan} onCreatePlan={createPlanFromProposal} onCanonicalInteraction={applyCanonicalInteraction} executionPlans={executionPlans} cancellingPlanId={cancelPlan.isPending ? cancelPlan.variables.planId : undefined} confirmingPlanId={confirmPlan.isPending ? confirmPlan.variables.planId : undefined} diagnosticsEnabled={Boolean(capabilities?.diagnosticsEnabled)} correlationId={message.correlationId} onRetry={previousUserMessage ? () => void retry(previousUserMessage) : undefined} onSubmitSuggestion={(prompt) => void submitSuggestedPrompt(prompt)} /><time className="mt-2 block text-[11px] text-muted-foreground">{new Date(message.createdAt).toLocaleTimeString([], { hour: "numeric", minute: "2-digit" })}</time></article>;
           })}
+          <AssistantWorkingIndicator active={assistantWorking.active} label={assistantWorking.label} />
           {sendTurn.isError ? <p role="status" className="rounded-md border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive">Your message wasn’t sent. Try again.</p> : null}
+          </div>
+          {conversationScroll.showJumpToLatest ? <Button type="button" variant="secondary" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-md" onClick={() => conversationScroll.scrollToLatest("assistant", true)}>Jump to latest</Button> : null}
         </div>
-        {conversationScroll.showJumpToLatest ? <Button type="button" variant="secondary" size="sm" className="absolute bottom-3 left-1/2 -translate-x-1/2 shadow-md" onClick={() => conversationScroll.scrollToLatest("assistant", true)}>Jump to latest</Button> : null}
-        </div>
-        <form className="border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)}>
+        <form className="shrink-0 border-t bg-background/95 p-3 sm:px-4" onSubmit={(event) => void submit(event)} data-testid="assistant-composer">
           <label className="sr-only" htmlFor="assistant-message">Message the assistant</label>
           <AssistantComposer value={draft} onChange={setDraft} onRequestSend={() => void submitCurrentDraft()} disabled={sendTurn.isPending || !toolsEnabled} placeholder={toolsEnabled ? "Ask about this workspace" : "Business questions unavailable"} />
           <p className={cn("mt-2 text-xs leading-5 text-muted-foreground", composerHelper.compact && "truncate")} title={composerHelper.compact ? composerHelper.fullText : undefined} aria-label={composerHelper.compact ? composerHelper.fullText : undefined}>{composerHelper.text}</p>
@@ -740,7 +874,7 @@ export function AssistantDock({ side }: { side: "left" | "right" | "bottom" }) {
     const finish = () => { persistLayout(); window.removeEventListener("pointermove", move); window.removeEventListener("pointerup", finish); };
     window.addEventListener("pointermove", move); window.addEventListener("pointerup", finish, { once: true });
   };
-  return <div className={cn("relative flex shrink-0", horizontal ? "h-[var(--assistant-dock-size)] w-full flex-col" : "h-full w-[var(--assistant-dock-size)]")} style={{ ["--assistant-dock-size" as string]: `${layout.dockSize}px` }}>
+  return <div className={cn("relative flex min-h-0 min-w-0 shrink-0 overflow-hidden", horizontal ? "h-[var(--assistant-dock-size)] w-full flex-col" : "h-full w-[var(--assistant-dock-size)]")} style={{ ["--assistant-dock-size" as string]: `${layout.dockSize}px` }}>
     <div onPointerDown={resizeStart} className={cn("z-10 shrink-0 touch-none bg-border hover:bg-primary/50", horizontal ? "h-1 cursor-row-resize" : "w-1 cursor-col-resize", side === "left" && "order-last", side === "bottom" && "order-first")} aria-label="Resize assistant workspace" role="separator" />
     <WorkspacePanel className="min-h-0 flex-1 border-0 shadow-none" />
   </div>;

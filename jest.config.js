@@ -8,7 +8,7 @@ export default {
     '^(\\.{1,2}/.*)\\.js$': '$1',
   },
   transform: {
-    '^.+\\.tsx?$': [
+    '^.+\\.[tj]sx?$': [
       'ts-jest',
       {
         useESM: true,
@@ -18,6 +18,7 @@ export default {
           moduleResolution: 'bundler',
           esModuleInterop: true,
           allowSyntheticDefaultImports: true,
+          allowJs: true,
           types: ['jest', 'node'],
         },
       },

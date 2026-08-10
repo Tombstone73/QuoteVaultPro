@@ -2,6 +2,7 @@ import type { Express, Request, RequestHandler, Response } from "express";
 import { z } from "zod";
 import {
   assistantCreateConversationRequestSchema,
+  assistantContextEnvelopeSchema,
   assistantReportResolutionCancelRequestSchema,
   assistantReportResolutionSelectionRequestSchema,
   assistantUpdateConversationRequestSchema,
@@ -24,6 +25,15 @@ import { DrizzleAssistantRepository } from "../storage/assistant.repo";
 import { AnalyticalCustomerResolutionService } from "../services/assistant/analyticalCustomerResolution";
 import { AssistantAnalyticsReportingRepository } from "../storage/assistantAnalyticsReporting.repo";
 import { assistantReportEntityResolutionsRepository } from "../storage/assistantReportEntityResolutions.repo";
+import { ConfiguredCanonicalProductIntentRouter } from "../services/assistant/productManagementSkill";
+import { and, asc, desc, eq, or, sql } from "drizzle-orm";
+import { db } from "../db";
+import { aiAuditEvents } from "@shared/schema";
+import { aiDiagnosticEnvelopeSchema } from "@shared/aiDiagnostics";
+
+const canonicalInteractionRequestSchema = z.object({
+  proposalId: z.string().uuid(), action: z.enum(["accept_recommendation", "dismiss_recommendation", "apply_candidate"]), actionId: z.string().min(3).max(128), newProductName: z.string().trim().min(1).max(160).optional(),
+}).strict();
 
 function getUserId(user: unknown): string | null {
   const candidate = user as { id?: unknown; claims?: { sub?: unknown } } | null;
@@ -155,6 +165,7 @@ function withoutUntrustedIdentity(raw: unknown): unknown {
 
 export interface AssistantRouteDependencies {
   service?: AssistantService;
+  orderOptionSelectionService?: AssistantOrderOptionSelectionService;
   /**
    * Reporting entity selection is intentionally a separate server-owned
    * continuation boundary.  The route only supplies authenticated scope,
@@ -177,6 +188,25 @@ export interface AssistantReportResolutionSelectionService {
     actor: AssistantActor,
     input: AssistantReportResolutionCancelRequest,
   ): Promise<unknown>;
+}
+
+export interface AssistantOrderOptionSelectionService {
+  submitOrderOptionSelections(scope: AssistantScope, conversationId: string, actor: AssistantActor, input: { orderIntakeSessionId: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: unknown }): Promise<any>;
+}
+
+const assistantOrderOptionSelectionRequestSchema = z.object({
+  productId: z.string().trim().min(1).max(128),
+  pbv2TreeVersionId: z.string().trim().min(1).max(128),
+  selections: z.array(z.object({ nodeId: z.string().trim().min(1).max(128), valueId: z.string().trim().min(1).max(256) }).strict()).max(30),
+  useRemainingDefaults: z.boolean(),
+  context: assistantContextEnvelopeSchema,
+}).strict();
+
+function sendOrderOptionSelectionError(res: Response, error: unknown) {
+  const code = typeof error === "object" && error && "code" in error ? String((error as { code?: unknown }).code ?? "") : "";
+  if (code === "ORDER_OPTION_SELECTION_STALE") return res.status(409).json({ error: { code: "order_option_selection_stale", message: "This option selection is no longer available. Refresh the order request.", retryable: false } });
+  if (code === "ORDER_OPTION_SELECTION_INVALID") return res.status(400).json({ error: { code: "order_option_selection_invalid", message: "One or more selected options are not available for this order.", retryable: false } });
+  return sendError(res, error);
 }
 
 type ReportResolutionFailureCode =
@@ -221,7 +251,7 @@ function sendReportResolutionError(res: Response, error: unknown) {
 
 export function registerAssistantRoutes(
   app: Express,
-  middleware: { isAuthenticated: RequestHandler; tenantContext: RequestHandler },
+  middleware: { isAuthenticated: RequestHandler; tenantContext: RequestHandler; isAdmin?: RequestHandler },
   dependencies: AssistantRouteDependencies = {},
 ): void {
   const service = dependencies.service ?? new AssistantService(
@@ -240,8 +270,21 @@ export function registerAssistantRoutes(
   // into the browser.
   const reportResolutionService = dependencies.reportResolutionService
     ?? (service as unknown as Partial<AssistantReportResolutionSelectionService>);
+  const orderOptionSelectionService = dependencies.orderOptionSelectionService
+    ?? (service as unknown as Partial<AssistantOrderOptionSelectionService>);
   const { isAuthenticated, tenantContext } = middleware;
   const guarded: RequestHandler[] = [isAuthenticated, tenantContext];
+
+  if (middleware.isAdmin) app.get("/api/assistant/diagnostics/:reference", isAuthenticated, tenantContext, middleware.isAdmin, async (req, res) => {
+    const scope = resolveScope(req);
+    const reference = String(req.params.reference ?? "");
+    if (!/^[A-Za-z0-9][A-Za-z0-9._:-]{7,159}$/.test(reference)) return res.status(404).json({ success: false, error: { code: "DIAGNOSTIC_NOT_FOUND", message: "Diagnostic not found." } });
+    const rows = await db.select().from(aiAuditEvents).where(and(eq(aiAuditEvents.orgId, scope.organizationId), or(eq(aiAuditEvents.correlationId, reference), eq(sql<string>`${aiAuditEvents.metadata}->>'referenceId'`, reference)))).orderBy(asc(aiAuditEvents.createdAt)).limit(20);
+    const diagnostics = rows.flatMap((row) => { const parsed = aiDiagnosticEnvelopeSchema.safeParse(row.metadata); return parsed.success ? [parsed.data] : []; });
+    await db.insert(aiAuditEvents).values({ orgId: scope.organizationId, actorUserId: scope.userId, eventType: "ai_diagnostic_lookup", status: diagnostics.length ? "found" : "not_found", correlationId: reference, metadata: { identifierType: reference.startsWith("aip-") || reference.startsWith("pic-") ? "reference" : "correlation", reference, matchingEvents: diagnostics.length } }).catch(() => undefined);
+    if (!diagnostics.length) return res.status(404).json({ success: false, error: { code: "DIAGNOSTIC_NOT_FOUND", message: "Diagnostic not found." } });
+    return res.json({ success: true, data: diagnostics });
+  });
 
   const resolveScope = (req: Request) => {
     const userId = getUserId(req.user);
@@ -328,6 +371,30 @@ export function registerAssistantRoutes(
     } catch (error) {
       return sendError(res, error);
     }
+  });
+
+  app.post("/api/assistant/conversations/:conversationId/order-option-selections/:orderIntakeSessionId", ...guarded, async (req, res) => {
+    try {
+      const input = assistantOrderOptionSelectionRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
+      const scope = resolveScope(req);
+      if (typeof orderOptionSelectionService.submitOrderOptionSelections !== "function") throw new AssistantServiceError("ASSISTANT_DISABLED", "Order option selection is not available.", 503);
+      const result = await orderOptionSelectionService.submitOrderOptionSelections(scope, req.params.conversationId, buildActor(req, scope.userId), { ...input, orderIntakeSessionId: req.params.orderIntakeSessionId });
+      return res.json({ success: true, data: { turnId: result.turnId, correlationId: result.correlationId, message: messageDto(result.assistantMessage, result.turnId), status: result.status } });
+    } catch (error) {
+      return sendOrderOptionSelectionError(res, error);
+    }
+  });
+
+  /** Opaque canonical interaction IDs are resolved only against the latest
+   * tenant/actor-bound session. No browser-supplied patch is accepted. */
+  app.post("/api/assistant/conversations/:conversationId/product-intent-interactions", ...guarded, async (req, res) => {
+    try {
+      const scope = resolveScope(req); const input = canonicalInteractionRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
+      const router = new ConfiguredCanonicalProductIntentRouter(); const result = await router.interact!({ organizationId: scope.organizationId, actorUserId: scope.userId, ...input });
+      if ("navigation" in result) return res.json({ success: true, data: result });
+      if (!result.ok) return res.status(409).json({ error: { code: result.code, message: result.message, retryable: false } });
+      return res.json({ success: true, data: { proposalId: result.session.proposalId, card: result.card } });
+    } catch (error) { return sendError(res, error); }
   });
 
   app.post("/api/assistant/report-resolutions/:resolutionId/select", ...guarded, async (req, res) => {

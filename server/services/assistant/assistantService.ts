@@ -1,22 +1,32 @@
-import type {
-  AssistantContextEnvelope,
-  AssistantCreateConversationRequest,
-  AssistantResponsePresentation,
-  AssistantResponseState,
-  AssistantStructuredCard,
-  AssistantUpdateConversationRequest,
-  AssistantTurnRequest,
-  AssistantReportResolutionSelectionRequest,
-  AssistantReportResolutionCancelRequest,
+import {
+  assistantToolNameValues,
+  type AssistantContextEnvelope,
+  type AssistantCreateConversationRequest,
+  type AssistantResponsePresentation,
+  type AssistantResponseState,
+  type AssistantStructuredCard,
+  type AssistantUpdateConversationRequest,
+  type AssistantTurnRequest,
+  type AssistantReportResolutionSelectionRequest,
+  type AssistantReportResolutionCancelRequest,
 } from "@shared/assistantContracts";
 import { formatAssistantDisplayValue } from "@shared/assistantDisplay";
 import { assistantReportResolutionCancelRequestSchema, assistantReportResolutionSelectionRequestSchema, assistantTurnRequestSchema } from "@shared/assistantContracts";
 import { AssistantOrchestrationService, type AssistantToolExecutionAudit } from "./orchestration";
-import { AssistantPlanningError, ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
+import { ConfiguredAssistantPlanner, type AssistantPlanner } from "./providerPlanning";
 import { createStage2AssistantToolAdapters } from "./assistantToolAdapters";
+import { AssistantOperatorRuntime, parseAssistantOperatorDecisionText, type AssistantOperatorBusinessContext, type AssistantOperatorDecisionProvider, type AssistantOperatorObservation, type AssistantOperatorTrustedObservation } from "./operatorRuntime";
+import { ConfiguredAssistantOperatorDecisionProvider } from "./operatorDecisionProvider";
+import { runOperatorAnalysis } from "./operatorAnalysisWorkspace";
+import { createAssistantOperatorToolExecutor, type AssistantOperatorSemanticTool } from "./operatorToolExecutor";
+import type { AssistantOperatorToolExecutor } from "./operatorRuntime";
+import { DrizzleAssistantOperatorTaskStore, type AssistantOperatorTaskStore } from "./operatorTaskContext";
+import { createQuoteInternalNoteCompositeSemanticTool } from "./execution/quoteInternalNoteCompositeTool";
+import { createPublicWebResearchTools, isPublicWebResearchConfigured } from "./publicWebResearch";
 import { OpenAiCompatibleBugReviewProvider } from "../ai/providers/configuredProvider";
-import { resolveQuoteInternalNoteIntent } from "./execution/quoteInternalNoteIntent";
-import { productManagementSkillService } from "./productManagementSkill";
+import { aiProviderResolver } from "../ai/aiProviderResolver";
+import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
+import { productManagementSkillService, type ActiveSemanticProductDraftContext } from "./productManagementSkill";
 import { quoteDraftIntakeService } from "./quoteDraftIntakeService";
 import { orderIntakeService } from "./orderIntakeService";
 import { crmManagementService } from "./crmManagementService";
@@ -24,6 +34,7 @@ import { productionOperationsService } from "./productionOperationsService";
 import { fulfillmentOperationsService } from "./fulfillmentOperationsService";
 import { billingInvoiceOperationsService } from "./billingInvoiceOperationsService";
 import { paymentOperationsService } from "./paymentOperationsService";
+import { persistAiDiagnostic } from "../aiDiagnosticsService";
 import {
   assistantCapabilityCommandDescriptions,
   assistantCapabilityCommandPermissions,
@@ -31,15 +42,20 @@ import {
   assistantCapabilityReadTools,
   isAssistantCapabilityProductionCommand,
 } from "./assistantCapabilities";
-import { deterministicOrderLookupTarget, deterministicSearchTarget, resolveDeterministicReadPlan } from "./deterministicReadRouting";
 import { AnalyticalCustomerResolutionService, type PersistedAnalyticalResolution } from "./analyticalCustomerResolution";
 import { resolveSystemGuideAnswer } from "./systemGuide";
-import { resolveConfigurableProductContinuation } from "./complexProductDraftPersistence";
+import {
+  getAssistantCapability,
+  type AssistantIntentPlan,
+} from "./assistantIntentPlanner";
+import {
+  ConfiguredAssistantIntentPlannerProvider,
+  type AssistantIntentPlannerProvider,
+} from "./intentPlannerProvider";
 
 type AssistantResultCard = Extract<AssistantStructuredCard, { summary: string }>;
 
 export const ASSISTANT_UNAVAILABLE_REPLY = "I can't answer that until a compatible AI provider is configured.";
-export const ASSISTANT_WRITE_REFUSAL_REPLY = "I can't make that change here. I can still help you look up the record or explain what needs attention.";
 
 export class AssistantServiceError extends Error {
   constructor(
@@ -156,59 +172,13 @@ export interface AssistantRepository {
 }
 
 export interface AssistantCapabilityResolver {
-  getCapabilities(organizationId: string): Promise<{ enabled: boolean; toolsEnabled?: boolean; providerConfigured?: boolean; unavailableReason?: string | null }>;
+  getCapabilities(organizationId: string): Promise<{ enabled: boolean; toolsEnabled?: boolean; providerConfigured?: boolean; externalResearchEnabled?: boolean; unavailableReason?: string | null }>;
 }
 
 type AssistantCapabilitySummary = Awaited<ReturnType<AssistantService["getCapabilities"]>>;
 
 function hasPermission(actor: AssistantActor | undefined, permission: string): boolean {
   return Boolean(actor?.permissions?.includes(permission));
-}
-
-/** Returns a local-only reply for the two capability questions that must never
- * depend on provider planning. The response derives entirely from the same
- * server summary used by the capability endpoint and composer. */
-export function resolveAssistantCapabilityQuestion(
-  message: string,
-  capability: AssistantCapabilitySummary,
-): { response: string; title: string } | null {
-  const normalized = message.trim().toLowerCase().replace(/[’']/g, "'").replace(/\s+/g, " ");
-  const asksAvailable = /^(?:what|which) (?:can|do) (?:you|the assistant) (?:currently )?do\??$/.test(normalized)
-    || /^(?:what are )?(?:your|the assistant's) capabilities\??$/.test(normalized);
-  const asksUnavailable = /^(?:what|which) (?:can't|cannot) (?:you|the assistant) (?:currently )?do(?: yet)?\??$/.test(normalized)
-    || /^(?:what|which) (?:can|do) (?:you|the assistant) (?:not|not yet) (?:currently )?do\??$/.test(normalized)
-    || /^(?:what are )?(?:your|the assistant's) limitations\??$/.test(normalized);
-  if (!asksAvailable && !asksUnavailable) return null;
-
-  if (asksAvailable) {
-    if (!capability.readToolsEnabled) {
-      return { title: "Assistant capabilities", response: capability.unavailableReason ?? "Business lookups are currently unavailable." };
-    }
-    const confirmedActions: string[] = [];
-    for (const command of capability.productionCommandsPermittedForUser) {
-      if (isAssistantCapabilityProductionCommand(command)) confirmedActions.push(assistantCapabilityCommandDescriptions[command]);
-    }
-    const actionSentence = confirmedActions.length
-      ? ` I can also ${confirmedActions.join(" and ")}.`
-      : capability.productionCommandsEnabled.length
-        ? " Confirmed changes are available to some roles, but not to your current role."
-        : "";
-    return { title: "Assistant capabilities", response: `I can search your records, summarize orders and products, show production queues, identify overdue or urgent jobs, compare station workloads, and show what needs attention today.${actionSentence} I can't activate products, edit active products, perform external research, or make unconfirmed changes yet.` };
-  }
-
-  const limits = [
-    "product activation remains disabled",
-    "active-product editing remains disabled",
-    "external research remains disabled",
-    "MCP integrations remain disabled",
-  ];
-  if (!capability.readToolsEnabled) limits.unshift(capability.unavailableReason ?? "business lookups are currently unavailable");
-  if (capability.productionCommandsEnabled.length && !capability.productionCommandsPermittedForUser.length) {
-    limits.unshift("confirmed actions are enabled for this organization, but your current role is not permitted to use them");
-  } else if (!capability.productionCommandsEnabled.length) {
-    limits.unshift("confirmed actions are unavailable because the assistant provider or organization setting is disabled");
-  }
-  return { title: "Assistant limitations", response: `I can't ${limits.join("; ")}.` };
 }
 
 export function toIso(value: Date | string): string {
@@ -243,7 +213,8 @@ function activeProductIntakeSession(messages: AssistantMessageRecord[]): string 
   for (const message of [...messages].reverse()) {
     if (message.role !== "assistant") continue;
     for (const card of [...(message.structuredCards ?? [])].reverse()) {
-      const candidate = card as { kind?: unknown; details?: { sessionId?: unknown }; plan?: { action?: unknown; intakeSessionId?: unknown } };
+      const candidate = card as { kind?: unknown; details?: { sessionId?: unknown; proposalId?: unknown }; plan?: { action?: unknown; intakeSessionId?: unknown } };
+      if (candidate.kind === "canonical_product_intent_proposal" && typeof candidate.details?.proposalId === "string") return candidate.details.proposalId;
       if (candidate.kind === "action_proposal" && candidate.plan?.action === "products.create_inactive_draft" && typeof candidate.plan.intakeSessionId === "string") return candidate.plan.intakeSessionId;
       if (candidate.kind === "action_proposal" && candidate.plan?.action === "products.update_inactive_draft" && typeof candidate.plan.intakeSessionId === "string") return candidate.plan.intakeSessionId;
       if (candidate.kind === "product_intake_summary" && typeof candidate.details?.sessionId === "string") return candidate.details.sessionId;
@@ -252,16 +223,222 @@ function activeProductIntakeSession(messages: AssistantMessageRecord[]): string 
   return null;
 }
 
-function activeConfigurableProductProposalId(messages: AssistantMessageRecord[]): string | null {
-  for (const message of [...messages].reverse()) {
-    if (message.role !== "assistant") continue;
-    for (const card of [...(message.structuredCards ?? [])].reverse()) {
-      const candidate = card as { details?: { configurableProduct?: { proposalId?: unknown } }; plan?: { action?: unknown; proposalId?: unknown } };
-      if (candidate.plan?.action === "products.create_configurable_draft" && typeof candidate.plan.proposalId === "string") return candidate.plan.proposalId;
-      if (typeof candidate.details?.configurableProduct?.proposalId === "string") return candidate.details.configurableProduct.proposalId;
+/** Persist only reduced, server-validated entity references. These are a
+ * continuity aid for a later conversational turn, never a source of tenant
+ * scope or authorization. */
+function mergeOperatorEntityReferences(
+  existing: Array<{ type: string; id: string; label?: string }>,
+  observations: readonly AssistantOperatorObservation[],
+): Array<{ type: string; id: string; label?: string }> {
+  const references = new Map<string, { type: string; id: string; label?: string }>();
+  const add = (type: unknown, id: unknown, label?: unknown) => {
+    if (typeof type !== "string" || !/^(?:quote|customer|order|product|invoice)$/.test(type)) return;
+    if (typeof id !== "string" || !/^[A-Za-z0-9:_-]{1,128}$/.test(id)) return;
+    references.set(`${type}:${id}`, { type, id, ...(typeof label === "string" && label.trim() ? { label: label.trim().slice(0, 240) } : {}) });
+  };
+  for (const reference of existing) add(reference.type, reference.id, reference.label);
+  for (const observation of observations) {
+    for (const link of observation.result?.provenance?.sourceLinks ?? []) {
+      add(link.entityType, link.entityId, link.label);
+    }
+    // quotes.search has a strict shared result schema. Reading its reduced
+    // rows here retains every returned reference even when provenance is
+    // intentionally capped at ten source links.
+    if (observation.toolName !== "quotes.search" || !observation.result?.data || typeof observation.result.data !== "object") continue;
+    const rows = (observation.result.data as { quotes?: unknown }).quotes;
+    if (!Array.isArray(rows)) continue;
+    for (const row of rows) {
+      if (!row || typeof row !== "object") continue;
+      const quote = row as { quoteId?: unknown; quoteNumber?: unknown; customer?: { id?: unknown; name?: unknown }; relatedOrderId?: unknown };
+      add("quote", quote.quoteId, typeof quote.quoteNumber === "string" ? `Quote ${quote.quoteNumber}` : undefined);
+      add("customer", quote.customer?.id, quote.customer?.name);
+      add("order", quote.relatedOrderId);
     }
   }
-  return null;
+  return Array.from(references.values()).slice(-25);
+}
+
+const registeredReadToolNames = new Set<string>([...assistantToolNameValues, "analysis.run", "web.search", "web.open"]);
+const trustedObservationStorageKey = "trustedReadObservations";
+const MAX_TRUSTED_OPERATOR_OBSERVATIONS = 5;
+const MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES = 16_000;
+const recentOperationStorageKey = "recentOperatorOperations";
+const MAX_RECENT_OPERATOR_OPERATIONS = 12;
+
+/** The only Product Builder structure exposed to an Operator function call.
+ * It deliberately contains business labels and values, never patch paths,
+ * IDs, revisions, fingerprints, serverOwnedFields, or PBV2 state. The
+ * canonical semantic-operation schema remains the execution authority. */
+const semanticProductOperationsToolInputSchema: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["operations"],
+  properties: {
+    operations: {
+      type: "array",
+      minItems: 1,
+      maxItems: 24,
+      items: {
+        oneOf: [
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "set_option_default" }, optionGroup: { type: "string" }, value: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "category"], properties: { op: { const: "set_category" }, category: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "mode"], properties: { op: { const: "set_measurement_mode" }, mode: { enum: ["dimensions_required", "quantity_only"] } } },
+          { type: "object", additionalProperties: false, required: ["op", "basis"], properties: { op: { const: "set_pricing_basis" }, basis: { enum: ["per_piece", "per_square_foot"] } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "required", "selectionMode"], properties: { op: { const: "add_option_group" }, optionGroup: { type: "string" }, required: { type: "boolean" }, selectionMode: { enum: ["single", "multiple"] } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "name"], properties: { op: { const: "rename_option_group" }, optionGroup: { type: "string" }, name: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "add_option_value" }, optionGroup: { type: "string" }, value: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value", "priceCents"], properties: { op: { const: "set_option_rate" }, optionGroup: { type: "string" }, value: { type: "string" }, priceCents: { type: "integer", minimum: 0 }, basis: { enum: ["per_piece", "per_square_foot"] } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value", "percent"], properties: { op: { const: "set_option_price_impact" }, optionGroup: { type: "string" }, value: { type: "string" }, percent: { type: "number", minimum: -100, maximum: 100 }, replacesPercentageWhen: { type: "object", additionalProperties: false, required: ["optionGroup", "value"], properties: { optionGroup: { type: "string" }, value: { type: "string" } } } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "whenOptionGroup", "whenValue"], properties: { op: { const: "set_option_group_availability" }, optionGroup: { type: "string" }, whenOptionGroup: { type: "string" }, whenValue: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "remove_option_value" }, optionGroup: { type: "string" }, value: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup"], properties: { op: { const: "remove_option_group" }, optionGroup: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "name"], properties: { op: { const: "set_product_name" }, name: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "requiresProofApproval"], properties: { op: { const: "set_proof_requirement" }, requiresProofApproval: { type: "boolean" } } },
+        ],
+      },
+    },
+  },
+};
+/** The initial-create capability deliberately reuses the exact operation-array
+ * schema published by products.apply_operations. */
+const beginProductDraftToolInputSchema: Record<string, unknown> = {
+  type: "object", additionalProperties: false,
+  properties: { initialOperations: (semanticProductOperationsToolInputSchema.properties as Record<string, unknown>).operations },
+};
+
+/** Read-only draft pricing accepts business labels only. A single bounded
+ * batch keeps ordinary multi-scenario questions inside one Operator call. */
+const draftPricingPreviewToolInputSchema: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["scenarios"],
+  properties: {
+    scenarios: {
+      type: "array", minItems: 1, maxItems: 12,
+      items: {
+        type: "object", additionalProperties: false, required: ["squareFeet"],
+        properties: {
+          squareFeet: { type: "number", exclusiveMinimum: 0 },
+          quantity: { type: "integer", minimum: 1 },
+          selections: {
+            type: "array", maxItems: 12,
+            items: {
+              type: "object", additionalProperties: false, required: ["optionGroup", "value"],
+              properties: { optionGroup: { type: "string", minLength: 1, maxLength: 160 }, value: { type: "string", minLength: 1, maxLength: 160 } },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+type DraftPricingScenario = { squareFeet: number; quantity?: number; selections?: Array<{ optionGroup: string; value: string }> };
+
+function parseDraftPricingScenarios(value: unknown): DraftPricingScenario[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 12) return null;
+  const scenarios: DraftPricingScenario[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const scenario = item as Record<string, unknown>;
+    if (typeof scenario.squareFeet !== "number" || !Number.isFinite(scenario.squareFeet) || scenario.squareFeet <= 0) return null;
+    if (scenario.quantity !== undefined && (typeof scenario.quantity !== "number" || !Number.isInteger(scenario.quantity) || scenario.quantity <= 0)) return null;
+    if (scenario.selections !== undefined && (!Array.isArray(scenario.selections) || scenario.selections.length > 12 || !scenario.selections.every((selection) => selection && typeof selection === "object" && !Array.isArray(selection) && typeof (selection as Record<string, unknown>).optionGroup === "string" && typeof (selection as Record<string, unknown>).value === "string"))) return null;
+    scenarios.push({ squareFeet: scenario.squareFeet, ...(typeof scenario.quantity === "number" ? { quantity: scenario.quantity } : {}), ...(Array.isArray(scenario.selections) ? { selections: scenario.selections as Array<{ optionGroup: string; value: string }> } : {}) });
+  }
+  return scenarios;
+}
+
+/** Financial reads require authorization at every retrieval. Never retain an
+ * analytics observation for a later direct-answer turn, because a user's role
+ * may have changed since the original read. */
+function mayPersistTrustedObservation(toolName: string): boolean {
+  return !toolName.startsWith("analytics.");
+}
+
+function persistedTrustedObservations(semanticChanges: Record<string, unknown>): AssistantOperatorTrustedObservation[] {
+  const candidate = semanticChanges[trustedObservationStorageKey];
+  if (!Array.isArray(candidate)) return [];
+  return candidate.flatMap((item) => {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+    const value = item as Record<string, unknown>;
+    return typeof value.toolName === "string" && mayPersistTrustedObservation(value.toolName) && typeof value.capturedAt === "string" && "data" in value
+      ? [{ toolName: value.toolName, data: value.data, capturedAt: value.capturedAt }]
+      : [];
+  }).slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS);
+}
+
+function persistedRecentOperatorOperations(semanticChanges: Record<string, unknown>): string[] {
+  const candidate = semanticChanges[recentOperationStorageKey];
+  return Array.isArray(candidate)
+    ? candidate.filter((item): item is string => typeof item === "string" && item.length > 0 && item.length <= 160).slice(-MAX_RECENT_OPERATOR_OPERATIONS)
+    : [];
+}
+
+function operatorBusinessContext(input: {
+  domain: string | null;
+  workingSummary: string | null;
+  missingInformation: string[];
+  semanticChanges: Record<string, unknown>;
+  activeSemanticProductDraft: ActiveSemanticProductDraftContext | null;
+  canBeginProductDraft: boolean;
+  canApplyProductOperations: boolean;
+}): AssistantOperatorBusinessContext {
+  const product = input.activeSemanticProductDraft;
+  const unresolvedDecisions = product
+    ? product.outstandingDecisions.map((decision) => ({ item: decision.path, question: decision.question, choices: decision.choices }))
+    : input.missingInformation.map((item) => ({ item }));
+  return {
+    taskType: product ? "product_draft" : input.domain ?? "general_assistance",
+    businessStateSummary: product
+      ? `Product draft \"${product.name}\" is ${product.readyForReview ? "ready for review" : "still collecting business decisions"}.`
+      : input.workingSummary,
+    unresolvedDecisions,
+    recentOperations: product?.recentBusinessOperations ?? persistedRecentOperatorOperations(input.semanticChanges),
+    trustedSelections: product?.trustedSelections ?? [],
+    readiness: product ? (product.readyForReview ? "ready" : product.outstandingDecisions.length ? "needs_input" : "in_progress") : unresolvedDecisions.length ? "needs_input" : "unknown",
+    constraints: product
+      ? ["Use only products.apply_operations for a draft edit.", "Do not regenerate the product or expose canonical persistence data.", "Product creation remains review/GO-gated."]
+      : ["Use registered, permission-aware tools only.", "Trusted observations are not authorization or freshness authority."],
+    capabilities: [
+      ...(input.canBeginProductDraft ? ["products.begin_draft"] : []),
+      ...(input.canApplyProductOperations ? ["products.apply_operations"] : []),
+      ...(input.canApplyProductOperations ? ["products.preview_draft_pricing"] : []),
+    ],
+  };
+}
+
+/** Persist only validated static read results. Semantic planning output and
+ * presentation/action cards are intentionally excluded. */
+function mergeTrustedOperatorObservations(
+  semanticChanges: Record<string, unknown>,
+  observations: readonly AssistantOperatorObservation[],
+): Record<string, unknown> {
+  const retained = persistedTrustedObservations(semanticChanges);
+  const additions = observations.flatMap((observation) => {
+    if (!registeredReadToolNames.has(observation.toolName) || !mayPersistTrustedObservation(observation.toolName) || observation.status !== "succeeded" || !observation.result?.provenance) return [];
+    try {
+      const data = JSON.parse(JSON.stringify(observation.result.data));
+      if (JSON.stringify(data).length > MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES) return [];
+      return [{ toolName: observation.toolName, data, capturedAt: observation.result.provenance.freshness.capturedAt }];
+    } catch {
+      return [];
+    }
+  });
+  const recent = [...persistedRecentOperatorOperations(semanticChanges), ...observations
+    .filter((observation) => observation.status === "succeeded" || observation.status === "partial")
+    .map((observation) => observation.toolName)]
+    .slice(-MAX_RECENT_OPERATOR_OPERATIONS);
+  return { ...semanticChanges, [trustedObservationStorageKey]: [...retained, ...additions].slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS), [recentOperationStorageKey]: recent };
+}
+
+function operatorFailureKind(response: string): string {
+  if (/provider did not return (?:a )?usable investigation result/i.test(response)) return "provider_result_unusable";
+  if (/provider returned an unusable investigation result/i.test(response)) return "provider_operator_result_invalid";
+  if (/provider did not finish.*timed out/i.test(response)) return "provider_timeout";
+  if (/could not complete.*Operator could not complete its investigation/i.test(response)) return "operator_decision_unavailable";
+  if (/within the configured safety limit/i.test(response)) return "operator_step_limit";
+  return "operator_failed";
 }
 
 export class AssistantService {
@@ -275,6 +452,27 @@ export class AssistantService {
      * repository is available. Optional during migration rollout so normal
      * assistant turns do not depend on an unfinished table. */
     private readonly reportResolutionService?: AnalyticalCustomerResolutionService,
+    /** This planner owns free-text interpretation. Structured UI routes do not
+     * enter createTurn and therefore remain server-bound direct actions. */
+    private readonly intentPlanner: AssistantIntentPlannerProvider = new ConfiguredAssistantIntentPlannerProvider(new OpenAiCompatibleBugReviewProvider()),
+    /** Injectable only for composition and isolated routing tests; production
+     * always uses the canonical compiler-backed singleton. */
+    private readonly productIntentDispatcher: Pick<typeof productManagementSkillService, "respondPlannedCanonicalProductIntent" | "applyCanonicalProductOperations" | "beginCanonicalProductDraft"> & Partial<Pick<typeof productManagementSkillService, "getActiveSemanticProductDraftContext" | "previewActiveSemanticProductDraftPricing">> = productManagementSkillService,
+    /** Ordinary free text always enters this provider/runtime path. Tests can
+     * supply deterministic decisions without initializing a real provider. */
+    private readonly operatorDecisionProvider: (organizationId: string) => AssistantOperatorDecisionProvider =
+      (organizationId) => new ConfiguredAssistantOperatorDecisionProvider(organizationId, new OpenAiCompatibleBugReviewProvider()),
+    private readonly operatorTasks: AssistantOperatorTaskStore = new DrizzleAssistantOperatorTaskStore(),
+    /** Composite semantic tools are separately injectable so the free-text
+     * integration path can be tested without a database. */
+    private readonly operatorCompositeTool: () => AssistantOperatorSemanticTool = () => createQuoteInternalNoteCompositeSemanticTool(),
+    /** Injectable only for end-to-end operator-path tests. Production always
+     * uses the static read registry plus reviewed semantic tools. */
+    private readonly createOperatorToolExecutor: (audit: (event: AssistantToolExecutionAudit) => void, semanticTools: readonly AssistantOperatorSemanticTool[]) => AssistantOperatorToolExecutor =
+      (audit, semanticTools) => createAssistantOperatorToolExecutor(audit, semanticTools),
+    /** Injectable for isolated runtime tests; production resolves the same
+     * organization-scoped configuration at the Operator boundary. */
+    private readonly operatorProviderResolver: Pick<typeof aiProviderResolver, "resolveProvider"> = aiProviderResolver,
   ) {}
 
   async getCapabilities(scope: AssistantScope, actor?: AssistantActor) {
@@ -299,7 +497,7 @@ export class AssistantService {
       writeActionsEnabled,
       productionCommandsEnabled,
       productionCommandsPermittedForUser,
-      externalResearchEnabled: false,
+      externalResearchEnabled: Boolean(resolved.enabled && resolved.externalResearchEnabled),
       mcpEnabled: false,
       productActivationEnabled: false,
       activeProductEditingEnabled: false,
@@ -307,12 +505,55 @@ export class AssistantService {
       composerHelperText: !readToolsEnabled
         ? "System Guide help is available. " + (resolved.unavailableReason ?? "Business record questions are unavailable until AI configuration is complete.")
         : writeActionsEnabled
-          ? "Business lookups and confirmed actions are enabled. Changes require a preview and the dedicated GO button. External research is disabled."
-          : "Business lookups are enabled. Write actions and external research are disabled.",
+          ? `Business lookups and confirmed actions are enabled. Changes require a preview and the dedicated GO button. External research is ${resolved.externalResearchEnabled ? "enabled" : "disabled"}.`
+          : resolved.externalResearchEnabled
+            ? "Business lookups and external research are enabled. Write actions require additional permission."
+            : "Business lookups are enabled. Write actions and external research are disabled.",
       assistantVersion: "stage-9-system-guide",
       unavailableReason: resolved.unavailableReason ?? (resolved.enabled ? null : "The assistant is disabled for this organization."),
       actorScope: scope,
     };
+  }
+
+  /** Server-bound continuation for the typed PBV2 option card. The browser
+   * supplies canonical identifiers only; this service reloads the scoped
+   * intake session and persists the resulting assistant turn. */
+  async submitOrderOptionSelections(
+    scope: AssistantScope,
+    conversationId: string,
+    actor: AssistantActor,
+    input: { orderIntakeSessionId: string; productId: string; pbv2TreeVersionId: string; selections: Array<{ nodeId: string; valueId: string }>; useRemainingDefaults: boolean; context: AssistantContextEnvelope },
+  ) {
+    const conversation = await this.repo.getConversation({ ...scope, conversationId });
+    if (!conversation) throw this.notFound();
+    const rendered = await orderIntakeService.submitOptionSelections({
+      organizationId: scope.organizationId,
+      userId: actor.userId,
+      conversationId: conversation.id,
+      orderIntakeSessionId: input.orderIntakeSessionId,
+      productId: input.productId,
+      pbv2TreeVersionId: input.pbv2TreeVersionId,
+      selections: input.selections,
+      useRemainingDefaults: input.useRemainingDefaults,
+    });
+    const correlationId = crypto.randomUUID();
+    const result = await this.persistFoundationTurn({
+      ...scope,
+      conversationId: conversation.id,
+      actor,
+      message: "Selected order options.",
+      context: input.context,
+      response: rendered.response,
+      correlationId,
+      status: "responded",
+      structuredCards: rendered.cards as AssistantStructuredCard[],
+      provider: "local_order_intake",
+      model: "conversational-order-intake-v1",
+      mode: "assistant_order_option_continuation",
+      promptVersion: "assistant-order-option-continuation-v1",
+    });
+    if (!result) throw this.notFound();
+    return result;
   }
 
   async listConversations(scope: AssistantScope, status?: "active" | "archived") {
@@ -405,7 +646,7 @@ export class AssistantService {
       context: resolution.context,
       correlationId,
     });
-    const rendered = renderToolResults(executed.executions, null, null, false);
+    const rendered = renderToolResults(executed.executions);
     const result = await this.repo.createReportResolutionContinuation!({
       ...scope,
       resolutionId,
@@ -452,279 +693,404 @@ export class AssistantService {
     }
 
     const correlationId = crypto.randomUUID();
-    // System Guide answers are local, read-only, and sourced from the
-    // versioned manifest/approved corpus. A guide phrase such as "Flatbed"
-    // must not intercept a valid, server-persisted configurable-product
-    // continuation before Product Management can handle it.
-    const systemGuide = resolveSystemGuideAnswer(request.message, request.context);
-    let preloadedConversation: Awaited<ReturnType<typeof this.repo.getConversation>> | null = null;
-    if (systemGuide) {
-      preloadedConversation = await this.repo.getConversation({ ...scope, conversationId });
-      if (!preloadedConversation) throw this.notFound();
-      let deferSystemGuide = false;
-      try {
-        deferSystemGuide = Boolean(await resolveConfigurableProductContinuation({
-          organizationId: scope.organizationId,
-          actorUserId: actor.userId,
-          conversationId: preloadedConversation.id,
-          priorProposalId: activeConfigurableProductProposalId(preloadedConversation.messages),
-        }));
-      } catch {
-        // Ambiguous, stale, or cross-actor continuation state must fail closed
-        // through Product Management rather than falling through to a guide.
-        deferSystemGuide = true;
-      }
-      if (!deferSystemGuide) {
-        return this.persistResponse({
-          scope, conversationId, actor, request, correlationId,
-          response: systemGuide.response,
-          status: "responded",
-          structuredCards: systemGuide.cards,
-        });
-      }
-    }
+    return this.createOperatorTurn({ scope, conversationId, actor, request, correlationId });
+  }
+
+  /** Primary ordinary free-text path. Exact structured routes never call
+   * createTurn and remain deterministic server actions. The former planner /
+   * specialist path remains below solely as an isolated compatibility path. */
+  private async createOperatorTurn(input: {
+    scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string;
+  }): Promise<AssistantTurnResult> {
+    const { scope, conversationId, actor, request, correlationId } = input;
+    const capability = await this.getCapabilities(scope, actor);
     if (!capability.toolsEnabled) {
-      return this.persistResponse({
-        scope, conversationId, actor, request, correlationId,
+      return this.persistOperatorResponse(input, { response: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, status: "failed", cards: [{ kind: "provider_unavailable", title: "AI Operator unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }], errorCode: "operator_unavailable", audits: [] });
+    }
+    const conversation = await this.repo.getConversation({ ...scope, conversationId });
+    if (!conversation) throw this.notFound();
+    let task = await this.operatorTasks.getActive({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id });
+    if (!task) task = await this.operatorTasks.create({ organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, goal: request.message });
+    const audits: AssistantToolExecutionAudit[] = [];
+    const providerConfig = await this.operatorProviderResolver.resolveProvider({ orgId: scope.organizationId, feature: "assistant" });
+    const providerCapabilities = resolveAiProviderCapabilities(providerConfig);
+    // Native search and the server-owned search are intentionally mutually
+    // exclusive in a turn. This is capability selection, not phrase routing.
+    const fallbackWebTools = !providerCapabilities.nativeWebSearch && isPublicWebResearchConfigured()
+      ? createPublicWebResearchTools()
+      : [];
+    const mayBeginProductDraft = hasPermission(actor, "assistant.products.create_inactive_draft");
+    const mayApplyProductOperations = mayBeginProductDraft
+      || hasPermission(actor, "assistant.products.update_inactive_draft")
+      || hasPermission(actor, "assistant.products.update_inactive_draft_batch");
+    const activeProductProposalIdForContext = task.canonicalProductIntentProposalId;
+    const activeSemanticProductDraft = activeProductProposalIdForContext
+      ? await (async () => {
+        try {
+          if (!this.productIntentDispatcher.getActiveSemanticProductDraftContext) return null;
+          return await this.productIntentDispatcher.getActiveSemanticProductDraftContext({
+            organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, proposalId: activeProductProposalIdForContext,
+          });
+        } catch { return null; }
+      })()
+      : null;
+    console.info("[ASSISTANT_OPERATOR_PRODUCT_CONTINUITY]", {
+      correlationId, conversationId: conversation.id, taskId: task.id,
+      activeSemanticDraft: Boolean(activeSemanticProductDraft),
+      outstandingDecisionCount: activeSemanticProductDraft?.outstandingDecisions.length ?? 0,
+      compatibilityFallback: "bypassed",
+    });
+    // Ordinary Operator product creation uses these direct business doors.
+    // The legacy compiler router remains callable only by legacy callers; it
+    // is intentionally absent from the Operator catalog.
+    let activeProductProposalId = task.canonicalProductIntentProposalId;
+    const beginProductIntentTools: AssistantOperatorSemanticTool[] = mayBeginProductDraft ? [{
+      name: "products.begin_draft",
+      description: "Establish one new authoritative unfinished product draft. When the user already supplied product details, include the understood business changes as initialOperations so the draft is populated in this call; use the same business operations as products.apply_operations. This remains an intermediate action, so continue this task when useful. Draft edits do not require GO; final product creation remains review/GO-gated. Do not use if an unfinished draft is already active.",
+      inputSchema: beginProductDraftToolInputSchema,
+      execute: async ({ arguments: args, context }) => {
+        if (activeProductProposalId) return { status: "partial" as const, warning: "An unfinished product draft is already active." };
+        const initialOperations = Array.isArray(args.initialOperations) ? args.initialOperations : undefined;
+        const product = await this.productIntentDispatcher.beginCanonicalProductDraft({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, message: context.goal, ...(initialOperations?.length ? { initialOperations } : {}) });
+        const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? null;
+        if (proposalId) activeProductProposalId = proposalId;
+        const draftContext = proposalId && this.productIntentDispatcher.getActiveSemanticProductDraftContext
+          ? await this.productIntentDispatcher.getActiveSemanticProductDraftContext({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId }).catch(() => null)
+          : null;
+        return { status: "succeeded" as const, result: { status: "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { draftEstablished: Boolean(proposalId), mayApplyBusinessOperations: Boolean(proposalId) } } } as any, presentation: { cards: product.cards as AssistantStructuredCard[] } };
+      },
+      }] : [];
+    const applyProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{
+      name: "products.apply_operations",
+      description: "Apply one atomic batch of one or more business changes to the current unfinished product draft. Use the original user request and current draft context to include all relevant name, category, dimensions, pricing, options, defaults, price impacts, availability, proof, or safe removals; do not make the user repeat supplied facts. All operations validate together and either create one next revision or none. Begin a draft first when none is active. Draft edits do not require GO; final product creation remains review/GO-gated. Pass only displayed business labels and values; never pass IDs, patch paths, persistence data, or PBV2 structures.",
+      inputSchema: semanticProductOperationsToolInputSchema,
+      execute: async ({ arguments: args, context }) => {
+        const operations = Array.isArray(args.operations) ? args.operations : null;
+        if (!operations) return { status: "rejected" as const, warning: "The product change must contain one or more business operations." };
+        if (!activeProductProposalId) return { status: "rejected" as const, warning: "Begin an unfinished product draft before applying product changes." };
+        const product = await this.productIntentDispatcher.applyCanonicalProductOperations({
+          organizationId: context.scope.organizationId,
+          userId: context.actor.userId,
+          conversationId: conversation.id,
+          message: context.goal,
+          operations,
+        });
+        const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? activeProductProposalId;
+        activeProductProposalId = proposalId;
+        const draftContext = this.productIntentDispatcher.getActiveSemanticProductDraftContext
+          ? await this.productIntentDispatcher.getActiveSemanticProductDraftContext({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId }).catch(() => null)
+          : null;
+        return { status: "succeeded" as const, result: { status: "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { mayApplyBusinessOperations: true } } } as any, presentation: { cards: product.cards as AssistantStructuredCard[] } };
+      },
+      }] : [];
+    const previewProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{
+      name: "products.preview_draft_pricing",
+      description: "Calculate read-only PBV2 prices for one or more scenarios on the current unfinished product draft before GO. Make one call with scenarios; each scenario has squareFeet, optional quantity, and selected business option labels. Use labels only, never IDs or PBV2 data. Use this when the user asks how the active draft will price; do not ask them to restate pricing rules already shown in the draft context.",
+      inputSchema: draftPricingPreviewToolInputSchema,
+      execute: async ({ arguments: args, context }) => {
+        if (!activeProductProposalId || !this.productIntentDispatcher.previewActiveSemanticProductDraftPricing) return { status: "rejected" as const, warning: "An active product draft is required for draft pricing." };
+        const scenarios = parseDraftPricingScenarios(args.scenarios);
+        if (!scenarios) {
+          console.warn("[AI_OPERATOR_TRACE]", { stage: "argument_validation", correlationId: context.correlationId, toolName: "products.preview_draft_pricing", succeeded: false });
+          return { status: "rejected" as const, warning: "Draft pricing requires one to twelve positive square-foot scenarios with business-label selections." };
+        }
+        console.info("[AI_OPERATOR_TRACE]", { stage: "argument_validation", correlationId: context.correlationId, toolName: "products.preview_draft_pricing", succeeded: true, scenarioCount: scenarios.length });
+        try {
+          const data = await this.productIntentDispatcher.previewActiveSemanticProductDraftPricing({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId: activeProductProposalId, scenarios, correlationId: context.correlationId });
+          return { status: "succeeded" as const, result: { status: "succeeded", data, provenance: { sourceLinks: [], freshness: { capturedAt: new Date().toISOString() } } } as any };
+        } catch (error) { return { status: "rejected" as const, warning: error instanceof Error ? error.message : "The active product draft could not be priced." }; }
+      },
+    }] : [];
+    const productIntentTools: AssistantOperatorSemanticTool[] = [...beginProductIntentTools, ...applyProductIntentTools, ...previewProductIntentTools];
+    const semanticTools: AssistantOperatorSemanticTool[] = [...productIntentTools, {
+      name: "analysis.run",
+      description: "Safely calculate over an already-authorized observation only. Arguments: purpose, dataset {source current_turn|trusted_task, toolName, optional array path}, and a declarative program. Available operations are filter, classify_range (AI-selected inclusive start/exclusive end labels), project, group, pivot, calculate (add/subtract/multiply/divide/average/percent_change), sort, limit, and summarize. Use classify_range + group + pivot + calculate for comparable-period analysis. It cannot run code, SQL, network, filesystem, or application-service access.",
+      execute: async ({ arguments: args, context }) => {
+        try {
+          const data = runOperatorAnalysis(args, context);
+          return { status: "succeeded", result: { status: "succeeded", data, provenance: { sourceLinks: [], freshness: { capturedAt: new Date().toISOString() } } } as any };
+        } catch (error) {
+          return { status: "rejected", warning: error instanceof Error ? error.message : "The requested analysis could not be run safely." };
+        }
+      },
+    }, ...fallbackWebTools, this.operatorCompositeTool()];
+    const runtime = new AssistantOperatorRuntime(this.operatorDecisionProvider(scope.organizationId), this.createOperatorToolExecutor((audit) => { audits.push(audit); }, semanticTools));
+    const run = await runtime.run({
+      goal: request.message,
+      taskId: task.id,
+      initialWorkingSummary: task.workingSummary,
+      trustedContext: { scope, conversationId: conversation.id, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId, goal: request.message, task: { id: task.id, domain: task.domain, canonicalProductIntentProposalId: task.canonicalProductIntentProposalId, activeSemanticProductDraft, businessContext: operatorBusinessContext({ domain: task.domain, workingSummary: task.workingSummary, missingInformation: task.missingInformation, semanticChanges: task.semanticChanges, activeSemanticProductDraft, canBeginProductDraft: mayBeginProductDraft, canApplyProductOperations: mayApplyProductOperations }), entityReferences: task.entityReferences, trustedObservations: persistedTrustedObservations(task.semanticChanges), missingInformation: task.missingInformation } },
+    });
+    const productObservation = [...run.observations].reverse().find((item) => (item.toolName === "products.begin_draft" || item.toolName === "products.apply_operations") && item.result?.data && typeof item.result.data === "object") as AssistantOperatorObservation | undefined;
+    const productData = productObservation?.result?.data as { response?: unknown; proposalId?: unknown; taskDomain?: unknown } | undefined;
+    const compositeCards = run.observations.flatMap((observation) => observation.presentation?.cards ?? []);
+    const cards = Array.isArray(productObservation?.presentation?.cards)
+      ? productObservation.presentation.cards
+      : [...renderToolResults(run.observations).cards, ...compositeCards];
+    const compositeResponse = [...run.observations].reverse().map((observation) => observation.result?.data).find((data): data is { response?: unknown } => Boolean(data && typeof data === "object" && typeof (data as any).response === "string"));
+    const response = typeof productData?.response === "string" ? productData.response : typeof compositeResponse?.response === "string" ? compositeResponse.response : run.response;
+    const status = run.status === "failed" ? "failed" : "responded" as const;
+    const proposalId = typeof productData?.proposalId === "string" ? productData.proposalId : null;
+    // A completed read-only detour must not close an unfinished authoritative
+    // product task. The task record merely remembers that active intent; it
+    // never duplicates its canonical Product Intent state.
+    const entityReferences = mergeOperatorEntityReferences(task.entityReferences, run.observations);
+    const quoteInvestigation = run.observations.some((observation) => observation.toolName === "quotes.search" && observation.status === "succeeded");
+    const productInvestigation = task.domain === "products" || run.observations.some((observation) => observation.toolName.startsWith("products.") || observation.result?.provenance?.sourceLinks.some((link) => link.entityType === "product"));
+    const continuesQuoteInvestigation = task.domain === "quotes" || quoteInvestigation;
+    const continuesTrustedEntityInvestigation = entityReferences.length > 0 && (task.entityReferences.length > 0 || run.observations.some((observation) => observation.status === "succeeded"));
+    const activeStatus = run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
+      ? "active"
+      : run.status === "completed" ? "completed" : "blocked";
+    await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: {
+      ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
+      workingSummary: run.safeWorkingSummary,
+      entityReferences,
+      semanticChanges: mergeTrustedOperatorObservations(task.semanticChanges, run.observations),
+      missingInformation: run.missingInformation,
+      ...(proposalId ? { canonicalProductIntentProposalId: proposalId } : {}),
+      lastObservationSummary: run.observations.at(-1)?.warning ?? null,
+      status: activeStatus,
+    } });
+    const diagnostic = run.status === "failed"
+      ? await persistAiDiagnostic({
+        version: 1, referenceId: correlationId, correlationId, diagnosticType: "operator_runtime",
+        tenantId: scope.organizationId, actorId: actor.userId, conversationId: conversation.id,
+        provider: providerConfig.provider ?? null, model: providerConfig.model ?? null, providerRequestId: null,
+        stage: "operator_runtime_failure", errorCode: operatorFailureKind(run.response),
+        providerResponseState: run.observations.length ? "received" : "not_received",
+        parseMethod: "none", repairAttempted: false, repairResult: "not_attempted",
+        validationSchema: null, validationIssuePaths: [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [],
+        plannerOperation: null, selectedCapability: null, specialistName: "operator_runtime", optionNormalizationStage: null, resolverStage: null,
+        persistenceAttempted: true, persistenceResult: "succeeded", createdAt: new Date().toISOString(),
+        operatorRuntime: {
+          step: Math.max(1, Math.min(25, run.diagnostics.stepsConsumed)),
+          decisionType: run.response === "I couldn't complete the request because the AI Operator could not complete its investigation." ? null : "fail",
+          toolName: run.observations.at(-1)?.toolName ?? null,
+          argumentValidationSucceeded: run.observations.length > 0 && run.observations.at(-1)?.status !== "rejected",
+          handlerEntered: run.observations.length > 0, observationReturned: run.observations.length > 0,
+          continuationStarted: run.diagnostics.providerDecisionCount > 1,
+          finalResultAccepted: false, failureKind: operatorFailureKind(run.response),
+        },
+      }).catch(() => null)
+      : null;
+    console.info("[ASSISTANT_OPERATOR_RUNTIME] Ordinary free-text turn handled.", { correlationId, conversationId: conversation.id, taskId: task.id, outcome: run.status, toolCount: run.observations.length, ...run.diagnostics, legacyFallback: false });
+    return this.persistOperatorResponse(input, { response, status, cards, errorCode: run.status === "failed" ? diagnostic ? "operator_failed" : "operator_failed_diagnostic_unavailable" : null, audits });
+  }
+
+  /**
+   * The only free-text AI-first dispatch boundary.  It receives one strict
+   * provider-neutral plan, verifies server-owned constraints, and then gives
+   * the selected specialist the original message without rewriting it.  A
+   * planning failure is persisted as a safe failure; it never falls through
+   * to a keyword router.
+   */
+  private async createAiFirstTurn(input: {
+    scope: AssistantScope;
+    conversationId: string;
+    actor: AssistantActor;
+    request: AssistantTurnRequest;
+    correlationId: string;
+  }): Promise<AssistantTurnResult> {
+    const { scope, conversationId, actor, request, correlationId } = input;
+    const capability = await this.getCapabilities(scope, actor);
+    if (!capability.toolsEnabled) {
+      return this.persistAiFirstResponse(input, {
         response: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY,
         status: "failed",
         errorCode: "provider_unavailable",
-        structuredCards: [{ kind: "provider_unavailable", title: "Business questions unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }],
+        cards: [{ kind: "provider_unavailable", title: "AI planning unavailable", summary: capability.unavailableReason ?? ASSISTANT_UNAVAILABLE_REPLY, sourceLinks: [], toolStatus: "failed" }],
+      });
+    }
+    const conversation = await this.repo.getConversation({ ...scope, conversationId });
+    if (!conversation) throw this.notFound();
+    const activeSessionId = activeProductIntakeSession(conversation.messages);
+    const plannerResult = await this.intentPlanner.plan({
+      organizationId: scope.organizationId,
+      promptVersion: "ai-first-intent-planner-v1",
+      timeoutUseCase: "ai_first_intent_planner",
+      currentEntityId: request.context.entityId ?? null,
+      activeSessionId,
+      system: "You are the PrintersHero AI-first typed intent planner. Return exactly one JSON object and no markdown or prose. Required strict keys: version (always 1), operation (lookup|report|explain|create|update|continue_session|correct|select_candidate|accept_recommendation|request_confirmation|execute_go|general_conversation|unrelated_conversation|clarify|unsupported), domain (products|quotes|orders|production|fulfillment|billing|payments|customers|reporting|system|conversation|unknown), mode (read|mutation|none), capabilityId, confidence, target {kind,entityId}, contextUsage {workspaceIsAuthoritative:false,workspaceRelevance,activeSessionId}, requiresClarification, clarificationQuestion, reasonCode. A question about whether the assistant can perform an operation is read-only: select assistant_capabilities with operation explain, domain system, mode read, target none, and never select the discussed mutation capability. The current message is primary; prior failed requests and workspace context must not turn a capability question into a mutation or continuation. When trusted context says an active canonical session exists and the message changes that current product intent, select canonical_product_intent_compiler with operation continue_session, domain products, mode mutation, and target active_session. Do not use products_workflow or any other specialist for an active canonical session. A new unrelated product request remains operation create with target new_entity. For a new product, use this exact structural shape: {\"version\":1,\"operation\":\"create\",\"domain\":\"products\",\"mode\":\"mutation\",\"capabilityId\":\"canonical_product_intent_compiler\",\"confidence\":\"high\",\"target\":{\"kind\":\"new_entity\",\"entityId\":null},\"contextUsage\":{\"workspaceIsAuthoritative\":false,\"workspaceRelevance\":\"supporting\",\"activeSessionId\":null},\"requiresClarification\":false,\"clarificationQuestion\":null,\"reasonCode\":\"explicit_new_entity_request\"}. Always include entityId and activeSessionId; use null when unknown or not applicable. capabilityId must be one of assistant_capabilities, system_guide, search_customers, search_products, search_orders, operational_summary, read_tooling, canonical_product_intent_compiler, products_workflow, clone_product, update_inactive_product, replace_product_matrix, replace_product_tiers, create_quote, update_quote, convert_quote, create_order, update_order, orders_workflow, production_operations, fulfillment_operations, billing_operations, payment_operations, crm_management, general_conversation, or null. Select canonical_product_intent_compiler with operation create, domain products, mode mutation, target new_entity for a detailed request to create a new product, including Translucent Vinyl. Never select system_guide from Product Details or generic workspace context; only select it for an actual help/explanation request. Treat workspace as supporting only, never authoritative. Never return product fields, executable arguments, tenant identity, permissions, or prose.",
+      user: JSON.stringify({
+        originalMessage: request.message,
+        trustedContext: {
+          route: request.context.route,
+          pageTitle: request.context.pageTitle,
+          entityType: request.context.entityType ?? null,
+          entityId: request.context.entityId ?? null,
+          hasActiveCanonicalSession: Boolean(activeSessionId),
+        },
+        contract: "Return only semantic planner fields: operation, capabilityId when a registered capability is selected, confidence when useful, target.kind, requiresClarification, and clarificationQuestion. The server derives version, domain, mode, reasonCode, target entity ID, trusted context, authorization, and execution metadata. For general help use general_conversation with target kind none. For a capability question select assistant_capabilities with operation explain and target kind none. If hasActiveCanonicalSession is true and the message changes the current product intent, select canonical_product_intent_compiler with continue_session and target active_session. For a detailed unrelated new product select canonical_product_intent_compiler with create and target new_entity.",
+      }),
+    });
+    if (!plannerResult.ok) {
+      return this.persistAiFirstResponse(input, {
+        response: plannerResult.error.message,
+        status: "failed",
+        errorCode: plannerResult.error.code,
+        cards: [{ kind: "provider_unavailable", title: "AI planning unavailable", summary: plannerResult.error.message, sourceLinks: [], toolStatus: "failed" }],
+        provider: plannerResult.diagnostics.provider,
+        model: plannerResult.diagnostics.model,
       });
     }
 
-    let response = "I could not complete that business lookup.";
-    let status: "responded" | "failed" = "responded";
-    let provider: string | null = null;
-    let model: string | null = null;
-    let errorCode: string | null = null;
-    let cards: AssistantStructuredCard[] = [];
-    const audits: AssistantToolExecutionAudit[] = [];
-    try {
-      const capabilityReply = resolveAssistantCapabilityQuestion(request.message, capability);
-      if (capabilityReply) {
-        response = capabilityReply.response;
-        // A local capability answer is a successful conversational response;
-        // it is not a warning, retry target, or diagnostic disclosure.
-        cards = [{ kind: "notice", title: capabilityReply.title, body: response, tone: "info" }];
-        provider = "local_policy";
-        model = "assistant-capabilities-v1";
-      } else {
-      // This runs before the read-only provider planner and is intentionally
-      // narrower than a general write classifier. It can only propose the one
-      // server-registered quote-note action; execution still requires a
-      // server-created plan, confirmation token, reauthorization, and domain
-      // service revalidation.
-      const conversation = preloadedConversation ?? await this.repo.getConversation({ ...scope, conversationId });
-      if (!conversation) throw this.notFound();
-      // The repository-owned ID is the canonical continuation identity.  Do
-      // not make a persisted configurable proposal depend on a route/client
-      // alias once the conversation has been tenant- and actor-scoped.
-      const canonicalConversationId = conversation.id;
-      const activeConfigurableProposalId = activeConfigurableProductProposalId(conversation.messages);
-      const quoteDraft = await quoteDraftIntakeService.respond({
-        organizationId: scope.organizationId,
-        userId: actor.userId,
-        conversationId,
-        message: request.message,
+    const plan = plannerResult.plan;
+    const validation = this.validateAiFirstPlan(plan, activeSessionId, actor);
+    if (validation) {
+      return this.persistAiFirstResponse(input, {
+        response: validation,
+        status: "failed",
+        errorCode: "invalid_intent_plan",
+        cards: [{ kind: "tool_warning", title: "AI plan rejected", summary: validation, sourceLinks: [], toolStatus: "permission_denied" }],
+        provider: plannerResult.diagnostics.provider,
+        model: plannerResult.diagnostics.model,
       });
-      if (quoteDraft.handled) {
-        response = quoteDraft.response;
-        cards = quoteDraft.cards as AssistantResultCard[];
-        provider = "local_quote_intake";
-        model = "conversational-quote-intake-v1";
-      } else {
-      const orderIntake = await orderIntakeService.respond({
-        organizationId: scope.organizationId,
-        userId: actor.userId,
-        conversationId,
-        message: request.message,
-      });
-      if (orderIntake.handled) {
-        response = orderIntake.response;
-        cards = orderIntake.cards as AssistantResultCard[];
-        provider = "local_order_intake";
-        model = "conversational-order-intake-v1";
-      } else {
-      const crmIntake = await crmManagementService.respond({
-        organizationId: scope.organizationId,
-        userId: actor.userId,
-        conversationId,
-        message: request.message,
-      });
-      if (crmIntake.handled) {
-        response = crmIntake.response;
-        cards = crmIntake.cards as AssistantResultCard[];
-        provider = "local_crm_intake";
-        model = "conversational-crm-intake-v1";
-      } else {
-      // A configurable-product proposal is conversation-bound. It must see
-      // its incremental corrections before broad operational responders can
-      // reinterpret route, sheet, or minimum-charge wording as a lookup.
-      const productManagement = await productManagementSkillService.respond({
-        organizationId: scope.organizationId,
-        userId: actor.userId,
-        conversationId: canonicalConversationId,
-        message: request.message,
-        activeSessionId: activeProductIntakeSession(conversation.messages),
-        activeConfigurableProposalId,
-      });
-      if (productManagement.handled) {
-        response = productManagement.response;
-        cards = productManagement.cards as AssistantResultCard[];
-        provider = "local_product_intake";
-        model = "product-management-skill-v1";
-      } else {
-      const productionIntake = await productionOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (productionIntake.handled) {
-        response = productionIntake.response;
-        cards = productionIntake.cards as AssistantResultCard[];
-        provider = "local_production_intake";
-        model = "conversational-production-intake-v1";
-      } else {
-      const fulfillmentIntake = await fulfillmentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (fulfillmentIntake.handled) { response = fulfillmentIntake.response; cards = fulfillmentIntake.cards as AssistantResultCard[]; provider = "local_fulfillment_intake"; model = "conversational-fulfillment-intake-v1"; } else {
-      const billingIntake = await billingInvoiceOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (billingIntake.handled) { response = billingIntake.response; cards = billingIntake.cards as AssistantResultCard[]; provider = "local_billing_intake"; model = "conversational-billing-intake-v1"; } else {
-      const paymentIntake = await paymentOperationsService.respond({ organizationId: scope.organizationId, userId: actor.userId, conversationId, message: request.message });
-      if (paymentIntake.handled) { response = paymentIntake.response; cards = paymentIntake.cards as AssistantResultCard[]; provider = "local_payment_intake"; model = "conversational-payment-intake-v1"; } else {
-      const quoteNoteIntent = resolveQuoteInternalNoteIntent(request.message, request.context);
-      if (quoteNoteIntent.kind === "resolved") {
-        response = "I can prepare an internal-only quote note preview. Review it and use the dedicated GO control to continue.";
-        cards = [{
-          kind: "action_proposal",
-          title: "Prepare internal quote note",
-          summary: response,
-          sourceLinks: [],
-          plan: {
-            action: "quotes.add_internal_note",
-            preview: {
-              quoteId: quoteNoteIntent.quoteId ?? null,
-              quoteNumber: quoteNoteIntent.expectedQuoteNumber ?? null,
-              noteText: quoteNoteIntent.noteText,
-              quotePath: quoteNoteIntent.quoteId ? `/quotes/${quoteNoteIntent.quoteId}` : null,
-              unchangedItems: ["Pricing", "Quote status", "Customer-facing notes", "Order state", "Production", "Invoice", "Payment"],
-            },
-          },
-        }];
-        provider = "local_policy";
-        model = "stage-4-quote-note-intent";
-      } else if (quoteNoteIntent.kind === "clarification") {
-        response = quoteNoteIntent.message;
-        cards = [{ kind: "missing_information", title: "Quote note needs clarification", summary: response, sourceLinks: [] }];
-        provider = "local_policy";
-        model = "stage-4-quote-note-intent";
-      } else {
-      // Exact, read-only lookups and current-context questions must not depend
-      // on a provider producing a valid JSON plan. The selected plan still
-      // traverses the same registry and orchestration enforcement as a
-      // provider plan, including tenant scope, permissions, limits, audits,
-      // timeouts, and result schemas.
-      const deterministicPlan = resolveDeterministicReadPlan(request.message, request.context);
-      const planned = deterministicPlan
-        ? { plan: deterministicPlan, provider: "local_policy", model: "deterministic-read-routing-v1", metadata: { route: "exact_read" } }
-        : await this.planner.plan({ organizationId: scope.organizationId, message: request.message, context: request.context });
-      provider = planned.provider;
-      model = planned.model;
-      let executablePlan = planned.plan;
-      if (this.reportResolutionService && !planned.plan.clarificationRequired) {
-        const preflight = await this.reportResolutionService.preflight({
-          scope: { ...scope, conversationId },
-          originalUserRequest: request.message,
-          plan: planned.plan,
-          context: request.context,
-        });
-        if (preflight.kind === "awaiting_entity_resolution") {
-          // `pause` writes the user message, assistant card, context snapshot,
-          // and resolution in one transaction. Never call createFoundationTurn
-          // here or a duplicate, independently visible card could be created.
-          return this.readPausedResolutionTurn(scope, conversationId, preflight.resolution);
-        }
-        if (preflight.kind === "persistence_failed") {
-          status = "failed";
-          errorCode = "report_resolution_persistence_failed";
-          response = preflight.message;
-          cards = [{ kind: "provider_unavailable", title: "Company selection unavailable", summary: response, sourceLinks: [], toolStatus: "failed" }];
-        } else if (preflight.kind === "no_match") {
-          response = preflight.message;
-          cards = [{ kind: "not_found", title: "Company not found", summary: response, sourceLinks: [], toolStatus: "not_found" }];
-        } else if (preflight.kind === "continue") {
-          executablePlan = preflight.plan;
-        }
-      }
-      if (planned.plan.intent === "unsupported_write") {
-        response = ASSISTANT_WRITE_REFUSAL_REPLY;
-        cards = [{ kind: "tool_warning", title: "Read-only assistant", summary: response, sourceLinks: [], toolStatus: "permission_denied" }];
-      } else if (planned.plan.clarificationRequired) {
-        response = planned.plan.clarificationQuestion ?? "Please clarify what you want to look up.";
-        cards = [{ kind: "tool_warning", title: "Clarification needed", summary: response, sourceLinks: [] }];
-      } else if (!cards.length) {
-        const orchestration = this.createOrchestrator((event) => { audits.push(event); });
-        const executed = await orchestration.executePlan(executablePlan, {
-          scope,
-          actor: { userId: actor.userId, email: actor.email },
-          permissions: actor.permissions ?? [],
-          context: request.context,
-          correlationId,
-        });
-        const rendered = renderToolResults(
-          executed.executions,
-          deterministicPlan ? deterministicSearchTarget(deterministicPlan) : null,
-          deterministicPlan ? deterministicOrderLookupTarget(deterministicPlan) : null,
-          deterministicPlan?.selectedSkill === "deterministic_current_order_blocking",
-        );
-        response = rendered.response;
-        cards = rendered.cards;
-      }
-      }
-      }
-      }
-      }
-      }
-      }
-      }
-      }
-      }
-      }
-    } catch (error) {
-      status = "failed";
-      errorCode = error instanceof AssistantPlanningError ? error.code : "provider_unavailable";
-      response = error instanceof AssistantPlanningError ? error.message : "The assistant is temporarily unavailable. Please retry.";
-      cards = [{ kind: "provider_unavailable", title: "Business questions unavailable", summary: response, sourceLinks: [], toolStatus: "failed" }];
     }
-    const result = await this.persistFoundationTurn({
-      ...scope,
-      conversationId,
-      actor,
-      message: request.message,
-      context: request.context,
-      clientRequestId: request.clientRequestId,
-      response,
-      correlationId,
-      status,
-      structuredCards: cards,
-      initialTitle: titleFromMessage(request.message),
-      provider,
-      model,
-      mode: "stage_2_read_only",
-      promptVersion: "assistant-stage-2-planner-v1",
-      errorCode,
-      errorMessage: status === "failed" ? response : null,
-      toolExecutions: audits.map((audit) => ({
-        toolName: audit.toolName,
-        toolVersion: audit.toolVersion,
+
+    if (plan.requiresClarification) {
+      return this.persistAiFirstResponse(input, {
+        response: plan.clarificationQuestion ?? "Please clarify what you need.", status: "responded", errorCode: null,
+        cards: [{ kind: "tool_warning", title: "Clarification needed", summary: plan.clarificationQuestion ?? "Please clarify what you need.", sourceLinks: [] }],
+        provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model,
+      });
+    }
+    if (!plan.capabilityId) {
+      const response = plan.operation === "unsupported"
+        ? "I can’t safely complete that request here."
+        : "How can I help with your products, quotes, orders, or operations?";
+      return this.persistAiFirstResponse(input, { response, status: "responded", errorCode: null, cards: [], provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model });
+    }
+
+    let response = "I couldn't complete that request.";
+    let cards: AssistantStructuredCard[] = [];
+    const plannedCapability = plan.capabilityId;
+    if (plannedCapability === "assistant_capabilities") {
+      response = "Yes. I can help create inactive Product Builder drafts from a natural-language description. I’ll ask for genuinely missing information, show the configuration for review, and require confirmation and GO before creating anything. Activation is a separate admin workflow.";
+      cards = [{ kind: "notice", title: "Assistant capabilities", body: response, tone: "info" }];
+    } else if (plannedCapability === "system_guide") {
+      const guide = resolveSystemGuideAnswer(request.message, request.context);
+      response = guide?.response ?? "I can help explain the supported PrintersHero workflows.";
+      cards = (guide?.cards ?? [{ kind: "notice", title: "System Guide", body: response, tone: "info" }]) as AssistantStructuredCard[];
+    } else if (plannedCapability === "canonical_product_intent_compiler") {
+      const product = await this.productIntentDispatcher.respondPlannedCanonicalProductIntent({
+        organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id,
+        message: request.message,
+        operation: plan.operation as "create" | "continue_session" | "correct" | "select_candidate" | "accept_recommendation" | "request_confirmation" | "execute_go",
+      });
+      response = product.response;
+      cards = product.cards as AssistantStructuredCard[];
+    } else {
+      let specialist: { handled: boolean; response: string; cards: unknown[] } | null = null;
+      try {
+        specialist = await this.dispatchAiFirstSpecialist(plannedCapability, { organizationId: scope.organizationId, userId: actor.userId, conversationId: conversation.id, message: request.message });
+      } catch {
+        await persistAiDiagnostic({ version: 1, referenceId: correlationId, correlationId, diagnosticType: "specialist_dispatch", tenantId: scope.organizationId, actorId: actor.userId, conversationId: conversation.id, provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model, providerRequestId: null, stage: "specialist_exception", errorCode: "specialist_dispatch_failed", providerResponseState: "accepted", parseMethod: "none", repairAttempted: false, repairResult: "not_attempted", validationSchema: null, validationIssuePaths: [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [], plannerOperation: plan.operation, selectedCapability: plannedCapability, specialistName: plannedCapability, optionNormalizationStage: null, resolverStage: null, persistenceAttempted: false, persistenceResult: "not_attempted", createdAt: new Date().toISOString() }).catch(() => undefined);
+        specialist = { handled: true, response: "That planned workflow could not be completed. Nothing was changed.", cards: [{ kind: "tool_warning", title: "Workflow unavailable", summary: "That planned workflow could not be completed. Nothing was changed.", sourceLinks: [], toolStatus: "failed" }] };
+      }
+      if (specialist) {
+        response = specialist.response;
+        cards = specialist.cards as AssistantStructuredCard[];
+      } else if (plan.mode === "read") {
+        // The typed planner selected a read capability first. The existing
+        // read planner is now a post-selection tool-argument compiler only;
+        // it cannot decide a mutation route or act as a fallback router.
+        const readPlan = await this.planner.plan({ organizationId: scope.organizationId, message: request.message, context: request.context });
+        if (readPlan.plan.clarificationRequired) {
+          response = readPlan.plan.clarificationQuestion ?? "Please clarify what you want to look up.";
+          cards = [{ kind: "tool_warning", title: "Clarification needed", summary: response, sourceLinks: [] }];
+        } else {
+          const audits: AssistantToolExecutionAudit[] = [];
+          const orchestration = this.createOrchestrator((event) => audits.push(event));
+          const executed = await orchestration.executePlan(readPlan.plan, { scope, actor: { userId: actor.userId, email: actor.email }, permissions: actor.permissions ?? [], context: request.context, correlationId });
+          const rendered = renderToolResults(executed.executions);
+          response = rendered.response;
+          cards = rendered.cards;
+        }
+      } else {
+        response = "That planned workflow is not available in this deployment. Nothing was changed.";
+        cards = [{ kind: "tool_warning", title: "Workflow unavailable", summary: response, sourceLinks: [], toolStatus: "permission_denied" }];
+      }
+    }
+    console.info("[ASSISTANT_INTENT_PLANNER] Dispatched validated plan.", {
+      correlationId, capabilityId: plannedCapability, operation: plan.operation,
+      provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model,
+      activeSession: Boolean(activeSessionId),
+    });
+    return this.persistAiFirstResponse(input, { response, status: "responded", errorCode: null, cards, provider: plannerResult.diagnostics.provider, model: plannerResult.diagnostics.model });
+  }
+
+  private validateAiFirstPlan(plan: AssistantIntentPlan, activeSessionId: string | null, actor: AssistantActor): string | null {
+    if (plan.contextUsage.activeSessionId !== null && plan.contextUsage.activeSessionId !== activeSessionId) return "The requested session could not be verified. Nothing was changed.";
+    if (!plan.capabilityId) return null;
+    const capability = getAssistantCapability(plan.capabilityId);
+    if (capability.domain !== plan.domain || capability.mode !== plan.mode || !capability.operations.includes(plan.operation)) return "The AI plan selected an incompatible capability. Nothing was changed.";
+    if (capability.requiredContext === "active_session" && !activeSessionId) return "This request needs an active assistant session.";
+    if (capability.requiredContext === "current_entity" && plan.contextUsage.workspaceRelevance !== "entity_reference") return "This request needs a server-verified current record.";
+    if (capability.requiredPermissions.some((permission) => !hasPermission(actor, permission))) return "You don't have permission for that assistant workflow.";
+    return null;
+  }
+
+  private async dispatchAiFirstSpecialist(capabilityId: Exclude<NonNullable<AssistantIntentPlan["capabilityId"]>, "canonical_product_intent_compiler" | "system_guide">, input: { organizationId: string; userId: string; conversationId: string; message: string }): Promise<{ handled: boolean; response: string; cards: unknown[] } | null> {
+    switch (capabilityId) {
+      case "create_quote": case "update_quote": return quoteDraftIntakeService.respond(input);
+      case "create_order": case "update_order": case "orders_workflow": return orderIntakeService.respond({ ...input, pendingRequest: undefined });
+      case "crm_management": return crmManagementService.respond(input);
+      case "production_operations": return productionOperationsService.respond(input);
+      case "fulfillment_operations": return fulfillmentOperationsService.respond(input);
+      case "billing_operations": return billingInvoiceOperationsService.respond(input);
+      case "payment_operations": return paymentOperationsService.respond(input);
+      default: return null;
+    }
+  }
+
+  private async persistOperatorResponse(
+    input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string },
+    result: { response: string; status: "responded" | "failed"; errorCode: string | null; cards: AssistantStructuredCard[]; audits: AssistantToolExecutionAudit[] },
+  ): Promise<AssistantTurnResult> {
+    // Defense in depth: a known raw control decision is never a presentable
+    // assistant message. Do not broadly suppress JSON, because users may
+    // legitimately ask for JSON; this catches only exact schema-valid
+    // Operator protocol text.
+    if (parseAssistantOperatorDecisionText(result.response)) {
+      console.warn("[ASSISTANT_OPERATOR] Prevented raw control protocol from persistence.", {
+        correlationId: input.correlationId,
+      });
+      result = {
+        response: "I couldn't safely present an internal investigation result. Please try again.",
+        status: "failed",
+        errorCode: "operator_protocol_leak_prevented",
+        cards: [],
+        audits: result.audits,
+      };
+    }
+    const persisted = await this.persistFoundationTurn({
+      ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message, context: input.request.context,
+      clientRequestId: input.request.clientRequestId, response: result.response, correlationId: input.correlationId, status: result.status,
+      structuredCards: result.cards, initialTitle: titleFromMessage(input.request.message), provider: "operator_runtime", model: null,
+      mode: "ai_operator_runtime", promptVersion: "ai-operator-runtime-v1", errorCode: result.errorCode,
+      errorMessage: result.status === "failed" ? result.response : null,
+      toolExecutions: result.audits.map((audit) => ({
+        toolName: audit.toolName, toolVersion: audit.toolVersion,
         status: audit.status === "succeeded" || audit.status === "not_found" || audit.status === "partial" ? "succeeded" : audit.status === "rejected" ? "disabled" : "failed",
-        errorCode: audit.failureCode,
-        auditStatus: audit.status,
-        durationMs: audit.durationMs,
-        failureCategory: audit.failureCategory,
-        failingStep: audit.failingStep,
-        coreResultSucceeded: audit.coreResultSucceeded,
+        errorCode: audit.failureCode, auditStatus: audit.status, durationMs: audit.durationMs,
+        failureCategory: audit.failureCategory, failingStep: audit.failingStep, coreResultSucceeded: audit.coreResultSucceeded,
       })),
     });
-    if (!result) throw this.notFound();
+    if (!persisted) throw this.notFound();
+    return persisted;
+  }
 
-    return result;
+  private async persistAiFirstResponse(input: { scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string }, result: { response: string; status: "responded" | "failed"; errorCode: string | null; cards: AssistantStructuredCard[]; provider?: string | null; model?: string | null }): Promise<AssistantTurnResult> {
+    const persisted = await this.persistFoundationTurn({
+      ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message, context: input.request.context,
+      clientRequestId: input.request.clientRequestId, response: result.response, correlationId: input.correlationId, status: result.status,
+      structuredCards: result.cards, initialTitle: titleFromMessage(input.request.message), provider: result.provider ?? null, model: result.model ?? null,
+      mode: "ai_first_typed_intent_planner", promptVersion: "ai-first-intent-planner-v1", errorCode: result.errorCode,
+      errorMessage: result.status === "failed" ? result.response : null,
+    });
+    if (!persisted) throw this.notFound();
+    return persisted;
   }
 
   private async readPausedResolutionTurn(
@@ -760,23 +1126,6 @@ export class AssistantService {
     return new AssistantServiceError("ASSISTANT_CONVERSATION_NOT_FOUND", "Conversation not found.", 404);
   }
 
-  private async persistResponse(input: {
-    scope: AssistantScope; conversationId: string; actor: AssistantActor; request: AssistantTurnRequest; correlationId: string;
-    response: string; status: "responded" | "failed"; errorCode?: string; structuredCards: AssistantStructuredCard[];
-  }) {
-    const result = await this.persistFoundationTurn({
-      ...input.scope, conversationId: input.conversationId, actor: input.actor, message: input.request.message,
-      context: input.request.context, clientRequestId: input.request.clientRequestId, response: input.response,
-      correlationId: input.correlationId, status: input.status,
-      structuredCards: input.structuredCards,
-      initialTitle: titleFromMessage(input.request.message),
-      provider: null, model: null, mode: "stage_2_read_only", promptVersion: "assistant-stage-2-planner-v1",
-      errorCode: input.errorCode ?? null, errorMessage: input.status === "failed" ? input.response : null,
-    });
-    if (!result) throw this.notFound();
-    return result;
-  }
-
   /**
    * A read result and the durable conversation response are separate concerns.
    * We cannot claim a lookup failed when only response persistence failed.
@@ -794,103 +1143,23 @@ export class AssistantService {
   }
 }
 
-function renderToolResults(
-  executions: Array<{ toolName: string; status: string; result?: any; warning?: string; failureCategory?: string; failureCode?: string; failingStep?: string; coreResultSucceeded?: boolean }>,
-  exactSearchTarget: import("./deterministicReadRouting").DeterministicSearchTarget | null = null,
-  exactOrderLookup: import("./deterministicReadRouting").DeterministicOrderLookupTarget | null = null,
-  currentOrderSummary = false,
-) {
+function renderToolResults(executions: Array<{ toolName: string; status: string; result?: any; warning?: string; failureCategory?: string; failureCode?: string; failingStep?: string; coreResultSucceeded?: boolean }>) {
   const cards: AssistantResultCard[] = [];
   for (const execution of executions) {
     if (!execution.result) {
       const permissionDenied = execution.status === "permission_denied";
-      const summary = permissionDenied
-        ? "You don't have permission to view that order."
-        : exactOrderLookup && execution.failureCategory === "timeout"
-          ? "I couldn't complete that lookup before it timed out. Nothing was changed. Please retry."
-          : exactOrderLookup
-            ? "I couldn't complete the order lookup right now. Nothing was changed. Please retry."
-          : execution.warning ?? "The lookup could not be completed.";
-      cards.push({
-        kind: permissionDenied ? "permission_denied" : "tool_warning",
-        title: displayToolTitle(execution.toolName),
-        summary,
-        sourceLinks: [],
-        toolStatus: execution.status === "rejected" ? "failed" : execution.status as any,
-        ...(execution.failureCategory ? {
-          details: {
-            failureCategory: execution.failureCategory,
-            failureCode: execution.failureCode ?? null,
-            failingStep: execution.failingStep ?? null,
-            coreResultSucceeded: execution.coreResultSucceeded ?? false,
-          },
-        } : {}),
-      });
+      cards.push({ kind: permissionDenied ? "permission_denied" : "tool_warning", title: displayToolTitle(execution.toolName), summary: permissionDenied ? "You don't have permission to view that record." : execution.warning ?? "The lookup could not be completed.", sourceLinks: [], toolStatus: execution.status === "rejected" ? "failed" : execution.status as any });
       continue;
     }
     const result = execution.result;
     if (result.status === "not_found") {
-      const summary = exactOrderLookup
-        ? `I couldn't find order ${exactOrderLookup.displayNumber} in the current organization.`
-        : execution.toolName === "production.get_queue_summary"
-          ? result.warning ?? "I couldn't find that active production station. Try the station name shown on your production board."
-          : "No matching record was found.";
-      cards.push({ kind: "not_found", title: displayToolTitle(execution.toolName), summary, sourceLinks: [], toolStatus: "not_found" });
+      cards.push({ kind: "not_found", title: displayToolTitle(execution.toolName), summary: execution.toolName === "production.get_queue_summary" ? result.warning ?? "No matching production station was found." : "No matching record was found.", sourceLinks: [], toolStatus: "not_found" });
       continue;
     }
-    if (execution.toolName === "search.global" && exactSearchTarget) {
-      const exactMatches = exactSearchMatches(result.data?.matches, exactSearchTarget);
-      const entityLabel = exactSearchTarget.entityType;
-      if (!exactMatches.length) {
-        cards.push({ kind: "not_found", title: `No matching ${entityLabel}`, summary: `I couldn't find a matching ${entityLabel}.`, sourceLinks: [], toolStatus: "not_found" });
-        continue;
-      }
-      const filteredResult = {
-        ...result,
-        data: { ...result.data, matches: exactMatches },
-        provenance: result.provenance
-          ? { ...result.provenance, sourceLinks: result.provenance.sourceLinks.filter((link: { entityId?: string; href?: string }) => exactMatches.some((match: { recordId: string; sourceLink?: { href?: string } }) => match.recordId === link.entityId || match.sourceLink?.href === link.href)) }
-          : undefined,
-      };
-      if (exactMatches.length > 1) {
-        cards.push({
-          kind: "search_results",
-          title: `Multiple matching ${entityLabel}s`,
-          summary: `I found multiple ${entityLabel}s with that exact name. Please choose one from the results.`,
-          freshness: filteredResult.provenance?.freshness.capturedAt,
-          sourceLinks: filteredResult.provenance?.sourceLinks ?? [],
-          toolStatus: result.status,
-          details: filteredResult.data,
-        });
-        continue;
-      }
-      const match = exactMatches[0]!;
-      cards.push({
-        kind: "search_results",
-        title: `${entityLabel[0]!.toUpperCase()}${entityLabel.slice(1)} found`,
-        summary: `I found ${match.label}${match.status ? `, currently ${match.status}` : ""}.`,
-        freshness: filteredResult.provenance?.freshness.capturedAt,
-        sourceLinks: filteredResult.provenance?.sourceLinks ?? [],
-        toolStatus: result.status,
-        details: filteredResult.data,
-      });
-      continue;
-    }
-    const names: Record<string, AssistantResultCard["kind"]> = {
-      "search.global": "search_results", "customers.get_summary": "customer_summary", "orders.get_summary": "order_summary",
-      "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context",
-      "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary",
-      "orders.get_due_summary": "order_due_summary",
-      "production.get_completed_jobs": "completed_job_summary",
-      "analytics.resolve_customer": "customer_resolution", "analytics.customer_product_sales": "customer_product_sales",
-      "analytics.customer_uninvoiced_orders": "uninvoiced_order_summary",
-    };
-    const summary = summaryForTool(execution.toolName, result.data, { exactOrderLookup, currentOrderSummary });
-    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: displayToolTitle(execution.toolName), summary, freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: withSuggestedPrompts(execution.toolName, result.data) });
+    const names: Record<string, AssistantResultCard["kind"]> = { "search.global": "search_results", "customers.get_summary": "customer_summary", "orders.get_summary": "order_summary", "products.get_summary": "product_summary", "reports.operational_summary": "operational_metrics", "navigation.get_current_context": "current_context", "production.get_queue_summary": "production_queue_summary", "operations.get_attention_summary": "attention_summary", "orders.get_due_summary": "order_due_summary", "production.get_completed_jobs": "completed_job_summary", "analytics.resolve_customer": "customer_resolution", "analytics.customer_product_sales": "customer_product_sales", "analytics.customer_uninvoiced_orders": "uninvoiced_order_summary" };
+    cards.push({ kind: names[execution.toolName] ?? "partial_result", title: displayToolTitle(execution.toolName), summary: summaryForTool(execution.toolName, result.data), freshness: result.provenance?.freshness.capturedAt, sourceLinks: result.provenance?.sourceLinks ?? [], toolStatus: result.status, details: withSuggestedPrompts(execution.toolName, result.data) });
   }
-  if (!cards.length) return { response: "I need a little more detail to find the right information.", cards };
-  const completed = cards.filter((card) => !["tool_warning", "permission_denied", "not_found"].includes(card.kind));
-  return { response: completed.length ? completed.map((card) => card.summary).join(" ") : cards[0]!.summary, cards };
+  return { response: cards.length ? cards.map((card) => card.summary).join(" ") : "I need a little more detail to find the right information.", cards };
 }
 
 /** Suggestions remain ordinary, visible text prompts. They do not contain
@@ -942,25 +1211,7 @@ function displayToolTitle(toolName: string): string {
   return titles[toolName] ?? "Assistant result";
 }
 
-function exactSearchMatches(matches: unknown, target: import("./deterministicReadRouting").DeterministicSearchTarget) {
-  if (!Array.isArray(matches)) return [];
-  const normalizedTarget = normalizeExactLookupValue(target.query);
-  return matches.filter((match): match is { entityType: string; recordId: string; label: string; status?: string } => {
-    if (!match || typeof match !== "object") return false;
-    const candidate = match as { entityType?: unknown; label?: unknown };
-    if (candidate.entityType !== target.entityType || typeof candidate.label !== "string") return false;
-    const normalizedLabel = normalizeExactLookupValue(candidate.label);
-    return target.entityType === "quote"
-      ? normalizedLabel === normalizedTarget || normalizedLabel === `quote ${normalizedTarget}`
-      : normalizedLabel === normalizedTarget;
-  });
-}
-
-function normalizeExactLookupValue(value: string): string {
-  return value.trim().toLocaleLowerCase("en-US").replace(/\s+/g, " ");
-}
-
-function summaryForTool(toolName: string, data: any, options: { exactOrderLookup: import("./deterministicReadRouting").DeterministicOrderLookupTarget | null; currentOrderSummary: boolean }): string {
+function summaryForTool(toolName: string, data: any): string {
   if (toolName === "search.global") {
     const count = data.matches?.length ?? 0;
     return count ? `I found ${count} matching ${count === 1 ? "record" : "records"}.` : "I couldn't find a matching record.";
@@ -970,28 +1221,16 @@ function summaryForTool(toolName: string, data: any, options: { exactOrderLookup
     const order = data.order;
     const operationalSummary = summarizeOperationalOrder(data);
     if (operationalSummary) return operationalSummary;
-    if (options.exactOrderLookup && order) {
-      const orderLabel = order.label ?? order.number ?? options.exactOrderLookup.displayNumber;
-      const displayOrder = /^order\b/i.test(orderLabel) ? orderLabel : `Order ${orderLabel}`;
-      return `I found ${displayOrder}${data.customer?.label ? ` for ${data.customer.label}` : ""}.`;
-    }
-    if (options.currentOrderSummary) {
-      const blockers = Array.isArray(data.blockingIssues) ? data.blockingIssues : [];
-      return blockers.length
-        ? `${order?.label ?? "This order"} is currently ${formatAssistantDisplayValue(order?.status)}. ${blockers.join(" ")}`
-        : `I can see ${order?.label ?? "this order"}'s current status, but the system does not expose a reliable blocking reason yet.`;
-    }
     return `${order?.label ?? "This order"} is currently ${formatAssistantDisplayValue(order?.status)}${data.dueDate ? ` and due ${formatAssistantDate(data.dueDate)}` : ""}.`;
   }
   if (toolName === "orders.get_due_summary") {
     const orders = Array.isArray(data.orders) ? data.orders as Array<{ orderNumber?: string }> : [];
     const total = Number(data.totalMatchingOrders ?? orders.length ?? 0);
-    const filter = options.exactOrderLookup ? "matching" : undefined;
     if (!total) return "There are no matching orders in that due-date window.";
     const labels = orders.map((order) => order.orderNumber).filter((value): value is string => Boolean(value));
     const listed = labels.length <= 3 ? labels.join(labels.length === 2 ? " and " : ", ") : `${labels.slice(0, 3).join(", ")}${total > 3 ? ", and more" : ""}`;
     const state = orders[0] && (data.orders[0] as { dueState?: string }).dueState;
-    const phrase = state === "overdue" ? "overdue" : state === "due_today" ? "due today" : state === "due_tomorrow" ? "due tomorrow" : filter ?? "matching";
+    const phrase = state === "overdue" ? "overdue" : state === "due_today" ? "due today" : state === "due_tomorrow" ? "due tomorrow" : "matching";
     return `${total} ${total === 1 ? "order is" : "orders are"} ${phrase}: ${listed}.`;
   }
   if (toolName === "production.get_completed_jobs") {
@@ -1158,6 +1397,12 @@ export function responsePresentationForCards(cards: readonly unknown[]): Assista
 export function responseStateForCards(cards: readonly unknown[]): AssistantResponseState {
   const values = cards.filter((card): card is { kind: string; toolStatus?: string } => Boolean(card && typeof card === "object" && typeof (card as { kind?: unknown }).kind === "string"));
   const kinds = new Set(values.map((card) => card.kind));
+  const canonicalContinuationDiagnostic = values.some((card) => {
+    if (card.kind !== "product_validation_errors") return false;
+    const details = card && typeof card === "object" && "details" in card ? (card as { details?: unknown }).details : null;
+    const errors = details && typeof details === "object" && !Array.isArray(details) ? (details as { errors?: unknown }).errors : null;
+    return Array.isArray(errors) && errors.some((value) => typeof value === "string" && /\bpic-[0-9a-f-]{36}\b/i.test(value));
+  });
   if (kinds.has("provider_unavailable")) return { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true };
   if (values.some((card) => card.kind === "tool_warning" && card.toolStatus === "failed")) {
     return { kind: "retryable_failure", retryable: true, diagnosticsAvailable: true };
@@ -1168,6 +1413,7 @@ export function responseStateForCards(cards: readonly unknown[]): AssistantRespo
   if (kinds.has("not_found")) return { kind: "not_found", retryable: false, diagnosticsAvailable: false };
   if (kinds.has("partial_result")) return { kind: "partial", retryable: false, diagnosticsAvailable: true };
   if (kinds.has("tool_warning")) return { kind: "validation_error", retryable: false, diagnosticsAvailable: false };
+  if (canonicalContinuationDiagnostic) return { kind: "validation_error", retryable: false, diagnosticsAvailable: true };
   return { kind: "success", retryable: false, diagnosticsAvailable: false };
 }
 

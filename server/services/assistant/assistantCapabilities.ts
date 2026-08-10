@@ -1,7 +1,9 @@
 import { DrizzleAiFoundationRepository, type AiFoundationRepository } from "../../storage/aiFoundation.repo";
 import type { AssistantCapabilityResolver } from "./assistantService";
 import { aiProviderResolver } from "../ai/aiProviderResolver";
+import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { assistantProductionCommandAllowlist } from "./execution/commandRegistry";
+import { isPublicWebResearchConfigured } from "./publicWebResearch";
 
 /**
  * These are intentionally an informational mirror of the reviewed production
@@ -87,6 +89,8 @@ export function isAssistantCapabilityProductionCommand(value: string): value is 
 
 export const assistantCapabilityReadTools = [
   "search.global",
+  "quotes.search",
+  "quotes.get_detail",
   "customers.get_summary",
   "orders.get_summary",
   "products.get_summary",
@@ -113,20 +117,24 @@ export class OrganizationAssistantCapabilityResolver implements AssistantCapabil
     const settings = await this.aiSettings.getSettings(organizationId);
     const enabled = Boolean(settings?.isEnabled && settings?.assistantEnabled);
     if (!enabled) {
-      return { enabled: false, toolsEnabled: false, providerConfigured: false, unavailableReason: "The assistant is disabled for this organization." };
+      return { enabled: false, toolsEnabled: false, providerConfigured: false, externalResearchEnabled: false, unavailableReason: "The assistant is disabled for this organization." };
     }
     try {
       const provider = await aiProviderResolver.resolveProvider({ orgId: organizationId, feature: "assistant" });
       const toolsEnabled = Boolean(provider.enabled && provider.endpoint && provider.apiKey && provider.model
         && (provider.provider === "openai" || provider.provider === "openai_compatible"));
+      const externalResearchEnabled = toolsEnabled && (
+        resolveAiProviderCapabilities(provider).nativeWebSearch || isPublicWebResearchConfigured()
+      );
       return {
         enabled: true,
         toolsEnabled,
         providerConfigured: toolsEnabled,
+        externalResearchEnabled,
         unavailableReason: toolsEnabled ? null : "Business questions are unavailable until a compatible AI provider is configured.",
       };
     } catch {
-      return { enabled: true, toolsEnabled: false, providerConfigured: false, unavailableReason: "Business questions are unavailable until AI configuration is complete." };
+      return { enabled: true, toolsEnabled: false, providerConfigured: false, externalResearchEnabled: false, unavailableReason: "Business questions are unavailable until AI configuration is complete." };
     }
   }
 }

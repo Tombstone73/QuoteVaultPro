@@ -2,6 +2,10 @@ import { z, type ZodTypeAny } from "zod";
 import {
   assistantCustomerSummaryInputSchema,
   assistantCustomerSummaryResultSchema,
+  assistantQuoteSearchInputSchema,
+  assistantQuoteSearchResultSchema,
+  assistantQuoteDetailInputSchema,
+  assistantQuoteDetailResultSchema,
   assistantGlobalSearchInputSchema,
   assistantGlobalSearchResultSchema,
   assistantNavigationCurrentContextInputSchema,
@@ -22,10 +26,14 @@ import {
   analyticsCustomerProductSalesResultSchema,
   analyticsCustomerUninvoicedOrdersInputSchema,
   analyticsCustomerUninvoicedOrdersResultSchema,
+  analyticsInvoiceActivityInputSchema,
+  analyticsInvoiceActivityResultSchema,
   assistantOrderSummaryInputSchema,
   assistantOrderSummaryResultSchema,
   assistantProductSummaryInputSchema,
   assistantProductSummaryResultSchema,
+  assistantProductPricingInputSchema,
+  assistantProductPricingResultSchema,
   assistantToolNameValues,
   assistantToolResultEnvelopeSchema,
   type AssistantContextEnvelope,
@@ -69,6 +77,9 @@ export interface AssistantToolDefinition<TInput = unknown> {
   requiredPermission: AssistantToolPermissionPolicy;
   requiredContext: readonly ("trusted_actor" | "page_context")[];
   inputSchema: ZodTypeAny;
+  /** Compact provider-facing schema. The Zod schema remains the execution
+   * authority; this prevents native function callers from guessing names. */
+  providerInputSchema?: Record<string, unknown>;
   resultSchema: ZodTypeAny;
   maxResults: number;
   timeoutMs: number;
@@ -83,16 +94,43 @@ export type AssistantToolAdapters = Partial<Record<AssistantToolName, AssistantT
 
 const toolMetadata = {
   "search.global": {
-    description: "Find bounded tenant-scoped customers, orders, products, and other approved business records.",
+    description: "Find bounded tenant-scoped business records. Arguments: query (required text), optional entityType customer|product, optional limit 1–20. Use this to establish a trusted product reference before a product summary or pricing request; investigate likely catalog matches before asking the user for an exact product name.",
     requiredPermission: "internal_staff",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantGlobalSearchInputSchema,
+    providerInputSchema: { type: "object", additionalProperties: false, required: ["query"], properties: { query: { type: "string", minLength: 1, maxLength: 160 }, entityType: { enum: ["customer", "product"] }, limit: { type: "integer", minimum: 1, maximum: 20 } } },
     resultSchema: assistantGlobalSearchResultSchema,
     maxResults: 20,
     timeoutMs: 3_000,
     dataClassification: "internal",
     sourceLinkBehavior: "required",
     auditCategory: "assistant_search",
+    modelSummarizationAllowed: true,
+  },
+  "quotes.search": {
+    description: "Search a bounded tenant-wide quote list without requiring a customer. Arguments are all optional: customer (business name), quoteNumber, lifecycle open or closed, canonical status draft|pending_approval|sent|approved|rejected|expired|converted, createdAtRange {start,end} ISO datetimes, sort newest|oldest|total_desc|total_asc, and limit up to 20. Use lifecycle open for open quotes. Results include quote number, customer, total, canonical status, creation date, and trusted quote/customer references. Quote sent timestamps are not stored; sent quotes are ordered by creation date.",
+    requiredPermission: "internal_staff",
+    requiredContext: ["trusted_actor"] as const,
+    inputSchema: assistantQuoteSearchInputSchema,
+    resultSchema: assistantQuoteSearchResultSchema,
+    maxResults: 20,
+    timeoutMs: 5_000,
+    dataClassification: "internal",
+    sourceLinkBehavior: "optional",
+    auditCategory: "assistant_quote_search",
+    modelSummarizationAllowed: true,
+  },
+  "quotes.get_detail": {
+    description: "Return one tenant-scoped quote's customer/contact, canonical status and total, line items, and authoritative quote-to-order relationship. Use a quoteId returned by quotes.search or trusted task context. A relatedOrder state of none is a normal authoritative result; only call orders.get_summary when state is linked.",
+    requiredPermission: "internal_staff",
+    requiredContext: ["trusted_actor"] as const,
+    inputSchema: assistantQuoteDetailInputSchema,
+    resultSchema: assistantQuoteDetailResultSchema,
+    maxResults: 1,
+    timeoutMs: 5_000,
+    dataClassification: "internal",
+    sourceLinkBehavior: "required",
+    auditCategory: "assistant_quote_detail",
     modelSummarizationAllowed: true,
   },
   "customers.get_summary": {
@@ -125,7 +163,7 @@ const toolMetadata = {
     modelSummarizationAllowed: true,
   },
   "products.get_summary": {
-    description: "Return a reduced catalog and production-routing summary for one product.",
+    description: "Return a reduced catalog and production-routing summary for one trusted product reference. This is not a calculated customer price; use products.get_pricing for an authoritative scenario price when permitted.",
     requiredPermission: "catalog_read",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantProductSummaryInputSchema,
@@ -135,6 +173,19 @@ const toolMetadata = {
     dataClassification: "internal",
     sourceLinkBehavior: "required",
     auditCategory: "assistant_product_summary",
+    modelSummarizationAllowed: true,
+  },
+  "products.get_pricing": {
+    description: "Return authoritative semantic PBV2 pricing configuration for one tenant-scoped product, without requiring a calculation. Optionally project a customer price with semantic width, height, unit (in or ft), quantity, and business-labeled option selections; server resolves defaults and internal PBV2 values. When a required pricing input is missing, the result names its business label and allowed choices. When only a product name is known, use search.global to establish a trusted product reference. After a product search or summary, use that trusted product reference as productId directly; do not search again. This read returns rates, defaults, option dependencies, and impacts together and never changes a product, quote, or order.",
+    requiredPermission: "finance_read",
+    requiredContext: ["trusted_actor"] as const,
+    inputSchema: assistantProductPricingInputSchema,
+    resultSchema: assistantProductPricingResultSchema,
+    maxResults: 1,
+    timeoutMs: 5_000,
+    dataClassification: "restricted_finance",
+    sourceLinkBehavior: "required",
+    auditCategory: "assistant_product_pricing",
     modelSummarizationAllowed: true,
   },
   "reports.operational_summary": {
@@ -258,6 +309,19 @@ const toolMetadata = {
     auditCategory: "assistant_analytics_customer_uninvoiced_orders",
     modelSummarizationAllowed: true,
   },
+  "analytics.invoice_activity": {
+    description: "Release a bounded tenant-scoped list of posted invoice facts for an AI-selected calendar range. Arguments are dateRange {start,end}, optional canonical posted statuses, optional customerId from a trusted result, and limit up to 200. Rows include canonical invoice total, paid amount, outstanding balance, status, customer, and dates. This tool does not calculate business conclusions; use analysis.run for grouping, comparisons, percentages, or rankings.",
+    requiredPermission: "finance_read",
+    requiredContext: ["trusted_actor"] as const,
+    inputSchema: analyticsInvoiceActivityInputSchema,
+    resultSchema: analyticsInvoiceActivityResultSchema,
+    maxResults: 200,
+    timeoutMs: 5_000,
+    dataClassification: "restricted_finance",
+    sourceLinkBehavior: "required",
+    auditCategory: "assistant_analytics_invoice_activity",
+    modelSummarizationAllowed: true,
+  },
 } satisfies Record<AssistantToolName, Omit<AssistantToolDefinition, "name" | "version" | "readOnly" | "adapter">>;
 
 export function createAssistantToolRegistry(adapters: AssistantToolAdapters = {}): ReadonlyMap<AssistantToolName, AssistantToolDefinition> {
@@ -284,7 +348,7 @@ export function createAssistantToolRegistry(adapters: AssistantToolAdapters = {}
 export const assistantToolRegistry = createAssistantToolRegistry();
 
 const ignoredIdentityArgumentKeys = new Set([
-  "organizationid", "orgid", "tenantid", "userid", "permissions", "permission", "role",
+  "organizationid", "orgid", "tenantid", "userid", "permissions", "permission", "role", "roles",
 ]);
 const forbiddenArgumentKeys = new Set(["url", "href", "sql", "querysql", "servicename"]);
 
