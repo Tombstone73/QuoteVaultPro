@@ -313,6 +313,37 @@ describe("assistant order/product/operational tools", () => {
     expect(projectProductPrice).toHaveBeenCalledWith(expect.objectContaining({ productId: "draft-product", pbv2TreeVersionIdOverride: "draft-tree", pbv2ExplicitSelections: { layers: { value: "five" }, contour: { value: "yes" }, weed_tape: { value: "yes" } } }));
   });
 
+  test("returns an active default-method product's readable PBV2 DRAFT configuration", async () => {
+    const repository = {
+      ...repo(),
+      getProduct: jest.fn(async () => ({
+        product: { ...((await repo().getProduct("org-a", {})) as any).product, id: "active-draft-product", name: "Translucent Vinyl - backlit with multilayer printing", isActive: true, pricingMode: "default", pricingEngine: null, pricingProfileKey: null, pbv2ActiveTreeVersionId: null },
+        versions: [{ id: "draft-tree", status: "DRAFT", schemaVersion: 2, publishedAt: null, updatedAt: capturedAt }], options: [], materials: [],
+      })),
+    };
+    const configuration = bannerPricingConfiguration({
+      treeVersionId: "draft-tree", lifecycle: "DRAFT", baseRates: { perSquareFootCents: 500, perPieceCents: null, minimumChargeCents: null },
+      optionGroups: [
+        { selectionKey: "layers", label: "Layers", required: true, defaultValue: "five", availableWhen: null, choices: [{ value: "three", label: "3 Layer", pricingImpactSummary: "$4.00 per sq ft" }, { value: "five", label: "5 Layer", pricingImpactSummary: "$5.00 per sq ft" }] },
+        { selectionKey: "contour", label: "Contour Cutting", required: false, defaultValue: "no", availableWhen: null, choices: [{ value: "no", label: "No", pricingImpactSummary: null }, { value: "yes", label: "Yes", pricingImpactSummary: "+10% of base" }] },
+        { selectionKey: "weed_tape", label: "Weeding and Taping", required: false, defaultValue: "no", availableWhen: { optionGroup: "Contour Cutting", value: "Yes" }, choices: [{ value: "no", label: "No", pricingImpactSummary: null }, { value: "yes", label: "Yes", pricingImpactSummary: "+20% of base; +30% total when Contour Cutting is Yes" }] },
+      ],
+    });
+    const getProductPricingConfiguration = jest.fn(async () => configuration);
+    const tools = createOrderProductOperationalTools({ repository, now: fixedNow, projectProductPrice: jest.fn(), getProductPricingConfiguration });
+
+    const read = await tools.productsGetPricing.execute(invocation, { productId: "active-draft-product" });
+
+    expect(read.data).toMatchObject({
+      product: { active: true, pricingMethod: "default" },
+      pricing: { status: "configuration", treeVersionId: "draft-tree", configuration: { lifecycle: "DRAFT", baseRates: { perSquareFootCents: 500 } } },
+    });
+    expect(read.data.pricing.message).toContain("active");
+    expect(read.data.pricing.message).toContain("PBV2 DRAFT");
+    expect(read.data.pricing.message).not.toContain("unavailable");
+    expect(getProductPricingConfiguration).toHaveBeenCalledWith({ organizationId: "org-a", productId: "active-draft-product" });
+  });
+
   test("keeps an active product on its active PBV2 tree", async () => {
     const activeProjection = jest.fn(async () => ({ pbv2TreeVersionId: "tree-1", lineTotalCents: 1250, breakdown: {}, pbv2SnapshotJson: { dimensions: { widthIn: 12, heightIn: 12 } } }));
     const activeTools = createOrderProductOperationalTools({ repository: repo(), now: fixedNow, projectProductPrice: activeProjection, getProductPricingConfiguration: jest.fn(async () => bannerPricingConfiguration()) });

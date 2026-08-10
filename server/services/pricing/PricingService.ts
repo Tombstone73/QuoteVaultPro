@@ -458,9 +458,9 @@ export function getPbv2PricingVariableDefinitions(): PricingVariableDefinition[]
   return PBV2_PRICING_VARIABLES;
 }
 
-/** A deliberately reduced view of an active PBV2 tree for trusted assistant
- * reads. It explains pricing without exposing tree JSON, node IDs, formula
- * source, or storage-only selection paths to the model. */
+/** A deliberately reduced view of the current readable PBV2 tree for trusted
+ * assistant reads. It explains pricing without exposing tree JSON, node IDs,
+ * formula source, or storage-only selection paths to the model. */
 export type ProductPricingIntrospection = {
   treeVersionId: string;
   lifecycle: string;
@@ -530,17 +530,20 @@ export async function loadCurrentPbv2DraftTreeVersion(
   return draft ?? null;
 }
 
-async function readablePbv2TreeVersionId(product: any, organizationId: string): Promise<string> {
+export async function readablePbv2TreeVersionId(
+  product: any,
+  organizationId: string,
+  loadCurrentDraft: typeof loadCurrentPbv2DraftTreeVersion = loadCurrentPbv2DraftTreeVersion,
+): Promise<string> {
   const activeOrOverride = resolvePbv2Override(product) || product.pbv2ActiveTreeVersionId;
   if (activeOrOverride) return activeOrOverride;
-  if (product.isActive) throw new ProductPricingReadError("PBV2_PRICING_UNAVAILABLE", "This active product has no PBV2 pricing tree.");
 
-  // Product Builder GO intentionally leaves an inactive product without an
-  // active-tree pointer. Use the same current-DRAFT resolution that feeds the
-  // Product Editor's Pricing Preview, rather than treating DRAFT as missing.
-  const draft = await loadCurrentPbv2DraftTreeVersion({ organizationId, productId: product.id });
+  // A linked DRAFT is readable whether the product is active or inactive. The
+  // Product Editor Pricing Preview resolves it this way, and lifecycle is not
+  // evidence that a persisted pricing configuration is absent.
+  const draft = await loadCurrentDraft({ organizationId, productId: product.id });
   if (draft) return draft.id;
-  throw new ProductPricingReadError("PBV2_PRICING_UNAVAILABLE", "This inactive product has no PBV2 pricing configuration.");
+  throw new ProductPricingReadError("PBV2_PRICING_UNAVAILABLE", "This product has no readable PBV2 pricing configuration.");
 }
 
 export async function inspectProductPricing(input: { organizationId: string; productId: string }): Promise<ProductPricingIntrospection> {

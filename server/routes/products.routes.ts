@@ -807,7 +807,7 @@ export function registerProductRoutes(
           .limit(1);
         draft = requestedDraft ?? null;
       } else {
-        // The AI pricing read uses this same resolver for an inactive product,
+        // The AI pricing read uses this same resolver for every product,
         // preventing the editor and AI from disagreeing about current PBV2 DRAFT
         // availability.
         const { loadCurrentPbv2DraftTreeVersion } = await import("../services/pricing/PricingService");
