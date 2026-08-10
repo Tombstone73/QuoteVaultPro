@@ -166,6 +166,18 @@ describe("AssistantService Operator Runtime integration", () => {
     expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
   });
 
+  test("keeps an active product task after a provider failure", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore("proposal_1");
+    const provider = { decide: jest.fn(async () => ({ kind: "fail", response: "The AI provider returned an unusable investigation result." })) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, { respondPlannedCanonicalProductIntent: jest.fn() } as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", actor, { message: "Continue the unfinished product draft.", context });
+
+    expect(tasks.updates.at(-1).patch.status).toBe("active");
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", response: "The AI provider returned an unusable investigation result." }));
+  });
+
   test("an active product correction uses the direct semantic operation capability instead of the continuation compiler adapter", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore("proposal_1");
