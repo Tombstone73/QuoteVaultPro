@@ -188,6 +188,17 @@ function repeatsPriorClarification(previous: readonly string[], next: readonly s
   return prior.every((value, index) => value === requested[index]);
 }
 
+/** Keep diagnostics useful without recording provider text, arguments, or
+ * business data. These facts identify the boundary that rejected a decision. */
+function decisionDiagnosticShape(value: unknown): { decisionKind: string | null; toolCallCount: number | null } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return { decisionKind: null, toolCallCount: null };
+  const record = value as Record<string, unknown>;
+  return {
+    decisionKind: typeof record.kind === "string" ? record.kind : null,
+    toolCallCount: Array.isArray(record.calls) ? record.calls.length : null,
+  };
+}
+
 /** A bounded sequential tool loop. It deliberately has no mutation executor:
  * protected work remains a proposal/confirmation/GO responsibility of the
  * existing deterministic command layer. */
@@ -210,16 +221,29 @@ export class AssistantOperatorRuntime {
       let decision: AssistantOperatorDecision;
       try {
         providerDecisionCount += 1;
-        decision = assistantOperatorDecisionSchema.parse(await this.provider.decide({
+        if (observations.length) console.info("[AI_OPERATOR_TRACE]", { stage: "provider_continuation_started", taskId: input.taskId, step, observationCount: observations.length });
+        const received = await this.provider.decide({
           goal: input.goal, taskId: input.taskId, step, remainingSteps: boundedSteps - step,
           toolCatalog: this.tools.catalog(), observations, safeWorkingSummary, task: input.trustedContext.task,
-        }));
+        });
+        const parsed = assistantOperatorDecisionSchema.safeParse(received);
+        const shape = decisionDiagnosticShape(received);
+        console.info("[AI_OPERATOR_TRACE]", { stage: "runtime_schema_validation", taskId: input.taskId, step, succeeded: parsed.success, ...shape });
+        if (!parsed.success) {
+          console.warn("[AI_OPERATOR_TRACE]", { stage: "final_result_validation", taskId: input.taskId, step, succeeded: false, reason: "operator_decision_schema" });
+          return { status: "failed", response: safeFailureResponse(observations), observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
+        }
+        decision = parsed.data;
       } catch {
+        console.warn("[AI_OPERATOR_TRACE]", { stage: "runtime_schema_validation", taskId: input.taskId, step, succeeded: false, reason: "provider_decision_unavailable" });
         return { status: "failed", response: safeFailureResponse(observations), observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
       }
       safeWorkingSummary = decision.kind === "fail" ? decision.recoverySummary ?? safeWorkingSummary : decision.workingSummary ?? safeWorkingSummary;
       if (decision.kind === "continue") { continuationCount += 1; continue; }
-      if (decision.kind === "complete") return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
+      if (decision.kind === "complete") {
+        console.info("[AI_OPERATOR_TRACE]", { stage: "final_result_validation", taskId: input.taskId, step, succeeded: true });
+        return { status: "completed", response: decision.response, observations, safeWorkingSummary, missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }) };
+      }
       if (decision.kind === "ask_user") {
         if (repeatsPriorClarification(input.trustedContext.task?.missingInformation ?? [], decision.missingInformation)) {
           if (input.trustedContext.task?.activeSemanticProductDraft) {
@@ -247,13 +271,16 @@ export class AssistantOperatorRuntime {
       printersHeroToolDecisionCount += 1;
       for (const call of decision.calls) {
         try {
+          console.info("[AI_OPERATOR_TRACE]", { stage: "handler_entered", taskId: input.taskId, step, toolName: call.toolName });
           const execution = await this.tools.execute({ toolName: call.toolName, arguments: call.arguments, context: { ...input.trustedContext, analysisObservations: observations } });
           observations.push({ step, ...execution });
+          console.info("[AI_OPERATOR_TRACE]", { stage: "observation_returned", taskId: input.taskId, step, toolName: call.toolName, status: execution.status });
         } catch {
           // Provider/model execution faults are still bounded observations.
           // Returning them to the model lets it choose a safe alternative or
           // a truthful partial answer without exposing implementation detail.
           observations.push({ step, toolName: call.toolName, status: "failed", warning: "The requested capability was temporarily unavailable." });
+          console.warn("[AI_OPERATOR_TRACE]", { stage: "observation_returned", taskId: input.taskId, step, toolName: call.toolName, status: "failed" });
         }
       }
     }

@@ -284,6 +284,16 @@ describe("configured AI provider", () => {
     expect(body.tools[0].parameters.properties.initialOperations.items.properties.op).toEqual({ type: "string" });
   });
 
+  test("transports a nested draft-pricing scenario batch through DeepSeek functions", async () => {
+    const scenarios = [{ squareFeet: 10, selections: [{ optionGroup: "Layers", value: "3 Layer" }, { optionGroup: "Contour Cutting", value: "No" }] }, { squareFeet: 10, selections: [{ optionGroup: "Layers", value: "5 Layer" }, { optionGroup: "Contour Cutting", value: "Yes" }, { optionGroup: "Weeding and Taping", value: "Yes" }] }];
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "function_call", call_id: "call_preview", name: "ph_0_products_preview_draft_pricing", arguments: JSON.stringify({ scenarios }) }] })) as unknown as typeof fetch;
+    const schema = { type: "object", additionalProperties: false, required: ["scenarios"], properties: { scenarios: { type: "array", minItems: 1, maxItems: 12, items: { type: "object", additionalProperties: false, required: ["squareFeet"], properties: { squareFeet: { type: "number", exclusiveMinimum: 0 }, selections: { type: "array", items: { type: "object", additionalProperties: false, required: ["optionGroup", "value"], properties: { optionGroup: { type: "string" }, value: { type: "string" } } } } } } } } } as any;
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [{ name: "products.preview_draft_pricing", description: "Preview draft pricing", inputSchema: schema }] });
+    expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "products.preview_draft_pricing", arguments: { scenarios } }] });
+    const body = JSON.parse(String((global.fetch as any).mock.calls[0][1].body));
+    expect(body.tools[0].parameters.properties.scenarios.items.properties.selections.items.required).toEqual(["optionGroup", "value"]);
+  });
+
   test("rejects DSML control text instead of returning it as a chat response", async () => {
     global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "<｜DSML｜tool_calls><｜DSML｜invoke name=\"ph_0_products_begin_draft\">" }] }] })) as unknown as typeof fetch;
     await expect(new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] })).rejects.toMatchObject({ name: "AiProviderResponseError", kind: "provider_protocol_failure" });

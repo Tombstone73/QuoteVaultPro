@@ -380,23 +380,59 @@ export class ProductManagementSkillService {
     return activeSemanticProductDraftContext(current.specification.session.revisions.at(-1)!.intent, inspection);
   }
 
-  async previewActiveSemanticProductDraftPricing(input: { organizationId: string; userId: string; conversationId: string; proposalId: string; squareFeet: number; quantity?: number; selections?: Array<{ optionGroup: string; value: string }> }) {
+  /** Read-only authoritative preview: it reloads the unfinished draft but
+   * never writes a revision, proposal, GO state, or product record. */
+  async previewActiveSemanticProductDraftPricing(input: {
+    organizationId: string;
+    userId: string;
+    conversationId: string;
+    proposalId: string;
+    scenarios: Array<{ squareFeet: number; quantity?: number; selections?: Array<{ optionGroup: string; value: string }> }>;
+    correlationId?: string;
+  }) {
+    const trace = (stage: string, extra: Record<string, unknown> = {}) => console.info("[AI_OPERATOR_TRACE]", {
+      stage, correlationId: input.correlationId ?? null, toolName: "products.preview_draft_pricing", scenarioCount: input.scenarios.length, ...extra,
+    });
     const router = this.deps.canonicalProductIntent;
-    if (!router) throw new Error("The active product draft is unavailable.");
+    if (!router) {
+      trace("active_draft_resolved", { succeeded: false });
+      throw new Error("The active product draft is unavailable.");
+    }
     const current = await router.loadForConversation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
-    if (!current || current.proposalId !== input.proposalId || current.specification.resolutionMetadata.architecture !== "operator_business_operations") throw new Error("The active product draft is unavailable.");
+    if (!current || current.proposalId !== input.proposalId || current.specification.resolutionMetadata.architecture !== "operator_business_operations" || ["executed", "expired", "abandoned"].includes(current.specification.session.state)) {
+      trace("active_draft_resolved", { succeeded: false });
+      throw new Error("The active product draft is unavailable.");
+    }
+    trace("active_draft_resolved", { succeeded: true });
     const intent = current.specification.session.revisions.at(-1)!.intent;
     const groups = new Map(intent.optionGroups.map((group) => [group.label.trim().toLocaleLowerCase(), group]));
-    const selected: Record<string, { value: string }> = {};
-    for (const selection of input.selections ?? []) {
-      const group = groups.get(selection.optionGroup.trim().toLocaleLowerCase());
-      const value = group?.values.find((candidate) => candidate.label.trim().toLocaleLowerCase() === selection.value.trim().toLocaleLowerCase());
-      if (!group || !value) throw new Error("A requested pricing selection is not available on the active product draft.");
-      selected[group.key] = { value: value.key };
-    }
     const projected = projectProductDraftIntentToProductBuilderDraft(intent);
-    const result = evaluatePricingPreviewFromTree({ treeJson: projected.treeJson, widthIn: input.squareFeet * 144, heightIn: 1, quantity: input.quantity ?? 1, pbv2ExplicitSelections: selected });
-    return { productName: intent.identity.name, revision: intent.revision, totalCents: Math.round(result.totalPrice * 100), baseCents: Math.round(result.breakdown.basePrice * 100), optionsCents: Math.round(result.breakdown.optionsPrice * 100) };
+    const scenarios = input.scenarios.map((scenario, scenarioIndex) => {
+      const selected: Record<string, { value: string }> = {};
+      for (const selection of scenario.selections ?? []) {
+        const group = groups.get(selection.optionGroup.trim().toLocaleLowerCase());
+        const value = group?.values.find((candidate) => candidate.label.trim().toLocaleLowerCase() === selection.value.trim().toLocaleLowerCase());
+        if (!group || !value) throw new Error("A requested pricing selection is not available on the active product draft.");
+        selected[group.key] = { value: value.key };
+      }
+      trace("pbv2_evaluation_started", { scenarioIndex: scenarioIndex + 1 });
+      let result: ReturnType<typeof evaluatePricingPreviewFromTree>;
+      try {
+        result = evaluatePricingPreviewFromTree({ treeJson: projected.treeJson, widthIn: scenario.squareFeet * 144, heightIn: 1, quantity: scenario.quantity ?? 1, pbv2ExplicitSelections: selected });
+      } catch (error) {
+        trace("pbv2_evaluation_completed", { scenarioIndex: scenarioIndex + 1, succeeded: false });
+        throw error;
+      }
+      trace("pbv2_evaluation_completed", { scenarioIndex: scenarioIndex + 1, succeeded: true });
+      return {
+        scenarioIndex: scenarioIndex + 1,
+        input: { squareFeet: scenario.squareFeet, quantity: scenario.quantity ?? 1, selections: scenario.selections ?? [] },
+        baseCents: Math.round(result.breakdown.basePrice * 100),
+        optionsCents: Math.round(result.breakdown.optionsPrice * 100),
+        totalCents: Math.round(result.totalPrice * 100),
+      };
+    });
+    return { productName: intent.identity.name, revision: intent.revision, scenarioCount: scenarios.length, scenarios };
   }
 
   /** Starts an unfinished inactive product intent owned by the server. The

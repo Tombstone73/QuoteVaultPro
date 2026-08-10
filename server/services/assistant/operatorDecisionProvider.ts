@@ -105,12 +105,23 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
           outputItemTypes: response.requestMetadata.outputItemTypes ?? [],
           parseClassification: "invalid_operator_json",
         });
+        console.warn("[AI_OPERATOR_TRACE]", {
+          stage: "final_result_validation", taskId: input.taskId,
+          requestSequence: response.requestMetadata.requestSequence ?? null,
+          succeeded: false, reason: "provider_operator_decision_json",
+        });
         return { kind: "fail", response: "The AI provider returned an unusable investigation result." };
       }
       if (hasProviderControlProtocol(decision)) {
         console.warn("[AI_PROVIDER] Blocking provider control protocol from Operator terminal output.", { requestSequence: response.requestMetadata.requestSequence ?? null, apiSurface: response.requestMetadata.apiSurface ?? null, outputItemTypes: response.requestMetadata.outputItemTypes ?? [] });
+        console.warn("[AI_OPERATOR_TRACE]", {
+          stage: "final_result_validation", taskId: input.taskId,
+          requestSequence: response.requestMetadata.requestSequence ?? null,
+          succeeded: false, reason: "provider_control_protocol",
+        });
         return { kind: "fail", response: "The AI provider returned an unusable investigation result." };
       }
+      if (decision.kind === "complete") console.info("[AI_OPERATOR_TRACE]", { stage: "final_result_validation", taskId: input.taskId, requestSequence: response.requestMetadata.requestSequence ?? null, succeeded: true });
       return this.withNativeSources(decision, response.requestMetadata.nativeWebSources);
     }
     const response = await this.provider.generateJson({

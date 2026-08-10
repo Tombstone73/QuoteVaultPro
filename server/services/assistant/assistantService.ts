@@ -306,6 +306,49 @@ const beginProductDraftToolInputSchema: Record<string, unknown> = {
   properties: { initialOperations: (semanticProductOperationsToolInputSchema.properties as Record<string, unknown>).operations },
 };
 
+/** Read-only draft pricing accepts business labels only. A single bounded
+ * batch keeps ordinary multi-scenario questions inside one Operator call. */
+const draftPricingPreviewToolInputSchema: Record<string, unknown> = {
+  type: "object",
+  additionalProperties: false,
+  required: ["scenarios"],
+  properties: {
+    scenarios: {
+      type: "array", minItems: 1, maxItems: 12,
+      items: {
+        type: "object", additionalProperties: false, required: ["squareFeet"],
+        properties: {
+          squareFeet: { type: "number", exclusiveMinimum: 0 },
+          quantity: { type: "integer", minimum: 1 },
+          selections: {
+            type: "array", maxItems: 12,
+            items: {
+              type: "object", additionalProperties: false, required: ["optionGroup", "value"],
+              properties: { optionGroup: { type: "string", minLength: 1, maxLength: 160 }, value: { type: "string", minLength: 1, maxLength: 160 } },
+            },
+          },
+        },
+      },
+    },
+  },
+};
+
+type DraftPricingScenario = { squareFeet: number; quantity?: number; selections?: Array<{ optionGroup: string; value: string }> };
+
+function parseDraftPricingScenarios(value: unknown): DraftPricingScenario[] | null {
+  if (!Array.isArray(value) || value.length < 1 || value.length > 12) return null;
+  const scenarios: DraftPricingScenario[] = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) return null;
+    const scenario = item as Record<string, unknown>;
+    if (typeof scenario.squareFeet !== "number" || !Number.isFinite(scenario.squareFeet) || scenario.squareFeet <= 0) return null;
+    if (scenario.quantity !== undefined && (typeof scenario.quantity !== "number" || !Number.isInteger(scenario.quantity) || scenario.quantity <= 0)) return null;
+    if (scenario.selections !== undefined && (!Array.isArray(scenario.selections) || scenario.selections.length > 12 || !scenario.selections.every((selection) => selection && typeof selection === "object" && !Array.isArray(selection) && typeof (selection as Record<string, unknown>).optionGroup === "string" && typeof (selection as Record<string, unknown>).value === "string"))) return null;
+    scenarios.push({ squareFeet: scenario.squareFeet, ...(typeof scenario.quantity === "number" ? { quantity: scenario.quantity } : {}), ...(Array.isArray(scenario.selections) ? { selections: scenario.selections as Array<{ optionGroup: string; value: string }> } : {}) });
+  }
+  return scenarios;
+}
+
 /** Financial reads require authorization at every retrieval. Never retain an
  * analytics observation for a later direct-answer turn, because a user's role
  * may have changed since the original read. */
@@ -360,6 +403,7 @@ function operatorBusinessContext(input: {
     capabilities: [
       ...(input.canBeginProductDraft ? ["products.begin_draft"] : []),
       ...(input.canApplyProductOperations ? ["products.apply_operations"] : []),
+      ...(input.canApplyProductOperations ? ["products.preview_draft_pricing"] : []),
     ],
   };
 }
@@ -732,16 +776,18 @@ export class AssistantService {
       }] : [];
     const previewProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{
       name: "products.preview_draft_pricing",
-      description: "Calculate a read-only PBV2 price scenario for the current unfinished product draft before GO. Provide squareFeet, optional quantity, and selected business option labels. Use this when the user asks how the active draft will price; do not ask them to restate pricing rules already shown in the draft context.",
-      inputSchema: { type: "object", additionalProperties: false, required: ["squareFeet"], properties: { squareFeet: { type: "number", exclusiveMinimum: 0 }, quantity: { type: "integer", minimum: 1 }, selections: { type: "array", maxItems: 12, items: { type: "object", additionalProperties: false, required: ["optionGroup", "value"], properties: { optionGroup: { type: "string", minLength: 1, maxLength: 160 }, value: { type: "string", minLength: 1, maxLength: 160 } } } } } },
+      description: "Calculate read-only PBV2 prices for one or more scenarios on the current unfinished product draft before GO. Make one call with scenarios; each scenario has squareFeet, optional quantity, and selected business option labels. Use labels only, never IDs or PBV2 data. Use this when the user asks how the active draft will price; do not ask them to restate pricing rules already shown in the draft context.",
+      inputSchema: draftPricingPreviewToolInputSchema,
       execute: async ({ arguments: args, context }) => {
         if (!activeProductProposalId || !this.productIntentDispatcher.previewActiveSemanticProductDraftPricing) return { status: "rejected" as const, warning: "An active product draft is required for draft pricing." };
-        const squareFeet = typeof args.squareFeet === "number" && Number.isFinite(args.squareFeet) && args.squareFeet > 0 ? args.squareFeet : null;
-        const quantity = typeof args.quantity === "number" && Number.isInteger(args.quantity) && args.quantity > 0 ? args.quantity : undefined;
-        const selections = Array.isArray(args.selections) && args.selections.every((item) => item && typeof item === "object" && typeof (item as any).optionGroup === "string" && typeof (item as any).value === "string") ? args.selections as Array<{ optionGroup: string; value: string }> : undefined;
-        if (squareFeet === null) return { status: "rejected" as const, warning: "Draft pricing requires a positive square-foot scenario." };
+        const scenarios = parseDraftPricingScenarios(args.scenarios);
+        if (!scenarios) {
+          console.warn("[AI_OPERATOR_TRACE]", { stage: "argument_validation", correlationId: context.correlationId, toolName: "products.preview_draft_pricing", succeeded: false });
+          return { status: "rejected" as const, warning: "Draft pricing requires one to twelve positive square-foot scenarios with business-label selections." };
+        }
+        console.info("[AI_OPERATOR_TRACE]", { stage: "argument_validation", correlationId: context.correlationId, toolName: "products.preview_draft_pricing", succeeded: true, scenarioCount: scenarios.length });
         try {
-          const data = await this.productIntentDispatcher.previewActiveSemanticProductDraftPricing({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId: activeProductProposalId, squareFeet, quantity, selections });
+          const data = await this.productIntentDispatcher.previewActiveSemanticProductDraftPricing({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId: activeProductProposalId, scenarios, correlationId: context.correlationId });
           return { status: "succeeded" as const, result: { status: "succeeded", data, provenance: { sourceLinks: [], freshness: { capturedAt: new Date().toISOString() } } } as any };
         } catch (error) { return { status: "rejected" as const, warning: error instanceof Error ? error.message : "The active product draft could not be priced." }; }
       },

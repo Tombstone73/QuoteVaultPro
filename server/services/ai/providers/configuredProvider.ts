@@ -498,10 +498,40 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       const outputItemTypes = output.slice(0, 32).map((item: any) => typeof item?.type === "string" ? item.type.slice(0, 80) : "unknown");
       const outputItemStatuses = output.slice(0, 32).map((item: any) => typeof item?.status === "string" ? item.status.slice(0, 80) : "unknown");
       const functionCalls = output.filter((item: any) => item?.type === "function_call" && typeof item.name === "string" && typeof item.arguments === "string" && providerFunctionNames.has(item.name));
+      const decodedFunctionCalls: Array<{ toolName: string; arguments: Record<string, unknown>; argumentDecodeSucceeded: boolean }> = functionCalls.map((item: any) => {
+        try {
+          const parsed = JSON.parse(item.arguments);
+          return {
+            toolName: providerFunctionNames.get(item.name)!,
+            arguments: parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {},
+            argumentDecodeSucceeded: Boolean(parsed && typeof parsed === "object" && !Array.isArray(parsed)),
+          };
+        } catch {
+          return { toolName: providerFunctionNames.get(item.name)!, arguments: {}, argumentDecodeSucceeded: false };
+        }
+      });
       const nativeWebSearchCalls = output.filter((item: any) => item?.type === "web_search_call");
       const webSearchActions = nativeWebSearchCalls.filter((item: any) => item.action && typeof item.action === "object").map((item: any) => item.action);
       const webSources = nativeWebSources(output);
       const finalText = output.filter((item: any) => item?.type === "message").flatMap((item: any) => Array.isArray(item.content) ? item.content : []).filter((part: any) => part?.type === "output_text" && typeof part.text === "string").map((part: any) => part.text).join("\n");
+      console.info("[AI_OPERATOR_TRACE]", {
+        stage: "provider_decision_received", requestSequence: request.operatorRequestSequence ?? null,
+        responseStatus, outputItemTypes, structuredToolCallDetected: decodedFunctionCalls.length > 0,
+        toolCallCount: decodedFunctionCalls.length,
+      });
+      if (decodedFunctionCalls.length) {
+        console.info("[AI_OPERATOR_TRACE]", {
+          stage: "tool_call_detected", requestSequence: request.operatorRequestSequence ?? null,
+          toolNames: decodedFunctionCalls.map((call) => call.toolName).slice(0, 12),
+          toolCallCount: decodedFunctionCalls.length,
+        });
+        console.info("[AI_OPERATOR_TRACE]", {
+          stage: "argument_decode", requestSequence: request.operatorRequestSequence ?? null,
+          succeeded: decodedFunctionCalls.every((call) => call.argumentDecodeSucceeded),
+          successCount: decodedFunctionCalls.filter((call) => call.argumentDecodeSucceeded).length,
+          failureCount: decodedFunctionCalls.filter((call) => !call.argumentDecodeSucceeded).length,
+        });
+      }
       if (!functionCalls.length && hasProviderControlProtocol(finalText)) {
         console.warn("[AI_PROVIDER] DeepSeek Responses returned unconsumed control protocol.", {
           provider: config.provider, model: config.model, apiSurface: "deepseek_responses", providerRequestId,
@@ -523,7 +553,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         throw new AiProviderResponseError({ kind: failureKind, status: response.status, provider: config.provider, model: config.model, providerRequestId, message: "DeepSeek Responses did not return a complete Operator result." });
       }
       const rawText = functionCalls.length
-        ? JSON.stringify({ kind: "call_tools", calls: functionCalls.map((item: any) => ({ toolName: providerFunctionNames.get(item.name), arguments: (() => { try { const parsed = JSON.parse(item.arguments); return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {}; } catch { return {}; } })() })), workingSummary: "Continuing authorized investigation." })
+        ? JSON.stringify({ kind: "call_tools", calls: decodedFunctionCalls.map((call) => ({ toolName: call.toolName, arguments: call.arguments })), workingSummary: "Continuing authorized investigation." })
         : terminalDecision ? JSON.stringify(terminalDecision) : terminalCompletion ? JSON.stringify({ kind: "complete", response: terminalCompletion.response }) : (nativeWebSearchCalls.length
           ? JSON.stringify({ kind: "continue", workingSummary: "Continuing public research." })
           : "");

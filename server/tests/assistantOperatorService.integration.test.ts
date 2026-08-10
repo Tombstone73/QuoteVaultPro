@@ -178,6 +178,61 @@ describe("AssistantService Operator Runtime integration", () => {
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ status: "failed", response: "The AI provider returned an unusable investigation result." }));
   });
 
+  test("offers one read-only batch pricing preview for an active product draft", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore("proposal_1");
+    const scenarios = [{ squareFeet: 10, selections: [{ optionGroup: "Layers", value: "3 Layer" }, { optionGroup: "Contour Cutting", value: "No" }] }, { squareFeet: 10, selections: [{ optionGroup: "Layers", value: "5 Layer" }, { optionGroup: "Contour Cutting", value: "Yes" }, { optionGroup: "Weeding and Taping", value: "Yes" }] }];
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(), applyCanonicalProductOperations: jest.fn(async () => ({ handled: true, response: "I made 5 Layer the default.", cards: [{ kind: "canonical_product_intent_proposal", title: "Product draft", summary: "Ready", sourceLinks: [], details: { proposalId: "proposal_1" } }] })),
+      getActiveSemanticProductDraftContext: jest.fn(async () => ({ name: "Translucent Vinyl", category: { state: "resolved", label: "Roll Printing", provenance: "explicit_user" }, measurementMode: "dimensions_required", pricing: { model: "one_dimensional_matrix", basis: "per_square_foot", optionGroup: "Layers", rates: [{ option: "3 Layer", priceCents: 400 }, { option: "5 Layer", priceCents: 500 }] }, optionGroups: [], outstandingDecisions: [], recentBusinessOperations: [], trustedSelections: [], readyForReview: true })),
+      previewActiveSemanticProductDraftPricing: jest.fn(async () => ({ productName: "Translucent Vinyl", revision: 3, scenarioCount: 2, scenarios: [{ totalCents: 4000 }, { totalCents: 6500 }] })),
+    };
+    const provider = { decide: jest.fn(async ({ observations, toolCatalog, task }: any) => {
+      if (!observations.length) {
+        const preview = toolCatalog.find((tool: any) => tool.name === "products.preview_draft_pricing");
+        expect(preview?.inputSchema).toMatchObject({ required: ["scenarios"], properties: { scenarios: { minItems: 1, maxItems: 12 } } });
+        expect(task.businessContext.capabilities).toContain("products.preview_draft_pricing");
+        return { kind: "call_tools", calls: [{ toolName: "products.preview_draft_pricing", arguments: { scenarios } }] };
+      }
+      expect(observations[0]).toMatchObject({ toolName: "products.preview_draft_pricing", status: "succeeded", result: { data: { scenarioCount: 2 } } });
+      return { kind: "complete", response: "For 10 square feet, 3 Layer with no contour is $40.00 and 5 Layer with contour and Weed/Tape is $65.00." };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.update_inactive_draft"] }, { message: "Show the pricing scenarios.", context });
+
+    expect(product.previewActiveSemanticProductDraftPricing).toHaveBeenCalledWith(expect.objectContaining({ proposalId: "proposal_1", scenarios }));
+    expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+    expect(tasks.updates.at(-1).patch.status).toBe("active");
+
+    const correctionProvider = { decide: jest.fn(async ({ observations }: any) => observations.length
+      ? ({ kind: "complete", response: "I made 5 Layer the default." })
+      : ({ kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations: [{ op: "set_option_default", optionGroup: "Layers", value: "5 Layer" }] } }] })) };
+    const correction = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => correctionProvider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+    await correction.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.update_inactive_draft"] }, { message: "Actually make 5 layer the default instead.", context });
+    expect(product.applyCanonicalProductOperations).toHaveBeenCalledWith(expect.objectContaining({ message: "Actually make 5 layer the default instead.", operations: [{ op: "set_option_default", optionGroup: "Layers", value: "5 Layer" }] }));
+  });
+
+  test("keeps the active draft after a rejected read-only pricing preview", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore("proposal_1");
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(), applyCanonicalProductOperations: jest.fn(),
+      getActiveSemanticProductDraftContext: jest.fn(async () => ({ name: "Translucent Vinyl", category: { state: "resolved", label: "Roll Printing", provenance: "explicit_user" }, measurementMode: "dimensions_required", pricing: { model: "one_dimensional_matrix", basis: "per_square_foot", optionGroup: "Layers", rates: [] }, optionGroups: [], outstandingDecisions: [], recentBusinessOperations: [], trustedSelections: [], readyForReview: true })),
+      previewActiveSemanticProductDraftPricing: jest.fn(async () => { throw new Error("The active product draft could not be priced."); }),
+    };
+    const provider = { decide: jest.fn(async ({ observations }: any) => observations.length
+      ? ({ kind: "fail", response: "The draft price preview is unavailable right now." })
+      : ({ kind: "call_tools", calls: [{ toolName: "products.preview_draft_pricing", arguments: { scenarios: [{ squareFeet: 10 }] } }] })) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.update_inactive_draft"] }, { message: "Show pricing for 10 square feet.", context });
+
+    expect(product.previewActiveSemanticProductDraftPricing).toHaveBeenCalledTimes(1);
+    expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+    expect(tasks.updates.at(-1).patch.status).toBe("active");
+  });
+
   test("an active product correction uses the direct semantic operation capability instead of the continuation compiler adapter", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore("proposal_1");
