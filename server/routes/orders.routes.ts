@@ -126,6 +126,7 @@ import {
     listManualReservationsForOrder,
 } from "../lib/manualInventoryReservationsRepo";
 import { createLineItemFileRecord } from "../services/lineItemFileRecordService";
+import { canonicalArtworkWriteService } from "../services/artwork/CanonicalArtworkWriteService";
 import {
     assertStage18PDevFixtureAccess,
     isStage18PDevFixtureCustomer,
@@ -1023,6 +1024,19 @@ export async function registerOrderRoutes(
             },
             source: args.source,
             persistLink: async (tx, stored) => {
+                if (args.orderLineItemId && args.role === "artwork") {
+                    await canonicalArtworkWriteService.attachSourceArtwork({
+                        tx,
+                        organizationId: args.organizationId,
+                        orderId: args.orderId,
+                        lineItemId: args.orderLineItemId,
+                        fileRecordId: stored.fileRecord.id,
+                        side: args.side,
+                        allocationQuantity: args.productionQuantity ?? null,
+                        allocationGroupId: args.productionGroupId ?? null,
+                        actorUserId: args.userId,
+                    });
+                }
                 const [created] = await tx.insert(orderAttachments).values({
                     orderId: args.orderId,
                     orderLineItemId: args.orderLineItemId ?? null,
@@ -6542,6 +6556,19 @@ export async function registerOrderRoutes(
                         mimeType: mimeType || 'application/octet-stream',
                     },
                     persistLink: async (tx, stored) => {
+                        if (resolvedLineItemId && role === "artwork") {
+                            await canonicalArtworkWriteService.attachSourceArtwork({
+                                tx,
+                                organizationId,
+                                orderId,
+                                lineItemId: resolvedLineItemId,
+                                fileRecordId: stored.fileRecord.id,
+                                side: side as FileSide | null,
+                                allocationQuantity: baseAttachmentData.productionQuantity,
+                                allocationGroupId: baseAttachmentData.productionGroupId,
+                                actorUserId: userId,
+                            });
+                        }
                         const [created] = await tx.insert(orderAttachments).values({
                             ...baseAttachmentData,
                             fileRecordId: stored.fileRecord.id,
@@ -6584,6 +6611,19 @@ export async function registerOrderRoutes(
                         fileSize: fileSize || null,
                     },
                     persistLink: async (tx, stored) => {
+                        if (resolvedLineItemId && role === "artwork") {
+                            await canonicalArtworkWriteService.attachSourceArtwork({
+                                tx,
+                                organizationId,
+                                orderId,
+                                lineItemId: resolvedLineItemId,
+                                fileRecordId: stored.fileRecord.id,
+                                side: side as FileSide | null,
+                                allocationQuantity: baseAttachmentData.productionQuantity,
+                                allocationGroupId: baseAttachmentData.productionGroupId,
+                                actorUserId: userId,
+                            });
+                        }
                         const [created] = await tx.insert(orderAttachments).values({
                             ...baseAttachmentData,
                             fileRecordId: stored.fileRecord.id,

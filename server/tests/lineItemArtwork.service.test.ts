@@ -1,7 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globals";
 
 const lineItemArtworkRepository = {};
-jest.unstable_mockModule("../storage/lineItemArtwork.repo", () => ({ lineItemArtworkRepository }));
+jest.unstable_mockModule("../storage/lineItemArtwork.repo", () => ({
+  lineItemArtworkRepository,
+  LineItemArtworkRepository: class {},
+}));
 
 let LineItemArtworkService: any;
 let LineItemArtworkError: any;
@@ -59,6 +62,16 @@ describe("LineItemArtworkService", () => {
     expect(source.fileRecordId).toBe("file_source");
     expect(production.fileRecordId).toBe("file_source");
     expect(store.fileRecords.size).toBe(4);
+  });
+
+  test("is idempotent for a retried equivalent source or production operation", async () => {
+    const source = await service.attachArtwork(sourceInput());
+    const retriedSource = await service.attachArtwork(sourceInput());
+    const production = await service.attachArtwork({ ...sourceInput(), role: "production", origin: "promoted_existing" });
+    const retriedProduction = await service.attachArtwork({ ...sourceInput(), role: "production", origin: "promoted_existing" });
+    expect(retriedSource.id).toBe(source.id);
+    expect(retriedProduction.id).toBe(production.id);
+    expect(store.artworks.size).toBe(2);
   });
 
   test("creates a modified relationship with explicit parent lineage and a distinct file", async () => {

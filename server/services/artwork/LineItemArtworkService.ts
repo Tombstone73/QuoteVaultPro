@@ -1,5 +1,5 @@
 import type { InsertLineItemArtwork, LineItemArtwork } from "@shared/schema";
-import { lineItemArtworkRepository, type LineItemArtworkRepository, type TenantLineItem } from "../../storage/lineItemArtwork.repo";
+import { LineItemArtworkRepository, lineItemArtworkRepository, type TenantLineItem } from "../../storage/lineItemArtwork.repo";
 
 export class LineItemArtworkError extends Error {
   constructor(public readonly statusCode: 404 | 409 | 422, message: string) {
@@ -49,20 +49,36 @@ export class LineItemArtworkService {
   }
 
   async attachArtwork(input: AttachLineItemArtworkInput): Promise<LineItemArtwork> {
-    return this.store.transaction(async (tx, repository) => this.attachArtworkInTransaction(repository, tx, input));
+    return this.store.transaction(async (tx, repository) => this.attachArtworkWithRepository(repository, tx, input));
+  }
+
+  /** Allows compatibility projections to share the caller's transaction. */
+  async attachArtworkInTransaction(tx: any, input: AttachLineItemArtworkInput): Promise<LineItemArtwork> {
+    return this.attachArtworkWithRepository(new LineItemArtworkRepository(tx), tx, input);
   }
 
   async createModifiedArtworkVersion(input: Omit<AttachLineItemArtworkInput, "role" | "origin"> & {
     parentArtworkId: string;
   }): Promise<LineItemArtwork> {
-    return this.store.transaction(async (tx, repository) => {
-      const created = await this.attachArtworkInTransaction(repository, tx, {
+    return this.store.transaction(async (tx, repository) => this.createModifiedArtworkWithRepository(repository, tx, input));
+  }
+
+  async createModifiedArtworkVersionInTransaction(tx: any, input: Omit<AttachLineItemArtworkInput, "role" | "origin"> & {
+    parentArtworkId: string;
+  }): Promise<LineItemArtwork> {
+    return this.createModifiedArtworkWithRepository(new LineItemArtworkRepository(tx), tx, input);
+  }
+
+  private async createModifiedArtworkWithRepository(repository: ArtworkStore, tx: any, input: Omit<AttachLineItemArtworkInput, "role" | "origin"> & {
+    parentArtworkId: string;
+  }): Promise<LineItemArtwork> {
+      const created = await this.attachArtworkWithRepository(repository, tx, {
         ...input,
         role: "modified_production",
         origin: "modified_copy",
       });
       if (input.supersedesArtworkId) {
-        await this.supersedeArtworkInTransaction(repository, tx, {
+        await this.supersedeArtworkWithRepository(repository, tx, {
           organizationId: input.organizationId,
           artworkId: input.supersedesArtworkId,
           replacementArtworkId: created.id,
@@ -70,7 +86,6 @@ export class LineItemArtworkService {
         });
       }
       return created;
-    });
   }
 
   async supersedeArtwork(args: {
@@ -79,10 +94,20 @@ export class LineItemArtworkService {
     replacementArtworkId: string;
     actorUserId?: string | null;
   }): Promise<LineItemArtwork> {
-    return this.store.transaction(async (tx, repository) => this.supersedeArtworkInTransaction(repository, tx, args));
+    return this.store.transaction(async (tx, repository) => this.supersedeArtworkWithRepository(repository, tx, args));
   }
 
-  private async attachArtworkInTransaction(repository: ArtworkStore, tx: any, input: AttachLineItemArtworkInput): Promise<LineItemArtwork> {
+  /** Allows replacement/reset compatibility projections to share the caller's transaction. */
+  async supersedeArtworkInTransaction(tx: any, args: {
+    organizationId: string;
+    artworkId: string;
+    replacementArtworkId: string;
+    actorUserId?: string | null;
+  }): Promise<LineItemArtwork> {
+    return this.supersedeArtworkWithRepository(new LineItemArtworkRepository(tx), tx, args);
+  }
+
+  private async attachArtworkWithRepository(repository: ArtworkStore, tx: any, input: AttachLineItemArtworkInput): Promise<LineItemArtwork> {
     if (!["customer_source", "production", "modified_production"].includes(input.role)) {
       throw new LineItemArtworkError(422, "Generated workflow artifacts are not line-item artwork.");
     }
@@ -109,6 +134,19 @@ export class LineItemArtworkService {
       throw new LineItemArtworkError(409, "Only current artwork can be superseded.");
     }
 
+    const current = await repository.listByLineItem(input.organizationId, input.lineItemId, { currentOnly: true }, tx);
+    const existing = current.find((relationship) =>
+      relationship.fileRecordId === input.fileRecordId &&
+      relationship.role === input.role &&
+      relationship.side === (input.side ?? "unknown") &&
+      relationship.origin === input.origin &&
+      relationship.allocationQuantity === (input.allocationQuantity ?? null) &&
+      relationship.allocationGroupId === (input.allocationGroupId ?? null) &&
+      relationship.parentArtworkId === (input.parentArtworkId ?? null) &&
+      relationship.supersedesArtworkId === (input.supersedesArtworkId ?? null),
+    );
+    if (existing) return existing;
+
     return repository.create({
       organizationId: input.organizationId,
       orderId: input.orderId,
@@ -126,7 +164,7 @@ export class LineItemArtworkService {
     } satisfies InsertLineItemArtwork, tx);
   }
 
-  private async supersedeArtworkInTransaction(repository: ArtworkStore, tx: any, args: {
+  private async supersedeArtworkWithRepository(repository: ArtworkStore, tx: any, args: {
     organizationId: string;
     artworkId: string;
     replacementArtworkId: string;

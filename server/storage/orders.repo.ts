@@ -54,6 +54,7 @@ import { getInitialWorkflowState, transitionLineItemWorkflowState } from "../ser
 import { resolveActiveProductionOwners } from "../services/productionOwnership";
 import { copyLineItemDesignSnapshotFields, materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "./productDesignConfig.repo";
+import { canonicalArtworkWriteService } from "../services/artwork/CanonicalArtworkWriteService";
 import {
     enrichLineItemWithEffectivePricing,
     mergePricingIntoSpecsJson,
@@ -2179,7 +2180,24 @@ export class OrdersRepository {
                     }
 
                     if (orderAttachmentInserts.length > 0) {
-                        await this.dbInstance.insert(orderAttachments).values(orderAttachmentInserts);
+                        await this.dbInstance.transaction(async (tx) => {
+                            for (const attachment of orderAttachmentInserts) {
+                                if (attachment.role !== "artwork" || !attachment.orderLineItemId || !attachment.fileRecordId) continue;
+                                await canonicalArtworkWriteService.attachSourceArtwork({
+                                    tx,
+                                    organizationId,
+                                    orderId: createdOrder.id,
+                                    lineItemId: attachment.orderLineItemId,
+                                    fileRecordId: attachment.fileRecordId,
+                                    side: attachment.side,
+                                    allocationQuantity: attachment.productionQuantity ?? null,
+                                    allocationGroupId: attachment.productionGroupId ?? null,
+                                    actorUserId: createdByUserId,
+                                    origin: "legacy_backfill",
+                                });
+                            }
+                            await tx.insert(orderAttachments).values(orderAttachmentInserts);
+                        });
                         console.log(`[CONVERT QUOTE] Copied ${orderAttachmentInserts.length} line item attachments from quote to order`);
                     }
                 }

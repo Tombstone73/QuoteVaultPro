@@ -48,6 +48,7 @@ import { fileDerivativeRepository } from "./storage/fileDerivative.repo";
 import { storagePlacementRepository } from "./storage/storagePlacement.repo";
 import { resolveProductionSides } from "@shared/productionHydration";
 import { defaultProductionArtworkAllocationForLine } from "@shared/artworkAllocation";
+import { canonicalArtworkWriteService } from "./services/artwork/CanonicalArtworkWriteService";
 
 const BUCKET_NAME = process.env.PREPRESS_FILES_BUCKET || process.env.GCS_BUCKET_NAME || "quotevaultpro-uploads";
 
@@ -885,6 +886,30 @@ export async function promoteCustomerArtworkToProductionArtwork(params: {
       fileSize: source.sizeBytes,
     },
     persistLink: async (tx, result) => {
+      const sourceArtwork = await canonicalArtworkWriteService.attachSourceArtwork({
+        tx,
+        organizationId: params.organizationId,
+        orderId: params.orderId,
+        lineItemId: params.lineItemId,
+        fileRecordId: result.fileRecord.id,
+        side: params.artworkSide,
+        allocationQuantity: source.productionQuantity ?? null,
+        allocationGroupId: source.productionGroupId ?? null,
+        actorUserId: params.createdByUserId,
+        origin: "legacy_backfill",
+      });
+      await canonicalArtworkWriteService.promoteArtworkForProduction({
+        tx,
+        organizationId: params.organizationId,
+        orderId: params.orderId,
+        lineItemId: params.lineItemId,
+        fileRecordId: result.fileRecord.id,
+        side: params.artworkSide,
+        allocationQuantity: source.productionQuantity ?? null,
+        allocationGroupId: source.productionGroupId ?? null,
+        actorUserId: params.createdByUserId,
+        parentArtworkId: sourceArtwork.id,
+      });
       const storagePath = result.legacyRelativePath ?? result.legacyFileUrl;
       const fallbackProductionQuantity = source.productionQuantity == null
         ? await defaultFinalProductionQuantityForLine(tx, {
@@ -1075,6 +1100,30 @@ export async function assignCustomerArtworkAsProductionArtwork(params: {
   if (existing) return { file: existing, created: false };
 
   const [inserted] = await db.transaction(async (tx) => {
+    const sourceArtwork = await canonicalArtworkWriteService.attachSourceArtwork({
+      tx,
+      organizationId: params.organizationId,
+      orderId: params.orderId,
+      lineItemId: params.lineItemId,
+      fileRecordId: source.fileRecordId!,
+      side: params.artworkSide,
+      allocationQuantity: source.productionQuantity ?? null,
+      allocationGroupId: source.productionGroupId ?? null,
+      actorUserId: params.createdByUserId,
+      origin: "legacy_backfill",
+    });
+    await canonicalArtworkWriteService.promoteArtworkForProduction({
+      tx,
+      organizationId: params.organizationId,
+      orderId: params.orderId,
+      lineItemId: params.lineItemId,
+      fileRecordId: source.fileRecordId!,
+      side: params.artworkSide,
+      allocationQuantity: source.productionQuantity ?? null,
+      allocationGroupId: source.productionGroupId ?? null,
+      actorUserId: params.createdByUserId,
+      parentArtworkId: sourceArtwork.id,
+    });
     const fallbackProductionQuantity = source.productionQuantity == null
       ? await defaultFinalProductionQuantityForLine(tx, {
           organizationId: params.organizationId,
