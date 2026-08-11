@@ -127,9 +127,13 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
     throw describeLoginFailure(diagnostics);
   }
 
-  const healthBody = await health.json().catch(() => null) as { env?: unknown } | null;
-  if (healthBody?.env !== "development") {
-    throw new Error(`[DEV QA auth] Refusing target ${config.baseUrl.origin}: /api/health did not report development.`);
+  const healthBody = await health.json().catch(() => null) as { publicWebOrigin?: unknown } | null;
+  // Railway DEV runs the production server build, so /api/health may report
+  // NODE_ENV=production. Bind the unauthenticated check to the reviewed DEV
+  // public origin; the authenticated runtime summary below then proves this is
+  // deployed DEV rather than production.
+  if (healthBody?.publicWebOrigin !== config.baseUrl.origin) {
+    throw new Error(`[DEV QA auth] Refusing target ${config.baseUrl.origin}: /api/health public origin did not match the approved DEV target.`);
   }
 
   await page.goto(new URL("/login", config.baseUrl).toString(), { waitUntil: "domcontentloaded" });

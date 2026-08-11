@@ -42,8 +42,9 @@ PRINTERSHERO_DEV_QA_EXPECTED_ORG_SLUG
 For the standard deployment, both origin settings are `https://dev.printershero.com`.
 If DEV moves to another frontend origin, change both settings to that reviewed DEV
 origin. The fixture rejects `printershero.com`, `www.printershero.com`, and
-`api.printershero.com`, then requires `/api/health` to report `development` and
-the authenticated runtime API to classify itself as `deployed-dev`.
+`api.printershero.com`, then requires `/api/health` to return the approved DEV
+public origin and the authenticated runtime API to classify itself as
+`deployed-dev`. Railway DEV may correctly run with `NODE_ENV=production`.
 
 ## Session behavior and safe diagnostics
 
