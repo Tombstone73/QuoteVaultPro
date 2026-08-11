@@ -96,6 +96,35 @@ describe("material duplication policy helpers", () => {
     expect(payload).not.toHaveProperty("updatedAt");
   });
 
+  test("normalizes legacy vendor cost unit aliases before creating a duplicate", () => {
+    const payload = buildDuplicateMaterialPayload({
+      ...sourceMaterial,
+      vendorCostUnit: "ea",
+    }, {
+      name: "Foam Board (Copy)",
+      sku: "FOAM-COPY",
+    });
+
+    expect(payload.vendorCostUnit).toBe("each");
+  });
+
+  test("rejects unsupported legacy vendor cost units before a duplicate can be written", () => {
+    try {
+      buildDuplicateMaterialPayload({
+        ...sourceMaterial,
+        vendorCostUnit: "fluid_ounce",
+      }, {
+        name: "Foam Board (Copy)",
+        sku: "FOAM-COPY",
+      });
+      throw new Error("Expected unsupported vendor cost unit to fail");
+    } catch (error) {
+      expect(error).toBeInstanceOf(DuplicateMaterialError);
+      expect((error as DuplicateMaterialError).statusCode).toBe(422);
+      expect((error as DuplicateMaterialError).code).toBe("MATERIAL_UNSUPPORTED_UNIT");
+    }
+  });
+
   test("fails clearly when legacy material rows lack required operational form data", () => {
     expect(() => buildDuplicateMaterialPayload({
       ...sourceMaterial,

@@ -9,6 +9,7 @@ import {
   vendors,
   type Material,
 } from "@shared/schema";
+import { normalizeMaterialUnit } from "@shared/materialUnits";
 
 export type DuplicateMaterialResult = {
   material: Material & { linkedProductIds: string[] };
@@ -23,12 +24,31 @@ export type DuplicateMaterialIdentity = {
 export class DuplicateMaterialError extends Error {
   constructor(
     public readonly statusCode: number,
-    public readonly code: "MATERIAL_NOT_FOUND" | "MATERIAL_NOT_DUPLICABLE",
+    public readonly code: "MATERIAL_NOT_FOUND" | "MATERIAL_NOT_DUPLICABLE" | "MATERIAL_UNSUPPORTED_UNIT",
     message: string,
   ) {
     super(message);
     this.name = "DuplicateMaterialError";
   }
+}
+
+function normalizeDuplicateVendorCostUnit(source: Material) {
+  const value = source.vendorCostUnit;
+  if (value == null || value === "") return undefined;
+
+  const normalized = normalizeMaterialUnit(value);
+  if (normalized) return normalized;
+
+  console.warn("[MaterialDuplicate] Unsupported legacy vendor cost unit", {
+    materialId: source.id,
+    organizationId: source.organizationId,
+    vendorCostUnit: value,
+  });
+  throw new DuplicateMaterialError(
+    422,
+    "MATERIAL_UNSUPPORTED_UNIT",
+    "Unable to duplicate this material because its vendor cost unit is unsupported. Update the material unit and try again.",
+  );
 }
 
 function normalizeIdentity(value: unknown) {
@@ -81,7 +101,7 @@ export function buildDuplicateMaterialPayload(source: Material, identity: Duplic
     materialForm,
     category: source.category ?? undefined,
     inventoryUnit: source.inventoryUnit,
-    vendorCostUnit: source.vendorCostUnit ?? undefined,
+    vendorCostUnit: normalizeDuplicateVendorCostUnit(source),
     consumptionUnit: source.consumptionUnit,
     weightValue: source.weightValue ?? undefined,
     weightUnit: source.weightUnit ?? undefined,

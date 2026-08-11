@@ -26,7 +26,7 @@ import {
 } from "./materialInventory";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "./materialWeight";
 import { normalizeMaterialVendorProductUrl } from "./materialVendorPurchasing";
-import { calculateUsableRollCapacity, MATERIAL_FORMS, MATERIAL_INVENTORY_UNITS } from "./materialUnits";
+import { calculateUsableRollCapacity, MATERIAL_FORMS, MATERIAL_INVENTORY_UNITS, normalizeMaterialUnit } from "./materialUnits";
 import {
   workflowStatusPillAssignmentSourceSchema,
   workflowStatusPillTriggerSchema,
@@ -6115,13 +6115,17 @@ export const materialProductLinks = pgTable("material_product_links", {
   uniqueIndex("material_product_links_org_material_product_uidx").on(table.organizationId, table.materialId, table.productId),
 ]);
 
-const materialUnitSchema = z.enum(MATERIAL_INVENTORY_UNITS);
+const canonicalMaterialUnitInput = (value: unknown) => {
+  if (value === "" || value === undefined || value === null) return value;
+  return normalizeMaterialUnit(value) ?? value;
+};
+const materialUnitSchema = z.preprocess(canonicalMaterialUnitInput, z.enum(MATERIAL_INVENTORY_UNITS));
 const materialFormSchema = z.enum(MATERIAL_FORMS);
 const materialWeightUnitSchema = z.enum(MATERIAL_WEIGHT_UNITS);
 const materialWeightBasisSchema = z.enum(MATERIAL_WEIGHT_BASES);
 const optionalMaterialUnitSchema = z.preprocess(
-  (v) => (v === "" || v == null ? undefined : v),
-  materialUnitSchema.optional().nullable()
+  (v) => (v === "" || v === undefined ? undefined : canonicalMaterialUnitInput(v)),
+  z.enum(MATERIAL_INVENTORY_UNITS).optional().nullable()
 );
 const optionalMaterialWeightUnitSchema = z.preprocess(
   (v) => (v === "" || v == null ? undefined : v),

@@ -50,6 +50,17 @@ describe("material vendor purchasing fields", () => {
     expect(parsed.vendorLastPriceUpdatedAt).toBeInstanceOf(Date);
   });
 
+  it("normalizes a legacy vendor cost unit alias on create and edit", () => {
+    const created = insertMaterialSchema.parse({
+      ...baseMaterialPayload,
+      vendorCostUnit: "ea",
+    });
+    const updated = updateMaterialSchema.parse({ vendorCostUnit: "ea" });
+
+    expect(created.vendorCostUnit).toBe("each");
+    expect(updated.vendorCostUnit).toBe("each");
+  });
+
   it("clears material vendor fields with blank or null values", () => {
     const parsed = updateMaterialSchema.parse({
       preferredVendorName: "",
