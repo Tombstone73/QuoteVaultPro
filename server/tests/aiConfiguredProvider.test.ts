@@ -146,7 +146,7 @@ describe("configured AI provider", () => {
   test("continues a product search into a pricing function call without leaking control text", async () => {
     const fetchMock = jest.fn()
       .mockResolvedValueOnce(jsonResponse({ status: "completed", output: [{
-        type: "function_call", call_id: "call_search", name: "ph_0_search_global", arguments: '{"query":"Translucent Vinyl - backlit with multilayer printing"}',
+        type: "message", content: [{ type: "output_text", text: JSON.stringify({ kind: "call_tools", calls: [{ toolName: "ph_0_search_global", arguments: { query: "Translucent Vinyl - backlit with multilayer printing" } }] }) }],
       }] }))
       .mockResolvedValueOnce(jsonResponse({ status: "completed", output: [{
         type: "function_call", call_id: "call_pricing", name: "ph_1_products_get_pricing", arguments: '{"productId":"product_translucent"}',

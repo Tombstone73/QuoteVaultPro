@@ -6,8 +6,13 @@ async function openFreshAssistantConversation(page: Page): Promise<void> {
   await page.goto("/dashboard", { waitUntil: "domcontentloaded" });
   await page.getByRole("button", { name: "Open PrintersHero assistant" }).click();
   await expect(page.getByRole("region", { name: "PrintersHero assistant workspace" })).toBeVisible({ timeout: 20_000 });
-  const newChat = page.getByRole("button", { name: "New chat" });
-  if (await newChat.isVisible().catch(() => false)) await newChat.click();
+  const sidebar = page.getByRole("complementary", { name: "Assistant conversations" });
+  const newChat = sidebar.getByRole("button", { name: "New chat", exact: true }).first();
+  if (await newChat.isVisible().catch(() => false)) {
+    await newChat.click();
+    await expect(page.getByTestId("assistant-conversation-list").getByRole("button", { name: "New chat", exact: true }))
+      .toHaveAttribute("aria-current", "page", { timeout: 20_000 });
+  }
   await expect(page.getByLabel("Message the assistant")).toBeEnabled({ timeout: 20_000 });
 }
 

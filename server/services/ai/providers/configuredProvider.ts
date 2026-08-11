@@ -534,7 +534,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       // A valid Operator decision is a control protocol, not native terminal
       // prose. Normalize known DeepSeek transport artifacts before deciding
       // whether remaining text is unsafe control leakage.
-      const parsedTerminalDecision = parseDeepSeekTerminalDecision(normalizedTerminalText);
+      const parsedTerminalDecision = parseDeepSeekTerminalDecision(normalizedTerminalText, providerFunctionNames);
       const terminalDecision = parsedTerminalDecision?.decision ?? null;
       const terminalCompletion = terminalDecision ? null : normalizeDeepSeekOperatorTerminal(normalizedTerminalText);
       const terminalClassification = parsedTerminalDecision?.classification ?? terminalCompletion?.classification ?? null;
@@ -716,17 +716,34 @@ function normalizeDeepSeekOperatorTerminal(finalText: string): { response: strin
  * that exact, bounded transport artifact; arbitrary markup or prose remains
  * a normal provider message and cannot become an Operator control decision.
  */
-function parseDeepSeekTerminalDecision(finalText: string): {
+function parseDeepSeekTerminalDecision(finalText: string, providerFunctionNames: ReadonlyMap<string, string>): {
   decision: AssistantOperatorDecision;
   classification: "operator_decision" | "operator_decision_parameter_suffix";
 } | null {
   const direct = parseAssistantOperatorDecisionText(finalText);
-  if (direct) return { decision: direct, classification: "operator_decision" };
+  if (direct) return { decision: normalizeDeepSeekTerminalDecisionAliases(direct, providerFunctionNames), classification: "operator_decision" };
 
   const { text: withoutParameterSuffix, stripped } = stripKnownDeepSeekTransportSuffix(finalText);
   if (!stripped) return null;
   const normalized = parseAssistantOperatorDecisionText(withoutParameterSuffix);
-  return normalized ? { decision: normalized, classification: "operator_decision_parameter_suffix" } : null;
+  return normalized ? { decision: normalizeDeepSeekTerminalDecisionAliases(normalized, providerFunctionNames), classification: "operator_decision_parameter_suffix" } : null;
+}
+
+/** Textual DeepSeek decisions can use the same short aliases as its native
+ * function-call items. Translate only aliases generated for this request;
+ * unknown names remain untouched for the Operator runtime to reject safely. */
+function normalizeDeepSeekTerminalDecisionAliases(
+  decision: AssistantOperatorDecision,
+  providerFunctionNames: ReadonlyMap<string, string>,
+): AssistantOperatorDecision {
+  if (decision.kind !== "call_tools") return decision;
+  return {
+    ...decision,
+    calls: decision.calls.map((call) => ({
+      ...call,
+      toolName: providerFunctionNames.get(call.toolName) ?? call.toolName,
+    })),
+  };
 }
 
 /** DeepSeek V4's tool transport is less reliable with discriminated oneOf
