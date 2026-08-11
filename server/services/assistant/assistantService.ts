@@ -307,6 +307,8 @@ const MAX_TRUSTED_OPERATOR_OBSERVATIONS = 5;
 const MAX_TRUSTED_OPERATOR_OBSERVATION_BYTES = 16_000;
 const recentOperationStorageKey = "recentOperatorOperations";
 const MAX_RECENT_OPERATOR_OPERATIONS = 12;
+const completedTurnStorageKey = "recentCompletedOperatorTurn";
+const MAX_RETAINED_COMPLETED_TURN_CHARS = 6_000;
 
 /** The only Product Builder structure exposed to an Operator function call.
  * It deliberately contains business labels and values, never patch paths,
@@ -419,6 +421,39 @@ function persistedRecentOperatorOperations(semanticChanges: Record<string, unkno
     : [];
 }
 
+type RetainedCompletedOperatorTurn = {
+  goal: string;
+  response: string;
+  workingSummary: string | null;
+  capturedAt: string;
+};
+
+function retainedCompletedOperatorTurn(semanticChanges: Record<string, unknown>): RetainedCompletedOperatorTurn | null {
+  const candidate = semanticChanges[completedTurnStorageKey];
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return null;
+  const value = candidate as Record<string, unknown>;
+  if (typeof value.goal !== "string" || typeof value.response !== "string" || typeof value.capturedAt !== "string") return null;
+  if (!value.goal.trim() || !value.response.trim() || value.goal.length > MAX_RETAINED_COMPLETED_TURN_CHARS || value.response.length > MAX_RETAINED_COMPLETED_TURN_CHARS) return null;
+  return {
+    goal: value.goal,
+    response: value.response,
+    workingSummary: typeof value.workingSummary === "string" && value.workingSummary.trim() ? value.workingSummary : null,
+    capturedAt: value.capturedAt,
+  };
+}
+
+function completedOperatorTurn(input: { goal: string; response: string; workingSummary: string | null }): RetainedCompletedOperatorTurn | null {
+  const goal = input.goal.trim().slice(0, MAX_RETAINED_COMPLETED_TURN_CHARS);
+  const response = input.response.trim().slice(0, MAX_RETAINED_COMPLETED_TURN_CHARS);
+  if (!goal || !response) return null;
+  return {
+    goal,
+    response,
+    workingSummary: input.workingSummary?.trim().slice(0, 2_000) || null,
+    capturedAt: new Date().toISOString(),
+  };
+}
+
 function operatorBusinessContext(input: {
   domain: string | null;
   workingSummary: string | null;
@@ -440,6 +475,7 @@ function operatorBusinessContext(input: {
       ? `Product draft \"${product.name}\" is ${product.readyForReview ? "ready for review" : "still collecting business decisions"}.`
       : input.existingProduct ? `Existing persisted product \"${input.existingProduct.name}\" is ${input.existingProduct.lifecycle}; its current pricing configuration is PBV2 ${input.existingProduct.pricingLifecycle}.`
         : input.workingSummary,
+    recentCompletedTurn: retainedCompletedOperatorTurn(input.semanticChanges),
     unresolvedDecisions,
     recentOperations: product?.recentBusinessOperations ?? persistedRecentOperatorOperations(input.semanticChanges),
     trustedSelections: product?.trustedSelections ?? [],
@@ -464,6 +500,7 @@ function operatorBusinessContext(input: {
 function mergeTrustedOperatorObservations(
   semanticChanges: Record<string, unknown>,
   observations: readonly AssistantOperatorObservation[],
+  recentCompletedTurn: RetainedCompletedOperatorTurn | null,
 ): Record<string, unknown> {
   const retained = persistedTrustedObservations(semanticChanges);
   const additions = observations.flatMap((observation) => {
@@ -480,7 +517,12 @@ function mergeTrustedOperatorObservations(
     .filter((observation) => observation.status === "succeeded" || observation.status === "partial")
     .map((observation) => observation.toolName)]
     .slice(-MAX_RECENT_OPERATOR_OPERATIONS);
-  return { ...semanticChanges, [trustedObservationStorageKey]: [...retained, ...additions].slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS), [recentOperationStorageKey]: recent };
+  return {
+    ...semanticChanges,
+    [trustedObservationStorageKey]: [...retained, ...additions].slice(-MAX_TRUSTED_OPERATOR_OBSERVATIONS),
+    [recentOperationStorageKey]: recent,
+    ...(recentCompletedTurn ? { [completedTurnStorageKey]: recentCompletedTurn } : {}),
+  };
 }
 
 function operatorFailureKind(response: string): string {
@@ -949,14 +991,15 @@ export class AssistantService {
     const productInvestigation = task.domain === "products" || run.observations.some((observation) => observation.toolName.startsWith("products.") || observation.result?.provenance?.sourceLinks.some((link) => link.entityType === "product"));
     const continuesQuoteInvestigation = task.domain === "quotes" || quoteInvestigation;
     const continuesTrustedEntityInvestigation = entityReferences.length > 0 && (task.entityReferences.length > 0 || run.observations.some((observation) => observation.status === "succeeded"));
-    const activeStatus = run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
+    const recentCompletedTurn = run.status === "completed" ? completedOperatorTurn({ goal: request.message, response, workingSummary: run.safeWorkingSummary }) : null;
+    const activeStatus = run.status === "awaiting_input" || proposalId || task.canonicalProductIntentProposalId || Boolean(recentCompletedTurn) || (continuesQuoteInvestigation && entityReferences.length > 0) || continuesTrustedEntityInvestigation
       ? "active"
       : run.status === "completed" ? "completed" : "blocked";
     await this.operatorTasks.update({ organizationId: scope.organizationId, userId: actor.userId, taskId: task.id, patch: {
       ...(typeof productData?.taskDomain === "string" ? { domain: productData.taskDomain } : productInvestigation ? { domain: "products" } : quoteInvestigation ? { domain: "quotes" } : {}),
       workingSummary: run.safeWorkingSummary,
       entityReferences,
-      semanticChanges: mergeTrustedOperatorObservations(task.semanticChanges, run.observations),
+      semanticChanges: mergeTrustedOperatorObservations(task.semanticChanges, run.observations, recentCompletedTurn),
       missingInformation: run.missingInformation,
       ...(proposalId ? { canonicalProductIntentProposalId: proposalId } : {}),
       lastObservationSummary: run.observations.at(-1)?.warning ?? null,

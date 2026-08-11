@@ -819,4 +819,24 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(intent.optionGroups.find((group) => group.label === "Sides")?.values).toEqual([{ key: "single_sided", label: "Single Sided", isDefault: true }]);
     expect(intent.optionGroups.find((group) => group.label === "Grommet Placement")?.values.map((value) => value.label)).toEqual(["None", "Top and Bottom"]);
   });
+
+  test("does not blame set_product_name when a later unsupported operation fails schema validation", async () => {
+    const service = new CanonicalProductIntentService(null, new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [], productionRoutes: [] });
+    const begun = await service.begin({ organizationId: "org-1", actorUserId: "user-1", conversationId: "semantic-schema-attribution" });
+    if (!begun.ok) throw new Error("Expected an unfinished draft.");
+
+    const outcome = await service.applySemanticOperations({
+      organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
+      request: "Create Reflective Pole Signs for a specific customer.",
+      operations: [
+        { op: "set_product_name", name: "Reflective Pole Signs" },
+        { op: "set_customer_specific_availability", customer: "Acme" },
+      ],
+    });
+
+    expect(outcome).toMatchObject({ ok: false, code: "PRODUCT_SEMANTIC_OPERATION_REJECTED" });
+    if (outcome.ok) throw new Error("Expected schema rejection.");
+    expect(outcome.message).toContain("set_customer_specific_availability");
+    expect(outcome.message).not.toContain("set_product_name product operation");
+  });
 });

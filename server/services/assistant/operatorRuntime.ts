@@ -113,6 +113,7 @@ export type AssistantOperatorTrustedObservation = {
 export type AssistantOperatorBusinessContext = {
   taskType: string;
   businessStateSummary: string | null;
+  recentCompletedTurn?: { goal: string; response: string; workingSummary: string | null; capturedAt: string } | null;
   unresolvedDecisions: Array<{ item: string; question?: string; choices?: string[] }>;
   recentOperations: string[];
   trustedSelections: Array<{ field: string; label: string; provenance: string }>;

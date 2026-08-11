@@ -207,6 +207,37 @@ describe("AssistantService Operator Runtime integration", () => {
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ mode: "ai_operator_runtime" }));
   });
 
+  test("retains a completed research response for clear summarization and shortening follow-ups without stale inheritance", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository();
+    const tasks = continuingTaskStore();
+    const provider = { decide: jest.fn(async ({ goal, task }: any) => {
+      if (goal.startsWith("Research General Formulations")) {
+        expect(task.businessContext.recentCompletedTurn).toBeNull();
+        return { kind: "complete", response: "General Formulations Concept 204 is a printable vinyl film used for graphics. It is 4 mil thick and designed for durable indoor and outdoor applications.", workingSummary: "Researched General Formulations Concept 204 vinyl, including uses, thickness, and durability." };
+      }
+      if (goal.startsWith("Summarize it")) {
+        expect(task.businessContext.recentCompletedTurn).toMatchObject({ goal: expect.stringContaining("General Formulations Concept 204"), response: expect.stringContaining("4 mil"), workingSummary: expect.stringContaining("Concept 204") });
+        return { kind: "complete", response: "Concept 204 is a durable 4 mil printable vinyl film for indoor and outdoor graphics.", workingSummary: "Created a customer-facing Concept 204 description." };
+      }
+      if (goal.startsWith("Make that shorter")) {
+        expect(task.businessContext.recentCompletedTurn).toMatchObject({ response: expect.stringContaining("Concept 204") });
+        return { kind: "complete", response: "Durable 4 mil printable vinyl for indoor and outdoor graphics.", workingSummary: "Shortened the customer-facing Concept 204 description." };
+      }
+      expect(task.businessContext.recentCompletedTurn).toMatchObject({ response: expect.stringContaining("Durable 4 mil") });
+      return { kind: "complete", response: "I will start a separate quote investigation.", workingSummary: "Started an unrelated quote investigation." };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, undefined, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", actor, { message: "Research General Formulations Concept 204 and tell me its thickness and durability.", context });
+    await service.createTurn(scope, "conversation_1", actor, { message: "Summarize it for a product description for customers to see quickly.", context });
+    await service.createTurn(scope, "conversation_1", actor, { message: "Make that shorter.", context });
+    await service.createTurn(scope, "conversation_1", actor, { message: "Find my open quotes.", context });
+
+    expect(tasks.updates.map((update) => update.patch.status)).toEqual(["active", "active", "active", "active"]);
+    expect(provider.decide).toHaveBeenCalledTimes(4);
+  });
+
   test("a product task survives a read-only detour and a later semantic continuation", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore("proposal_1");

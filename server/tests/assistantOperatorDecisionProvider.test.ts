@@ -13,6 +13,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       expect(request.system).toContain("PrintersHero is not read-only");
       expect(request.system).toContain("standalone request naming one product and asking for its current pricing");
       expect(request.system).toContain("'do not apply/change it yet' means prepare the protected products.apply_existing_operations preview now");
+      expect(request.system).toContain("recentCompletedTurn is the bounded result");
       const body = JSON.parse(request.user);
       expect(body.goal).toBe("all 5");
       expect(body.observations).toEqual([]);

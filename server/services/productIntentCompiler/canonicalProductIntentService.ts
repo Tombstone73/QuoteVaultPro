@@ -448,11 +448,20 @@ function requestedSemanticOperationNames(value: unknown): string[] | undefined {
   return names.length ? names : undefined;
 }
 
+function invalidSemanticOperationIndex(error: unknown): number | null {
+  if (!(error instanceof z.ZodError)) return null;
+  const issue = error.issues.find((candidate) => candidate.path[0] === "operations" && typeof candidate.path[1] === "number");
+  return typeof issue?.path[1] === "number" ? issue.path[1] : null;
+}
+
 function semanticOperationFailureMessage(error: unknown, requestedOperations: readonly string[] | undefined, referenceId: string): string {
   const failedOperation = error instanceof SemanticProductOperationError
     ? error.operationType
     : error instanceof z.ZodError
-      ? requestedOperations?.[0]
+      ? (() => {
+        const index = invalidSemanticOperationIndex(error);
+        return index === null ? undefined : requestedOperations?.[index];
+      })()
       : undefined;
   const subject = failedOperation ? `the ${failedOperation} product operation` : "that product change";
   return `I could not apply ${subject} safely. The current draft was left unchanged; review that operation and try again. Reference: ${referenceId}.`;
