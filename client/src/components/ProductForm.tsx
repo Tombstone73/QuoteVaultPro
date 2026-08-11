@@ -173,6 +173,18 @@ export const ProductForm = ({
     ? materials.find((mat: any) => mat.id === selectedPrimaryMaterialId)
     : null;
   const productTypesLoaded = Array.isArray(productTypes);
+  const selectedProductType = productTypesLoaded
+    ? productTypes.find((productType: any) => productType.id === form.watch("productTypeId"))
+    : null;
+  const productionDestination = String(selectedProductType?.defaultStationKey ?? "").trim();
+  const prepressRouting = selectedProductType?.requiresPrepressOverride === true
+    ? "Prepress required"
+    : selectedProductType?.requiresPrepressOverride === false
+      ? "Prepress skipped"
+      : "Prepress inherits org default";
+  const productionRouteSummary = selectedProductType
+    ? `${prepressRouting}; destination: ${productionDestination || "No station configured"}`
+    : null;
   const materialsLoaded = Array.isArray(materials);
   const legacyTrimAllowance = Number(treeMeta?.geometry?.trimAllowance ?? 0);
   const normalizedLegacyTrimAllowance = Number.isFinite(legacyTrimAllowance) && legacyTrimAllowance >= 0 ? legacyTrimAllowance : 0;
@@ -288,6 +300,11 @@ export const ProductForm = ({
                       <UnknownLookupWarning>
                         Product type "{field.value}" is not in the current product type list. Select a valid type before saving.
                       </UnknownLookupWarning>
+                    ) : null}
+                    {productionRouteSummary ? (
+                      <FormDescription className="text-[11px] text-slate-500">
+                        Production workflow: {productionRouteSummary}. Proof requirement is configured below.
+                      </FormDescription>
                     ) : null}
                     <FormMessage />
                   </FormItem>

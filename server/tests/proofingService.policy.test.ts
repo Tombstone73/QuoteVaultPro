@@ -38,6 +38,8 @@ describe("proofing policy", () => {
       deriveProofRecoveryWorkflowTransition({
         lineItemId: "line-item-1",
         workflowState: "in_design",
+        requiresPrepress: true,
+        proofGateAllowed: true,
         lifecycleStatus: "new",
       }),
     ).toMatchObject({
@@ -49,13 +51,48 @@ describe("proofing policy", () => {
     });
   });
 
-  test("proof recovery actions do not route incomplete design directly to prepress", () => {
+  test("a cleared proof gate advances a proof-blocked item to prepress", () => {
     const transition = deriveProofRecoveryWorkflowTransition({
       lineItemId: "line-item-2",
       workflowState: "awaiting_proof_approval",
+      requiresPrepress: true,
+      proofGateAllowed: true,
     });
 
-    expect(transition.toState).toBe("awaiting_proof_approval");
-    expect(transition.toState).not.toBe("ready_for_prepress");
+    expect(transition.toState).toBe("ready_for_prepress");
+    expect(transition.toState).not.toBe("awaiting_proof_approval");
+  });
+
+  test("an unresolved proof gate leaves the awaiting-proof state in place", () => {
+    expect(
+      deriveProofRecoveryWorkflowTransition({
+        lineItemId: "line-item-2b",
+        workflowState: "awaiting_proof_approval",
+        requiresPrepress: true,
+        proofGateAllowed: false,
+      }).toState,
+    ).toBe("awaiting_proof_approval");
+  });
+
+  test("a cleared proof gate advances directly to production when prepress is skipped", () => {
+    expect(
+      deriveProofRecoveryWorkflowTransition({
+        lineItemId: "line-item-3",
+        workflowState: "awaiting_proof_approval",
+        requiresPrepress: false,
+        proofGateAllowed: true,
+      }).toState,
+    ).toBe("ready_for_production");
+  });
+
+  test("a repeated reconciliation is idempotent once the item is already ready for prepress", () => {
+    expect(
+      deriveProofRecoveryWorkflowTransition({
+        lineItemId: "line-item-4",
+        workflowState: "ready_for_prepress",
+        requiresPrepress: true,
+        proofGateAllowed: true,
+      }).toState,
+    ).toBe("ready_for_prepress");
   });
 });

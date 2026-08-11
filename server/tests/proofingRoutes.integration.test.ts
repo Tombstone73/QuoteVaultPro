@@ -2306,6 +2306,47 @@ describe("proofing route integration", () => {
     expect(lineItem?.requiresProofApproval).toBe(false);
   });
 
+  test("removing proof required from an awaiting item reconciles it into the Prepress queue", async () => {
+    const { lineItemId } = await createLineItemFixture("remove_gate_awaiting_prepress", {
+      workflowState: "awaiting_proof_approval",
+      requiresDesign: false,
+      requiresPrepress: true,
+      requiresProofApproval: true,
+    });
+
+    const removeRes = await request(app)
+      .post(`/api/proofing/line-item/${lineItemId}/mark-proof-not-required`)
+      .set("x-test-user-id", userId)
+      .set("x-test-user-role", "admin")
+      .set("x-test-org-id", orgId)
+      .send({ reason: "Proof no longer required" })
+      .expect(200);
+
+    expect(removeRes.body?.data?.workflowTransition).toMatchObject({
+      fromState: "awaiting_proof_approval",
+      toState: "ready_for_prepress",
+      activeOwnerStationKey: "prepress",
+    });
+
+    const [lineItem] = await db
+      .select({
+        workflowState: orderLineItems.workflowState,
+        requiresProofApproval: orderLineItems.requiresProofApproval,
+      })
+      .from(orderLineItems)
+      .where(eq(orderLineItems.id, lineItemId))
+      .limit(1);
+    const activeJobs = await db
+      .select({ stationKey: productionJobs.stationKey, status: productionJobs.status })
+      .from(productionJobs)
+      .where(eq(productionJobs.lineItemId, lineItemId));
+
+    expect(lineItem).toMatchObject({ workflowState: "ready_for_prepress", requiresProofApproval: false });
+    expect(activeJobs.filter((job) => job.status !== "completed")).toEqual([
+      expect.objectContaining({ stationKey: "prepress" }),
+    ]);
+  });
+
   test("completes design into awaiting proof approval when proofing is required", async () => {
     const { lineItemId } = await createLineItemFixture("design_to_proof", {
       workflowState: "in_design",
@@ -2444,7 +2485,7 @@ describe("proofing route integration", () => {
       .send({ proofVersionId, overrideReason: "Customer approved by phone", internalNote: "CSR confirmed at 4:30 PM" })
       .expect(200);
 
-    expect(overrideRes.body?.data?.workflowTransition?.toState).toBe("awaiting_proof_approval");
+    expect(overrideRes.body?.data?.workflowTransition?.toState).toBe("ready_for_prepress");
     const proofing = proofingReadModelSchema.parse(overrideRes.body?.data?.proofing);
     expect(proofing.approvedProofVersionId).toBe(proofVersionId);
     expect(proofing.approvedProofSource).toBe("manual_override");
@@ -2574,7 +2615,7 @@ describe("proofing route integration", () => {
       .send({ proofVersionId, overrideReason: "Customer approved offline after rejection" })
       .expect(200);
 
-    expect(overrideRes.body?.data?.workflowTransition?.toState).toBe("awaiting_proof_approval");
+    expect(overrideRes.body?.data?.workflowTransition?.toState).toBe("ready_for_prepress");
     const proofing = proofingReadModelSchema.parse(overrideRes.body?.data?.proofing);
     expect(proofing.approvedProofSource).toBe("manual_override");
     expect(proofing.approvedProofVersionId).toBe(proofVersionId);
@@ -2600,7 +2641,7 @@ describe("proofing route integration", () => {
       .send({ proofVersionId, overrideReason: "Customer approved cancelled proof by phone" })
       .expect(200);
 
-    expect(overrideRes.body?.data?.workflowTransition?.toState).toBe("awaiting_proof_approval");
+    expect(overrideRes.body?.data?.workflowTransition?.toState).toBe("ready_for_prepress");
     const proofing = proofingReadModelSchema.parse(overrideRes.body?.data?.proofing);
     expect(proofing.approvedProofSource).toBe("manual_override");
     expect(proofing.approvedProofVersionId).toBe(proofVersionId);

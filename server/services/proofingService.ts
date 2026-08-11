@@ -591,22 +591,63 @@ export function deriveProofResponseWorkflowState(args: { decision: ProofDecision
 export function deriveProofRecoveryWorkflowTransition(args: {
   lineItemId: string;
   workflowState: string;
+  requiresPrepress: boolean;
+  proofGateAllowed: boolean;
   lifecycleStatus?: string | null;
   activeOwnerJobId?: string | null;
   activeOwnerStationKey?: string | null;
   activeOwnerStepKey?: string | null;
 }) {
   const currentState = normalizeProofingWorkflowState(args.workflowState);
+  const toState = currentState === "awaiting_proof_approval" && args.proofGateAllowed
+    ? deriveProofResponseWorkflowState({ decision: "approved", requiresPrepress: args.requiresPrepress })
+    : currentState;
   return {
     lineItemId: args.lineItemId,
     fromState: currentState,
-    toState: currentState,
+    toState,
     lifecycleStatus: args.lifecycleStatus ?? null,
     activeOwnerJobId: args.activeOwnerJobId ?? null,
     activeOwnerStationKey: args.activeOwnerStationKey ?? null,
     activeOwnerStepKey: args.activeOwnerStepKey ?? null,
     ownershipAction: "none" as const,
   };
+}
+
+export async function reconcileLineItemProofGateRelease(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  actorUserId?: string | null;
+  source: string;
+}) {
+  const lineItem = await loadProofLineItem(tx, {
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+  });
+  const proofGate = await resolveLineItemProofReleaseGate(tx, {
+    organizationId: args.organizationId,
+    lineItemId: lineItem.lineItemId,
+  });
+
+  if (!proofGate.allowed) {
+    throwProofingConflict(proofGate.blockedReason || "Proof gate remains unresolved");
+  }
+
+  const recovery = deriveProofRecoveryWorkflowTransition({
+    lineItemId: lineItem.lineItemId,
+    workflowState: lineItem.workflowState,
+    requiresPrepress: lineItem.requiresPrepress,
+    proofGateAllowed: proofGate.allowed,
+    lifecycleStatus: lineItem.lifecycleStatus,
+  });
+
+  return transitionLineItemWorkflowState(tx, {
+    organizationId: args.organizationId,
+    lineItemId: lineItem.lineItemId,
+    toState: recovery.toState,
+    actorUserId: args.actorUserId ?? null,
+    metadata: { source: args.source, proofGateAllowed: proofGate.allowed },
+  });
 }
 
 type LoadedProofLineItem = {
@@ -3971,10 +4012,11 @@ export async function recordManualProofApprovalOverride(tx: any, args: {
       })
       .where(eq(orderLineItems.id, lineItem.lineItemId));
 
-    const workflowTransition = deriveProofRecoveryWorkflowTransition({
+    const workflowTransition = await reconcileLineItemProofGateRelease(tx, {
+      organizationId: args.organizationId,
       lineItemId: lineItem.lineItemId,
-      workflowState: lineItem.workflowState,
-      lifecycleStatus: lineItem.lifecycleStatus,
+      actorUserId: args.actorUserId,
+      source: "proofing_manual_approval_override",
     });
 
     await appendProofingEvent(tx, {
@@ -4087,10 +4129,11 @@ export async function markLineItemProofNotRequired(tx: any, args: {
     })
     .where(eq(orderLineItems.id, lineItem.lineItemId));
 
-  const workflowTransition = deriveProofRecoveryWorkflowTransition({
+  const workflowTransition = await reconcileLineItemProofGateRelease(tx, {
+    organizationId: args.organizationId,
     lineItemId: lineItem.lineItemId,
-    workflowState: lineItem.workflowState,
-    lifecycleStatus: lineItem.lifecycleStatus,
+    actorUserId: args.actorUserId,
+    source: "proofing_mark_not_required",
   });
 
   await appendProofingEvent(tx, {

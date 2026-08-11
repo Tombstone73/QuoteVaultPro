@@ -66,7 +66,7 @@ import { normalizeOrderSaveRoutingMode } from "@shared/orderSaveRouting";
 import { getLineItemDesignBriefDetail, upsertLineItemDesignBrief } from "../services/lineItemDesignBriefService";
 import { addLineItemNote, addOrderInternalNote, listLineItemNotes, listOrderInternalNotes } from "../services/structuredOrderNotesService";
 import { findActiveJobForLineItem } from "../services/productionOwnership";
-import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
+import { autoSyncCanonicalProofForLineItem, reconcileLineItemProofGateRelease } from "../services/proofingService";
 import { materializeLineItemDesignSnapshot } from "../services/designLineItemSnapshot";
 import { productDesignConfigRepository } from "../storage/productDesignConfig.repo";
 import { pbv2ToChildItemProposals, pbv2ToMaterialEffects, pbv2ToPricingAddons, pbv2ToRuntimeSelectionContext } from "@shared/pbv2/pricingAdapter";
@@ -7586,6 +7586,9 @@ export async function registerOrderRoutes(
             const requestedRequiresDesign = updateData.requiresDesign;
             const requestedRequiresPrepress = updateData.requiresPrepress;
             const requestedRequiresProofApproval = updateData.requiresProofApproval;
+            const shouldReconcileProofGateRemoval =
+                requestedRequiresProofApproval === false &&
+                oldLineItemWorkflowState === "awaiting_proof_approval";
             const hasRoutingChange =
                 updateData.productId !== undefined ||
                 (typeof requestedRequiresDesign === "boolean" && requestedRequiresDesign !== Boolean((oldLineItem as any).requiresDesign)) ||
@@ -7781,7 +7784,27 @@ export async function registerOrderRoutes(
                 updateData.totalPrice = (effectivePricing.effectiveTotalCents / 100).toFixed(2);
             }
 
-            const lineItem = await storage.updateOrderLineItem(lineItemId, updateData);
+            const lineItem = shouldReconcileProofGateRemoval
+                ? await db.transaction(async (tx) => {
+                    await tx
+                        .update(orderLineItems)
+                        .set({ ...updateData, updatedAt: new Date() })
+                        .where(eq(orderLineItems.id, lineItemId));
+                    await reconcileLineItemProofGateRelease(tx, {
+                        organizationId,
+                        lineItemId,
+                        actorUserId: userId ?? null,
+                        source: "order_line_item_edit:proof_requirement_removed",
+                    });
+                    const [reconciled] = await tx
+                        .select()
+                        .from(orderLineItems)
+                        .where(eq(orderLineItems.id, lineItemId))
+                        .limit(1);
+                    if (!reconciled) throw new Error("Order line item not found after proof-gate reconciliation");
+                    return reconciled;
+                })
+                : await storage.updateOrderLineItem(lineItemId, updateData);
             const quantityChanged =
                 updateData.quantity !== undefined &&
                 Number((oldLineItem as any).quantity) !== Number((lineItem as any).quantity);
