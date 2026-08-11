@@ -7,6 +7,9 @@ describe("Proofing artwork thumbnail contract", () => {
     expect(page).toContain("buildProofingArtworkThumbnailUrl");
     expect(page).toContain("getArtworkSourceThumbnailUrl(source)");
     expect(page).toContain('loading="lazy"');
+    expect(page).toContain("ProofingArtworkThumbnailImage");
+    expect(page).toContain("object-contain");
+    expect(page).toContain("h-32 w-40");
     expect(page).toContain("void openArtworkPreview(source)");
     expect(page).not.toContain("openArtworkPdfPreview");
   });

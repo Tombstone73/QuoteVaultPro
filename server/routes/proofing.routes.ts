@@ -275,7 +275,9 @@ export function registerProofingRoutes(
       const filename = String(source.originalFilename || source.fileName || "artwork").replace(/[\r\n\\"]/g, "_");
       res.setHeader("Cache-Control", "private, max-age=60");
       res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
-      res.type(source.mimeType || preview.mimeType || "application/octet-stream");
+      // Thumbnail derivatives are images even when the source artwork is a PDF.
+      // The response MIME type must describe the bytes sent to the <img> element.
+      res.type(preview.mimeType || source.mimeType || "application/octet-stream");
       return res.send(preview.sourceBuffer);
     } catch (error: any) {
       const status = error?.statusCode || 500;

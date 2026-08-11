@@ -297,6 +297,43 @@ function getDownloadUrl(file: ProofFileRow | null | undefined) {
   return getStaffProofDownloadUrl(file);
 }
 
+function ProofingArtworkThumbnailImage({
+  src,
+  alt,
+  onError,
+}: {
+  src: string;
+  alt: string;
+  onError: () => void;
+}) {
+  const [isLoading, setIsLoading] = useState(true);
+
+  useEffect(() => {
+    setIsLoading(true);
+  }, [src]);
+
+  return (
+    <div className="relative h-full w-full bg-slate-900">
+      <img
+        src={src}
+        alt={alt}
+        loading="lazy"
+        className={`h-full w-full object-contain transition-opacity ${isLoading ? "opacity-0" : "opacity-100"}`}
+        onLoad={() => setIsLoading(false)}
+        onError={() => {
+          setIsLoading(false);
+          onError();
+        }}
+      />
+      {isLoading ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-900 text-slate-400">
+          <Loader2 className="h-5 w-5 animate-spin" />
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 function getRoleSummary(userRole: string | null | undefined) {
   const normalized = (userRole || "").toLowerCase();
   return {
@@ -2103,19 +2140,29 @@ export default function StaffProofingPage() {
                             const openingPdfPreview = openingArtworkPreviewId === sourceKey;
                             return (
                               <div key={`${source.sourceType}:${source.id}`} className={`flex gap-3 rounded-lg border p-3 ${source.eligible ? "border-[#2a3157] bg-[#111622]" : "border-amber-400/30 bg-amber-500/5"}`}>
-                                <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded border border-[#30385d] bg-slate-900">
-                                  {sourceIsPdf && previewUrl ? (
+                                <div className="flex h-32 w-40 shrink-0 items-center justify-center overflow-hidden rounded border border-[#30385d] bg-slate-900">
+                                  {openingPdfPreview ? <Loader2 className="h-6 w-6 animate-spin" /> : thumbnailUrl && !previewFailed ? (
                                     <button
                                       type="button"
                                       onClick={() => void openArtworkPreview(source)}
-                                      disabled={openingPdfPreview}
+                                      title={`Open ${displayName}`}
+                                      className="h-full w-full hover:bg-slate-800"
+                                    >
+                                      <ProofingArtworkThumbnailImage
+                                        src={thumbnailUrl}
+                                        alt={`Artwork preview for ${displayName}`}
+                                        onError={() => setFailedArtworkPreviewIds((current) => new Set(current).add(source.id))}
+                                      />
+                                    </button>
+                                  ) : sourceIsPdf && previewUrl ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => void openArtworkPreview(source)}
                                       title={`Open ${displayName}`}
                                       className="flex h-full w-full flex-col items-center justify-center gap-1 text-[10px] text-slate-300 hover:bg-slate-800"
                                     >
-                                      {openingPdfPreview ? <Loader2 className="h-6 w-6 animate-spin" /> : thumbnailUrl ? <img src={thumbnailUrl} alt={`Artwork preview for ${displayName}`} loading="lazy" className="h-full w-full object-cover" onError={() => setFailedArtworkPreviewIds((current) => new Set(current).add(source.id))} /> : <><FileText className="h-6 w-6" /><span>View PDF</span></>}
+                                      <FileText className="h-6 w-6" /><span>View PDF</span>
                                     </button>
-                                  ) : previewUrl && !previewFailed ? (
-                                    <button type="button" onClick={() => void openArtworkPreview(source)} title={`Open ${displayName}`} className="h-full w-full"><img src={previewUrl} alt={`Artwork preview for ${displayName}`} loading="lazy" className="h-full w-full object-cover" onError={() => setFailedArtworkPreviewIds((current) => new Set(current).add(source.id))} /></button>
                                   ) : source.previewStatus === "generation_failed" || previewFailed ? (
                                     <span className="px-2 text-center text-[10px] text-amber-200">Preview unavailable — retry below</span>
                                   ) : source.previewState === "queued" || source.previewState === "processing" ? (
@@ -2960,9 +3007,7 @@ export default function StaffProofingPage() {
                     {eligibleArtworkSources.map((source) => {
                       const isSelected = selectedArtworkSourceIds.includes(source.id);
                       const displayName = source.computedDisplayFilename || source.displayFilename || source.originalFilename || source.fileName;
-                      const previewUrl = getArtworkSourcePreviewUrl(source);
                       const thumbnailUrl = getArtworkSourceThumbnailUrl(source);
-                      const sourceIsPdf = isPdfFile(source.mimeType, displayName);
                       const previewFailed = failedArtworkPreviewIds.has(source.id);
                       return (
                         <label
@@ -2982,17 +3027,19 @@ export default function StaffProofingPage() {
                             }}
                             className="h-4 w-4"
                           />
-                          {sourceIsPdf && previewUrl ? (
+                          {thumbnailUrl && !previewFailed ? (
                             <button
                               type="button"
                               title={`Open ${displayName}`}
                               onClick={(event) => { event.preventDefault(); event.stopPropagation(); void openArtworkPreview(source); }}
                               className="flex h-10 w-10 items-center justify-center rounded border text-muted-foreground hover:bg-muted"
                             >
-                              {thumbnailUrl ? <img src={thumbnailUrl} alt={`Artwork preview for ${displayName}`} loading="lazy" className="h-full w-full rounded object-cover" onError={() => setFailedArtworkPreviewIds((current) => new Set(current).add(source.id))} /> : <FileText className="h-4 w-4" />}
+                              <ProofingArtworkThumbnailImage
+                                src={thumbnailUrl}
+                                alt={`Artwork preview for ${displayName}`}
+                                onError={() => setFailedArtworkPreviewIds((current) => new Set(current).add(source.id))}
+                              />
                             </button>
-                          ) : previewUrl && !previewFailed ? (
-                            <button type="button" title={`Open ${displayName}`} onClick={(event) => { event.preventDefault(); event.stopPropagation(); void openArtworkPreview(source); }} className="h-10 w-10 rounded border"><img src={previewUrl} alt={`Artwork preview for ${displayName}`} loading="lazy" className="h-full w-full rounded object-cover" onError={() => setFailedArtworkPreviewIds((current) => new Set(current).add(source.id))} /></button>
                           ) : previewFailed || source.previewRetryAllowed ? (
                             <Button type="button" variant="outline" size="sm" className="h-10 px-2 text-[10px]" disabled={generatePreviewMutation.isPending} onClick={(event) => { event.preventDefault(); event.stopPropagation(); retryArtworkPreview(source.id); }}>Retry preview</Button>
                           ) : (
