@@ -59,6 +59,25 @@ export class ProductionRunError extends Error {
   constructor(readonly code: string, message: string, readonly statusCode = 400, readonly details?: Record<string, unknown>) { super(message); }
 }
 
+export function buildPlannedProductionRunOutcomeMembers(
+  members: Array<{ id: string; allocatedQuantity?: number | null; damagedQuantity?: number | null; operatorNote?: string | null }>,
+  note?: string | null,
+): MemberOutcomeInput[] {
+  const completionNote = note?.trim() || "Completed as planned from Combined Run";
+  return members.map((member) => {
+    const allocatedQuantity = Math.max(0, Number(member.allocatedQuantity) || 0);
+    return {
+      memberId: member.id,
+      successfulQuantity: allocatedQuantity,
+      damagedQuantity: Math.max(0, Number(member.damagedQuantity) || 0),
+      remainingQuantity: 0,
+      outcomeStatus: "completed",
+      recoveryDisposition: "none",
+      operatorNote: member.operatorNote?.trim() || completionNote,
+    };
+  });
+}
+
 const activeStatuses: RunStatus[] = [...ACTIVE_PRODUCTION_RUN_STATUSES];
 const terminalJobStatuses = new Set(["done", "void", "canceled", "cancelled"]);
 const FULFILLMENT_STATION_KEY = "fulfillment";
@@ -2236,37 +2255,12 @@ export async function transitionProductionRun(input: { organizationId: string; r
       }
       const members = await tx.select().from(productionRunMembers).where(and(eq(productionRunMembers.productionRunId, run.id), eq(productionRunMembers.organizationId, input.organizationId)));
       if (!members.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "A production run must have members.");
-      const unresolvedMembers = members.filter((member: any) => {
-        const allocated = Number(member.allocatedQuantity) || 0;
-        const successful = Number(member.successfulQuantity ?? member.completedQuantity) || 0;
-        const damaged = Number(member.damagedQuantity) || 0;
-        const remaining = Number(member.remainingQuantity) || 0;
-        return member.outcomeStatus !== "completed"
-          || remaining !== 0
-          || successful < allocated;
-      });
-      if (unresolvedMembers.length) {
-        throw new ProductionRunError(
-          "PRODUCTION_RUN_RESULTS_REQUIRED",
-          `Record reconciled production results for ${unresolvedMembers.length} member${unresolvedMembers.length === 1 ? "" : "s"} before completing this run.`,
-          409,
-          { unresolvedMemberIds: unresolvedMembers.map((member: any) => member.id) },
-        );
-      }
       return recordProductionRunOutcomeInTransaction(tx, {
         organizationId: input.organizationId,
         runId: run.id,
         actorUserId: input.actorUserId,
-        idempotencyKey: `complete:${run.id}`,
-        members: members.map((member: any) => ({
-          memberId: member.id,
-          successfulQuantity: Number(member.successfulQuantity ?? member.completedQuantity) || 0,
-          damagedQuantity: Number(member.damagedQuantity) || 0,
-          remainingQuantity: 0,
-          outcomeStatus: "completed" as const,
-          recoveryDisposition: member.recoveryDisposition ?? "none",
-          operatorNote: member.operatorNote ?? input.reason ?? null,
-        })),
+        idempotencyKey: `complete-as-planned:${run.id}`,
+        members: buildPlannedProductionRunOutcomeMembers(members, input.reason),
       });
     }
     const [updated] = await tx.update(productionRuns).set({ ...next, updatedAt: now }).where(and(eq(productionRuns.id, run.id), eq(productionRuns.organizationId, input.organizationId))).returning();

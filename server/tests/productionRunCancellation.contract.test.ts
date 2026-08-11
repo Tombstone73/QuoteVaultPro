@@ -59,9 +59,11 @@ describe("combined production run cancellation contract", () => {
     expect(service).not.toContain("delete(lineItemFiles)");
   });
 
-  test("does not fabricate all-good results when an operator completes a run", () => {
-    expect(service).toContain("PRODUCTION_RUN_RESULTS_REQUIRED");
-    expect(service).toContain("const unresolvedMembers = members.filter");
-    expect(service).toContain("successfulQuantity: Number(member.successfulQuantity ?? member.completedQuantity) || 0");
+  test("completes a normal run from planned member allocations without resetting history", () => {
+    expect(service).toContain("buildPlannedProductionRunOutcomeMembers");
+    expect(service).toContain("complete-as-planned");
+    expect(service).toContain("successfulQuantity: allocatedQuantity");
+    expect(service).not.toContain("PRODUCTION_RUN_RESULTS_REQUIRED");
+    expect(service).not.toContain("const unresolvedMembers = members.filter");
   });
 });

@@ -17,9 +17,9 @@ import {
   useRepairCompletedProductionRunFulfillmentHandoff,
   useReopenCompletedProductionRun,
   useRecordProductionRunOutcome,
-  useRecordProductionRunSheetProgress,
   useReturnProductionRunToPrepress,
   useProductionJob,
+  useSubmitReprintRequest,
   useTransitionProductionRun,
   type CanceledProductionRunReconciliationResult,
   type ProductionRunListItem,
@@ -57,7 +57,6 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const { user, isAdmin } = useAuth();
   const transition = useTransitionProductionRun();
   const recordOutcome = useRecordProductionRunOutcome();
-  const recordSheetProgress = useRecordProductionRunSheetProgress();
   const completeCanceledReturn = useCompleteProductionRunReturnToPrepress();
   const reopenCompletedRun = useReopenCompletedProductionRun();
   const repairFulfillmentHandoff = useRepairCompletedProductionRunFulfillmentHandoff();
@@ -85,6 +84,10 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const [returnConfirmationOpen, setReturnConfirmationOpen] = useState(false);
   const [returnReason, setReturnReason] = useState("Nesting requires revision");
   const [reconciliationResult, setReconciliationResult] = useState<CanceledProductionRunReconciliationResult | null>(null);
+  const [shortageMember, setShortageMember] = useState<ProductionRunListItem["members"][number] | null>(null);
+  const [shortageQuantity, setShortageQuantity] = useState("1");
+  const [shortageReason, setShortageReason] = useState("");
+  const submitShortageReprint = useSubmitReprintRequest(shortageMember?.productionJobId ?? leadMember?.productionJobId ?? "");
   const initialDrafts = useMemo(() => Object.fromEntries(run.members.map((member) => [member.id, {
     successfulQuantity: member.successfulQuantity || member.completedQuantity || 0,
     damagedQuantity: member.damagedQuantity || 0,
@@ -98,10 +101,15 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
     setCurrentSheetIndex(0);
   }, [initialSheetProgress]);
   const sheetProgressSummary = useMemo(() => summarizeProductionRunSheetProgress(sheetProgressDraft), [sheetProgressDraft]);
-  const completedSheetEstimate = sheetProgressSummary.goodImpressions;
   const currentSheet = sheetProgressDraft?.sheets[currentSheetIndex] ?? sheetProgressDraft?.sheets[0] ?? null;
   const currentSheetFile = currentSheet?.fileId ? run.files.find((file) => file.id === currentSheet.fileId) ?? null : null;
-  const currentSheetRemaining = currentSheet ? Math.max(0, currentSheet.requiredImpressions - currentSheet.goodImpressions) : 0;
+  const sheetQuantityLabel = sheetProgressSummary.sheetCount === 1
+    ? `Run quantity: ${currentSheet?.requiredImpressions || run.totalAllocatedQuantity || "-"}`
+    : sheetProgressSummary.requiredImpressions > 0 && sheetProgressSummary.requiredImpressions === sheetProgressSummary.sheetCount
+      ? "1 copy each"
+      : sheetProgressSummary.requiredImpressions > 0
+        ? `${sheetProgressSummary.requiredImpressions} planned impressions`
+        : "Quantity planned by allocation";
   const placements = (Number(run.plannedSheetCount) || 0) * (Number(run.nominalPiecesPerSheet) || 0);
   const mismatch = placements > 0 && placements !== run.totalAllocatedQuantity;
   const activeFileCount = run.fileCount ?? run.files?.filter((file) => file.status === "active").length ?? 0;
@@ -126,22 +134,14 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
       || remainingQuantity < 0
       || successfulQuantity > Number(member.allocatedQuantity || 0)
   ));
-  const unresolvedResultRows = resultRows.filter(({ remainingQuantity }) => remainingQuantity !== 0);
-  const resultsComplete = resultRows.length > 0 && invalidResultRows.length === 0 && unresolvedResultRows.length === 0;
-  const totalGood = resultRows.reduce((sum, row) => sum + row.successfulQuantity, 0);
-  const totalDamaged = resultRows.reduce((sum, row) => sum + row.damagedQuantity, 0);
-  const totalRemaining = resultRows.reduce((sum, row) => sum + Math.max(0, row.remainingQuantity), 0);
-  const completionBlockedReason = !isStartedRun
+  const normalCompletionBlockedReason = !isStartedRun
     ? "Start the run first."
     : replacementRequired
     ? "A required nested production file is missing."
-    : sheetProgressSummary.requiredImpressions > 0 && !sheetProgressSummary.complete
-      ? "Record required good impressions for every nested sheet before completion."
-    : invalidResultRows.length
-      ? "Correct invalid good or damaged quantities before completion."
-      : unresolvedResultRows.length
-        ? `Record results for ${unresolvedResultRows.length} member${unresolvedResultRows.length === 1 ? "" : "s"}.`
-        : null;
+    : null;
+  const exceptionBlockedReason = invalidResultRows.length
+    ? "Correct invalid good or damaged quantities before saving."
+    : null;
   const isAdminOrOwner = Boolean(isAdmin || user?.isAdmin || user?.role === "admin" || user?.role === "owner");
   const canReturnEntireRun = isAdminOrOwner && isOperationalRun && run.members.length > 0 && run.members.every((member) => member.successfulQuantity === 0 && member.completedQuantity === 0 && member.damagedQuantity === 0 && member.remainingQuantity === member.allocatedQuantity && member.outcomeStatus === "pending");
   const strandedCanceledMembers = unfinishedMembers.filter((member) => member.currentWorkflowOwner !== "prepress");
@@ -152,6 +152,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const canceledRunFullyRestored = isAdminOrOwner && run.runStatus === "canceled" && unfinishedMembers.length > 0 && strandedCanceledMembers.length === 0;
   const returnError = (returnRunToPrepress.error || completeCanceledReturn.error) as (Error & { code?: string | null; details?: { memberId?: string; productionJobId?: string; lineItemId?: string; members?: Array<{ productionJobId?: string }> } | null }) | null;
   const canReopenCompletedRun = isAdminOrOwner && run.runStatus === "completed" && run.members.every((member) => member.outcomeStatus === "completed" && member.remainingQuantity === 0);
+  const canReportPostProductionShortage = run.runStatus === "completed" || run.runStatus === "completed_with_exceptions";
   const releaseBlockedReason = action === "release" && replacementRequired
     ? "Nested production file required before release."
     : null;
@@ -159,28 +160,8 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
     ...current,
     [memberId]: { ...(current[memberId] ?? initialDrafts[memberId]), ...patch },
   }));
-  const updateCurrentSheet = (patch: { goodDelta?: number; damagedDelta?: number; markRemainingGood?: boolean }) => {
-    if (!sheetProgressDraft || !currentSheet) return;
-    setSheetProgressDraft({
-      ...sheetProgressDraft,
-      source: "operator",
-      sheets: sheetProgressDraft.sheets.map((sheet) => {
-        if (sheet.id !== currentSheet.id) return sheet;
-        const goodImpressions = patch.markRemainingGood
-          ? sheet.requiredImpressions
-          : Math.min(sheet.requiredImpressions, Math.max(0, sheet.goodImpressions + (patch.goodDelta ?? 0)));
-        const damagedImpressions = Math.max(0, sheet.damagedImpressions + (patch.damagedDelta ?? 0));
-        return { ...sheet, goodImpressions, damagedImpressions };
-      }),
-    });
-  };
-  const saveSheetProgress = () => {
-    if (!sheetProgressDraft) return;
-    recordSheetProgress.mutate({
-      runId: run.id,
-      idempotencyKey: `sheet-progress:${run.id}:${Date.now()}`,
-      sheetProgressSnapshot: { ...sheetProgressDraft, source: "operator", updatedAt: new Date().toISOString() },
-    });
+  const completeRunAsPlanned = () => {
+    transition.mutate({ runId: run.id, action: "complete", reason: "Completed as planned from production board" });
   };
   const submitResults = () => {
     recordOutcome.mutate({
@@ -204,17 +185,36 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
       }),
     }, { onSuccess: () => setRecordingResults(false) });
   };
-  const markAllRunQuantitiesGood = () => {
-    setDrafts(Object.fromEntries(run.members.map((member) => [member.id, {
-      successfulQuantity: member.allocatedQuantity,
-      damagedQuantity: 0,
-      recoveryDisposition: "none",
-      operatorNote: drafts[member.id]?.operatorNote ?? member.operatorNote ?? "",
-    }])));
-  };
   const focusResults = () => {
     setRecordingResults(true);
     requestAnimationFrame(() => resultsSectionRef.current?.scrollIntoView({ behavior: "smooth", block: "start" }));
+  };
+  const openShortageReport = (member: ProductionRunListItem["members"][number]) => {
+    setShortageMember(member);
+    setShortageQuantity("1");
+    setShortageReason("");
+  };
+  const submitShortageReport = () => {
+    if (!shortageMember) return;
+    const quantity = Number(shortageQuantity);
+    const filename = run.files.find((file) => file.lineItemId === shortageMember.orderLineItemId && file.status === "active")?.fileName
+      ?? run.files.find((file) => file.status === "active")?.fileName
+      ?? shortageMember.description
+      ?? run.displayNumber;
+    submitShortageReprint.mutate({
+      lineItemId: shortageMember.orderLineItemId,
+      filename,
+      quantity,
+      units: "pieces",
+      reason: `Post-production shortage from ${run.displayNumber}: ${shortageReason.trim()}`,
+      noPrintsCompletedYet: false,
+    }, {
+      onSuccess: () => {
+        setShortageMember(null);
+        setShortageReason("");
+        setShortageQuantity("1");
+      },
+    });
   };
   const restoreCanceledRunMembers = () => {
     completeCanceledReturn.mutate({ runId: run.id }, {
@@ -285,7 +285,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           ) : null}
           {isActiveRun ? (
             <Button size="sm" variant="outline" onClick={focusResults}>
-              {resultsComplete ? "Child results reconciled" : `Adjust Child Results${unresolvedResultRows.length ? ` (${unresolvedResultRows.length})` : ""}`}
+              Report Problem
             </Button>
           ) : null}
           {canReconcileCanceledRun ? (
@@ -319,7 +319,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         <div>Files: <span className="font-semibold">{activeFileCount}</span></div>
         <div>Target station: <span className="font-semibold">{run.stationKey}</span></div>
         <div>Started: <span className="font-semibold">{run.startedAt ? new Date(run.startedAt).toLocaleString() : "Not recorded"}</span></div>
-        <div>Progress: <span className="font-semibold">{totalGood + totalDamaged} / {run.totalAllocatedQuantity} pieces</span></div>
+        <div>Planned output: <span className="font-semibold">{run.totalAllocatedQuantity} pieces</span></div>
       </div>
       {isOperationalRun ? (
         <div className="mt-3 grid gap-3 rounded-md border border-titan-border-subtle bg-black/10 p-3 xl:grid-cols-[minmax(0,1.6fr)_minmax(280px,0.8fr)]">
@@ -356,7 +356,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
                     onClick={() => setCurrentSheetIndex(index)}
                   >
                     <span className="block font-semibold">{sheet.label}</span>
-                    <span className="text-titan-text-muted">{sheet.goodImpressions}/{sheet.requiredImpressions} good</span>
+                    <span className="text-titan-text-muted">{sheet.requiredImpressions || 1} planned</span>
                   </button>
                 ))}
               </div>
@@ -364,31 +364,24 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           </div>
           <div className="space-y-3">
             <div className="rounded-md border border-titan-border-subtle p-3">
-              <div className="text-xs font-semibold">Current sheet status</div>
+              <div className="text-xs font-semibold">Production reference</div>
               <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                <div>Required: <span className="font-semibold">{currentSheet?.requiredImpressions ?? "-"}</span></div>
-                <div>Good: <span className="font-semibold">{currentSheet?.goodImpressions ?? "-"}</span></div>
-                <div>Damaged: <span className="font-semibold">{currentSheet?.damagedImpressions ?? "-"}</span></div>
-                <div>Remaining good: <span className="font-semibold">{currentSheet ? currentSheetRemaining : "-"}</span></div>
+                <div>Nested sheets: <span className="font-semibold">{sheetProgressSummary.sheetCount || run.plannedSheetCount || "-"}</span></div>
+                <div>{sheetQuantityLabel}</div>
+                <div>Planned pieces: <span className="font-semibold">{run.totalAllocatedQuantity}</span></div>
+                <div>Child items: <span className="font-semibold">{run.memberCount}</span></div>
               </div>
-              <div className="mt-3 flex flex-wrap gap-2">
-                <Button size="sm" onClick={() => updateCurrentSheet({ goodDelta: 1 })} disabled={!isStartedRun || !currentSheet || currentSheetRemaining <= 0}>Mark Impression Good</Button>
-                <Button size="sm" variant="outline" onClick={() => updateCurrentSheet({ markRemainingGood: true })} disabled={!isStartedRun || !currentSheet || currentSheetRemaining <= 0}>Mark Remaining Good</Button>
-                <Button size="sm" variant="outline" onClick={() => updateCurrentSheet({ damagedDelta: 1 })} disabled={!isStartedRun || !currentSheet}>Record Damage</Button>
-                <Button size="sm" variant="outline" onClick={saveSheetProgress} disabled={!isStartedRun || !sheetProgressDraft || recordSheetProgress.isPending}>
-                  {recordSheetProgress.isPending ? "Saving..." : "Save Progress"}
-                </Button>
-              </div>
+              <div className="mt-2 text-xs text-titan-text-muted">No per-sheet checkoff required. Use Report Problem for damage, shortage, or reprint needs.</div>
             </div>
             <div className="rounded-md border border-titan-border-subtle p-3 text-xs">
-              <div className="font-semibold">Overall run progress</div>
+              <div className="font-semibold">Planned run output</div>
               <div className="mt-2 grid grid-cols-2 gap-2">
                 <div>Nested sheets: <span className="font-semibold">{sheetProgressSummary.sheetCount || run.plannedSheetCount || "-"}</span></div>
-                <div>Total impressions: <span className="font-semibold">{sheetProgressSummary.requiredImpressions || "-"}</span></div>
-                <div>Good impressions: <span className="font-semibold">{sheetProgressSummary.goodImpressions} / {sheetProgressSummary.requiredImpressions || "-"}</span></div>
-                <div>Damaged: <span className="font-semibold">{sheetProgressSummary.damagedImpressions}</span></div>
+                <div>Sheet quantity: <span className="font-semibold">{sheetProgressSummary.requiredImpressions || "-"}</span></div>
+                <div>Allocated pieces: <span className="font-semibold">{run.totalAllocatedQuantity}</span></div>
+                <div>Completion mode: <span className="font-semibold">Planned success</span></div>
               </div>
-              <div className="mt-2 text-titan-text-muted">Saving progress rolls usable output into child line-item quantities through the existing production result workflow.</div>
+              <div className="mt-2 text-titan-text-muted">Completing the run records the planned allocated quantities through the existing production result workflow.</div>
             </div>
             <div className="rounded-md border border-titan-border-subtle p-3">
               <div className="text-xs font-semibold">Machine assignment</div>
@@ -406,9 +399,9 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
             {leadMember ? <div className="mt-2"><PrinterMachineAssignment jobId={leadMember.productionJobId} stationKey={run.stationKey} assignedPrinterName={(leadJob as any)?.assignedPrinterName} assignedPrinterId={(leadJob as any)?.assignedPrinterId} assignedPrinterAt={(leadJob as any)?.assignedPrinterAt} printerOptions={(leadJob as any)?.printerOptions} compact /></div> : null}
           </div>
           <div className="rounded border border-titan-border-subtle p-2">
-            <div className="text-xs font-semibold">Sheet progress</div>
-            <div className="mt-1 text-sm">{run.plannedSheetCount ?? "—"} sheets required · {completedSheetEstimate ?? "—"} result-derived sheets completed</div>
-            <div className="mt-1 text-[11px] text-titan-text-muted">Sheet completion is calculated from recorded pieces. The current run lifecycle has no persisted sheet-progress field, so this workspace does not fabricate a separate sheet counter.</div>
+            <div className="text-xs font-semibold">Sheet reference</div>
+            <div className="mt-1 text-sm">{run.plannedSheetCount ?? "—"} sheets required</div>
+            <div className="mt-1 text-[11px] text-titan-text-muted">Sheet progress metadata is retained for reference, but normal completion uses planned allocations.</div>
           </div>
         </div>
       ) : null}
@@ -451,7 +444,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         </div>
         <div className="divide-y divide-titan-border-subtle rounded-md border border-titan-border-subtle">
         {run.members.map((member) => (
-          <div key={member.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_auto_auto_auto]">
+          <div key={member.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_auto_auto_auto_auto]">
             <div className="min-w-0 truncate">
               <div>{member.lineNumber ? `Line ${member.lineNumber}: ` : ""}{member.description}</div>
               <div className="text-[11px] text-titan-text-muted">
@@ -473,6 +466,9 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
             <div>Ordered {member.orderedQuantity}</div>
             <div>Run {member.allocatedQuantity} / Good {member.successfulQuantity} / Damaged {member.damagedQuantity}</div>
             <div>Remaining {member.remainingQuantity}</div>
+            {canReportPostProductionShortage ? (
+              <Button size="sm" variant="outline" onClick={() => openShortageReport(member)}>Report Shortage</Button>
+            ) : null}
           </div>
         ))}
         </div>
@@ -481,22 +477,22 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         <div className="mt-3 rounded-md border border-titan-border-subtle bg-titan-bg-subtle p-3 text-xs">
           <div className="flex flex-wrap items-center justify-between gap-2">
             <div className="font-semibold">Completion summary</div>
-            <Badge variant={resultsComplete ? "secondary" : "outline"}>{resultsComplete ? "Results complete" : `${unresolvedResultRows.length} unresolved member results`}</Badge>
+            <Badge variant="secondary">Planned success</Badge>
           </div>
           <div className="mt-2 grid gap-2 sm:grid-cols-4">
-            <div>Total good: <span className="font-semibold">{totalGood}</span></div>
-            <div>Total damaged: <span className="font-semibold">{totalDamaged}</span></div>
-            <div>Total remaining: <span className="font-semibold">{totalRemaining}</span></div>
+            <div>Expected good: <span className="font-semibold">{run.totalAllocatedQuantity}</span></div>
+            <div>Child items: <span className="font-semibold">{run.memberCount}</span></div>
+            <div>Nested sheets: <span className="font-semibold">{sheetProgressSummary.sheetCount || run.plannedSheetCount || "—"}</span></div>
             <div>Sheets planned: <span className="font-semibold">{run.plannedSheetCount ?? "—"}</span></div>
           </div>
-          {completionBlockedReason ? <div className="mt-2 text-amber-200">Complete blocked: {completionBlockedReason}</div> : <div className="mt-2 text-emerald-200">Results reconcile. Completion will use the canonical server-side validation and fulfillment handoff.</div>}
+          {normalCompletionBlockedReason ? <div className="mt-2 text-amber-200">Complete blocked: {normalCompletionBlockedReason}</div> : <div className="mt-2 text-emerald-200">Normal completion records planned run quantities as successful through canonical production logic.</div>}
         </div>
       ) : null}
       {recordingResults ? (
         <div ref={resultsSectionRef} className="mt-3 rounded-md border border-titan-border-subtle p-3">
-          <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs font-semibold">Exception adjustment by child item</div>
-            <Button size="sm" variant="outline" onClick={markAllRunQuantitiesGood}>Mark all run quantities good</Button>
+          <div className="mb-3">
+            <div className="text-xs font-semibold">Report Problem by child item</div>
+            <div className="mt-1 text-[11px] text-titan-text-muted">Enter only the damaged, short, or unresolved quantities that need recovery.</div>
           </div>
           <div className="space-y-3">
             {run.members.map((member) => {
@@ -561,9 +557,8 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           </div>
           <div className="mt-3 flex flex-wrap justify-end gap-2">
             <Button size="sm" variant="outline" onClick={() => setRecordingResults(false)}>Collapse Results</Button>
-            <Button size="sm" onClick={submitResults} disabled={recordOutcome.isPending || invalidResultRows.length > 0}>Save Results</Button>
-            <Button size="sm" onClick={submitResults} disabled={recordOutcome.isPending || !!completionBlockedReason} title={completionBlockedReason ?? undefined}>
-              {recordOutcome.isPending ? "Saving…" : "Complete Run"}
+            <Button size="sm" onClick={submitResults} disabled={recordOutcome.isPending || !!exceptionBlockedReason} title={exceptionBlockedReason ?? undefined}>
+              {recordOutcome.isPending ? "Saving…" : "Save Problem Report"}
             </Button>
           </div>
         </div>
@@ -576,12 +571,12 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
       ) : null}
       {isOperationalRun ? (
         <div className="sticky bottom-3 z-10 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-violet-400/40 bg-slate-950/95 px-3 py-2 shadow-lg backdrop-blur">
-          <div className="text-xs"><span className="font-semibold">{run.displayNumber}</span> · {resultsComplete ? "Results complete" : `${unresolvedResultRows.length} results unresolved`}</div>
+          <div className="text-xs"><span className="font-semibold">{run.displayNumber}</span> · Start, print, complete as planned</div>
           <div className="flex flex-wrap gap-2">
-            {isStartedRun ? <Button size="sm" variant="outline" onClick={focusResults}>Adjust Child Results</Button> : null}
+            {isStartedRun ? <Button size="sm" variant="outline" onClick={focusResults}>Report Problem</Button> : null}
             {isStartedRun ? <Button size="sm" variant="outline" onClick={() => transition.mutate({ runId: run.id, action: "pause" })} disabled={transition.isPending}>Pause Run</Button> : null}
             {canReturnEntireRun ? <Button size="sm" variant="outline" onClick={() => setReturnConfirmationOpen(true)} disabled={returnRunToPrepress.isPending}>Return Run to Prepress</Button> : null}
-            <Button size="sm" onClick={submitResults} disabled={recordOutcome.isPending || !!completionBlockedReason} title={completionBlockedReason ?? undefined}>Complete Run</Button>
+            <Button size="sm" onClick={completeRunAsPlanned} disabled={transition.isPending || !!normalCompletionBlockedReason} title={normalCompletionBlockedReason ?? undefined}>Complete Run</Button>
           </div>
         </div>
       ) : null}
@@ -636,6 +631,41 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
               returnRunToPrepress.mutate({ runId: run.id, reason: returnReason.trim() }, { onSuccess: () => setReturnConfirmationOpen(false) });
             }}>
               {returnRunToPrepress.isPending ? "Returning…" : "Return Run to Prepress"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={Boolean(shortageMember)} onOpenChange={(open) => { if (!open) setShortageMember(null); }}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Report shortage for {shortageMember?.orderNumber ? `Order ${shortageMember.orderNumber}` : run.displayNumber}</AlertDialogTitle>
+            <AlertDialogDescription>
+              This keeps {run.displayNumber} completed and creates recovery production only for the replacement quantity.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <div className="space-y-3 text-sm">
+            <div className="rounded border border-titan-border-subtle p-2 text-xs text-titan-text-muted">
+              {shortageMember ? `${shortageMember.description} · original line quantity ${shortageMember.orderedQuantity} · run allocation ${shortageMember.allocatedQuantity}` : "No child item selected."}
+            </div>
+            <label className="grid gap-1">
+              <span className="font-medium">Replacement quantity</span>
+              <input type="number" min={1} value={shortageQuantity} onChange={(event) => setShortageQuantity(event.target.value)} className="rounded border border-titan-border-subtle bg-transparent px-2 py-1" />
+            </label>
+            <label className="grid gap-1">
+              <span className="font-medium">Reason</span>
+              <textarea value={shortageReason} onChange={(event) => setShortageReason(event.target.value)} maxLength={2000} className="min-h-[88px] rounded border border-titan-border-subtle bg-transparent px-2 py-1" />
+            </label>
+          </div>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={submitShortageReprint.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={submitShortageReprint.isPending || !shortageMember || !(Number(shortageQuantity) > 0) || !shortageReason.trim()}
+              onClick={(event) => {
+                event.preventDefault();
+                submitShortageReport();
+              }}
+            >
+              {submitShortageReprint.isPending ? "Creating…" : "Create Recovery"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

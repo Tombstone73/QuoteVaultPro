@@ -43,20 +43,22 @@ describe("combined run operator lifecycle contract", () => {
     expect(service).toContain("restoredAt: now");
   });
 
-  it("renders an explicit operator next step, result workspace, and return action", () => {
+  it("renders an explicit operator next step, reference workspace, and return action", () => {
     expect(panel).toContain("Current state:");
     expect(panel).toContain("Next:");
     expect(panel).toContain("Start Run");
     expect(panel).toContain("Resume Run");
     expect(panel).toContain("Return Run to Prepress");
     expect(panel).toContain("Nested production artwork");
-    expect(panel).toContain("Mark Impression Good");
-    expect(panel).toContain("Save Progress");
-    expect(panel).toContain("Exception adjustment by child item");
+    expect(panel).toContain("No per-sheet checkoff required");
+    expect(panel).toContain("Report Problem");
+    expect(panel).toContain("Report Problem by child item");
+    expect(panel).not.toContain("Mark Impression Good");
+    expect(panel).not.toContain("Save Progress");
     expect(panel).toContain("sticky bottom-3");
   });
 
-  it("persists nested sheet progress on the parent run and rolls it through member outcomes", () => {
+  it("keeps nested sheet progress available as parent-run metadata", () => {
     expect(service).toContain("sheetProgressSnapshot");
     expect(service).toContain("recordProductionRunSheetProgress");
     expect(service).toContain("distributeProducedPiecesAcrossMembers");
