@@ -14,6 +14,9 @@ const rows = [
     customerDisplayName: "Zeta Signs",
     lineItemLabel: "Window Perf",
     packageLabel: "Perf Package",
+    jobLabel: "Lobby window refresh",
+    poNumber: "PO-1002",
+    dueDate: "2026-05-06T00:00:00.000Z",
     workflowState: "awaiting_proof_approval",
     currentQueueStatus: "awaiting_send",
     currentQueueBadge: "Draft",
@@ -43,6 +46,9 @@ const rows = [
     customerDisplayName: "Alpha Print",
     lineItemLabel: "Yard Sign",
     packageLabel: "Campaign Signs",
+    jobLabel: null,
+    poNumber: null,
+    dueDate: null,
     workflowState: "awaiting_proof_approval",
     currentQueueStatus: "awaiting_approval",
     currentQueueBadge: "Sent",
@@ -72,6 +78,9 @@ const rows = [
     customerDisplayName: "Bravo Banners",
     lineItemLabel: "Step and Repeat",
     packageLabel: "Event Banner",
+    jobLabel: null,
+    poNumber: null,
+    dueDate: null,
     workflowState: "ready_for_production",
     currentQueueStatus: "approved",
     currentQueueBadge: "Approved",
@@ -101,6 +110,9 @@ const rows = [
     customerDisplayName: "Delta Displays",
     lineItemLabel: "Trade Show Backdrop",
     packageLabel: "Backdrop",
+    jobLabel: null,
+    poNumber: null,
+    dueDate: null,
     workflowState: "awaiting_proof_approval",
     currentQueueStatus: "rejected",
     currentQueueBadge: "Rejected",
@@ -131,6 +143,8 @@ describe("proofingQueueControls", () => {
     expect(matchesProofingSearch(rows[1], "alpha")).toBe(true);
     expect(matchesProofingSearch(rows[2], "step and repeat")).toBe(true);
     expect(matchesProofingSearch(rows[3], "missing term")).toBe(false);
+    expect(matchesProofingSearch(rows[0], "lobby window")).toBe(true);
+    expect(matchesProofingSearch(rows[0], "po-1002")).toBe(true);
   });
 
   test("default filter maps to awaiting proof and preserves legacy slice compatibility", () => {

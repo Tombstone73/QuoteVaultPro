@@ -21,6 +21,7 @@ import { GENERATED_PROOF_DESCRIPTION_MARKER } from "@shared/prepressFileClassifi
 import {
   assetLinks,
   assets,
+  customerContacts,
   customers,
   lineItemProofApprovals,
   lineItemProofManualApprovalOverrides,
@@ -629,6 +630,9 @@ type LoadedProofQueueLineItem = LoadedProofLineItem & {
   customerDisplayName: string | null;
   lineItemLabel: string;
   packageLabel: string;
+  jobLabel: string | null;
+  poNumber: string | null;
+  dueDate: string | Date | null;
   activeOwnerJobId?: string | null;
   activeOwnerStationKey?: string | null;
   activeOwnerStepKey?: string | null;
@@ -3232,6 +3236,9 @@ function buildProofingQueueRow(base: LoadedProofQueueLineItem, truth: ProofingRe
     customerDisplayName: base.customerDisplayName,
     lineItemLabel: base.lineItemLabel,
     packageLabel: base.packageLabel,
+    jobLabel: base.jobLabel,
+    poNumber: base.poNumber,
+    dueDate: toIsoString(base.dueDate),
     workflowState: truth.workflowState,
     currentQueueStatus,
     currentQueueBadge: deriveProofingQueueBadge(currentQueueStatus),
@@ -3284,9 +3291,12 @@ export async function listProofingQueue(tx: any, args: {
       organizationId: orders.organizationId,
       orderNumber: orders.orderNumber,
       sortOrder: orderLineItems.sortOrder,
-      customerDisplayName: customers.companyName,
+      customerDisplayName: sql<string | null>`coalesce(nullif(${customers.companyName}, ''), nullif(concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName}), ''))`,
       lineItemLabel: orderLineItems.description,
       packageLabel: orderLineItems.description,
+      jobLabel: orders.label,
+      poNumber: orders.poNumber,
+      dueDate: orders.dueDate,
       workflowState: orderLineItems.workflowState,
       requiresPrepress: orderLineItems.requiresPrepress,
       requiresProofApproval: orderLineItems.requiresProofApproval,
@@ -3296,6 +3306,7 @@ export async function listProofingQueue(tx: any, args: {
     .from(orderLineItems)
     .innerJoin(orders, eq(orderLineItems.orderId, orders.id))
     .leftJoin(customers, eq(orders.customerId, customers.id))
+    .leftJoin(customerContacts, and(eq(orders.contactId, customerContacts.id), eq(customerContacts.organizationId, args.organizationId)))
     .where(
       and(
         eq(orders.organizationId, args.organizationId),

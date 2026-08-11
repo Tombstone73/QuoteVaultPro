@@ -24,7 +24,7 @@ export function matchesProofingSearch(row: ProofingQueueRow, rawQuery: string) {
   const query = rawQuery.trim().toLowerCase();
   if (!query) return true;
 
-  return [row.orderNumber, row.customerDisplayName, row.lineItemLabel, row.packageLabel]
+  return [row.orderNumber, row.customerDisplayName, row.lineItemLabel, row.packageLabel, row.jobLabel, row.poNumber]
     .filter(Boolean)
     .some((value) => String(value).toLowerCase().includes(query));
 }

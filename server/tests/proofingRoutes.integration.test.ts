@@ -1504,6 +1504,37 @@ describe("proofing route integration", () => {
     });
   });
 
+  test("proofing queue includes canonical job context from the order without extra requests", async () => {
+    const { lineItemId } = await createLineItemFixture("queue_job_context", {
+      requiresProofApproval: true,
+      attachProofFiles: false,
+    });
+    const dueDate = new Date("2030-05-17T12:00:00.000Z");
+
+    await db.update(orders)
+      .set({ label: "Long format lobby campaign", poNumber: "PO-QUEUE-123", dueDate })
+      .where(eq(orders.id, orderId));
+
+    try {
+      const queue = proofingQueueResponseSchema.parse((await request(app)
+        .get("/api/proofing/queue")
+        .set("x-test-user-id", userId)
+        .set("x-test-user-role", "admin")
+        .set("x-test-org-id", orgId)
+        .expect(200)).body.data);
+
+      expect(queue.rows.find((row) => row.lineItemId === lineItemId)).toMatchObject({
+        jobLabel: "Long format lobby campaign",
+        poNumber: "PO-QUEUE-123",
+        dueDate: dueDate.toISOString(),
+      });
+    } finally {
+      await db.update(orders)
+        .set({ label: null, poNumber: null, dueDate: null })
+        .where(eq(orders.id, orderId));
+    }
+  });
+
   test("generated proof draft can use selected generic uploaded artwork source", async () => {
     const { lineItemId } = await createLineItemFixture("generic_upload_generated_draft", {
       addArtwork: false,

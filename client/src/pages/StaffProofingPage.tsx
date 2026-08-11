@@ -71,6 +71,7 @@ import {
 } from "@/lib/proofingRecovery";
 import { getStaffProofDownloadUrl, getStaffProofPreviewUrl, shouldFetchStaffPreviewAsBlob } from "@/lib/proofingPreviewUrls";
 import { buildProofingArtworkDisplayUrl } from "@/lib/proofingArtworkDisplay";
+import { getProofingQueueDueDate } from "@/lib/proofingQueueDueDate";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import {
   combinedProofReviewIsReady,
@@ -540,30 +541,6 @@ function getSectionHeadingClass(sectionKey: string) {
       return "text-rose-500";
     default:
       return "text-slate-600";
-  }
-}
-
-function getPersonInitials(value: string | null | undefined) {
-  const parts = String(value || "")
-    .trim()
-    .split(/\s+/)
-    .filter(Boolean)
-    .slice(0, 2);
-
-  if (parts.length === 0) return "NA";
-  return parts.map((part) => part[0]?.toUpperCase() || "").join("");
-}
-
-function getAvatarClass(sectionKey: string) {
-  switch (sectionKey) {
-    case "awaiting_send":
-      return "bg-blue-500";
-    case "awaiting_approval":
-      return "bg-indigo-500";
-    case "revision_requested":
-      return "bg-emerald-500";
-    default:
-      return "bg-slate-700";
   }
 }
 
@@ -1832,6 +1809,14 @@ export default function StaffProofingPage() {
                   const isSelected = row.lineItemId === activeRow?.lineItemId;
                   const isBatchSelectable = isProofingSelectionSelectable(row);
                   const printJobId = row.activeOwnerJobId ?? row.productionJobId;
+                  const dueDate = getProofingQueueDueDate(row.dueDate);
+                  const dueDateClass = dueDate?.tone === "overdue"
+                    ? "text-rose-300"
+                    : dueDate?.tone === "today"
+                      ? "text-amber-200"
+                      : dueDate?.tone === "tomorrow"
+                        ? "text-sky-200"
+                        : "text-slate-300";
                   return (
                     <div
                       key={row.lineItemId}
@@ -1850,7 +1835,7 @@ export default function StaffProofingPage() {
                           : "border border-[#232948] bg-[#141824]/40 hover:border-slate-600"
                       }`}
                     >
-                      <div className="mb-2 flex items-start justify-between">
+                      <div className="mb-2 flex items-start justify-between gap-2">
                         <div className="flex items-center gap-2">
                           <input
                             type="checkbox"
@@ -1866,16 +1851,32 @@ export default function StaffProofingPage() {
                             {row.orderNumber ? `#${row.orderNumber}` : row.orderId}
                           </span>
                         </div>
-                        <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${getQueueCardBadgeClass(row)}`}>
-                          {getQueueCardBadgeLabel(row)}
-                        </span>
-                      </div>
-                      <h4 className="text-xs font-bold text-white transition-colors group-hover:text-[#1337ec]">{row.lineItemLabel}</h4>
-                      <p className="mt-1 text-[10px] text-slate-500">{row.customerDisplayName || "No customer"}</p>
-                      <div className="mt-3 flex items-center justify-between">
-                        <div className={`flex size-5 items-center justify-center rounded-full text-[8px] text-white ${getAvatarClass(row.currentQueueStatus)}`}>
-                          {getPersonInitials(row.customerDisplayName)}
+                        <div className="flex shrink-0 items-center gap-1">
+                          <span className={`rounded px-1.5 py-0.5 text-[10px] font-bold uppercase ${getQueueCardBadgeClass(row)}`}>
+                            {getQueueCardBadgeLabel(row)}
+                          </span>
+                          <button
+                            type="button"
+                            className="rounded border border-slate-600 px-1.5 py-0.5 text-[9px] font-bold text-slate-200 hover:border-[#4b7bff] hover:text-white"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setSelectedLineItemId(row.lineItemId);
+                            }}
+                          >
+                            OPEN
+                          </button>
                         </div>
+                      </div>
+                      <h4 title={row.lineItemLabel} className="truncate text-xs font-bold text-white transition-colors group-hover:text-[#1337ec]">{row.lineItemLabel}</h4>
+                      <p title={row.customerDisplayName || undefined} className="mt-1 truncate text-[10px] text-slate-400">{row.customerDisplayName || "No customer"}</p>
+                      {row.jobLabel || row.poNumber ? (
+                        <div className="mt-2 space-y-1 border-t border-[#232948] pt-2 text-[10px] text-slate-400">
+                          {row.jobLabel ? <p title={row.jobLabel} className="truncate"><span className="text-slate-500">Job: </span>{row.jobLabel}</p> : null}
+                          {row.poNumber ? <p title={row.poNumber} className="truncate"><span className="text-slate-500">PO: </span>{row.poNumber}</p> : null}
+                        </div>
+                      ) : null}
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-x-2 gap-y-1">
+                        {dueDate ? <span title={dueDate.title} className={`text-[9px] font-bold ${dueDateClass}`}>{dueDate.label}</span> : <span />}
                         <span className={`flex items-center gap-1 text-[10px] ${row.currentQueueStatus === "awaiting_approval" ? "text-amber-500/70" : row.currentQueueStatus === "revision_requested" || row.currentQueueStatus === "rejected" ? "font-bold text-rose-400" : "text-slate-500"}`}>
                           {row.currentQueueStatus === "awaiting_approval" ? <Eye className="h-3 w-3" /> : row.currentQueueStatus === "revision_requested" || row.currentQueueStatus === "rejected" ? <AlertCircle className="h-3 w-3" /> : null}
                           {formatRelativeTime(row.lastActivityAt)}
