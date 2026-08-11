@@ -177,6 +177,46 @@ describe("AssistantOperatorRuntime", () => {
     expect(result.response).toContain("internal banner pricing");
   });
 
+  test("blocks repeated equivalent deterministic failures and leaves the provider free to use another capability", async () => {
+    const execute = jest.fn(async ({ toolName }: any) => toolName === "search.global"
+      ? { toolName, status: "failed" as const, warning: "The business lookup could not be completed.", failureCode: "adapter_failed", failureCategory: "adapter_failed", failingStep: "tool_execution" }
+      : { toolName, status: "succeeded" as const, result: { status: "succeeded" as const, data: { priced: true }, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-10T00:00:00.000Z" } } } as any });
+    const provider: AssistantOperatorDecisionProvider = { decide: async ({ observations }) => {
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "search.global", arguments: { query: "Banner", entityType: "product" } }] };
+      if (observations.length === 1) return { kind: "call_tools", calls: [{ toolName: "search.global", arguments: { entityType: "product", query: "Banner" } }] };
+      if (observations.length === 2) return { kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: {} }] };
+      return { kind: "complete", response: "I used the available pricing capability after the search failure." };
+    } };
+
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({ goal: "Price this trusted product.", taskId: "task_no_repeat", trustedContext });
+
+    expect(execute.mock.calls.map(([call]: any[]) => call.toolName)).toEqual(["search.global", "products.get_pricing"]);
+    expect(result.observations).toEqual(expect.arrayContaining([expect.objectContaining({ toolName: "search.global", status: "rejected", warning: expect.stringContaining("already failed deterministically") })]));
+    expect(result.status).toBe("completed");
+  });
+
+  test("uses pricing directly for a trusted current product without rediscovery", async () => {
+    const execute = jest.fn(async ({ toolName, arguments: args }: any) => {
+      expect(toolName).toBe("products.get_pricing");
+      expect(args).toEqual({});
+      return { toolName, status: "succeeded" as const, result: { status: "succeeded" as const, data: { totals: [4000, 4400, 5200, 5000, 5500, 6500] }, provenance: { sourceLinks: [], freshness: { capturedAt: "2026-08-10T00:00:00.000Z" } } } as any };
+    });
+    const provider: AssistantOperatorDecisionProvider = { decide: async ({ observations, task }) => {
+      expect(task?.entityReferences).toEqual([expect.objectContaining({ type: "product", id: "product_translucent" })]);
+      return observations.length
+        ? { kind: "complete", response: "3 Layer: $40, $44, $52. 5 Layer: $50, $55, $65." }
+        : { kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: {} }] };
+    } };
+
+    const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute }).run({
+      goal: "Show pricing for this product.", taskId: "task_trusted_pricing",
+      trustedContext: { ...trustedContext, task: { id: "task_trusted_pricing", domain: "products", canonicalProductIntentProposalId: null, entityReferences: [{ type: "product", id: "product_translucent", label: "Translucent Vinyl" }] } },
+    });
+
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(result.response).toContain("$65");
+  });
+
   test("turns an unexpected tool exception into a recoverable observation", async () => {
     const provider: AssistantOperatorDecisionProvider = {
       decide: async ({ observations }) => observations.length

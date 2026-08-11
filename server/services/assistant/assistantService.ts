@@ -912,11 +912,11 @@ export class AssistantService {
         persistenceAttempted: true, persistenceResult: "succeeded", createdAt: new Date().toISOString(),
         operatorRuntime: {
           ...(() => {
-            const toolObservations = run.observations.slice(-12).map((observation) => ({ toolName: observation.toolName.slice(0, 160), status: observation.status }));
+            const toolObservations = run.observations.slice(-12).map((observation) => ({ toolName: observation.toolName.slice(0, 160), status: observation.status, failureCode: observation.failureCode ?? null, failureCategory: observation.failureCategory ?? null, failingStep: observation.failingStep ?? null }));
             const firstFailed = run.observations.find((observation) => observation.status === "rejected" || observation.status === "failed" || observation.status === "timed_out");
             return {
               toolObservations,
-              firstFailedTool: firstFailed ? { toolName: firstFailed.toolName.slice(0, 160), status: firstFailed.status } : null,
+              firstFailedTool: firstFailed ? { toolName: firstFailed.toolName.slice(0, 160), status: firstFailed.status, failureCode: firstFailed.failureCode ?? null, failureCategory: firstFailed.failureCategory ?? null, failingStep: firstFailed.failingStep ?? null } : null,
             };
           })(),
           step: Math.max(1, Math.min(25, run.diagnostics.stepsConsumed)),

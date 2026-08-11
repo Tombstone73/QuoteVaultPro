@@ -88,6 +88,11 @@ export type AssistantOperatorObservation = {
   status: "succeeded" | "not_found" | "permission_denied" | "partial" | "failed" | "rejected" | "timed_out";
   result?: AssistantToolResultEnvelope;
   warning?: string;
+  /** Safe execution classifications only; argument values and provider text
+   * never enter observations or persisted diagnostics. */
+  failureCategory?: string;
+  failureCode?: string;
+  failingStep?: string;
   /** Server-to-browser presentation only. It is intentionally excluded from
    * subsequent provider decisions so the model never receives GO tokens,
    * plan identifiers, fingerprints, or command payloads. */
@@ -219,6 +224,27 @@ function repeatsPriorClarification(previous: readonly string[], next: readonly s
   return prior.every((value, index) => value === requested[index]);
 }
 
+/** Runtime-only equivalence for loop prevention. It is never logged or
+ * persisted, and normalizes object key order so semantically identical model
+ * calls cannot consume the full investigation budget after one deterministic
+ * failure. */
+function equivalentToolCallKey(toolName: string, argumentsValue: Record<string, unknown>): string {
+  const normalize = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(normalize);
+    if (!value || typeof value !== "object") return value;
+    return Object.fromEntries(Object.entries(value as Record<string, unknown>).sort(([left], [right]) => left.localeCompare(right)).map(([key, child]) => [key, normalize(child)]));
+  };
+  return `${toolName}:${JSON.stringify(normalize(argumentsValue))}`;
+}
+
+function isDeterministicToolFailure(observation: Pick<AssistantOperatorObservation, "status" | "failureCode">): boolean {
+  return observation.status === "rejected"
+    || observation.failureCode === "invalid_arguments"
+    || observation.failureCode === "core_query_failed"
+    || observation.failureCode === "adapter_failed"
+    || observation.failureCode === "result_validation_failed";
+}
+
 /** Keep diagnostics useful without recording provider text, arguments, or
  * business data. These facts identify the boundary that rejected a decision. */
 function decisionDiagnosticShape(value: unknown): { decisionKind: string | null; toolCallCount: number | null } {
@@ -247,6 +273,7 @@ export class AssistantOperatorRuntime {
     let providerDecisionCount = 0;
     let printersHeroToolDecisionCount = 0;
     let continuationCount = 0;
+    const deterministicFailureKeys = new Set<string>();
 
     for (let step = 1; step <= boundedSteps; step += 1) {
       let decision: AssistantOperatorDecision;
@@ -301,10 +328,17 @@ export class AssistantOperatorRuntime {
 
       printersHeroToolDecisionCount += 1;
       for (const call of decision.calls) {
+        const callKey = equivalentToolCallKey(call.toolName, call.arguments);
+        if (deterministicFailureKeys.has(callKey)) {
+          observations.push({ step, toolName: call.toolName, status: "rejected", warning: "This equivalent lookup already failed deterministically in this investigation; choose a different authorized capability." });
+          console.warn("[AI_OPERATOR_TRACE]", { stage: "duplicate_deterministic_tool_failure_blocked", taskId: input.taskId, step, toolName: call.toolName });
+          continue;
+        }
         try {
           console.info("[AI_OPERATOR_TRACE]", { stage: "handler_entered", taskId: input.taskId, step, toolName: call.toolName });
           const execution = await this.tools.execute({ toolName: call.toolName, arguments: call.arguments, context: { ...input.trustedContext, analysisObservations: observations } });
           observations.push({ step, ...execution });
+          if (isDeterministicToolFailure(execution)) deterministicFailureKeys.add(callKey);
           console.info("[AI_OPERATOR_TRACE]", { stage: "observation_returned", taskId: input.taskId, step, toolName: call.toolName, status: execution.status });
         } catch {
           // Provider/model execution faults are still bounded observations.

@@ -34,6 +34,9 @@ export function createAssistantOperatorToolExecutor(
         status: execution.status,
         ...(execution.result ? { result: execution.result } : {}),
         ...(execution.warning ? { warning: execution.warning } : {}),
+        ...(execution.failureCategory ? { failureCategory: execution.failureCategory } : {}),
+        ...(execution.failureCode ? { failureCode: execution.failureCode } : {}),
+        ...(execution.failingStep ? { failingStep: execution.failingStep } : {}),
       };
     },
   };

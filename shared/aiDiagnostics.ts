@@ -43,8 +43,8 @@ export const aiDiagnosticEnvelopeSchema = z.object({
     argumentValidationSucceeded: z.boolean(), handlerEntered: z.boolean(),
     observationReturned: z.boolean(), continuationStarted: z.boolean(),
     finalResultAccepted: z.boolean(), failureKind: safeText.nullable(),
-    toolObservations: z.array(z.object({ toolName: safeText, status: safeText }).strict()).max(12).optional().default([]),
-    firstFailedTool: z.object({ toolName: safeText, status: safeText }).strict().nullable().optional().default(null),
+    toolObservations: z.array(z.object({ toolName: safeText, status: safeText, failureCode: safeText.nullable().optional().default(null), failureCategory: safeText.nullable().optional().default(null), failingStep: safeText.nullable().optional().default(null) }).strict()).max(12).optional().default([]),
+    firstFailedTool: z.object({ toolName: safeText, status: safeText, failureCode: safeText.nullable().optional().default(null), failureCategory: safeText.nullable().optional().default(null), failingStep: safeText.nullable().optional().default(null) }).strict().nullable().optional().default(null),
     providerDecisionShape: z.object({
       responseItemCount: z.number().int().nonnegative().max(64).nullable(), responseItemTypes: z.array(safeText).max(32), unknownItemTypes: z.array(safeText).max(16),
       outputTextPresent: z.boolean(), outputTextItemCount: z.number().int().nonnegative().max(64).nullable().optional().default(null), outputTextLengths: z.array(z.number().int().nonnegative().max(1_000_000)).max(32).optional().default([]), textBeginsKnownTransportMarker: z.boolean().optional().default(false), textEndsKnownTransportMarker: z.boolean().optional().default(false), finalTextRemainingAfterTransportStripping: z.boolean().optional().default(false), finalTextLength: z.number().int().nonnegative().max(1_000_000).nullable(), functionCallItemCount: z.number().int().nonnegative().max(24).nullable().optional().default(null), functionCallCount: z.number().int().nonnegative().max(24).nullable(), functionArgumentDecodeSucceeded: z.boolean().nullable(),

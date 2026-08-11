@@ -176,7 +176,7 @@ const toolMetadata = {
     modelSummarizationAllowed: true,
   },
   "products.get_pricing": {
-    description: "Return authoritative semantic PBV2 pricing configuration for one tenant-scoped product, without requiring a calculation. Optionally project a customer price with semantic width, height, unit (in or ft), quantity, and business-labeled option selections; server resolves defaults and internal PBV2 values. When a required pricing input is missing, the result names its business label and allowed choices. When only a product name is known, use search.global to establish a trusted product reference. After a product search or summary, use that trusted product reference as productId directly; do not search again. This read returns rates, defaults, option dependencies, and impacts together and never changes a product, quote, or order.",
+    description: "Return authoritative semantic PBV2 pricing configuration for one tenant-scoped product, without requiring a calculation. Optionally project a customer price with semantic width, height, unit (in or ft), quantity, and business-labeled option selections; server resolves defaults and internal PBV2 values. When a current trusted product is supplied by task or page context, call this directly and omit productId if necessary: the server binds only that trusted product. Use search.global only when product identity is genuinely unresolved. This read returns rates, defaults, option dependencies, and impacts together and never changes a product, quote, or order.",
     requiredPermission: "finance_read",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantProductPricingInputSchema,
