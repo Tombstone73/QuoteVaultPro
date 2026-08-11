@@ -899,12 +899,13 @@ export class AssistantService {
       lastObservationSummary: run.observations.at(-1)?.warning ?? null,
       status: activeStatus,
     } });
-    const diagnostic = run.status === "failed"
+    const hasFailedTool = run.observations.some((observation) => observation.status === "rejected" || observation.status === "failed" || observation.status === "timed_out");
+    const diagnostic = (run.status === "failed" || hasFailedTool)
       ? await persistAiDiagnostic({
         version: 1, referenceId: correlationId, correlationId, diagnosticType: "operator_runtime",
         tenantId: scope.organizationId, actorId: actor.userId, conversationId: conversation.id,
         provider: providerConfig.provider ?? null, model: providerConfig.model ?? null, providerRequestId: null,
-        stage: "operator_runtime_failure", errorCode: operatorFailureKind(run.response),
+        stage: "operator_runtime_failure", errorCode: hasFailedTool ? "operator_tool_failure" : operatorFailureKind(run.response),
         providerResponseState: run.observations.length ? "received" : "not_received",
         parseMethod: "none", repairAttempted: false, repairResult: "not_attempted",
         validationSchema: null, validationIssuePaths: [], validationIssueCodes: [], returnedTopLevelKeys: [], missingRequiredKeys: [], unknownKeys: [],
@@ -920,12 +921,12 @@ export class AssistantService {
             };
           })(),
           step: Math.max(1, Math.min(25, run.diagnostics.stepsConsumed)),
-          decisionType: run.response === "I couldn't complete the request because the AI Operator could not complete its investigation." ? null : "fail",
+          decisionType: run.status === "completed" ? "complete" : run.response === "I couldn't complete the request because the AI Operator could not complete its investigation." ? null : "fail",
           toolName: run.observations.at(-1)?.toolName ?? null,
           argumentValidationSucceeded: run.observations.length > 0 && !run.observations.some((observation) => observation.status === "rejected"),
           handlerEntered: run.observations.length > 0, observationReturned: run.observations.length > 0,
           continuationStarted: run.diagnostics.providerDecisionCount > 1,
-          finalResultAccepted: false, failureKind: operatorFailureKind(run.response),
+          finalResultAccepted: run.status === "completed", failureKind: hasFailedTool ? "operator_tool_failure" : operatorFailureKind(run.response),
           providerDecisionShape: run.diagnostics.providerDecisionShape ?? null,
         },
       }).catch(() => null)

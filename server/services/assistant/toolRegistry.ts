@@ -94,7 +94,7 @@ export type AssistantToolAdapters = Partial<Record<AssistantToolName, AssistantT
 
 const toolMetadata = {
   "search.global": {
-    description: "Find bounded tenant-scoped business records. Arguments: query (required text), optional entityType customer|product, optional limit 1–20. Use this to establish a trusted product reference before a product summary or pricing request; investigate likely catalog matches before asking the user for an exact product name.",
+    description: "Find bounded tenant-scoped business records only when the relevant entity is genuinely unresolved. Arguments: query (required text), optional entityType customer|product, optional limit 1–20. For known product discovery, set entityType to product. Never rediscover a trusted task or page-context entity: use its applicable summary, detail, or pricing capability directly with the trusted product reference.",
     requiredPermission: "internal_staff",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantGlobalSearchInputSchema,

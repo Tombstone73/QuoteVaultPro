@@ -342,7 +342,15 @@ export class AssistantOrchestrationService {
       failingStep: "request_validation",
       coreResultSucceeded: false,
     });
-    return { toolName: tool.name, status, warning };
+    return {
+      toolName: tool.name,
+      status,
+      warning,
+      failureCategory: failureCode === "invalid_arguments" ? "invalid_input" : failureCode === "unauthorized" ? "permission_denied" : "adapter_failed",
+      failureCode,
+      failingStep: "request_validation",
+      coreResultSucceeded: false,
+    };
   }
 
   private async audit(event: AssistantToolExecutionAudit): Promise<void> {

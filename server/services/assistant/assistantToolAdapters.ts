@@ -12,6 +12,7 @@ import {
   type AssistantToolResultEnvelope,
 } from "@shared/assistantContracts";
 import { createCustomerSummaryTool, createSearchGlobalTool, customerSummaryToolResultSchema } from "./searchCustomerTools";
+import { AssistantToolExecutionError } from "./orchestration";
 import { createQuoteSearchTool } from "./quoteSearchTools";
 import { createQuoteDetailTool } from "./quoteDetailTools";
 import { createStage2OrderProductToolAdapters } from "./orderProductOperationalTools";
@@ -63,11 +64,19 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
     "search.global": {
       async execute(rawInput, context): Promise<AssistantToolResultEnvelope> {
         const input = assistantGlobalSearchInputSchema.parse(rawInput);
-        const result = await search.execute(contextForLegacyAdapter(context), {
-          query: input.query,
-          maxResultsPerCategory: Math.min(5, input.limit ?? 5),
-          ...(input.entityType ? { entityType: input.entityType } : {}),
-        });
+        let result;
+        try {
+          result = await search.execute(contextForLegacyAdapter(context), {
+            query: input.query,
+            maxResultsPerCategory: Math.min(5, input.limit ?? 5),
+            ...(input.entityType ? { entityType: input.entityType } : {}),
+          });
+        } catch {
+          // This is deliberately structural only: it proves the handler began
+          // and the tenant-scoped backend lookup failed without retaining the
+          // provider query or database error.
+          throw new AssistantToolExecutionError("core_query_failed", "core_query_failed", "search_backend");
+        }
         const matches = result.data.results.map((record) => assistantEntitySummarySchema.parse({
           entityType: record.entityType,
           recordId: record.recordId,
