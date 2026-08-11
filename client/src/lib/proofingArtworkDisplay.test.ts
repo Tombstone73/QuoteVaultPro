@@ -1,4 +1,4 @@
-import { buildProofingArtworkDisplayUrl } from "./proofingArtworkDisplay";
+import { buildProofingArtworkDisplayUrl, buildProofingArtworkThumbnailUrl } from "./proofingArtworkDisplay";
 
 describe("buildProofingArtworkDisplayUrl", () => {
   test("uses the authenticated canonical Proofing source route for line_item_files", () => {
@@ -13,5 +13,12 @@ describe("buildProofingArtworkDisplayUrl", () => {
       sourceType: "line_item_artwork",
       sourceId: "",
     })).toBeNull();
+  });
+
+  test("requests thumbnails through the same authenticated source route", () => {
+    expect(buildProofingArtworkThumbnailUrl("line-1", {
+      sourceType: "line_item_artwork",
+      sourceId: "artwork-1",
+    })).toBe("/api/proofing/line-item/line-1/eligible-artwork/line_item_artwork/artwork-1/preview?variant=thumbnail");
   });
 });

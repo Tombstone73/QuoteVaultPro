@@ -2112,8 +2112,10 @@ export async function resolveEligibleProofArtworkPreviewForDisplay(tx: any, args
   lineItemId: string;
   sourceType: EligibleProofArtworkSource["sourceType"];
   sourceId: string;
+  variant?: "preview" | "thumbnail";
 }) {
   const source = await getEligibleProofArtworkSourceForDisplay(tx, args);
+  const thumbnailOnly = args.variant === "thumbnail";
   const preview = await resolveProofPreviewSource({
     context: {
       organizationId: args.organizationId,
@@ -2127,13 +2129,15 @@ export async function resolveEligibleProofArtworkPreviewForDisplay(tx: any, args
       fileRecordId: source.fileRecordId,
       // Legacy rows can be canonical source artwork without a file record.
       // Pass their existing reference only to the authenticated resolver.
-      previewStorageKey: source.previewKey || source.thumbnailUrl || source.fileUrl || source.relativePath,
+      previewStorageKey: thumbnailOnly
+        ? source.thumbKey || source.thumbnailRelativePath || source.previewKey || source.thumbnailUrl
+        : source.previewKey || source.thumbnailUrl || source.fileUrl || source.relativePath,
       thumbStorageKey: source.thumbKey || source.thumbnailRelativePath,
       storageProviderHint: source.storageProvider,
       pagePreviewFileRecordId: source.pagePreviewFileRecordId,
       pageThumbFileRecordId: source.pageThumbFileRecordId,
-      allowOriginalPdf: true,
-      preferOriginalPdf: true,
+      allowOriginalPdf: !thumbnailOnly,
+      preferOriginalPdf: !thumbnailOnly,
     }],
   });
 

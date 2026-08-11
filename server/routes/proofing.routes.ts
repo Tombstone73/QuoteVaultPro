@@ -256,10 +256,12 @@ export function registerProofingRoutes(
       if (!parsed.success) {
         return res.status(400).json({ success: false, error: "Invalid artwork preview request" });
       }
+      const variant = req.query?.variant === "thumbnail" ? "thumbnail" : "preview";
 
       const { source, preview } = await resolveEligibleProofArtworkPreviewForDisplay(db, {
         organizationId,
         ...parsed.data,
+        variant,
       });
 
       if (preview.kind === "unavailable" || !preview.sourceBuffer) {

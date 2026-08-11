@@ -55,6 +55,26 @@ export async function openAuthenticatedPdfPreview(
   );
 }
 
+export async function openAuthenticatedImagePreview(url: string): Promise<void> {
+  const response = await apiFetch(url, {
+    method: "GET",
+    credentials: "include",
+    headers: { Accept: "image/*" },
+  });
+  if (!response.ok) throw new Error(await readPdfErrorMessage(response, `Image request failed (${response.status})`));
+
+  const contentType = getHeader(response, "content-type").toLowerCase();
+  if (!contentType.startsWith("image/")) throw new Error("Image preview failed: server returned a non-image response.");
+  const objectUrl = URL.createObjectURL(await response.blob());
+  try {
+    if (!window.open(objectUrl, "_blank", DEFAULT_PREVIEW_FEATURES)) throw new Error("Image preview was blocked by the browser.");
+  } catch (error) {
+    URL.revokeObjectURL(objectUrl);
+    throw error;
+  }
+  window.setTimeout(() => URL.revokeObjectURL(objectUrl), DEFAULT_BLOB_REVOKE_DELAY_MS);
+}
+
 async function fetchAuthenticatedPdfObjectUrl(url: string): Promise<string> {
   const response = await apiFetch(url, {
     method: "GET",

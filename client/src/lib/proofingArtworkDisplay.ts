@@ -11,3 +11,9 @@ export function buildProofingArtworkDisplayUrl(lineItemId: string | null | undef
 
   return `/api/proofing/line-item/${encodeURIComponent(normalizedLineItemId)}/eligible-artwork/${encodeURIComponent(source.sourceType)}/${encodeURIComponent(normalizedSourceId)}/preview`;
 }
+
+/** Uses the same authenticated, tenant-scoped source route but asks for a lightweight derivative. */
+export function buildProofingArtworkThumbnailUrl(lineItemId: string | null | undefined, source: ProofingArtworkSourceRef) {
+  const displayUrl = buildProofingArtworkDisplayUrl(lineItemId, source);
+  return displayUrl ? `${displayUrl}?variant=thumbnail` : null;
+}
