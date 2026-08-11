@@ -11,6 +11,7 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       expect(request.system).toContain("Treat a user's requested presentation as part of the goal");
       expect(request.system).toContain("If multiple records share the extreme value");
       expect(request.system).toContain("PrintersHero is not read-only");
+      expect(request.system).toContain("standalone request naming one product and asking for its current pricing");
       const body = JSON.parse(request.user);
       expect(body.goal).toBe("all 5");
       expect(body.observations).toEqual([]);

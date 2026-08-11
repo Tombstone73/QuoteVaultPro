@@ -163,10 +163,11 @@ const toolMetadata = {
     modelSummarizationAllowed: true,
   },
   "products.get_summary": {
-    description: "Return a reduced catalog and production-routing summary for one trusted product reference. This is not a calculated customer price; use products.get_pricing for an authoritative scenario price when permitted.",
+    description: "Return a reduced catalog and production-routing summary for one product. For a standalone named-product summary, pass query with the exact product name; for a trusted product, pass its trusted productId. This is not a calculated customer price; use products.get_pricing for authoritative persisted pricing, defaults, or option dependencies.",
     requiredPermission: "catalog_read",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantProductSummaryInputSchema,
+    providerInputSchema: { type: "object", additionalProperties: false, properties: { productId: { type: "string", minLength: 1, maxLength: 128 }, query: { type: "string", minLength: 1, maxLength: 160 } } },
     resultSchema: assistantProductSummaryResultSchema,
     maxResults: 1,
     timeoutMs: 3_000,
@@ -176,10 +177,19 @@ const toolMetadata = {
     modelSummarizationAllowed: true,
   },
   "products.get_pricing": {
-    description: "Return authoritative semantic PBV2 pricing configuration for one tenant-scoped product, without requiring a calculation. Optionally project a customer price with semantic width, height, unit (in or ft), quantity, and business-labeled option selections; server resolves defaults and internal PBV2 values. When a current trusted product is supplied by task or page context, call this directly and omit productId if necessary: the server binds only that trusted product. Use search.global only when product identity is genuinely unresolved. This read returns rates, defaults, option dependencies, and impacts together and never changes a product, quote, or order.",
+    description: "Return authoritative semantic PBV2 pricing configuration for one tenant-scoped product, without requiring a calculation. For a standalone named-product request for current pricing, defaults, or option dependencies, call this directly with query set to the exact product name; it resolves the product and its persisted configuration in one read. For a trusted current product, call this directly with its trusted productId or omit identity only where server binding applies. Optionally project a customer price with semantic width, height, unit (in or ft), quantity, and business-labeled option selections; server resolves defaults and internal PBV2 values. Use search.global only for genuinely unresolved broad discovery, never before this named-product configuration read. This read returns rates, defaults, option dependencies, and impacts together and never changes a product, quote, or order.",
     requiredPermission: "finance_read",
     requiredContext: ["trusted_actor"] as const,
     inputSchema: assistantProductPricingInputSchema,
+    providerInputSchema: {
+      type: "object", additionalProperties: false,
+      properties: {
+        productId: { type: "string", minLength: 1, maxLength: 128 }, query: { type: "string", minLength: 1, maxLength: 160 },
+        quantity: { type: "number", minimum: 1, maximum: 100000 }, widthIn: { type: "number", maximum: 10000 }, heightIn: { type: "number", maximum: 10000 },
+        width: { type: "number", maximum: 10000 }, height: { type: "number", maximum: 10000 }, unit: { enum: ["in", "ft"] },
+        optionSelections: { type: "object", additionalProperties: true },
+      },
+    },
     resultSchema: assistantProductPricingResultSchema,
     maxResults: 1,
     timeoutMs: 5_000,

@@ -382,6 +382,20 @@ describe("configured AI provider", () => {
     expect(JSON.stringify(result.requestMetadata)).not.toContain("product_translucent");
   });
 
+  test("publishes a query contract for a standalone persisted product configuration read", async () => {
+    const query = "Translucent Vinyl - backlit with multilayer printing";
+    const inputSchema = { type: "object", additionalProperties: false, properties: { productId: { type: "string" }, query: { type: "string" } } } as const;
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{
+      type: "function_call", call_id: "call_config", name: "ph_0_products_get_pricing", arguments: JSON.stringify({ query }),
+    }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [{ name: "products.get_pricing", description: "Read one named product's persisted configuration directly.", inputSchema }] });
+
+    expect(JSON.parse(result.rawText)).toMatchObject({ kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: { query } }] });
+    const body = JSON.parse(String((global.fetch as any).mock.calls[0][1].body));
+    expect(body.tools[0].parameters).toMatchObject({ additionalProperties: false, properties: { query: { type: "string" }, productId: { type: "string" } } });
+  });
+
   test("reassembles split output_text fragments before validating a terminal decision", async () => {
     global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [
       { type: "output_text", text: '{"kind":"complete","response":"Pricing' },

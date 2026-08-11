@@ -91,6 +91,17 @@ describe("assistant tool registry", () => {
     expect(search.inputSchema.parse({ query: "banner", entityType: "product", limit: 5 })).toEqual({ query: "banner", entityType: "product", limit: 5 });
   });
 
+  test("publishes a direct named-product configuration contract instead of requiring global search", () => {
+    const registry = createAssistantToolRegistry();
+    const pricing = registry.get("products.get_pricing")!;
+    expect(pricing.description).toContain("standalone named-product request");
+    expect(pricing.description).toContain("Use search.global only for genuinely unresolved broad discovery");
+    expect(pricing.providerInputSchema).toEqual(expect.objectContaining({
+      properties: expect.objectContaining({ query: expect.objectContaining({ type: "string" }), productId: expect.objectContaining({ type: "string" }) }),
+    }));
+    expect(pricing.inputSchema.parse({ query: "Translucent Vinyl - backlit with multilayer printing" })).toEqual({ query: "Translucent Vinyl - backlit with multilayer printing" });
+  });
+
   test("normalizes only a safe numeric order summary number at the registered-tool boundary", () => {
     expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: 1112 })).toEqual({ orderNumber: "1112" });
     expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: "ORD-1112" })).toEqual({ orderNumber: "ORD-1112" });
