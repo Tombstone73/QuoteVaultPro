@@ -97,6 +97,25 @@ function buildCustomerOrderBy(sortBy?: string, sortDir?: string) {
     ];
 }
 
+function buildCustomerSearchOrderBy(search: string) {
+    const normalizedSearch = search.trim().toLowerCase();
+    const companyName = sql`lower(coalesce(${customers.companyName}, ''))`;
+    const email = sql`lower(coalesce(${customers.email}, ''))`;
+
+    return [
+        sql`case
+            when ${companyName} = ${normalizedSearch} then 0
+            when ${companyName} like ${`${normalizedSearch}%`} then 1
+            when ${companyName} like ${`% ${normalizedSearch}%`} then 2
+            when ${companyName} like ${`%${normalizedSearch}%`} then 3
+            when ${email} like ${`%${normalizedSearch}%`} then 4
+            else 5
+        end`,
+        asc(companyName),
+        asc(customers.id),
+    ];
+}
+
 const contactSortExpressions: Record<ContactSortBy, any> = {
     name: sql`lower(coalesce(${customerContacts.lastName}, '') || ' ' || coalesce(${customerContacts.firstName}, ''))`,
     lastName: sql`lower(coalesce(${customerContacts.lastName}, ''))`,
@@ -1260,7 +1279,9 @@ export class CustomersRepository {
                 .select()
                 .from(customers)
                 .where(and(eq(customers.organizationId, organizationId), inArray(customers.id, matchingIds)))
-                .orderBy(...buildCustomerOrderBy(opts.sortBy, opts.sortDir))
+                .orderBy(...(opts.search?.trim() && !opts.sortBy
+                    ? buildCustomerSearchOrderBy(opts.search)
+                    : buildCustomerOrderBy(opts.sortBy, opts.sortDir)))
                 .limit(pageSize)
                 .offset(offset);
 

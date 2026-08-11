@@ -52,6 +52,10 @@ function sortedCustId(label: string) {
   return `cust_sort_${suffix}_${label}`;
 }
 
+function rankedCustId(label: string) {
+  return `cust_rank_${suffix}_${label}`;
+}
+
 function customerPage(body: any) {
   const pagination = body.data.pagination;
   return {
@@ -269,6 +273,17 @@ beforeAll(async () => {
     `);
   }
 
+  for (const customer of [
+    { id: rankedCustId("prefix"), companyName: `GraphicRank${suffix} Solutions` },
+    { id: rankedCustId("contains"), companyName: `MetrographicRank${suffix} Printing` },
+  ]) {
+    await db.execute(sql`
+      insert into customers (id, organization_id, company_name, status, customer_type, current_balance, credit_limit)
+      values (${customer.id}, ${ORG_A}, ${customer.companyName}, ${"active"}, ${"business"}, ${"0"}, ${"0"})
+      on conflict (id) do nothing
+    `);
+  }
+
   // 7 contacts for ORG_A customers (spread across first 7 customers)
   for (let i = 1; i <= 7; i++) {
     await db.execute(sql`
@@ -331,6 +346,8 @@ afterAll(async () => {
     sortedCustId("alpha"),
     sortedCustId("charlie"),
     sortedCustId("bravo"),
+    rankedCustId("prefix"),
+    rankedCustId("contains"),
   ];
   const allCtctIds = [
     ...Array.from({length: 7}, (_, i) => ctctId(i + 1)),
@@ -557,6 +574,18 @@ describe("GET /api/customers?page=1&pageSize=10 — paginated envelope", () => {
       `SortCase ${suffix} Bravo`,
       `SortCase ${suffix} Charlie`,
       `SortCase ${suffix} Zulu`,
+    ]);
+  });
+
+  test("search ranks direct company-name prefixes above weaker substring matches before pagination", async () => {
+    const res = await request(app)
+      .get(`/api/customers?page=1&pageSize=2&search=${encodeURIComponent(`GraphicRank${suffix}`)}`)
+      .set(authHeaders)
+      .expect(200);
+
+    expect(customerPage(res.body).items.map((customer: any) => customer.id)).toEqual([
+      rankedCustId("prefix"),
+      rankedCustId("contains"),
     ]);
   });
 });

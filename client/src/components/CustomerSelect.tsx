@@ -5,6 +5,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
+import { sortCustomersForSearch } from "@/lib/customerSearchRanking";
 import type { Customer, CustomerContact } from "@shared/schema";
 
 export type CustomerWithContacts = Customer & {
@@ -39,6 +40,8 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const commandInputRef = useRef<HTMLInputElement>(null);
+  const commandListRef = useRef<HTMLDivElement>(null);
+  const [activeItemValue, setActiveItemValue] = useState("");
 
   // Debounce search input
   useEffect(() => {
@@ -55,6 +58,11 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
         clearTimeout(debounceTimerRef.current);
       }
     };
+  }, [searchQuery]);
+
+  useEffect(() => {
+    setActiveItemValue("");
+    if (commandListRef.current) commandListRef.current.scrollTop = 0;
   }, [searchQuery]);
 
   // Fetch customers with search - show all when no search query
@@ -132,49 +140,11 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
     setSearchQuery("");
   }, [onChange]);
 
-  // Helper function to get sort key for a customer (alphabetical sorting)
-  const getCustomerSortKey = useCallback((customer: CustomerWithContacts): string => {
-    // Primary: companyName (trimmed, case-insensitive)
-    // Fallbacks: email, then id
-    const companyName = (customer.companyName || "").trim().toLowerCase();
-    const email = (customer.email || "").trim().toLowerCase();
-    const id = customer.id || "";
-    
-    // Return the first available value, with id as final fallback
-    return companyName || email || id;
-  }, []);
-
-  // Filter and sort customers based on search
+  // Rank direct company matches before weaker customer/contact matches.
   const filteredCustomers = useMemo(() => {
-    let result = Array.from(new Map(customers.map((customer) => [customer.id, customer])).values());
-    
-    // Apply search filter if query exists
-    if (debouncedSearch.trim()) {
-      const q = debouncedSearch.toLowerCase();
-      result = customers.filter((customer) => {
-        const companyName = (customer.companyName || "").toLowerCase();
-        const email = (customer.email || "").toLowerCase();
-        const phone = (customer.phone || "").toLowerCase();
-        const matchesName = companyName.includes(q);
-        const matchesEmail = email.includes(q);
-        const matchesPhone = phone.includes(q);
-        const matchesContact = customer.contacts?.some((contact) => {
-          const contactName = `${contact.firstName || ""} ${contact.lastName || ""}`.trim().toLowerCase();
-          const contactEmail = (contact.email || "").toLowerCase();
-          const contactPhone = (contact.phone || "").toLowerCase();
-          return contactName.includes(q) || contactEmail.includes(q) || contactPhone.includes(q);
-        });
-        return matchesName || matchesEmail || matchesPhone || matchesContact;
-      });
-    }
-    
-    // Sort alphabetically by companyName (with fallbacks) - stable sort, non-mutating
-    return [...result].sort((a, b) => {
-      const keyA = getCustomerSortKey(a);
-      const keyB = getCustomerSortKey(b);
-      return keyA.localeCompare(keyB, undefined, { sensitivity: 'base' });
-    });
-  }, [customers, debouncedSearch, getCustomerSortKey]);
+    const uniqueCustomers = Array.from(new Map(customers.map((customer) => [customer.id, customer])).values());
+    return sortCustomersForSearch(uniqueCustomers, debouncedSearch);
+  }, [customers, debouncedSearch]);
 
   return (
     <div className="space-y-2">
@@ -205,14 +175,14 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-[400px] p-0" align="start">
-          <Command shouldFilter={false}>
+          <Command shouldFilter={false} value={activeItemValue} onValueChange={setActiveItemValue}>
             <CommandInput
               ref={commandInputRef}
               placeholder="Search by company name, email, or contact..."
               value={searchQuery}
               onValueChange={setSearchQuery}
             />
-            <CommandList>
+            <CommandList ref={commandListRef}>
               {isLoading ? (
                 <div className="p-4 text-sm text-muted-foreground text-center">
                   Loading customers...
