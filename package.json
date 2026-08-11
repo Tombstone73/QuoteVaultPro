@@ -31,6 +31,7 @@
     "knowledge:sync": "tsx scripts/knowledge-sync.ts",
     "knowledge:status": "tsx scripts/knowledge-status.ts",
     "dev:portal-seed": "tsx scripts/dev/seedPortalValidation.ts",
+    "qa:provision-dev-user": "tsx scripts/qa/provisionDevQaUser.ts",
     "seed:invoice-smoke": "tsx scripts/dev/seedInvoiceSmoke.ts",
     "dev:portal-validate": "tsx scripts/dev/validatePortalValidation.ts",
     "dev:portal-stripe-validate": "tsx scripts/dev/validatePortalStripePayment.ts",

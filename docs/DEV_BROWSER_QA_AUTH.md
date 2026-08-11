@@ -6,21 +6,21 @@ bypass, or an application-only QA route.
 
 ## One-time DEV account provisioning
 
-This repository cannot create an account in the deployed DEV database without
-an authenticated DEV owner/admin session or the DEV database credential. Use a
-normal DEV owner/admin session to create the account through **Settings → Users**
-or the existing `POST /api/admin/users` endpoint:
+Use the guarded Railway DEV command below to create the account with the same
+normal `users`, password `auth_identities`, and `user_organizations` records
+used by the application. It is idempotent for the dedicated QA email and never
+prints credentials or connection details:
 
-1. Create an unmistakably named dedicated browser-QA email address in the DEV
-   environment. Do not reuse a person’s account.
-2. Assign the DEV org admin role, if that is the level required for the intended
-   QA workflows. It receives normal user permissions; it is not a service account.
-3. Complete the ordinary first-login password-change flow and place the final
-   password only in the approved local/CI secret store.
-4. Verify via `/api/me/orgs` that this account has exactly one membership: the
-   DEV organization. Record only its ID and slug in the non-secret settings below.
-5. Never create the account in MAIN. DEV and MAIN use separate deployed
-   environments and databases; the QA account must be provisioned only in DEV.
+1. Set the named QA configuration in the Railway DEV environment only, including
+   `PRINTERSHERO_DEV_QA_PROVISION_ENABLED=true` for the one-time run.
+2. Run `npm run qa:provision-dev-user` in the Railway DEV service shell.
+3. Remove `PRINTERSHERO_DEV_QA_PROVISION_ENABLED` after the command succeeds.
+
+The command requires `NODE_ENV=production`, `APP_ENV=development`, the reviewed
+`https://dev.printershero.com` public origin, and the known DEV-cloud database.
+It rejects local, unknown, and production environments. The account is a normal
+DEV org-admin identity with exactly one organization membership; it is not a
+service account and has no platform-admin privileges.
 
 To retire the account, remove its DEV organization membership using the same
 normal user-management surface. Do not use this fixture against another target.
