@@ -102,6 +102,10 @@ function invoiceLabel(displayNumber: string | null, invoiceNumber: number): stri
   return `Invoice ${displayNumber ?? invoiceNumber}`;
 }
 
+function fulfilledSearchRows<T>(result: PromiseSettledResult<T[]>): T[] {
+  return result.status === "fulfilled" ? result.value : [];
+}
+
 export class DrizzleAssistantSearchCustomerRepository implements AssistantSearchCustomerRepository {
   constructor(private readonly dbInstance = db) {}
 
@@ -113,7 +117,11 @@ export class DrizzleAssistantSearchCustomerRepository implements AssistantSearch
       : null;
     const tenant = (column: PgColumn) => eq(column, organizationId);
 
-    const [customerRows, contactRows, orderRows, quoteRows, invoiceRows, jobRows, productRows] = await Promise.all([
+    // A broad search is an aggregation of independently tenant-scoped read
+    // models. One unavailable legacy category must not make an otherwise valid
+    // product or customer discovery fail. A complete outage still returns an
+    // empty bounded result rather than exposing a database error to callers.
+    const settled = await Promise.allSettled([
       this.dbInstance
         .select({ id: customers.id, companyName: customers.companyName, email: customers.email, phone: customers.phone, status: customers.status, updatedAt: customers.updatedAt })
         .from(customers)
@@ -170,6 +178,13 @@ export class DrizzleAssistantSearchCustomerRepository implements AssistantSearch
         .orderBy(desc(products.updatedAt))
         .limit(limit),
     ]);
+    const customerRows = fulfilledSearchRows(settled[0]);
+    const contactRows = fulfilledSearchRows(settled[1]);
+    const orderRows = fulfilledSearchRows(settled[2]);
+    const quoteRows = fulfilledSearchRows(settled[3]);
+    const invoiceRows = fulfilledSearchRows(settled[4]);
+    const jobRows = fulfilledSearchRows(settled[5]);
+    const productRows = fulfilledSearchRows(settled[6]);
 
     return [
       ...customerRows.map((row): AssistantSearchRecord => ({ entityType: "customer", recordId: row.id, displayLabel: row.companyName, secondaryDescription: row.email ?? row.phone, status: row.status, route: `/customers/${row.id}`, freshness: row.updatedAt })),

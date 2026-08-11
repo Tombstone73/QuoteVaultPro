@@ -6,7 +6,7 @@ import {
   customerSummaryToolInputSchema,
   searchGlobalToolInputSchema,
 } from "../services/assistant/searchCustomerTools";
-import { escapeAssistantSearchTerm } from "../storage/assistantSearchCustomer.repo";
+import { DrizzleAssistantSearchCustomerRepository, escapeAssistantSearchTerm } from "../storage/assistantSearchCustomer.repo";
 
 const invocation = {
   scope: { organizationId: "org_allowed", userId: "user_1" },
@@ -103,6 +103,69 @@ describe("Stage 2 customer/search assistant tools", () => {
       { recordId: "customer_1", route: "/customers/customer_1", label: "OTB Graphics" },
       { recordId: "order_1", route: "/orders/order_1", label: "Order 16309" },
     ]);
+  });
+
+  test("generic search keeps an authorized product result when an unrelated category query fails", async () => {
+    const outcomes: Array<Promise<unknown[]>> = [
+      Promise.resolve([]),
+      Promise.reject(new Error("legacy contact query unavailable")),
+      Promise.resolve([]),
+      Promise.resolve([]),
+      Promise.resolve([]),
+      Promise.resolve([]),
+      Promise.resolve([{
+        id: "product_banner_1",
+        name: "13 oz Banner",
+        category: "Banners",
+        isActive: true,
+        updatedAt: new Date("2026-08-10T00:00:00.000Z"),
+      }]),
+    ];
+    let next = 0;
+    const fakeDb = {
+      select: jest.fn(() => {
+        const outcome = outcomes[next++];
+        const query: any = {
+          from: () => query,
+          innerJoin: () => query,
+          where: () => query,
+          orderBy: () => query,
+          limit: () => outcome,
+        };
+        return query;
+      }),
+    };
+    const repository = new DrizzleAssistantSearchCustomerRepository(fakeDb as any);
+
+    const records = await repository.search("org_allowed", "Banner", 5);
+
+    expect(fakeDb.select).toHaveBeenCalledTimes(7);
+    expect(records).toEqual([expect.objectContaining({
+      entityType: "product",
+      recordId: "product_banner_1",
+      displayLabel: "13 oz Banner",
+      route: "/products/product_banner_1/edit",
+    })]);
+  });
+
+  test("generic search returns a normal empty result when no category matches", async () => {
+    const outcomes = Array.from({ length: 7 }, () => Promise.resolve([] as unknown[]));
+    let next = 0;
+    const fakeDb = {
+      select: jest.fn(() => {
+        const outcome = outcomes[next++];
+        const query: any = {
+          from: () => query,
+          innerJoin: () => query,
+          where: () => query,
+          orderBy: () => query,
+          limit: () => outcome,
+        };
+        return query;
+      }),
+    };
+
+    await expect(new DrizzleAssistantSearchCustomerRepository(fakeDb as any).search("org_allowed", "No such record", 5)).resolves.toEqual([]);
   });
 
   test.each([
