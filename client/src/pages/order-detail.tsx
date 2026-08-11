@@ -231,6 +231,9 @@ function hasAnyStagedChanges(stagedPatch: Record<string, any>): boolean {
   return Object.keys(stagedPatch).length > 0;
 }
 
+const ORDER_DETAIL_DEV_DIAGNOSTICS =
+  typeof process !== "undefined" && process.env?.NODE_ENV === "development";
+
 export default function OrderDetail() {
   const { user } = useAuth();
   const { preferences } = useOrgPreferences();
@@ -736,10 +739,12 @@ export default function OrderDetail() {
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
-  const canShowCancelOrder = Boolean(order && isManagerOrHigher && !orderIsCanceled);
-  const canCancelOrder = Boolean(canShowCancelOrder && cancellationEligibilityQuery.data?.canCancel);
+  const canShowCancelOrder = Boolean(order && !orderIsCanceled);
+  const canCancelOrder = Boolean(canShowCancelOrder && isAdminOrOwner && cancellationEligibilityQuery.data?.canCancel);
   const cancelOrderUnavailableReason = canShowCancelOrder
-    ? cancellationEligibilityQuery.isLoading
+    ? !isAdminOrOwner
+      ? "Only Admin and Owner users can cancel orders."
+      : cancellationEligibilityQuery.isLoading
       ? "Checking cancellation availability..."
       : cancellationEligibilityQuery.data?.message ?? (cancellationEligibilityQuery.isError ? "Cancellation availability could not be checked." : null)
     : null;
@@ -811,7 +816,7 @@ export default function OrderDetail() {
 
   const logOrderDirtyAudit = useCallback(
     (phase: string) => {
-      if (!import.meta.env.DEV) return;
+      if (!ORDER_DETAIL_DEV_DIAGNOSTICS) return;
       console.warn("[ORDER_SAVE_DIRTY_AUDIT]", getOrderDirtyAuditSnapshot(phase));
     },
     [getOrderDirtyAuditSnapshot],
@@ -839,7 +844,7 @@ export default function OrderDetail() {
   // DEV diagnostics — surfaces the canonical dirty state and the inputs that
   // feed it whenever any of them change, so a stuck guard is traceable.
   useEffect(() => {
-    if (!import.meta.env.DEV) return;
+    if (!ORDER_DETAIL_DEV_DIAGNOSTICS) return;
     console.warn("[ORDER_NAV_GUARD] dirty-state", {
       isDirty,
       hasDirtyLineItem,
@@ -860,12 +865,12 @@ export default function OrderDetail() {
       () => createOrderNavigationGuard(orderDirtyRef.current).shouldBlock(),
       "order-detail",
     );
-    if (import.meta.env.DEV) {
+    if (ORDER_DETAIL_DEV_DIAGNOSTICS) {
       console.warn("[ORDER_NAV_GUARD] guard registered", { isDirty: orderDirtyRef.current });
     }
     return () => {
       unregister();
-      if (import.meta.env.DEV) {
+      if (ORDER_DETAIL_DEV_DIAGNOSTICS) {
         console.warn("[ORDER_NAV_GUARD] guard unregistered", { wasDirty: orderDirtyRef.current });
       }
     };

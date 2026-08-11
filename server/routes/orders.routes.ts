@@ -4318,7 +4318,7 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.post("/api/orders/:id/cancel", isAuthenticated, tenantContext, async (req: any, res) => {
+    app.post("/api/orders/:id/cancel", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             if (!assertInternalStaffUser(req, res)) return;
 

@@ -119,6 +119,34 @@ describe("Order detail action layout", () => {
     expect(html).toContain("Cannot cancel because a payment has been recorded");
   });
 
+  it("does not offer another cancellation action for an already cancelled order", () => {
+    const html = renderToStaticMarkup(
+      <OrderDetailPrimaryActions
+        canEditOrder={false}
+        canShowCancelOrder={false}
+        canCancelOrder={false}
+        canMarkCompleted={false}
+        canCompleteProduction={false}
+        canCompleteOrder={false}
+        orderId="order-cancelled"
+        isDirty={false}
+        isSavingOrder={false}
+        isUpdatingOrder={false}
+        isTransitioningStatus={false}
+        isCancelingOrder={false}
+        hasDirtyLineItem={false}
+        cancelOrderUnavailableReason={null}
+        onSaveOrder={noop}
+        onSaveAndRoute={noop}
+        onDiscardChanges={noop}
+        onCancelOrder={noop}
+        onMarkCompleted={noop}
+      />,
+    );
+
+    expect(html).not.toContain("Cancel Order");
+  });
+
   it("keeps proof bypass available in the secondary action area", () => {
     const html = renderToStaticMarkup(
       <OrderDetailSecondaryActions

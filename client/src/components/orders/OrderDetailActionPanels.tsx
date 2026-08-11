@@ -86,17 +86,22 @@ export function OrderDetailPrimaryActions({
       )}
 
       {canShowCancelOrder && (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onCancelOrder}
-          disabled={!canCancelOrder || isCancelingOrder}
-          className="rounded-titan-md border-destructive/60 text-destructive hover:bg-destructive/10"
-          title={!canCancelOrder ? cancelOrderUnavailableReason ?? "Cancellation is unavailable for this order." : undefined}
-        >
-          <Ban className="w-4 h-4 mr-2" />
-          {isCancelingOrder ? "Cancelling..." : "Cancel Order"}
-        </Button>
+        <div className="flex max-w-[260px] flex-col items-start gap-1">
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onCancelOrder}
+            disabled={!canCancelOrder || isCancelingOrder}
+            className="rounded-titan-md border-destructive/60 text-destructive hover:bg-destructive/10"
+            title={!canCancelOrder ? cancelOrderUnavailableReason ?? "Cancellation is unavailable for this order." : undefined}
+          >
+            <Ban className="w-4 h-4 mr-2" />
+            {isCancelingOrder ? "Cancelling..." : "Cancel Order"}
+          </Button>
+          {!canCancelOrder && cancelOrderUnavailableReason ? (
+            <span className="text-xs leading-snug text-muted-foreground">{cancelOrderUnavailableReason}</span>
+          ) : null}
+        </div>
       )}
 
       {canMarkCompleted && (
