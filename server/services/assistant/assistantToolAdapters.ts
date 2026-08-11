@@ -44,6 +44,45 @@ function contextForLegacyAdapter(context: AssistantTrustedToolContext) {
   };
 }
 
+type LegacyGlobalSearchResult = {
+  data: {
+    results: Array<{
+      entityType: string;
+      recordId: string;
+      displayLabel: string;
+      secondaryDescription: string | null;
+      status: string | null;
+      route: string;
+      freshness: string;
+    }>;
+  };
+  freshness: string;
+};
+
+/** A zero-match search has no internal record to cite.  It is therefore a
+ * normal not-found result, never a successful result with missing provenance. */
+export function normalizeGlobalSearchResultForRegistry(result: LegacyGlobalSearchResult): AssistantToolResultEnvelope {
+  const matches = result.data.results.map((record) => assistantEntitySummarySchema.parse({
+    entityType: record.entityType,
+    recordId: record.recordId,
+    label: record.displayLabel,
+    ...(record.secondaryDescription ? { secondaryDescription: record.secondaryDescription } : {}),
+    ...(record.status ? { status: record.status } : {}),
+    sourceLink: sourceLink({ recordId: record.recordId, route: record.route, label: record.displayLabel }, record.entityType, record.freshness),
+    freshness: record.freshness,
+  }));
+  if (!matches.length) return { status: "not_found", data: null };
+  const data = assistantGlobalSearchResultSchema.parse({ matches });
+  return {
+    status: "succeeded",
+    data,
+    provenance: {
+      sourceLinks: matches.slice(0, 10).map((match) => match.sourceLink),
+      freshness: { capturedAt: result.freshness },
+    },
+  };
+}
+
 /**
  * Bridges independently implemented read tools to the single registry
  * envelope. The bridge only reshapes already-reduced DTOs; it never supplies
@@ -77,24 +116,7 @@ export function createStage2AssistantToolAdapters(): AssistantToolAdapters {
           // provider query or database error.
           throw new AssistantToolExecutionError("core_query_failed", "core_query_failed", "search_backend");
         }
-        const matches = result.data.results.map((record) => assistantEntitySummarySchema.parse({
-          entityType: record.entityType,
-          recordId: record.recordId,
-          label: record.displayLabel,
-          ...(record.secondaryDescription ? { secondaryDescription: record.secondaryDescription } : {}),
-          ...(record.status ? { status: record.status } : {}),
-          sourceLink: sourceLink({ recordId: record.recordId, route: record.route, label: record.displayLabel }, record.entityType, record.freshness),
-          freshness: record.freshness,
-        }));
-        const data = assistantGlobalSearchResultSchema.parse({ matches });
-        return {
-          status: "succeeded",
-          data,
-          provenance: {
-            sourceLinks: matches.slice(0, 10).map((match) => match.sourceLink),
-            freshness: { capturedAt: result.freshness },
-          },
-        };
+        return normalizeGlobalSearchResultForRegistry(result);
       },
     },
     "quotes.search": {
