@@ -401,6 +401,7 @@ export function createPbv2BannerProductTreeJson(): Record<string, unknown> {
       "grommets",
       "grommet_placement",
       "custom_grommet_count",
+      "custom_grommet_placement",
     ],
     nodes: {
       group_banner_media: {
@@ -692,6 +693,28 @@ export function createPbv2BannerProductTreeJson(): Record<string, unknown> {
           constraints: { number: { min: 1, step: 1, integerOnly: true } },
         },
       },
+      custom_grommet_placement: {
+        id: "custom_grommet_placement",
+        type: "INPUT",
+        kind: "question",
+        key: "banner.grommets.custom_placement",
+        label: "Custom Grommet Placement",
+        description: "Describe the requested grommet placement.",
+        displayOrder: 3,
+        ui: { sortOrder: 3 },
+        status: "ENABLED",
+        visibility: visibleWhenAll([
+          { type: "equals", selectionKey: "grommets", value: "yes" },
+          { type: "equals", selectionKey: "grommet_placement", value: "custom" },
+        ]),
+        input: {
+          type: "textarea",
+          valueType: "TEXT",
+          selectionKey: "custom_grommet_placement",
+          required: false,
+          constraints: { text: { maxLen: 500 } },
+        },
+      },
     },
     edges: [
       structuralEdge("group_banner_media", "banner_weight", 0),
@@ -704,6 +727,7 @@ export function createPbv2BannerProductTreeJson(): Record<string, unknown> {
       structuralEdge("group_banner_grommets", "grommets", 0),
       structuralEdge("group_banner_grommets", "grommet_placement", 1),
       structuralEdge("group_banner_grommets", "custom_grommet_count", 2),
+      structuralEdge("group_banner_grommets", "custom_grommet_placement", 3),
     ],
     optionRules: [
       {
@@ -766,6 +790,9 @@ export function createPbv2BannerProductTreeJson(): Record<string, unknown> {
           { action: "hide", targetOptionGroup: "custom_grommet_count" },
           { action: "optional", targetOptionGroup: "custom_grommet_count" },
           { action: "clear", targetOptionGroup: "custom_grommet_count" },
+          { action: "hide", targetOptionGroup: "custom_grommet_placement" },
+          { action: "optional", targetOptionGroup: "custom_grommet_placement" },
+          { action: "clear", targetOptionGroup: "custom_grommet_placement" },
         ],
       },
       {
@@ -780,6 +807,9 @@ export function createPbv2BannerProductTreeJson(): Record<string, unknown> {
           { action: "hide", targetOptionGroup: "custom_grommet_count" },
           { action: "optional", targetOptionGroup: "custom_grommet_count" },
           { action: "clear", targetOptionGroup: "custom_grommet_count" },
+          { action: "hide", targetOptionGroup: "custom_grommet_placement" },
+          { action: "optional", targetOptionGroup: "custom_grommet_placement" },
+          { action: "clear", targetOptionGroup: "custom_grommet_placement" },
         ],
       },
     ],

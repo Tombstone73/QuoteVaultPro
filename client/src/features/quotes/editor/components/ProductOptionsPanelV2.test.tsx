@@ -270,6 +270,58 @@ describe("ProductOptionsPanelV2", () => {
     expect(container.querySelectorAll("select")).toHaveLength(2);
   });
 
+  test("stores typed and pasted textarea values as strings and reloads them unchanged", () => {
+    const tree: OptionTreeV2 = {
+      schemaVersion: 2,
+      rootNodeIds: ["custom_grommet_placement"],
+      nodes: {
+        custom_grommet_placement: {
+          id: "custom_grommet_placement",
+          kind: "question",
+          label: "Custom Grommet Placement",
+          input: { type: "textarea", selectionKey: "custom_grommet_placement" },
+        },
+      },
+    };
+    const onSelectionsChange = jest.fn();
+    const placement = "2 on top, 2 on bottom, none on sides";
+
+    act(() => {
+      root.render(
+        <ProductOptionsPanelV2
+          tree={tree}
+          selections={{ schemaVersion: 2, selected: {} }}
+          onSelectionsChange={onSelectionsChange}
+        />,
+      );
+    });
+
+    const textarea = container.querySelector("textarea") as HTMLTextAreaElement;
+    const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set;
+    setter?.call(textarea, placement);
+    act(() => {
+      textarea.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+
+    expect(onSelectionsChange).toHaveBeenLastCalledWith(expect.objectContaining({
+      selected: {
+        custom_grommet_placement: { value: placement },
+      },
+    }));
+
+    act(() => {
+      root.render(
+        <ProductOptionsPanelV2
+          tree={tree}
+          selections={{ schemaVersion: 2, selected: { custom_grommet_placement: { value: placement } } }}
+          onSelectionsChange={jest.fn()}
+        />,
+      );
+    });
+
+    expect((container.querySelector("textarea") as HTMLTextAreaElement).value).toBe(placement);
+  });
+
   test("omits disabled product options from mounted line-item controls and prunes stale selections", () => {
     const tree: OptionTreeV2 = {
       schemaVersion: 2,

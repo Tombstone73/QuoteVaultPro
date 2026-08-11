@@ -154,23 +154,54 @@ describe("PBV2 Banner product configuration", () => {
     );
   });
 
-  test("Grommets = No hides and clears stale placement and custom count before pricing", () => {
+  test("Grommets = No hides and clears stale custom placement values before pricing", () => {
     const tree = bannerTree();
     const selections = {
       ...validBaseSelections(),
       grommet_placement: { value: "custom" },
       custom_grommet_count: { value: 8 },
+      custom_grommet_placement: { value: "Grommets every 24 inches" },
     };
     const runtime = resolveRuntimeVisibility(tree as any, { selected: selections });
 
     expect(runtime.visibleNodeIds).not.toContain("grommet_placement");
     expect(runtime.visibleNodeIds).not.toContain("custom_grommet_count");
+    expect(runtime.visibleNodeIds).not.toContain("custom_grommet_placement");
     expect(runtime.effectiveSelections.grommet_placement).toBeUndefined();
     expect(runtime.effectiveSelections.custom_grommet_count).toBeUndefined();
+    expect(runtime.effectiveSelections.custom_grommet_placement).toBeUndefined();
 
     const result = preview(selections, tree);
     expect(result.debug?.runtimeSelectionContext?.selectedChoices.grommet_placement).toBeUndefined();
     expect(result.totalPrice).toBeCloseTo(13.13, 2);
+  });
+
+  test("Custom Grommet Placement is a text field and does not affect Banner pricing", () => {
+    const tree = bannerTree() as any;
+    const selections = {
+      ...validBaseSelections(),
+      grommets: { value: "yes" },
+      grommet_placement: { value: "custom" },
+      custom_grommet_count: { value: 8 },
+      custom_grommet_placement: { value: "2 on top, 2 on bottom, none on sides" },
+    };
+
+    const runtime = resolveRuntimeVisibility(tree, { selected: selections });
+
+    expect(tree.nodes.custom_grommet_placement.input).toMatchObject({
+      type: "textarea",
+      valueType: "TEXT",
+      selectionKey: "custom_grommet_placement",
+    });
+    expect(runtime.visibleNodeIds).toContain("custom_grommet_placement");
+    expect(runtime.effectiveSelections.custom_grommet_placement).toBe(selections.custom_grommet_placement.value);
+
+    const base = preview({
+      ...selections,
+      custom_grommet_placement: { value: "Top corners only" },
+    });
+    const withDifferentPlacement = preview(selections);
+    expect(withDifferentPlacement.totalPrice).toBe(base.totalPrice);
   });
 
   test("Grommets = Yes requires placement", () => {
