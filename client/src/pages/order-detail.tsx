@@ -723,6 +723,10 @@ export default function OrderDetail() {
   }, [order, workflowQuery.data]);
   const isTerminal = allowedNextStatuses.length === 0;
   const orderIsCanceled = isCanceledOrder(order);
+  const cancellationReasonLabel = order?.cancellationReason
+    ? (orderCancellationReasonLabels as Record<string, string>)[order.cancellationReason] || order.cancellationReason
+    : null;
+  const cancellationDateLabel = order?.canceledAt ? format(new Date(order.canceledAt), "MMM d, yyyy h:mm a") : null;
   
   // Admin/Owner override: allow editing terminal orders if setting enabled
   const allowCompletedOrderEdits = preferences?.orders?.allowCompletedOrderEdits || false;
@@ -2231,6 +2235,17 @@ export default function OrderDetail() {
                 <div className="text-destructive/90">
                   This order is read-only for operations. History, files, proofs, invoices, payments, and activity remain available.
                 </div>
+                {(cancellationReasonLabel || cancellationDateLabel || order?.cancellationNotes) && (
+                  <div className="mt-2 space-y-1 text-destructive/90">
+                    <div className="flex flex-wrap gap-x-4 gap-y-1">
+                      {cancellationReasonLabel && <span>Reason: {cancellationReasonLabel}</span>}
+                      {cancellationDateLabel && <span>Cancelled: {cancellationDateLabel}</span>}
+                    </div>
+                    {order?.cancellationNotes && (
+                      <div className="whitespace-pre-wrap break-words">Note: {order.cancellationNotes}</div>
+                    )}
+                  </div>
+                )}
               </div>
             </div>
           </div>

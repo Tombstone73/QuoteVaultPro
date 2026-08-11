@@ -107,7 +107,9 @@ export type Order = {
   createdAt: string;
   updatedAt: string;
   canceledAt?: string | null;
+  canceledByUserId?: string | null;
   cancellationReason?: string | null;
+  cancellationNotes?: string | null;
   label?: string | null; // Job label
   poNumber?: string | null; // PO number
 };

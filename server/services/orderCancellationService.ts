@@ -17,6 +17,8 @@ import {
   pickupTickets,
   productionEvents,
   productionJobs,
+  productionRunMembers,
+  productionRuns,
   proofAccessTokens,
   shipmentOrders,
   shipments,
@@ -31,6 +33,10 @@ import {
   orderCancellationReasonLabels,
   type OrderCancellationReason,
 } from "@shared/orderCancellation";
+import {
+  isActiveProductionRunStatus,
+  isUnfinishedProductionRunMember,
+} from "@shared/productionRunLifecycle";
 import { applyWorkflowStatusPillFailSoft } from "./workflowStatusPillService";
 
 export type OrderCancellationBlockCode =
@@ -40,7 +46,8 @@ export type OrderCancellationBlockCode =
   | "PAID_INVOICE"
   | "PARTIALLY_PAID_INVOICE"
   | "SHIPPED_SHIPMENT"
-  | "PICKED_UP_ORDER";
+  | "PICKED_UP_ORDER"
+  | "COMBINED_RUN_ACTIVE";
 
 export class OrderCancellationError extends Error {
   constructor(
@@ -81,6 +88,18 @@ export type ShipmentDecision =
   | { action: "void"; shipmentId: string; status: string; reason: string }
   | { action: "skip"; shipmentId: string; status: string; reason: string }
   | { action: "block"; shipmentId: string; status: string; code: "SHIPPED_SHIPMENT"; message: string };
+
+export type CombinedRunCancellationDecision =
+  | { action: "allow"; productionJobId: string; productionRunId: string; runStatus: string; reason: string }
+  | {
+      action: "block";
+      productionJobId: string;
+      productionRunId: string;
+      runNumber: number | null;
+      runStatus: string;
+      code: "COMBINED_RUN_ACTIVE";
+      message: string;
+    };
 
 function toMoneyNumber(value: unknown): number {
   const n = Number(value ?? 0);
@@ -141,6 +160,40 @@ export function classifyShipmentForCancellation(shipment: {
     };
   }
   return { action: "void", shipmentId: shipment.id, status, reason: "pending_shipment" };
+}
+
+export function classifyCombinedRunForOrderCancellation(member: {
+  productionJobId: string;
+  productionRunId: string;
+  runNumber?: number | null;
+  runStatus?: string | null;
+  allocatedQuantity?: number | null;
+  completedQuantity?: number | null;
+  successfulQuantity?: number | null;
+  damagedQuantity?: number | null;
+  remainingQuantity?: number | null;
+}): CombinedRunCancellationDecision {
+  const runStatus = String(member.runStatus || "draft").trim().toLowerCase();
+  if (isActiveProductionRunStatus(runStatus) && isUnfinishedProductionRunMember(member)) {
+    const runLabel = member.runNumber != null ? `PR-${String(member.runNumber).padStart(4, "0")}` : member.productionRunId;
+    return {
+      action: "block",
+      productionJobId: member.productionJobId,
+      productionRunId: member.productionRunId,
+      runNumber: member.runNumber ?? null,
+      runStatus,
+      code: "COMBINED_RUN_ACTIVE",
+      message: `Order has unfinished work in active Combined Run ${runLabel}. Return or reconcile the run before cancelling this order.`,
+    };
+  }
+
+  return {
+    action: "allow",
+    productionJobId: member.productionJobId,
+    productionRunId: member.productionRunId,
+    runStatus,
+    reason: "run_inactive_or_finished",
+  };
 }
 
 function emptySideEffects(): OrderCancellationSideEffects {
@@ -386,6 +439,42 @@ export async function cancelOrder(args: {
       });
     }
 
+    const productionJobIds = orderProductionJobs.map((job: any) => job.id).filter(Boolean);
+    const combinedRunRows = productionJobIds.length > 0
+      ? await tx
+          .select({
+            productionJobId: productionRunMembers.productionJobId,
+            productionRunId: productionRunMembers.productionRunId,
+            runNumber: productionRuns.runNumber,
+            runStatus: productionRuns.status,
+            allocatedQuantity: productionRunMembers.allocatedQuantity,
+            completedQuantity: productionRunMembers.completedQuantity,
+            successfulQuantity: productionRunMembers.successfulQuantity,
+            damagedQuantity: productionRunMembers.damagedQuantity,
+            remainingQuantity: productionRunMembers.remainingQuantity,
+          })
+          .from(productionRunMembers)
+          .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+          .where(
+            and(
+              eq(productionRunMembers.organizationId, args.organizationId),
+              eq(productionRuns.organizationId, args.organizationId),
+              inArray(productionRunMembers.productionJobId, productionJobIds),
+            ),
+          )
+      : [];
+    const blockingCombinedRun = combinedRunRows
+      .map((member: any) => classifyCombinedRunForOrderCancellation(member))
+      .find((decision) => decision.action === "block");
+    if (blockingCombinedRun?.action === "block") {
+      throw new OrderCancellationError(409, blockingCombinedRun.code, blockingCombinedRun.message, {
+        productionJobId: blockingCombinedRun.productionJobId,
+        productionRunId: blockingCombinedRun.productionRunId,
+        runNumber: blockingCombinedRun.runNumber,
+        runStatus: blockingCombinedRun.runStatus,
+      });
+    }
+
     const actorName = await getActorName(tx, args.actorUserId);
     const reasonLabel = orderCancellationReasonLabels[args.reason];
     const noteText = args.internalNote?.trim() || null;
@@ -555,7 +644,9 @@ export async function cancelOrder(args: {
       canonicalState: "canceled",
       workflowStatusId: workflowStatus?.id ?? order.workflowStatusId,
       canceledAt: nowIso as any,
+      canceledByUserId: args.actorUserId,
       cancellationReason: args.reason,
+      cancellationNotes: noteText,
       routingTarget: null,
       billingStatus: order.billingStatus === "billed" ? order.billingStatus : "not_ready",
       billingReadyAt: null,

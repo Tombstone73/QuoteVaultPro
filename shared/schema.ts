@@ -3716,7 +3716,9 @@ export const orders = pgTable("orders", {
   startedProductionAt: timestamp("started_production_at", { withTimezone: true, mode: "string" }),
   completedProductionAt: timestamp("completed_production_at", { withTimezone: true, mode: "string" }),
   canceledAt: timestamp("canceled_at", { withTimezone: true, mode: "string" }),
+  canceledByUserId: varchar("canceled_by_user_id").references(() => users.id, { onDelete: 'set null' }),
   cancellationReason: text("cancellation_reason"),
+  cancellationNotes: text("cancellation_notes"),
   createdByUserId: varchar("created_by_user_id").notNull().references(() => users.id, { onDelete: 'restrict' }),
   createdAt: timestamp("created_at", { mode: "string" }).defaultNow().notNull(),
   updatedAt: timestamp("updated_at", { mode: "string" }).defaultNow().notNull(),
@@ -3739,6 +3741,7 @@ export const orders = pgTable("orders", {
   index("orders_started_production_at_idx").on(table.startedProductionAt),
   index("orders_completed_production_at_idx").on(table.completedProductionAt),
   index("orders_canceled_at_idx").on(table.canceledAt),
+  index("orders_canceled_by_user_id_idx").on(table.canceledByUserId),
   index("orders_created_by_user_id_idx").on(table.createdByUserId),
 ]);
 

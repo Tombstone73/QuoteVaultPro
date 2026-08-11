@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 
 import {
+  classifyCombinedRunForOrderCancellation,
   classifyInvoiceForCancellation,
   classifyShipmentForCancellation,
 } from "../services/orderCancellationService";
@@ -58,6 +59,54 @@ describe("order cancellation policy helpers", () => {
     expect(classifyShipmentForCancellation({ id: "ship-shipped", status: "SHIPPED" })).toMatchObject({
       action: "block",
       code: "SHIPPED_SHIPMENT",
+    });
+  });
+
+  test("blocks unfinished active Combined Run members before order cancellation side effects", () => {
+    expect(classifyCombinedRunForOrderCancellation({
+      productionJobId: "job-1",
+      productionRunId: "run-1",
+      runNumber: 42,
+      runStatus: "in_production",
+      allocatedQuantity: 10,
+      completedQuantity: 4,
+      damagedQuantity: 1,
+      remainingQuantity: 5,
+    })).toMatchObject({
+      action: "block",
+      code: "COMBINED_RUN_ACTIVE",
+      productionJobId: "job-1",
+      productionRunId: "run-1",
+      runNumber: 42,
+      runStatus: "in_production",
+    });
+  });
+
+  test("allows historical or fully reconciled Combined Run members", () => {
+    expect(classifyCombinedRunForOrderCancellation({
+      productionJobId: "job-complete",
+      productionRunId: "run-complete",
+      runStatus: "completed",
+      allocatedQuantity: 10,
+      completedQuantity: 5,
+      damagedQuantity: 0,
+      remainingQuantity: 5,
+    })).toMatchObject({
+      action: "allow",
+      reason: "run_inactive_or_finished",
+    });
+
+    expect(classifyCombinedRunForOrderCancellation({
+      productionJobId: "job-reconciled",
+      productionRunId: "run-reconciled",
+      runStatus: "ready_for_production",
+      allocatedQuantity: 10,
+      completedQuantity: 8,
+      damagedQuantity: 2,
+      remainingQuantity: 0,
+    })).toMatchObject({
+      action: "allow",
+      reason: "run_inactive_or_finished",
     });
   });
 
