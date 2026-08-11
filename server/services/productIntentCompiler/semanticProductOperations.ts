@@ -8,6 +8,7 @@ export const semanticProductOperationsResultSchema = z.object({
   kind: z.literal("semantic_operations"),
   operations: z.array(z.discriminatedUnion("op", [
     z.object({ op: z.literal("set_product_name"), name: z.string().trim().min(1).max(160) }).strict(),
+    z.object({ op: z.literal("set_product_description"), description: z.string().trim().min(1).max(10_000) }).strict(),
     z.object({ op: z.literal("set_category"), category: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("set_material"), material: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("set_measurement_mode"), mode: z.enum(["dimensions_required", "quantity_only"]) }).strict(),
@@ -24,6 +25,10 @@ export const semanticProductOperationsResultSchema = z.object({
     z.object({ op: z.literal("set_option_default"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("remove_option_value"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("remove_option_group"), optionGroup: z.string().trim().min(1).max(160) }).strict(),
+    z.object({ op: z.literal("set_scalar_price"), priceCents: z.number().int().min(0).max(10_000_000), basis: z.enum(["per_piece", "per_square_foot"]) }).strict(),
+    // Preserve valid product details when an optional availability restriction
+    // is unsupported by the current Product Builder model.
+    z.object({ op: z.literal("record_unsupported_detail"), detail: z.literal("customer_specific_availability") }).strict(),
     z.object({ op: z.literal("set_proof_requirement"), requiresProofApproval: z.boolean() }).strict(),
   ])).min(1).max(24),
 }).strict();
@@ -198,6 +203,12 @@ export function compileSemanticProductOperations(
       mark("identity.name");
       continue;
     }
+    if (operation.op === "set_product_description") {
+      nextIdentity = { ...nextIdentity, description: operation.description };
+      identityChanged = true;
+      mark("identity.description");
+      continue;
+    }
     if (operation.op === "set_material") {
       nextMaterial = { state: "unresolved", label: operation.material };
       materialChanged = true;
@@ -280,6 +291,18 @@ export function compileSemanticProductOperations(
       clearUnresolved("pricing.unit");
       mark("pricing.unit");
       inferMeasurementFromPricingBasis(operation.basis);
+      continue;
+    }
+    if (operation.op === "set_scalar_price") {
+      if (nextPricing.model !== "unresolved" && nextPricing.model !== "scalar") throw new Error("PRODUCT_INTENT_SEMANTIC_SCALAR_PRICE_UNSUPPORTED");
+      nextPricing = { model: "scalar", unit: operation.basis, priceCents: operation.priceCents };
+      pricingChanged = true;
+      clearUnresolved("pricing.unit");
+      mark("pricing.scalar");
+      inferMeasurementFromPricingBasis(operation.basis);
+      continue;
+    }
+    if (operation.op === "record_unsupported_detail") {
       continue;
     }
     if (operation.op === "set_option_rate" || operation.op === "set_matrix_rate") {

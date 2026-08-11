@@ -82,6 +82,14 @@ export type ProductManagementCard = {
   plan?: Record<string, unknown>;
 };
 
+function unsupportedProductDetailNotice(operations: unknown): string {
+  return Array.isArray(operations) && operations.some((operation) => operation && typeof operation === "object"
+    && (operation as { op?: unknown; detail?: unknown }).op === "record_unsupported_detail"
+    && (operation as { detail?: unknown }).detail === "customer_specific_availability")
+    ? " Customer-specific availability cannot currently be encoded, but I kept the supported product details in this draft."
+    : "";
+}
+
 /** Reduced server-derived product state for a later Operator turn. It carries
  * only business labels and outstanding decisions, never canonical patches,
  * tenant record IDs, fingerprints, or PBV2 structures. */
@@ -357,7 +365,7 @@ export class ProductManagementSkillService {
         operations: input.operations,
       });
       return outcome.ok
-        ? { handled: true, response: outcome.card.readiness.ready ? "I saved the product revision. It is ready for review." : "I saved the product revision and kept only its remaining questions.", cards: canonicalCards(outcome) }
+        ? { handled: true, response: `${outcome.changed === false ? "I confirmed the requested product detail is already in the active draft." : outcome.card.readiness.ready ? "I saved the product revision. It is ready for review." : "I saved the product revision and kept only its remaining questions."}${unsupportedProductDetailNotice(input.operations)}`, cards: canonicalCards(outcome) }
         : { handled: true, response: outcome.message, cards: [{ kind: "product_validation_errors", title: "Product change could not be applied", summary: "No new revision was created.", sourceLinks: [], details: { errors: [outcome.message], code: outcome.code } }] };
     } catch (error) {
       const message = error instanceof Error ? error.message : "The semantic product change could not be applied safely.";
@@ -468,7 +476,7 @@ export class ProductManagementSkillService {
       if (outcome.ok && input.initialOperations) {
         if (!router.applySemanticOperations) return { handled: true, response: "The initial product details could not be applied in this deployment.", cards: canonicalCards(outcome) };
         const applied = await router.applySemanticOperations({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: outcome.session.proposalId, request: input.message, operations: input.initialOperations });
-        if (applied.ok) return { handled: true, response: applied.card.readiness.ready ? "I prepared the product draft for review. No product has been created yet." : "I started the product draft and applied the supplied business details.", cards: canonicalCards(applied) };
+        if (applied.ok) return { handled: true, response: `${applied.card.readiness.ready ? "I prepared the product draft for review. No product has been created yet." : "I started the product draft and applied the supplied business details."}${unsupportedProductDetailNotice(input.initialOperations)}`, cards: canonicalCards(applied) };
         return { handled: true, response: applied.message, cards: [...canonicalCards(outcome), { kind: "product_validation_errors", title: "Product draft needs correction", summary: "The initial business details were not applied; the unfinished draft remains available for correction.", sourceLinks: [], details: { errors: [applied.message], code: applied.code } }] };
       }
       return outcome.ok

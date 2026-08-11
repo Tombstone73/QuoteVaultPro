@@ -34,7 +34,7 @@ export type CanonicalProductIntentCandidates = {
 };
 
 export type CanonicalProductIntentOutcome =
-  | { ok: true; session: CanonicalProductIntentSession; card: CanonicalProductIntentProposalDto; issues: ProductIntentIssue[] }
+  | { ok: true; session: CanonicalProductIntentSession; card: CanonicalProductIntentProposalDto; issues: ProductIntentIssue[]; changed?: boolean }
   | { ok: false; code: string; message: string };
 
 /** Read-only view of the latest persisted revision. It is intentionally
@@ -851,12 +851,16 @@ export class CanonicalProductIntentService {
         outstandingDecisionCount: issues.length,
       });
       if (productDraftIntentFingerprint(draft) === productDraftIntentFingerprint(intent)) {
-        return await continuationFailure({
-          referenceId, organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId,
-          stage: "semantic_operation_validation", current, activeIssueIds: [], deterministicAttempted: true, providerRequested: false,
-          patch: sourcePatch, requestedOperations, semanticBatch: semanticBatchDiagnostic({ operations: semanticOperations, stage, originalRevisionUnchanged: true }), code: "PRODUCT_SEMANTIC_OPERATION_NO_CHANGE",
-          message: `That product change does not alter the current draft. Review the current configuration and try again. Reference: ${referenceId}.`,
+        // A repeated, already-satisfied semantic instruction is safe. Keep
+        // stale candidate-action protections below, but let the Operator
+        // continue from the authoritative draft instead of turning a harmless
+        // confirmation into a terminal product-workflow failure.
+        console.info("[PRODUCT_SEMANTIC_CONTINUITY]", {
+          referenceId, proposalId: input.proposalId, operationValidation: "already_satisfied",
+          canonicalReadiness: issues.length === 0 ? "ready_for_review" : "needs_answers",
+          outstandingDecisionCount: issues.length,
         });
+        return { ok: true, session: current, issues, card: await this.presentation(intent, issues), changed: false };
       }
       stage = "revision_persistence";
       const session = await this.persistence.appendPatch({
