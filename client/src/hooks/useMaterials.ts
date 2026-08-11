@@ -347,6 +347,34 @@ export function useCreateMaterial() {
   });
 }
 
+export function useDuplicateMaterial() {
+  const queryClient = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (id: string) => {
+      const response = await fetch(`/api/materials/${id}/duplicate`, {
+        method: "POST",
+        credentials: "include",
+      });
+      if (!response.ok) {
+        const err = await response.json().catch(() => null);
+        throw new Error(err?.error || err?.message || "Failed to duplicate material");
+      }
+      const json = await response.json();
+      return json?.success ? json.data : json;
+    },
+    onSuccess: (material: Material) => {
+      queryClient.invalidateQueries({ queryKey: ["/api/materials"] });
+      queryClient.invalidateQueries({ queryKey: ["/api/materials/low-stock"] });
+      toast({
+        title: "Material duplicated",
+        description: material?.name ? `Created ${material.name}.` : "A new material copy was created.",
+      });
+    },
+    onError: (e: Error) => toast({ title: "Unable to duplicate material", description: e.message, variant: "destructive" }),
+  });
+}
+
 export function useUpdateMaterial(id: string) {
   const queryClient = useQueryClient();
   const { toast } = useToast();

@@ -1,7 +1,7 @@
-import { ChangeEvent, Fragment, useEffect, useMemo, useState } from "react";
+import { ChangeEvent, Fragment, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "react-router-dom";
-import { useMaterials, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
+import { useDuplicateMaterial, useMaterials, Material, calculateRollDerivedValues } from "@/hooks/useMaterials";
 import { useVendors } from "@/hooks/useVendors";
 import { MaterialForm } from "@/components/MaterialForm";
 import { AdjustInventoryForm } from "@/components/AdjustInventoryForm";
@@ -216,7 +216,8 @@ export default function MaterialsListPage() {
   const [showCreate, setShowCreate] = useState(false);
   const [editMaterial, setEditMaterial] = useState<Material | null>(null);
   const [adjustMaterialId, setAdjustMaterialId] = useState<string | null>(null);
-  const [duplicateMaterial, setDuplicateMaterial] = useState<Material | null>(null);
+  const duplicateMaterialInFlightRef = useRef(false);
+  const [duplicateMaterialInFlight, setDuplicateMaterialInFlight] = useState(false);
   const [countMode, setCountMode] = useState(false);
   const [isSavingInventory, setIsSavingInventory] = useState(false);
   const [printSheetOpen, setPrintSheetOpen] = useState(false);
@@ -225,6 +226,7 @@ export default function MaterialsListPage() {
   const [countMaterialNames, setCountMaterialNames] = useState<Record<string, string>>({});
   const { data: materials, isLoading } = useMaterials({ search, type: typeFilter, lowStockOnly });
   const { data: vendors = [] } = useVendors();
+  const duplicateMaterialMutation = useDuplicateMaterial();
   
   const {
     columns,
@@ -494,6 +496,20 @@ export default function MaterialsListPage() {
     setSortDirection("asc");
   };
 
+  const handleDuplicateMaterial = async (material: Material) => {
+    if (duplicateMaterialInFlightRef.current || duplicateMaterialMutation.isPending) return;
+    duplicateMaterialInFlightRef.current = true;
+    setDuplicateMaterialInFlight(true);
+    try {
+      await duplicateMaterialMutation.mutateAsync(material.id);
+    } catch {
+      // Toast is handled by the mutation hook.
+    } finally {
+      duplicateMaterialInFlightRef.current = false;
+      setDuplicateMaterialInFlight(false);
+    }
+  };
+
   const renderSortIcon = (columnId: SortableColumnId) => {
     if (sortKey !== columnId) return null;
 
@@ -634,7 +650,13 @@ export default function MaterialsListPage() {
         return (
           <div className="flex gap-1" onClick={e => e.stopPropagation()}>
             <TitanIconButton icon={Pencil} variant="ghost" onClick={() => setEditMaterial(m)} title="Edit material" />
-            <TitanIconButton icon={Copy} variant="ghost" onClick={() => setDuplicateMaterial(m)} title="Duplicate material" />
+            <TitanIconButton
+              icon={Copy}
+              variant="ghost"
+              onClick={() => void handleDuplicateMaterial(m)}
+              disabled={duplicateMaterialInFlight || duplicateMaterialMutation.isPending}
+              title={duplicateMaterialInFlight || duplicateMaterialMutation.isPending ? "Duplicating material..." : "Duplicate material"}
+            />
             <Button size="sm" variant="outline" onClick={() => setAdjustMaterialId(m.id)}>
               Adjust
             </Button>
@@ -813,14 +835,6 @@ export default function MaterialsListPage() {
           materialId={adjustMaterialId}
           open={!!adjustMaterialId}
           onOpenChange={(o) => { if (!o) setAdjustMaterialId(null); }}
-        />
-      )}
-      {duplicateMaterial && (
-        <MaterialForm
-          open={!!duplicateMaterial}
-          onOpenChange={(o) => { if (!o) setDuplicateMaterial(null); }}
-          material={duplicateMaterial}
-          isDuplicate={true}
         />
       )}
       <InventoryCountPrintDialog

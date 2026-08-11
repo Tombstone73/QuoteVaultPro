@@ -156,6 +156,7 @@ import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArt
 import { generateOrderPdfBytes, orderPdfFilename, OrderPdfEligibilityError } from "../lib/orderPdf";
 import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineItemCreationPolicy";
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
+import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -5285,6 +5286,40 @@ export async function registerOrderRoutes(
         } catch (err) {
             console.error('Error fetching material', err);
             res.status(500).json({ error: 'Failed to fetch material' });
+        }
+    });
+
+    app.post('/api/materials/:id/duplicate', isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ error: 'Missing organization context' });
+
+            const result = await duplicateMaterial({
+                organizationId,
+                materialId: String(req.params.id),
+            });
+
+            return res.json({
+                success: true,
+                data: result.material,
+                created: true,
+                sourceMaterialId: String(req.params.id),
+                copiedProductLinkIds: result.copiedProductLinkIds,
+            });
+        } catch (err) {
+            if (err instanceof DuplicateMaterialError) {
+                return res.status(err.statusCode).json({
+                    success: false,
+                    code: err.code,
+                    error: err.message,
+                });
+            }
+            if (err instanceof z.ZodError) return res.status(400).json({ success: false, error: fromZodError(err).message });
+            if (typeof (err as any)?.code === 'string' && String((err as any).code).startsWith('MATERIAL_WEIGHT_')) {
+                return res.status(400).json({ success: false, error: (err as any).message, code: (err as any).code });
+            }
+            console.error('[POST /api/materials/:id/duplicate] Error:', err);
+            return res.status(500).json({ success: false, error: 'Failed to duplicate material' });
         }
     });
 

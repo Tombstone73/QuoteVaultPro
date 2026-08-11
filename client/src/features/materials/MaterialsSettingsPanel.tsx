@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, Boxes, Copy, Pencil, Plus } from "lucide-react";
@@ -11,6 +11,7 @@ import { useToast } from "@/hooks/use-toast";
 import {
   Material,
   calculateRollDerivedValues,
+  useDuplicateMaterial,
   useMaterials,
   useMaterialReorderRequests,
   useMarkMaterialReorderRequestOrdered,
@@ -153,7 +154,8 @@ export function MaterialsSettingsPanel() {
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
   const [showCreate, setShowCreate] = useState(false);
   const [editMaterial, setEditMaterial] = useState<Material | null>(null);
-  const [duplicateMaterial, setDuplicateMaterial] = useState<Material | null>(null);
+  const duplicateMaterialInFlightRef = useRef(false);
+  const [duplicateMaterialInFlight, setDuplicateMaterialInFlight] = useState(false);
   const [adjustMaterial, setAdjustMaterial] = useState<Material | null>(null);
   const [requestReorderMaterial, setRequestReorderMaterial] = useState<Material | null>(null);
   const [receiveRequest, setReceiveRequest] = useState<MaterialReorderRequest | null>(null);
@@ -166,6 +168,7 @@ export function MaterialsSettingsPanel() {
   });
   const { data: reorderRequests = [] } = useMaterialReorderRequests();
   const { data: vendors = [] } = useVendors({ isActive: undefined });
+  const duplicateMaterialMutation = useDuplicateMaterial();
   const markOrderedMutation = useMarkMaterialReorderRequestOrdered();
   const cancelRequestMutation = useCancelMaterialReorderRequest();
 
@@ -235,6 +238,20 @@ export function MaterialsSettingsPanel() {
         description: err?.message || "Unknown error",
         variant: "destructive",
       });
+    }
+  }
+
+  async function handleDuplicateMaterial(material: Material) {
+    if (duplicateMaterialInFlightRef.current || duplicateMaterialMutation.isPending) return;
+    duplicateMaterialInFlightRef.current = true;
+    setDuplicateMaterialInFlight(true);
+    try {
+      await duplicateMaterialMutation.mutateAsync(material.id);
+    } catch {
+      // Toast is handled by the mutation hook.
+    } finally {
+      duplicateMaterialInFlightRef.current = false;
+      setDuplicateMaterialInFlight(false);
     }
   }
 
@@ -403,7 +420,13 @@ export function MaterialsSettingsPanel() {
                   <TitanTableCell>
                     <div className="flex flex-wrap gap-1" onClick={(event) => event.stopPropagation()}>
                       <TitanIconButton icon={Pencil} variant="ghost" onClick={() => setEditMaterial(material)} title="Edit material" />
-                      <TitanIconButton icon={Copy} variant="ghost" onClick={() => setDuplicateMaterial(material)} title="Duplicate material" />
+                      <TitanIconButton
+                        icon={Copy}
+                        variant="ghost"
+                        onClick={() => void handleDuplicateMaterial(material)}
+                        disabled={duplicateMaterialInFlight || duplicateMaterialMutation.isPending}
+                        title={duplicateMaterialInFlight || duplicateMaterialMutation.isPending ? "Duplicating material..." : "Duplicate material"}
+                      />
                       <Button size="sm" variant="outline" onClick={() => setAdjustMaterial(material)}>Adjust</Button>
                       {canRequestReorder(material, inventoryStatus, openRequestCount) ? (
                         <Button size="sm" variant="outline" onClick={() => setRequestReorderMaterial(material)}>Request Reorder</Button>
@@ -482,14 +505,6 @@ export function MaterialsSettingsPanel() {
 
       <MaterialForm open={showCreate} onOpenChange={setShowCreate} />
       {editMaterial ? <MaterialForm open={!!editMaterial} onOpenChange={(open) => !open && setEditMaterial(null)} material={editMaterial} /> : null}
-      {duplicateMaterial ? (
-        <MaterialForm
-          open={!!duplicateMaterial}
-          onOpenChange={(open) => !open && setDuplicateMaterial(null)}
-          material={duplicateMaterial}
-          isDuplicate
-        />
-      ) : null}
       {adjustMaterial ? (
         <AdjustInventoryForm
           materialId={adjustMaterial.id}
