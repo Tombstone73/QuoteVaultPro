@@ -113,6 +113,68 @@ describe("AI Operator routing (replacement for retired AI-first planner coverage
     contextSpy.mockRestore(); proposalSpy.mockRestore();
   });
 
+  test("a same-turn canonical product read binds an existing-product mutation and blocks a blank draft", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const { existingProductEditService } = await import("../services/assistant/existingProductEditService");
+    const repo = repository();
+    const product = { beginCanonicalProductDraft: jest.fn(), applyCanonicalProductOperations: jest.fn(), respondPlannedCanonicalProductIntent: jest.fn() };
+    const contextSpy = jest.spyOn(existingProductEditService, "trustedContext").mockResolvedValue({ name: "Translucent Vinyl", lifecycle: "active", pricingLifecycle: "DRAFT", optionGroups: [{ label: "Layer", defaultValue: "5 Layer", values: ["3 Layer", "5 Layer"] }] });
+    const proposalSpy = jest.spyOn(existingProductEditService, "buildProposal").mockResolvedValue({ productId: "product_1", productName: "Translucent Vinyl", productActive: true, treeId: "tree_1", treeUpdatedAt: "2026-08-10T00:00:00.000Z", changes: [{ field: "Layer default", before: "5 Layer", after: "3 Layer" }], fingerprint: "a".repeat(64) });
+    const executor = (_audit: unknown, semanticTools: readonly any[]) => {
+      const semantic = new Map(semanticTools.map((tool) => [tool.name, tool]));
+      return {
+        catalog: () => [...semanticTools.map((tool) => ({ name: tool.name, description: tool.description, inputSchema: tool.inputSchema })), { name: "products.get_pricing", description: "Read one product's current configuration." }],
+        execute: async ({ toolName, arguments: args, context: trusted }: any) => {
+          if (toolName === "products.get_pricing") return {
+            toolName,
+            status: "succeeded",
+            result: { status: "succeeded", data: { product: { id: "product_1", name: "Translucent Vinyl", active: true }, pricing: { status: "configuration" } }, provenance: { sourceLinks: [{ label: "Translucent Vinyl", href: "/products/product_1/edit", entityType: "product", entityId: "product_1" }], freshness: { capturedAt: "2026-08-10T00:00:00.000Z" } } },
+          };
+          const tool = semantic.get(toolName);
+          if (!tool) throw new Error(`Unexpected tool ${toolName}`);
+          return { toolName, ...(await tool.execute({ arguments: args, context: trusted })) };
+        },
+      };
+    };
+    const provider = { decide: jest.fn(async ({ observations, toolCatalog }: any) => {
+      expect(toolCatalog.map((tool: any) => tool.name)).toContain("products.apply_existing_operations");
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.get_pricing", arguments: { query: "Translucent Vinyl" } }] };
+      if (observations.length === 1) return { kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: {} }] };
+      if (observations.length === 2) {
+        expect(observations[1]).toMatchObject({ toolName: "products.begin_draft", status: "rejected" });
+        return { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations: [{ op: "set_option_default", optionGroup: "Layer", value: "3 Layer" }] } }] };
+      }
+      return { kind: "complete", response: "Prepared the protected existing-product edit." };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks(), undefined, executor as any, operatorProviderResolver() as any);
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.create_inactive_draft", "assistant.products.update_existing_product"] }, { message: "Change the default Layer selection to 3 layer for Translucent Vinyl.", context });
+
+    expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
+    expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+    expect(proposalSpy).toHaveBeenCalledWith(expect.objectContaining({ productId: "product_1", operations: { operations: [{ op: "set_option_default", optionGroup: "Layer", value: "3 Layer" }] } }));
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ structuredCards: expect.arrayContaining([expect.objectContaining({ kind: "action_proposal", plan: expect.objectContaining({ action: "products.update_existing_product", productId: "product_1" }) })]) }));
+    contextSpy.mockRestore(); proposalSpy.mockRestore();
+  });
+
+  test("an unresolved existing-product mutation cannot select an arbitrary product", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const { existingProductEditService } = await import("../services/assistant/existingProductEditService");
+    const repo = repository();
+    const proposalSpy = jest.spyOn(existingProductEditService, "buildProposal").mockResolvedValue({} as any);
+    const provider = { decide: jest.fn(async ({ observations }: any) => observations.length
+      ? { kind: "complete", response: "Please identify the product to update." }
+      : { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations: [{ op: "set_option_default", optionGroup: "Layer", value: "3 Layer" }] } }] }) };
+    const product = { beginCanonicalProductDraft: jest.fn(), applyCanonicalProductOperations: jest.fn(), respondPlannedCanonicalProductIntent: jest.fn() };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks(), undefined, undefined, operatorProviderResolver() as any);
+
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.update_existing_product"] }, { message: "Change the default Layer selection to 3 layer.", context });
+
+    expect(proposalSpy).not.toHaveBeenCalled();
+    expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
+    proposalSpy.mockRestore();
+  });
+
   test("an invalid operator decision fails safely without invoking a product mutation path", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository();

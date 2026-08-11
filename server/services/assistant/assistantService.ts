@@ -190,6 +190,30 @@ function trustedExistingProductId(context: AssistantContextEnvelope, references:
   return productIds.length === 1 ? productIds[0]! : null;
 }
 
+/** A same-turn canonical product read may establish the only safe product
+ * target after the Operator has started.  Accept only the single-product
+ * result shapes from the server-owned product readers; broad search results
+ * remain deliberately ineligible so an ambiguous request cannot mutate an
+ * unrelated product. */
+function resolvedExistingProductIdFromObservations(observations: readonly AssistantOperatorObservation[] | undefined): string | null {
+  const ids = new Set<string>();
+  for (const observation of observations ?? []) {
+    if (observation.status !== "succeeded" || (observation.toolName !== "products.get_pricing" && observation.toolName !== "products.get_summary")) continue;
+    const data = observation.result?.data;
+    if (!data || typeof data !== "object" || Array.isArray(data)) continue;
+    const product = (data as { product?: unknown }).product;
+    if (!product || typeof product !== "object" || Array.isArray(product)) continue;
+    const id = (product as { id?: unknown }).id;
+    if (typeof id === "string" && id.length > 0) ids.add(id);
+  }
+  return ids.size === 1 ? [...ids][0]! : null;
+}
+
+function existingProductIdForMutation(context: { context: AssistantContextEnvelope; task?: { entityReferences: Array<{ type: string; id: string }> }; analysisObservations?: readonly AssistantOperatorObservation[] }): string | null {
+  return trustedExistingProductId(context.context, context.task?.entityReferences ?? [])
+    ?? resolvedExistingProductIdFromObservations(context.analysisObservations);
+}
+
 export function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
@@ -771,7 +795,8 @@ export class AssistantService {
       description: "Establish one NEW authoritative unfinished product draft. Use only when the user intends to create a new product. Never use this to modify an existing persisted product; use products.apply_existing_operations for that. When a trusted existing product is in context and the user explicitly wants a new product based on it, set target to new_product. When the user already supplied product details, include the understood business changes as initialOperations so the new draft is populated in this call. Do not use if an unfinished new-product draft is already active.",
       inputSchema: beginProductDraftToolInputSchema,
       execute: async ({ arguments: args, context }) => {
-        if (existingProduct && args.target !== "new_product") return { status: "rejected" as const, warning: "A trusted existing product is in context. Use the existing-product edit capability unless the request explicitly creates a new product." };
+        const resolvedExistingProductId = existingProductIdForMutation(context);
+        if (resolvedExistingProductId && args.target !== "new_product") return { status: "rejected" as const, warning: "This request resolved to an existing product. Use the existing-product edit capability unless the user explicitly creates a distinct new product." };
         if (activeProductProposalId) return { status: "partial" as const, warning: "An unfinished product draft is already active." };
         const initialOperations = Array.isArray(args.initialOperations) ? args.initialOperations : undefined;
         const product = await this.productIntentDispatcher.beginCanonicalProductDraft({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, message: context.goal, ...(initialOperations?.length ? { initialOperations } : {}) });
@@ -824,9 +849,9 @@ export class AssistantService {
         } catch (error) { return { status: "rejected" as const, warning: error instanceof Error ? error.message : "The active product draft could not be priced." }; }
       },
     }] : [];
-    const existingProductEditTools: AssistantOperatorSemanticTool[] = existingProduct && existingProductId && mayEditExistingProduct ? [{
+    const existingProductEditTools: AssistantOperatorSemanticTool[] = mayEditExistingProduct ? [{
       name: "products.apply_existing_operations",
-      description: "Prepare a protected edit to the trusted existing persisted product's current PBV2 DRAFT. Use this for an existing-product mutation such as changing an option default. This is not new-product creation: it never calls Product Builder begin_draft, creates no product, makes no change before GO, and the server revalidates the current DRAFT at GO. Pass business labels only; product identity is supplied by trusted context.",
+      description: "Prepare a protected edit to one trusted existing persisted product's current PBV2 DRAFT. Use this after the current context or a canonical products.get_pricing/products.get_summary result has resolved exactly one existing product. This is not new-product creation: it never calls Product Builder begin_draft, creates no product, makes no change before GO, and the server revalidates the current DRAFT at GO. Pass business labels only; product identity is supplied by trusted context.",
       inputSchema: {
         type: "object", additionalProperties: false, required: ["operations"],
         properties: {
@@ -840,7 +865,11 @@ export class AssistantService {
         const parsed = existingProductEditOperationsSchema.safeParse({ operations: args.operations });
         if (!parsed.success) return { status: "rejected" as const, warning: "Existing-product edits require one or more supported business operations." };
         try {
-          const proposal = await existingProductEditService.buildProposal({ organizationId: context.scope.organizationId, productId: existingProductId, operations: parsed.data });
+          const resolvedExistingProductId = existingProductIdForMutation(context);
+          if (!resolvedExistingProductId) return { status: "rejected" as const, warning: "Resolve exactly one existing product before preparing an edit." };
+          const resolvedExistingProduct = await existingProductEditService.trustedContext({ organizationId: context.scope.organizationId, productId: resolvedExistingProductId });
+          if (!resolvedExistingProduct) return { status: "rejected" as const, warning: "The resolved existing product is no longer available for editing." };
+          const proposal = await existingProductEditService.buildProposal({ organizationId: context.scope.organizationId, productId: resolvedExistingProductId, operations: parsed.data });
           const summary = proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}`).join("; ");
           return { status: "succeeded" as const, result: { status: "succeeded", data: { response: `Prepared protected existing-product edit: ${summary}. GO is required before any change.`, taskDomain: "products", targetType: "existing_product" }, provenance: { sourceLinks: [{ label: proposal.productName, href: `/products/${encodeURIComponent(proposal.productId)}/edit`, entityType: "product", entityId: proposal.productId }], freshness: { capturedAt: new Date().toISOString() } } } as any, presentation: { cards: [{ kind: "action_proposal", title: `Review existing product edit: ${proposal.productName}`, summary: `${summary}. No change has been made; GO is required.`, sourceLinks: [{ label: `Open ${proposal.productName}`, href: `/products/${encodeURIComponent(proposal.productId)}/edit`, entityType: "product", entityId: proposal.productId }], plan: { action: "products.update_existing_product", productId: proposal.productId, operations: parsed.data.operations, proposalFingerprint: proposal.fingerprint } } as any] } };
         } catch (error) {
