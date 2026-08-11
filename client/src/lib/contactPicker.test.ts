@@ -1,9 +1,11 @@
 import {
   contactMatchesCustomer,
+  getCanonicalContactCustomerId,
   getContactCompanyLabel,
   getContactCustomerConflict,
   getContactDisplayName,
   getContactSecondaryLine,
+  resolveOrderCustomerIdFromContact,
   sortContactsForCustomer,
   type ContactPickerContact,
 } from "./contactPicker";
@@ -52,6 +54,25 @@ describe("contact picker helpers", () => {
     expect(getContactCustomerConflict(attached, "customer-1")).toBeNull();
     expect(contactMatchesCustomer(attached, "customer-2")).toBe(false);
     expect(getContactCustomerConflict(attached, "customer-2")).toBe("CONTACT_CUSTOMER_CONFLICT");
+  });
+
+  test("resolves a selected linked contact to its canonical customer", () => {
+    expect(getCanonicalContactCustomerId(attached)).toBe("customer-1");
+    expect(resolveOrderCustomerIdFromContact("customer-previous", attached)).toBe("customer-1");
+  });
+
+  test("replaces a stale customer for another linked contact and preserves standalone contacts", () => {
+    const otherCustomerContact: ContactPickerContact = {
+      ...attached,
+      id: "contact-other",
+      customerId: "customer-2",
+      customer: { id: "customer-2", companyName: "Other Signs", status: "active", isPrimary: true },
+      linkedCustomers: [{ id: "customer-2", companyName: "Other Signs", status: "active", isPrimary: true }],
+    };
+
+    expect(resolveOrderCustomerIdFromContact("customer-1", otherCustomerContact)).toBe("customer-2");
+    expect(resolveOrderCustomerIdFromContact("customer-1", standalone)).toBe("customer-1");
+    expect(resolveOrderCustomerIdFromContact("", standalone)).toBe("");
   });
 
   test("sorts contacts compatible with the selected customer first", () => {

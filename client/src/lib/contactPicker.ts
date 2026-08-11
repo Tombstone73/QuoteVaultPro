@@ -56,6 +56,24 @@ export function getContactSecondaryLine(contact: ContactPickerContact): string {
   return parts.join(" - ");
 }
 
+export function getCanonicalContactCustomerId(contact: ContactPickerContact | null | undefined): string | null {
+  const activeCustomers = getActiveContactCustomers(contact);
+  if (activeCustomers.length === 0) return null;
+
+  if (contact?.customerId && activeCustomers.some((customer) => customer.id === contact.customerId)) {
+    return contact.customerId;
+  }
+
+  return activeCustomers.find((customer) => customer.isPrimary)?.id ?? activeCustomers[0].id;
+}
+
+export function resolveOrderCustomerIdFromContact(
+  currentCustomerId: string | null | undefined,
+  contact: ContactPickerContact | null | undefined,
+): string {
+  return getCanonicalContactCustomerId(contact) ?? currentCustomerId ?? "";
+}
+
 export function contactMatchesCustomer(contact: ContactPickerContact | null | undefined, customerId: string | null | undefined): boolean {
   if (!contact || !customerId) return true;
   const activeCustomers = getActiveContactCustomers(contact);

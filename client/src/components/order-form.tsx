@@ -18,6 +18,7 @@ import { CustomerSelect } from "@/components/CustomerSelect";
 import { ContactSelect } from "@/components/ContactSelect";
 import {
   getContactCustomerConflict,
+  resolveOrderCustomerIdFromContact,
   type ContactPickerContact,
 } from "@/lib/contactPicker";
 import {
@@ -565,6 +566,11 @@ export default function OrderForm({ open, onOpenChange, onSuccess }: OrderFormPr
                       onChange={(contactId, contact) => {
                         setSelectedContactId(contactId || "");
                         setSelectedContact(contact ?? null);
+                        if (contact) {
+                          setSelectedCustomerId((currentCustomerId) =>
+                            resolveOrderCustomerIdFromContact(currentCustomerId, contact),
+                          );
+                        }
                       }}
                       onResolvedContact={setSelectedContact}
                       label="Contact (optional)"
