@@ -1,6 +1,6 @@
 # DEV browser QA authentication
 
-`npm run test:e2e:dev` signs into the deployed DEV application using the normal
+`npm run qa:dev-browser` signs into the deployed DEV application using the normal
 password login route. It does not use a shared browser tab, a token, an auth
 bypass, or an application-only QA route.
 
@@ -28,7 +28,9 @@ normal user-management surface. Do not use this fixture against another target.
 ## Local or CI configuration
 
 Copy `.env.playwright.example` to the ignored `.env.playwright` file, or set the
-same values in the CI secret store. Use these names only:
+same values in the local/CI secret store. The Playwright runner is outside
+Railway, so it needs its own secure copy of the QA login values. It always
+defaults to cloud DEV and never starts a local application. Use these names only:
 
 ```
 PLAYWRIGHT_BASE_URL
@@ -62,7 +64,7 @@ tokens, or credential values.
 ## Running the DEV smoke suite
 
 ```
-npm run test:e2e:dev
+npm run qa:dev-browser
 ```
 
 The setup plus `login.spec.ts` exercise two independent fresh browser logins.

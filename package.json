@@ -47,7 +47,8 @@
     "test:watch": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest --watch",
     "test:watch:mem": "cross-env-shell \"NODE_OPTIONS=--max_old_space_size=4096 --experimental-vm-modules\" jest --watch",
     "test:e2e": "playwright test",
-    "test:e2e:dev": "playwright test"
+    "test:e2e:dev": "playwright test",
+    "qa:dev-browser": "playwright test"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1009.0",

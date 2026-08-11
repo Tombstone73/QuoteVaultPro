@@ -6,19 +6,17 @@ import { resolve } from "path";
 // isolated from unrelated app/runtime env files.
 loadDotenv({ path: resolve(process.cwd(), ".env.playwright") });
 
+const DEV_QA_BASE_URL = "https://dev.printershero.com";
+
 // The dedicated DEV QA fixture owns the preferred credential names. Preserve
 // the existing PLAYWRIGHT_* aliases so current specs do not duplicate secrets.
+// Browser QA is always cloud DEV; it must never silently target localhost.
+process.env.PLAYWRIGHT_BASE_URL ??= DEV_QA_BASE_URL;
+process.env.PRINTERSHERO_DEV_QA_ALLOWED_ORIGIN ??= DEV_QA_BASE_URL;
 process.env.PLAYWRIGHT_EMAIL ??= process.env.PRINTERSHERO_DEV_QA_EMAIL;
 process.env.PLAYWRIGHT_PASSWORD ??= process.env.PRINTERSHERO_DEV_QA_PASSWORD;
 
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL;
-if (!BASE_URL) {
-  // Fail fast at config load time so the error is obvious.
-  throw new Error(
-    "PLAYWRIGHT_BASE_URL is required for Playwright E2E. " +
-      "Set it in .env.playwright or provide it via the shell environment."
-  );
-}
 
 export default defineConfig({
   testDir: "./e2e",
