@@ -214,6 +214,16 @@ function existingProductIdForMutation(context: { context: AssistantContextEnvelo
     ?? resolvedExistingProductIdFromObservations(context.analysisObservations);
 }
 
+/** A named request that also states one or more concrete Product Builder
+ * facts must enter the canonical flow with those facts.  This is a narrow
+ * creation guard, not a prose-to-patch parser: the provider still supplies
+ * the schema-validated business operations. */
+function newProductRequestRequiresInitialOperations(message: string): boolean {
+  const hasExplicitName = /\b(?:named|called)\s+(?:["“][^"”]{1,160}["”]|[^.!?]{1,160})/i.test(message);
+  const hasProductDetail = /\b(?:requires?\s+dimensions|per[-\s]?square[-\s]?foot|per[-\s]?piece|option|default|pricing|price|category)\b/i.test(message);
+  return hasExplicitName && hasProductDetail;
+}
+
 export function toIso(value: Date | string): string {
   return value instanceof Date ? value.toISOString() : new Date(value).toISOString();
 }
@@ -797,15 +807,38 @@ export class AssistantService {
       execute: async ({ arguments: args, context }) => {
         const resolvedExistingProductId = existingProductIdForMutation(context);
         if (resolvedExistingProductId && args.target !== "new_product") return { status: "rejected" as const, warning: "This request resolved to an existing product. Use the existing-product edit capability unless the user explicitly creates a distinct new product." };
-        if (activeProductProposalId) return { status: "partial" as const, warning: "An unfinished product draft is already active." };
         const initialOperations = Array.isArray(args.initialOperations) ? args.initialOperations : undefined;
+        if (activeProductProposalId) {
+          const draftContext = this.productIntentDispatcher.getActiveSemanticProductDraftContext
+            ? await this.productIntentDispatcher.getActiveSemanticProductDraftContext({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId: activeProductProposalId }).catch(() => null)
+            : null;
+          return {
+            status: "partial" as const,
+            failureCode: "draft_already_active",
+            warning: "An unfinished product draft is already active. Continue that draft with products.apply_operations; do not begin another draft.",
+            result: { status: "partial", data: { proposalId: activeProductProposalId, taskDomain: "products", draftContext, continuation: { draftAlreadyActive: true, draftEstablished: false, mayApplyBusinessOperations: true } } } as any,
+          };
+        }
+        if (!initialOperations?.length && newProductRequestRequiresInitialOperations(context.goal)) {
+          return {
+            status: "rejected" as const,
+            failureCode: "initial_operations_required",
+            warning: "This named new-product request already includes business details. Include every understood detail as ordered initialOperations when beginning its draft; do not create an empty draft.",
+          };
+        }
         const product = await this.productIntentDispatcher.beginCanonicalProductDraft({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, message: context.goal, ...(initialOperations?.length ? { initialOperations } : {}) });
         const proposalId = product.cards.flatMap((card) => [((card as any).details?.proposalId), ((card as any).plan?.proposalId)]).find((id): id is string => typeof id === "string") ?? null;
         if (proposalId) activeProductProposalId = proposalId;
         const draftContext = proposalId && this.productIntentDispatcher.getActiveSemanticProductDraftContext
           ? await this.productIntentDispatcher.getActiveSemanticProductDraftContext({ organizationId: context.scope.organizationId, userId: context.actor.userId, conversationId: conversation.id, proposalId }).catch(() => null)
           : null;
-        return { status: "succeeded" as const, result: { status: "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { draftEstablished: Boolean(proposalId), mayApplyBusinessOperations: Boolean(proposalId) } } } as any, presentation: { cards: product.cards as AssistantStructuredCard[] } };
+        const resumed = product.draftState === "resumed";
+        return {
+          status: resumed ? "partial" as const : "succeeded" as const,
+          ...(resumed ? { failureCode: "draft_already_active", warning: "An unfinished product draft is already active. Continue that draft with products.apply_operations; do not begin another draft." } : {}),
+          result: { status: resumed ? "partial" : "succeeded", data: { response: product.response, proposalId, taskDomain: "products", draftContext, continuation: { draftAlreadyActive: resumed, draftEstablished: Boolean(proposalId) && !resumed, mayApplyBusinessOperations: Boolean(proposalId) } } } as any,
+          presentation: { cards: product.cards as AssistantStructuredCard[] },
+        };
       },
       }] : [];
     const applyProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{

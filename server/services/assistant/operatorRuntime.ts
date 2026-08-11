@@ -239,6 +239,8 @@ function equivalentToolCallKey(toolName: string, argumentsValue: Record<string, 
 
 function isDeterministicToolFailure(observation: Pick<AssistantOperatorObservation, "status" | "failureCode">): boolean {
   return observation.status === "rejected"
+    || observation.failureCode === "draft_already_active"
+    || observation.failureCode === "initial_operations_required"
     || observation.failureCode === "invalid_arguments"
     || observation.failureCode === "core_query_failed"
     || observation.failureCode === "adapter_failed"

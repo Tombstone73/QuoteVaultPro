@@ -52,7 +52,7 @@ function semanticOnlyExecutor(_audit: unknown, semanticTools: readonly any[]) {
 }
 
 describe("AssistantService Operator Runtime integration", () => {
-  test("the exact complex Translucent Vinyl request begins a direct draft and applies only business operations", async () => {
+  test("the exact complex Translucent Vinyl request begins one populated direct draft with all supplied business operations", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const repo = repository(); const tasks = taskStore();
     const exactRequest = "Let's add a new product called \"Translucent Vinyl - backlit with multilayer printing\". It should have an option for 3 layer or 5 layer. 3 layer is $4 sq ft and 5 layer is $5 sq ft. Another option is contour cutting. Contour cutting adds 10% to the total price. If the answer is yes, then an additional option appears that is for weeding and taping. If they want weeding and taping, instead of a 10% increase, the price increase 30%.";
@@ -86,11 +86,11 @@ describe("AssistantService Operator Runtime integration", () => {
       const operationTool = toolCatalog.find((tool: any) => tool.name === "products.apply_operations");
       expect(operationTool?.inputSchema).toMatchObject({ properties: { operations: { maxItems: 24 } } });
       expect(JSON.stringify(operationTool?.inputSchema)).not.toMatch(/patch|revision|fingerprint|serverOwnedFields|pbv2/i);
-      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: {} }] };
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: { initialOperations: operations } }] };
       if (observations.length === 1) {
         expect(observations[0]?.result?.data).toMatchObject({ continuation: { draftEstablished: true, mayApplyBusinessOperations: true }, draftContext: { name: "Unfinished product draft" } });
         expect(JSON.stringify(observations[0]?.result?.data)).not.toContain("canonicalProductIntent");
-        return { kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations } }] };
+        return { kind: "complete", response: "I created a canonical product intent and will ask only its remaining questions." };
       }
       return { kind: "complete", response: "I created a canonical product intent and will ask only its remaining questions." };
     }) };
@@ -98,8 +98,9 @@ describe("AssistantService Operator Runtime integration", () => {
 
     await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.create_inactive_draft"] }, { message: exactRequest, context });
 
-    expect(product.beginCanonicalProductDraft).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "conversation_1" }));
-    expect(product.applyCanonicalProductOperations).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "conversation_1", message: exactRequest, operations }));
+    expect(product.beginCanonicalProductDraft).toHaveBeenCalledTimes(1);
+    expect(product.beginCanonicalProductDraft).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "conversation_1", message: exactRequest, initialOperations: operations }));
+    expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
     expect(product.respondPlannedCanonicalProductIntent).not.toHaveBeenCalled();
     expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ mode: "ai_operator_runtime", structuredCards: expect.arrayContaining([expect.objectContaining({ kind: "canonical_product_intent_proposal" })]) }));
   });
@@ -115,6 +116,64 @@ describe("AssistantService Operator Runtime integration", () => {
     await service.createTurn(scope, "conversation_1", actor, { message: "Create the supplied Translucent Vinyl product.", context });
     expect(product.beginCanonicalProductDraft).toHaveBeenCalledWith(expect.objectContaining({ initialOperations, message: "Create the supplied Translucent Vinyl product." }));
     expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+  });
+
+  test("rejects a detail-bearing new-product begin without initial operations before any blank draft is created", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore();
+    const initialOperations = [
+      { op: "set_product_name", name: "QA Roll Product" },
+      { op: "set_category", category: "Roll Printing" },
+      { op: "set_measurement_mode", mode: "dimensions_required" },
+      { op: "set_pricing_basis", basis: "per_square_foot" },
+      { op: "add_option_group", optionGroup: "Finish", required: true, selectionMode: "single" },
+      { op: "add_option_value", optionGroup: "Finish", value: "Standard" },
+      { op: "set_option_default", optionGroup: "Finish", value: "Standard" },
+    ];
+    const cards = [{ kind: "canonical_product_intent_proposal", title: "Product draft", summary: "Needs pricing", sourceLinks: [], details: { proposalId: "proposal_populated" } }];
+    const product = { respondPlannedCanonicalProductIntent: jest.fn(), beginCanonicalProductDraft: jest.fn(async () => ({ handled: true, response: "Draft populated.", cards })), applyCanonicalProductOperations: jest.fn() };
+    const provider = { decide: jest.fn(async ({ observations }: any) => {
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: {} }] };
+      if (observations.length === 1) {
+        expect(observations[0]).toMatchObject({ toolName: "products.begin_draft", status: "rejected", failureCode: "initial_operations_required" });
+        return { kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: { initialOperations } }] };
+      }
+      return { kind: "complete", response: "The supplied draft details are prepared." };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", actor, { message: "Create a new product named QA Roll Product. It is Roll Printing, requires dimensions, uses per-square-foot pricing, and has a required single-select Finish option with Standard as its default.", context });
+
+    expect(product.beginCanonicalProductDraft).toHaveBeenCalledTimes(1);
+    expect(product.beginCanonicalProductDraft).toHaveBeenCalledWith(expect.objectContaining({ initialOperations }));
+    expect(product.applyCanonicalProductOperations).not.toHaveBeenCalled();
+  });
+
+  test("resumes an already-active canonical draft without repeating begin_draft", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const repo = repository(); const tasks = taskStore();
+    const cards = [{ kind: "canonical_product_intent_proposal", title: "Product draft", summary: "Needs pricing", sourceLinks: [], details: { proposalId: "proposal_active" } }];
+    const product = {
+      respondPlannedCanonicalProductIntent: jest.fn(),
+      beginCanonicalProductDraft: jest.fn(async () => ({ handled: true, response: "An unfinished product draft is already active in this conversation.", cards, draftState: "resumed" as const })),
+      applyCanonicalProductOperations: jest.fn(async () => ({ handled: true, response: "Draft resumed.", cards })),
+      getActiveSemanticProductDraftContext: jest.fn(async () => ({ name: "QA Roll Product", category: { state: "resolved", label: "Roll Printing", provenance: "explicit_user" }, measurementMode: "dimensions_required", pricing: { model: "unresolved", basis: null, optionGroup: null, rates: [] }, optionGroups: [], outstandingDecisions: [], recentBusinessOperations: [], trustedSelections: [], readyForReview: false })),
+    };
+    const operation = { op: "set_product_name", name: "QA Roll Product" };
+    const provider = { decide: jest.fn(async ({ observations }: any) => {
+      if (!observations.length) return { kind: "call_tools", calls: [{ toolName: "products.begin_draft", arguments: { initialOperations: [operation] } }] };
+      if (observations.length === 1) {
+        expect(observations[0]).toMatchObject({ toolName: "products.begin_draft", status: "partial", failureCode: "draft_already_active", result: { data: { proposalId: "proposal_active", continuation: { draftAlreadyActive: true, mayApplyBusinessOperations: true } } } });
+        return { kind: "call_tools", calls: [{ toolName: "products.apply_operations", arguments: { operations: [operation] } }] };
+      }
+      return { kind: "complete", response: "Resumed the active draft." };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks, undefined, semanticOnlyExecutor as any, operatorProviderResolver as any);
+
+    await service.createTurn(scope, "conversation_1", actor, { message: "Create a new product named QA Roll Product with a Roll Printing category.", context });
+
+    expect(product.beginCanonicalProductDraft).toHaveBeenCalledTimes(1);
+    expect(product.applyCanonicalProductOperations).toHaveBeenCalledWith(expect.objectContaining({ conversationId: "conversation_1", operations: [operation] }));
   });
 
   test("does not expose direct product-draft tools without a product-draft permission", async () => {

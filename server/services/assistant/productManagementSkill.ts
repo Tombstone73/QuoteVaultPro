@@ -208,6 +208,10 @@ function canonicalCards(outcome: Extract<CanonicalProductIntentOutcome, { ok: tr
   return cards;
 }
 
+function canonicalCardsFromInspection(inspection: CanonicalProductIntentInspection): ProductManagementCard[] {
+  return canonicalCards({ ok: true, session: inspection.session, issues: inspection.issues, card: inspection.card });
+}
+
 function activeSemanticProductDraftContext(intent: ProductDraftIntent, inspection: CanonicalProductIntentInspection | null): ActiveSemanticProductDraftContext {
   const groups = new Map(intent.optionGroups.map((group) => [group.key, group]));
   const labelFor = (groupKey: string, valueKey: string) => {
@@ -444,13 +448,21 @@ export class ProductManagementSkillService {
     conversationId: string;
     message: string;
     initialOperations?: unknown;
-  }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[] }> {
+  }): Promise<{ handled: boolean; response: string; cards: ProductManagementCard[]; draftState?: "resumed" }> {
     const router = this.deps.canonicalProductIntent;
     if (!router?.begin) return { handled: true, response: "Incremental Product Builder creation is not available in this deployment.", cards: [] };
     try {
       const current = await router.loadForConversation({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
       if (current && !["executed", "expired", "abandoned"].includes(current.specification.session.state)) {
-        return { handled: true, response: "An unfinished product draft is already active in this conversation.", cards: [] };
+        const inspection = router.inspect
+          ? await router.inspect({ organizationId: input.organizationId, actorUserId: input.userId, proposalId: current.proposalId }).catch(() => null)
+          : null;
+        return {
+          handled: true,
+          response: "An unfinished product draft is already active in this conversation. Continue that draft instead of starting another one.",
+          cards: inspection ? canonicalCardsFromInspection(inspection) : [],
+          draftState: "resumed",
+        };
       }
       const outcome = await router.begin({ organizationId: input.organizationId, actorUserId: input.userId, conversationId: input.conversationId });
       if (outcome.ok && input.initialOperations) {

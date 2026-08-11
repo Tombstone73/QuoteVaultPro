@@ -120,6 +120,7 @@ export function compileSemanticProductOperations(
   let pricingChanged = false;
   let nextIdentity = structuredClone(current.identity);
   let identityChanged = false;
+  let categoryChanged = false;
   let nextWorkflow = structuredClone(current.workflow);
   let workflowChanged = false;
   let nextMeasurement = structuredClone(current.measurement);
@@ -176,9 +177,13 @@ export function compileSemanticProductOperations(
     const operation = semantic.operations[operationIndex];
     try {
     if (operation.op === "set_category") {
-      if (identityChanged) throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
+      // Identity is one canonical object, but a valid ordered creation batch
+      // commonly establishes its name and then its category.  Reject only a
+      // second category assignment in the same atomic batch, not the name.
+      if (categoryChanged) throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
       nextIdentity = { ...nextIdentity, category: { state: "unresolved", label: resolveCategoryLabel(operation.category, request, options.categoryLabels) } };
       identityChanged = true;
+      categoryChanged = true;
       mark("identity.category");
       continue;
     }

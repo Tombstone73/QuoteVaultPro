@@ -62,6 +62,34 @@ describe("semantic product operations", () => {
     expect(next.pricing).toEqual(current.pricing);
   });
 
+  test("accepts the exact ordered supplied-detail creation batch with a name followed by its category", () => {
+    const current = productDraftIntentSchema.parse({
+      ...translucentIntent,
+      identity: { ...translucentIntent.identity, name: "Unfinished product draft", category: { state: "unresolved", label: "Product category" } },
+      measurement: { mode: "quantity_only" }, pricing: { model: "unresolved" }, optionGroups: [],
+      unresolvedFields: [{ path: "identity.name", code: "PRODUCT_NAME_UNRESOLVED" }, { path: "measurement.mode", code: "MEASUREMENT_UNRESOLVED" }],
+      fieldMetadata: { "identity.name": { source: "unresolved" }, "measurement.mode": { source: "unresolved" }, "identity.category": { source: "unresolved" } },
+    });
+    const request = "Create a new inactive product named QA Browser Test Product 20260811130111. It is a test-only Roll Printing product that requires dimensions and uses per-square-foot pricing. Add a required single-select Finish option with Standard as its default. Prepare the Product Builder draft only; do not execute GO.";
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [
+      { op: "set_product_name", name: "QA Browser Test Product 20260811130111" },
+      { op: "set_category", category: "Roll Printing" },
+      { op: "set_measurement_mode", mode: "dimensions_required" },
+      { op: "set_pricing_basis", basis: "per_square_foot" },
+      { op: "add_option_group", optionGroup: "Finish", required: true, selectionMode: "single" },
+      { op: "add_option_value", optionGroup: "Finish", value: "Standard" },
+      { op: "set_option_default", optionGroup: "Finish", value: "Standard" },
+    ] }, 4, request, { categoryLabels: ["Flatbed Printing", "Roll Printing", "Fees", "Stock Item"] });
+    const next = applyProductDraftIntentPatch(current, patch);
+    expect(next.identity).toMatchObject({ name: "QA Browser Test Product 20260811130111", category: { state: "unresolved", label: "Roll Printing" } });
+    expect(next.measurement).toEqual({ mode: "dimensions_required" });
+    expect(next.pricing).toEqual({ model: "unresolved", unit: "per_square_foot" });
+    expect(next.optionGroups).toEqual([{ key: "finish", label: "Finish", required: true, selectionMode: "single", values: [{ key: "standard", label: "Standard", isDefault: true }] }]);
+    expect(() => compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [
+      { op: "set_category", category: "Roll Printing" }, { op: "set_category", category: "Flatbed Printing" },
+    ] }, 4, request, { categoryLabels: ["Flatbed Printing", "Roll Printing"] })).toThrow("CATEGORY_UNRESOLVED");
+  });
+
   test("preserves an explicit quoted product name and infers dimensions from square-foot pricing", () => {
     const current = productDraftIntentSchema.parse({
       ...translucentIntent,
