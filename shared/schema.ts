@@ -3540,6 +3540,65 @@ export const fileRecords = pgTable("file_records", {
 export type FileRecord = typeof fileRecords.$inferSelect;
 export type InsertFileRecord = typeof fileRecords.$inferInsert;
 
+// Business ownership of an artwork file is intentionally separate from its
+// physical file record and storage placement. Workflow artifacts (proofs and
+// nested run files) never use this relationship.
+export const lineItemArtworkRoleEnum = pgEnum("line_item_artwork_role", [
+  "customer_source",
+  "production",
+  "modified_production",
+]);
+
+export const lineItemArtworkStatusEnum = pgEnum("line_item_artwork_status", [
+  "current",
+  "superseded",
+]);
+
+export const lineItemArtworkSideEnum = pgEnum("line_item_artwork_side", [
+  "front",
+  "back",
+  "both",
+  "unknown",
+  "not_applicable",
+]);
+
+export const lineItemArtworkOriginEnum = pgEnum("line_item_artwork_origin", [
+  "customer_upload",
+  "staff_upload",
+  "promoted_existing",
+  "modified_copy",
+  "legacy_backfill",
+]);
+
+export const lineItemArtwork = pgTable("line_item_artwork", {
+  id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
+  organizationId: varchar("organization_id").notNull().references(() => organizations.id, { onDelete: "cascade" }),
+  orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: "cascade" }),
+  lineItemId: varchar("line_item_id").notNull().references(() => orderLineItems.id, { onDelete: "cascade" }),
+  fileRecordId: varchar("file_record_id").notNull().references(() => fileRecords.id, { onDelete: "restrict" }),
+  role: lineItemArtworkRoleEnum("role").notNull(),
+  status: lineItemArtworkStatusEnum("status").notNull().default("current"),
+  side: lineItemArtworkSideEnum("side").notNull().default("unknown"),
+  allocationQuantity: integer("allocation_quantity"),
+  allocationGroupId: varchar("allocation_group_id", { length: 128 }),
+  origin: lineItemArtworkOriginEnum("origin").notNull(),
+  parentArtworkId: varchar("parent_artwork_id").references((): AnyPgColumn => lineItemArtwork.id, { onDelete: "restrict" }),
+  supersedesArtworkId: varchar("supersedes_artwork_id").references((): AnyPgColumn => lineItemArtwork.id, { onDelete: "restrict" }),
+  createdByUserId: varchar("created_by_user_id").references(() => users.id, { onDelete: "set null" }),
+  createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
+  supersededAt: timestamp("superseded_at", { withTimezone: true }),
+  supersededByUserId: varchar("superseded_by_user_id").references(() => users.id, { onDelete: "set null" }),
+}, (table) => [
+  index("line_item_artwork_org_line_idx").on(table.organizationId, table.lineItemId),
+  index("line_item_artwork_current_idx").on(table.organizationId, table.lineItemId, table.role, table.status),
+  index("line_item_artwork_file_record_idx").on(table.fileRecordId),
+  index("line_item_artwork_parent_idx").on(table.parentArtworkId),
+  index("line_item_artwork_supersedes_idx").on(table.supersedesArtworkId),
+]);
+
+export type LineItemArtwork = typeof lineItemArtwork.$inferSelect;
+export type InsertLineItemArtwork = typeof lineItemArtwork.$inferInsert;
+
 export const storagePlacements = pgTable("storage_placements", {
   id: varchar("id").primaryKey().default(sql`gen_random_uuid()`),
   fileRecordId: varchar("file_record_id").notNull().references(() => fileRecords.id, { onDelete: "cascade" }),
