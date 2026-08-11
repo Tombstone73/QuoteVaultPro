@@ -870,6 +870,30 @@ export function useReturnProductionRunToPrepress() {
   });
 }
 
+export function useReturnProductionRunMembersToPrepress() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: { runId: string; memberIds: string[]; reason: string }) => {
+      const res = await fetch(`/api/production/runs/${args.runId}/return-selected-to-prepress`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, credentials: "include", body: JSON.stringify(args),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw Object.assign(new Error(json?.message || json?.error || "Unable to return selected members to Prepress"), { code: json?.code ?? null, details: json?.details ?? null });
+      return json.data as { restoredMemberJobIds: string[]; selectedMemberIds: string[]; preservedHistoricalRun: boolean };
+    },
+    onSuccess: (data) => {
+      invalidateProduction(qc);
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      qc.invalidateQueries({ queryKey: ["/api/prepress/queue"] });
+      qc.invalidateQueries({ queryKey: ["/api/orders"] });
+      qc.invalidateQueries({ queryKey: ["/api/fulfillment"] });
+      toast({ title: "Selected members returned to Prepress", description: `${data.restoredMemberJobIds.length} ${data.restoredMemberJobIds.length === 1 ? "member was" : "members were"} reopened.` });
+    },
+    onError: (error: Error) => toast({ title: "Return to Prepress failed", description: error.message, variant: "destructive" }),
+  });
+}
+
 export function useCompleteProductionRunReturnToPrepress() {
   const qc = useQueryClient();
   const { toast } = useToast();

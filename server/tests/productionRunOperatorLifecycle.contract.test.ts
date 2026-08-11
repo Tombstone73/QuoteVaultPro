@@ -21,12 +21,14 @@ describe("combined run operator lifecycle contract", () => {
     expect(routes).toContain('"pause"');
   });
 
-  it("returns only an unproduced run to Prepress and preserves its history", () => {
+  it("preserves the unproduced return path and delegates recorded work to corrective member recovery", () => {
     expect(service).toContain("export async function returnProductionRunToPrepress");
-    expect(service).toContain("PRODUCTION_RUN_RETURN_RECOVERY_REQUIRED");
+    expect(service).toContain("returnProductionRunMembersToPrepressInTransaction");
+    expect(service).toContain("historicalCompletedRun || progressed.length");
     expect(service).toContain('source: "combined_run_return_to_prepress"');
     expect(service).toContain('status: "canceled"');
     expect(routes).toContain("return-to-prepress");
+    expect(routes).toContain("return-selected-to-prepress");
   });
 
   it("preflights every member before mutation and provides an atomic canceled-run repair", () => {

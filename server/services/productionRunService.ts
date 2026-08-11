@@ -1,7 +1,7 @@
 import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, customers, lineItemFiles, localFileCopyJobs, orderLineItems, orders, prepressSessions, productionEvents, productionJobs, productionRunMembers, productionRuns, productionStationSteps, reprintRequests, users } from "@shared/schema";
-import { transitionLineItemWorkflowState } from "./lineItemWorkflowService";
+import { returnLineItemToPrepressForProductionRecovery, transitionLineItemWorkflowState } from "./lineItemWorkflowService";
 import { findActiveJobForLineItem, isPrepressOwnershipJob, resolveActiveProductionOwners } from "./productionOwnership";
 import { routeLineItemToProduction } from "./productionRoutingService";
 import { getProductionConfigForOrganization } from "../routes/production.shared";
@@ -2088,6 +2088,101 @@ export async function reconcileCanceledProductionRun(input: { organizationId: st
   });
 }
 
+async function returnProductionRunMembersToPrepressInTransaction(tx: any, input: {
+  organizationId: string;
+  actorUserId: string;
+  run: any;
+  memberIds: string[];
+  reason: string;
+}) {
+  const memberIds = Array.from(new Set(input.memberIds.filter(Boolean)));
+  if (!memberIds.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBER_SELECTION_REQUIRED", "Select at least one run member.", 400);
+
+  const rows = await tx.select({ member: productionRunMembers, line: orderLineItems, job: productionJobs })
+    .from(productionRunMembers)
+    .innerJoin(orderLineItems, eq(orderLineItems.id, productionRunMembers.orderLineItemId))
+    .innerJoin(productionJobs, eq(productionJobs.id, productionRunMembers.productionJobId))
+    .where(and(
+      eq(productionRunMembers.organizationId, input.organizationId),
+      eq(productionRunMembers.productionRunId, input.run.id),
+      inArray(productionRunMembers.id, memberIds),
+    ))
+    .for("update");
+  if (rows.length !== memberIds.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBER_NOT_FOUND", "One or more selected members do not belong to this run.", 404);
+
+  const orderIds = Array.from(new Set(rows.map(({ line }: any) => line.orderId)));
+  const [irreversibleOrder] = await tx.select({ id: orders.id }).from(orders).where(and(
+    eq(orders.organizationId, input.organizationId),
+    inArray(orders.id, orderIds),
+    inArray(orders.fulfillmentStatus as any, ["shipped", "delivered"]),
+  )).limit(1);
+  if (irreversibleOrder) throw new ProductionRunError("PRODUCTION_RUN_RETURN_FULFILLMENT_CONFLICT", "A shipped or delivered order cannot be returned to Prepress.", 409, { orderId: irreversibleOrder.id });
+
+  const lineItemIds = rows.map(({ member }: any) => member.orderLineItemId);
+  const activeSessions = await tx.select({ lineItemId: prepressSessions.lineItemId }).from(prepressSessions).where(and(
+    eq(prepressSessions.organizationId, input.organizationId),
+    inArray(prepressSessions.lineItemId, lineItemIds),
+    eq(prepressSessions.status, "active"),
+  ));
+  const sessionCounts = new Map<string, number>();
+  for (const session of activeSessions) sessionCounts.set(session.lineItemId, (sessionCounts.get(session.lineItemId) ?? 0) + 1);
+  const duplicateSessions = Array.from(sessionCounts.entries()).filter(([, count]) => count > 1).map(([lineItemId]) => lineItemId);
+  if (duplicateSessions.length) throw new ProductionRunError("PRODUCTION_RUN_RETURN_DUPLICATE_PREPRESS_SESSION", "Resolve duplicate active Prepress sessions before returning members.", 409, { lineItemIds: duplicateSessions });
+
+  for (const { member, job } of rows as Array<any>) {
+    const owner = await findActiveJobForLineItem(tx, { organizationId: input.organizationId, lineItemId: member.orderLineItemId });
+    if (owner && !isPrepressOwnershipJob(owner) && String(owner.status || "").toLowerCase() === "in_progress") {
+      throw new ProductionRunError("PRODUCTION_RUN_MEMBER_PRINTING", "Stop active production before returning a member to Prepress.", 409, { memberId: member.id, productionJobId: job.id });
+    }
+  }
+
+  const now = new Date();
+  const restoredMemberJobIds: string[] = [];
+  const finalOwners: Array<{ productionRunMemberId: string; productionJobId: string; lineItemId: string; owner: "prepress" }> = [];
+  for (const { member, line, job } of rows as Array<any>) {
+    const transition = await returnLineItemToPrepressForProductionRecovery(tx, {
+      organizationId: input.organizationId,
+      lineItemId: member.orderLineItemId,
+      actorUserId: input.actorUserId,
+      note: `Combined run PR-${String(input.run.runNumber).padStart(4, "0")} corrective return: ${input.reason}`,
+      metadata: { source: "combined_run_member_return_to_prepress", productionRunId: input.run.id, productionRunMemberId: member.id, previousProductionJobId: job.id, reason: input.reason },
+    });
+    if (!transition.activeOwnerJobId || !isPrepressOwnershipJob({ stationKey: transition.activeOwnerStationKey, stepKey: transition.activeOwnerStepKey })) {
+      throw new ProductionRunError("PRODUCTION_RUN_RETURN_FAILED", "Could not restore the member to canonical Prepress ownership.", 409, { memberId: member.id });
+    }
+    const note = `[COMBINED RUN MEMBER RETURNED TO PREPRESS]\nPR-${String(input.run.runNumber).padStart(4, "0")} · ${input.reason}`;
+    const [session] = await tx.select({ id: prepressSessions.id, notesText: prepressSessions.notesText }).from(prepressSessions).where(and(
+      eq(prepressSessions.organizationId, input.organizationId), eq(prepressSessions.lineItemId, member.orderLineItemId), eq(prepressSessions.status, "active"),
+    )).orderBy(desc(prepressSessions.updatedAt)).limit(1);
+    if (session) {
+      const existing = String(session.notesText || "").trim();
+      await tx.update(prepressSessions).set({ lockOwnerUserId: input.actorUserId, issueFlag: true, issueType: "production_edit_request", notesText: existing.includes(note) ? existing : [existing, note].filter(Boolean).join("\n\n"), updatedAt: now }).where(eq(prepressSessions.id, session.id));
+    } else {
+      await tx.insert(prepressSessions).values({ organizationId: input.organizationId, orderId: line.orderId, lineItemId: member.orderLineItemId, status: "active", startedByUserId: input.actorUserId, lockOwnerUserId: input.actorUserId, issueFlag: true, issueType: "production_edit_request", notesText: note });
+    }
+    await tx.update(productionRunMembers).set({
+      outcomeStatus: "return_to_prepress",
+      recoveryDisposition: "return_to_prepress",
+      operatorNote: `Returned to Prepress: ${input.reason}`,
+      updatedAt: now,
+    }).where(and(eq(productionRunMembers.organizationId, input.organizationId), eq(productionRunMembers.id, member.id)));
+    restoredMemberJobIds.push(job.id);
+    finalOwners.push({ productionRunMemberId: member.id, productionJobId: job.id, lineItemId: member.orderLineItemId, owner: "prepress" });
+  }
+  await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "UPDATE", entityType: "production_run", entityId: input.run.id, entityName: `PR-${String(input.run.runNumber).padStart(4, "0")}`, description: "Combined run members returned to Prepress", oldValues: { status: input.run.status }, newValues: { selectedMemberIds: memberIds, restoredMemberJobIds, reason: input.reason, preservedHistoricalRun: true } } as any);
+  return { runId: input.run.id, selectedMemberIds: memberIds, restoredMemberJobIds, finalOwners, preservedProductionDestination: input.run.stationKey, preservedHistoricalRun: true };
+}
+
+export async function returnProductionRunMembersToPrepress(input: { organizationId: string; runId: string; actorUserId: string; memberIds: string[]; reason: string }) {
+  const reason = input.reason.trim();
+  if (!reason) throw new ProductionRunError("PRODUCTION_RUN_RETURN_REASON_REQUIRED", "Choose or enter a reason before returning members to Prepress.", 400);
+  return db.transaction(async (tx) => {
+    const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.organizationId, input.organizationId), eq(productionRuns.id, input.runId))).limit(1);
+    if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
+    return returnProductionRunMembersToPrepressInTransaction(tx, { ...input, run, reason });
+  });
+}
+
 /** Return an entirely unproduced combined run to Prepress without deleting its
  * file, sheet-plan, member, or audit history. This is intentionally separate
  * from cancellation: a partially produced run must use recovery instead. */
@@ -2106,7 +2201,8 @@ export async function returnProductionRunToPrepress(input: {
     )).limit(1);
     if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
     const repairingCanceledRun = run.status === "canceled";
-    if (!activeStatuses.includes(run.status as RunStatus) && !(repairingCanceledRun && input.allowCanceledRepair)) {
+    const historicalCompletedRun = run.status === "completed" || run.status === "completed_with_exceptions";
+    if (!activeStatuses.includes(run.status as RunStatus) && !historicalCompletedRun && !(repairingCanceledRun && input.allowCanceledRepair)) {
       throw new ProductionRunError("PRODUCTION_RUN_NOT_RETURNABLE", "Only an unfinished production run can be returned to Prepress.", 409);
     }
     const rows = await tx.select({ member: productionRunMembers, line: orderLineItems }).from(productionRunMembers)
@@ -2121,8 +2217,14 @@ export async function returnProductionRunToPrepress(input: {
         || Number(member.remainingQuantity) !== allocated
         || member.outcomeStatus !== "pending";
     });
-    if (progressed.length) {
-      throw new ProductionRunError("PRODUCTION_RUN_RETURN_RECOVERY_REQUIRED", "A run with recorded production results must use the partial-recovery workflow instead of Return Run to Prepress.", 409, { memberIds: progressed.map(({ member }) => member.id) });
+    if (historicalCompletedRun || progressed.length) {
+      return returnProductionRunMembersToPrepressInTransaction(tx, {
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        run,
+        memberIds: rows.map(({ member }: any) => member.id),
+        reason,
+      });
     }
     const orderIds = Array.from(new Set(rows.map(({ line }) => line.orderId)));
     const [irreversibleOrder] = await tx.select({ id: orders.id, fulfillmentStatus: orders.fulfillmentStatus }).from(orders).where(and(

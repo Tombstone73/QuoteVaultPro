@@ -13,6 +13,7 @@ import {
   recordProductionRunOutcome,
   recordProductionRunSheetProgress,
   reconcileCanceledProductionRun,
+  returnProductionRunMembersToPrepress,
   returnProductionRunToPrepress,
   repairCompletedProductionRunFulfillmentHandoff,
   reopenCompletedProductionRun,
@@ -74,6 +75,7 @@ const createPrepressSchema = createSchema.extend({
 });
 const transitionSchema = z.object({ action: z.enum(["release", "start", "pause", "complete", "cancel"]), reason: z.string().max(2000).nullable().optional() });
 const returnToPrepressSchema = z.object({ reason: z.enum(["Nesting requires revision", "Artwork correction", "Incorrect production setup", "Run reopened by mistake", "Machine/setup issue", "Other"]).or(z.string().trim().min(1).max(2000)) });
+const returnSelectedMembersToPrepressSchema = returnToPrepressSchema.extend({ memberIds: z.array(z.string().min(1)).min(1).max(200) });
 const completeReturnToPrepressSchema = z.object({ reason: z.string().trim().min(1).max(2000).default("Complete previously failed return to Prepress") });
 const outcomeSchema = z.object({
   idempotencyKey: z.string().max(160).nullable().optional(),
@@ -343,6 +345,17 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
       if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
       if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: "PRODUCTION_RUN_OUTCOME_INVALID", message: error.issues[0]?.message ?? "Invalid production outcome." });
       console.error("[production-runs] outcome failed", error); return res.status(500).json({ success: false, code: "PRODUCTION_RUN_OUTCOME_FAILED", message: "Unable to record production run outcome." });
+    }
+  });
+  app.post("/api/production/runs/:runId/return-selected-to-prepress", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const body = returnSelectedMembersToPrepressSchema.parse(req.body ?? {});
+      return res.json({ success: true, data: await returnProductionRunMembersToPrepress({ organizationId, actorUserId, runId: req.params.runId, memberIds: body.memberIds, reason: body.reason }) });
+    } catch (error) {
+      return handleProductionRunError(res, error, "PRODUCTION_RUN_MEMBER_RETURN_FAILED", "Unable to return selected production run members to Prepress.");
     }
   });
   app.post("/api/production/runs/:runId/sheet-progress", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {

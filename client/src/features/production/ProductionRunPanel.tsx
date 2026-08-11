@@ -17,6 +17,7 @@ import {
   useRepairCompletedProductionRunFulfillmentHandoff,
   useReopenCompletedProductionRun,
   useRecordProductionRunOutcome,
+  useReturnProductionRunMembersToPrepress,
   useReturnProductionRunToPrepress,
   useProductionJob,
   useSubmitReprintRequest,
@@ -61,6 +62,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const reopenCompletedRun = useReopenCompletedProductionRun();
   const repairFulfillmentHandoff = useRepairCompletedProductionRunFulfillmentHandoff();
   const returnRunToPrepress = useReturnProductionRunToPrepress();
+  const returnSelectedMembersToPrepress = useReturnProductionRunMembersToPrepress();
   const action = runAction(run.runStatus);
   const isStartedRun = (run.runStatus === "in_production" || run.runStatus === "partially_completed") && Boolean(run.startedAt);
   const isPausedRun = run.runStatus === "ready_for_production" && Boolean(run.startedAt);
@@ -82,7 +84,9 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const [reopenConfirmationOpen, setReopenConfirmationOpen] = useState(false);
   const [reopenReason, setReopenReason] = useState("");
   const [returnConfirmationOpen, setReturnConfirmationOpen] = useState(false);
+  const [returnSelectedConfirmationOpen, setReturnSelectedConfirmationOpen] = useState(false);
   const [returnReason, setReturnReason] = useState("Nesting requires revision");
+  const [selectedReturnMemberIds, setSelectedReturnMemberIds] = useState<string[]>([]);
   const [reconciliationResult, setReconciliationResult] = useState<CanceledProductionRunReconciliationResult | null>(null);
   const [shortageMember, setShortageMember] = useState<ProductionRunListItem["members"][number] | null>(null);
   const [shortageQuantity, setShortageQuantity] = useState("1");
@@ -143,14 +147,15 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
     ? "Correct invalid good or damaged quantities before saving."
     : null;
   const isAdminOrOwner = Boolean(isAdmin || user?.isAdmin || user?.role === "admin" || user?.role === "owner");
-  const canReturnEntireRun = isAdminOrOwner && isOperationalRun && run.members.length > 0 && run.members.every((member) => member.successfulQuantity === 0 && member.completedQuantity === 0 && member.damagedQuantity === 0 && member.remainingQuantity === member.allocatedQuantity && member.outcomeStatus === "pending");
+  const canReturnEntireRun = isAdminOrOwner && run.runStatus !== "canceled" && run.members.length > 0;
+  const canReturnSelectedMembers = isAdminOrOwner && selectedReturnMemberIds.length > 0;
   const strandedCanceledMembers = unfinishedMembers.filter((member) => member.currentWorkflowOwner !== "prepress");
   const canReconcileCanceledRun = isAdminOrOwner
     && run.runStatus === "canceled"
     && unfinishedMembers.length > 0
     && strandedCanceledMembers.length > 0;
   const canceledRunFullyRestored = isAdminOrOwner && run.runStatus === "canceled" && unfinishedMembers.length > 0 && strandedCanceledMembers.length === 0;
-  const returnError = (returnRunToPrepress.error || completeCanceledReturn.error) as (Error & { code?: string | null; details?: { memberId?: string; productionJobId?: string; lineItemId?: string; members?: Array<{ productionJobId?: string }> } | null }) | null;
+  const returnError = (returnRunToPrepress.error || returnSelectedMembersToPrepress.error || completeCanceledReturn.error) as (Error & { code?: string | null; details?: { memberId?: string; productionJobId?: string; lineItemId?: string; members?: Array<{ productionJobId?: string }> } | null }) | null;
   const canReopenCompletedRun = isAdminOrOwner && run.runStatus === "completed" && run.members.every((member) => member.outcomeStatus === "completed" && member.remainingQuantity === 0);
   const canReportPostProductionShortage = run.runStatus === "completed" || run.runStatus === "completed_with_exceptions";
   const releaseBlockedReason = action === "release" && replacementRequired
@@ -234,6 +239,9 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
       },
     });
   };
+  const toggleReturnMember = (memberId: string) => setSelectedReturnMemberIds((current) => current.includes(memberId)
+    ? current.filter((id) => id !== memberId)
+    : [...current, memberId]);
 
   return (
     <div className="rounded-md border border-titan-border-subtle bg-titan-bg-card p-4">
@@ -444,7 +452,8 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         </div>
         <div className="divide-y divide-titan-border-subtle rounded-md border border-titan-border-subtle">
         {run.members.map((member) => (
-          <div key={member.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_auto_auto_auto_auto]">
+          <div key={member.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[auto_1fr_auto_auto_auto_auto]">
+            {isAdminOrOwner ? <input type="checkbox" aria-label={`Return ${member.description} to Prepress`} checked={selectedReturnMemberIds.includes(member.id)} onChange={() => toggleReturnMember(member.id)} /> : null}
             <div className="min-w-0 truncate">
               <div>{member.lineNumber ? `Line ${member.lineNumber}: ` : ""}{member.description}</div>
               <div className="text-[11px] text-titan-text-muted">
@@ -472,6 +481,11 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           </div>
         ))}
         </div>
+        {canReturnSelectedMembers ? (
+          <div className="mt-2 flex justify-end">
+            <Button size="sm" variant="outline" onClick={() => setReturnSelectedConfirmationOpen(true)} disabled={returnSelectedMembersToPrepress.isPending}>Return Selected to Prepress</Button>
+          </div>
+        ) : null}
       </div>
       {isActiveRun ? (
         <div className="mt-3 rounded-md border border-titan-border-subtle bg-titan-bg-subtle p-3 text-xs">
@@ -618,6 +632,9 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
             <select value={returnReason} onChange={(event) => setReturnReason(event.target.value)} className="rounded border border-titan-border-subtle bg-titan-bg-card px-2 py-1">
               <option>Nesting requires revision</option>
               <option>Artwork correction</option>
+              <option>Reprint required</option>
+              <option>Production problem</option>
+              <option>Customer correction</option>
               <option>Incorrect production setup</option>
               <option>Run reopened by mistake</option>
               <option>Machine/setup issue</option>
@@ -631,6 +648,38 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
               returnRunToPrepress.mutate({ runId: run.id, reason: returnReason.trim() }, { onSuccess: () => setReturnConfirmationOpen(false) });
             }}>
               {returnRunToPrepress.isPending ? "Returning…" : "Return Run to Prepress"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+      <AlertDialog open={returnSelectedConfirmationOpen} onOpenChange={setReturnSelectedConfirmationOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Return {selectedReturnMemberIds.length} of {run.memberCount} members to Prepress?</AlertDialogTitle>
+            <AlertDialogDescription>
+              The original Combined Run and nested production file remain in history. Selected items reopen for artwork correction and can join a future production run.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <label className="grid gap-1 text-sm">
+            <span className="font-medium">Reason</span>
+            <select value={returnReason} onChange={(event) => setReturnReason(event.target.value)} className="rounded border border-titan-border-subtle bg-titan-bg-card px-2 py-1">
+              <option>Artwork correction</option>
+              <option>Reprint required</option>
+              <option>Production problem</option>
+              <option>Customer correction</option>
+              <option>Other</option>
+            </select>
+          </label>
+          <AlertDialogFooter>
+            <AlertDialogCancel disabled={returnSelectedMembersToPrepress.isPending}>Cancel</AlertDialogCancel>
+            <AlertDialogAction disabled={returnSelectedMembersToPrepress.isPending || !returnReason.trim()} onClick={(event) => {
+              event.preventDefault();
+              returnSelectedMembersToPrepress.mutate({ runId: run.id, memberIds: selectedReturnMemberIds, reason: returnReason.trim() }, { onSuccess: () => {
+                setSelectedReturnMemberIds([]);
+                setReturnSelectedConfirmationOpen(false);
+              } });
+            }}>
+              {returnSelectedMembersToPrepress.isPending ? "Returning…" : "Return Selected to Prepress"}
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>

@@ -6,6 +6,8 @@ describe("production Return to Prepress contract", () => {
   const service = fs.readFileSync(path.join(root, "server/services/productionReturnToPrepressService.ts"), "utf8");
   const jobsRoute = fs.readFileSync(path.join(root, "server/routes/productionJobs.routes.ts"), "utf8");
   const runService = fs.readFileSync(path.join(root, "server/services/productionRunService.ts"), "utf8");
+  const runRoute = fs.readFileSync(path.join(root, "server/routes/productionRuns.routes.ts"), "utf8");
+  const workflow = fs.readFileSync(path.join(root, "server/services/lineItemWorkflowService.ts"), "utf8");
 
   test("uses an all-or-nothing tenant-scoped transition and preserves historical run members", () => {
     expect(service).toContain("returnProductionJobsToPrepressInTransaction");
@@ -34,5 +36,22 @@ describe("production Return to Prepress contract", () => {
     expect(jobsRoute).toContain("returnProductionJobsToPrepressInTransaction");
     expect(runService).toContain("prepressPredecessorIds");
     expect(runService).toContain("previousJobId");
+  });
+
+  test("keeps ordinary completed transitions terminal while allowing only explicit combined-run member recovery", () => {
+    expect(workflow).toContain('Cannot transition terminal workflow state ${fromState}');
+    expect(workflow).toContain("returnLineItemToPrepressForProductionRecovery");
+    expect(workflow).toContain('allowTerminalRecovery: true');
+    expect(runService).toContain("returnProductionRunMembersToPrepressInTransaction");
+    expect(runService).toContain('recoveryDisposition: "return_to_prepress"');
+    expect(runRoute).toContain('"/api/production/runs/:runId/return-selected-to-prepress"');
+  });
+
+  test("preserves completed quantities and historical run files during member recovery", () => {
+    const memberRecovery = runService.slice(runService.indexOf("returnProductionRunMembersToPrepressInTransaction"), runService.indexOf("/** Return an entirely unproduced"));
+    expect(memberRecovery).toContain("preservedHistoricalRun: true");
+    expect(memberRecovery).not.toContain("successfulQuantity: 0");
+    expect(memberRecovery).not.toContain("damagedQuantity: 0");
+    expect(memberRecovery).not.toContain("delete(productionRunMembers)");
   });
 });

@@ -476,6 +476,7 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
   actorUserId?: string | null;
   note?: string | null;
   metadata?: Record<string, unknown>;
+  allowTerminalRecovery?: boolean;
 }): Promise<WorkflowTransitionResult> {
   const lineItem = await loadLineItemForWorkflow(tx, {
     organizationId: args.organizationId,
@@ -640,7 +641,7 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     };
   }
 
-  if (isTerminalWorkflowState(fromState)) {
+  if (isTerminalWorkflowState(fromState) && !(args.allowTerminalRecovery && args.toState === "in_prepress")) {
     throw Object.assign(new Error(`Cannot transition terminal workflow state ${fromState}`), { statusCode: 409 });
   }
 
@@ -733,6 +734,24 @@ export async function transitionLineItemWorkflowState(tx: any, args: {
     activeOwnerStepKey: invariant.activeOwnerStepKey,
     ownershipAction: ownership.ownershipAction,
   };
+}
+
+/**
+ * Corrective production recovery only. Normal callers must continue using the
+ * generic transition function, which keeps completed states terminal.
+ */
+export async function returnLineItemToPrepressForProductionRecovery(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  actorUserId: string;
+  note: string;
+  metadata: Record<string, unknown>;
+}): Promise<WorkflowTransitionResult> {
+  return transitionLineItemWorkflowState(tx, {
+    ...args,
+    toState: "in_prepress",
+    allowTerminalRecovery: true,
+  });
 }
 
 export function getInitialWorkflowState(args: {
