@@ -30,6 +30,7 @@ tmp-smoke-screenshots/
 
 # Playwright E2E
 e2e/.auth/user.json
+e2e/.auth/*.json
 playwright-report/
 test-results/
 .env.playwright

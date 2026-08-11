@@ -6,6 +6,11 @@ import { resolve } from "path";
 // isolated from unrelated app/runtime env files.
 loadDotenv({ path: resolve(process.cwd(), ".env.playwright") });
 
+// The dedicated DEV QA fixture owns the preferred credential names. Preserve
+// the existing PLAYWRIGHT_* aliases so current specs do not duplicate secrets.
+process.env.PLAYWRIGHT_EMAIL ??= process.env.PRINTERSHERO_DEV_QA_EMAIL;
+process.env.PLAYWRIGHT_PASSWORD ??= process.env.PRINTERSHERO_DEV_QA_PASSWORD;
+
 const BASE_URL = process.env.PLAYWRIGHT_BASE_URL;
 if (!BASE_URL) {
   // Fail fast at config load time so the error is obvious.

@@ -45,7 +45,8 @@
     "test:material-units": "cross-env NODE_OPTIONS=--experimental-vm-modules jest --runInBand --no-cache shared/tests/uomConversions.test.ts shared/tests/materialInventory.test.ts shared/tests/materialVendorPurchasing.test.ts server/tests/materialStockDeductionGuard.test.ts server/tests/materialUnitArchitecture.test.ts server/tests/aiParsingDescriptionSchemas.test.ts",
     "test:watch": "cross-env NODE_OPTIONS='--experimental-vm-modules' jest --watch",
     "test:watch:mem": "cross-env-shell \"NODE_OPTIONS=--max_old_space_size=4096 --experimental-vm-modules\" jest --watch",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "test:e2e:dev": "playwright test"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1009.0",
