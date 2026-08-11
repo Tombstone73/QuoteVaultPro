@@ -26,6 +26,7 @@ async function sendAndReadLatestAssistantMessage(page: Page, message: string): P
   const response = (await messages.last().textContent())?.trim() ?? "";
   expect(response).not.toBe("");
   expect(response).not.toMatch(/(generic investigation error|your message wasn.t sent|search backend error)/i);
+  expect(response).not.toMatch(/(<think|<\/?parameter>|DSML|\{\s*"kind"\s*:)/i);
   return response;
 }
 
