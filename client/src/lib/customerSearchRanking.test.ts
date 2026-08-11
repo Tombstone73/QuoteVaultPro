@@ -1,6 +1,7 @@
 import {
   customerMatchesSearch,
   getCustomerSearchRank,
+  getBestMatchingCustomerContact,
   sortCustomersForSearch,
   type CustomerSearchCandidate,
 } from "./customerSearchRanking";
@@ -42,5 +43,23 @@ describe("customer search ranking", () => {
       "contact-match",
     ]);
     expect(customerMatchesSearch(graphicSolutions, "orders@graphicsolutions.example")).toBe(true);
+  });
+
+  test("ranks full linked-contact matches deterministically and returns the matched contact", () => {
+    const contactMatch: CustomerSearchCandidate = {
+      id: "graphic-solutions",
+      companyName: "Graphic Solutions",
+      contacts: [
+        { id: "other", firstName: "Alex", lastName: "Smith" },
+        { id: "rick", firstName: "Rick", lastName: "Clark", email: "rick@graphicsolutions.example" },
+      ],
+    };
+
+    expect(getCustomerSearchRank(contactMatch, "rick clark")).toBe(5);
+    expect(getBestMatchingCustomerContact(contactMatch, "rick clark")).toMatchObject({ id: "rick" });
+    expect(sortCustomersForSearch([
+      { id: "weak", companyName: "Rick's Sign Shop" },
+      contactMatch,
+    ], "rick clark").map((customer) => customer.id)).toEqual(["graphic-solutions"]);
   });
 });

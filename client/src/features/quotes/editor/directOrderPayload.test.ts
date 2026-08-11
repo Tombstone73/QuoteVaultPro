@@ -183,4 +183,28 @@ describe("buildDirectOrderPayloadFromEditorState", () => {
     expect(payload.customerId).toBeNull();
     expect(payload.contactId).toBe("standalone-contact");
   });
+
+  test("prefers the canonical customer ID state over a stale display customer", () => {
+    const payload = buildDirectOrderPayloadFromEditorState({
+      selectedCustomer: { id: "customer-a", companyName: "Customer A" } as any,
+      selectedCustomerId: "customer-b",
+      selectedContactId: "contact-b",
+      lineItems: [],
+      subtotal: 0,
+      effectiveTaxRate: 0,
+      taxAmount: 0,
+      effectiveDiscount: 0,
+      jobLabel: "",
+      orderPoNumber: "",
+      requestedDueDate: "",
+      orderPromisedDate: "",
+      orderPriority: "normal",
+      orderInternalNotes: "",
+      deliveryMethod: "pickup",
+      shippingCents: null,
+      quoteNotes: "",
+    });
+
+    expect(payload).toMatchObject({ customerId: "customer-b", contactId: "contact-b" });
+  });
 });

@@ -9,7 +9,7 @@ import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { useConvertQuoteToOrder } from "@/hooks/useOrders";
 import { ROUTES } from "@/config/routes";
 import type { CustomerWithContacts } from "@/components/CustomerSelect";
-import { getContactCustomerConflict, type ContactPickerContact } from "@/lib/contactPicker";
+import { getContactCustomerConflict, resolveOrderCustomerIdFromContact, type ContactPickerContact } from "@/lib/contactPicker";
 import type { Product, ProductVariant, QuoteWithRelations, ProductOptionItem, Organization } from "@shared/schema";
 import type { LineItemOptionSelectionsV2 } from "@shared/optionTreeV2";
 import { injectDerivedMaterialOptionIntoProductOptions } from "@shared/productOptionUi";
@@ -1730,7 +1730,7 @@ export function useQuoteEditorState() {
             throw new Error("Missing quote id");
         }
 
-        const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? null;
+        const payloadCustomerId = selectedCustomerId ?? selectedCustomer?.id ?? null;
         const payloadHasCustomerId = !!payloadCustomerId;
         const payloadHasLineItems = lineItems.length > 0;
         const payloadCustomerName = payloadCustomerId
@@ -1802,7 +1802,7 @@ export function useQuoteEditorState() {
     // ============================================================================
 
     const handleSaveQuote = async (): Promise<SaveQuoteResult> => {
-        const payloadCustomerId = selectedCustomer?.id ?? selectedCustomerId ?? null;
+        const payloadCustomerId = selectedCustomerId ?? selectedCustomer?.id ?? null;
         const payloadHasCustomerId = !!payloadCustomerId;
         const payloadHasLineItems = lineItems.length > 0;
         const payloadCustomerName = payloadCustomerId
@@ -2772,9 +2772,19 @@ export function useQuoteEditorState() {
         // Handlers
         handlers: {
             // Customer
-            setCustomer: (customerId: string | null, customer?: CustomerWithContacts | undefined, _contactId?: string | null | undefined) => {
+            setCustomer: (customerId: string | null, customer?: CustomerWithContacts | undefined, contactId?: string | null | undefined) => {
                 setSelectedCustomerId(customerId);
                 setSelectedCustomer(customer);
+                if (contactId) {
+                    const contact = customer?.contacts?.find((candidate) => candidate.id === contactId) ?? null;
+                    setSelectedContactId(contactId);
+                    setSelectedContact(contact ? {
+                        ...contact,
+                        customerId: customerId ?? contact.customerId,
+                        companyName: customer?.companyName ?? null,
+                        customer: customer ? { id: customer.id, companyName: customer.companyName, status: customer.status } : null,
+                    } : null);
+                }
                 void repriceExistingLineItemsForCustomer(customerId);
                 // Pre-fill shipping address from customer if ship is selected
                 if (customer && deliveryMethod === 'ship') {
@@ -2791,6 +2801,19 @@ export function useQuoteEditorState() {
             setContactId: (contactId: string | null, contact?: ContactPickerContact | null) => {
                 setSelectedContactId(contactId);
                 setSelectedContact(contact ?? null);
+                if (contact) {
+                    const resolvedCustomerId = resolveOrderCustomerIdFromContact(selectedCustomerId, contact) || null;
+                    if (resolvedCustomerId && resolvedCustomerId !== selectedCustomerId) {
+                        setSelectedCustomerId(resolvedCustomerId);
+                        setSelectedCustomer({
+                            id: resolvedCustomerId,
+                            companyName: contact.customer?.id === resolvedCustomerId
+                                ? contact.customer.companyName
+                                : contact.linkedCustomers?.find((customer) => customer.id === resolvedCustomerId)?.companyName ?? contact.companyName ?? null,
+                        } as CustomerWithContacts);
+                        void repriceExistingLineItemsForCustomer(resolvedCustomerId);
+                    }
+                }
             },
             setResolvedContact: setSelectedContact,
 

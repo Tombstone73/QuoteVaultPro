@@ -5,7 +5,7 @@ import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
-import { sortCustomersForSearch } from "@/lib/customerSearchRanking";
+import { getBestMatchingCustomerContact, sortCustomersForSearch } from "@/lib/customerSearchRanking";
 import type { Customer, CustomerContact } from "@shared/schema";
 
 export type CustomerWithContacts = Customer & {
@@ -41,7 +41,6 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
   const debounceTimerRef = useRef<NodeJS.Timeout | null>(null);
   const commandInputRef = useRef<HTMLInputElement>(null);
   const commandListRef = useRef<HTMLDivElement>(null);
-  const [activeItemValue, setActiveItemValue] = useState("");
 
   // Debounce search input
   useEffect(() => {
@@ -58,11 +57,6 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
         clearTimeout(debounceTimerRef.current);
       }
     };
-  }, [searchQuery]);
-
-  useEffect(() => {
-    setActiveItemValue("");
-    if (commandListRef.current) commandListRef.current.scrollTop = 0;
   }, [searchQuery]);
 
   // Fetch customers with search - show all when no search query
@@ -128,23 +122,25 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
 
   // Handle customer selection
   const handleSelectCustomer = useCallback((customer: CustomerWithContacts) => {
-    let contactId: string | null = null;
-    
-    if (customer.contacts && customer.contacts.length > 0) {
-      const primaryContact = customer.contacts.find(c => c.isPrimary);
-      contactId = primaryContact?.id || customer.contacts[0].id;
-    }
+    const matchedContact = getBestMatchingCustomerContact(customer, searchQuery);
+    const primaryContact = customer.contacts?.find((contact) => contact.isPrimary);
+    const contactId = matchedContact?.id ?? primaryContact?.id ?? customer.contacts?.[0]?.id ?? null;
 
     onChange(customer.id, customer, contactId);
     setOpen(false);
     setSearchQuery("");
-  }, [onChange]);
+  }, [onChange, searchQuery]);
 
   // Rank direct company matches before weaker customer/contact matches.
   const filteredCustomers = useMemo(() => {
     const uniqueCustomers = Array.from(new Map(customers.map((customer) => [customer.id, customer])).values());
     return sortCustomersForSearch(uniqueCustomers, debouncedSearch);
   }, [customers, debouncedSearch]);
+  const resultSignature = filteredCustomers.map((customer) => customer.id).join(",");
+
+  useEffect(() => {
+    if (commandListRef.current) commandListRef.current.scrollTop = 0;
+  }, [searchQuery, debouncedSearch, resultSignature]);
 
   return (
     <div className="space-y-2">
@@ -175,7 +171,7 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
           </Button>
         </PopoverTrigger>
         <PopoverContent className="w-[400px] p-0" align="start">
-          <Command shouldFilter={false} value={activeItemValue} onValueChange={setActiveItemValue}>
+          <Command shouldFilter={false}>
             <CommandInput
               ref={commandInputRef}
               placeholder="Search by company name, email, or contact..."
@@ -193,6 +189,7 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
                   <CommandGroup heading={searchQuery ? `Found ${filteredCustomers.length} customer${filteredCustomers.length !== 1 ? 's' : ''}` : `All customers (${filteredCustomers.length})`}>
                     {filteredCustomers.map((customer) => {
                       const isSelected = value === customer.id;
+                      const matchedContact = getBestMatchingCustomerContact(customer, searchQuery);
                       return (
                         <CommandItem
                           key={customer.id}
@@ -215,6 +212,11 @@ export const CustomerSelect = forwardRef<CustomerSelectRef, CustomerSelectProps>
                                 {customer.email && <span>{customer.email}</span>}
                                 {customer.email && customer.phone && <span className="mx-1">•</span>}
                                 {customer.phone && <span>{customer.phone}</span>}
+                              </div>
+                            )}
+                            {matchedContact && (
+                              <div className="text-xs text-muted-foreground truncate">
+                                Matched contact: {[matchedContact.firstName, matchedContact.lastName].filter(Boolean).join(" ") || matchedContact.email}
                               </div>
                             )}
                           </div>

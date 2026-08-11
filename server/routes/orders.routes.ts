@@ -49,6 +49,7 @@ import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { eq, desc, asc, and, isNull, isNotNull, inArray, or, sql } from "drizzle-orm";
 import { storage } from "../storage";
 import { OrderIdentityError } from "../storage/orders.repo";
+import { resolveOrderCustomerContactIds } from "../services/orderCustomerResolutionService";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import Papa from "papaparse";
@@ -2221,6 +2222,14 @@ export async function registerOrderRoutes(
             });
 
             const createOrderForRequest = async () => {
+            const resolvedIdentity = await resolveOrderCustomerContactIds({
+                organizationId,
+                customerId: orderFields.customerId,
+                contactId: orderFields.contactId,
+            });
+            orderFields.customerId = resolvedIdentity.customerId;
+            orderFields.contactId = resolvedIdentity.contactId;
+
             // Load organization for tax settings
             const [org] = await db
                 .select()
@@ -2664,6 +2673,16 @@ export async function registerOrderRoutes(
                     // Set contactId to primary contact or null if none exist
                     req.body.contactId = contacts[0]?.id || null;
                 }
+            }
+
+            if (req.body.customerId !== undefined || req.body.contactId !== undefined) {
+                const resolvedIdentity = await resolveOrderCustomerContactIds({
+                    organizationId,
+                    customerId: req.body.customerId !== undefined ? req.body.customerId : existingOrder.customerId,
+                    contactId: req.body.contactId !== undefined ? req.body.contactId : existingOrder.contactId,
+                });
+                req.body.customerId = resolvedIdentity.customerId;
+                req.body.contactId = resolvedIdentity.contactId;
             }
 
             const orderData = updateOrderSchema.parse({

@@ -98,18 +98,35 @@ function buildCustomerOrderBy(sortBy?: string, sortDir?: string) {
 }
 
 function buildCustomerSearchOrderBy(search: string) {
-    const normalizedSearch = search.trim().toLowerCase();
-    const companyName = sql`lower(coalesce(${customers.companyName}, ''))`;
-    const email = sql`lower(coalesce(${customers.email}, ''))`;
+  const normalizedSearch = search.trim().toLowerCase();
+  const companyName = sql`lower(coalesce(${customers.companyName}, ''))`;
+  const email = sql`lower(coalesce(${customers.email}, ''))`;
+  const contactName = sql`lower(concat_ws(' ', cc.first_name, cc.last_name))`;
+  const linkedContactMatch = (predicate: any) => sql`exists (
+    select 1
+    from customer_contact_links ccl
+    join customer_contacts cc on cc.id = ccl.contact_id
+    where ccl.customer_id = ${customers.id}
+      and ccl.organization_id = ${customers.organizationId}
+      and ccl.status = 'active'
+      and cc.organization_id = ${customers.organizationId}
+      and cc.status = 'active'
+      and ${predicate}
+  )`;
 
-    return [
+  return [
         sql`case
             when ${companyName} = ${normalizedSearch} then 0
             when ${companyName} like ${`${normalizedSearch}%`} then 1
             when ${companyName} like ${`% ${normalizedSearch}%`} then 2
             when ${companyName} like ${`%${normalizedSearch}%`} then 3
             when ${email} like ${`%${normalizedSearch}%`} then 4
-            else 5
+            when ${linkedContactMatch(sql`${contactName} = ${normalizedSearch}`)} then 5
+            when ${linkedContactMatch(sql`${contactName} like ${`${normalizedSearch}%`}`)} then 6
+            when ${linkedContactMatch(sql`${contactName} like ${`% ${normalizedSearch}%`}`)} then 7
+            when ${linkedContactMatch(sql`${contactName} like ${`%${normalizedSearch}%`}`)} then 8
+            when ${linkedContactMatch(sql`lower(coalesce(cc.email, '')) like ${`%${normalizedSearch}%`}`)} then 9
+            else 10
         end`,
         asc(companyName),
         asc(customers.id),
@@ -1237,6 +1254,7 @@ export class CustomersRepository {
                     or(
                         ilike(customerContacts.firstName, pattern),
                         ilike(customerContacts.lastName, pattern),
+                        sql`concat_ws(' ', ${customerContacts.firstName}, ${customerContacts.lastName}) ilike ${pattern}`,
                         ilike(customerContacts.email, pattern),
                         ilike(customerContacts.phone, pattern),
                         ilike(customerContacts.mobile, pattern),

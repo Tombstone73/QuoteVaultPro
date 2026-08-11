@@ -42,7 +42,14 @@ beforeEach(() => {
       return {
         data: [
           { id: "substring", companyName: "Metrographic Printing" },
-          { id: "prefix", companyName: "Graphic Solutions" },
+          {
+            id: "prefix",
+            companyName: "Graphic Solutions",
+            contacts: [
+              { id: "contact-rick", firstName: "Rick", lastName: "Clark", isPrimary: false },
+              { id: "contact-primary", firstName: "Pat", lastName: "Primary", isPrimary: true },
+            ],
+          },
         ],
         isLoading: false,
       } as any;
@@ -72,5 +79,26 @@ describe("CustomerSelect", () => {
     });
 
     expect(list.scrollTop).toBe(0);
+  });
+
+  test("selects the linked contact that caused a customer search match", () => {
+    const onChange = jest.fn();
+    act(() => {
+      root.render(<CustomerSelect value={null} onChange={onChange} />);
+    });
+
+    const input = container.querySelector("input") as HTMLInputElement;
+    act(() => {
+      input.value = "Rick Clark";
+      Simulate.change(input);
+    });
+
+    const option = Array.from(container.querySelectorAll('[role="option"]'))
+      .find((element) => element.textContent?.includes("Graphic Solutions")) as HTMLDivElement;
+    act(() => {
+      Simulate.select(option);
+    });
+
+    expect(onChange).toHaveBeenCalledWith("prefix", expect.objectContaining({ id: "prefix" }), "contact-rick");
   });
 });

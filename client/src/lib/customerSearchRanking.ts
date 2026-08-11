@@ -4,6 +4,7 @@ export type CustomerSearchCandidate = {
   email?: string | null;
   phone?: string | null;
   contacts?: Array<{
+    id?: string | null;
     firstName?: string | null;
     lastName?: string | null;
     email?: string | null;
@@ -41,7 +42,38 @@ export function getCustomerSearchRank(customer: CustomerSearchCandidate, query: 
   if (companyName.split(/[^\p{L}\p{N}]+/u).some((word) => word.startsWith(normalizedQuery))) return 2;
   if (companyName.includes(normalizedQuery)) return 3;
   if (normalizeSearchValue(customer.email).includes(normalizedQuery)) return 4;
+
+  const contact = getBestMatchingCustomerContact(customer, query);
+  if (!contact) return 9;
+  return getContactSearchRank(contact, normalizedQuery) + 5;
+}
+
+function getContactSearchRank(contact: NonNullable<CustomerSearchCandidate["contacts"]>[number], normalizedQuery: string): number {
+  const contactName = normalizeSearchValue(`${contact.firstName ?? ""} ${contact.lastName ?? ""}`);
+  if (contactName === normalizedQuery) return 0;
+  if (contactName.startsWith(normalizedQuery)) return 1;
+  if (contactName.split(/[^\p{L}\p{N}]+/u).some((word) => word.startsWith(normalizedQuery))) return 2;
+  if (contactName.includes(normalizedQuery)) return 3;
+  if ([contact.email, contact.phone, contact.mobile].map(normalizeSearchValue).some((value) => value.includes(normalizedQuery))) return 4;
   return 5;
+}
+
+export function getBestMatchingCustomerContact<TCustomer extends CustomerSearchCandidate>(
+  customer: TCustomer,
+  query: string,
+): NonNullable<TCustomer["contacts"]>[number] | null {
+  const normalizedQuery = normalizeSearchValue(query);
+  if (!normalizedQuery || !customer.contacts?.length) return null;
+
+  return [...customer.contacts]
+    .filter((contact) => getContactSearchRank(contact, normalizedQuery) < 5)
+    .sort((a, b) => {
+      const rankDifference = getContactSearchRank(a, normalizedQuery) - getContactSearchRank(b, normalizedQuery);
+      if (rankDifference !== 0) return rankDifference;
+      return normalizeSearchValue(`${a.firstName ?? ""} ${a.lastName ?? ""}`).localeCompare(
+        normalizeSearchValue(`${b.firstName ?? ""} ${b.lastName ?? ""}`),
+      );
+    })[0] ?? null;
 }
 
 export function sortCustomersForSearch<TCustomer extends CustomerSearchCandidate>(customers: TCustomer[], query: string): TCustomer[] {
