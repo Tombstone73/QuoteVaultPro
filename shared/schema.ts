@@ -213,6 +213,7 @@ export const organizations = pgTable("organizations", {
       };
       proofing?: {
         proofApprovalLockEnabled?: boolean;
+        policy?: 'automatic' | 'manual_requested_only';
         defaultProofDisclaimerText?: string;
       };
       fulfillment?: {
@@ -2590,6 +2591,9 @@ export const customers = pgTable("customers", {
   // Commercial defaults used for future quote/order context only.
   paymentTerms: varchar("payment_terms", { length: 50 }).notNull().default("due_on_receipt"),
   blindShipping: boolean("blind_shipping").notNull().default(false),
+  // Customer-specific operational preference. This remains effective even when
+  // product-driven proofing is temporarily suspended for the organization.
+  alwaysRequireProof: boolean("always_require_proof").notNull().default(false),
 
   // 🔥 SAFETY FIX — add back is_active so Drizzle stops trying to drop it
   isActive: boolean("is_active").default(true),

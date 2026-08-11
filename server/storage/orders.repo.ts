@@ -70,6 +70,7 @@ import {
     type ProductionIntakePolicy,
 } from "../services/productionIntakePolicy";
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
+import { resolveLineItemProofApprovalRequirement, resolveProofingPolicyFromOrgPreferences } from "@shared/proofApprovalLock";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
 
@@ -1792,7 +1793,7 @@ export class OrdersRepository {
 
         // Fetch org settings for prepress default (migration 0051)
         const [org] = await this.dbInstance
-            .select({ prepressDefaultEnabled: organizations.prepressDefaultEnabled })
+            .select({ prepressDefaultEnabled: organizations.prepressDefaultEnabled, settings: organizations.settings })
             .from(organizations)
             .where(eq(organizations.id, organizationId))
             .limit(1);
@@ -1843,9 +1844,13 @@ export class OrdersRepository {
             const requiresPrepress: boolean = typeof qlAny.requiresPrepress === 'boolean'
                 ? qlAny.requiresPrepress
                 : fulfillmentOrService ? false : (productPrepressMap.get(ql.productId) ?? orgPrepressDefault);
-            const requiresProofApproval: boolean = typeof qlAny.requiresProofApproval === 'boolean'
-                ? qlAny.requiresProofApproval
-                : fulfillmentOrService ? false : (productProofApprovalMap.get(ql.productId) ?? false);
+            const proofApproval = resolveLineItemProofApprovalRequirement({
+                productRequiresProofApproval: productProofApprovalMap.get(ql.productId) ?? false,
+                requestedRequiresProofApproval: typeof qlAny.requiresProofApproval === "boolean" ? qlAny.requiresProofApproval : undefined,
+                proofingPolicy: resolveProofingPolicyFromOrgPreferences((org?.settings as any)?.preferences),
+                customerRequiresProofApproval: customer?.alwaysRequireProof === true,
+            });
+            const requiresProofApproval = fulfillmentOrService ? false : proofApproval.requiresProofApproval;
             const copiedDesignSnapshot = copyLineItemDesignSnapshotFields(qlAny);
             const designSnapshot = {
                 ...copiedDesignSnapshot,

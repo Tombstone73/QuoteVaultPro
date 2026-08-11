@@ -1135,6 +1135,13 @@
       "when": 1788048000013,
       "tag": "0166_order_cancellation_actor_notes",
       "breakpoints": true
+    },
+    {
+      "idx": 168,
+      "version": "7",
+      "when": 1788048000014,
+      "tag": "0167_customer_always_require_proof",
+      "breakpoints": true
     }
   ]
 }

@@ -36,6 +36,7 @@ const customerSchema = z.object({
   productVisibilityMode: z.enum(["default", "linked-only"]).default("default"),
   // Tax fields
   isTaxExempt: z.boolean().default(false),
+  alwaysRequireProof: z.boolean().default(false),
   taxRateOverride: z.coerce.number().min(0).max(30).optional().or(z.nan()).transform(v => isNaN(v as any) ? undefined : v).optional(),
   taxExemptReason: z.string().max(255).optional(),
   taxExemptCertificateRef: z.string().max(512).optional(),
@@ -82,6 +83,7 @@ interface CustomerWithContacts {
   defaultMarginPercent?: string | number | null;
   productVisibilityMode?: string | null;
   isTaxExempt?: boolean | null;
+  alwaysRequireProof?: boolean | null;
   taxRateOverride?: string | number | null;
   taxExemptReason?: string | null;
   taxExemptCertificateRef?: string | null;
@@ -155,6 +157,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       productVisibilityMode: (customer.productVisibilityMode as "default" | "linked-only") || "default",
       // Tax fields
       isTaxExempt: customer.isTaxExempt || false,
+      alwaysRequireProof: customer.alwaysRequireProof || false,
       taxRateOverride: customer.taxRateOverride ? parseFloat(customer.taxRateOverride.toString()) : undefined,
       taxExemptReason: customer.taxExemptReason || "",
       taxExemptCertificateRef: customer.taxExemptCertificateRef || "",
@@ -208,6 +211,7 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
       productVisibilityMode: "default",
       // Tax fields
       isTaxExempt: false,
+      alwaysRequireProof: false,
       taxRateOverride: undefined,
       taxExemptReason: "",
       taxExemptCertificateRef: "",
@@ -883,6 +887,21 @@ export default function CustomerForm({ open, onOpenChange, customer }: CustomerF
             </div>
             <p className="text-xs text-muted-foreground mt-1">
               If checked, no sales tax will be applied to this customer's orders.
+            </p>
+
+            <div className="flex items-center space-x-2 pt-2">
+              <input
+                type="checkbox"
+                id="alwaysRequireProof"
+                className="h-4 w-4 rounded border-gray-300"
+                {...register("alwaysRequireProof")}
+              />
+              <Label htmlFor="alwaysRequireProof" className="font-normal cursor-pointer">
+                Always Require Proof
+              </Label>
+            </div>
+            <p className="text-xs text-muted-foreground mt-1">
+              Requires proof approval for this customer's work, including when product proofing is set to Manual / Requested Only.
             </p>
 
             {watch("isTaxExempt") && (

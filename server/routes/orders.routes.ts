@@ -93,6 +93,7 @@ import {
     buildProofApprovalManualOverrideAuditEvent,
     resolveLineItemProofApprovalRequirement,
     resolveProofApprovalLockEnabledFromOrgPreferences,
+    resolveProofingPolicyFromOrgPreferences,
 } from "@shared/proofApprovalLock";
 import {
     buildOrderCreationFingerprint,
@@ -441,6 +442,7 @@ async function resolveEffectiveLineItemRouting(args: {
         productRequiresProofApproval: Boolean(productRow?.requiresProofApproval),
         requestedRequiresProofApproval: args.requestedRequiresProofApproval,
         proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((org?.settings as any)?.preferences),
+        proofingPolicy: resolveProofingPolicyFromOrgPreferences((org?.settings as any)?.preferences),
     });
     const requiresProofApproval = fulfillmentOrService && typeof args.requestedRequiresProofApproval !== "boolean"
         ? false
@@ -2232,6 +2234,7 @@ export async function registerOrderRoutes(
 
             const orgTaxSettings = getOrganizationTaxSettings(org);
             const proofApprovalLockEnabled = resolveProofApprovalLockEnabledFromOrgPreferences((org.settings as any)?.preferences);
+            const proofingPolicy = resolveProofingPolicyFromOrgPreferences((org.settings as any)?.preferences);
 
             // Load customer for tax calculation (if applicable)
             let customer = null;
@@ -2311,6 +2314,8 @@ export async function registerOrderRoutes(
                     productRequiresProofApproval: Boolean(product?.requiresProofApproval),
                     requestedRequiresProofApproval: typeof item.requiresProofApproval === "boolean" ? item.requiresProofApproval : undefined,
                     proofApprovalLockEnabled,
+                    proofingPolicy,
+                    customerRequiresProofApproval: customer?.alwaysRequireProof === true,
                 });
                 if (proofApproval.manualOverride) {
                     proofApprovalManualOverrideIndexes.push(index);

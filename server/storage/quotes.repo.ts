@@ -25,6 +25,7 @@ import {
 import {
     resolveLineItemProofApprovalRequirement,
     resolveProofApprovalLockEnabledFromOrgPreferences,
+    resolveProofingPolicyFromOrgPreferences,
 } from "@shared/proofApprovalLock";
 import { and, eq, isNull, like, gte, lte, desc, asc, sql, inArray, or } from "drizzle-orm";
 import { DB_TO_WORKFLOW, getEffectiveWorkflowState, type QuoteWorkflowState as WorkflowState } from "@shared/quoteWorkflow";
@@ -735,6 +736,7 @@ export class QuotesRepository {
                 productRequiresProofApproval: proofApprovalMap.get(item.productId) ?? false,
                 requestedRequiresProofApproval: typeof (item as any).requiresProofApproval === "boolean" ? (item as any).requiresProofApproval : undefined,
                 proofApprovalLockEnabled,
+                proofingPolicy: resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
             });
             return {
             ...materializeLineItemDesignSnapshot({
@@ -839,6 +841,7 @@ export class QuotesRepository {
                         productRequiresProofApproval: existingProofApprovalMap.get(existingLineItem.productId) ?? false,
                         requestedRequiresProofApproval: typeof existingLineItem.requiresProofApproval === "boolean" ? existingLineItem.requiresProofApproval : undefined,
                         proofApprovalLockEnabled,
+                        proofingPolicy: resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
                     });
 
                     const [updatedExistingLineItem] = await this.dbInstance
@@ -1148,6 +1151,7 @@ export class QuotesRepository {
             productRequiresProofApproval: Boolean(proofProductRow?.requiresProofApproval),
             requestedRequiresProofApproval: typeof (lineItem as any).requiresProofApproval === "boolean" ? (lineItem as any).requiresProofApproval : undefined,
             proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+            proofingPolicy: resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
         });
         const lineItemRequiresProofApproval = proofApproval.requiresProofApproval;
 
@@ -1333,6 +1337,7 @@ export class QuotesRepository {
                     productRequiresProofApproval: Boolean(proofProductRow?.requiresProofApproval),
                     requestedRequiresProofApproval: typeof (lineItem as any).requiresProofApproval === "boolean" ? (lineItem as any).requiresProofApproval : undefined,
                     proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+                    proofingPolicy: resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
                 });
                 updateData.requiresProofApproval = proofApproval.requiresProofApproval;
             }

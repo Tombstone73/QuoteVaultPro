@@ -68,6 +68,7 @@ export interface OrgPreferences {
   proofing?: {
     defaultProofDisclaimerText?: string;
     proofApprovalLockEnabled?: boolean;
+    policy?: "automatic" | "manual_requested_only";
   };
 
   sidebar?: {

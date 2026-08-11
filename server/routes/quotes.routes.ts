@@ -54,6 +54,7 @@ import {
   buildProofApprovalManualOverrideAuditEvent,
   resolveLineItemProofApprovalRequirement,
   resolveProofApprovalLockEnabledFromOrgPreferences,
+  resolveProofingPolicyFromOrgPreferences,
 } from "@shared/proofApprovalLock";
 import { eq, desc, and, inArray, ne, sql } from "drizzle-orm";
 import { storage } from "../storage";
@@ -802,6 +803,7 @@ export function registerQuoteRoutes(
 
       const orgTaxSettings = getOrganizationTaxSettings(org);
       const proofApprovalLockEnabled = resolveProofApprovalLockEnabledFromOrgPreferences((org.settings as any)?.preferences);
+      const proofingPolicy = resolveProofingPolicyFromOrgPreferences((org.settings as any)?.preferences);
       const requestedPortalVisibility =
         typeof quotePayload.visibleInCustomerPortal === "boolean"
           ? quotePayload.visibleInCustomerPortal
@@ -886,6 +888,8 @@ export function registerQuoteRoutes(
           productRequiresProofApproval: Boolean(product?.requiresProofApproval),
           requestedRequiresProofApproval: typeof item.requiresProofApproval === "boolean" ? item.requiresProofApproval : undefined,
           proofApprovalLockEnabled,
+          proofingPolicy,
+          customerRequiresProofApproval: customer?.alwaysRequireProof === true,
         });
         if (normalized.jsonChanges.length > 0) {
           quoteCreateJsonChanges.push({ lineItemIndex: index, changes: normalized.jsonChanges });
@@ -2207,12 +2211,14 @@ export function registerQuoteRoutes(
       const requestedRequiresDesign = typeof lineItem.requiresDesign === "boolean" ? lineItem.requiresDesign : undefined;
       const requestedRequiresPrepress = typeof lineItem.requiresPrepress === "boolean" ? lineItem.requiresPrepress : undefined;
       const requestedRequiresProofApproval = typeof lineItem.requiresProofApproval === "boolean" ? lineItem.requiresProofApproval : undefined;
+      const proofingPolicy = resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences);
       const proofApproval = resolveLineItemProofApprovalRequirement({
         productRequiresProofApproval: Boolean(productForProofPolicy?.requiresProofApproval),
         requestedRequiresProofApproval,
         proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+        proofingPolicy,
       });
-      const requiresProofApproval = typeof workflowDefaults.requiresProofApproval === "boolean" && requestedRequiresProofApproval === undefined
+      const requiresProofApproval = proofingPolicy === "automatic" && typeof workflowDefaults.requiresProofApproval === "boolean" && requestedRequiresProofApproval === undefined
         ? workflowDefaults.requiresProofApproval
         : proofApproval.requiresProofApproval;
 
@@ -2852,6 +2858,7 @@ export function registerQuoteRoutes(
           productRequiresProofApproval: Boolean(productForProofPolicy?.requiresProofApproval),
           requestedRequiresProofApproval: typeof lineItem.requiresProofApproval === "boolean" ? lineItem.requiresProofApproval : undefined,
           proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
+          proofingPolicy: resolveProofingPolicyFromOrgPreferences((orgForProofPolicy?.settings as any)?.preferences),
         });
         updateData.requiresProofApproval = proofApproval.requiresProofApproval;
         proofApprovalManualOverride =

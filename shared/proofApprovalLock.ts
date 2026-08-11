@@ -1,9 +1,12 @@
 export type ProofApprovalPreferences = {
   proofing?: {
     proofApprovalLockEnabled?: boolean;
+    policy?: ProofingPolicy;
   };
   proofApprovalLockEnabled?: boolean;
 };
+
+export type ProofingPolicy = "automatic" | "manual_requested_only";
 
 export type ProofApprovalRequirementResult = {
   requiresProofApproval: boolean;
@@ -39,14 +42,46 @@ export function resolveProofApprovalLockEnabledFromOrgPreferences(preferences: u
   return record.proofing?.proofApprovalLockEnabled === true || record.proofApprovalLockEnabled === true;
 }
 
+/** Defaults to automatic so existing tenants retain their current product-driven behavior. */
+export function resolveProofingPolicyFromOrgPreferences(preferences: unknown): ProofingPolicy {
+  const record = preferences && typeof preferences === "object" && !Array.isArray(preferences)
+    ? preferences as ProofApprovalPreferences
+    : {};
+  return record.proofing?.policy === "manual_requested_only" ? "manual_requested_only" : "automatic";
+}
+
 export function resolveLineItemProofApprovalRequirement(input: {
   productRequiresProofApproval: boolean;
   requestedRequiresProofApproval?: unknown;
   proofApprovalLockEnabled?: boolean;
+  proofingPolicy?: ProofingPolicy;
+  customerRequiresProofApproval?: boolean;
 }): ProofApprovalRequirementResult {
   const productRequiresProofApproval = input.productRequiresProofApproval === true;
   const proofApprovalLockEnabled = input.proofApprovalLockEnabled === true;
   const hasRequestedValue = typeof input.requestedRequiresProofApproval === "boolean";
+
+  // A true value beyond a product that does not require proofs is an explicit
+  // staff request. Product-default true values are commonly sent by older
+  // clients, so they remain product-derived unless the customer requires proof.
+  const explicitManualRequirement = input.requestedRequiresProofApproval === true && !productRequiresProofApproval;
+  if (explicitManualRequirement || input.customerRequiresProofApproval === true) {
+    return {
+      requiresProofApproval: true,
+      productRequiresProofApproval,
+      proofApprovalLockEnabled,
+      manualOverride: false,
+    };
+  }
+
+  if (input.proofingPolicy === "manual_requested_only") {
+    return {
+      requiresProofApproval: false,
+      productRequiresProofApproval,
+      proofApprovalLockEnabled,
+      manualOverride: false,
+    };
+  }
 
   if (!hasRequestedValue) {
     return {

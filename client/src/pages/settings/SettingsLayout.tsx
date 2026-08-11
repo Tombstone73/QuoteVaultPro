@@ -1104,6 +1104,7 @@ export function ProductionSettings() {
 
   const prepressDefaultEnabled = (preferences as any)?.prepressDefaultEnabled ?? true;
   const proofApprovalLockEnabled = preferences.proofing?.proofApprovalLockEnabled ?? false;
+  const proofingPolicy = preferences.proofing?.policy ?? "automatic";
   const orderSaveRoutingMode = preferences.orders?.saveRoutingMode ?? "save_only";
 
   const handlePrepressDefaultToggle = async (enabled: boolean) => {
@@ -1120,6 +1121,13 @@ export function ProductionSettings() {
         ...(preferences.proofing ?? {}),
         proofApprovalLockEnabled: enabled,
       },
+    });
+  };
+
+  const handleProofingPolicyChange = async (policy: "automatic" | "manual_requested_only") => {
+    await updatePreferences({
+      ...preferences,
+      proofing: { ...(preferences.proofing ?? {}), policy },
     });
   };
 
@@ -1277,6 +1285,28 @@ export function ProductionSettings() {
               </SelectContent>
             </Select>
             <p className="text-titan-xs text-titan-text-muted">Eligible lines route to Design, Proofing, or Prepress. Direct production handoff is not automatic.</p>
+          </div>
+        </ProductionSettingsSection>
+
+        <ProductionSettingsSection
+          title="Proofing Policy"
+          summary={proofingPolicy === "automatic" ? "Product proof requirements are active" : "Only customer and staff-requested proofs are required"}
+          help="Changing this does not edit products or disable proofing. Customer-specific and manually requested proofs remain available."
+        >
+          <div className="space-y-2 rounded-titan-lg border border-titan-border-subtle p-4">
+            <Label htmlFor="proofing-policy">Proofing Policy</Label>
+            <Select value={proofingPolicy} onValueChange={(value) => void handleProofingPolicyChange(value as "automatic" | "manual_requested_only")} disabled={isOrgPreferencesLoading || isOrgPreferencesUpdating}>
+              <SelectTrigger id="proofing-policy"><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="automatic">Automatic Proofing</SelectItem>
+                <SelectItem value="manual_requested_only">Manual / Requested Only</SelectItem>
+              </SelectContent>
+            </Select>
+            <p className="text-titan-xs text-titan-text-muted">
+              {proofingPolicy === "automatic"
+                ? "Product proof requirements are honored for new and routed work."
+                : "Product proof requirements are temporarily suspended. Customer-specific and manually requested proofs still apply; product settings remain saved."}
+            </p>
           </div>
         </ProductionSettingsSection>
 

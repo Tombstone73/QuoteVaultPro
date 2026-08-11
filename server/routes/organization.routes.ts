@@ -43,7 +43,7 @@ import {
 import { resolveQuickBooksPreferencesFromOrgPreferences } from "@shared/quickBooksPreferences";
 import { resolveMaterialsOverrideModeFromOrgPreferences } from "@shared/materialsOverrideMode";
 import { resolveBillingInvoiceTriggerPolicyFromOrgPreferences } from "@shared/billingInvoicePolicy";
-import { resolveProofApprovalLockEnabledFromOrgPreferences } from "@shared/proofApprovalLock";
+import { resolveProofApprovalLockEnabledFromOrgPreferences, resolveProofingPolicyFromOrgPreferences } from "@shared/proofApprovalLock";
 import {
   inboundEmailIntakeSettingsPatchSchema,
   resolveInboundEmailIntakeSettingsFromPreferences,
@@ -196,6 +196,7 @@ export function registerOrganizationRoutes(
       const proofing = {
         ...rawProofing,
         proofApprovalLockEnabled: resolveProofApprovalLockEnabledFromOrgPreferences(preferences),
+        policy: resolveProofingPolicyFromOrgPreferences(preferences),
       };
 
       const rawBasic = (preferences as any)?.basic && typeof (preferences as any).basic === "object"
