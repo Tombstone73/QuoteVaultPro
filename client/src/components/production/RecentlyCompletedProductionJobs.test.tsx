@@ -11,6 +11,10 @@ jest.mock("@/hooks/useProduction", () => ({
   useRecoverLegacyProductionCompletion: jest.fn(),
   useReopenCompletedProductionRun: jest.fn(),
 }));
+jest.mock("@/components/artwork/AuthenticatedArtworkThumbnail", () => ({
+  AuthenticatedArtworkThumbnail: ({ fallback }: { fallback: React.ReactNode }) => <>{fallback}</>,
+}));
+jest.mock("@/lib/artworkAccess", () => ({ openArtworkPreview: jest.fn() }));
 
 const { MemoryRouter } = require("react-router-dom") as typeof import("react-router-dom");
 const { RecentlyCompletedProductionJobs } = require("./RecentlyCompletedProductionJobs") as typeof import("./RecentlyCompletedProductionJobs");

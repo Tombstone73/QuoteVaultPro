@@ -22,6 +22,8 @@ import {
   type ProductionRunListItem,
 } from "@/hooks/useProduction";
 import { downloadAuthenticatedFile } from "@/lib/authenticatedFileDownload";
+import { openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 
 function formatFileSize(sizeBytes: number | null | undefined) {
   const size = Number(sizeBytes) || 0;
@@ -54,12 +56,7 @@ function productionQuantityLabel(file: ProductionRunFileSummary) {
 }
 
 function ProductionRunFileThumbnail({ file }: { file: ProductionRunFileSummary }) {
-  const [failed, setFailed] = useState(false);
-  const source = failed ? null : file.thumbnailUrl;
-  if (!source) {
-    return <div className="flex h-full w-full items-center justify-center text-titan-text-muted" aria-label={`${file.fileName} preview unavailable`}><FileText className="h-5 w-5" /></div>;
-  }
-  return <img src={source} alt="" className="h-full w-full object-cover" onError={() => setFailed(true)} />;
+  return <AuthenticatedArtworkThumbnail fileRecordId={file.fileRecordId} alt="" className="h-full w-full object-cover" fallback={<div className="flex h-full w-full items-center justify-center text-titan-text-muted" aria-label={`${file.fileName} preview unavailable`}><FileText className="h-5 w-5" /></div>} />;
 }
 
 type ProductionRunFilesPanelProps = {
@@ -174,7 +171,7 @@ export function ProductionRunFilesPanel({ run, focusUpload = false, onUploadFocu
                   ) : null}
                 </div>
                 <div className="flex flex-wrap gap-1">
-                  <Button size="sm" variant="outline" aria-label={`Open ${file.fileName}`} title="Open file" onClick={() => window.open(file.openUrl, "_blank", "noopener,noreferrer")}>
+                  <Button size="sm" variant="outline" aria-label={`Open ${file.fileName}`} title="Open file" onClick={() => void openAuthenticatedFile(file.openUrl)}>
                     <ExternalLink className="mr-1 h-3.5 w-3.5" />
                     Open
                   </Button>

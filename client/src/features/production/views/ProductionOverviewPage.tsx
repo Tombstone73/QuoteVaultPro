@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo, useRef } from "react";
+import { useEffect, useState, useMemo } from "react";
 import { useNavigate, Link } from "react-router-dom";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -49,7 +49,8 @@ import {
 } from "@/hooks/useProduction";
 import { format, isPast, parseISO } from "date-fns";
 import { cn } from "@/lib/utils";
-import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
+import { downloadArtwork, openArtworkPreview } from "@/lib/artworkAccess";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { buildProofingLineItemPath, isProofApprovalRoutingBlocked } from "@/lib/proofingNavigation";
 import { ROUTES } from "@/config/routes";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
@@ -199,24 +200,6 @@ type OperationalAreaCard = {
 };
 
 /**
- * Get the best available image source for artwork
- * Priority: thumbnailUrl > fileUrl (if image) > null
- */
-function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
-  if (!artwork) return null;
-
-  const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
-  
-  // 1. Prefer thumbnailUrl (always an image if present).
-  if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
-    return normalizeArtworkImageUrl(artwork.thumbnailUrl);
-  }
-  
-  
-  return null;
-}
-
-/**
  * Normalize artwork for DS jobs: 2+ assets = front+back, 1 asset = front only (back null)
  */
 function normalizeArtworkForSides(
@@ -281,13 +264,6 @@ function formatFileSize(bytes: number): string {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function buildDownloadUrl(fileUrl: string, fileName: string): string {
-  const url = new URL(fileUrl, window.location.origin);
-  url.searchParams.set("download", "true");
-  url.searchParams.set("filename", fileName);
-  return url.toString();
 }
 
 export default function ProductionOverviewPage() {
@@ -806,25 +782,6 @@ export default function ProductionOverviewPage() {
 
     return grouped;
   };
-
-
-  // DEV-only: log sample preview URLs once
-  const devLoggedSample = useRef(false);
-  useEffect(() => {
-    if (process.env.NODE_ENV !== "development") return;
-    if (devLoggedSample.current) return;
-    if (!jobs || jobs.length === 0) return;
-    const j = jobs[0];
-    devLoggedSample.current = true;
-    // eslint-disable-next-line no-console
-    console.log("[ProductionOverview] sample job previews", {
-      id: j.id,
-      frontPreviewUrl: j.frontPreviewUrl,
-      backPreviewUrl: j.backPreviewUrl,
-      frontFileUrl: j.frontFileUrl,
-      backFileUrl: j.backFileUrl,
-    });
-  }, [jobs]);
 
   // Sort jobs for list view
   const sortedJobs = useMemo(() => {
@@ -1528,7 +1485,6 @@ export default function ProductionOverviewPage() {
             const thumbs = artworkThumbs(selectedJob);
             const { front, back, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesValue, thumbs);
             const currentArtwork = previewSide === "front" ? front : back;
-            const imageSrc = getBestArtworkImage(currentArtwork);
 
             return (
               <div className="flex-1 flex flex-col min-h-0 gap-4">
@@ -1575,10 +1531,12 @@ export default function ProductionOverviewPage() {
                     </Button>
                   </div>
                 ) : (
-                  <ZoomPanImageViewer
-                    src={imageSrc}
+                  <AuthenticatedArtworkThumbnail
+                    fileRecordId={currentArtwork?.fileRecordId}
+                    variant="preview"
                     alt={`${previewSide === "front" ? "Front" : "Back"} artwork`}
-                    className="flex-1 min-h-0 rounded-lg border-2 border-border"
+                    className="flex-1 min-h-0 w-full object-contain rounded-lg border-2 border-border"
+                    fallback={<ArtworkPreviewFallback />}
                   />
                 )}
 
@@ -1598,15 +1556,12 @@ export default function ProductionOverviewPage() {
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      {currentArtwork.fileUrl && (
+                      {currentArtwork.fileRecordId && (
                         <>
                           <Button
                             size="sm"
                             variant="default"
-                            onClick={() => {
-                              const downloadUrl = buildDownloadUrl(currentArtwork.fileUrl, currentArtwork.fileName);
-                              window.location.href = downloadUrl;
-                            }}
+                            onClick={() => void downloadArtwork(currentArtwork.fileRecordId!, currentArtwork.fileName).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to download artwork." }))}
                             className="gap-1.5"
                           >
                             <Download className="w-3.5 h-3.5" />
@@ -1615,7 +1570,7 @@ export default function ProductionOverviewPage() {
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => window.open(currentArtwork.fileUrl, "_blank")}
+                            onClick={() => void openArtworkPreview(currentArtwork.fileRecordId!, currentArtwork.mimeType).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to open artwork." }))}
                             className="gap-1.5"
                           >
                             Open
@@ -2414,50 +2369,23 @@ function JobRow({
   );
 }
 
-function PreviewThumb({ src, alt }: { src?: string; alt: string }) {
-  const [failed, setFailed] = useState(false);
-  const resolvedSrc = resolveObjectsPublicUrl(src ?? null) ?? src;
+function ArtworkPreviewFallback() {
+  return <div className="flex-1 min-h-0 rounded-lg border-2 border-dashed border-border flex items-center justify-center bg-muted/30"><FileText className="h-16 w-16 text-muted-foreground" /></div>;
+}
 
-  if (!resolvedSrc || failed) {
-    return (
-      <div className="w-12 h-12 rounded border border-dashed border-muted-foreground/30 bg-muted/20 flex items-center justify-center">
-        <div className="text-center leading-none">
-          <FileText className="mx-auto w-4 h-4 text-muted-foreground/50" />
-          {import.meta.env.DEV && failed && resolvedSrc ? (
-            <div className="mt-1 text-[9px] text-amber-500">thumb failed</div>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <div className="w-12 h-12 rounded border border-border overflow-hidden bg-muted">
-      <img
-        src={resolvedSrc}
-        alt={alt}
-        className="w-full h-full object-cover"
-        onError={(e) => {
-          if (import.meta.env.DEV) {
-            console.info(`[thumb] failed url=${e.currentTarget.src}`);
-          }
-          setFailed(true);
-        }}
-      />
-    </div>
-  );
+function PreviewThumb({ artwork, alt }: { artwork: ProductionOrderArtworkSummary | null; alt: string }) {
+  return <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} alt={alt} className="w-12 h-12 object-cover" fallback={<div className="w-12 h-12 rounded border border-dashed border-muted-foreground/30 bg-muted/20 flex items-center justify-center"><FileText className="w-4 h-4 text-muted-foreground/50" /></div>} />;
 }
 
 // Thumbnail group component (shared between card and row)
 function ThumbnailGroup({ job, sides }: { job: ProductionJobListItem; sides: string }) {
   const isDoubleSided = sides.toLowerCase().includes("double");
-  const front = job.frontPreviewUrl;
-  const back = job.backPreviewUrl;
+  const { front, back } = artworkThumbs(job);
 
   return (
     <div className="flex items-center gap-2">
-      <PreviewThumb src={front} alt={`Job ${job.id} front preview`} />
-      {isDoubleSided && <PreviewThumb src={back} alt={`Job ${job.id} back preview`} />}
+      <PreviewThumb artwork={front} alt={`Job ${job.id} front preview`} />
+      {isDoubleSided && <PreviewThumb artwork={back} alt={`Job ${job.id} back preview`} />}
     </div>
   );
 }

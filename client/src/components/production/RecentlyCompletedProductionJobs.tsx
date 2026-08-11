@@ -18,6 +18,9 @@ import {
 } from "@/components/ui/alert-dialog";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { Textarea } from "@/components/ui/textarea";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
+import { openArtworkPreview } from "@/lib/artworkAccess";
+import { useToast } from "@/hooks/use-toast";
 import { ROUTES } from "@/config/routes";
 import {
   RecentlyCompletedProductionJob,
@@ -57,25 +60,9 @@ function CompletedArtworkThumbnail({
   file: RecentlyCompletedProductionJob["artwork"][number];
   onOpen: () => void;
 }) {
-  const [failed, setFailed] = useState(false);
-  const source = file.thumbnailUrl || file.previewUrl;
-  if (!source || failed) {
-    return (
-      <button
-        type="button"
-        onClick={onOpen}
-        className="flex h-14 w-14 shrink-0 flex-col items-center justify-center rounded border border-dashed border-titan-border-subtle bg-titan-bg-muted p-1 text-[9px] text-titan-text-muted"
-        aria-label={`View artwork details for ${file.fileName}`}
-        title={file.previewReason || "Preview unavailable"}
-      >
-        <FileImage className="h-4 w-4" />
-        <span className="mt-0.5 line-clamp-2">No preview</span>
-      </button>
-    );
-  }
   return (
     <button type="button" onClick={onOpen} className="h-14 w-14 shrink-0 overflow-hidden rounded border border-titan-border-subtle bg-white" aria-label={`Preview ${file.fileName}`}>
-      <img src={source} alt={`Artwork thumbnail for ${file.fileName}`} className="h-full w-full object-contain" onError={() => setFailed(true)} />
+      <AuthenticatedArtworkThumbnail fileRecordId={file.fileRecordId} alt={`Artwork thumbnail for ${file.fileName}`} className="h-full w-full object-contain" fallback={<span className="flex h-full w-full flex-col items-center justify-center p-1 text-[9px] text-titan-text-muted" title={file.previewReason || "Preview unavailable"}><FileImage className="h-4 w-4" /><span className="mt-0.5 line-clamp-2">No preview</span></span>} />
     </button>
   );
 }
@@ -83,8 +70,8 @@ function CompletedArtworkThumbnail({
 function CompletedArtworkDetails({ job }: { job: RecentlyCompletedProductionJob }) {
   const [expanded, setExpanded] = useState(false);
   const [preview, setPreview] = useState<RecentlyCompletedProductionJob["artwork"][number] | null>(null);
+  const { toast } = useToast();
   const inlineArtwork = job.artwork.slice(0, 4);
-  const previewIsPdf = preview?.mimeType?.toLowerCase().includes("pdf");
 
   return (
     <>
@@ -122,9 +109,7 @@ function CompletedArtworkDetails({ job }: { job: RecentlyCompletedProductionJob 
       <Dialog open={!!preview} onOpenChange={(open) => !open && setPreview(null)}>
         <DialogContent className="max-w-3xl">
           <DialogHeader><DialogTitle>{preview?.fileName || "Artwork preview"}</DialogTitle></DialogHeader>
-          {preview?.previewUrl || preview?.thumbnailUrl ? (
-            previewIsPdf ? <iframe title={preview.fileName} src={preview.previewUrl || preview.thumbnailUrl || undefined} className="h-[65vh] w-full rounded border bg-white" /> : <img src={preview.previewUrl || preview.thumbnailUrl || undefined} alt={`Artwork preview for ${preview.fileName}`} className="max-h-[65vh] w-full object-contain" />
-          ) : <div className="rounded border border-dashed p-6 text-sm text-titan-text-muted">{preview?.previewReason || "Production artwork preview is unavailable."}</div>}
+          {preview?.fileRecordId ? <div className="space-y-3"><AuthenticatedArtworkThumbnail fileRecordId={preview.fileRecordId} variant="preview" alt={`Artwork preview for ${preview.fileName}`} className="h-[65vh] w-full object-contain rounded border bg-white" fallback={<div className="rounded border border-dashed p-6 text-sm text-titan-text-muted">{preview.previewReason || "Production artwork preview is unavailable."}</div>} /><Button type="button" variant="outline" onClick={() => void openArtworkPreview(preview.fileRecordId!, preview.mimeType).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to open artwork." }))}>Open full file</Button></div> : <div className="rounded border border-dashed p-6 text-sm text-titan-text-muted">{preview?.previewReason || "Production artwork preview is unavailable."}</div>}
         </DialogContent>
       </Dialog>
     </>

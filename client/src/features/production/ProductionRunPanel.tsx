@@ -26,6 +26,7 @@ import {
   type ProductionRunListItem,
 } from "@/hooks/useProduction";
 import { ProductionRunFilesPanel } from "./ProductionRunFilesPanel";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { PrinterMachineAssignment } from "@/components/production/PrinterMachineAssignment";
 import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
 import { ProductionNotesSection } from "@/components/production/ProductionNotesSection";
@@ -346,8 +347,8 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
               </div>
             </div>
             <div className="flex min-h-[280px] items-center justify-center overflow-hidden rounded-md border border-titan-border-subtle bg-titan-bg-card">
-              {currentSheetFile?.previewUrl || currentSheetFile?.thumbnailUrl ? (
-                <img src={currentSheetFile.previewUrl ?? currentSheetFile.thumbnailUrl ?? ""} alt={currentSheetFile.fileName} className="max-h-[420px] w-full object-contain" />
+              {currentSheetFile?.fileRecordId ? (
+                <AuthenticatedArtworkThumbnail fileRecordId={currentSheetFile.fileRecordId} variant="preview" alt={currentSheetFile.fileName} className="max-h-[420px] w-full object-contain" fallback={<div className="p-6 text-center text-sm text-titan-text-muted">Preview unavailable. Open the run production file below for inspection.</div>} />
               ) : (
                 <div className="p-6 text-center text-sm text-titan-text-muted">
                   {currentSheetFile ? "Preview unavailable. Open the run production file below for inspection." : "Upload or select run-owned nested artwork before release, or use the RIP-managed workflow."}

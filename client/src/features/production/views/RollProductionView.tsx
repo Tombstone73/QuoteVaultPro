@@ -59,8 +59,9 @@ import {
   Download,
   Upload,
 } from "lucide-react";
-import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
+import { downloadArtwork, openArtworkPreview } from "@/lib/artworkAccess";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
 import { useToast } from "@/hooks/use-toast";
 import ZoomPanImageViewer from "@/components/production/ZoomPanImageViewer";
 import { ProductionFilePreviewPanel } from "@/components/production/ProductionFilePreviewPanel";
@@ -72,7 +73,7 @@ import { ProductionNotesSection } from "@/components/production/ProductionNotesS
 import { RecentlyCompletedProductionJobs } from "@/components/production/RecentlyCompletedProductionJobs";
 import { ProductionBulkActions } from "@/features/production/ProductionBulkActions";
 import { isProductionRunItem, ProductionRunPanel, productionRunToBoardItem } from "@/features/production/ProductionRunPanel";
-import { formatFileSize, getFileTypeLabel, buildDownloadUrl } from "@/lib/fileUtils";
+import { formatFileSize, getFileTypeLabel } from "@/lib/fileUtils";
 import { sanitizeDisplayText } from "@/lib/sanitizeDisplayText";
 import { filterProductionJobsForTab, type ProductionBoardTab } from "@/lib/productionBoard";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
@@ -83,71 +84,8 @@ type ProductionStatus = ProductionBoardTab;
 
 type DueUrgency = "overdue" | "today" | "soon" | "normal";
 
-/**
- * DEV-only: Test if a URL is accessible
- */
-async function testUrlAccessibility(url: string, label: string): Promise<void> {
-  if (process.env.NODE_ENV !== 'development') return;
-  
-  try {
-    const response = await fetch(url, { method: 'HEAD', credentials: 'include' });
-    console.log(`[DEV:URL] ${label}: ${response.status} ${response.statusText} - ${url}`);
-  } catch (error) {
-    console.error(`[DEV:URL] ${label}: FETCH_ERROR - ${url}`, error);
-  }
-}
-
-/**
- * DEV-only: Log artwork details comprehensively
- */
-function logArtworkDetails(artwork: ProductionOrderArtworkSummary | null, context: string): void {
-  if (process.env.NODE_ENV !== 'development') return;
-  
-  console.group(`[DEV:Artwork] ${context}`);
-  if (!artwork) {
-    console.log('No artwork provided');
-  } else {
-    console.log('ID:', artwork.id);
-    console.log('fileName:', artwork.fileName);
-    console.log('side:', artwork.side);
-    console.log('fileUrl:', artwork.fileUrl || '(empty)');
-    console.log('thumbnailUrl:', artwork.thumbnailUrl || '(empty)');
-    console.log('thumbKey:', artwork.thumbKey || '(empty)');
-    console.log('previewKey:', artwork.previewKey || '(empty)');
-    console.log('thumbStatus:', artwork.thumbStatus || '(empty)');
-    
-    // Test URLs if present
-    if (artwork.fileUrl) testUrlAccessibility(artwork.fileUrl, 'fileUrl');
-    if (artwork.thumbnailUrl) testUrlAccessibility(artwork.thumbnailUrl, 'thumbnailUrl');
-  }
-  console.groupEnd();
-}
-
-/**
- * Get the best available image source for artwork
- * Priority: thumbnailUrl > fileUrl (if image) > null
- * 
- * Note: thumbnailUrl is always an image. fileUrl might be a PDF or other non-image.
- * We check fileName extension to determine if fileUrl can be used as an image.
- */
-function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
-  if (!artwork) return null;
-
-  const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
-  
-  // 1. Prefer thumbnailUrl (always an image if present).
-  if (artwork.thumbnailUrl && artwork.thumbnailUrl.trim()) {
-    if (process.env.NODE_ENV === 'development') {
-      console.log(`[DEV:getBestArtworkImage] Using thumbnailUrl: ${artwork.thumbnailUrl}`);
-    }
-    return normalizeArtworkImageUrl(artwork.thumbnailUrl);
-  }
-  
-  
-  if (process.env.NODE_ENV === 'development') {
-    console.log(`[DEV:getBestArtworkImage] No derivative preview available - fileName: ${artwork.fileName}, has thumbnailUrl: ${!!artwork.thumbnailUrl}`);
-  }
-  return null;
+function ArtworkFallback({ artwork, className, assignedLabel = "No Preview" }: { artwork: ProductionOrderArtworkSummary | null; className?: string; assignedLabel?: string }) {
+  return <div className={`flex items-center justify-center bg-titan-bg-muted ${className || ""}`}><div className="text-center p-2"><FileText className="mx-auto h-8 w-8 text-titan-text-muted" /><div className="mt-1 text-[10px] text-titan-text-muted">{artwork ? assignedLabel : "No Preview"}</div></div></div>;
 }
 
 /**
@@ -165,47 +103,7 @@ function ArtworkImage({
   className?: string;
   onClick?: () => void;
 }) {
-  const [src, setSrc] = useState<string | null>(() => getBestArtworkImage(artwork));
-  const [hasError, setHasError] = useState(false);
-
-  useEffect(() => {
-    // DEV: Log artwork details on mount/change
-    if (process.env.NODE_ENV === 'development') {
-      logArtworkDetails(artwork, 'ArtworkImage');
-    }
-    setSrc(getBestArtworkImage(artwork));
-    setHasError(false);
-  }, [artwork]);
-
-  const handleError = () => {
-    setHasError(true);
-    setSrc(null);
-  };
-
-  if (!src || hasError) {
-    return (
-      <div className={`flex items-center justify-center bg-titan-bg-muted ${className || ""}`}>
-        <div className="text-center p-2">
-          <FileText className="mx-auto h-8 w-8 text-titan-text-muted" />
-          <div className="mt-1 text-[10px] text-titan-text-muted">No Preview</div>
-          {import.meta.env.DEV && hasError && src ? (
-            <div className="mt-1 text-[9px] text-amber-400">thumb failed</div>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt={alt}
-      className={className}
-      onError={handleError}
-      onClick={onClick}
-      style={onClick ? { cursor: "pointer" } : undefined}
-    />
-  );
+  return <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} alt={alt} className={className} onClick={onClick} fallback={<ArtworkFallback artwork={artwork} className={className} assignedLabel="File assigned" />} />;
 }
 
 /**
@@ -223,47 +121,7 @@ function ProductionThumbnail({
   className?: string;
   onClick?: () => void;
 }) {
-  // DEV: Log artwork details on mount
-  useEffect(() => {
-    if (process.env.NODE_ENV === 'development' && artwork) {
-      logArtworkDetails(artwork, `ProductionThumbnail (${alt})`);
-    }
-  }, [artwork, alt]);
-
-  const src = getBestArtworkImage(artwork);
-  const [failed, setFailed] = useState(false);
-
-  // Reset failed state when artwork changes
-  useEffect(() => {
-    setFailed(false);
-  }, [artwork]);
-
-  if (!src || failed) {
-    return (
-      <div className={`flex items-center justify-center bg-titan-bg-muted ${className || ""}`}>
-        <div className="text-center p-2">
-          <FileText className="mx-auto h-8 w-8 text-titan-text-muted" />
-          <div className="mt-1 text-[10px] text-titan-text-muted">No Preview</div>
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt={alt}
-      className={className}
-      onClick={onClick}
-      onError={() => {
-        if (import.meta.env.DEV) {
-          console.info(`[thumb] failed url=${src}`);
-        }
-        setFailed(true);
-      }}
-      style={onClick ? { cursor: "pointer" } : undefined}
-    />
-  );
+  return <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} alt={alt} className={className} onClick={onClick} fallback={<ArtworkFallback artwork={artwork} className={className} />} />;
 }
 
 function formatSeconds(totalSeconds: number) {
@@ -2052,7 +1910,6 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
             const thumbs = artworkThumbs(selectedJob);
             const { front, back, showBackSlot, backMissingReason } = normalizeArtworkForSides(sidesInfo.isDouble, thumbs);
             const currentArtwork = previewSide === "front" ? front : back;
-            const imageSrc = getBestArtworkImage(currentArtwork);
 
             return (
               <div className="flex-1 flex flex-col min-h-0 gap-4">
@@ -2099,10 +1956,12 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                     </Button>
                   </div>
                 ) : (
-                  <ZoomPanImageViewer
-                    src={imageSrc}
+                  <AuthenticatedArtworkThumbnail
+                    fileRecordId={currentArtwork?.fileRecordId}
+                    variant="preview"
                     alt={`${previewSide === "front" ? "Front" : "Back"} artwork`}
-                    className="flex-1 min-h-0 rounded-lg border-2 border-titan-border-subtle"
+                    className="flex-1 min-h-0 w-full object-contain rounded-lg border-2 border-titan-border-subtle"
+                    fallback={<ArtworkFallback artwork={currentArtwork} className="flex-1 min-h-0 rounded-lg border-2 border-dashed border-titan-border-subtle" assignedLabel="File assigned" />}
                   />
                 )}
 
@@ -2122,15 +1981,12 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                       </div>
                     </div>
                     <div className="flex items-center gap-2 shrink-0">
-                      {currentArtwork.fileUrl && (
+                      {currentArtwork.fileRecordId && (
                         <>
                           <Button
                             size="sm"
                             variant="default"
-                            onClick={() => {
-                              const downloadUrl = buildDownloadUrl(currentArtwork.fileUrl, currentArtwork.fileName);
-                              window.location.href = downloadUrl;
-                            }}
+                            onClick={() => void downloadArtwork(currentArtwork.fileRecordId!, currentArtwork.fileName).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to download artwork." }))}
                             className="gap-1.5"
                           >
                             <Download className="w-3.5 h-3.5" />
@@ -2139,7 +1995,7 @@ export default function RollProductionView(props: { viewKey: string; status: Pro
                           <Button
                             size="sm"
                             variant="outline"
-                            onClick={() => window.open(currentArtwork.fileUrl, "_blank")}
+                            onClick={() => void openArtworkPreview(currentArtwork.fileRecordId!, currentArtwork.mimeType).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to open artwork." }))}
                             className="gap-1.5"
                           >
                             Open

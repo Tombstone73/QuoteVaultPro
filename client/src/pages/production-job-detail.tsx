@@ -15,7 +15,7 @@ import {
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from "@/components/ui/dialog";
 import { ROUTES } from "@/config/routes";
-import { describeProductionPrintPasses, resolveProductionArtworkSides, resolveProductionPreviewUrl } from "@shared/productionHydration";
+import { describeProductionPrintPasses, resolveProductionArtworkSides } from "@shared/productionHydration";
 import {
   useAddProductionNote,
   useCompleteProductionJob,
@@ -31,7 +31,9 @@ import { deriveLaminationDisplay } from "@/lib/productionHelpers";
 import { PrintTicketActions } from "@/components/production/PrintTicketActions";
 import { PrinterMachineAssignment, hasProductionPrinterAssignment } from "@/components/production/PrinterMachineAssignment";
 import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
-import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
+import { openArtworkPreview } from "@/lib/artworkAccess";
+import { AuthenticatedArtworkThumbnail } from "@/components/artwork/AuthenticatedArtworkThumbnail";
+import { useToast } from "@/hooks/use-toast";
 import { buildReferrer } from "@/lib/nav/smartBack";
 import {
   Play,
@@ -88,22 +90,6 @@ function formatPrinterAssignmentPayload(payload: any): string | null {
   return toName;
 }
 
-/**
- * Get the best available image source for artwork
- * Priority: thumbnailUrl > fileUrl (if image) > null
- */
-function getBestArtworkImage(artwork: ProductionOrderArtworkSummary | null): string | null {
-  if (!artwork) return null;
-
-  const normalizeArtworkImageUrl = (value: string): string | null => resolveObjectsPublicUrl(value);
-
-  const previewUrl = resolveProductionPreviewUrl(artwork);
-  return previewUrl ? normalizeArtworkImageUrl(previewUrl) : null;
-}
-
-/**
- * Production thumbnail component with fallback handling
- */
 function ProductionThumbnail({
   artwork,
   alt,
@@ -115,43 +101,7 @@ function ProductionThumbnail({
   className?: string;
   onClick?: () => void;
 }) {
-  const src = getBestArtworkImage(artwork);
-  const [failed, setFailed] = useState(false);
-
-  useEffect(() => {
-    setFailed(false);
-  }, [artwork]);
-
-  if (!src || failed) {
-    return (
-      <div className={`flex items-center justify-center bg-muted ${className || ""}`}>
-        <div className="text-center p-2">
-          <FileText className="mx-auto h-8 w-8 text-muted-foreground" />
-          <div className="mt-1 text-[10px] text-muted-foreground">{artwork ? "File assigned" : "No Preview"}</div>
-          {artwork && <div className="text-[10px] text-muted-foreground">Preview unavailable</div>}
-          {import.meta.env.DEV && failed && src ? (
-            <div className="mt-1 text-[9px] text-amber-500">thumb failed</div>
-          ) : null}
-        </div>
-      </div>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt={alt}
-      className={className}
-      onClick={onClick}
-      onError={(e) => {
-        if (import.meta.env.DEV) {
-          console.info(`[thumb] failed url=${e.currentTarget.src}`);
-        }
-        setFailed(true);
-      }}
-      style={onClick ? { cursor: "pointer" } : undefined}
-    />
-  );
+  return <AuthenticatedArtworkThumbnail fileRecordId={artwork?.fileRecordId} alt={alt} className={className} onClick={onClick} fallback={<div className={`flex items-center justify-center bg-muted ${className || ""}`}><div className="text-center p-2"><FileText className="mx-auto h-8 w-8 text-muted-foreground" /><div className="mt-1 text-[10px] text-muted-foreground">{artwork ? "File assigned" : "No Preview"}</div></div></div>} />;
 }
 
 function isProductionJobDone(status: unknown): boolean {
@@ -204,6 +154,7 @@ function normalizeArtworkForSides(
 export default function ProductionJobDetailPage() {
   const { jobId } = useParams<{ jobId: string }>();
   const navigate = useNavigate();
+  const { toast } = useToast();
   const location = useLocation();
 
   const { data, isLoading, error } = useProductionJob(jobId);
@@ -624,11 +575,11 @@ export default function ProductionJobDetailPage() {
                   )}
 
                   <div className="ml-auto flex flex-col gap-2">
-                    {firstArtworkFile?.fileUrl && (
+                    {firstArtworkFile?.fileRecordId && (
                       <Button
                         size="sm"
                         variant="outline"
-                        onClick={() => window.open(firstArtworkFile.fileUrl, "_blank")}
+                        onClick={() => void openArtworkPreview(firstArtworkFile.fileRecordId!, firstArtworkFile.mimeType).catch((error) => toast({ variant: "destructive", title: error instanceof Error ? error.message : "Unable to open artwork." }))}
                         className="gap-1.5"
                       >
                         <ExternalLink className="w-3.5 h-3.5" />
