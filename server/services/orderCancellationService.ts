@@ -79,6 +79,10 @@ export type OrderCancellationResult = {
   sideEffects: OrderCancellationSideEffects;
 };
 
+export type OrderCancellationEligibility =
+  | { canCancel: true; code: null; message: null; details: null }
+  | { canCancel: false; code: OrderCancellationBlockCode; message: string; details: Record<string, unknown> | null };
+
 type InvoiceDecision =
   | { action: "void"; invoiceId: string; status: string; reason: string }
   | { action: "skip"; invoiceId: string; status: string; reason: string }
@@ -208,6 +212,168 @@ function emptySideEffects(): OrderCancellationSideEffects {
     supersededProofVersionIds: [],
     releasedInventoryReservationIds: [],
   };
+}
+
+function blockedCancellation(error: OrderCancellationError): OrderCancellationEligibility {
+  return {
+    canCancel: false,
+    code: error.code,
+    message: error.message,
+    details: error.details ?? null,
+  };
+}
+
+async function assertOrderCancellationAllowed(tx: any, args: {
+  organizationId: string;
+  orderId: string;
+}): Promise<void> {
+  const [order] = await tx
+    .select()
+    .from(orders)
+    .where(and(eq(orders.id, args.orderId), eq(orders.organizationId, args.organizationId)))
+    .limit(1);
+
+  if (!order) {
+    throw new OrderCancellationError(404, "ORDER_NOT_FOUND", "Order not found");
+  }
+
+  if (isCanceledOrder(order)) {
+    throw new OrderCancellationError(409, "ORDER_ALREADY_CANCELED", "Order is already cancelled");
+  }
+
+  if (order.state === "closed" || order.status === "completed") {
+    throw new OrderCancellationError(409, "ORDER_TERMINAL", "Completed or closed orders cannot be cancelled from this workflow.");
+  }
+
+  const [orderInvoices, orderProductionJobs, linkedShipmentRows, pickupRows] = await Promise.all([
+    tx.select().from(invoices).where(and(eq(invoices.organizationId, args.organizationId), eq(invoices.orderId, args.orderId))),
+    tx.select().from(productionJobs).where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.orderId, args.orderId))),
+    (async () => {
+      const linkedIds = await tx
+        .select({ shipmentId: shipmentOrders.shipmentId })
+        .from(shipmentOrders)
+        .where(and(eq(shipmentOrders.organizationId, args.organizationId), eq(shipmentOrders.orderId, args.orderId)));
+      const ids = Array.from(new Set(linkedIds.map((r: any) => r.shipmentId).filter(Boolean))) as string[];
+      const shipmentPredicates: any[] = [
+        eq(shipments.orderId, args.orderId),
+        eq(shipments.primaryOrderId, args.orderId),
+      ];
+      if (ids.length > 0) {
+        shipmentPredicates.push(inArray(shipments.id, ids));
+      }
+      return tx
+        .select()
+        .from(shipments)
+        .where(
+          and(
+            eq(shipments.organizationId, args.organizationId),
+            or(...shipmentPredicates),
+          ),
+        );
+    })(),
+    tx.select().from(pickupTickets).where(and(eq(pickupTickets.organizationId, args.organizationId), eq(pickupTickets.orderId, args.orderId))),
+  ]);
+
+  const paymentRows = orderInvoices.length
+    ? await tx
+        .select({
+          invoiceId: payments.invoiceId,
+          amountCents: payments.amountCents,
+          amount: payments.amount,
+          status: payments.status,
+        })
+        .from(payments)
+        .where(
+          and(
+            eq(payments.organizationId, args.organizationId),
+            inArray(payments.invoiceId, orderInvoices.map((invoice: any) => invoice.id)),
+            inArray(payments.status, ["succeeded", "voided"]),
+          ),
+        )
+    : [];
+
+  const paidCentsByInvoiceId = new Map<string, number>();
+  for (const payment of paymentRows) {
+    if (payment.status === "voided") continue;
+    const cents = Number(payment.amountCents) || Math.round(toMoneyNumber(payment.amount) * 100);
+    paidCentsByInvoiceId.set(payment.invoiceId, (paidCentsByInvoiceId.get(payment.invoiceId) || 0) + Math.max(0, cents));
+  }
+
+  const blockingInvoice = orderInvoices
+    .map((invoice: any) => classifyInvoiceForCancellation(invoice, paidCentsByInvoiceId.get(invoice.id) || 0))
+    .find((decision: InvoiceDecision) => decision.action === "block");
+  if (blockingInvoice?.action === "block") {
+    throw new OrderCancellationError(409, blockingInvoice.code, blockingInvoice.message, {
+      invoiceId: blockingInvoice.invoiceId,
+      status: blockingInvoice.status,
+    });
+  }
+
+  const blockingShipment = linkedShipmentRows
+    .map((shipment: any) => classifyShipmentForCancellation(shipment))
+    .find((decision: ShipmentDecision) => decision.action === "block");
+  if (blockingShipment?.action === "block") {
+    throw new OrderCancellationError(409, blockingShipment.code, blockingShipment.message, {
+      shipmentId: blockingShipment.shipmentId,
+      status: blockingShipment.status,
+    });
+  }
+
+  const pickedUp = pickupRows.find((ticket: any) => String(ticket.status).toUpperCase() === "PICKED_UP");
+  if (pickedUp) {
+    throw new OrderCancellationError(409, "PICKED_UP_ORDER", "Picked up orders require manual handling before cancelling the order.", {
+      pickupTicketId: pickedUp.id,
+    });
+  }
+
+  const productionJobIds = orderProductionJobs.map((job: any) => job.id).filter(Boolean) as string[];
+  const combinedRunRows = productionJobIds.length > 0
+    ? await tx
+        .select({
+          productionJobId: productionRunMembers.productionJobId,
+          productionRunId: productionRunMembers.productionRunId,
+          runNumber: productionRuns.runNumber,
+          runStatus: productionRuns.status,
+          allocatedQuantity: productionRunMembers.allocatedQuantity,
+          completedQuantity: productionRunMembers.completedQuantity,
+          successfulQuantity: productionRunMembers.successfulQuantity,
+          damagedQuantity: productionRunMembers.damagedQuantity,
+          remainingQuantity: productionRunMembers.remainingQuantity,
+        })
+        .from(productionRunMembers)
+        .innerJoin(productionRuns, eq(productionRuns.id, productionRunMembers.productionRunId))
+        .where(
+          and(
+            eq(productionRunMembers.organizationId, args.organizationId),
+            eq(productionRuns.organizationId, args.organizationId),
+            inArray(productionRunMembers.productionJobId, productionJobIds),
+          ),
+        )
+    : [];
+  const blockingCombinedRun = combinedRunRows
+    .map((member: any) => classifyCombinedRunForOrderCancellation(member))
+    .find((decision: CombinedRunCancellationDecision) => decision.action === "block");
+  if (blockingCombinedRun?.action === "block") {
+    throw new OrderCancellationError(409, blockingCombinedRun.code, blockingCombinedRun.message, {
+      productionJobId: blockingCombinedRun.productionJobId,
+      productionRunId: blockingCombinedRun.productionRunId,
+      runNumber: blockingCombinedRun.runNumber,
+      runStatus: blockingCombinedRun.runStatus,
+    });
+  }
+}
+
+export async function assessOrderCancellationEligibility(args: {
+  organizationId: string;
+  orderId: string;
+}): Promise<OrderCancellationEligibility> {
+  try {
+    await db.transaction((tx) => assertOrderCancellationAllowed(tx, args));
+    return { canCancel: true, code: null, message: null, details: null };
+  } catch (error) {
+    if (error instanceof OrderCancellationError) return blockedCancellation(error);
+    throw error;
+  }
 }
 
 async function getActorName(tx: any, actorUserId: string) {

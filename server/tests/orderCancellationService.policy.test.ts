@@ -1,4 +1,6 @@
 import { describe, expect, test } from "@jest/globals";
+import fs from "node:fs";
+import path from "node:path";
 
 import {
   classifyCombinedRunForOrderCancellation,
@@ -12,6 +14,8 @@ import {
 } from "../../shared/operationalState";
 
 describe("order cancellation policy helpers", () => {
+  const serviceSource = fs.readFileSync(path.join(process.cwd(), "server/services/orderCancellationService.ts"), "utf8");
+
   test.each([
     ["draft", "draft_invoice"],
     ["billed", "unpaid_invoice"],
@@ -60,6 +64,16 @@ describe("order cancellation policy helpers", () => {
       action: "block",
       code: "SHIPPED_SHIPMENT",
     });
+  });
+
+  test("does not block cancellation solely for fulfillment pending or production-complete canonical state", () => {
+    expect(classifyShipmentForCancellation({ id: "ship-ready", status: "READY_FOR_PICKUP" })).toMatchObject({
+      action: "void",
+      reason: "pending_shipment",
+    });
+    expect(serviceSource).toContain("order.state === \"closed\" || order.status === \"completed\"");
+    expect(serviceSource).not.toContain("order.canonicalState");
+    expect(serviceSource).toContain("PICKED_UP_ORDER");
   });
 
   test("blocks unfinished active Combined Run members before order cancellation side effects", () => {

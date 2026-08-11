@@ -34,7 +34,7 @@ import { Command, CommandEmpty, CommandInput, CommandItem, CommandList } from "@
 import { CustomerSelect, type CustomerWithContacts } from "@/components/CustomerSelect";
 import { useAuth } from "@/hooks/useAuth";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
-import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, isOrderEditable, useOrderWorkflow } from "@/hooks/useOrders";
+import { useOrder, useCancelOrder, useDeleteOrder, useUpdateOrder, useBulkUpdateOrderLineItemStatus, useTransitionOrderStatus, getAllowedNextStatuses, isOrderEditable, useOrderWorkflow, useOrderCancellationEligibility } from "@/hooks/useOrders";
 import { useBillInvoice, useCreateOrderInvoice, useInvoices } from "@/hooks/useInvoices";
 import { OrderAttachmentsPanel } from "@/components/OrderAttachmentsPanel";
 import { useQuery } from "@tanstack/react-query";
@@ -507,6 +507,7 @@ export default function OrderDetail() {
 
   const deleteOrder = useDeleteOrder();
   const cancelOrderMutation = useCancelOrder(orderId!);
+  const cancellationEligibilityQuery = useOrderCancellationEligibility(orderId);
   const updateOrder = useUpdateOrder(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
   const workflowQuery = useOrderWorkflow();
@@ -734,14 +735,13 @@ export default function OrderDetail() {
     ?? preferences?.orders?.requireLineItemsDoneToComplete
     ?? true); // Default strict
   const canEditOrder = baseCanEditOrder || (isTerminal && isAdminOrOwner && allowCompletedOrderEdits);
-  const canCancelOrder = Boolean(
-    order &&
-    isManagerOrHigher &&
-    !orderIsCanceled &&
-    order.state !== "closed" &&
-    order.status !== "completed" &&
-    order.canonicalState !== "completed",
-  );
+  const canShowCancelOrder = Boolean(order && isManagerOrHigher && !orderIsCanceled);
+  const canCancelOrder = Boolean(canShowCancelOrder && cancellationEligibilityQuery.data?.canCancel);
+  const cancelOrderUnavailableReason = canShowCancelOrder
+    ? cancellationEligibilityQuery.isLoading
+      ? "Checking cancellation availability..."
+      : cancellationEligibilityQuery.data?.message ?? (cancellationEligibilityQuery.isError ? "Cancellation availability could not be checked." : null)
+    : null;
   const orderPdfEligibleLineItems = useMemo(() => {
     return (order?.lineItems ?? []).filter((lineItem: any) => {
       const status = String(lineItem?.status || "").toLowerCase();
@@ -2189,6 +2189,8 @@ export default function OrderDetail() {
 
             <OrderDetailPrimaryActions
               canEditOrder={canEditOrder}
+              canShowCancelOrder={canShowCancelOrder}
+              canCancelOrder={canCancelOrder}
               canMarkCompleted={false}
               canCompleteProduction={isAdminOrOwner && order.state === 'open' && !isServiceFeeOnlyOrder}
               canCompleteOrder={canCompleteOrder}
@@ -2197,10 +2199,13 @@ export default function OrderDetail() {
               isSavingOrder={isSavingOrder}
               isUpdatingOrder={updateOrder.isPending}
               isTransitioningStatus={transitionStatus.isPending}
+              isCancelingOrder={cancelOrderMutation.isPending}
               hasDirtyLineItem={hasDirtyLineItem}
+              cancelOrderUnavailableReason={cancelOrderUnavailableReason}
               onSaveOrder={handleSaveOrder}
               onSaveAndRoute={() => handleSaveOrder(true)}
               onDiscardChanges={handleCancelOrderEdits}
+              onCancelOrder={() => setShowCancelOrderDialog(true)}
               onMarkCompleted={() => {
                 if (requireLineItemsDone && incompleteLi.length > 0) {
                   setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
@@ -4048,7 +4053,6 @@ export default function OrderDetail() {
             </Card>
 
             {hasOrderDetailSecondaryActions({
-              canCancelOrder,
               canManageProofPolicy: isAdminOrOwner && !orderIsCanceled,
               proofBypassed,
             }) && (
@@ -4058,13 +4062,10 @@ export default function OrderDetail() {
                 </CardHeader>
                 <CardContent>
                   <OrderDetailSecondaryActions
-                    canCancelOrder={canCancelOrder}
                     canManageProofPolicy={isAdminOrOwner && !orderIsCanceled}
                     proofBypassed={proofBypassed}
                     proofBypassReason={proofBypassReason}
-                    isCancelingOrder={cancelOrderMutation.isPending}
                     isUpdatingProofPolicy={proofPolicyMutation.isPending}
-                    onCancelOrder={() => setShowCancelOrderDialog(true)}
                     onProofBypassReasonChange={setProofBypassReason}
                     onBypassProof={() => proofPolicyMutation.mutate({ policy: "bypass", reason: proofBypassReason })}
                     onRequireProofDefaults={() => proofPolicyMutation.mutate({ policy: "inherit_default" })}

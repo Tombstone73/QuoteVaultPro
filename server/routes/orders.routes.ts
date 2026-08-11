@@ -134,7 +134,7 @@ import {
     upsertOrderWorkflowDraft,
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
-import { cancelOrder, OrderCancellationError } from "../services/orderCancellationService";
+import { assessOrderCancellationEligibility, cancelOrder, OrderCancellationError } from "../services/orderCancellationService";
 import { assessOrderCloseEligibility } from "../services/orderCloseEligibility";
 import { assessOrderOperationalCompletion } from "../services/orderCompletionPolicy";
 import { cancelOrderRequestSchema } from "@shared/orderCancellation";
@@ -4294,6 +4294,27 @@ export async function registerOrderRoutes(
             if (error instanceof CustomerUploadReviewError) return res.status(error.statusCode).json({ error: error.message });
             console.error("[OrderAttachments:CustomerUploadPrimaryArtworkCandidate] Error:", error);
             return res.status(500).json({ error: "Failed to select customer upload primary artwork candidate" });
+        }
+    });
+
+    app.get("/api/orders/:id/cancellation-eligibility", isAuthenticated, tenantContext, async (req: any, res) => {
+        try {
+            if (!assertInternalStaffUser(req, res)) return;
+
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) {
+                return res.status(500).json({ success: false, message: "Missing organization context" });
+            }
+
+            const eligibility = await assessOrderCancellationEligibility({
+                organizationId,
+                orderId: String(req.params.id),
+            });
+
+            return res.json({ success: true, data: eligibility });
+        } catch (error: any) {
+            console.error("[GET /api/orders/:id/cancellation-eligibility] Error:", error);
+            return res.status(500).json({ success: false, message: "Failed to check cancellation eligibility" });
         }
     });
 

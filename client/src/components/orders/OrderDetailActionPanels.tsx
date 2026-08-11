@@ -8,6 +8,8 @@ type MaybePromise = void | Promise<void>;
 
 interface OrderDetailPrimaryActionsProps {
   canEditOrder: boolean;
+  canShowCancelOrder: boolean;
+  canCancelOrder: boolean;
   canMarkCompleted: boolean;
   canCompleteProduction: boolean;
   canCompleteOrder: boolean;
@@ -16,15 +18,20 @@ interface OrderDetailPrimaryActionsProps {
   isSavingOrder: boolean;
   isUpdatingOrder: boolean;
   isTransitioningStatus: boolean;
+  isCancelingOrder: boolean;
   hasDirtyLineItem: boolean;
+  cancelOrderUnavailableReason?: string | null;
   onSaveOrder: () => MaybePromise;
   onSaveAndRoute: () => MaybePromise;
   onDiscardChanges: () => MaybePromise;
+  onCancelOrder: () => void;
   onMarkCompleted: () => void;
 }
 
 export function OrderDetailPrimaryActions({
   canEditOrder,
+  canShowCancelOrder,
+  canCancelOrder,
   canMarkCompleted,
   canCompleteProduction,
   canCompleteOrder,
@@ -33,10 +40,13 @@ export function OrderDetailPrimaryActions({
   isSavingOrder,
   isUpdatingOrder,
   isTransitioningStatus,
+  isCancelingOrder,
   hasDirtyLineItem,
+  cancelOrderUnavailableReason,
   onSaveOrder,
   onSaveAndRoute,
   onDiscardChanges,
+  onCancelOrder,
   onMarkCompleted,
 }: OrderDetailPrimaryActionsProps) {
   return (
@@ -54,14 +64,14 @@ export function OrderDetailPrimaryActions({
             {isUpdatingOrder || isSavingOrder ? "Saving..." : "Save Order"}
           </Button>
           <Button
-            variant="outline"
+            variant="secondary"
             size="sm"
             onClick={() => void onSaveAndRoute()}
             disabled={isUpdatingOrder || isSavingOrder}
             className="rounded-titan-md"
-            title="Save changes, then route each eligible line through its canonical workflow"
+            title="Saves changes, then moves eligible line items to Design, Proofing, or Prepress as needed."
           >
-            {isUpdatingOrder || isSavingOrder ? "Saving..." : "Save & Route Eligible"}
+            {isUpdatingOrder || isSavingOrder ? "Saving..." : "Save & Route Jobs"}
           </Button>
           <Button
             variant="outline"
@@ -73,6 +83,20 @@ export function OrderDetailPrimaryActions({
             Discard changes
           </Button>
         </>
+      )}
+
+      {canShowCancelOrder && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onCancelOrder}
+          disabled={!canCancelOrder || isCancelingOrder}
+          className="rounded-titan-md border-destructive/60 text-destructive hover:bg-destructive/10"
+          title={!canCancelOrder ? cancelOrderUnavailableReason ?? "Cancellation is unavailable for this order." : undefined}
+        >
+          <Ban className="w-4 h-4 mr-2" />
+          {isCancelingOrder ? "Cancelling..." : "Cancel Order"}
+        </Button>
       )}
 
       {canMarkCompleted && (
@@ -98,53 +122,33 @@ export function OrderDetailPrimaryActions({
 }
 
 interface OrderDetailSecondaryActionsProps {
-  canCancelOrder: boolean;
   canManageProofPolicy: boolean;
   proofBypassed: boolean;
   proofBypassReason: string;
-  isCancelingOrder: boolean;
   isUpdatingProofPolicy: boolean;
-  onCancelOrder: () => void;
   onProofBypassReasonChange: (value: string) => void;
   onBypassProof: () => void;
   onRequireProofDefaults: () => void;
 }
 
 export function hasOrderDetailSecondaryActions({
-  canCancelOrder,
   canManageProofPolicy,
   proofBypassed,
-}: Pick<OrderDetailSecondaryActionsProps, "canCancelOrder" | "canManageProofPolicy" | "proofBypassed">) {
-  return canCancelOrder || canManageProofPolicy || proofBypassed;
+}: Pick<OrderDetailSecondaryActionsProps, "canManageProofPolicy" | "proofBypassed">) {
+  return canManageProofPolicy || proofBypassed;
 }
 
 export function OrderDetailSecondaryActions({
-  canCancelOrder,
   canManageProofPolicy,
   proofBypassed,
   proofBypassReason,
-  isCancelingOrder,
   isUpdatingProofPolicy,
-  onCancelOrder,
   onProofBypassReasonChange,
   onBypassProof,
   onRequireProofDefaults,
 }: OrderDetailSecondaryActionsProps) {
   return (
     <div className="space-y-3">
-      {canCancelOrder && (
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={onCancelOrder}
-          disabled={isCancelingOrder}
-          className="w-full justify-start rounded-titan-md border-destructive/60 text-destructive hover:bg-destructive/10"
-        >
-          <Ban className="w-4 h-4 mr-2" />
-          Cancel Order
-        </Button>
-      )}
-
       {proofBypassed ? (
         <Badge variant="outline" className="border-amber-500/50 bg-amber-500/10 text-amber-700">
           Proof Bypassed

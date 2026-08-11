@@ -49,6 +49,9 @@ export const orderTimelineQueryKey = (orderId: string) =>
 export const orderWorkflowQueryKey = () =>
   ["orders", "workflow"] as const;
 
+export const orderCancellationEligibilityQueryKey = (orderId: string) =>
+  ["orders", "cancellation-eligibility", orderId] as const;
+
 function invalidateOrderOperationalQueries(queryClient: QueryClient, orderId?: string) {
   if (orderId) {
     queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
@@ -676,6 +679,7 @@ export function useCancelOrder(orderId: string) {
     },
     onSuccess: (data) => {
       queryClient.invalidateQueries({ queryKey: orderDetailQueryKey(orderId) });
+      queryClient.invalidateQueries({ queryKey: orderCancellationEligibilityQueryKey(orderId) });
       queryClient.invalidateQueries({ queryKey: orderTimelineQueryKey(orderId) });
       queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
       queryClient.invalidateQueries({ queryKey: ["orders", "internalNotes", orderId] });
@@ -706,6 +710,28 @@ export function useCancelOrder(orderId: string) {
         description: error.message,
         variant: "destructive",
       });
+    },
+  });
+}
+
+export function useOrderCancellationEligibility(orderId?: string | null) {
+  return useQuery<{
+    canCancel: boolean;
+    code: string | null;
+    message: string | null;
+    details: Record<string, unknown> | null;
+  }>({
+    queryKey: orderCancellationEligibilityQueryKey(orderId || ""),
+    enabled: Boolean(orderId),
+    queryFn: async () => {
+      const response = await fetch(`/api/orders/${orderId}/cancellation-eligibility`, {
+        credentials: "include",
+      });
+      const data = await response.json().catch(() => null);
+      if (!response.ok || !data?.success) {
+        throw new Error(data?.message || "Failed to check cancellation eligibility");
+      }
+      return data.data;
     },
   });
 }
