@@ -106,6 +106,37 @@ describe("resolveProofPreviewSource", () => {
     expect(resolved.reason).toBe("no_pdf_preview_derivative");
   });
 
+  test("serves the original PDF when an inline source viewer explicitly requests it", async () => {
+    const readCanonicalFileRecord = jest.fn<(...args: any[]) => Promise<any>>().mockResolvedValue({
+      buffer: ORIGINAL_BUFFER,
+      mimeType: "application/pdf",
+      providerType: "titan_managed",
+      status: "ready",
+      error: null,
+    });
+    const readCanonicalDerivative = jest.fn<(...args: any[]) => Promise<any>>();
+
+    const resolved = await resolveProofPreviewSource({
+      context: { organizationId: "org_1", orderId: "order_1", lineItemId: "line_1" },
+      candidates: [{
+        candidateId: "artwork:pdf",
+        fileName: "artwork.pdf",
+        mimeType: "application/pdf",
+        fileRecordId: "file_pdf",
+        allowOriginalPdf: true,
+        preferOriginalPdf: true,
+      }],
+      loader: {
+        readCanonicalDerivative,
+        readCanonicalFileRecord,
+        readLegacyStorageKey: jest.fn<(...args: any[]) => Promise<any>>(),
+      },
+    });
+
+    expect(resolved).toMatchObject({ kind: "pdf", mimeType: "application/pdf", sourceBuffer: ORIGINAL_BUFFER });
+    expect(readCanonicalDerivative).not.toHaveBeenCalled();
+  });
+
   test("records preview_error when storage access fails", async () => {
     const resolved = await resolveProofPreviewSource({
       context: { organizationId: "org_1", orderId: "order_1", lineItemId: "line_1" },

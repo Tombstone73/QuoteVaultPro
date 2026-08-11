@@ -2075,6 +2075,67 @@ export async function listEligibleProofArtworkSources(tx: any, args: {
   return rows.map(({ artworkSource: _artworkSource, ...publicSource }) => publicSource);
 }
 
+/**
+ * Resolves one canonical artwork source for the staff Proofing viewer. The
+ * order-line-item files API intentionally excludes prepress mirrors because
+ * they are not editable attachment relationships, so the viewer must use the
+ * same resolver as generated proof creation instead of trying to reconstruct
+ * the source from that API.
+ */
+export async function getEligibleProofArtworkSourceForDisplay(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  sourceType: EligibleProofArtworkSource["sourceType"];
+  sourceId: string;
+}): Promise<ArtworkProofSource> {
+  const rows = await resolveEligibleProofArtworkSourceRows(tx, args);
+  const matched = rows.find((row) =>
+    row.sourceType === args.sourceType &&
+    row.sourceId === args.sourceId &&
+    row.eligible &&
+    row.artworkSource,
+  );
+
+  if (!matched?.artworkSource) {
+    throw Object.assign(new Error("Artwork source is not available for this line item."), { statusCode: 404 });
+  }
+
+  return matched.artworkSource;
+}
+
+export async function resolveEligibleProofArtworkPreviewForDisplay(tx: any, args: {
+  organizationId: string;
+  lineItemId: string;
+  sourceType: EligibleProofArtworkSource["sourceType"];
+  sourceId: string;
+}) {
+  const source = await getEligibleProofArtworkSourceForDisplay(tx, args);
+  const preview = await resolveProofPreviewSource({
+    context: {
+      organizationId: args.organizationId,
+      orderId: source.orderId,
+      lineItemId: args.lineItemId,
+    },
+    candidates: [{
+      candidateId: `${args.sourceType}:${args.sourceId}`,
+      fileName: source.originalFilename || source.fileName,
+      mimeType: source.mimeType,
+      fileRecordId: source.fileRecordId,
+      // Legacy rows can be canonical source artwork without a file record.
+      // Pass their existing reference only to the authenticated resolver.
+      previewStorageKey: source.previewKey || source.thumbnailUrl || source.fileUrl || source.relativePath,
+      thumbStorageKey: source.thumbKey || source.thumbnailRelativePath,
+      storageProviderHint: source.storageProvider,
+      pagePreviewFileRecordId: source.pagePreviewFileRecordId,
+      pageThumbFileRecordId: source.pageThumbFileRecordId,
+      allowOriginalPdf: true,
+      preferOriginalPdf: true,
+    }],
+  });
+
+  return { source, preview };
+}
+
 export async function getProofArtworkPreparation(tx: any, args: {
   organizationId: string;
   lineItemId: string;

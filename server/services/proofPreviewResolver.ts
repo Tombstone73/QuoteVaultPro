@@ -22,6 +22,7 @@ export type ProofPreviewCandidate = {
   pagePreviewFileRecordId?: string | null;
   pageThumbFileRecordId?: string | null;
   allowOriginalPdf?: boolean;
+  preferOriginalPdf?: boolean;
 };
 
 export type ProofPreviewResolution =
@@ -382,6 +383,34 @@ async function resolveCandidatePreview(args: {
   }
 
   if (candidate.fileRecordId) {
+    if (normalizedMime === "application/pdf" && candidate.allowOriginalPdf && candidate.preferOriginalPdf) {
+      const original = await loader.readCanonicalFileRecord(candidate.fileRecordId, context);
+      if (original.status === "ready" && original.buffer) {
+        return {
+          kind: "pdf",
+          sourceBuffer: original.buffer,
+          mimeType: "application/pdf",
+          filename: candidate.fileName,
+          reason: null,
+          previewStatus: "ready",
+          previewError: null,
+          candidateId: candidate.candidateId,
+        };
+      }
+      if (original.status === "failed") {
+        return {
+          kind: "unavailable",
+          sourceBuffer: null,
+          mimeType: null,
+          filename: candidate.fileName,
+          reason: "storage_read_failed",
+          previewStatus: "generation_failed",
+          previewError: original.error,
+          candidateId: candidate.candidateId,
+        };
+      }
+    }
+
     const previewDerivative = await loader.readCanonicalDerivative(candidate.fileRecordId, "preview", context);
     if (previewDerivative.status === "ready" && previewDerivative.buffer) {
       return {

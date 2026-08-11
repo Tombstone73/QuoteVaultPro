@@ -42,6 +42,7 @@ import {
   recordManualProofApprovalOverride,
   recordManualProofApprovalOverrides,
   recordProofResponse,
+  resolveEligibleProofArtworkPreviewForDisplay,
   resendProofVersion,
   resolveLineItemProofingTruth,
 } from "../services/proofingService";
@@ -237,6 +238,49 @@ export function registerProofingRoutes(
         success: false,
         error: error?.message || "Failed to resolve eligible artwork",
         reason: error?.code || "eligible_artwork_lookup_failed",
+      });
+    }
+  });
+
+  app.get("/api/proofing/line-item/:lineItemId/eligible-artwork/:sourceType/:sourceId/preview", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      if (!assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const parsed = z.object({
+        lineItemId: z.string().trim().min(1),
+        sourceType: z.enum(["line_item_artwork", "line_item_asset", "line_item_file"]),
+        sourceId: z.string().trim().min(1),
+      }).safeParse(req.params);
+      if (!parsed.success) {
+        return res.status(400).json({ success: false, error: "Invalid artwork preview request" });
+      }
+
+      const { source, preview } = await resolveEligibleProofArtworkPreviewForDisplay(db, {
+        organizationId,
+        ...parsed.data,
+      });
+
+      if (preview.kind === "unavailable" || !preview.sourceBuffer) {
+        return res.status(404).json({
+          success: false,
+          error: preview.previewError || "Artwork preview is unavailable.",
+          reason: preview.reason,
+        });
+      }
+
+      const filename = String(source.originalFilename || source.fileName || "artwork").replace(/[\r\n\\"]/g, "_");
+      res.setHeader("Cache-Control", "private, max-age=60");
+      res.setHeader("Content-Disposition", `inline; filename="${filename}"`);
+      res.type(source.mimeType || preview.mimeType || "application/octet-stream");
+      return res.send(preview.sourceBuffer);
+    } catch (error: any) {
+      const status = error?.statusCode || 500;
+      console.error("[Proofing] Error resolving artwork preview:", error);
+      return res.status(status).json({
+        success: false,
+        error: error?.message || "Failed to resolve artwork preview",
       });
     }
   });

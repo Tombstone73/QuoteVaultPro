@@ -50,6 +50,7 @@ import {
   createLineItemProofVersionFromExistingAttachment,
   generateLineItemArtworkPreviewDerivative,
   getProofArtworkPreparation,
+  getEligibleProofArtworkSourceForDisplay,
   INCOMPLETE_PROOF_MESSAGE,
   listEligibleProofArtworkSources,
   listProofingQueue,
@@ -1487,6 +1488,20 @@ describe("proofing route integration", () => {
       ]),
     );
     expect(sources.some((source) => source.id === supersededId)).toBe(false);
+
+    const displaySource = await getEligibleProofArtworkSourceForDisplay(db, {
+      organizationId: orgId,
+      lineItemId,
+      sourceType: "line_item_file",
+      sourceId: activeFinalId,
+    });
+
+    expect(displaySource).toMatchObject({
+      sourceType: "line_item_file",
+      sourceId: activeFinalId,
+      fileName: "final.png",
+      fileUrl: "uploads/final.png",
+    });
   });
 
   test("generated proof draft can use selected generic uploaded artwork source", async () => {
