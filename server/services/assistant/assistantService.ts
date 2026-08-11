@@ -5,6 +5,7 @@ import {
   type AssistantResponsePresentation,
   type AssistantResponseState,
   type AssistantStructuredCard,
+  type AssistantBulkArchiveConversationsRequest,
   type AssistantUpdateConversationRequest,
   type AssistantTurnRequest,
   type AssistantReportResolutionSelectionRequest,
@@ -125,6 +126,7 @@ export interface AssistantRepository {
   createConversation(input: AssistantScope & { title?: string | null }): Promise<AssistantConversationRecord>;
   getConversation(scope: AssistantScope & { conversationId: string }): Promise<AssistantConversationDetailRecord | null>;
   updateConversation(input: AssistantScope & { conversationId: string; patch: AssistantUpdateConversationRequest }): Promise<AssistantConversationRecord | null>;
+  archiveConversations(input: AssistantScope & { conversationIds: string[] }): Promise<AssistantConversationRecord[]>;
   createFoundationTurn(input: AssistantScope & {
     conversationId: string;
     actor: AssistantActor;
@@ -667,6 +669,16 @@ export class AssistantService {
     const conversation = await this.repo.updateConversation({ ...scope, conversationId, patch });
     if (!conversation) throw this.notFound();
     return conversation;
+  }
+
+  async archiveConversations(scope: AssistantScope, data: AssistantBulkArchiveConversationsRequest) {
+    const conversationIds = [...new Set(data.conversationIds)];
+    const archived = await this.repo.archiveConversations({ ...scope, conversationIds });
+    const archivedIds = archived.map((conversation) => conversation.id);
+    return {
+      archivedIds,
+      unavailableIds: conversationIds.filter((conversationId) => !archivedIds.includes(conversationId)),
+    };
   }
 
   /** Server-only selection continuation. The route supplies only opaque

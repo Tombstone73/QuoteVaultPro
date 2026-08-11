@@ -72,6 +72,7 @@ function buildService() {
     createConversation: jest.fn(async () => conversation),
     getConversation: jest.fn(async () => conversation),
     updateConversation: jest.fn(async () => conversation),
+    archiveConversations: jest.fn(async (_scope: any, data: { conversationIds: string[] }) => ({ archivedIds: data.conversationIds, unavailableIds: [] })),
     createTurn: jest.fn(async () => ({
       turnId: "turn_1",
       correlationId: "correlation_1",
@@ -171,6 +172,22 @@ describe("assistant routes", () => {
     expect(otherUser.body).toEqual(otherOrg.body);
     expect(otherUser.body.error.code).toBe("conversation_not_found");
     expect(service.getConversation).toHaveBeenCalledWith({ organizationId: "org_1", userId: "user_1" }, "conversation_other_user");
+  });
+
+  test("archives selected conversations through a single tenant-scoped batch request", async () => {
+    const service = buildService();
+    const { app } = buildApp(service);
+
+    const response = await request(app)
+      .post("/api/assistant/conversations/archive")
+      .send({ conversationIds: ["conversation_1", "conversation_2"], organizationId: "org_attacker" })
+      .expect(200);
+
+    expect(service.archiveConversations).toHaveBeenCalledWith(
+      { organizationId: "org_1", userId: "user_1" },
+      { conversationIds: ["conversation_1", "conversation_2"] },
+    );
+    expect(response.body.data).toEqual({ archivedIds: ["conversation_1", "conversation_2"], unavailableIds: [] });
   });
 
   test("keeps server presentation metadata out of the visible card collection", async () => {

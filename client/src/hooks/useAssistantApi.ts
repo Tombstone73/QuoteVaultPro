@@ -16,6 +16,11 @@ export type AssistantConversationUpdate = {
   status?: "active" | "archived";
 };
 
+export type AssistantBulkArchiveResult = {
+  archivedIds: string[];
+  unavailableIds: string[];
+};
+
 function unwrap<T>(payload: T | { data?: T }): T {
   return (payload && typeof payload === "object" && "data" in payload
     ? (payload as { data?: T }).data
@@ -99,6 +104,33 @@ export function useUpdateAssistantConversation() {
       for (const [queryKey, data] of context?.previous ?? []) queryClient.setQueryData(queryKey, data);
     },
     onSuccess: () => queryClient.invalidateQueries({ queryKey: conversationsKey }),
+  });
+}
+
+export function useArchiveAssistantConversations() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: async ({ conversationIds }: { conversationIds: string[] }): Promise<AssistantBulkArchiveResult> => {
+      const response = await apiRequest("POST", "/api/assistant/conversations/archive", { conversationIds });
+      const result = unwrap<AssistantBulkArchiveResult>(await response.json());
+      if (result.unavailableIds.length) {
+        throw new Error("Some conversations could not be archived because they are no longer active. The list has been refreshed.");
+      }
+      return result;
+    },
+    onMutate: async ({ conversationIds }) => {
+      await queryClient.cancelQueries({ queryKey: conversationsKey });
+      const previous = queryClient.getQueriesData<AssistantConversationSummary[]>({ queryKey: conversationsKey });
+      const ids = new Set(conversationIds);
+      for (const [queryKey, data] of previous) {
+        if (Array.isArray(data)) queryClient.setQueryData<AssistantConversationSummary[]>(queryKey, data.filter((conversation) => !ids.has(conversation.id)));
+      }
+      return { previous };
+    },
+    onError: (_error, _variables, context) => {
+      for (const [queryKey, data] of context?.previous ?? []) queryClient.setQueryData(queryKey, data);
+    },
+    onSettled: () => queryClient.invalidateQueries({ queryKey: conversationsKey }),
   });
 }
 

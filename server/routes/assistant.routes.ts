@@ -2,6 +2,7 @@ import type { Express, Request, RequestHandler, Response } from "express";
 import { z } from "zod";
 import {
   assistantCreateConversationRequestSchema,
+  assistantBulkArchiveConversationsRequestSchema,
   assistantContextEnvelopeSchema,
   assistantReportResolutionCancelRequestSchema,
   assistantReportResolutionSelectionRequestSchema,
@@ -318,6 +319,16 @@ export function registerAssistantRoutes(
       const data = assistantCreateConversationRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
       const conversation = await service.createConversation(resolveScope(req), data);
       return res.status(201).json({ success: true, data: conversationDetail({ ...conversation, messages: [] }) });
+    } catch (error) {
+      return sendError(res, error);
+    }
+  });
+
+  app.post("/api/assistant/conversations/archive", ...guarded, async (req, res) => {
+    try {
+      const data = assistantBulkArchiveConversationsRequestSchema.parse(withoutUntrustedIdentity(req.body ?? {}));
+      const result = await service.archiveConversations(resolveScope(req), data);
+      return res.json({ success: true, data: result });
     } catch (error) {
       return sendError(res, error);
     }

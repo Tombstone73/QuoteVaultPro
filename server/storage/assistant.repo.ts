@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, desc, eq, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import {
   aiAuditEvents,
@@ -121,6 +121,21 @@ export class DrizzleAssistantRepository implements AssistantRepository {
       .where(conversationPredicate(input, input.conversationId))
       .returning();
     return row ? toConversation(row) : null;
+  }
+
+  async archiveConversations(input: AssistantScope & { conversationIds: string[] }): Promise<AssistantConversationRecord[]> {
+    if (!input.conversationIds.length) return [];
+    const rows = await db
+      .update(aiConversations)
+      .set({ status: "archived", archivedAt: new Date(), updatedAt: new Date() })
+      .where(and(
+        eq(aiConversations.orgId, input.organizationId),
+        eq(aiConversations.userId, input.userId),
+        eq(aiConversations.status, "active"),
+        inArray(aiConversations.id, input.conversationIds),
+      ))
+      .returning();
+    return rows.map(toConversation);
   }
 
   async createFoundationTurn(input: AssistantScope & {

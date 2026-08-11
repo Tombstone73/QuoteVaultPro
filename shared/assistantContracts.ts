@@ -1068,6 +1068,11 @@ export const assistantUpdateConversationRequestSchema = z.object({
 });
 export type AssistantUpdateConversationRequest = z.infer<typeof assistantUpdateConversationRequestSchema>;
 
+export const assistantBulkArchiveConversationsRequestSchema = z.object({
+  conversationIds: z.array(assistantSafeIdentifierSchema).min(1).max(100),
+}).strict();
+export type AssistantBulkArchiveConversationsRequest = z.infer<typeof assistantBulkArchiveConversationsRequestSchema>;
+
 export const assistantTurnRequestSchema = z.object({
   message: z.string().trim().min(1).max(8_000),
   context: assistantContextEnvelopeSchema,

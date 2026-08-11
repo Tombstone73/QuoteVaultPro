@@ -52,6 +52,7 @@ function render(props: Partial<React.ComponentProps<typeof AssistantConversation
     onSelect: jest.fn(),
     onRename: jest.fn(async () => undefined),
     onArchive: jest.fn(async () => undefined),
+    onArchiveSelected: jest.fn(async () => undefined),
     onRestore: jest.fn(async () => undefined),
   };
   act(() => root.render(<AssistantConversationSidebar {...defaults} {...props} />));
@@ -63,7 +64,10 @@ describe("assistant conversation management", () => {
     (globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
   });
 
-  afterEach(() => document.body.replaceChildren());
+  afterEach(() => {
+    document.body.replaceChildren();
+    window.localStorage.clear();
+  });
 
   it("sanitizes a bounded title before submitting it", () => {
     expect(sanitizeAssistantConversationTitle("  <July>\u0000  production\nqueue  ")).toBe("July production queue");
@@ -76,9 +80,9 @@ describe("assistant conversation management", () => {
     const menu = view.container.querySelector('[aria-label="Conversation options for Original title"]') as HTMLButtonElement;
     expect(menu).toBeTruthy();
     await act(async () => menu.click());
-    const deleteItem = Array.from(document.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent?.includes("Delete conversation")) as HTMLElement;
-    expect(deleteItem).toBeTruthy();
-    await act(async () => deleteItem.click());
+    const archiveItem = Array.from(document.querySelectorAll('[role="menuitem"]')).find((item) => item.textContent?.includes("Archive conversation")) as HTMLElement;
+    expect(archiveItem).toBeTruthy();
+    await act(async () => archiveItem.click());
     expect(onArchive).not.toHaveBeenCalled();
     const confirm = Array.from(document.querySelectorAll("button")).find((button) => button.textContent === "Archive conversation") as HTMLButtonElement;
     await act(async () => confirm.click());
@@ -123,6 +127,49 @@ describe("assistant conversation management", () => {
     expect(list.className).toContain("min-h-0");
     expect(list.className).toContain("flex-1");
     expect(list.className).toContain("overflow-y-auto");
+    act(() => view.root.unmount());
+  });
+
+  it("collapses to a compact persisted rail while keeping New chat available", async () => {
+    const view = render();
+    const rail = view.container.querySelector('[aria-label="Assistant conversations"]') as HTMLElement;
+    const collapse = view.container.querySelector('[aria-label="Collapse conversations"]') as HTMLButtonElement;
+    await act(async () => collapse.click());
+    expect(rail.className).toContain("w-12");
+    expect(view.container.querySelector('[data-testid="assistant-conversation-list"]')).toBeNull();
+    expect(view.container.querySelector('[aria-label="New chat"]')).toBeTruthy();
+    expect(window.localStorage.getItem("titan.assistant.conversations.collapsed")).toBe("true");
+    act(() => view.root.unmount());
+
+    const restored = render();
+    expect(restored.container.querySelector('[aria-label="Expand conversations"]')).toBeTruthy();
+    act(() => restored.root.unmount());
+  });
+
+  it("selects and deselects chats without opening them, then archives the selected ids together", async () => {
+    const onSelect = jest.fn();
+    const onArchiveSelected = jest.fn(async () => undefined);
+    const onArchiveComplete = jest.fn();
+    const view = render({
+      conversations: [conversation("conversation-1", "Original title"), conversation("conversation-3", "Another chat")],
+      onSelect,
+      onArchiveSelected,
+      onArchiveComplete,
+    });
+    const selectMode = view.container.querySelector('[aria-label="Select conversations"]') as HTMLButtonElement;
+    await act(async () => selectMode.click());
+    const archive = Array.from(view.container.querySelectorAll("button")).find((button) => button.textContent?.includes("Archive (0)")) as HTMLButtonElement;
+    expect(archive.disabled).toBe(true);
+    const first = view.container.querySelector('[aria-label="Select Original title"]') as HTMLButtonElement;
+    const second = view.container.querySelector('[aria-label="Select Another chat"]') as HTMLButtonElement;
+    await act(async () => first.click());
+    await act(async () => second.click());
+    expect(onSelect).not.toHaveBeenCalled();
+    const selectedArchive = Array.from(view.container.querySelectorAll("button")).find((button) => button.textContent?.includes("Archive (2)")) as HTMLButtonElement;
+    await act(async () => selectedArchive.click());
+    expect(onArchiveSelected).toHaveBeenCalledWith(["conversation-1", "conversation-3"]);
+    expect(onArchiveComplete).toHaveBeenCalledWith(["conversation-1", "conversation-3"]);
+    expect(view.container.querySelector('[aria-label="Select conversations"]')).toBeTruthy();
     act(() => view.root.unmount());
   });
 });

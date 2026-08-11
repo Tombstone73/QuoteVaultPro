@@ -5,7 +5,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
-import { useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useCanonicalProductIntentInteraction, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSendAssistantTurn, useSubmitAssistantOrderOptionSelections, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
+import { useArchiveAssistantConversations, useAssistantConversation, useAssistantConversations, useCancelAssistantPlan, useCancelAssistantReportResolution, useCanonicalProductIntentInteraction, useConfirmAssistantQuoteInternalNote, useCreateAssistantConversation, useCreateAssistantExecutionPlan, useSelectAssistantReportResolution, useSendAssistantTurn, useSubmitAssistantOrderOptionSelections, useUpdateAssistantConversation } from "@/hooks/useAssistantApi";
 import { useAssistantWorkspace } from "./AssistantWorkspaceProvider";
 import type { AssistantPresentation } from "./types";
 import type { AssistantContextEnvelope } from "./types";
@@ -673,6 +673,7 @@ function ConversationContent() {
   const archivedConversations = useAssistantConversations(enabled, "archived");
   const createConversation = useCreateAssistantConversation();
   const updateConversation = useUpdateAssistantConversation();
+  const archiveConversations = useArchiveAssistantConversations();
   const detail = useAssistantConversation(activeConversationId, enabled);
   const sendTurn = useSendAssistantTurn();
   const cancelPlan = useCancelAssistantPlan();
@@ -797,10 +798,11 @@ function ConversationContent() {
         onSelect={setActiveConversationId}
         onRename={(conversationId, title) => updateConversation.mutateAsync({ conversationId, patch: { title } })}
         onArchive={(conversationId) => updateConversation.mutateAsync({ conversationId, patch: { status: "archived" } })}
+        onArchiveSelected={(conversationIds) => archiveConversations.mutateAsync({ conversationIds })}
         onRestore={(conversationId) => updateConversation.mutateAsync({ conversationId, patch: { status: "active" } })}
-        onArchiveComplete={(conversationId) => {
-          if (activeConversationId !== conversationId) return;
-          setActiveConversationId(conversationItems.find((conversation) => conversation.id !== conversationId)?.id ?? null);
+        onArchiveComplete={(conversationIds) => {
+          if (!activeConversationId || !conversationIds.includes(activeConversationId)) return;
+          setActiveConversationId(conversationItems.find((conversation) => !conversationIds.includes(conversation.id))?.id ?? null);
         }}
       />
       {/* Legacy sidebar markup remains intentionally removed in favor of the metadata-aware conversation sidebar.
