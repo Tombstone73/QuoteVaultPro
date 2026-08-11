@@ -297,7 +297,7 @@ export function CompanyInfoInvoiceBrandingCard() {
         ) : (
           <>
             <div>
-              <h3 className="text-base font-semibold">Company Info & Branding</h3>
+              <h3 id="company-info-branding" tabIndex={-1} className="text-base font-semibold scroll-mt-6">Company Info & Branding</h3>
               <p className="text-sm text-muted-foreground">
                 These fields identify the organization on invoices and other generated documents.
               </p>
@@ -408,7 +408,7 @@ export function CompanyInfoInvoiceBrandingCard() {
 
             <div className="space-y-4">
               <div>
-                <h3 className="text-base font-semibold">Invoice & Payment Details</h3>
+                <h3 id="invoice-payment-details" tabIndex={-1} className="text-base font-semibold scroll-mt-6">Invoice & Payment Details</h3>
                 <p className="text-sm text-muted-foreground">
                   Payment mailing details and invoice-specific instructions shown on generated invoices.
                 </p>

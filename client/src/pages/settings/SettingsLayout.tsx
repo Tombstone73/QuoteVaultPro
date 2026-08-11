@@ -1,5 +1,5 @@
 import * as React from "react";
-import { Link, NavLink, Outlet, useLocation } from "react-router-dom";
+import { Link, NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { TitanCard } from "@/components/titan";
 import { PageHeader } from "@/components/titan";
@@ -39,6 +39,15 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/comp
 import { AlertTriangle, ChevronDown, CircleHelp, Loader2, Printer, Ticket } from "lucide-react";
 import { cn } from "@/lib/utils";
 import {
+  SETTINGS_NAV_ITEMS,
+  canAccessSettingsEntry,
+  focusSettingsTarget,
+  nextSettingsSearchIndex,
+  searchSettings,
+  settingsSearchDestination,
+  type SettingsSearchResult,
+} from "@/lib/settingsSearch";
+import {
   useProductionLineItemStatusRules,
   useProductionStationSteps,
   useProductionStations,
@@ -69,26 +78,7 @@ import {
   usePublishOrderWorkflow,
   useSaveOrderWorkflowDraft,
 } from "@/hooks/useOrders";
-import {
-  Settings,
-  Users,
-  Package,
-  Tag,
-  DollarSign,
-  Factory,
-  Boxes,
-  Bell,
-  Palette,
-  PlugZap,
-  Sliders,
-  Mail,
-  HardDrive,
-  Wrench,
-  Hash,
-  Brain,
-  KeyRound,
-  type LucideIcon,
-} from "lucide-react";
+import { Search, X } from "lucide-react";
 
 function Guard({ children }: { children: (activeOrgRole: string) => React.ReactNode }) {
   const { user, isLoading: isAuthLoading } = useAuth();
@@ -139,142 +129,114 @@ function Guard({ children }: { children: (activeOrgRole: string) => React.ReactN
   return <>{children(activeOrgRole)}</>;
 }
 
-type SettingsNavItem = {
-  label: string;
-  path: string;
-  icon: LucideIcon;
-  description?: string;
-  ownerOnly?: boolean;
-};
-
-const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
-  { 
-    label: "Company", 
-    path: "/settings/company", 
-    icon: Settings,
-    description: "Company info and defaults"
-  },
-  { 
-    label: "Preferences", 
-    path: "/settings/preferences", 
-    icon: Sliders,
-    description: "Workflow and behavior preferences"
-  },
-  {
-    label: "Customer Portal",
-    path: "/settings/customer-portal",
-    icon: KeyRound,
-    description: "Company portal access and contact invitations",
-  },
-  { 
-    label: "Users & Roles", 
-    path: "/settings/users", 
-    icon: Users,
-    description: "User management and permissions"
-  },
-  { 
-    label: "Product Catalog", 
-    path: "/settings/products", 
-    icon: Package,
-    description: "Products and pricing"
-  },
-  { 
-    label: "Product Types", 
-    path: "/settings/product-types", 
-    icon: Tag,
-    description: "Product categories and types"
-  },
-  { 
-    label: "Pricing Formulas", 
-    path: "/settings/pricing-formulas", 
-    icon: DollarSign,
-    description: "Pricing calculation rules"
-  },
-  { 
-    label: "Accounting & Integrations", 
-    path: "/settings/integrations", 
-    icon: PlugZap,
-    description: "QuickBooks and other integrations"
-  },
-  { 
-    label: "Email Settings", 
-    path: "/settings/email", 
-    icon: Mail,
-    description: "Email configuration for invoices and quotes"
-  },
-  {
-    label: "Storage",
-    path: "/settings/storage",
-    icon: HardDrive,
-    description: "Canonical storage routing and provider status"
-  },
-  {
-    label: "AI Settings",
-    path: "/settings/ai",
-    icon: Brain,
-    description: "AI provider mode, BYOK, and feature availability"
-  },
-  { 
-    label: "Production & Operations", 
-    path: "/settings/production", 
-    icon: Factory,
-    description: "Production workflow settings"
-  },
-  {
-    label: "Printers",
-    path: "/settings/printers",
-    icon: Printer,
-    description: "Production ticket and document printer profiles"
-  },
-  { 
-    label: "Inventory & Procurement", 
-    path: "/settings/inventory", 
-    icon: Boxes,
-    description: "Inventory and vendor settings"
-  },
-  { 
-    label: "Notifications", 
-    path: "/settings/notifications", 
-    icon: Bell,
-    description: "Email and notification preferences"
-  },
-  { 
-    label: "Appearance / Themes", 
-    path: "/settings/appearance", 
-    icon: Palette,
-    description: "UI theme and visual preferences"
-  },
-  {
-    label: "System Setup",
-    path: "/settings/setup",
-    icon: Hash,
-    description: "System initialization: document numbering sequences",
-  },
-  {
-    label: "Admin Tools",
-    path: "/settings/admin-tools",
-    icon: Wrench,
-    description: "Data portability and system administration",
-    ownerOnly: true,
-  },
-];
-
 function SettingsNav({ activeOrgRole }: { activeOrgRole?: string }) {
   const location = useLocation();
+  const navigate = useNavigate();
+  const [query, setQuery] = React.useState("");
+  const [activeIndex, setActiveIndex] = React.useState(0);
+  const searchInputRef = React.useRef<HTMLInputElement>(null);
+  const results = React.useMemo(() => searchSettings(query, activeOrgRole), [query, activeOrgRole]);
+  const searchOpen = query.trim().length > 0;
+
+  React.useEffect(() => {
+    setActiveIndex(0);
+  }, [query]);
+
+  const openResult = (result: SettingsSearchResult) => {
+    const destination = settingsSearchDestination(result);
+    const targetHash = result.anchor ? `#${result.anchor}` : "";
+
+    setQuery("");
+    if (location.pathname === result.route && location.hash === targetHash) {
+      if (result.anchor) focusSettingsTarget(result.anchor);
+      return;
+    }
+
+    navigate(destination);
+  };
+
+  const handleSearchKeyDown = (event: React.KeyboardEvent<HTMLInputElement>) => {
+    if (event.key === "ArrowDown" && results.length) {
+      event.preventDefault();
+      setActiveIndex((current) => nextSettingsSearchIndex(current, results.length, 1));
+    } else if (event.key === "ArrowUp" && results.length) {
+      event.preventDefault();
+      setActiveIndex((current) => nextSettingsSearchIndex(current, results.length, -1));
+    } else if (event.key === "Enter" && results[activeIndex]) {
+      event.preventDefault();
+      openResult(results[activeIndex]);
+    } else if (event.key === "Escape") {
+      event.preventDefault();
+      setQuery("");
+      searchInputRef.current?.blur();
+    }
+  };
   
   return (
     <TitanCard className="p-3 h-fit sticky top-6">
-      <div className="space-y-0.5">
-        {SETTINGS_NAV_ITEMS.filter((item) => !item.ownerOnly || hasOwnerOnlyAdminToolsRole(activeOrgRole)).map((item) => {
+      <div className="space-y-2">
+        <div className="relative">
+          <Search className="pointer-events-none absolute left-2.5 top-1/2 h-4 w-4 -translate-y-1/2 text-titan-text-muted" />
+          <Input
+            ref={searchInputRef}
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            onKeyDown={handleSearchKeyDown}
+            placeholder="Search settings"
+            aria-label="Search settings"
+            aria-controls="settings-search-results"
+            aria-expanded={searchOpen}
+            className="h-9 pl-8 pr-8 text-sm"
+          />
+          {query ? (
+            <button
+              type="button"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-titan-text-muted hover:text-titan-text-primary"
+              onClick={() => { setQuery(""); searchInputRef.current?.focus(); }}
+              aria-label="Clear settings search"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          ) : null}
+          {searchOpen ? (
+            <div id="settings-search-results" role="listbox" className="absolute left-0 right-0 top-full z-20 mt-1 max-h-80 overflow-y-auto rounded-titan-md border border-titan-border-subtle bg-titan-bg-card p-1 shadow-titan-card">
+              {results.length ? results.map((result, index) => (
+                <button
+                  key={result.id}
+                  type="button"
+                  role="option"
+                  aria-selected={index === activeIndex}
+                  className={cn(
+                    "w-full rounded-titan-sm px-2.5 py-2 text-left transition-colors",
+                    index === activeIndex ? "bg-titan-bg-card-elevated" : "hover:bg-titan-bg-card-elevated",
+                  )}
+                  onMouseEnter={() => setActiveIndex(index)}
+                  onClick={() => openResult(result)}
+                >
+                  <div className="text-titan-sm font-medium text-titan-text-primary">{result.label}</div>
+                  <div className="mt-0.5 text-titan-xs text-titan-text-secondary">{result.kind === "setting" ? result.category : "Settings"}</div>
+                  <div className="mt-0.5 text-titan-xs text-titan-text-muted">{result.description}</div>
+                </button>
+              )) : (
+                <div className="px-3 py-6 text-center">
+                  <p className="text-titan-sm font-medium text-titan-text-primary">No results found</p>
+                  <p className="mt-1 text-titan-xs text-titan-text-muted">No matches for &quot;{query}&quot;</p>
+                </div>
+              )}
+            </div>
+          ) : null}
+        </div>
+        <div className="space-y-0.5">
+        {SETTINGS_NAV_ITEMS.filter((item) => canAccessSettingsEntry(item, activeOrgRole)).map((item) => {
           const Icon = item.icon;
-          const active = 
-            location.pathname === item.path || 
-            (item.path === "/settings/company" && location.pathname === "/settings");
+          const active =
+            location.pathname === item.route ||
+            (item.route === "/settings/company" && location.pathname === "/settings");
           
           return (
             <NavLink
-              key={item.path}
-              to={item.path}
+              key={item.id}
+              to={item.route}
               className={cn(
                 "flex items-center gap-3 rounded-titan-md px-3 py-2 text-sm font-medium transition-colors w-full",
                 "hover:bg-titan-bg-card-elevated",
@@ -288,12 +250,27 @@ function SettingsNav({ activeOrgRole }: { activeOrgRole?: string }) {
             </NavLink>
           );
         })}
+        </div>
       </div>
     </TitanCard>
   );
 }
 
 export function SettingsLayout() {
+  const location = useLocation();
+
+  React.useEffect(() => {
+    const anchor = decodeURIComponent(location.hash.slice(1));
+    if (!anchor) return;
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      if (!focusSettingsTarget(anchor)) {
+        window.setTimeout(() => focusSettingsTarget(anchor), 100);
+      }
+    });
+    return () => window.cancelAnimationFrame(animationFrame);
+  }, [location.hash, location.pathname]);
+
   return (
     <Guard>
       {(activeOrgRole) => (
@@ -516,6 +493,7 @@ function SectionLabel({ title, help }: { title: string; help?: string }) {
 }
 
 function ProductionSettingsSection({
+  id,
   title,
   summary,
   help,
@@ -524,6 +502,7 @@ function ProductionSettingsSection({
   actions,
   children,
 }: React.PropsWithChildren<{
+  id?: string;
   title: string;
   summary: string;
   help?: string;
@@ -531,11 +510,17 @@ function ProductionSettingsSection({
   warningCount?: number;
   actions?: React.ReactNode;
 }>) {
-  const [open, setOpen] = React.useState(Boolean(defaultOpen || warningCount > 0));
+  const location = useLocation();
+  const isAnchoredTarget = Boolean(id && location.hash === `#${id}`);
+  const [open, setOpen] = React.useState(Boolean(defaultOpen || warningCount > 0 || isAnchoredTarget));
+
+  React.useEffect(() => {
+    if (isAnchoredTarget) setOpen(true);
+  }, [isAnchoredTarget]);
 
   return (
     <Collapsible open={open} onOpenChange={setOpen}>
-      <div className="rounded-titan-lg border border-titan-border-subtle bg-transparent overflow-hidden">
+      <div id={id} tabIndex={id ? -1 : undefined} className="rounded-titan-lg border border-titan-border-subtle bg-transparent overflow-hidden transition-shadow">
         <div className={cn(
           "flex flex-wrap items-start gap-3 px-4 py-3",
           warningCount > 0 && "bg-amber-50/40"
@@ -1289,6 +1274,7 @@ export function ProductionSettings() {
         </ProductionSettingsSection>
 
         <ProductionSettingsSection
+          id="proofing-policy"
           title="Proofing Policy"
           summary={proofingPolicy === "automatic" ? "Product proof requirements are active" : "Only customer and staff-requested proofs are required"}
           help="Changing this does not edit products or disable proofing. Customer-specific and manually requested proofs remain available."
@@ -1311,6 +1297,7 @@ export function ProductionSettings() {
         </ProductionSettingsSection>
 
         <ProductionSettingsSection
+          id="proof-approval"
           title="Proof Approval"
           summary={proofApprovalLockEnabled ? "Required proof approval is locked" : "Required proof approval can be overridden"}
           help="Controls whether product-required proof approval can be manually unchecked during quote and order intake."
