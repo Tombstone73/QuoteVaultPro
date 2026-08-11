@@ -7100,7 +7100,7 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.post("/api/order-line-items", isAuthenticated, tenantContext, async (req: any, res) => {
+    app.post("/api/order-line-items", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
@@ -7395,7 +7395,7 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.post("/api/order-line-items/:id/production-bypass", isAuthenticated, tenantContext, async (req: any, res) => {
+    app.post("/api/order-line-items/:id/production-bypass", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
@@ -7455,7 +7455,7 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.patch("/api/order-line-items/:id/parent", isAuthenticated, tenantContext, async (req: any, res) => {
+    app.patch("/api/order-line-items/:id/parent", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
@@ -7504,7 +7504,7 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.patch("/api/order-line-items/:id", isAuthenticated, tenantContext, async (req: any, res) => {
+    app.patch("/api/order-line-items/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });

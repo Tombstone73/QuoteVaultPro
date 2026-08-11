@@ -84,6 +84,7 @@ import { buildProofingLineItemPath } from "@/lib/proofingNavigation";
 import { getOrderProofBadgeClass } from "@/lib/orderProofUi";
 import { canOpenProofingFromOrderStatus } from "@shared/orderProofStatus";
 import { isCanceledOrder } from "@shared/operationalState";
+import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { ROUTES } from "@/config/routes";
 import { downloadAuthenticatedPdf, openAuthenticatedPdfForPrint, openAuthenticatedPdfPreview } from "@/lib/authenticatedPdfPreview";
 import { apiFetch } from "@/lib/queryClient";
@@ -692,8 +693,8 @@ export default function OrderDetail() {
     },
   });
 
-  // Check if user is admin or owner
-  const isAdminOrOwner = user?.isAdmin || user?.role === 'owner' || user?.role === 'admin';
+  // Check if user has owner/admin operational access.
+  const isAdminOrOwner = hasAdminOrOwnerOperationalRole(user);
   const isManagerOrHigher = isAdminOrOwner || user?.role === 'manager';
   const proofApprovalPolicyOverride = String((order as any)?.proofApprovalPolicyOverride || "inherit_default");
   const proofBypassed = proofApprovalPolicyOverride === "bypass";

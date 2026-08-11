@@ -51,6 +51,7 @@ import {
 import { inboundEmailIntakeSettingsService } from "../services/inboundEmailIntakeSettingsService";
 import { resetTransactionalData, resetQuickBooksImportData } from "../services/orgResetService";
 import { resolveFileUploadNamingPolicyFromPreferences } from "../prepressFileService";
+import { hasOwnerOnlyAdminToolsRole } from "@shared/roleAccess";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -79,6 +80,12 @@ export function registerOrganizationRoutes(
   },
 ): void {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = middleware;
+  const requireAdminToolsOwner = (req: any, res: any, next: any) => {
+    const role = req.actorOrgRole ?? req.orgRole ?? req.user?.orgRole ?? req.user?.role;
+    if (hasOwnerOnlyAdminToolsRole(role)) return next();
+    return res.status(403).json({ message: "Access denied. Organization Owner role required for Admin Tools." });
+  };
+  const adminToolsGuards = [isAuthenticated, tenantContext, requireOrgOwnerAdmin, requireAdminToolsOwner];
 
   // ============================================================
   // ORGANIZATION MANAGEMENT ROUTES (Multi-Tenant)
@@ -499,9 +506,9 @@ export function registerOrganizationRoutes(
    * POST /api/admin/org/reset
    * Reset organization transactional data (orders, invoices, quotes, production records).
    * Preserves organization, users, products, materials, pricing, OAuth, and all config.
-   * Requires owner/admin role.
+   * Requires owner role.
    */
-  app.post("/api/admin/org/reset", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+  app.post("/api/admin/org/reset", ...adminToolsGuards, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const userId = getUserId(req.user);
@@ -526,9 +533,9 @@ export function registerOrganizationRoutes(
    * Selectively remove QuickBooks-imported data without wiping other tenant data.
    * Optional body: { disconnectOAuth?: boolean, deleteQBCustomers?: boolean }
    * Preserves org, users, products, materials, and QB OAuth by default.
-   * Requires owner/admin role.
+   * Requires owner role.
    */
-  app.post("/api/admin/org/reset-quickbooks-import", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+  app.post("/api/admin/org/reset-quickbooks-import", ...adminToolsGuards, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const userId = getUserId(req.user);
@@ -565,9 +572,9 @@ export function registerOrganizationRoutes(
    * POST /api/admin/org/disable
    * Disable organization - prevents non-admin access.
    * Organization remains in system.
-   * Requires owner/admin role.
+   * Requires owner role.
    */
-  app.post("/api/admin/org/disable", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+  app.post("/api/admin/org/disable", ...adminToolsGuards, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const userId = getUserId(req.user);
@@ -601,10 +608,10 @@ export function registerOrganizationRoutes(
   /**
    * DELETE /api/admin/org
    * Request organization deletion (sets pending_delete state).
-   * Only org owner/admin can request. Platform admin must finalize.
-   * Requires owner/admin role.
+   * Only org owner can request. Platform admin must finalize.
+   * Requires owner role.
    */
-  app.delete("/api/admin/org", isAuthenticated, tenantContext, requireOrgOwnerAdmin, async (req: any, res) => {
+  app.delete("/api/admin/org", ...adminToolsGuards, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
       const userId = getUserId(req.user);

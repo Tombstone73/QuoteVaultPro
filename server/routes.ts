@@ -115,7 +115,7 @@ const isOwner = (req: any, res: any, next: any) => {
 };
 
 const isAdminOrOwner = (req: any, res: any, next: any) => {
-  if (req.user?.role === 'owner' || req.user?.role === 'admin') {
+  if (hasAdminOrOwnerOperationalRole(req.user)) {
     return next();
   }
   return res.status(403).json({ message: "Access denied. Admin or Owner role required." });
@@ -125,6 +125,7 @@ const isAdminOrOwner = (req: any, res: any, next: any) => {
 // NOTE: user_organizations.role is the authoritative org-scoped role.
 // users.role / users.is_admin are global identity fields only.
 import { canInviteOrgUsers } from './lib/orgPermissions';
+import { hasAdminOrOwnerOperationalRole } from '@shared/roleAccess';
 
 // Org-scoped owner/admin check - requires tenantContext middleware.
 // Attaches req.actorOrgRole for use in downstream route handlers.

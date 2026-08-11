@@ -9,6 +9,7 @@ import { useOrgPreferences, type OrgPreferences } from "@/hooks/useOrgPreference
 import { BILLING_INVOICE_TRIGGER_POLICIES, type BillingInvoiceTriggerPolicy } from "@shared/billingInvoicePolicy";
 import { fetchMyOrgs } from "@/lib/api/me";
 import { getApiUrl } from "@/lib/apiConfig";
+import { hasOwnerOnlyAdminToolsRole } from "@shared/roleAccess";
 import { useLowStockAlerts } from "@/hooks/useMaterials";
 import { useVendors } from "@/hooks/useVendors";
 import { MaterialsSettingsPanel } from "@/features/materials/MaterialsSettingsPanel";
@@ -89,8 +90,9 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-function Guard({ children }: React.PropsWithChildren<{}>) {
+function Guard({ children }: { children: (activeOrgRole: string) => React.ReactNode }) {
   const { user, isLoading: isAuthLoading } = useAuth();
+  const location = useLocation();
   const { data: orgData, isLoading: isOrgLoading } = useQuery({
     queryKey: [getApiUrl("/api/me/orgs")],
     queryFn: fetchMyOrgs,
@@ -102,6 +104,7 @@ function Guard({ children }: React.PropsWithChildren<{}>) {
   const activeOrg = orgs.find((org) => org.id === orgData?.data?.lastActiveOrgId) ?? (orgs.length === 1 ? orgs[0] : null);
   const activeOrgRole = activeOrg?.role ?? "";
   const allowed = activeOrgRole === "owner" || activeOrgRole === "admin";
+  const isAdminToolsRoute = location.pathname === "/settings/admin-tools";
 
   if (isAuthLoading || (!!user && isOrgLoading)) {
     return (
@@ -122,7 +125,18 @@ function Guard({ children }: React.PropsWithChildren<{}>) {
       </div>
     );
   }
-  return <>{children}</>;
+
+  if (isAdminToolsRoute && !hasOwnerOnlyAdminToolsRole(activeOrgRole)) {
+    return (
+      <div className="min-h-screen bg-titan-bg-app p-6">
+        <TitanCard className="p-6">
+          <p className="text-titan-text-secondary">Access denied. Admin Tools are only available to organization Owners.</p>
+        </TitanCard>
+      </div>
+    );
+  }
+
+  return <>{children(activeOrgRole)}</>;
 }
 
 type SettingsNavItem = {
@@ -130,6 +144,7 @@ type SettingsNavItem = {
   path: string;
   icon: LucideIcon;
   description?: string;
+  ownerOnly?: boolean;
 };
 
 const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
@@ -239,17 +254,18 @@ const SETTINGS_NAV_ITEMS: SettingsNavItem[] = [
     label: "Admin Tools",
     path: "/settings/admin-tools",
     icon: Wrench,
-    description: "Data portability and system administration"
+    description: "Data portability and system administration",
+    ownerOnly: true,
   },
 ];
 
-function SettingsNav() {
+function SettingsNav({ activeOrgRole }: { activeOrgRole?: string }) {
   const location = useLocation();
   
   return (
     <TitanCard className="p-3 h-fit sticky top-6">
       <div className="space-y-0.5">
-        {SETTINGS_NAV_ITEMS.map((item) => {
+        {SETTINGS_NAV_ITEMS.filter((item) => !item.ownerOnly || hasOwnerOnlyAdminToolsRole(activeOrgRole)).map((item) => {
           const Icon = item.icon;
           const active = 
             location.pathname === item.path || 
@@ -280,22 +296,24 @@ function SettingsNav() {
 export function SettingsLayout() {
   return (
     <Guard>
-      <div className="min-h-screen bg-titan-bg-app p-6">
-        <PageHeader
-          title="Settings"
-          subtitle="Configure Printers Hero, your account, and integrations"
-        />
-        
-        <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6 mt-6">
-          {/* Left: Settings Navigation */}
-          <SettingsNav />
-          
-          {/* Right: Settings Content */}
-          <div className="min-w-0">
-            <Outlet />
+      {(activeOrgRole) => (
+        <div className="min-h-screen bg-titan-bg-app p-6">
+          <PageHeader
+            title="Settings"
+            subtitle="Configure Printers Hero, your account, and integrations"
+          />
+
+          <div className="grid grid-cols-1 lg:grid-cols-[260px_1fr] gap-6 mt-6">
+            {/* Left: Settings Navigation */}
+            <SettingsNav activeOrgRole={activeOrgRole} />
+
+            {/* Right: Settings Content */}
+            <div className="min-w-0">
+              <Outlet />
+            </div>
           </div>
         </div>
-      </div>
+      )}
     </Guard>
   );
 }
