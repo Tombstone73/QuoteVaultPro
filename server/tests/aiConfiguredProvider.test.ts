@@ -188,6 +188,43 @@ describe("configured AI provider", () => {
     expect(result.requestMetadata).toMatchObject({ terminalClassification: "operator_decision", parseClassification: "operator_decision" });
   });
 
+  test("recovers a complete terminal envelope with literal newline controls without exposing its protocol", async () => {
+    const malformed = '{"kind":"complete","response":"First line\nSecond line"}';
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: malformed }] }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "First line\nSecond line" });
+    expect(result.requestMetadata).toMatchObject({ terminalClassification: "operator_decision_sanitized_string_controls", parseClassification: "operator_decision" });
+  });
+
+  test("recovers literal carriage-return and tab controls only within complete-envelope strings", async () => {
+    const malformed = '{"kind":"complete","response":"First\rSecond\tIndented"}';
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: malformed }] }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "First\rSecond\tIndented" });
+    expect(result.requestMetadata.terminalClassification).toBe("operator_decision_sanitized_string_controls");
+  });
+
+  test("keeps escaped newline controls on the strict terminal-decision path", async () => {
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: '{"kind":"complete","response":"First\\nSecond"}' }] }] })) as unknown as typeof fetch;
+
+    const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
+
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: "First\nSecond" });
+    expect(result.requestMetadata.terminalClassification).toBe("operator_decision");
+  });
+
+  test("rejects unrecoverable control-shaped terminal text instead of rendering raw Operator syntax", async () => {
+    const malformed = '{"kind":"complete"\u0001,"response":"Never render this protocol."}';
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: malformed }] }] })) as unknown as typeof fetch;
+
+    await expect(new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] }))
+      .rejects.toMatchObject({ name: "AiProviderResponseError", kind: "provider_protocol_failure" });
+  });
+
   test("accepts an ordinary direct terminal answer without requiring a tool call", async () => {
     global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{ type: "message", content: [{ type: "output_text", text: "Weeding and Taping is already limited to Contour Cutting = Yes, and its default is No. I did not change anything." }] }] })) as unknown as typeof fetch;
     const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
@@ -234,14 +271,24 @@ describe("configured AI provider", () => {
     expect(result.requestMetadata).toMatchObject({ terminalClassification: "operator_decision", parseClassification: "operator_decision" });
   });
 
-  test("keeps malformed or unrelated JSON as ordinary terminal content", async () => {
+  test("rejects incomplete control-shaped JSON instead of rendering it as ordinary terminal content", async () => {
     global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{
       type: "message", content: [{ type: "output_text", text: '{"kind":"continue"' }],
     }] })) as unknown as typeof fetch;
 
+    await expect(new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] }))
+      .rejects.toMatchObject({ name: "AiProviderResponseError", kind: "provider_protocol_failure" });
+  });
+
+  test("keeps ordinary non-Operator JSON as terminal content", async () => {
+    const ordinaryJson = '{"kind":"product_metadata","active":true}';
+    global.fetch = jest.fn(async () => jsonResponse({ status: "completed", output: [{
+      type: "message", content: [{ type: "output_text", text: ordinaryJson }],
+    }] })) as unknown as typeof fetch;
+
     const result = await new OpenAiCompatibleBugReviewProvider().generateOperatorDecision!({ ...baseRequest(), toolCatalog: [] });
 
-    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: '{"kind":"continue"' });
+    expect(JSON.parse(result.rawText)).toEqual({ kind: "complete", response: ordinaryJson });
     expect(result.requestMetadata).toMatchObject({ terminalClassification: "provider_message", parseClassification: "terminal_completion" });
   });
 

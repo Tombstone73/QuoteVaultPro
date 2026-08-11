@@ -536,7 +536,11 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
       // whether remaining text is unsafe control leakage.
       const parsedTerminalDecision = parseDeepSeekTerminalDecision(normalizedTerminalText, providerFunctionNames);
       const terminalDecision = parsedTerminalDecision?.decision ?? null;
-      const terminalCompletion = terminalDecision ? null : normalizeDeepSeekOperatorTerminal(normalizedTerminalText);
+      // A malformed control-shaped payload is never ordinary assistant prose.
+      // If bounded recovery did not produce a schema-valid decision, keep it
+      // out of the presentation path and fail at the provider boundary below.
+      const malformedControlEnvelope = !terminalDecision && resemblesOperatorControlEnvelope(normalizedTerminalText);
+      const terminalCompletion = terminalDecision || malformedControlEnvelope ? null : normalizeDeepSeekOperatorTerminal(normalizedTerminalText);
       const terminalClassification = parsedTerminalDecision?.classification ?? terminalCompletion?.classification ?? null;
       const hasTerminalDecision = Boolean(terminalDecision || terminalCompletion);
       const parseClassification = functionCalls.length ? "function_calls" : terminalDecision ? "operator_decision" : nativeWebSearchCalls.length && !hasTerminalDecision ? "native_web_continuation" : terminalCompletion ? "terminal_completion" : "empty_response";
@@ -544,7 +548,7 @@ export class OpenAiCompatibleBugReviewProvider implements AiProviderAdapter {
         output, outputItemTypes, outputItemStatuses, functionCallItems, functionCalls, decodedFunctionCalls,
         outputTextFragments, finalText, responseStatus, terminalDecision, terminalClassification, parseClassification,
       });
-      if (!functionCalls.length && !terminalDecision && hasProviderControlProtocol(normalizedTerminalText)) {
+      if (!functionCalls.length && !terminalDecision && (hasProviderControlProtocol(normalizedTerminalText) || malformedControlEnvelope)) {
         console.warn("[AI_PROVIDER] DeepSeek Responses returned unconsumed control protocol.", {
           provider: config.provider, model: config.model, apiSurface: "deepseek_responses", providerRequestId,
           responseStatus, outputItemTypes, responseItemCount: output.length, structuredToolCallDetected: false,
@@ -718,15 +722,78 @@ function normalizeDeepSeekOperatorTerminal(finalText: string): { response: strin
  */
 function parseDeepSeekTerminalDecision(finalText: string, providerFunctionNames: ReadonlyMap<string, string>): {
   decision: AssistantOperatorDecision;
-  classification: "operator_decision" | "operator_decision_parameter_suffix";
+  classification: "operator_decision" | "operator_decision_parameter_suffix" | "operator_decision_sanitized_string_controls" | "operator_decision_parameter_suffix_sanitized_string_controls";
 } | null {
   const direct = parseAssistantOperatorDecisionText(finalText);
   if (direct) return { decision: normalizeDeepSeekTerminalDecisionAliases(direct, providerFunctionNames), classification: "operator_decision" };
 
+  const recoveredDirect = recoverMalformedOperatorControlEnvelope(finalText);
+  if (recoveredDirect) return { decision: normalizeDeepSeekTerminalDecisionAliases(recoveredDirect, providerFunctionNames), classification: "operator_decision_sanitized_string_controls" };
+
   const { text: withoutParameterSuffix, stripped } = stripKnownDeepSeekTransportSuffix(finalText);
   if (!stripped) return null;
   const normalized = parseAssistantOperatorDecisionText(withoutParameterSuffix);
-  return normalized ? { decision: normalizeDeepSeekTerminalDecisionAliases(normalized, providerFunctionNames), classification: "operator_decision_parameter_suffix" } : null;
+  if (normalized) return { decision: normalizeDeepSeekTerminalDecisionAliases(normalized, providerFunctionNames), classification: "operator_decision_parameter_suffix" };
+  const recoveredSuffix = recoverMalformedOperatorControlEnvelope(withoutParameterSuffix);
+  return recoveredSuffix ? { decision: normalizeDeepSeekTerminalDecisionAliases(recoveredSuffix, providerFunctionNames), classification: "operator_decision_parameter_suffix_sanitized_string_controls" } : null;
+}
+
+/** A recovery attempt is permitted only for a top-level object whose early
+ * discriminator is one of the five Operator control kinds. This deliberately
+ * excludes ordinary JSON content from the provider-message path. */
+function resemblesOperatorControlEnvelope(value: string): boolean {
+  return /^\s*\{[\s\S]{0,320}?"kind"\s*:\s*"(?:continue|call_tools|ask_user|complete|fail)"/.test(value);
+}
+
+/** Escape only illegal U+0000–U+001F characters that occur inside a JSON
+ * string. It understands backslash escapes and quotes, performs one pass,
+ * and never changes control characters outside a string. The normal strict
+ * parser and Operator decision schema remain the authority after this repair. */
+function escapeLiteralJsonStringControls(value: string): string | null {
+  let inString = false;
+  let escaped = false;
+  let changed = false;
+  let output = "";
+  for (let index = 0; index < value.length; index += 1) {
+    const character = value[index]!;
+    if (!inString) {
+      output += character;
+      if (character === '"') inString = true;
+      continue;
+    }
+    if (escaped) {
+      output += character;
+      escaped = false;
+      continue;
+    }
+    if (character === "\\") {
+      output += character;
+      escaped = true;
+      continue;
+    }
+    if (character === '"') {
+      output += character;
+      inString = false;
+      continue;
+    }
+    const code = character.charCodeAt(0);
+    if (code > 0x1f) {
+      output += character;
+      continue;
+    }
+    changed = true;
+    output += character === "\n" ? "\\n"
+      : character === "\r" ? "\\r"
+        : character === "\t" ? "\\t"
+          : `\\u${code.toString(16).padStart(4, "0")}`;
+  }
+  return changed ? output : null;
+}
+
+function recoverMalformedOperatorControlEnvelope(value: string): AssistantOperatorDecision | null {
+  if (!resemblesOperatorControlEnvelope(value)) return null;
+  const sanitized = escapeLiteralJsonStringControls(value);
+  return sanitized ? parseAssistantOperatorDecisionText(sanitized) : null;
 }
 
 /** Textual DeepSeek decisions can use the same short aliases as its native
