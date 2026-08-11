@@ -492,6 +492,7 @@ export const assistantProductPricingInputSchema = z.object({
 export const assistantProductPricingResultSchema = z.object({
   product: assistantEntitySummarySchema,
   active: z.boolean(),
+  category: z.string().trim().min(1).max(160).nullable().optional(),
   pricing: z.object({
     status: z.enum(["configuration", "priced", "input_needed", "unavailable"]),
     pricingMethod: z.string().trim().min(1).max(160).nullable(),

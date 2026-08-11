@@ -780,4 +780,43 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(intent.pricing).toMatchObject({ model: "one_dimensional_matrix", unit: "per_square_foot", cells: [{ priceCents: 400 }] });
     expect(weedTape?.availableWhen).toEqual({ optionGroupKey: contour?.key, optionValueKey: contour?.values[0]?.key });
   });
+
+  test("retains supported Reflective Pole Signs details when customer-specific availability is outside the draft model", async () => {
+    const service = new CanonicalProductIntentService(null, new ProductIntentPersistenceService(new MemoryStore()), {
+      categories: [{ id: "rigid-signs", label: "Rigid Signs" }], materials: [], productionRoutes: [],
+    });
+    const begun = await service.begin({ organizationId: "org-1", actorUserId: "user-1", conversationId: "reflective-pole-signs" });
+    if (!begun.ok) throw new Error("Expected an unfinished draft.");
+
+    const created = await service.applySemanticOperations({
+      organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
+      request: "Add a product for 'Reflective Pole Signs' and it will be a product that we only use for a certain customer. The options will be grommets with placement, they will be logged as single sided as the only option for sides and they will be on coroplast with reflective vinyl mounted to them. They are priced at $9 each.",
+      operations: [
+        { op: "set_product_name", name: "Reflective Pole Signs" },
+        { op: "set_category", category: "Rigid Signs" },
+        { op: "set_material", material: "Coroplast with reflective vinyl" },
+        { op: "set_measurement_mode", mode: "quantity_only" },
+        { op: "set_pricing_basis", basis: "per_piece" },
+        { op: "add_option_group", optionGroup: "Sides", required: true, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Sides", value: "Single Sided" },
+        { op: "set_option_rate", optionGroup: "Sides", value: "Single Sided", priceCents: 900, basis: "per_piece" },
+        { op: "set_option_default", optionGroup: "Sides", value: "Single Sided" },
+        { op: "add_option_group", optionGroup: "Grommet Placement", required: false, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Grommet Placement", value: "None" },
+        { op: "add_option_value", optionGroup: "Grommet Placement", value: "Top and Bottom" },
+      ],
+    });
+
+    expect(created).toMatchObject({ ok: true });
+    if (!created.ok) throw new Error("Expected supported Reflective Pole Signs details to persist.");
+    const intent = created.session.specification.session.revisions.at(-1)!.intent;
+    expect(intent).toMatchObject({
+      identity: { name: "Reflective Pole Signs", category: { state: "resolved", id: "rigid-signs", label: "Rigid Signs" } },
+      material: { state: "unresolved", label: "Coroplast with reflective vinyl" },
+      measurement: { mode: "quantity_only" },
+      pricing: { model: "one_dimensional_matrix", unit: "per_piece", cells: [{ priceCents: 900 }] },
+    });
+    expect(intent.optionGroups.find((group) => group.label === "Sides")?.values).toEqual([{ key: "single_sided", label: "Single Sided", isDefault: true }]);
+    expect(intent.optionGroups.find((group) => group.label === "Grommet Placement")?.values.map((value) => value.label)).toEqual(["None", "Top and Bottom"]);
+  });
 });

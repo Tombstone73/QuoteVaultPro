@@ -440,6 +440,24 @@ function semanticFailureCode(error: unknown): string | null {
   return typeof candidate === "string" && /^[A-Z0-9_]{1,160}$/.test(candidate) ? candidate : null;
 }
 
+function requestedSemanticOperationNames(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined;
+  const names = value.flatMap((operation) => operation && typeof operation === "object" && typeof (operation as { op?: unknown }).op === "string"
+    ? [(operation as { op: string }).op.slice(0, 80)]
+    : []);
+  return names.length ? names : undefined;
+}
+
+function semanticOperationFailureMessage(error: unknown, requestedOperations: readonly string[] | undefined, referenceId: string): string {
+  const failedOperation = error instanceof SemanticProductOperationError
+    ? error.operationType
+    : error instanceof z.ZodError
+      ? requestedOperations?.[0]
+      : undefined;
+  const subject = failedOperation ? `the ${failedOperation} product operation` : "that product change";
+  return `I could not apply ${subject} safely. The current draft was left unchanged; review that operation and try again. Reference: ${referenceId}.`;
+}
+
 function semanticBatchDiagnostic(input: { operations?: SemanticProductOperationsResult["operations"]; error?: unknown; stage: string; originalRevisionUnchanged: boolean }): SemanticBatchDiagnostic | undefined {
   if (!input.operations) return undefined;
   const failure = input.error instanceof SemanticProductOperationError ? input.error : null;
@@ -783,6 +801,7 @@ export class CanonicalProductIntentService {
     let semanticOperations: SemanticProductOperationsResult["operations"] | undefined;
     let stage = "active_session_lookup";
     try {
+      requestedOperations = requestedSemanticOperationNames(input.operations);
       current = await this.persistence.load({ organizationId: input.organizationId, actorUserId: input.actorUserId, proposalId: input.proposalId });
       const draft = current.specification.session.revisions.at(-1)?.intent;
       if (!draft) {
@@ -856,7 +875,7 @@ export class CanonicalProductIntentService {
         code: stale ? "PRODUCT_INTENT_STALE_REVISION" : "PRODUCT_SEMANTIC_OPERATION_REJECTED",
         message: stale
           ? `The product draft changed before this correction could be saved. Review the latest draft and try again. Reference: ${referenceId}.`
-          : `I could not apply that product change safely. Review the current configuration and try again. Reference: ${referenceId}.`,
+          : semanticOperationFailureMessage(error, requestedOperations, referenceId),
       });
     }
   }

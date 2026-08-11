@@ -318,7 +318,7 @@ export class AssistantOperatorRuntime {
           }
           return {
             status: "failed",
-            response: "I couldn't reconcile the information already provided with the outstanding request. I won't repeat the same clarification; please start a new request if you still need help.",
+            response: "I couldn't reconcile the information already provided with the outstanding request. I won't repeat the same clarification.",
             observations,
             safeWorkingSummary,
             missingInformation: [], diagnostics: runtimeDiagnostics({ configuredMaxSteps: boundedSteps, stepsConsumed: step, providerDecisionCount, printersHeroToolDecisionCount, continuationCount, finalSynthesisUsed: false }),

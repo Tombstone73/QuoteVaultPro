@@ -9,6 +9,7 @@ export const semanticProductOperationsResultSchema = z.object({
   operations: z.array(z.discriminatedUnion("op", [
     z.object({ op: z.literal("set_product_name"), name: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("set_category"), category: z.string().trim().min(1).max(160) }).strict(),
+    z.object({ op: z.literal("set_material"), material: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("set_measurement_mode"), mode: z.enum(["dimensions_required", "quantity_only"]) }).strict(),
     z.object({ op: z.literal("set_pricing_basis"), basis: z.enum(["per_piece", "per_square_foot"]) }).strict(),
     z.object({ op: z.literal("add_option_group"), optionGroup: z.string().trim().min(1).max(160), required: z.boolean(), selectionMode: z.enum(["single", "multiple"]) }).strict(),
@@ -121,6 +122,8 @@ export function compileSemanticProductOperations(
   let nextIdentity = structuredClone(current.identity);
   let identityChanged = false;
   let categoryChanged = false;
+  let nextMaterial = structuredClone(current.material);
+  let materialChanged = false;
   let nextWorkflow = structuredClone(current.workflow);
   let workflowChanged = false;
   let nextMeasurement = structuredClone(current.measurement);
@@ -193,6 +196,12 @@ export function compileSemanticProductOperations(
       identityChanged = true;
       clearUnresolved("identity.name");
       mark("identity.name");
+      continue;
+    }
+    if (operation.op === "set_material") {
+      nextMaterial = { state: "unresolved", label: operation.material };
+      materialChanged = true;
+      mark("material");
       continue;
     }
     if (operation.op === "set_measurement_mode") {
@@ -332,6 +341,7 @@ export function compileSemanticProductOperations(
 
   const operations: ProductDraftIntentPatch["operations"] = [];
   if (identityChanged) operations.push({ op: "set_identity", value: nextIdentity });
+  if (materialChanged) operations.push({ op: "set_material", value: nextMaterial });
   if (measurementChanged) operations.push({ op: "set_measurement", value: nextMeasurement });
   if (groupsChanged) operations.push({ op: "replace_option_groups", value: nextGroups });
   if (pricingChanged) operations.push({ op: "set_pricing", value: nextPricing });

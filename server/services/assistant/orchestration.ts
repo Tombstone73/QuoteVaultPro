@@ -14,6 +14,7 @@ import {
   type AssistantToolDefinition,
   type AssistantTrustedToolContext,
 } from "./toolRegistry";
+import { canonicalOrderNumberLookup } from "@shared/documentNumbering";
 
 export const ASSISTANT_MAX_TOOL_CALLS_PER_TURN = 5;
 
@@ -106,10 +107,16 @@ export type AssistantToolAuditWriter = (event: AssistantToolExecutionAudit) => P
 export function normalizeAssistantToolArguments(toolName: AssistantToolName, value: unknown): unknown {
   if (toolName !== "orders.get_summary" || !value || typeof value !== "object" || Array.isArray(value)) return value;
   const args = value as Record<string, unknown>;
-  if (typeof args.orderNumber !== "number") return args;
-  const orderNumber = args.orderNumber;
-  if (!Number.isFinite(orderNumber) || !Number.isSafeInteger(orderNumber) || orderNumber < 0) return args;
-  return { ...args, orderNumber: String(orderNumber) };
+  const orderId = typeof args.orderId === "string" ? args.orderId : undefined;
+  const candidate = args.orderNumber ?? args.number ?? args.displayNumber ?? args.order;
+  const normalized = canonicalOrderNumberLookup(candidate);
+  if (normalized) return { ...(orderId ? { orderId } : {}), orderNumber: normalized.databaseValue };
+  if (typeof args.orderNumber === "number") {
+    const orderNumber = args.orderNumber;
+    if (!Number.isFinite(orderNumber) || !Number.isSafeInteger(orderNumber) || orderNumber < 0) return args;
+    return { ...(orderId ? { orderId } : {}), orderNumber: String(orderNumber) };
+  }
+  return orderId ? { orderId } : args;
 }
 
 function primitiveType(value: unknown): string {

@@ -65,7 +65,7 @@ export function canonicalOrderNumberLookup(value: unknown): {
     .replace(/[.!?,;:]+$/g, "")
     .replace(/\s+/g, " ");
   const withoutOrderWord = normalized.replace(/^order\s+/i, "");
-  const match = /^(?:ord[\s_-]*)?(\d{1,15})$/i.exec(withoutOrderWord);
+  const match = /^(?:#\s*)?(?:ord[\s_-]*)?(\d{1,15})$/i.exec(withoutOrderWord);
   if (!match) return null;
 
   const numeric = Number(match[1]);

@@ -219,7 +219,7 @@ describe("assistant order/product/operational tools", () => {
     expect(() => (tools.ordersGetSummary.definition.resultSchema as any).parse(result)).not.toThrow();
   });
 
-  test.each(["20002", "ORD-20002", "ord-20002", "ORD 20002", "Order 20002."])("normalizes %s before using the tenant-scoped order repository", async (orderNumber) => {
+  test.each(["20002", "ORD-20002", "ord-20002", "ORD 20002", "Order 20002.", "#20002"])("normalizes %s before using the tenant-scoped order repository", async (orderNumber) => {
     const repository = repo();
     const tools = createOrderProductOperationalTools({ repository, now: fixedNow });
 
@@ -260,6 +260,7 @@ describe("assistant order/product/operational tools", () => {
     const result = await tools.productsGetPricing.execute(invocation, { query: "Economy Yard Sign Stakes", quantity: 3, width: 3, height: 6, unit: "ft", optionSelections: { Finishing: "Grommets" } });
 
     expect(projectProductPrice).toHaveBeenCalledWith(expect.objectContaining({ organizationId: "org-a", productId: "product-1", quantity: 3, widthIn: 36, heightIn: 72 }));
+    expect(result.data.product).toMatchObject({ name: "Economy Yard Sign Stakes", category: "Signs", pricingMethod: "yard-sign" });
     expect(result.data.pricing).toMatchObject({ status: "priced", treeVersionId: "tree-1", totalCents: 5400, averageUnitCents: 1800, dimensions: { widthIn: 36, heightIn: 72 } });
     expect(projectProductPrice).toHaveBeenCalledWith(expect.objectContaining({ pbv2ExplicitSelections: { finishing: { value: "grommets" } } }));
     expect(JSON.stringify(result.data)).not.toContain("treeJson");

@@ -325,6 +325,7 @@ const semanticProductOperationsToolInputSchema: Record<string, unknown> = {
         oneOf: [
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "set_option_default" }, optionGroup: { type: "string" }, value: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "category"], properties: { op: { const: "set_category" }, category: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "material"], properties: { op: { const: "set_material" }, material: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "mode"], properties: { op: { const: "set_measurement_mode" }, mode: { enum: ["dimensions_required", "quantity_only"] } } },
           { type: "object", additionalProperties: false, required: ["op", "basis"], properties: { op: { const: "set_pricing_basis" }, basis: { enum: ["per_piece", "per_square_foot"] } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "required", "selectionMode"], properties: { op: { const: "add_option_group" }, optionGroup: { type: "string" }, required: { type: "boolean" }, selectionMode: { enum: ["single", "multiple"] } } },
@@ -802,7 +803,7 @@ export class AssistantService {
     let activeProductProposalId = task.canonicalProductIntentProposalId;
     const beginProductIntentTools: AssistantOperatorSemanticTool[] = mayBeginProductDraft ? [{
       name: "products.begin_draft",
-      description: "Establish one NEW authoritative unfinished product draft. Use only when the user intends to create a new product. Never use this to modify an existing persisted product; use products.apply_existing_operations for that. When a trusted existing product is in context and the user explicitly wants a new product based on it, set target to new_product. When the user already supplied product details, include the understood business changes as initialOperations so the new draft is populated in this call. Do not use if an unfinished new-product draft is already active.",
+      description: "Establish one NEW authoritative unfinished product draft. Use only when the user intends to create a new product. Never use this to modify an existing persisted product; use products.apply_existing_operations for that. When a trusted existing product is in context and the user explicitly wants a new product based on it, set target to new_product. When the user already supplied product details, include the understood business changes as initialOperations so the new draft is populated in this call. Use set_material for a supplied product material or construction. Customer-specific availability is not a supported draft operation: retain the supported product details and address only that limitation in the response. Do not use if an unfinished new-product draft is already active.",
       inputSchema: beginProductDraftToolInputSchema,
       execute: async ({ arguments: args, context }) => {
         const resolvedExistingProductId = existingProductIdForMutation(context);
@@ -843,7 +844,7 @@ export class AssistantService {
       }] : [];
     const applyProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{
       name: "products.apply_operations",
-      description: "Apply one atomic batch of one or more business changes to the current unfinished product draft. Use the original user request and current draft context to include all relevant name, category, dimensions, pricing, options, defaults, price impacts, availability, proof, or safe removals; do not make the user repeat supplied facts. All operations validate together and either create one next revision or none. Begin a draft first when none is active. Draft edits do not require GO; final product creation remains review/GO-gated. Pass only displayed business labels and values; never pass IDs, patch paths, persistence data, or PBV2 structures.",
+      description: "Apply one atomic batch of one or more business changes to the current unfinished product draft. Use the original user request and current draft context to include all relevant name, category, material, dimensions, pricing, options, defaults, price impacts, availability, proof, or safe removals; do not make the user repeat supplied facts. Customer-specific availability is not a supported draft operation: retain the supported product details and address only that limitation in the response. All operations validate together and either create one next revision or none. Begin a draft first when none is active. Draft edits do not require GO; final product creation remains review/GO-gated. Pass only displayed business labels and values; never pass IDs, patch paths, persistence data, or PBV2 structures.",
       inputSchema: semanticProductOperationsToolInputSchema,
       execute: async ({ arguments: args, context }) => {
         const operations = Array.isArray(args.operations) ? args.operations : null;

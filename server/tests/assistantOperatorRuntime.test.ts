@@ -300,6 +300,7 @@ describe("AssistantOperatorRuntime", () => {
     const result = await new AssistantOperatorRuntime(provider, { catalog: () => [], execute: async () => { throw new Error("not called"); } }).run({ goal: "all 5", taskId: "task_loop", trustedContext: { ...trustedContext, task: { id: "task_loop", domain: "quotes", canonicalProductIntentProposalId: null, entityReferences: [], trustedObservations: [], missingInformation: ["quote selection"] } } });
     expect(result).toMatchObject({ status: "failed", missingInformation: [] });
     expect(result.response).toContain("won't repeat");
+    expect(result.response).not.toContain("start a new request");
   });
 
   test("keeps a recoverable active semantic product draft in context instead of forcing a restart", async () => {

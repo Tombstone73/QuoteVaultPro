@@ -83,6 +83,10 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     const result = await provider.decide({ ...base, step: 2, observations: [{ step: 1, toolName: "quotes.search", status: "succeeded", result: { status: "succeeded", data: { quotes: [] } } as any }] });
     expect(result).toEqual({ kind: "complete", response: "Five open quotes found.\n\nProvider-verified sources:\n- [Market reference](https://example.com/market) (example.com)" });
     const second = generateOperatorDecision.mock.calls[1]?.[0];
+    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("actionable public research");
+    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("manufacturer or other authoritative public sources");
+    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("keep the subject from safeWorkingSummary");
+    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("customer-specific availability");
     expect(second.responseContinuation).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "function_call", call_id: "call_1" }),
       expect.objectContaining({ type: "function_call_output", call_id: "call_1" }),

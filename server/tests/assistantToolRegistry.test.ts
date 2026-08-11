@@ -104,10 +104,14 @@ describe("assistant tool registry", () => {
 
   test("normalizes only a safe numeric order summary number at the registered-tool boundary", () => {
     expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: 1112 })).toEqual({ orderNumber: "1112" });
-    expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: "ORD-1112" })).toEqual({ orderNumber: "ORD-1112" });
+    expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber: "ORD-1112" })).toEqual({ orderNumber: "1112" });
+    expect(normalizeAssistantToolArguments("orders.get_summary", { number: "ord-1112" })).toEqual({ orderNumber: "1112" });
+    expect(normalizeAssistantToolArguments("orders.get_summary", { displayNumber: "#1112" })).toEqual({ orderNumber: "1112" });
+    expect(normalizeAssistantToolArguments("orders.get_summary", { orderId: "order_1", number: "ORD-1112", organizationId: "other_org" })).toEqual({ orderId: "order_1", orderNumber: "1112" });
     for (const orderNumber of [-1, 11.12, Number.NaN, Number.POSITIVE_INFINITY, Number.MAX_SAFE_INTEGER + 1, true, null, {}, []]) {
       expect(normalizeAssistantToolArguments("orders.get_summary", { orderNumber })).toEqual({ orderNumber });
     }
+    expect(normalizeAssistantToolArguments("orders.get_summary", { number: "the one from yesterday" })).toEqual({ number: "the one from yesterday" });
     expect(normalizeAssistantToolArguments("search.global", { query: 1112 })).toEqual({ query: 1112 });
   });
 
@@ -125,12 +129,19 @@ describe("assistant tool registry", () => {
     }, trustedContext);
     expect(execute).toHaveBeenCalledWith({ orderNumber: "1112" }, expect.objectContaining({ scope: { organizationId: "org_1", userId: "user_1" } }));
 
-    const invalid = await service.executePlan({
+    await service.executePlan({
       intent: "lookup", selectedSkill: "order", clarificationRequired: false, clarificationQuestion: null, responseStyle: "concise",
       toolCalls: [{ toolName: "orders.get_summary", arguments: { number: 1112 } }],
     }, trustedContext);
+    expect(execute).toHaveBeenLastCalledWith({ orderNumber: "1112" }, expect.objectContaining({ scope: { organizationId: "org_1", userId: "user_1" } }));
+    expect(execute).toHaveBeenCalledTimes(2);
+
+    const invalid = await service.executePlan({
+      intent: "lookup", selectedSkill: "order", clarificationRequired: false, clarificationQuestion: null, responseStyle: "concise",
+      toolCalls: [{ toolName: "orders.get_summary", arguments: { number: "the one from yesterday" } }],
+    }, trustedContext);
     expect(invalid.executions).toEqual([expect.objectContaining({ status: "rejected", warning: "The tool request could not be validated." })]);
-    expect(execute).toHaveBeenCalledTimes(1);
+    expect(execute).toHaveBeenCalledTimes(2);
     expect(audit).toHaveBeenLastCalledWith(expect.objectContaining({
       failureCode: "invalid_arguments",
       validationDiagnostic: expect.objectContaining({ stage: "request_validation", fieldPath: "root" }),
