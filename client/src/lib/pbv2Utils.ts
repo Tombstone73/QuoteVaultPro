@@ -160,8 +160,12 @@ export function isPbv2Product(product: Product | null | undefined): boolean {
     return true;
   }
 
-  // Fallback: pbv2ActiveTreeVersionId means the product was published via PBV2 editor
-  return !!(product as any)?.pbv2ActiveTreeVersionId;
+ // Fallback: pbv2ActiveTreeVersionId means the product was published via PBV2 editor
+  if ((product as any)?.pbv2ActiveTreeVersionId) return true;
+
+  // The catalog exposes this only as a safety signal.  It must make Order
+  // Entry visibly block: a DRAFT is never substituted into live pricing.
+  return !!(product as any)?.pbv2DraftTreeVersionId;
 }
 
 /**

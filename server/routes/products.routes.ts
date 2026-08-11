@@ -57,6 +57,7 @@ import {
 import { applyProductTypeIdUpdateGuard } from "../lib/productUpdateGuards";
 import { getDefaultFormula } from "@shared/pricingProfiles";
 import { filterProductsForCatalog } from "@shared/productCatalogVisibility";
+import { requiresPublishedPbv2BeforeActivation } from "@shared/pbv2/productionLifecycle";
 import {
   getProductAllowRotation,
 } from "@shared/pbv2/productPricingRotation";
@@ -364,6 +365,21 @@ export function registerProductRoutes(
             ))
         : [];
 
+      // A DRAFT is intentionally not sent as order-entry tree data.  The
+      // marker lets clients fail visibly rather than mistaking a PBV2 product
+      // with no active tree for a legacy $0 product.
+      const draftTreeRows = productIds.length
+        ? await db
+            .select({ productId: pbv2TreeVersions.productId, id: pbv2TreeVersions.id, updatedAt: pbv2TreeVersions.updatedAt })
+            .from(pbv2TreeVersions)
+            .where(and(
+              eq(pbv2TreeVersions.organizationId, organizationId),
+              inArray(pbv2TreeVersions.productId, productIds),
+              eq(pbv2TreeVersions.status, "DRAFT"),
+            ))
+            .orderBy(desc(pbv2TreeVersions.updatedAt))
+        : [];
+
       const designByProductId = new Map(designConfigs.map((config) => [config.productId, config] as const));
       const typeById = new Map(typeRows.map((type) => [type.id, type] as const));
       const linkedMaterialIdsByProductId = new Map<string, string[]>();
@@ -371,6 +387,10 @@ export function registerProductRoutes(
         const current = linkedMaterialIdsByProductId.get(row.productId) || [];
         current.push(row.materialId);
         linkedMaterialIdsByProductId.set(row.productId, current);
+      }
+      const draftTreeIdByProductId = new Map<string, string>();
+      for (const row of draftTreeRows) {
+        if (!draftTreeIdByProductId.has(row.productId)) draftTreeIdByProductId.set(row.productId, row.id);
       }
       const enrichedProducts = products.map((product) => {
         const designConfig = designByProductId.get(product.id);
@@ -385,6 +405,7 @@ export function registerProductRoutes(
           productTypeRequiresPrepressOverride: typeConfig?.requiresPrepressOverride ?? null,
           productTypeSendToProductionDefault: typeConfig?.sendToProductionDefault ?? false,
           linkedMaterialIds: linkedMaterialIdsByProductId.get(product.id) || [],
+          pbv2DraftTreeVersionId: draftTreeIdByProductId.get(product.id) ?? null,
         };
       });
       res.json(
@@ -2405,6 +2426,30 @@ export function registerProductRoutes(
         ),
         existingProduct,
       );
+      if (sanitizedProductData.isActive === true && existingProduct.isActive === false && !existingProduct.pbv2ActiveTreeVersionId) {
+        const [draftTree] = await db
+          .select({ id: pbv2TreeVersions.id })
+          .from(pbv2TreeVersions)
+          .where(and(
+            eq(pbv2TreeVersions.organizationId, organizationId),
+            eq(pbv2TreeVersions.productId, productId),
+            eq(pbv2TreeVersions.status, "DRAFT"),
+          ))
+          .orderBy(desc(pbv2TreeVersions.updatedAt))
+          .limit(1);
+        if (requiresPublishedPbv2BeforeActivation({
+          currentlyActive: existingProduct.isActive,
+          requestedActive: sanitizedProductData.isActive,
+          activeTreeVersionId: existingProduct.pbv2ActiveTreeVersionId,
+          draftTreeVersionId: draftTree?.id,
+        })) {
+          return res.status(409).json({
+            success: false,
+            code: "PBV2_DRAFT_MUST_BE_PUBLISHED",
+            message: "Publish the PBV2 draft before activating this product for Order Entry.",
+          });
+        }
+      }
       const product = await storage.updateProduct(organizationId, productId, sanitizedProductData as UpdateProduct);
       if (!product) {
         return res.status(404).json({ success: false, message: "Product not found" });

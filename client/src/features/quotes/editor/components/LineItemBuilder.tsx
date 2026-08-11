@@ -272,7 +272,9 @@ export function LineItemBuilder({
                         {pbv2ConfigMissing ? (
                             <div className="flex items-center gap-2 p-3 rounded-md bg-destructive/10 border border-destructive/20 text-sm text-destructive">
                                 <AlertCircle className="h-4 w-4 shrink-0" />
-                                <span>PBV2 configuration missing for this product.</span>
+                                <span>{(selectedProduct as any)?.pbv2DraftTreeVersionId
+                                    ? "This product has a PBV2 draft that is not published. Publish an ACTIVE PBV2 configuration before adding it to an order."
+                                    : "PBV2 configuration missing for this product."}</span>
                             </div>
                         ) : isPbv2 && pbv2Tree ? (
                             <ProductOptionsPanelV2

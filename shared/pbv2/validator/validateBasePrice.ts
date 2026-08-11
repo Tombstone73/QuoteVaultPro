@@ -37,6 +37,21 @@ function hasFlatFeeFormula(meta: AnyRecord): boolean {
 }
 
 /**
+ * Formula-priced matrix products deliberately keep the scalar base at zero:
+ * the selected matrix row supplies `base_price` at runtime.  A positive row
+ * is therefore a real production price source, not a missing fallback.
+ */
+function matrixBasePriceRowCount(tree: AnyRecord, meta: AnyRecord): number {
+  const matrix = asRecord(tree.pricingMatrix) ?? asRecord(meta.pricingMatrix);
+  const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
+  return rows.filter((row) => {
+    const variables = asRecord(asRecord(row)?.variables);
+    const basePrice = variables?.base_price;
+    return typeof basePrice === "number" && Number.isFinite(basePrice) && basePrice > 0;
+  }).length;
+}
+
+/**
  * A quantity-only PBV2 product may be priced entirely by its line-item
  * quantity tiers. The tier thresholds are canonical lower bounds: omitted
  * maxQty values cover through the next threshold and the final one is open.
@@ -184,8 +199,9 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
       return typeof value === "number" && Number.isFinite(value) && value > 0;
     })
     : [];
+  const matrixBasePriceRows = matrixBasePriceRowCount(t, meta);
 
-  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && quantityTierRates.length === 0) {
+  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && quantityTierRates.length === 0 && matrixBasePriceRows === 0) {
     findings.push(
       errorFinding({
         code: "PBV2_E_BASE_PRICE_MISSING",
@@ -196,6 +212,7 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
           perPieceCents,
           minimumChargeCents,
           quantityTierRateCount: quantityTierRates.length,
+          matrixBasePriceRowCount: matrixBasePriceRows,
         },
       })
     );

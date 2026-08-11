@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { getPbv2Tree, normalizePbv2Tree, summarizePbv2Tree } from "@/lib/pbv2Utils";
+import { getPbv2Tree, isPbv2Product, normalizePbv2Tree, summarizePbv2Tree } from "@/lib/pbv2Utils";
 
 function makeLegacyTypedTree() {
   return {
@@ -78,5 +78,12 @@ describe("pbv2Utils tree normalization", () => {
     expect(extracted?.nodes.sides.input?.selectionKey).toBe("sides");
     expect(extracted?.nodes.thickness.kind).toBe("question");
     expect(extracted?.nodes.thickness.input?.selectionKey).toBe("thickness");
+  });
+
+  test("recognizes a DRAFT-only PBV2 catalog product so Order Entry blocks instead of using legacy pricing", () => {
+    const product = { id: "prod_acm", name: "ACM", pbv2ActiveTreeVersionId: null, pbv2DraftTreeVersionId: "draft_acm", optionTreeJson: null };
+
+    expect(isPbv2Product(product as any)).toBe(true);
+    expect(getPbv2Tree(product as any)).toBeNull();
   });
 });

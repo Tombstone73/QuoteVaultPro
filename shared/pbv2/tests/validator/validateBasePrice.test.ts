@@ -66,4 +66,28 @@ describe("quantity-only PBV2 tier pricing validation", () => {
     tree.meta.pricingV2.base.perPieceCents = 300;
     expect(validateTreeHasBasePrice(tree).errors).toEqual([]);
   });
+
+  test("accepts a formula-priced matrix when positive matrix rows supply base_price", () => {
+    const tree = tierOnlyTree([]) as any;
+    tree.meta.pricingProfileKey = "default";
+    tree.meta.pricingV2.base = { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 };
+    tree.pricingMatrix = {
+      dimensions: ["thickness", "sides"],
+      rows: [
+        { when: { thickness: "3mm", sides: "single" }, variables: { base_price: 5 } },
+        { when: { thickness: "6mm", sides: "double" }, variables: { base_price: 8.75 } },
+      ],
+    };
+
+    expect(validateTreeHasBasePrice(tree).errors).toEqual([]);
+  });
+
+  test("does not accept a matrix whose base_price rows are zero or absent", () => {
+    const tree = tierOnlyTree([]) as any;
+    tree.meta.pricingProfileKey = "default";
+    tree.meta.pricingV2.base = { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 };
+    tree.pricingMatrix = { dimensions: ["thickness"], rows: [{ when: { thickness: "3mm" }, variables: { base_price: 0 } }] };
+
+    expect(validateTreeHasBasePrice(tree).errors[0]?.code).toBe("PBV2_E_BASE_PRICE_MISSING");
+  });
 });
