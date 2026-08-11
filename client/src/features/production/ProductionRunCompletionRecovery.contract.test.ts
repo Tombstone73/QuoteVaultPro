@@ -17,12 +17,15 @@ describe("combined run completion recovery UI contract", () => {
   });
 
   test("keeps active-run production controls visible and blocks completion before reconciled results", () => {
-    expect(source).toContain("Production Results by Member");
+    expect(source).toContain("Nested production artwork");
+    expect(source).toContain("Mark Impression Good");
+    expect(source).toContain("Save Progress");
+    expect(source).toContain("Exception adjustment by child item");
     expect(source).toContain("Mark all run quantities good");
     expect(source).toContain("Complete blocked:");
     expect(source).toContain("Primary production file — PRINT THIS FILE");
     expect(source).toContain("Machine assignment");
-    expect(source).toContain("Sheet progress");
+    expect(source).toContain("Current sheet status");
     expect(source).toContain("sticky bottom-3");
   });
 });

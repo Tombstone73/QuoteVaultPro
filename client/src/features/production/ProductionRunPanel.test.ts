@@ -17,6 +17,7 @@ describe("productionRunToBoardItem", () => {
       customerId: "customer-1",
       customerName: "Acme Signs",
       stationKey: "flatbed",
+      productionFileStrategy: "staff_prepared",
       status: "queued",
       runStatus: "draft",
       startedAt: null,
@@ -31,6 +32,13 @@ describe("productionRunToBoardItem", () => {
       totalAllocatedQuantity: 72,
       fileCount: 1,
       replacementRequired: false,
+      sheetProgressSnapshot: {
+        version: "production-run-sheet-progress-v1",
+        source: "run_files",
+        sheets: [{ id: "file-1", label: "Sheet 1", fileId: "file-1", fileName: "nested-final.pdf", requiredImpressions: 20, goodImpressions: 0, damagedImpressions: 0 }],
+        updatedAt: null,
+      },
+      sheetProgressSummary: { sheetCount: 1, requiredImpressions: 20, goodImpressions: 0, damagedImpressions: 0, remainingGoodImpressions: 20, complete: false },
       files: [
         {
           id: "file-1",

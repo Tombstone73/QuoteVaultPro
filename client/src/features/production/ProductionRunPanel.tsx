@@ -17,6 +17,7 @@ import {
   useRepairCompletedProductionRunFulfillmentHandoff,
   useReopenCompletedProductionRun,
   useRecordProductionRunOutcome,
+  useRecordProductionRunSheetProgress,
   useReturnProductionRunToPrepress,
   useProductionJob,
   useTransitionProductionRun,
@@ -27,6 +28,11 @@ import { ProductionRunFilesPanel } from "./ProductionRunFilesPanel";
 import { PrinterMachineAssignment } from "@/components/production/PrinterMachineAssignment";
 import { ProductionAlertsPanel } from "@/components/production/ProductionAlertsPanel";
 import { ProductionNotesSection } from "@/components/production/ProductionNotesSection";
+import {
+  buildInitialProductionRunSheetProgressSnapshot,
+  summarizeProductionRunSheetProgress,
+  type ProductionRunSheetProgressSnapshot,
+} from "@shared/productionRunSheetProgress";
 export { isProductionRunItem, productionRunToBoardItem } from "@/lib/productionRuns";
 
 function runAction(runStatus: ProductionRunListItem["runStatus"]): "release" | "start" | "complete" | null {
@@ -51,6 +57,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const { user, isAdmin } = useAuth();
   const transition = useTransitionProductionRun();
   const recordOutcome = useRecordProductionRunOutcome();
+  const recordSheetProgress = useRecordProductionRunSheetProgress();
   const completeCanceledReturn = useCompleteProductionRunReturnToPrepress();
   const reopenCompletedRun = useReopenCompletedProductionRun();
   const repairFulfillmentHandoff = useRepairCompletedProductionRunFulfillmentHandoff();
@@ -62,7 +69,15 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const isActiveRun = isStartedRun;
   const leadMember = run.members[0] ?? null;
   const { data: leadJob } = useProductionJob(leadMember?.productionJobId);
-  const [recordingResults, setRecordingResults] = useState(isActiveRun);
+  const [recordingResults, setRecordingResults] = useState(false);
+  const initialSheetProgress = useMemo(() => buildInitialProductionRunSheetProgressSnapshot({
+    existing: run.sheetProgressSnapshot,
+    files: run.files,
+    plannedSheetCount: run.plannedSheetCount,
+    defaultRequiredImpressions: null,
+  }), [run.files, run.plannedSheetCount, run.sheetProgressSnapshot]);
+  const [sheetProgressDraft, setSheetProgressDraft] = useState<ProductionRunSheetProgressSnapshot | null>(initialSheetProgress);
+  const [currentSheetIndex, setCurrentSheetIndex] = useState(0);
   const resultsSectionRef = useRef<HTMLDivElement | null>(null);
   const [reconcileConfirmationOpen, setReconcileConfirmationOpen] = useState(false);
   const [reopenConfirmationOpen, setReopenConfirmationOpen] = useState(false);
@@ -78,7 +93,15 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   }])), [run.members]);
   const [drafts, setDrafts] = useState(initialDrafts);
   useEffect(() => setDrafts(initialDrafts), [initialDrafts]);
-  useEffect(() => { if (isActiveRun) setRecordingResults(true); }, [isActiveRun]);
+  useEffect(() => {
+    setSheetProgressDraft(initialSheetProgress);
+    setCurrentSheetIndex(0);
+  }, [initialSheetProgress]);
+  const sheetProgressSummary = useMemo(() => summarizeProductionRunSheetProgress(sheetProgressDraft), [sheetProgressDraft]);
+  const completedSheetEstimate = sheetProgressSummary.goodImpressions;
+  const currentSheet = sheetProgressDraft?.sheets[currentSheetIndex] ?? sheetProgressDraft?.sheets[0] ?? null;
+  const currentSheetFile = currentSheet?.fileId ? run.files.find((file) => file.id === currentSheet.fileId) ?? null : null;
+  const currentSheetRemaining = currentSheet ? Math.max(0, currentSheet.requiredImpressions - currentSheet.goodImpressions) : 0;
   const placements = (Number(run.plannedSheetCount) || 0) * (Number(run.nominalPiecesPerSheet) || 0);
   const mismatch = placements > 0 && placements !== run.totalAllocatedQuantity;
   const activeFileCount = run.fileCount ?? run.files?.filter((file) => file.status === "active").length ?? 0;
@@ -92,7 +115,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
     const draft = drafts[member.id] ?? initialDrafts[member.id];
     const successfulQuantity = Number(draft.successfulQuantity) || 0;
     const damagedQuantity = Number(draft.damagedQuantity) || 0;
-    const remainingQuantity = member.allocatedQuantity - successfulQuantity - damagedQuantity;
+    const remainingQuantity = member.allocatedQuantity - successfulQuantity;
     return { member, draft, successfulQuantity, damagedQuantity, remainingQuantity };
   });
   const invalidResultRows = resultRows.filter(({ member, successfulQuantity, damagedQuantity, remainingQuantity }) => (
@@ -100,18 +123,20 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
     || !Number.isInteger(damagedQuantity)
     || successfulQuantity < Number(member.successfulQuantity || member.completedQuantity || 0)
     || damagedQuantity < Number(member.damagedQuantity || 0)
-    || remainingQuantity < 0
+      || remainingQuantity < 0
+      || successfulQuantity > Number(member.allocatedQuantity || 0)
   ));
   const unresolvedResultRows = resultRows.filter(({ remainingQuantity }) => remainingQuantity !== 0);
   const resultsComplete = resultRows.length > 0 && invalidResultRows.length === 0 && unresolvedResultRows.length === 0;
   const totalGood = resultRows.reduce((sum, row) => sum + row.successfulQuantity, 0);
   const totalDamaged = resultRows.reduce((sum, row) => sum + row.damagedQuantity, 0);
   const totalRemaining = resultRows.reduce((sum, row) => sum + Math.max(0, row.remainingQuantity), 0);
-  const completedSheetEstimate = run.nominalPiecesPerSheet ? Math.floor((totalGood + totalDamaged) / Number(run.nominalPiecesPerSheet)) : null;
   const completionBlockedReason = !isStartedRun
     ? "Start the run first."
     : replacementRequired
     ? "A required nested production file is missing."
+    : sheetProgressSummary.requiredImpressions > 0 && !sheetProgressSummary.complete
+      ? "Record required good impressions for every nested sheet before completion."
     : invalidResultRows.length
       ? "Correct invalid good or damaged quantities before completion."
       : unresolvedResultRows.length
@@ -134,6 +159,29 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
     ...current,
     [memberId]: { ...(current[memberId] ?? initialDrafts[memberId]), ...patch },
   }));
+  const updateCurrentSheet = (patch: { goodDelta?: number; damagedDelta?: number; markRemainingGood?: boolean }) => {
+    if (!sheetProgressDraft || !currentSheet) return;
+    setSheetProgressDraft({
+      ...sheetProgressDraft,
+      source: "operator",
+      sheets: sheetProgressDraft.sheets.map((sheet) => {
+        if (sheet.id !== currentSheet.id) return sheet;
+        const goodImpressions = patch.markRemainingGood
+          ? sheet.requiredImpressions
+          : Math.min(sheet.requiredImpressions, Math.max(0, sheet.goodImpressions + (patch.goodDelta ?? 0)));
+        const damagedImpressions = Math.max(0, sheet.damagedImpressions + (patch.damagedDelta ?? 0));
+        return { ...sheet, goodImpressions, damagedImpressions };
+      }),
+    });
+  };
+  const saveSheetProgress = () => {
+    if (!sheetProgressDraft) return;
+    recordSheetProgress.mutate({
+      runId: run.id,
+      idempotencyKey: `sheet-progress:${run.id}:${Date.now()}`,
+      sheetProgressSnapshot: { ...sheetProgressDraft, source: "operator", updatedAt: new Date().toISOString() },
+    });
+  };
   const submitResults = () => {
     recordOutcome.mutate({
       runId: run.id,
@@ -142,7 +190,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         const draft = drafts[member.id] ?? initialDrafts[member.id];
         const successfulQuantity = Number(draft.successfulQuantity) || 0;
         const damagedQuantity = Number(draft.damagedQuantity) || 0;
-        const remainingQuantity = member.allocatedQuantity - successfulQuantity - damagedQuantity;
+        const remainingQuantity = member.allocatedQuantity - successfulQuantity;
         const recoveryDisposition = draft.recoveryDisposition === "none" ? "none" : draft.recoveryDisposition as any;
         return {
           memberId: member.id,
@@ -237,7 +285,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
           ) : null}
           {isActiveRun ? (
             <Button size="sm" variant="outline" onClick={focusResults}>
-              {resultsComplete ? "Results complete" : `Record Production Results${unresolvedResultRows.length ? ` (${unresolvedResultRows.length})` : ""}`}
+              {resultsComplete ? "Child results reconciled" : `Adjust Child Results${unresolvedResultRows.length ? ` (${unresolvedResultRows.length})` : ""}`}
             </Button>
           ) : null}
           {canReconcileCanceledRun ? (
@@ -274,7 +322,84 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         <div>Progress: <span className="font-semibold">{totalGood + totalDamaged} / {run.totalAllocatedQuantity} pieces</span></div>
       </div>
       {isOperationalRun ? (
-        <div className="mt-3 grid gap-3 rounded-md border border-titan-border-subtle bg-black/10 p-3 md:grid-cols-2">
+        <div className="mt-3 grid gap-3 rounded-md border border-titan-border-subtle bg-black/10 p-3 xl:grid-cols-[minmax(0,1.6fr)_minmax(280px,0.8fr)]">
+          <div className="min-w-0">
+            <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-emerald-200">Nested production artwork</div>
+                <div className="text-[11px] text-titan-text-muted">
+                  {currentSheet ? `${currentSheet.label} of ${sheetProgressDraft?.sheets.length ?? 0}` : "No nested sheet progress target"}
+                  {currentSheetFile ? ` - ${currentSheetFile.fileName}` : ""}
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1">
+                <Button size="sm" variant="outline" disabled={!sheetProgressDraft || currentSheetIndex <= 0} onClick={() => setCurrentSheetIndex((index) => Math.max(0, index - 1))}>Previous</Button>
+                <Button size="sm" variant="outline" disabled={!sheetProgressDraft || currentSheetIndex >= (sheetProgressDraft.sheets.length - 1)} onClick={() => setCurrentSheetIndex((index) => Math.min((sheetProgressDraft?.sheets.length ?? 1) - 1, index + 1))}>Next</Button>
+              </div>
+            </div>
+            <div className="flex min-h-[280px] items-center justify-center overflow-hidden rounded-md border border-titan-border-subtle bg-titan-bg-card">
+              {currentSheetFile?.previewUrl || currentSheetFile?.thumbnailUrl ? (
+                <img src={currentSheetFile.previewUrl ?? currentSheetFile.thumbnailUrl ?? ""} alt={currentSheetFile.fileName} className="max-h-[420px] w-full object-contain" />
+              ) : (
+                <div className="p-6 text-center text-sm text-titan-text-muted">
+                  {currentSheetFile ? "Preview unavailable. Open the run production file below for inspection." : "Upload or select run-owned nested artwork before release, or use the RIP-managed workflow."}
+                </div>
+              )}
+            </div>
+            {sheetProgressDraft && sheetProgressDraft.sheets.length > 1 ? (
+              <div className="mt-2 flex gap-1 overflow-x-auto pb-1">
+                {sheetProgressDraft.sheets.map((sheet, index) => (
+                  <button
+                    key={sheet.id}
+                    type="button"
+                    className={`min-w-[76px] rounded border px-2 py-1 text-left text-[11px] ${index === currentSheetIndex ? "border-emerald-400 bg-emerald-500/10" : "border-titan-border-subtle bg-transparent"}`}
+                    onClick={() => setCurrentSheetIndex(index)}
+                  >
+                    <span className="block font-semibold">{sheet.label}</span>
+                    <span className="text-titan-text-muted">{sheet.goodImpressions}/{sheet.requiredImpressions} good</span>
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          <div className="space-y-3">
+            <div className="rounded-md border border-titan-border-subtle p-3">
+              <div className="text-xs font-semibold">Current sheet status</div>
+              <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
+                <div>Required: <span className="font-semibold">{currentSheet?.requiredImpressions ?? "-"}</span></div>
+                <div>Good: <span className="font-semibold">{currentSheet?.goodImpressions ?? "-"}</span></div>
+                <div>Damaged: <span className="font-semibold">{currentSheet?.damagedImpressions ?? "-"}</span></div>
+                <div>Remaining good: <span className="font-semibold">{currentSheet ? currentSheetRemaining : "-"}</span></div>
+              </div>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button size="sm" onClick={() => updateCurrentSheet({ goodDelta: 1 })} disabled={!isStartedRun || !currentSheet || currentSheetRemaining <= 0}>Mark Impression Good</Button>
+                <Button size="sm" variant="outline" onClick={() => updateCurrentSheet({ markRemainingGood: true })} disabled={!isStartedRun || !currentSheet || currentSheetRemaining <= 0}>Mark Remaining Good</Button>
+                <Button size="sm" variant="outline" onClick={() => updateCurrentSheet({ damagedDelta: 1 })} disabled={!isStartedRun || !currentSheet}>Record Damage</Button>
+                <Button size="sm" variant="outline" onClick={saveSheetProgress} disabled={!isStartedRun || !sheetProgressDraft || recordSheetProgress.isPending}>
+                  {recordSheetProgress.isPending ? "Saving..." : "Save Progress"}
+                </Button>
+              </div>
+            </div>
+            <div className="rounded-md border border-titan-border-subtle p-3 text-xs">
+              <div className="font-semibold">Overall run progress</div>
+              <div className="mt-2 grid grid-cols-2 gap-2">
+                <div>Nested sheets: <span className="font-semibold">{sheetProgressSummary.sheetCount || run.plannedSheetCount || "-"}</span></div>
+                <div>Total impressions: <span className="font-semibold">{sheetProgressSummary.requiredImpressions || "-"}</span></div>
+                <div>Good impressions: <span className="font-semibold">{sheetProgressSummary.goodImpressions} / {sheetProgressSummary.requiredImpressions || "-"}</span></div>
+                <div>Damaged: <span className="font-semibold">{sheetProgressSummary.damagedImpressions}</span></div>
+              </div>
+              <div className="mt-2 text-titan-text-muted">Saving progress rolls usable output into child line-item quantities through the existing production result workflow.</div>
+            </div>
+            <div className="rounded-md border border-titan-border-subtle p-3">
+              <div className="text-xs font-semibold">Machine assignment</div>
+              <div className="mt-1 text-[11px] text-titan-text-muted">Assigned through the canonical production-job machine endpoint on the run's lead member.</div>
+              {leadMember ? <div className="mt-2"><PrinterMachineAssignment jobId={leadMember.productionJobId} stationKey={run.stationKey} assignedPrinterName={(leadJob as any)?.assignedPrinterName} assignedPrinterId={(leadJob as any)?.assignedPrinterId} assignedPrinterAt={(leadJob as any)?.assignedPrinterAt} printerOptions={(leadJob as any)?.printerOptions} compact /></div> : null}
+            </div>
+          </div>
+        </div>
+      ) : null}
+      {isOperationalRun ? (
+        <div className="hidden">
           <div>
             <div className="text-xs font-semibold">Machine assignment</div>
             <div className="mt-1 text-[11px] text-titan-text-muted">Assigned through the canonical production-job machine endpoint on the run’s lead member.</div>
@@ -319,7 +444,12 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         {isActiveRun ? <div className="mb-2 text-xs font-bold uppercase tracking-wide text-emerald-200">Primary production file — PRINT THIS FILE</div> : null}
         <ProductionRunFilesPanel run={run} focusUpload={focusNestedFileUpload} onUploadFocused={onNestedFileUploadFocused} />
       </div>
-      <div className="mt-3 divide-y divide-titan-border-subtle rounded-md border border-titan-border-subtle">
+      <div className="mt-3">
+        <div className="mb-2 flex items-center justify-between text-xs">
+          <div className="font-semibold">Items in this Run</div>
+          <div className="text-titan-text-muted">{run.memberCount} child line item{run.memberCount === 1 ? "" : "s"}</div>
+        </div>
+        <div className="divide-y divide-titan-border-subtle rounded-md border border-titan-border-subtle">
         {run.members.map((member) => (
           <div key={member.id} className="grid gap-2 px-3 py-2 text-xs sm:grid-cols-[1fr_auto_auto_auto]">
             <div className="min-w-0 truncate">
@@ -345,6 +475,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
             <div>Remaining {member.remainingQuantity}</div>
           </div>
         ))}
+        </div>
       </div>
       {isActiveRun ? (
         <div className="mt-3 rounded-md border border-titan-border-subtle bg-titan-bg-subtle p-3 text-xs">
@@ -364,7 +495,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
       {recordingResults ? (
         <div ref={resultsSectionRef} className="mt-3 rounded-md border border-titan-border-subtle p-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
-            <div className="text-xs font-semibold">Production Results by Member</div>
+            <div className="text-xs font-semibold">Exception adjustment by child item</div>
             <Button size="sm" variant="outline" onClick={markAllRunQuantitiesGood}>Mark all run quantities good</Button>
           </div>
           <div className="space-y-3">
@@ -372,7 +503,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
               const draft = drafts[member.id] ?? initialDrafts[member.id];
               const successfulQuantity = Number(draft.successfulQuantity) || 0;
               const damagedQuantity = Number(draft.damagedQuantity) || 0;
-              const remainingQuantity = member.allocatedQuantity - successfulQuantity - damagedQuantity;
+              const remainingQuantity = member.allocatedQuantity - successfulQuantity;
               return (
                 <div key={`outcome-${member.id}`} className="grid gap-2 rounded border border-titan-border-subtle p-2 text-xs md:grid-cols-[1.4fr_0.6fr_0.6fr_0.9fr_1.2fr]">
                   <div>
@@ -447,7 +578,7 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
         <div className="sticky bottom-3 z-10 mt-4 flex flex-wrap items-center justify-between gap-3 rounded-md border border-violet-400/40 bg-slate-950/95 px-3 py-2 shadow-lg backdrop-blur">
           <div className="text-xs"><span className="font-semibold">{run.displayNumber}</span> · {resultsComplete ? "Results complete" : `${unresolvedResultRows.length} results unresolved`}</div>
           <div className="flex flex-wrap gap-2">
-            {isStartedRun ? <Button size="sm" variant="outline" onClick={focusResults}>Record Results</Button> : null}
+            {isStartedRun ? <Button size="sm" variant="outline" onClick={focusResults}>Adjust Child Results</Button> : null}
             {isStartedRun ? <Button size="sm" variant="outline" onClick={() => transition.mutate({ runId: run.id, action: "pause" })} disabled={transition.isPending}>Pause Run</Button> : null}
             {canReturnEntireRun ? <Button size="sm" variant="outline" onClick={() => setReturnConfirmationOpen(true)} disabled={returnRunToPrepress.isPending}>Return Run to Prepress</Button> : null}
             <Button size="sm" onClick={submitResults} disabled={recordOutcome.isPending || !!completionBlockedReason} title={completionBlockedReason ?? undefined}>Complete Run</Button>

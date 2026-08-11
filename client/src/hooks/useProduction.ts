@@ -4,6 +4,7 @@ import { useNavigate } from "react-router-dom";
 import { ToastAction, type ToastActionElement } from "@/components/ui/toast";
 import { useToast } from "@/hooks/use-toast";
 import { buildProofingLineItemPath, PROOF_APPROVAL_REQUIRED_ROUTING_REASON } from "@/lib/proofingNavigation";
+import type { ProductionRunSheetProgressSnapshot, ProductionRunSheetProgressSummary } from "@shared/productionRunSheetProgress";
 
 export type ProductionConfig = {
   enabledViews: string[];
@@ -341,6 +342,8 @@ export type ProductionRunListItem = {
   sheetPlanInputSnapshot?: Record<string, unknown> | null;
   calculatedSheetPlanSnapshot?: Record<string, unknown> | null;
   effectiveSheetPlanSnapshot?: Record<string, unknown> | null;
+  sheetProgressSnapshot?: ProductionRunSheetProgressSnapshot | null;
+  sheetProgressSummary?: ProductionRunSheetProgressSummary | null;
   sheetPlanOverrideReason?: string | null;
   sheetPlanOverrideByUserId?: string | null;
   sheetPlanOverrideAt?: string | null;
@@ -685,6 +688,36 @@ export function useRecordProductionRunOutcome() {
     },
     onError: (e: Error) => {
       toast({ title: "Run results failed", description: e.message, variant: "destructive" });
+    },
+  });
+}
+
+export function useRecordProductionRunSheetProgress() {
+  const qc = useQueryClient();
+  const { toast } = useToast();
+  return useMutation({
+    mutationFn: async (args: {
+      runId: string;
+      idempotencyKey?: string | null;
+      sheetProgressSnapshot: ProductionRunSheetProgressSnapshot;
+    }) => {
+      const res = await fetch(`/api/production/runs/${args.runId}/sheet-progress`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ idempotencyKey: args.idempotencyKey, sheetProgressSnapshot: args.sheetProgressSnapshot }),
+      });
+      const json = await res.json().catch(() => ({}));
+      if (!res.ok || json?.success === false) throw new Error(json?.message || json?.error || "Failed to record sheet progress");
+      return json.data;
+    },
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["/api/production/jobs"] });
+      qc.invalidateQueries({ queryKey: ["/api/production/runs"] });
+      toast({ title: "Sheet progress recorded" });
+    },
+    onError: (e: Error) => {
+      toast({ title: "Sheet progress failed", description: e.message, variant: "destructive" });
     },
   });
 }

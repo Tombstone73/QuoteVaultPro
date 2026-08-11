@@ -49,7 +49,18 @@ describe("combined run operator lifecycle contract", () => {
     expect(panel).toContain("Start Run");
     expect(panel).toContain("Resume Run");
     expect(panel).toContain("Return Run to Prepress");
-    expect(panel).toContain("Production Results by Member");
+    expect(panel).toContain("Nested production artwork");
+    expect(panel).toContain("Mark Impression Good");
+    expect(panel).toContain("Save Progress");
+    expect(panel).toContain("Exception adjustment by child item");
     expect(panel).toContain("sticky bottom-3");
+  });
+
+  it("persists nested sheet progress on the parent run and rolls it through member outcomes", () => {
+    expect(service).toContain("sheetProgressSnapshot");
+    expect(service).toContain("recordProductionRunSheetProgress");
+    expect(service).toContain("distributeProducedPiecesAcrossMembers");
+    expect(service).toContain("successfulQuantity + remainingQuantity");
+    expect(routes).toContain("sheet-progress");
   });
 });

@@ -11,6 +11,7 @@ import {
   ProductionRunError,
   completeCanceledProductionRunReturnToPrepress,
   recordProductionRunOutcome,
+  recordProductionRunSheetProgress,
   reconcileCanceledProductionRun,
   returnProductionRunToPrepress,
   repairCompletedProductionRunFulfillmentHandoff,
@@ -86,6 +87,25 @@ const outcomeSchema = z.object({
     operatorNote: z.string().max(4000).nullable().optional(),
     segments: z.array(z.record(z.string(), z.unknown())).optional(),
   })).min(1),
+});
+const sheetProgressSchema = z.object({
+  idempotencyKey: z.string().max(160).nullable().optional(),
+  sheetProgressSnapshot: z.object({
+    version: z.literal("production-run-sheet-progress-v1"),
+    source: z.enum(["operator", "legacy_plan", "run_files"]),
+    updatedAt: z.string().nullable().optional(),
+    sheets: z.array(z.object({
+      id: z.string().trim().min(1),
+      label: z.string().trim().min(1),
+      fileId: z.string().nullable().optional(),
+      fileName: z.string().nullable().optional(),
+      requiredImpressions: z.number().int().positive(),
+      goodImpressions: z.number().int().nonnegative(),
+      damagedImpressions: z.number().int().nonnegative(),
+      recoveryImpressions: z.number().int().nonnegative().optional(),
+      operatorNote: z.string().max(2000).nullable().optional(),
+    })).min(1),
+  }),
 });
 const retireFileSchema = z.object({ reason: z.string().max(2000).nullable().optional() });
 const reopenCompletedRunSchema = z.object({ reason: z.string().trim().min(1).max(2000) });
@@ -323,6 +343,19 @@ export function registerProductionRunRoutes(app: Express, deps: { isAuthenticate
       if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message });
       if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: "PRODUCTION_RUN_OUTCOME_INVALID", message: error.issues[0]?.message ?? "Invalid production outcome." });
       console.error("[production-runs] outcome failed", error); return res.status(500).json({ success: false, code: "PRODUCTION_RUN_OUTCOME_FAILED", message: "Unable to record production run outcome." });
+    }
+  });
+  app.post("/api/production/runs/:runId/sheet-progress", deps.isAuthenticated, deps.tenantContext, async (req: any, res) => {
+    try {
+      if (!deps.assertInternalUser(req, res)) return;
+      const organizationId = getRequestOrganizationId(req); const actorUserId = userId(req.user);
+      if (!organizationId || !actorUserId) return res.status(401).json({ success: false, code: "UNAUTHENTICATED", message: "User is not authenticated." });
+      const body = sheetProgressSchema.parse(req.body ?? {});
+      return res.json({ success: true, data: await recordProductionRunSheetProgress({ organizationId, actorUserId, runId: req.params.runId, ...body }) });
+    } catch (error) {
+      if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message, details: error.details ?? null });
+      if (error instanceof z.ZodError) return res.status(400).json({ success: false, code: "PRODUCTION_RUN_SHEET_PROGRESS_INVALID", message: error.issues[0]?.message ?? "Invalid sheet progress." });
+      console.error("[production-runs] sheet progress failed", error); return res.status(500).json({ success: false, code: "PRODUCTION_RUN_SHEET_PROGRESS_FAILED", message: "Unable to record sheet progress." });
     }
   });
 }

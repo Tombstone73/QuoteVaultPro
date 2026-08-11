@@ -4715,6 +4715,7 @@ export const productionRuns = pgTable("production_runs", {
   sheetPlanInputSnapshot: jsonb("sheet_plan_input_snapshot").$type<Record<string, unknown>>(),
   calculatedSheetPlanSnapshot: jsonb("calculated_sheet_plan_snapshot").$type<Record<string, unknown>>(),
   effectiveSheetPlanSnapshot: jsonb("effective_sheet_plan_snapshot").$type<Record<string, unknown>>(),
+  sheetProgressSnapshot: jsonb("sheet_progress_snapshot").$type<Record<string, unknown>>(),
   sheetPlanOverrideReason: text("sheet_plan_override_reason"),
   sheetPlanOverrideByUserId: varchar("sheet_plan_override_by_user_id").references(() => users.id, { onDelete: "set null" }),
   sheetPlanOverrideAt: timestamp("sheet_plan_override_at", { withTimezone: true }),

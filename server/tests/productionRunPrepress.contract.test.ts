@@ -57,7 +57,7 @@ describe("prepress production run creation contract", () => {
     expect(service).toContain("recordProductionRunOutcomeInTransaction");
     expect(service).toContain("lastOutcomeIdempotencyKey");
     expect(service).toContain("PRODUCTION_RUN_OUTCOME_CONFIRMED");
-    expect(service).toContain("successfulQuantity + damagedQuantity + remainingQuantity > allocatedQuantity");
+    expect(service).toContain("successfulQuantity + remainingQuantity > allocatedQuantity");
     expect(service).toContain("orderId: line.orderId");
     expect(service).toContain("production_run_member_outcome_recorded");
     expect(service).toContain("completed_with_exceptions");

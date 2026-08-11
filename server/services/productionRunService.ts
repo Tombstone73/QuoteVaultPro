@@ -17,6 +17,13 @@ import {
 import { resolveProductionSides } from "@shared/productionHydration";
 import { buildArtworkAllocationStatus, summarizeArtworkAllocationIssue } from "@shared/artworkAllocation";
 import { ACTIVE_PRODUCTION_RUN_STATUSES, isUnfinishedProductionRunMember, resolveCanonicalReopenedRunState } from "@shared/productionRunLifecycle";
+import {
+  buildInitialProductionRunSheetProgressSnapshot,
+  distributeProducedPiecesAcrossMembers,
+  normalizeProductionRunSheetProgressSnapshot,
+  summarizeProductionRunSheetProgress,
+  type ProductionRunSheetProgressSnapshot,
+} from "@shared/productionRunSheetProgress";
 import type { Response } from "express";
 
 type MemberInput = { productionJobId: string; allocatedQuantity?: number };
@@ -81,7 +88,7 @@ function describeStaleSheetPlan(
 ) {
   const submittedQuantities = new Map((submitted?.memberQuantities ?? []).map((member) => [member.lineItemId, Number(member.quantity)]));
   const currentQuantities = new Map(canonical.memberQuantities.map((member) => [member.lineItemId, Number(member.quantity)]));
-  const affectedMemberIds = Array.from(new Set([...submittedQuantities.keys(), ...currentQuantities.keys()]))
+  const affectedMemberIds = Array.from(new Set([...Array.from(submittedQuantities.keys()), ...Array.from(currentQuantities.keys())]))
     .filter((id) => submittedQuantities.get(id) !== currentQuantities.get(id))
     .sort();
   const calculatorVersionChanged = submitted?.calculatorVersion !== canonical.calculatorVersion;
@@ -102,6 +109,7 @@ function describeStaleSheetPlan(
 
 function buildSheetPlanPersistence(input: {
   stationKey: string;
+  organizationId: string;
   actorUserId: string;
   sheetPlan?: CombinedRunSheetPlanSubmission | null;
   rows: Array<{ line: typeof orderLineItems.$inferSelect }>;
@@ -223,6 +231,8 @@ export type ProductionRunListItem = {
   sheetPlanInputSnapshot: Record<string, unknown> | null;
   calculatedSheetPlanSnapshot: Record<string, unknown> | null;
   effectiveSheetPlanSnapshot: Record<string, unknown> | null;
+  sheetProgressSnapshot: ProductionRunSheetProgressSnapshot | null;
+  sheetProgressSummary: ReturnType<typeof summarizeProductionRunSheetProgress>;
   sheetPlanOverrideReason: string | null;
   sheetPlanOverrideByUserId: string | null;
   sheetPlanOverrideAt: Date | null;
@@ -616,6 +626,7 @@ export async function createPrepressProductionRun(input: {
     }
     const sheetPlanPersistence = buildSheetPlanPersistence({
       stationKey: input.stationKey,
+      organizationId: input.organizationId,
       actorUserId: input.actorUserId,
       sheetPlan: input.sheetPlan ?? null,
       rows: selectedRows,
@@ -899,6 +910,18 @@ export async function listProductionRuns(input: {
         sheetPlanInputSnapshot: canonicalRun.sheetPlanInputSnapshot ?? null,
         calculatedSheetPlanSnapshot: canonicalRun.calculatedSheetPlanSnapshot ?? null,
         effectiveSheetPlanSnapshot: canonicalRun.effectiveSheetPlanSnapshot ?? null,
+        sheetProgressSnapshot: buildInitialProductionRunSheetProgressSnapshot({
+          existing: canonicalRun.sheetProgressSnapshot,
+          files,
+          plannedSheetCount: canonicalRun.plannedSheetCount ?? null,
+          defaultRequiredImpressions: null,
+        }),
+        sheetProgressSummary: summarizeProductionRunSheetProgress(buildInitialProductionRunSheetProgressSnapshot({
+          existing: canonicalRun.sheetProgressSnapshot,
+          files,
+          plannedSheetCount: canonicalRun.plannedSheetCount ?? null,
+          defaultRequiredImpressions: null,
+        })),
         sheetPlanOverrideReason: canonicalRun.sheetPlanOverrideReason ?? null,
         sheetPlanOverrideByUserId: canonicalRun.sheetPlanOverrideByUserId ?? null,
         sheetPlanOverrideAt: canonicalRun.sheetPlanOverrideAt ?? null,
@@ -1348,8 +1371,8 @@ async function recordProductionRunOutcomeInTransaction(tx: any, input: {
     if (![successfulQuantity, damagedQuantity, remainingQuantity].every((value) => Number.isInteger(value) && value >= 0)) {
       throw new ProductionRunError("PRODUCTION_RUN_OUTCOME_INVALID", "Outcome quantities must be whole numbers at or above zero.", 400);
     }
-    if (successfulQuantity + damagedQuantity + remainingQuantity > allocatedQuantity) {
-      throw new ProductionRunError("PRODUCTION_RUN_OUTCOME_INVALID", "Successful, damaged, and remaining quantities cannot exceed the allocated quantity.", 400);
+    if (successfulQuantity + remainingQuantity > allocatedQuantity) {
+      throw new ProductionRunError("PRODUCTION_RUN_OUTCOME_INVALID", "Successful and remaining quantities cannot exceed the allocated quantity.", 400);
     }
     if (successfulQuantity < Number(member.successfulQuantity ?? member.completedQuantity ?? 0) || damagedQuantity < Number(member.damagedQuantity ?? 0)) {
       throw new ProductionRunError("PRODUCTION_RUN_OUTCOME_CONFIRMED", "Confirmed successful or damaged quantities cannot be reduced by a later outcome.", 409);
@@ -1473,6 +1496,88 @@ export async function recordProductionRunOutcome(input: {
   members: MemberOutcomeInput[];
 }) {
   return db.transaction(async (tx) => recordProductionRunOutcomeInTransaction(tx, input));
+}
+
+export async function recordProductionRunSheetProgress(input: {
+  organizationId: string;
+  runId: string;
+  actorUserId: string;
+  idempotencyKey?: string | null;
+  sheetProgressSnapshot: ProductionRunSheetProgressSnapshot;
+}) {
+  return db.transaction(async (tx) => {
+    const [run] = await tx.select().from(productionRuns).where(and(eq(productionRuns.id, input.runId), eq(productionRuns.organizationId, input.organizationId))).limit(1);
+    if (!run) throw new ProductionRunError("PRODUCTION_RUN_NOT_FOUND", "Production run was not found.", 404);
+    if (run.status === "draft") throw new ProductionRunError("PRODUCTION_RUN_NOT_STARTED", "Release and start the production run before recording sheet progress.", 409);
+    if (run.status === "canceled" || run.status === "completed" || run.status === "completed_with_exceptions") {
+      throw new ProductionRunError("PRODUCTION_RUN_TERMINAL", "Completed or canceled production runs cannot receive new sheet progress.", 409);
+    }
+    const snapshot = normalizeProductionRunSheetProgressSnapshot({
+      ...input.sheetProgressSnapshot,
+      source: "operator",
+      updatedAt: new Date().toISOString(),
+    });
+    if (!snapshot) throw new ProductionRunError("PRODUCTION_RUN_SHEET_PROGRESS_INVALID", "Record at least one valid nested sheet before saving progress.", 400);
+    const summary = summarizeProductionRunSheetProgress(snapshot);
+    if (summary.requiredImpressions <= 0) throw new ProductionRunError("PRODUCTION_RUN_SHEET_PROGRESS_INVALID", "Nested sheet progress requires a positive impression target.", 400);
+
+    const memberRows = await tx.select().from(productionRunMembers).where(and(
+      eq(productionRunMembers.organizationId, input.organizationId),
+      eq(productionRunMembers.productionRunId, run.id),
+    )).orderBy(asc(productionRunMembers.createdAt));
+    if (!memberRows.length) throw new ProductionRunError("PRODUCTION_RUN_MEMBERS_REQUIRED", "A production run must have members before sheet progress can roll up.", 409);
+
+    await tx.update(productionRuns).set({ sheetProgressSnapshot: snapshot as unknown as Record<string, unknown>, updatedAt: new Date() }).where(and(
+      eq(productionRuns.organizationId, input.organizationId),
+      eq(productionRuns.id, run.id),
+    ));
+
+    const totalAllocatedQuantity = memberRows.reduce((sum: number, member: any) => sum + (Number(member.allocatedQuantity) || 0), 0);
+    const usablePieces = summary.complete
+      ? totalAllocatedQuantity
+      : Math.floor((totalAllocatedQuantity * summary.goodImpressions) / summary.requiredImpressions);
+    const damagedPieces = Math.floor((totalAllocatedQuantity * summary.damagedImpressions) / summary.requiredImpressions);
+    const successfulByMember = distributeProducedPiecesAcrossMembers({
+      memberAllocatedQuantities: memberRows.map((member: any) => ({ memberId: member.id, allocatedQuantity: Number(member.allocatedQuantity) || 0 })),
+      usablePieces,
+    });
+    const damagedByMember = distributeProducedPiecesAcrossMembers({
+      memberAllocatedQuantities: memberRows.map((member: any) => ({ memberId: member.id, allocatedQuantity: Number(member.allocatedQuantity) || 0 })),
+      usablePieces: damagedPieces,
+    });
+    const damagedByMemberId = new Map(damagedByMember.map((member) => [member.memberId, member.successfulQuantity]));
+
+    return recordProductionRunOutcomeInTransaction(tx, {
+      organizationId: input.organizationId,
+      runId: run.id,
+      actorUserId: input.actorUserId,
+      idempotencyKey: input.idempotencyKey ?? `sheet-progress:${run.id}:${snapshot.updatedAt ?? Date.now()}`,
+      members: successfulByMember.map((rollup) => {
+        const member = memberRows.find((candidate: any) => candidate.id === rollup.memberId) as any;
+        const successfulQuantity = Math.max(Number(member.successfulQuantity ?? member.completedQuantity) || 0, rollup.successfulQuantity);
+        const damagedQuantity = Math.max(Number(member.damagedQuantity) || 0, damagedByMemberId.get(rollup.memberId) ?? 0);
+        const remainingQuantity = Math.max(0, Number(member.allocatedQuantity || 0) - successfulQuantity);
+        return {
+          memberId: rollup.memberId,
+          successfulQuantity,
+          damagedQuantity,
+          remainingQuantity,
+          outcomeStatus: remainingQuantity <= 0 && successfulQuantity >= Number(member.allocatedQuantity || 0) ? "completed" as const : "partially_completed" as const,
+          recoveryDisposition: remainingQuantity > 0 && damagedQuantity > 0 ? "requires_reprint" as const : "none" as const,
+          operatorNote: "Sheet/impression progress rollup",
+          segments: snapshot.sheets.map((sheet) => ({
+            type: "nested_sheet_progress",
+            sheetId: sheet.id,
+            label: sheet.label,
+            fileId: sheet.fileId ?? null,
+            requiredImpressions: sheet.requiredImpressions,
+            goodImpressions: sheet.goodImpressions,
+            damagedImpressions: sheet.damagedImpressions,
+          })),
+        };
+      }),
+    });
+  });
 }
 
 /**
@@ -2138,7 +2243,7 @@ export async function transitionProductionRun(input: { organizationId: string; r
         const remaining = Number(member.remainingQuantity) || 0;
         return member.outcomeStatus !== "completed"
           || remaining !== 0
-          || successful + damaged !== allocated;
+          || successful < allocated;
       });
       if (unresolvedMembers.length) {
         throw new ProductionRunError(
