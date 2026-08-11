@@ -203,8 +203,8 @@ function resolvedExistingProductIdFromObservations(observations: readonly Assist
     if (!data || typeof data !== "object" || Array.isArray(data)) continue;
     const product = (data as { product?: unknown }).product;
     if (!product || typeof product !== "object" || Array.isArray(product)) continue;
-    const id = (product as { id?: unknown }).id;
-    if (typeof id === "string" && id.length > 0) ids.add(id);
+    const identifiers = [(product as { id?: unknown }).id, (product as { recordId?: unknown }).recordId];
+    for (const id of identifiers) if (typeof id === "string" && id.length > 0) ids.add(id);
   }
   return ids.size === 1 ? [...ids][0]! : null;
 }

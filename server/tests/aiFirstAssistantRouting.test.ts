@@ -128,7 +128,7 @@ describe("AI Operator routing (replacement for retired AI-first planner coverage
           if (toolName === "products.get_pricing") return {
             toolName,
             status: "succeeded",
-            result: { status: "succeeded", data: { product: { id: "product_1", name: "Translucent Vinyl", active: true }, pricing: { status: "configuration" } }, provenance: { sourceLinks: [{ label: "Translucent Vinyl", href: "/products/product_1/edit", entityType: "product", entityId: "product_1" }], freshness: { capturedAt: "2026-08-10T00:00:00.000Z" } } },
+            result: { status: "succeeded", data: { product: { recordId: "product_1", label: "Translucent Vinyl", status: "active" }, pricing: { status: "configuration" } }, provenance: { sourceLinks: [{ label: "Translucent Vinyl", href: "/products/product_1/edit", entityType: "product", entityId: "product_1" }], freshness: { capturedAt: "2026-08-10T00:00:00.000Z" } } },
           };
           const tool = semantic.get(toolName);
           if (!tool) throw new Error(`Unexpected tool ${toolName}`);
