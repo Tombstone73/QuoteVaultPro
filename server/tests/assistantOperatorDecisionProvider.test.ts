@@ -138,6 +138,22 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
       .resolves.toEqual({ kind: "fail", response: "The AI provider did not return a complete investigation result before its output limit." });
   });
 
+  test("retries one DeepSeek transport-protocol failure without exposing its control text", async () => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const generateOperatorDecision = jest.fn()
+      .mockRejectedValueOnce(new AiProviderResponseError({ kind: "provider_protocol_failure", message: "hidden DSML transport" }))
+      .mockResolvedValueOnce({ rawText: JSON.stringify({ kind: "complete", response: "Banner results are ready." }), requestMetadata: {}, operatorContinuation: { items: [], functionCalls: [] } });
+    const provider = new ConfiguredAssistantOperatorDecisionProvider(
+      "org_1", { generateJson: jest.fn(), generateOperatorDecision } as any,
+      { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://api.deepseek.com/chat/completions", apiKey: "test", model: "deepseek-v4-flash" })) } as any,
+    );
+
+    await expect(provider.decide({ goal: "Find banner products.", taskId: "task_retry", step: 3, remainingSteps: 2, toolCatalog: [], observations: [], safeWorkingSummary: null }))
+      .resolves.toEqual({ kind: "complete", response: "Banner results are ready." });
+    expect(generateOperatorDecision).toHaveBeenCalledTimes(2);
+    expect(generateOperatorDecision.mock.calls.map((call) => call[0].operatorRequestSequence)).toEqual([1, 2]);
+  });
+
   test("keeps a malformed or empty provider result as a safe failure", async () => {
     const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
     const provider = new ConfiguredAssistantOperatorDecisionProvider(

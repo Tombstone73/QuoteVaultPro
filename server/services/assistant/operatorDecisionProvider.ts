@@ -88,14 +88,33 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
     if (capabilities.responsesApi && this.provider.generateOperatorDecision) {
       this.appendFunctionOutputs(input.observations);
       let response: AiProviderResponse;
+      const generateDecision = () => this.provider.generateOperatorDecision!({
+        orgId: this.organizationId, feature: "assistant", promptVersion: "ai-operator-runtime-v1", timeoutUseCase: "assistant_operator_decision", timeoutMs: operatorTimeoutMs,
+        providerConfig: config, system, user, toolCatalog: input.toolCatalog, responseContinuation: this.responseContinuation,
+        operatorRequestSequence: ++this.responseRequestSequence,
+      });
       try {
-        response = await this.provider.generateOperatorDecision({
-          orgId: this.organizationId, feature: "assistant", promptVersion: "ai-operator-runtime-v1", timeoutUseCase: "assistant_operator_decision", timeoutMs: operatorTimeoutMs,
-          providerConfig: config, system, user, toolCatalog: input.toolCatalog, responseContinuation: this.responseContinuation,
-          operatorRequestSequence: ++this.responseRequestSequence,
-        });
+        response = await generateDecision();
       } catch (error) {
-        return providerFailureDecision(error, { taskId: input.taskId, ...contextTrace });
+        // DeepSeek can intermittently emit a DSML transport fragment as a
+        // terminal message after otherwise successful tool observations. The
+        // adapter rejects it before any text can reach the user. Retry this
+        // one recoverable provider boundary once with the same server-owned
+        // observations and continuation; all other provider failures retain
+        // their existing safe failure behavior.
+        if (!(error instanceof AiProviderResponseError) || error.kind !== "provider_protocol_failure") {
+          return providerFailureDecision(error, { taskId: input.taskId, ...contextTrace });
+        }
+        console.warn("[AI_OPERATOR_TRACE]", {
+          stage: "provider_protocol_recovery_started",
+          taskId: input.taskId,
+          requestSequence: this.responseRequestSequence,
+        });
+        try {
+          response = await generateDecision();
+        } catch (retryError) {
+          return providerFailureDecision(retryError, { taskId: input.taskId, ...contextTrace });
+        }
       }
       const continuation = response.operatorContinuation;
       this.responseContinuation = Array.isArray(continuation?.items) ? [...this.responseContinuation, ...continuation.items] : this.responseContinuation;

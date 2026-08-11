@@ -1,4 +1,4 @@
-import { expect, type Page } from "@playwright/test";
+import { expect, type Locator, type Page } from "@playwright/test";
 
 type DevQaConfig = {
   baseUrl: URL;
@@ -75,11 +75,22 @@ export function getDevQaConfig(): DevQaConfig {
 }
 
 async function jsonRequest(page: Page, baseUrl: URL, path: string, init?: { method?: string; data?: unknown }): Promise<JsonResponse> {
-  const response = await page.request.fetch(new URL(path, baseUrl).toString(), init);
-  return {
-    status: response.status(),
-    body: await response.json().catch(() => null),
-  };
+  return page.evaluate(async ({ url, request }) => {
+    const controller = new AbortController();
+    const timeout = window.setTimeout(() => controller.abort(), 15_000);
+    try {
+      const response = await fetch(url, {
+        method: request?.method ?? "GET",
+        credentials: "include",
+        headers: request?.data === undefined ? undefined : { "Content-Type": "application/json" },
+        body: request?.data === undefined ? undefined : JSON.stringify(request.data),
+        signal: controller.signal,
+      });
+      return { status: response.status, body: await response.json().catch(() => null) };
+    } finally {
+      window.clearTimeout(timeout);
+    }
+  }, { url: new URL(path, baseUrl).toString(), request: init });
 }
 
 function describeLoginFailure(args: {
@@ -102,6 +113,22 @@ function describeLoginFailure(args: {
       `login_page_reached=${args.loginPageReached}; credential_env_present=yes; submit_attempted=${args.submitAttempted}; ` +
       `login_status=${args.loginStatus ?? "unavailable"}; authenticated_app_reached=${args.authenticatedAppReached}; category=${category}.`,
   );
+}
+
+async function loginControl(page: Page, id: string, accessibleName: string): Promise<Locator> {
+  const idControl = page.locator(`#${id}`);
+  const accessibleControl = page.getByRole("textbox", { name: accessibleName });
+  const candidate = idControl.or(accessibleControl).first();
+  await candidate.waitFor({ state: "visible", timeout: 10_000 });
+  return candidate;
+}
+
+async function loginSubmitControl(page: Page): Promise<Locator> {
+  const submitControl = page.locator('button[type="submit"]');
+  const accessibleControl = page.getByRole("button", { name: "Sign In", exact: true });
+  const candidate = submitControl.or(accessibleControl).first();
+  await candidate.waitFor({ state: "visible", timeout: 10_000 });
+  return candidate;
 }
 
 /**
@@ -137,23 +164,26 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
   }
 
   await page.goto(new URL("/login", config.baseUrl).toString(), { waitUntil: "domcontentloaded" });
-  diagnostics.loginPageReached = await page.locator("#email").isVisible().catch(() => false)
-    && await page.locator("#password").isVisible().catch(() => false);
+  const emailControl = await loginControl(page, "email", "Email");
+  const passwordControl = await loginControl(page, "password", "Password");
+  const submitControl = await loginSubmitControl(page);
+  diagnostics.loginPageReached = await emailControl.isVisible().catch(() => false)
+    && await passwordControl.isVisible().catch(() => false)
+    && await submitControl.isVisible().catch(() => false);
   if (!diagnostics.loginPageReached) {
     throw describeLoginFailure(diagnostics);
   }
 
-  await page.locator("#email").fill(config.email);
-  await page.locator("#password").fill(config.password);
+  await emailControl.fill(config.email);
+  await passwordControl.fill(config.password);
   const loginResponse = page.waitForResponse(
     (response) => response.url() === new URL("/api/auth/login", config.baseUrl).toString(),
     { timeout: 30_000 },
   ).catch(() => null);
   diagnostics.submitAttempted = true;
-  await page.locator('button[type="submit"]').click();
+  await submitControl.click();
   const response = await loginResponse;
   diagnostics.loginStatus = response?.status() ?? null;
-
   try {
     await page.waitForURL((url) => url.origin === config.baseUrl.origin && url.pathname !== "/login", { timeout: 30_000 });
     diagnostics.authenticatedAppReached = true;
@@ -161,6 +191,9 @@ export async function authenticateDevQaUser(page: Page): Promise<void> {
     throw describeLoginFailure(diagnostics);
   }
 
+  // Verify through a normal browser fetch after navigation. The login page's
+  // initial unauthenticated session check is intentionally not used as a
+  // signal: on production builds React Query may reuse it after login.
   const session = await jsonRequest(page, config.baseUrl, "/api/auth/session");
   const sessionBody = session.body as { authenticated?: unknown; mustChangePassword?: unknown; user?: { email?: unknown } } | null;
   if (session.status !== 200 || sessionBody?.authenticated !== true) {

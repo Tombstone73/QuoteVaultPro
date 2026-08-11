@@ -8,6 +8,9 @@ import { authenticateDevQaUser } from "./devQaAuth";
 test.use({ storageState: { cookies: [], origins: [] } });
 
 test("dedicated DEV QA user can log in from a second fresh browser", async ({ page }) => {
+  // This intentionally repeats the complete cloud login and tenant checks.
+  // Give those deployed requests the same budget as the setup project.
+  test.setTimeout(90_000);
   await authenticateDevQaUser(page);
   await expect(page).toHaveURL(/\/dashboard(?:[?#].*)?$/);
   await expect(page.locator('[data-sidebar], nav, [role="navigation"]').first()).toBeVisible({ timeout: 10_000 });
