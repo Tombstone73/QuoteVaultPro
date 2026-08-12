@@ -1321,6 +1321,12 @@ async function createGeneratedProofAttachment(tx: any, args: {
     },
   });
 
+  await ensureGeneratedProofCanonicalDerivatives({
+    organizationId: args.organizationId,
+    fileRecordId: stored.fileRecord.id,
+    fileName,
+  });
+
   return buildProofArtifactSummary({
     attachment: stored.linkedRecord,
     snapshot: args.snapshot,
@@ -1405,7 +1411,38 @@ async function createGeneratedCombinedProofAttachment(tx: any, args: {
     },
   });
 
+  await ensureGeneratedProofCanonicalDerivatives({
+    organizationId: args.organizationId,
+    fileRecordId: stored.fileRecord.id,
+    fileName,
+  });
+
   return buildProofArtifactSummary({ attachment: stored.linkedRecord, snapshot: primary });
+}
+
+export async function ensureGeneratedProofCanonicalDerivatives(args: {
+  organizationId: string;
+  fileRecordId: string;
+  fileName: string;
+}, dependencies: {
+  generateCanonicalFilePreviews?: typeof assetPreviewGenerator.generateCanonicalFilePreviews;
+} = {}): Promise<void> {
+  try {
+    const generateCanonicalFilePreviews = dependencies.generateCanonicalFilePreviews ?? assetPreviewGenerator.generateCanonicalFilePreviews.bind(assetPreviewGenerator);
+    await generateCanonicalFilePreviews({
+      organizationId: args.organizationId,
+      fileRecordId: args.fileRecordId,
+      fileName: args.fileName,
+      mimeType: "application/pdf",
+    });
+  } catch (error) {
+    // A proof remains valid even when its presentation derivative cannot be made.
+    console.warn("[ProofComposition] canonical_proof_derivative_generation_failed", {
+      organizationId: args.organizationId,
+      fileRecordId: args.fileRecordId,
+      error: error instanceof Error ? error.message : String(error),
+    });
+  }
 }
 
 export async function createGeneratedCombinedProofVersion(tx: any, args: {

@@ -6,7 +6,7 @@ import { isPdfAttachment } from "@/lib/attachments";
 import { getAttachmentPollingInterval, isAttachmentSettled } from "@/lib/attachments/attachmentStatus";
 import { mergeQuoteLineItemRows } from "@/lib/attachments/quoteLineItemRows";
 import { normalizeOrderFileRows } from "@/lib/attachments/orderFileRows";
-import { getThumbSrc } from "@/lib/getThumbSrc";
+import { getLineItemThumbnailUrl } from "@/lib/lineItemThumbnailUrl";
 
 type LineItemThumbnailProps = {
   /** Either quoteId (for quotes) or orderId (for orders) */
@@ -35,6 +35,7 @@ type AttachmentData = {
   thumbError?: string | null;
   pageCount?: number | null;
   fileUrl?: string | null;
+  fileRecordId?: string | null;
   pages?: Array<{ thumbUrl?: string | null; thumbStatus?: string | null }>;
 };
 
@@ -105,7 +106,8 @@ export function LineItemThumbnail({
   const attachments = providedAttachments ?? fetchedAttachments;
 
   // Find first attachment with a thumbnail URL (using unified helper)
-  const first = attachments.find((a) => !!getThumbSrc(a)) ?? attachments[0] ?? null;
+  const thumbnailFor = (attachment: AttachmentData) => getLineItemThumbnailUrl(attachment);
+  const first = attachments.find((attachment) => !!thumbnailFor(attachment)) ?? attachments[0] ?? null;
 
   // No attachments - show placeholder
   if (!first) {
@@ -117,7 +119,7 @@ export function LineItemThumbnail({
   }
 
   const isPdf = isPdfAttachment(first);
-  const thumbSrc = !imageError ? getThumbSrc(first) : null;
+  const thumbSrc = !imageError ? thumbnailFor(first) : null;
   const isPending = !thumbSrc && !isAttachmentSettled(first as any);
 
   const devTitle =

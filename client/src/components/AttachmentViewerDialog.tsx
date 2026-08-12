@@ -11,6 +11,7 @@ import { downloadFileFromUrl } from "@/lib/downloadFile";
 import { buildPdfDownloadUrl, buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
 import { apiFetchBlob } from "@/lib/queryClient";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
+import { buildArtworkAccessUrl, openArtworkPreview } from "@/lib/artworkAccess";
 import { cn } from "@/lib/utils";
 import { resolvePdfViewportScale, type PdfFitMode } from "@/lib/attachmentViewerSizing";
 import { ChevronLeft, ChevronRight, Download, ExternalLink, FileText, Printer, RotateCcw, RotateCw, X, ZoomIn, ZoomOut } from "lucide-react";
@@ -43,6 +44,7 @@ export type AttachmentData = {
   thumbUrl?: string | null;
   previewUrl?: string | null;
   objectPath?: string | null;
+  fileRecordId?: string | null;
   pageCount?: number | null;
   pages?: AttachmentPage[];
 };
@@ -118,7 +120,10 @@ function FilmstripThumbnail({
   const itemIsPdf = isPdfFile(itemMimeType, itemName);
   const itemIsImage = typeof itemMimeType === "string" && itemMimeType.startsWith("image/");
   const normalizedThumbUrl = normalizeThumbnailUrl(
-    item.thumbUrl ?? item.pages?.[0]?.thumbUrl ?? (itemIsImage ? item.previewUrl ?? item.originalUrl ?? null : null)
+    buildArtworkAccessUrl(item.fileRecordId, "thumbnail") ??
+      item.thumbUrl ??
+      item.pages?.[0]?.thumbUrl ??
+      (itemIsImage ? item.previewUrl ?? item.originalUrl ?? null : null)
   );
   const [thumbFailed, setThumbFailed] = useState(false);
 
@@ -221,15 +226,21 @@ export function AttachmentViewerDialog({
   const effectiveMimeType = currentAttachment?.mimeType ?? inferMimeType(fileName);
   const isPdf = isPdfFile(effectiveMimeType, fileName);
   const isImage = typeof effectiveMimeType === "string" && effectiveMimeType.startsWith("image/");
-  const imageViewUrl = isImage ? currentAttachment?.previewUrl ?? currentAttachment?.originalUrl ?? null : null;
+  const canonicalOriginalUrl = buildArtworkAccessUrl(currentAttachment?.fileRecordId, "original");
+  const canonicalPreviewUrl = buildArtworkAccessUrl(currentAttachment?.fileRecordId, "preview");
+  const imageOriginalUrl = canonicalOriginalUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null;
+  const imageViewUrl = isImage ? canonicalPreviewUrl ?? currentAttachment?.previewUrl ?? imageOriginalUrl : null;
+  const imageFallbackUrl = isImage && imageViewUrl !== imageOriginalUrl ? imageOriginalUrl : null;
   const objectPath = currentAttachment?.objectPath ?? null;
-  const pdfViewUrl = isPdf ? currentAttachment?.previewUrl ?? currentAttachment?.originalUrl ?? buildPdfViewUrl(objectPath) : null;
+  const pdfViewUrl = isPdf ? canonicalOriginalUrl ?? currentAttachment?.previewUrl ?? currentAttachment?.originalUrl ?? buildPdfViewUrl(objectPath) : null;
   const pdfDownloadUrl = isPdf ? buildPdfDownloadUrl(objectPath, fileName) : null;
   const pdfSourceUrl = isPdf
     ? pdfViewUrl ?? currentAttachment?.fileUrl
     : null;
   const pdfSourceKind = isPdf
-    ? currentAttachment?.previewUrl
+    ? canonicalOriginalUrl
+      ? "canonicalOriginal"
+      : currentAttachment?.previewUrl
       ? "previewUrl"
       : currentAttachment?.originalUrl
         ? "originalUrl"
@@ -239,9 +250,9 @@ export function AttachmentViewerDialog({
             ? "fileUrl"
             : "missing"
     : null;
-  const genericDownloadUrl = !isPdf ? currentAttachment?.downloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null : null;
+  const genericDownloadUrl = !isPdf ? canonicalOriginalUrl ?? currentAttachment?.downloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null : null;
   const downloadUrl = isPdf
-    ? currentAttachment?.downloadUrl ?? pdfDownloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null
+    ? canonicalOriginalUrl ?? currentAttachment?.downloadUrl ?? pdfDownloadUrl ?? currentAttachment?.originalUrl ?? currentAttachment?.fileUrl ?? null
     : genericDownloadUrl;
   const canGoPrev = !!galleryAttachments && selectedIndex > 0;
   const canGoNext = !!galleryAttachments && selectedIndex < galleryAttachments.length - 1;
@@ -338,7 +349,13 @@ export function AttachmentViewerDialog({
 
     void (async () => {
       try {
-        const blob = await apiFetchBlob(imageViewUrl, { method: "GET", credentials: "include" });
+        let blob: Blob;
+        try {
+          blob = await apiFetchBlob(imageViewUrl, { method: "GET", credentials: "include" });
+        } catch (previewError) {
+          if (!imageFallbackUrl) throw previewError;
+          blob = await apiFetchBlob(imageFallbackUrl, { method: "GET", credentials: "include" });
+        }
         if (cancelled) return;
         const objectUrl = URL.createObjectURL(blob);
         const cache = imagePreviewCacheRef.current;
@@ -371,7 +388,7 @@ export function AttachmentViewerDialog({
     return () => {
       cancelled = true;
     };
-  }, [currentAttachment, effectiveMimeType, imageViewUrl, isDev, isImage, open]);
+  }, [currentAttachment, effectiveMimeType, imageFallbackUrl, imageViewUrl, isDev, isImage, open]);
 
   useEffect(() => {
     if (!open || !isPdf || !currentAttachment?.id || !pdfSourceUrl) {
@@ -601,6 +618,15 @@ export function AttachmentViewerDialog({
     }
     if (!downloadUrl) return;
     void downloadFileFromUrl(downloadUrl, fileName);
+  };
+
+  const handleOpenPdf = () => {
+    if (currentAttachment?.fileRecordId) {
+      void openArtworkPreview(currentAttachment.fileRecordId, effectiveMimeType);
+      return;
+    }
+    const url = pdfViewUrl ?? pdfSourceUrl;
+    if (url) window.open(url, "_blank", "noopener,noreferrer");
   };
 
   const clampZoom = (value: number) => Math.min(3, Math.max(0.5, value));
@@ -942,11 +968,7 @@ export function AttachmentViewerDialog({
                     <RotateCw className="h-4 w-4" />
                   </Button>
                   {pdfViewUrl || pdfSourceUrl ? (
-                    <Button type="button" variant="outline" size="icon" onClick={() => {
-                      const url = pdfViewUrl ?? pdfSourceUrl;
-                      if (!url) return;
-                      window.open(url, "_blank", "noopener,noreferrer");
-                    }} title="Open / print PDF">
+                    <Button type="button" variant="outline" size="icon" onClick={handleOpenPdf} title="Open / print PDF">
                       <Printer className="h-4 w-4" />
                     </Button>
                   ) : null}
@@ -963,11 +985,7 @@ export function AttachmentViewerDialog({
                   type="button"
                   variant="outline"
                   size="icon"
-                  onClick={() => {
-                    const url = pdfViewUrl ?? pdfSourceUrl;
-                    if (!url) return;
-                    window.open(url, "_blank", "noopener,noreferrer");
-                  }}
+                  onClick={handleOpenPdf}
                   title="Open in new tab"
                 >
                   <ExternalLink className="h-4 w-4" />

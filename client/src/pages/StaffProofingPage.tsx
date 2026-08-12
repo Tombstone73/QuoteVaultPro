@@ -71,6 +71,7 @@ import {
   getProofVersionRecoveryStatusNote,
 } from "@/lib/proofingRecovery";
 import { getStaffProofDownloadUrl, getStaffProofPreviewUrl, shouldFetchStaffPreviewAsBlob } from "@/lib/proofingPreviewUrls";
+import { buildArtworkAccessUrl } from "@/lib/artworkAccess";
 import { buildProofingArtworkDisplayUrl, buildProofingArtworkThumbnailUrl } from "@/lib/proofingArtworkDisplay";
 import { getProofingQueueDueDate } from "@/lib/proofingQueueDueDate";
 import { buildPdfViewUrl, isPdfFile } from "@/lib/pdfUrls";
@@ -290,11 +291,11 @@ function getProofPreviewUrl(file: ProofFileRow | null | undefined) {
   const fileName = file.originalFilename || file.fileName || "Proof";
   const mimeType = file.mimeType || null;
   const isPdf = isPdfFile(mimeType, fileName);
-  return getStaffProofPreviewUrl(file, isPdf) || (isPdf ? buildPdfViewUrl(file.objectPath) : null);
+  return buildArtworkAccessUrl(file.fileRecordId, "original") || getStaffProofPreviewUrl(file, isPdf) || (isPdf ? buildPdfViewUrl(file.objectPath) : null);
 }
 
 function getDownloadUrl(file: ProofFileRow | null | undefined) {
-  return getStaffProofDownloadUrl(file);
+  return buildArtworkAccessUrl(file?.fileRecordId, "original") || getStaffProofDownloadUrl(file);
 }
 
 function ProofingArtworkThumbnailImage({
@@ -996,6 +997,7 @@ export default function StaffProofingPage() {
   const previewName = displayedFile?.originalFilename || displayedFile?.fileName || "Proof";
   const previewIsPdf = Boolean(displayedFile && isPdfFile(displayedFile.mimeType || null, previewName));
   const previewIsImage = Boolean(displayedFile?.mimeType?.startsWith("image/"));
+  const proofArtifactThumbnailUrl = buildArtworkAccessUrl(displayedFile?.fileRecordId, "thumbnail");
   const displayedFileForViewer = useMemo(
     () =>
       displayedFile
@@ -3186,6 +3188,12 @@ export default function StaffProofingPage() {
                     <img
                       src={previewUrl}
                       alt="Proof preview"
+                      className="h-16 w-16 shrink-0 rounded border object-cover"
+                    />
+                  ) : proofArtifactThumbnailUrl ? (
+                    <img
+                      src={proofArtifactThumbnailUrl}
+                      alt="Proof thumbnail"
                       className="h-16 w-16 shrink-0 rounded border object-cover"
                     />
                   ) : (

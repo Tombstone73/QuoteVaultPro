@@ -72,6 +72,7 @@ export function toAttachmentViewerAttachment<T extends RawAttachmentRecord>(raw:
     thumbUrl: firstString(raw?.thumbUrl, raw?.thumbnailUrl, raw?.previewThumbnailUrl),
     previewUrl,
     objectPath: firstString(raw?.objectPath, raw?.object_key, raw?.filePath),
+    fileRecordId: firstString(raw?.fileRecordId, raw?.file_record_id),
     pageCount: firstNumber(raw?.pageCount, pages?.length),
     pages,
   };
