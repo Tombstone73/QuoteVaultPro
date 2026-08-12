@@ -42,7 +42,7 @@ function assertReady(intent: ProductDraftIntent): void {
   assert(intent.production.route.state !== "unresolved", "ROUTE_UNRESOLVED", "Production route must be resolved or explicitly unset before projection.", "production.route");
   assert(intent.pricing.model !== "unresolved", "PRICING_UNRESOLVED", "Pricing must be resolved before projection.", "pricing");
   for (const group of intent.optionGroups) {
-    assert(!(group.required && group.selectionMode === "single" && group.values.every((value) => !value.isDefault)), "OPTION_DEFAULT_UNRESOLVED", `A default is required for option group '${group.label}' before projection.`, `optionGroups.${group.key}.default`);
+    assert(!(group.inputType == null && group.required && group.selectionMode === "single" && group.values.every((value) => !value.isDefault)), "OPTION_DEFAULT_UNRESOLVED", `A default is required for option group '${group.label}' before projection.`, `optionGroups.${group.key}.default`);
   }
   if (intent.pricing.model === "one_dimensional_matrix" || intent.pricing.model === "two_dimensional_matrix") {
     assert(intent.pricing.unit !== "unresolved", "PRICING_UNIT_UNRESOLVED", "Matrix pricing must be per piece or per square foot before projection.", "pricing.unit");
@@ -65,15 +65,19 @@ function buildOptions(intent: ProductDraftIntent) {
     groups.set(group.key, group);
   });
   intent.optionGroups.forEach((group, index) => {
-    const groupId = stableId("intent_group", group.key); const nodeId = stableId("intent_input", group.key);
+    const structuralGroupKey = group.parentGroupKey ?? group.key;
+    const structuralGroup = groups.get(structuralGroupKey);
+    assert(!group.parentGroupKey || structuralGroup, "OPTION_PARENT_GROUP_MISSING", `Parent group '${group.parentGroupKey}' is not declared.`, `optionGroups.${group.key}.parentGroupKey`);
+    const groupId = stableId("intent_group", structuralGroupKey); const nodeId = stableId("intent_input", group.key);
     rootNodeIds.push(nodeId);
-    nodes[groupId] = { id: groupId, kind: "group", type: "GROUP", status: "ENABLED", key: `${group.key}_group`, label: group.label, displayOrder: index + 1, input: { type: "select", required: group.required } };
+    nodes[groupId] ??= { id: groupId, kind: "group", type: "GROUP", status: "ENABLED", key: `${structuralGroupKey}_group`, label: structuralGroup?.label ?? group.label, displayOrder: index + 1, input: { type: "select", required: structuralGroup?.required ?? group.required } };
     const defaults = group.values.filter((value) => value.isDefault).map((value) => value.key);
+    const inputType = group.inputType ?? (group.selectionMode === "multiple" ? "multiselect" : "select");
     nodes[nodeId] = {
       id: nodeId, kind: "question", type: "INPUT", status: "ENABLED", key: group.key, label: group.label, ui: { sortOrder: index + 1 },
-      input: { type: group.selectionMode === "multiple" ? "multiselect" : "select", required: group.required, selectionKey: group.key, valueType: "ENUM", constraints: { select: { allowEmpty: !group.required } }, ...(defaults.length ? { defaultValue: group.selectionMode === "multiple" ? defaults : defaults[0] } : {}) },
+      input: { type: inputType, required: group.required, selectionKey: group.key, valueType: group.inputType ? "TEXT" : "ENUM", ...(!group.inputType ? { constraints: { select: { allowEmpty: !group.required } } } : {}), ...(defaults.length ? { defaultValue: group.selectionMode === "multiple" ? defaults : defaults[0] } : {}) },
       ...(group.availableWhen ? { visibility: { rules: [{ type: "equals", selectionKey: group.availableWhen.optionGroupKey, value: group.availableWhen.optionValueKey }] } } : {}),
-      choices: group.values.map((value, valueIndex) => ({
+      ...(!group.inputType ? { choices: group.values.map((value, valueIndex) => ({
         id: `${nodeId}_choice_${valueIndex + 1}`,
         value: value.key,
         label: value.label,
@@ -86,7 +90,7 @@ function buildOptions(intent: ProductDraftIntent) {
             label: `${value.label} adjustment`,
           }],
         } : {}),
-      })),
+      })) } : {}),
     };
     edges.push({ id: `${groupId}_edge`, fromNodeId: groupId, toNodeId: nodeId, status: "DISABLED" });
   });

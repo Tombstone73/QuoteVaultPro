@@ -1,5 +1,6 @@
 import { z } from "zod";
-import { type ProductDraftIntent, type ProductDraftIntentPatch } from "@shared/productDraftIntent";
+import { applyProductDraftIntentPatch, type ProductDraftIntent, type ProductDraftIntentPatch } from "@shared/productDraftIntent";
+import { applyCanonicalProductIntentProposal, buildCanonicalProductIntentProposal } from "./productIntentCanonicalProposal";
 
 /** Provider-facing Product Builder language. It contains only business labels
  * and effects; canonical patches, PBV2 nodes, IDs, revisions, fingerprints,
@@ -16,6 +17,7 @@ export const semanticProductOperationsResultSchema = z.object({
     z.object({ op: z.literal("add_option_group"), optionGroup: z.string().trim().min(1).max(160), required: z.boolean(), selectionMode: z.enum(["single", "multiple"]) }).strict(),
     z.object({ op: z.literal("rename_option_group"), optionGroup: z.string().trim().min(1).max(160), name: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("add_option_value"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160) }).strict(),
+    z.object({ op: z.literal("add_text_input"), optionGroup: z.string().trim().min(1).max(160), label: z.string().trim().min(1).max(160), multiline: z.boolean(), required: z.boolean(), whenOptionGroup: z.string().trim().min(1).max(160).optional(), whenValue: z.string().trim().min(1).max(160).optional() }).strict(),
     z.object({ op: z.literal("set_option_rate"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160), priceCents: z.number().int().min(0).max(10_000_000), basis: z.enum(["per_piece", "per_square_foot"]).optional() }).strict(),
     // Retained for legacy compiler continuation compatibility. New Operator
     // function tools expose set_option_rate, not the matrix implementation term.
@@ -55,31 +57,6 @@ function containsWholePhrase(source: string, phrase: string): boolean {
 }
 
 function normalizeWhitespace(value: string): string { return value.trim().replace(/\s+/g, " "); }
-
-function hasOptionGroup(groups: readonly ProductDraftIntent["optionGroups"], label: string): boolean {
-  return groups.some((group) => normalized(group.label) === normalized(label));
-}
-
-/** Applies the reusable Banner-style grommet vocabulary only when the user
- * explicitly supplies those concepts in ordinary language. */
-function explicitGrommetFollowUpOperations(request: string | undefined, current: ProductDraftIntent): SemanticProductOperationsResult["operations"] {
-  if (!request || !/\bgrommets?\b/i.test(request)) return [];
-  const operations: SemanticProductOperationsResult["operations"] = [];
-  if (!hasOptionGroup(current.optionGroups, "Grommets")) operations.push({ op: "add_option_group", optionGroup: "Grommets", required: false, selectionMode: "single" });
-  const hasPlacement = /\bgrommets?\s+with\s+placement\b|\btop\s+and\s+bottom\b/i.test(request);
-  if (!/\bdefault\b/i.test(request)) {
-    if (hasPlacement && !hasOptionGroup(current.optionGroups, "Grommet Placement")) operations.push({ op: "add_option_group", optionGroup: "Grommet Placement", required: false, selectionMode: "single" });
-    return operations;
-  }
-  operations.push({ op: "add_option_value", optionGroup: "Grommets", value: "Yes" }, { op: "add_option_value", optionGroup: "Grommets", value: "No" }, { op: "set_option_default", optionGroup: "Grommets", value: "Yes" });
-  if (/\btop\s+and\s+bottom\b/i.test(request)) {
-    if (!hasOptionGroup(current.optionGroups, "Grommet Placement")) operations.push({ op: "add_option_group", optionGroup: "Grommet Placement", required: false, selectionMode: "single" });
-    const malformedPlacement = current.optionGroups.find((group) => normalized(group.label) === "grommet placement")?.values.some((value) => normalized(value.label) === "grommets");
-    if (malformedPlacement) operations.push({ op: "remove_option_value", optionGroup: "Grommet Placement", value: "Grommets" });
-    operations.push({ op: "add_option_value", optionGroup: "Grommet Placement", value: "Top and Bottom" }, { op: "set_option_default", optionGroup: "Grommet Placement", value: "Top and Bottom" });
-  }
-  return operations;
-}
 
 /** A quoted name introduced with ordinary product-naming language is direct
  * user evidence. The server preserves it rather than accepting a shortened
@@ -139,7 +116,7 @@ function addUnresolved(paths: readonly UnresolvedField[], field: UnresolvedField
 
 /** Converts business operations into a server-built canonical patch. This is
  * deliberately a small translation layer, not an interpreter of user prose. */
-export function compileSemanticProductOperations(
+function compileCompatibilitySemanticProductOperations(
   current: ProductDraftIntent,
   raw: unknown,
   baseRevision: number,
@@ -148,31 +125,7 @@ export function compileSemanticProductOperations(
 ): ProductDraftIntentPatch {
   const semantic = semanticProductOperationsResultSchema.parse(raw);
   if (baseRevision !== current.revision) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_STALE");
-  const explicitName = explicitProductNameFromRequest(request);
-  // A quoted name supplied as "product for <name>" is direct user evidence.
-  // Do not depend on the model remembering to emit a separate rename operation.
-  const nameOperation = explicitName && normalized(current.identity.name) !== normalized(explicitName) && !semantic.operations.some((operation) => operation.op === "set_product_name")
-    ? [{ op: "set_product_name" as const, name: explicitName }]
-    : [];
-  // Creation batches sometimes mention a value before the group that owns it.
-  // Move only that dependency immediately before its dependent value; unrelated
-  // operations retain their original provider order.
-  const semanticOperations = [...nameOperation, ...semantic.operations.filter((operation) => !(request && /\bgrommets?\s+with\s+placement\b/i.test(request) && operation.op === "add_option_value" && normalized(operation.optionGroup) === "grommet placement" && normalized(operation.value) === "grommets")).map((operation) => operation.op === "set_product_name" && explicitName ? { ...operation, name: explicitName } : operation), ...explicitGrommetFollowUpOperations(request, current)];
-  const orderedOperations = [...semanticOperations];
-  for (let changed = true; changed;) {
-    changed = false;
-    for (let index = 0; index < orderedOperations.length; index += 1) {
-      const operation = orderedOperations[index]!;
-      const group = "optionGroup" in operation ? operation.optionGroup : null;
-      const needsValue = operation.op === "set_option_default" || operation.op === "set_option_rate" || operation.op === "set_matrix_rate" || operation.op === "set_option_price_impact";
-      const dependencyIndex = group && ((operation.op === "add_option_value" && orderedOperations.findIndex((candidate, candidateIndex) => candidateIndex > index && candidate.op === "add_option_group" && normalized(candidate.optionGroup) === normalized(group))) || (needsValue && orderedOperations.findIndex((candidate, candidateIndex) => candidateIndex > index && candidate.op === "add_option_value" && normalized(candidate.optionGroup) === normalized(group) && normalized(candidate.value) === normalized(operation.value))));
-      if (typeof dependencyIndex !== "number" || dependencyIndex < 0) continue;
-      const [dependency] = orderedOperations.splice(dependencyIndex, 1);
-      orderedOperations.splice(index, 0, dependency!);
-      changed = true;
-      break;
-    }
-  }
+  const orderedOperations = [...semantic.operations];
   const nextGroups = structuredClone(current.optionGroups);
   const metadata: Record<string, ProductDraftIntent["fieldMetadata"][string]> = {};
   let groupsChanged = false;
@@ -252,7 +205,7 @@ export function compileSemanticProductOperations(
     }
     if (operation.op === "set_product_name") {
       if (request && !containsWholePhrase(request, operation.name)) throw new Error("PRODUCT_INTENT_SEMANTIC_PRODUCT_NAME_UNRESOLVED");
-      nextIdentity = { ...nextIdentity, name: explicitProductNameFromRequest(request) ?? operation.name };
+      nextIdentity = { ...nextIdentity, name: operation.name };
       identityChanged = true;
       clearUnresolved("identity.name");
       mark("identity.name");
@@ -456,4 +409,54 @@ export function compileSemanticProductOperations(
   if (Object.keys(metadata).length) operations.push({ op: "merge_field_metadata", value: metadata });
   if (!operations.length) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_EMPTY");
   return { contractVersion: 1, baseRevision, preserveUnchanged: true, operations };
+}
+
+/** Continuations now plan through the shared Phase 5/6 proposal contracts.
+ * Pricing, material, and deletion are passed to the contained legacy adapter
+ * until their own canonical application operations exist. */
+export function compileSemanticProductOperations(
+  current: ProductDraftIntent,
+  raw: unknown,
+  baseRevision: number,
+  request?: string,
+  options: SemanticProductOperationOptions = {},
+): ProductDraftIntentPatch {
+  const semantic = semanticProductOperationsResultSchema.parse(raw);
+  if (baseRevision !== current.revision) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_STALE");
+  const proposal = buildCanonicalProductIntentProposal(current, semantic.operations, request, options);
+  const canonicalPatch = applyCanonicalProductIntentProposal(current, proposal, baseRevision);
+  const compatibilityIndexes = new Set(proposal.compatibilityOperations.map((operation) => operation.index));
+  const compatibilityOperations = semantic.operations.filter((_, index) => compatibilityIndexes.has(index));
+  if (!compatibilityOperations.length) {
+    if (!canonicalPatch) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_EMPTY");
+    return canonicalPatch;
+  }
+  const working = canonicalPatch
+    ? applyProductDraftIntentPatch(current, canonicalPatch, { parentRevision: current.revision })
+    : current;
+  const compatibilityPatch = compileCompatibilitySemanticProductOperations(
+    working,
+    { kind: "semantic_operations", operations: compatibilityOperations },
+    working.revision,
+    request,
+    options,
+  );
+  const final = applyProductDraftIntentPatch(working, compatibilityPatch, { parentRevision: current.revision });
+  const operations: ProductDraftIntentPatch["operations"] = [];
+  const changed = <T>(before: T, after: T) => JSON.stringify(before) !== JSON.stringify(after);
+  if (changed(current.identity, final.identity)) operations.push({ op: "set_identity", value: final.identity });
+  if (changed(current.measurement, final.measurement)) operations.push({ op: "set_measurement", value: final.measurement });
+  if (changed(current.pricing, final.pricing)) operations.push({ op: "set_pricing", value: final.pricing });
+  if (changed(current.material, final.material)) operations.push({ op: "set_material", value: final.material });
+  if (changed(current.optionGroups, final.optionGroups)) operations.push({ op: "replace_option_groups", value: final.optionGroups });
+  if (changed(current.workflow, final.workflow)) operations.push({ op: "set_workflow", value: final.workflow });
+  if (changed(current.unresolvedFields, final.unresolvedFields)) operations.push({ op: "set_unresolved_fields", value: final.unresolvedFields });
+  const metadata = Object.fromEntries(Object.entries(final.fieldMetadata).filter(([path, value]) => JSON.stringify(current.fieldMetadata[path]) !== JSON.stringify(value)));
+  if (Object.keys(metadata).length) operations.push({ op: "merge_field_metadata", value: metadata });
+  return {
+    contractVersion: 1,
+    baseRevision,
+    preserveUnchanged: true,
+    operations,
+  };
 }

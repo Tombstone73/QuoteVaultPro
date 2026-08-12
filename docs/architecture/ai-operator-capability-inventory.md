@@ -25,16 +25,16 @@ None.
 
 | Product area | Classification | Notes |
 |---|---|---|
-| Name / identity | shared_canonical_today | Product Editor and confirmed existing-product Operator share products.update_configuration.v1. |
+| Name / identity | shared_canonical_today | Existing edits share products.update_configuration.v1; new drafts compose the same proposal schema before a Product ID exists. |
 | Description | shared_canonical_today | Product Editor and confirmed existing-product Operator share products.update_configuration.v1. |
 | Category / type | shared_canonical_today | Category and validated Product type are shared for existing Products. |
-| Measurement mode | shared_canonical_today | Existing Product measurement mode is shared canonical. |
+| Measurement mode | shared_canonical_today | Existing edits and pre-persistence semantic proposals share the canonical configuration shape. |
 | Workflow intent | shared_canonical_today | Workflow intent and established service-fee defaults are shared canonical. |
-| Scalar pricing | ai_specific_narrow_implementation | New semantic draft only. |
+| Scalar pricing | ai_specific_narrow_implementation | Contained new-draft compatibility path; pricing was not migrated in Phase 7. |
 | Pricing matrices | partial_or_indirect | AI command is limited to inactive drafts, not existing Product Editor parity. |
 | Quantity tiers | partial_or_indirect | AI command is limited to inactive drafts. |
-| Materials | ai_specific_narrow_implementation | New draft has label-based selection; existing product adapter missing. |
-| Option groups and values | shared_canonical_today | Group/input creation and metadata plus choice creation, labels, descriptions, and order share products.update_option_configuration.v1. |
+| Materials | ai_specific_narrow_implementation | Contained label-based new-draft compatibility path; existing Product adapter remains missing. |
+| Option groups and values | shared_canonical_today | Existing edits execute the shared operation; new drafts compose and apply its mutation schema through a pre-persistence adapter. |
 | Defaults | shared_canonical_today | Defaults are validated against choice values; set_option_default is compatibility-only and translates to the shared operation. |
 | Required state | shared_canonical_today | Group and input required state use the same PBV2 DRAFT operation. |
 | Conditional rules | shared_canonical_today | Simple node/group/choice visibility uses validated selectionKey and choice-value references; complex nested authoring remains unmigrated. |
@@ -42,8 +42,8 @@ None.
 | Proof requirements | shared_canonical_today | Existing Product proof requirement is shared canonical. |
 | Prepress and production routing | ui_supported_ai_adapter_missing | No normal Operator product operation found. |
 | Active/inactive, draft/publish | ui_supported_ai_adapter_missing | Operator capabilities explicitly report product activation disabled. |
-| Customer-specific availability | underlying_support_not_demonstrated | Semantic contract explicitly preserves this as unsupported. |
-| Exact grommet-count structure | underlying_support_not_demonstrated | Not a first-class Product Draft Intent field. |
+| Customer-specific availability | underlying_support_not_demonstrated | Proposal contract preserves this as unsupported without poisoning independent supported work. |
+| Exact grommet-count structure | underlying_support_not_demonstrated | Preserved as unresolved; no phrase-specific choice repair remains active. |
 
 ## Capability inventory by domain
 

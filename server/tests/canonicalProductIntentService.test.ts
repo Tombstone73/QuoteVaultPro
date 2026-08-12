@@ -824,10 +824,16 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const followUp = await service.applySemanticOperations({
       organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
       request: "Grommets would be default, top and bottom. 1 each so each one gets 2 grommets. Product is called Reflective Pole Signs - Rick",
-      // Reproduces the historical Operator omission: the only emitted
-      // operation was the already-recorded unsupported count. The explicit
-      // user facts must still reconcile atomically into the next revision.
-      operations: [{ op: "record_unsupported_detail", detail: "grommet_quantity" }],
+      // The semantic plan states every supported fact. No vocabulary-specific
+      // server repair manufactures omitted choices from the request wording.
+      operations: [
+        { op: "add_option_value", optionGroup: "Grommets", value: "Yes" },
+        { op: "add_option_value", optionGroup: "Grommets", value: "No" },
+        { op: "set_option_default", optionGroup: "Grommets", value: "Yes" },
+        { op: "add_option_value", optionGroup: "Grommet Placement", value: "Top and Bottom" },
+        { op: "set_option_default", optionGroup: "Grommet Placement", value: "Top and Bottom" },
+        { op: "record_unsupported_detail", detail: "grommet_quantity" },
+      ],
     });
     expect(followUp).toMatchObject({ ok: true });
     if (!followUp.ok) throw new Error("Expected the supported follow-up details to persist.");

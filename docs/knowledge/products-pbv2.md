@@ -16,9 +16,11 @@ PBV2 is PrintersHero's versioned product-option and pricing configuration. It ev
 
 ## Shared option configuration
 
-Existing Product option configuration uses the shared canonical PBV2 DRAFT operation. Groups are structural `GROUP` nodes; customer fields are `INPUT` nodes with stable `selectionKey` values. Select choices have stable internal values and customer labels. Defaults must use existing values, and required selects need a choice.
+Existing option configuration uses the shared canonical PBV2 DRAFT operation. Structural `GROUP` nodes contain customer `INPUT` nodes with stable `selectionKey` values. Choices keep stable values and labels; defaults must reference a choice, and required selects need a choice. Text/textarea inputs and supported visibility rules use the same operation. Existing edits require a trusted Product, preview, GO, and a fresh DRAFT.
 
-Text and textarea fields are normal inputs. Conditional fields and group/value availability use visibility rules referencing an existing `selectionKey`; select conditions use existing choice values. Existing Product edits require a trusted Product, preview, GO, and fresh DRAFT version. Pricing, publish/activate, deletion, customer-specific behavior, and complex nested visibility authoring remain outside this capability. Never guess an unresolved group, input, choice, or condition.
+## Semantic drafting and persisted editing
+
+A new Product may be described over several turns before it has an ID. The Operator keeps draft continuity, missing information, trusted references, and unsupported detail while building shared Product/PBV2-shaped proposals. Optional detail is not a blocker; required information remains explicit. Proposals cannot grant execution: tenant, capability, lifecycle, stale-state, GO, and canonical validation still win.
 
 ## Existing Product configuration
 

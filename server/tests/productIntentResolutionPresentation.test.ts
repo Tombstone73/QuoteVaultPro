@@ -44,7 +44,7 @@ describe("canonical Product Intent issue aggregation and presentation", () => {
     const fingerprint = productDraftIntentFingerprint(validation.intent);
     const actions = generateProductIntentCandidateActions(validation.intent, fingerprint, validation.issues, candidates);
     const card = presentProductDraftIntent(validation.intent, validation.issues, { candidateResolutions: actions, optionalRecommendations: generateProductIntentRecommendations(validation.intent, fingerprint) });
-    expect(card.fields).toMatchObject({ Category: "Not selected", Material: "Not selected", "Production route": "Not set", Pricing: "Matrix — pricing unit not selected (4 prices)" });
+    expect(card.fields).toMatchObject({ Category: "Not selected", Material: "Unresolved: PVC - 3mm (Foamed PVC Sheets)", "Production route": "Not set", Pricing: "Matrix — pricing unit not selected (4 prices)" });
     expect(card.candidateResolutions.filter((action) => action.kind === "select_category")).toHaveLength(candidates.categories.length);
     expect(card.requiredQuestions).toEqual([expect.objectContaining({ id: "1:pricing.matrix.unit:required", path: "pricing.matrix.unit" })]);
     expect(card.readiness.ready).toBe(false);

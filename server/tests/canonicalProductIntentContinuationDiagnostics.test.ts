@@ -106,11 +106,9 @@ test("records safe ordered-batch failure evidence without persisting a revision"
     semanticBatch: {
       operationCount: 2,
       operationTypes: ["add_option_group", "set_option_default"],
-      failingOperation: {
-        index: 2, type: "set_option_default", targetLabels: ["Weeding and Taping", "No"],
-        validationStage: "semantic_operation_validation", dependsOnPriorBatchOperation: true,
-        failureCode: "PRODUCT_INTENT_SEMANTIC_OPTION_VALUE_UNRESOLVED",
-      },
+      // Canonical proposal construction rejects the unresolved choice before
+      // the contained legacy adapter performs per-operation attribution.
+      failingOperation: null,
       originalRevisionUnchanged: true,
     },
   }));

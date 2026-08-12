@@ -58,7 +58,7 @@ function optionDefaultQuestion(group: ProductDraftIntent["optionGroups"][number]
 function normalizeSafeNeutralOptionDefaults(rawIntent: ProductDraftIntent): ProductDraftIntent {
   const intent = structuredClone(rawIntent);
   for (const group of intent.optionGroups) {
-    if (group.selectionMode !== "single") continue;
+    if (group.inputType || group.selectionMode !== "single") continue;
     const neutral = group.values.find(isNeutralNone);
     if (!neutral) continue;
     group.required = false;
@@ -146,7 +146,7 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
     : "Should pricing be per piece, per square foot, a matrix, or quantity tiers?" });
   if ((intent.pricing.model === "one_dimensional_matrix" || intent.pricing.model === "two_dimensional_matrix") && intent.pricing.unit === "unresolved") issues.push({ code: "PRICING_UNIT_UNRESOLVED", path: "pricing.unit", severity: "question", message: "Are these matrix prices per piece or per square foot?" });
   for (const group of intent.optionGroups) {
-    if (group.values.length === 0) {
+    if (!group.inputType && group.values.length === 0) {
       issues.push({ code: "OPTION_GROUP_VALUES_UNRESOLVED", path: `optionGroups.${group.key}.values`, severity: "question", message: `${group.label} needs at least one option value.` });
       continue;
     }

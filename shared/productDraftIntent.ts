@@ -42,7 +42,8 @@ const optionValueSchema = z.object({ key: nonEmpty, label: nonEmpty, isDefault: 
 /** Unfinished server-owned drafts may contain an empty option group while the
  * Operator is still assembling it. Resolver readiness turns that temporary
  * state into a business question; PBV2 projection never sees it as ready. */
-const optionGroupSchema = z.object({ key: nonEmpty, label: nonEmpty, required: z.boolean(), selectionMode: z.enum(["single", "multiple"]), values: z.array(optionValueSchema), availableWhen: optionAvailabilitySchema.optional() }).strict().superRefine((group, ctx) => {
+const optionGroupSchema = z.object({ key: nonEmpty, label: nonEmpty, required: z.boolean(), selectionMode: z.enum(["single", "multiple"]), inputType: z.enum(["text", "textarea"]).optional(), parentGroupKey: nonEmpty.optional(), values: z.array(optionValueSchema), availableWhen: optionAvailabilitySchema.optional() }).strict().superRefine((group, ctx) => {
+  if (group.parentGroupKey && !group.inputType) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Only free-form inputs may declare a parent group.", path: ["parentGroupKey"] });
   if (new Set(group.values.map((value) => value.key.toLocaleLowerCase())).size !== group.values.length) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Option value keys must be unique.", path: ["values"] });
   if (group.selectionMode === "single" && group.values.filter((value) => value.isDefault).length > 1) ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Single-select groups may have one default.", path: ["values"] });
   // PBV2 supports required choices without a preselected value. Do not invent

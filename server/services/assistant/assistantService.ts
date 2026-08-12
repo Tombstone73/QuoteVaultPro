@@ -312,10 +312,11 @@ const MAX_RECENT_OPERATOR_OPERATIONS = 12;
 const completedTurnStorageKey = "recentCompletedOperatorTurn";
 const MAX_RETAINED_COMPLETED_TURN_CHARS = 6_000;
 
-/** The only Product Builder structure exposed to an Operator function call.
+/** The only Product planning structure exposed to an Operator function call.
  * It deliberately contains business labels and values, never patch paths,
  * IDs, revisions, fingerprints, serverOwnedFields, or PBV2 state. The
- * canonical semantic-operation schema remains the execution authority. */
+ * Canonical Capability Registry and shared operation schemas remain capability
+ * and business-validity authority. */
 const semanticProductOperationsToolInputSchema: Record<string, unknown> = {
   type: "object",
   additionalProperties: false,
@@ -335,6 +336,7 @@ const semanticProductOperationsToolInputSchema: Record<string, unknown> = {
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "required", "selectionMode"], properties: { op: { const: "add_option_group" }, optionGroup: { type: "string" }, required: { type: "boolean" }, selectionMode: { enum: ["single", "multiple"] } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "name"], properties: { op: { const: "rename_option_group" }, optionGroup: { type: "string" }, name: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "add_option_value" }, optionGroup: { type: "string" }, value: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op", "optionGroup", "label", "multiline", "required"], properties: { op: { const: "add_text_input" }, optionGroup: { type: "string" }, label: { type: "string" }, multiline: { type: "boolean" }, required: { type: "boolean" }, whenOptionGroup: { type: "string" }, whenValue: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value", "priceCents"], properties: { op: { const: "set_option_rate" }, optionGroup: { type: "string" }, value: { type: "string" }, priceCents: { type: "integer", minimum: 0 }, basis: { enum: ["per_piece", "per_square_foot"] } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value", "percent"], properties: { op: { const: "set_option_price_impact" }, optionGroup: { type: "string" }, value: { type: "string" }, percent: { type: "number", minimum: -100, maximum: 100 }, replacesPercentageWhen: { type: "object", additionalProperties: false, required: ["optionGroup", "value"], properties: { optionGroup: { type: "string" }, value: { type: "string" } } } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "whenOptionGroup", "whenValue"], properties: { op: { const: "set_option_group_availability" }, optionGroup: { type: "string" }, whenOptionGroup: { type: "string" }, whenValue: { type: "string" } } },
@@ -860,7 +862,7 @@ export class AssistantService {
     let activeProductProposalId = task.canonicalProductIntentProposalId;
     const beginProductIntentTools: AssistantOperatorSemanticTool[] = mayBeginProductDraft ? [{
       name: "products.begin_draft",
-      description: "Establish one NEW authoritative unfinished product draft. Use only when the user intends to create a new product. Never use this to modify an existing persisted product; use products.apply_existing_operations for that. When a trusted existing product is in context and the user explicitly wants a new product based on it, set target to new_product. When the user already supplied product details, include the understood business changes as initialOperations so the new draft is populated in this call. Use set_material and set_product_description for supplied material or construction, and set_scalar_price for a stated base per-piece or per-square-foot price. For customer-specific availability or an unmodelled grommet count, include record_unsupported_detail and retain every supported operation. Do not use if an unfinished new-product draft is already active.",
+      description: "Establish one NEW authoritative unfinished product draft. Use only when the user intends to create a new product. Never use this to modify an existing persisted product; use products.apply_existing_operations for that. When a trusted existing product is in context and the user explicitly wants a new product based on it, set target to new_product. When the user already supplied product details, include every understood supported business change as initialOperations so the new draft is populated in this call. Preserve enumerated unsupported details with record_unsupported_detail instead of dropping supported work. Do not use if an unfinished new-product draft is already active.",
       inputSchema: beginProductDraftToolInputSchema,
       execute: async ({ arguments: args, context }) => {
         const resolvedExistingProductId = existingProductIdForMutation(context);
@@ -901,7 +903,7 @@ export class AssistantService {
       }] : [];
     const applyProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{
       name: "products.apply_operations",
-      description: "Apply one atomic batch of one or more business changes to the current unfinished product draft. Use the original user request and current draft context to include all relevant name, description, category, material, dimensions, pricing, options, defaults, price impacts, availability, proof, or safe removals; do not make the user repeat supplied facts. Use set_scalar_price for a stated base per-piece or per-square-foot price. Customer-specific availability is not a supported draft operation: record it with record_unsupported_detail, retain the supported product details, and address only that limitation in the response. If an explicit grommet count cannot be represented, record grommet_quantity so the draft retains the count question while valid groups/defaults apply. All supported operations validate together and either create one next revision or none. Begin a draft first when none is active. Draft edits do not require GO; final product creation remains review/GO-gated. Pass only displayed business labels and values; never pass IDs, patch paths, persistence data, or PBV2 structures.",
+      description: "Apply one atomic batch of one or more business changes to the current unfinished product draft. Use the original request and current draft context to include every supported change; do not make the user repeat supplied facts. Preserve an enumerated unsupported detail with record_unsupported_detail while retaining independent supported changes. Shared Product/PBV2 proposal schemas validate migrated configuration; contained compatibility handles pricing, material, and safe removals. Begin a draft first when none is active. Draft edits do not require GO; final product creation remains review/GO-gated. Pass only displayed business labels and values; never pass IDs, patch paths, persistence data, or PBV2 structures.",
       inputSchema: semanticProductOperationsToolInputSchema,
       execute: async ({ arguments: args, context }) => {
         const operations = Array.isArray(args.operations) ? args.operations : null;

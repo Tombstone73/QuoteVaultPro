@@ -139,7 +139,7 @@ describe("semantic product operations", () => {
     expect(applyProductDraftIntentPatch(current, patch).identity.name).toBe("Relective Pole Signs");
   });
 
-  test("applies an out-of-order grommet continuation incrementally and treats duplicates as already satisfied", () => {
+  test("applies out-of-order option operations generically without inventing vocabulary-specific values", () => {
     const current = productDraftIntentSchema.parse({
       ...translucentIntent,
       identity: { ...translucentIntent.identity, name: "Relective Pole Signs" },
@@ -161,10 +161,9 @@ describe("semantic product operations", () => {
     ] }, 4, "Grommets would be default, top and bottom. 1 each so each one gets 2 grommets. Product is called Reflective Pole Signs - Rick.");
     const next = applyProductDraftIntentPatch(current, patch);
     expect(next.identity.name).toBe("Reflective Pole Signs - Rick");
-    expect(next.optionGroups.find((group) => group.label === "Grommets")?.values).toEqual(expect.arrayContaining([
+    expect(next.optionGroups.find((group) => group.label === "Grommets")?.values).toEqual([
       { key: "yes", label: "Yes", isDefault: true },
-      { key: "no", label: "No", isDefault: false },
-    ]));
+    ]);
     expect(next.optionGroups.find((group) => group.label === "Grommet Placement")?.values).toEqual([{ key: "top_and_bottom", label: "Top and Bottom", isDefault: true }]);
     expect(next.unresolvedFields).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.grommets.quantity", code: "GROMMET_QUANTITY_UNRESOLVED" })]));
   });
