@@ -23,6 +23,7 @@ import {
   assets,
   assetLinks,
   assetVariants,
+  lineItemArtwork,
   lineItemFiles,
 } from "@shared/schema";
 import { storage } from "../storage";
@@ -160,8 +161,24 @@ export function registerOrderLineItemFileRoutes(
         lineItemId,
         purpose: "order",
       });
+      // Compatibility attachment IDs remain action handles for the existing
+      // panel, but only when they correspond to a selected canonical record.
+      // They never participate in artwork discovery.
+      const compatibilityRows = await db
+        .select({ id: orderAttachments.id, fileRecordId: orderAttachments.fileRecordId })
+        .from(orderAttachments)
+        .where(and(
+          eq(orderAttachments.orderId, orderId),
+          eq(orderAttachments.orderLineItemId, lineItemId),
+          eq(orderAttachments.role, "artwork"),
+        ));
+      const compatibilityIdByFileRecordId = new Map(
+        compatibilityRows
+          .filter((row): row is { id: string; fileRecordId: string } => !!row.fileRecordId)
+          .map((row) => [row.fileRecordId, row.id]),
+      );
       const canonicalArtwork = resolution.artwork.map((artwork) => ({
-        id: artwork.relationshipId,
+        id: compatibilityIdByFileRecordId.get(artwork.fileRecordId) ?? artwork.relationshipId,
         fileRecordId: artwork.fileRecordId,
         fileName: artwork.file.originalFilename ?? "Artwork",
         originalFilename: artwork.file.originalFilename,
@@ -685,6 +702,39 @@ export function registerOrderLineItemFileRoutes(
               .limit(1);
             if (row) return row;
 
+            const [canonicalArtwork] = await tx
+              .select({ fileRecordId: lineItemArtwork.fileRecordId })
+              .from(lineItemArtwork)
+              .where(and(
+                eq(lineItemArtwork.id, scopedFileId),
+                eq(lineItemArtwork.organizationId, organizationId),
+                eq(lineItemArtwork.orderId, scopedOrderId),
+                eq(lineItemArtwork.lineItemId, scopedLineItemId),
+                eq(lineItemArtwork.status, "current"),
+              ))
+              .limit(1);
+            if (canonicalArtwork) {
+              const [materialized] = await tx.insert(orderAttachments).values({
+                orderId: scopedOrderId,
+                orderLineItemId: scopedLineItemId,
+                fileRecordId: canonicalArtwork.fileRecordId,
+                uploadedByUserId: getUserId(req.user) ?? null,
+                uploadedByName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email,
+                fileName: "Artwork",
+                fileUrl: null,
+                fileSize: null,
+                sizeBytes: null,
+                mimeType: null,
+                role: "artwork",
+                side: "na",
+                isPrimary: false,
+                storageProvider: null,
+                productionQuantity: defaultNewProductionArtworkAllocation("artwork"),
+                productionGroupId: null,
+              }).returning();
+              return materialized ?? null;
+            }
+
             // Newer line-item uploads are canonical assets. Materialize the
             // order_attachment link on first side assignment because that is
             // where Front/Back/Both metadata is persisted and consumed.
@@ -827,6 +877,37 @@ export function registerOrderLineItemFileRoutes(
           .from(orderLineItems)
           .where(and(eq(orderLineItems.id, lineItemId), eq(orderLineItems.orderId, orderId)))
           .limit(1);
+        if (lineItem && assigned.fileRecordId) {
+          const [canonicalArtwork] = await tx
+            .select({ id: lineItemArtwork.id })
+            .from(lineItemArtwork)
+            .where(and(
+              eq(lineItemArtwork.organizationId, organizationId),
+              eq(lineItemArtwork.orderId, orderId),
+              eq(lineItemArtwork.lineItemId, lineItemId),
+              eq(lineItemArtwork.fileRecordId, assigned.fileRecordId),
+              eq(lineItemArtwork.status, "current"),
+            ))
+            .limit(1);
+          if (canonicalArtwork) {
+            const conflictingSides: Array<"front" | "back" | "both"> = req.body.side === "both"
+              ? ["front", "back", "both"]
+              : [req.body.side, "both"];
+            await tx.update(lineItemArtwork)
+              .set({ side: "unknown" })
+              .where(and(
+                eq(lineItemArtwork.organizationId, organizationId),
+                eq(lineItemArtwork.orderId, orderId),
+                eq(lineItemArtwork.lineItemId, lineItemId),
+                eq(lineItemArtwork.status, "current"),
+                ne(lineItemArtwork.id, canonicalArtwork.id),
+                inArray(lineItemArtwork.side, conflictingSides),
+              ));
+            await tx.update(lineItemArtwork)
+              .set({ side: req.body.side })
+              .where(and(eq(lineItemArtwork.id, canonicalArtwork.id), eq(lineItemArtwork.organizationId, organizationId)));
+          }
+        }
         if (lineItem) {
           await tx
             .update(orderLineItems)
@@ -931,6 +1012,27 @@ export function registerOrderLineItemFileRoutes(
           eq(orderAttachments.id, fileId), eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId),
         )).limit(1);
         if (!attachment) {
+          const [canonicalArtwork] = await tx.select({ fileRecordId: lineItemArtwork.fileRecordId })
+            .from(lineItemArtwork)
+            .where(and(
+              eq(lineItemArtwork.id, fileId),
+              eq(lineItemArtwork.organizationId, organizationId),
+              eq(lineItemArtwork.orderId, orderId),
+              eq(lineItemArtwork.lineItemId, lineItemId),
+              eq(lineItemArtwork.status, "current"),
+            ))
+            .limit(1);
+          if (canonicalArtwork) {
+            [attachment] = await tx.insert(orderAttachments).values({
+              orderId, orderLineItemId: lineItemId, fileRecordId: canonicalArtwork.fileRecordId,
+              uploadedByUserId: getUserId(req.user) ?? null, uploadedByName: null,
+              fileName: "Artwork", fileUrl: null, fileSize: null, sizeBytes: null,
+              mimeType: null, role: "artwork", side: "na", isPrimary: false,
+              productionQuantity: defaultNewProductionArtworkAllocation("artwork"), productionGroupId: null,
+            }).returning();
+          }
+        }
+        if (!attachment) {
           const [asset] = await tx.select({ fileRecordId: assets.fileRecordId, fileName: assets.fileName, fileKey: assets.fileKey, mimeType: assets.mimeType, sizeBytes: assets.sizeBytes })
             .from(assets).innerJoin(assetLinks, and(eq(assetLinks.assetId, assets.id), eq(assetLinks.organizationId, organizationId), eq(assetLinks.parentType, "order_line_item"), eq(assetLinks.parentId, lineItemId)))
             .where(and(eq(assets.id, fileId), eq(assets.organizationId, organizationId))).limit(1);
@@ -949,6 +1051,18 @@ export function registerOrderLineItemFileRoutes(
           productionGroupId: role === "artwork" ? productionGroupId : null,
           updatedAt: new Date(),
         }).where(eq(orderAttachments.id, attachment.id)).returning();
+        if (updated?.fileRecordId) {
+          await tx.update(lineItemArtwork).set({
+            allocationQuantity: role === "artwork" ? productionQuantity : null,
+            allocationGroupId: role === "artwork" ? productionGroupId : null,
+          }).where(and(
+            eq(lineItemArtwork.organizationId, organizationId),
+            eq(lineItemArtwork.orderId, orderId),
+            eq(lineItemArtwork.lineItemId, lineItemId),
+            eq(lineItemArtwork.fileRecordId, updated.fileRecordId),
+            eq(lineItemArtwork.status, "current"),
+          ));
+        }
         const members = await tx.select({ id: orderAttachments.id, role: orderAttachments.role, side: orderAttachments.side, productionQuantity: orderAttachments.productionQuantity, productionGroupId: orderAttachments.productionGroupId })
           .from(orderAttachments).where(and(eq(orderAttachments.orderId, orderId), eq(orderAttachments.orderLineItemId, lineItemId)));
         const mappedFinalCandidates = role === "artwork"
