@@ -26,7 +26,9 @@ describe("canonical AI capability registry and privilege ceiling", () => {
 
   it("marks the bounded existing-Product configuration capability as shared canonical without expanding the Product surface", () => {
     const capability = getCanonicalCapabilityForCommand("products.update_existing_product");
-    expect(capability).toMatchObject({ canonicalOperationReference: "products.update_configuration.v1", parityStatus: "shared_canonical", migrationStatus: "shared_canonical", confirmation: "go_required" });
+    expect(capability).toMatchObject({ parityStatus: "shared_canonical", migrationStatus: "shared_canonical", confirmation: "go_required" });
+    expect(capability?.canonicalOperationReference).toContain("products.update_configuration.v1");
+    expect(capability?.canonicalOperationReference).toContain("products.update_option_configuration.v1");
     expect(canonicalCapabilityRegistry.filter((item) => item.domain === "products" && item.parityStatus === "shared_canonical").map((item) => item.sourceId)).toEqual(["products.update_existing_product"]);
   });
 

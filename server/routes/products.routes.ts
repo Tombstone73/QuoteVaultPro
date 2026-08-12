@@ -67,6 +67,7 @@ import {
   productParsingDescriptionGeneratorService,
 } from "../services/products/ProductParsingDescriptionGeneratorService";
 import { CanonicalProductConfigurationError, canonicalProductConfigurationOperations, takeCanonicalProductConfigurationChanges } from "../services/products/canonicalProductConfigurationOperations";
+import { CanonicalPbv2OptionConfigurationError, canonicalPbv2OptionConfigurationOperations } from "../services/products/canonicalPbv2OptionConfigurationOperations";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -986,165 +987,15 @@ export function registerProductRoutes(
         firstFiveNodeKeys,
       });
 
-      // Upsert: update if exists, insert if not
-      // CRITICAL: Order by updated_at DESC to get most recent draft deterministically
-      // This prevents repeated INSERTs when activation is blocked (draft stays DRAFT)
-      const [existingDraft] = await db
-        .select({ id: pbv2TreeVersions.id, updatedAt: pbv2TreeVersions.updatedAt })
-        .from(pbv2TreeVersions)
-        .where(
-          and(
-            eq(pbv2TreeVersions.organizationId, organizationId),
-            eq(pbv2TreeVersions.productId, productId),
-            eq(pbv2TreeVersions.status, "DRAFT")
-          )
-        )
-        .orderBy(desc(pbv2TreeVersions.updatedAt))
-        .limit(1);
-
-      console.log('[PBV2_DRAFT_PUT] existing draft check', {
-        existingDraftId: existingDraft?.id || null,
-        action: existingDraft ? 'UPDATE' : 'INSERT'
-      });
-
-      // Belt-and-suspenders: a draft row must always carry status:'DRAFT' in its
-      // treeJson content. If the client sends status:'ACTIVE' (e.g. loaded from an
-      // active tree before the client-side normalizeTreeJson fix was deployed),
-      // validateTreeForPublish would fail with PBV2_E_TREE_STATUS_INVALID and
-      // silently leave the old active tree in place.
-      const matrixSanitizer = sanitizePbv2PricingMatrix(
-        { ...(treeJson as any), status: 'DRAFT' },
-        { allowIncompleteMatrix: true }
-      );
-      const sanitizedTreeJson = matrixSanitizer.tree;
-      if (matrixSanitizer.changed) {
-        console.warn('[PBV2_MATRIX_SANITIZER] draft save removed stale matrix references', {
-          productId,
-          orgId: organizationId,
-          changes: matrixSanitizer.changes.map((change) => ({ code: change.code, path: change.path })),
-        });
+      // Phase 6: the Product Editor keeps its full-tree save contract, while
+      // option validation and DRAFT persistence are owned by the same
+      // transport-independent operation used by confirmed AI edits.
+      if (!userId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
+      const canonicalSave = await canonicalPbv2OptionConfigurationOperations.saveEditorDraft({ organizationId, actorUserId: userId, productId, treeJson });
+      const draft = canonicalSave.draft;
+      if (canonicalSave.sanitizerChanges.length > 0) {
+        console.warn('[PBV2_MATRIX_SANITIZER] draft save removed stale matrix references', { productId, orgId: organizationId, changes: canonicalSave.sanitizerChanges });
       }
-      const allowsDraftMatrixRowsToBeAddedLater = (finding: any) => {
-        if (finding?.code !== "PBV2_E_PRICING_MATRIX_INVALID_STRUCTURE") return false;
-        const path = String(finding?.path ?? "");
-        if (!path.endsWith(".rows")) return false;
-        const matrix = path.startsWith("tree.meta.")
-          ? (sanitizedTreeJson as any)?.meta?.pricingMatrix
-          : (sanitizedTreeJson as any)?.pricingMatrix;
-        return (
-          Array.isArray(matrix?.dimensions) &&
-          matrix.dimensions.length > 0 &&
-          Array.isArray(matrix?.rows) &&
-          matrix.rows.length === 0
-        );
-      };
-      const postSanitizeMatrixErrors = validateTreeForPublish(sanitizedTreeJson as any, DEFAULT_VALIDATE_OPTS)
-        .errors
-        .filter((finding: any) => typeof finding?.code === "string" && finding.code.startsWith("PBV2_E_PRICING_MATRIX"))
-        .filter((finding: any) => !allowsDraftMatrixRowsToBeAddedLater(finding));
-      if (postSanitizeMatrixErrors.length > 0) {
-        return res.status(400).json({
-          success: false,
-          message: "PBV2 pricing matrix still has invalid references after cleanup",
-          findings: postSanitizeMatrixErrors,
-        });
-      }
-
-      let draft;
-      try {
-        const schemaVersion = sanitizedTreeJson.schemaVersion ?? 2;
-        if (existingDraft) {
-          [draft] = await db
-            .update(pbv2TreeVersions)
-            .set({
-              treeJson: sanitizedTreeJson,
-              schemaVersion: schemaVersion,
-              updatedByUserId: userId ?? null,
-              updatedAt: new Date(),
-            })
-            .where(eq(pbv2TreeVersions.id, existingDraft.id))
-            .returning();
-          console.log('[PBV2_DRAFT_PUT] UPDATE succeeded', { draftId: draft.id });
-        } else {
-          [draft] = await db
-            .insert(pbv2TreeVersions)
-            .values({
-              organizationId,
-              productId,
-              status: "DRAFT",
-              schemaVersion: schemaVersion,
-              treeJson: sanitizedTreeJson,
-              createdByUserId: userId ?? null,
-              updatedByUserId: userId ?? null,
-            })
-            .returning();
-          console.log('[PBV2_DRAFT_PUT] INSERT succeeded', { draftId: draft.id });
-        }
-      } catch (dbError: any) {
-        console.error('[PBV2_DRAFT_PUT] DB write failed:', dbError);
-        console.error('[PBV2_DRAFT_PUT] DB error stack:', dbError.stack);
-        throw dbError;
-      }
-
-      // LOG 3: Verify row exists with SELECT COUNT
-      const [countResult] = await db
-        .select({ count: sql<number>`count(*)::int` })
-        .from(pbv2TreeVersions)
-        .where(
-          and(
-            eq(pbv2TreeVersions.organizationId, organizationId),
-            eq(pbv2TreeVersions.productId, productId),
-            eq(pbv2TreeVersions.status, "DRAFT")
-          )
-        );
-
-      console.log('[PBV2_DRAFT_PUT] after write count', {
-        count: countResult.count,
-        draftId: draft.id,
-        productId,
-        orgId: organizationId
-      });
-
-      // HARD FAIL: If no row exists after write, return 500
-      if (countResult.count < 1) {
-        console.error('[PBV2_DRAFT_PUT] HARD FAIL: no row after write', {
-          orgId: organizationId,
-          productId,
-          attemptedDraftId: draft?.id || 'null'
-        });
-        return res.status(500).json({
-          success: false,
-          message: "PBV2 draft write failed: no row after write"
-        });
-      }
-
-      // Additional verification: SELECT the actual row
-      const [verifiedDraft] = await db
-        .select({ id: pbv2TreeVersions.id })
-        .from(pbv2TreeVersions)
-        .where(
-          and(
-            eq(pbv2TreeVersions.organizationId, organizationId),
-            eq(pbv2TreeVersions.productId, productId),
-            eq(pbv2TreeVersions.status, "DRAFT")
-          )
-        )
-        .orderBy(desc(pbv2TreeVersions.updatedAt))
-        .limit(1);
-
-      if (!verifiedDraft) {
-        console.error('[PBV2_DRAFT_PUT] HARD FAIL: verification SELECT returned no row', {
-          orgId: organizationId,
-          productId,
-          attemptedDraftId: draft?.id || 'null'
-        });
-        return res.status(500).json({
-          success: false,
-          message: "PBV2 draft write failed: verification SELECT returned no row"
-        });
-      }
-
-      console.log('[PBV2_DRAFT_PUT] verification SELECT succeeded', { verifiedId: verifiedDraft.id });
 
       // ============================================================
       // AUTO-ACTIVATION: If org mode is 'auto_on_save', attempt activation
@@ -1312,6 +1163,10 @@ export function registerProductRoutes(
         activationResult: activationAttempted ? activationResult : undefined,
       });
     } catch (error: any) {
+      if (error instanceof CanonicalPbv2OptionConfigurationError) {
+        const status = error.code === "PRODUCT_NOT_FOUND" ? 404 : error.code === "PBV2_DRAFT_STALE" ? 409 : error.code === "ACTOR_REQUIRED" ? 401 : 400;
+        return res.status(status).json({ success: false, code: error.code, message: error.message, findings: error.findings });
+      }
       console.error('[PBV2_DRAFT_PUT] FATAL ERROR:', error);
       console.error('[PBV2_DRAFT_PUT] error stack:', error.stack);
       return res.status(500).json({ success: false, message: "Failed to upsert PBV2 draft", error: error.message });

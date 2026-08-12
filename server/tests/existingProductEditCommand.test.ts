@@ -44,4 +44,16 @@ describe("existing product edit execution command", () => {
     expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ operations: { operations: configurationInput.operations } }));
     expect(result.steps[0]?.summary).toContain("shared canonical Product configuration");
   });
+
+  test("keeps canonical PBV2 option configuration behind GO and reports the final shared operation", async () => {
+    const pbv2Input = { productId: "product_1", operations: [{ op: "update_pbv2_option_configuration", mutations: [{ kind: "add_input", group: "Finishing", input: { selectionKey: "placement_note", label: "Placement note", type: "textarea", required: true, visibilityRules: [{ type: "equals", selectionKey: "grommets", value: "custom" }] } }] }], proposalFingerprint: fingerprint };
+    const pbv2Proposal = { ...proposal, sourceLifecycle: "DRAFT", canonicalOperationReference: "products.update_option_configuration.v1", changes: [{ field: "Input Placement note", before: "(missing)", after: "textarea created" }] };
+    const service = { revalidateProposal: jest.fn(async () => ({ valid: true as const, proposal: pbv2Proposal })), execute: jest.fn(async () => pbv2Proposal) } as any;
+    const command = createExistingProductEditExecutionCommand(service);
+    const built = await command.buildPreview({ scope, arguments: pbv2Input, context: {} as any });
+    expect(service.execute).not.toHaveBeenCalled();
+    expect(built.preview.summary).toContain("before GO");
+    const result = await command.execute({ plan: { sanitizedArguments: pbv2Input } as any, scope });
+    expect(result.steps[0]?.summary).toContain("canonical PBV2 option configuration");
+  });
 });

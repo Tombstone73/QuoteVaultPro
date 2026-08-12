@@ -25,21 +25,21 @@ None.
 
 | Product area | Classification | Notes |
 |---|---|---|
-| Name / identity | ai_specific_narrow_implementation | New draft supports a semantic name operation; existing product adapter cannot rename. |
-| Description | ai_specific_narrow_implementation | New draft only; existing Product Editor parity is absent. |
-| Category / type | ai_specific_narrow_implementation | Semantic category exists; UI product-type coverage is broader. |
-| Measurement mode | ai_specific_narrow_implementation | Semantic model supports only its listed modes and new drafts. |
-| Workflow intent | ui_supported_ai_adapter_missing | UI form supports workflow intent; normal semantic Operator lacks equivalent operation. |
+| Name / identity | shared_canonical_today | Product Editor and confirmed existing-product Operator share products.update_configuration.v1. |
+| Description | shared_canonical_today | Product Editor and confirmed existing-product Operator share products.update_configuration.v1. |
+| Category / type | shared_canonical_today | Category and validated Product type are shared for existing Products. |
+| Measurement mode | shared_canonical_today | Existing Product measurement mode is shared canonical. |
+| Workflow intent | shared_canonical_today | Workflow intent and established service-fee defaults are shared canonical. |
 | Scalar pricing | ai_specific_narrow_implementation | New semantic draft only. |
 | Pricing matrices | partial_or_indirect | AI command is limited to inactive drafts, not existing Product Editor parity. |
 | Quantity tiers | partial_or_indirect | AI command is limited to inactive drafts. |
 | Materials | ai_specific_narrow_implementation | New draft has label-based selection; existing product adapter missing. |
-| Option groups and values | ai_specific_narrow_implementation | New draft supports a subset; existing product adapter missing. |
-| Defaults | ai_specific_narrow_implementation | Existing adapter only supports single-select defaults. |
-| Required state | ui_supported_ai_adapter_missing | Supported by UI/PBV2 tree; no existing-product AI operation. |
-| Conditional rules | ai_specific_narrow_implementation | New semantic model carries narrow group availability only. |
-| Free-form/text inputs | ui_supported_ai_adapter_missing | No AI operation found. |
-| Proof requirements | ai_specific_narrow_implementation | New draft boolean only; existing parity absent. |
+| Option groups and values | shared_canonical_today | Group/input creation and metadata plus choice creation, labels, descriptions, and order share products.update_option_configuration.v1. |
+| Defaults | shared_canonical_today | Defaults are validated against choice values; set_option_default is compatibility-only and translates to the shared operation. |
+| Required state | shared_canonical_today | Group and input required state use the same PBV2 DRAFT operation. |
+| Conditional rules | shared_canonical_today | Simple node/group/choice visibility uses validated selectionKey and choice-value references; complex nested authoring remains unmigrated. |
+| Free-form/text inputs | shared_canonical_today | Text and textarea INPUT nodes, including conditional fields, are shared canonical. |
+| Proof requirements | shared_canonical_today | Existing Product proof requirement is shared canonical. |
 | Prepress and production routing | ui_supported_ai_adapter_missing | No normal Operator product operation found. |
 | Active/inactive, draft/publish | ui_supported_ai_adapter_missing | Operator capabilities explicitly report product activation disabled. |
 | Customer-specific availability | underlying_support_not_demonstrated | Semantic contract explicitly preserves this as unsupported. |
@@ -72,7 +72,7 @@ None.
 | ai.command.products.rollback_pricing_change_set | mutation | unknown | command_plan_only | products.rollback_pricing_change_set | assistant.products.adjust_pricing | partial_or_indirect |
 | ai.command.products.replace_inactive_matrix | mutation | unknown | command_plan_only | products.replace_inactive_matrix | assistant.products.replace_inactive_matrix | partial_or_indirect |
 | ai.command.products.replace_inactive_quantity_tiers | mutation | unknown | command_plan_only | products.replace_inactive_quantity_tiers | assistant.products.replace_inactive_quantity_tiers | partial_or_indirect |
-| ui.pbv2.save_draft_tree | mutation | page_and_route | none | — | authenticated_tenant_user | ui_supported_ai_adapter_missing |
+| ui.pbv2.save_draft_tree | mutation | page_and_route | command_plan_only | products.update_existing_product | authenticated_tenant_user (UI); assistant.products.update_existing_product (AI) | shared_canonical_today |
 
 ### quotes
 

@@ -1,8 +1,8 @@
-import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { pbv2TreeVersions, products } from "@shared/schema";
 import { loadCurrentPbv2DraftTreeVersion } from "../pricing/PricingService";
 import { CanonicalProductConfigurationError, canonicalProductConfigurationOperations, type ProductConfigurationChanges } from "../products/canonicalProductConfigurationOperations";
+import { CanonicalPbv2OptionConfigurationError, canonicalPbv2OptionConfigurationOperations, type Pbv2OptionConfigurationMutations } from "../products/canonicalPbv2OptionConfigurationOperations";
 import { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
 export { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
 
@@ -19,7 +19,7 @@ export type ExistingProductEditProposal = {
   treeId?: string;
   treeUpdatedAt?: string;
   sourceLifecycle: "DRAFT" | "ACTIVE" | "PRODUCT";
-  canonicalOperationReference?: "products.update_configuration.v1";
+  canonicalOperationReference?: "products.update_configuration.v1" | "products.update_option_configuration.v1";
   expectedProductUpdatedAt?: string;
   changes: Array<{ field: string; before: string; after: string }>;
   fingerprint: string;
@@ -29,26 +29,11 @@ export type TrustedExistingProductEditContext = {
   name: string;
   lifecycle: "active" | "inactive";
   pricingLifecycle: "DRAFT" | "ACTIVE";
-  optionGroups: Array<{ label: string; defaultValue: string | null; values: string[] }>;
+  optionGroups: Array<{ label: string; selectionKey?: string; inputType?: string; required?: boolean; defaultValue: string | null; values: string[]; choices?: Array<{ value: string; label: string }> }>;
 };
 
 export class ExistingProductEditError extends Error {
   constructor(readonly code: string, message: string) { super(message); }
-}
-
-function normalized(value: string): string {
-  return value.normalize("NFKC").toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
-}
-
-function stable(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-  const record = value as Record<string, unknown>;
-  return `{${Object.keys(record).sort().map((key) => `${JSON.stringify(key)}:${stable(record[key])}`).join(",")}}`;
-}
-
-function fingerprint(value: unknown): string {
-  return createHash("sha256").update(stable(value)).digest("hex");
 }
 
 function asNodes(tree: Record<string, any>): any[] {
@@ -58,49 +43,16 @@ function asNodes(tree: Record<string, any>): any[] {
       : [];
 }
 
-function optionNode(tree: Record<string, any>, label: string): any {
-  const matches = asNodes(tree).filter((node) => {
-    if (node.kind === "group") return false;
-    const candidate = typeof node.label === "string" && node.label.trim()
-      ? node.label : typeof node.input?.selectionKey === "string" ? node.input.selectionKey : node.key;
-    return typeof candidate === "string" && normalized(candidate) === normalized(label);
-  });
-  if (matches.length !== 1) throw new ExistingProductEditError("EXISTING_PRODUCT_OPTION_GROUP_UNRESOLVED", "The requested option group is not uniquely available on this product.");
-  return matches[0]!;
-}
-
-function optionChoice(node: any, label: string): any {
-  const matches = Array.isArray(node.choices) ? node.choices.filter((choice: any) => {
-    const candidate = typeof choice?.label === "string" && choice.label.trim() ? choice.label : choice?.value;
-    return typeof candidate === "string" && normalized(candidate) === normalized(label);
-  }) : [];
-  if (matches.length !== 1) throw new ExistingProductEditError("EXISTING_PRODUCT_OPTION_VALUE_UNRESOLVED", "The requested option value is not uniquely available on this product.");
-  return matches[0]!;
-}
-
 function displayDefault(node: any): string {
   const current = node?.input?.defaultValue;
   const choice = Array.isArray(node?.choices) ? node.choices.find((candidate: any) => candidate?.value === current) : null;
   return typeof choice?.label === "string" ? choice.label : typeof current === "string" ? current : "(none)";
 }
 
-function applyOperations(tree: Record<string, any>, operations: ExistingProductEditOperations): { tree: Record<string, any>; changes: ExistingProductEditProposal["changes"] } {
-  const next = structuredClone(tree);
-  const changes: ExistingProductEditProposal["changes"] = [];
-  for (const operation of operations.operations) {
-    if (operation.op !== "set_option_default") continue;
-    const node = optionNode(next, operation.optionGroup);
-    if (node?.input?.type && node.input.type !== "select") throw new ExistingProductEditError("EXISTING_PRODUCT_DEFAULT_UNSUPPORTED", "Only single-select option defaults can be changed through this capability.");
-    const choice = optionChoice(node, operation.value);
-    const before = displayDefault(node);
-    const after = typeof choice.label === "string" ? choice.label : choice.value;
-    if (before === after) continue;
-    node.input = { ...(node.input && typeof node.input === "object" ? node.input : {}), defaultValue: choice.value };
-    const label = typeof node.label === "string" && node.label.trim() ? node.label : operation.optionGroup;
-    changes.push({ field: `${label} default`, before, after });
-  }
-  if (!changes.length) throw new ExistingProductEditError("EXISTING_PRODUCT_NO_CHANGES", "The requested existing-product configuration already matches the current values.");
-  return { tree: next, changes };
+function canonicalPbv2Mutations(operations: ExistingProductEditOperations): Pbv2OptionConfigurationMutations {
+  const canonical = operations.operations.find((operation) => operation.op === "update_pbv2_option_configuration");
+  if (canonical?.op === "update_pbv2_option_configuration") return canonical.mutations;
+  return operations.operations.flatMap((operation) => operation.op === "set_option_default" ? [{ kind: "set_default" as const, input: operation.optionGroup, choice: operation.value }] : []);
 }
 
 export class ExistingProductEditService {
@@ -126,7 +78,8 @@ export class ExistingProductEditService {
       if (node.kind === "group") return [];
       const label = typeof node.label === "string" && node.label.trim() ? node.label : node.input?.selectionKey;
       if (typeof label !== "string" || !label.trim() || !Array.isArray(node.choices)) return [];
-      return [{ label, defaultValue: displayDefault(node) === "(none)" ? null : displayDefault(node), values: node.choices.flatMap((choice: any) => typeof choice?.label === "string" && choice.label.trim() ? [choice.label] : typeof choice?.value === "string" ? [choice.value] : []) }];
+      const choices = node.choices.flatMap((choice: any) => typeof choice?.value === "string" && choice.value.trim() ? [{ value: choice.value, label: typeof choice?.label === "string" && choice.label.trim() ? choice.label : choice.value }] : []);
+      return [{ label, selectionKey: String(node.input?.selectionKey ?? node.key ?? node.id), inputType: String(node.input?.type ?? "unknown"), required: Boolean(node.input?.required), defaultValue: displayDefault(node) === "(none)" ? null : displayDefault(node), values: choices.map((choice: any) => choice.label), choices }];
     }).slice(0, 24);
     return { name: product.name, lifecycle: product.isActive ? "active" : "inactive", pricingLifecycle: tree.status === "DRAFT" ? "DRAFT" : "ACTIVE", optionGroups };
   }
@@ -141,23 +94,13 @@ export class ExistingProductEditService {
       if (!product) throw new ExistingProductEditError("EXISTING_PRODUCT_NOT_FOUND", "The trusted product is no longer available.");
       return { productId: proposal.productId, productName: proposal.productName, productActive: product.isActive, sourceLifecycle: "PRODUCT", canonicalOperationReference: proposal.operationReference, expectedProductUpdatedAt: proposal.expectedUpdatedAt, changes: proposal.appliedChanges.map((change) => ({ field: String(change.field), before: String(change.before ?? "(none)"), after: String(change.after ?? "(none)") })), fingerprint: proposal.fingerprint };
     }
-    const [product] = await db.select({ id: products.id, name: products.name, isActive: products.isActive, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
-      .from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
-    if (!product) throw new ExistingProductEditError("EXISTING_PRODUCT_NOT_FOUND", "The trusted product is no longer available.");
-    // This mirrors Product Editor lifecycle: update a current DRAFT when one
-    // exists; otherwise read the active configuration and create a DRAFT only
-    // after GO. The active tree itself is never changed.
-    const draft = await this.editableTree({ organizationId: input.organizationId, product });
-    if (!draft) throw new ExistingProductEditError("EXISTING_PRODUCT_DRAFT_UNAVAILABLE", "This product has no editable PBV2 pricing configuration.");
-    const tree = draft.treeJson;
-    if (!tree || typeof tree !== "object" || Array.isArray(tree)) throw new ExistingProductEditError("EXISTING_PRODUCT_DRAFT_INVALID", "The current PBV2 DRAFT configuration is not editable.");
-    const applied = applyOperations(tree as Record<string, any>, operations);
-    const treeUpdatedAt = new Date(draft.updatedAt).toISOString();
-    return {
-      productId: product.id, productName: product.name, productActive: product.isActive, treeId: draft.id, treeUpdatedAt, sourceLifecycle: draft.status === "DRAFT" ? "DRAFT" : "ACTIVE",
-      changes: applied.changes,
-      fingerprint: fingerprint({ productId: product.id, treeId: draft.id, treeUpdatedAt, operations }),
-    };
+    try {
+      const proposal = await canonicalPbv2OptionConfigurationOperations.propose({ organizationId: input.organizationId, productId: input.productId, mutations: canonicalPbv2Mutations(operations) });
+      return { productId: proposal.productId, productName: proposal.productName, productActive: proposal.productActive, treeId: proposal.sourceTreeId, treeUpdatedAt: proposal.expectedTreeUpdatedAt, sourceLifecycle: proposal.sourceTreeStatus, canonicalOperationReference: proposal.operationReference, changes: proposal.changes, fingerprint: proposal.fingerprint };
+    } catch (error) {
+      if (error instanceof CanonicalPbv2OptionConfigurationError) throw new ExistingProductEditError(error.code, error.message);
+      throw error;
+    }
   }
 
   async revalidateProposal(input: { organizationId: string; productId: string; operations: unknown; expectedFingerprint: string }) {
@@ -167,7 +110,6 @@ export class ExistingProductEditService {
   }
 
   async execute(input: { organizationId: string; productId: string; operations: unknown; expectedFingerprint: string; userId: string }) {
-    const { db } = await import("../../db");
     const validation = await this.revalidateProposal(input);
     if (!validation.valid) throw new ExistingProductEditError(validation.code, validation.summary);
     const operations = existingProductEditOperationsSchema.parse(input.operations);
@@ -182,21 +124,14 @@ export class ExistingProductEditService {
         throw error;
       }
     }
-    const [product] = await db.select({ id: products.id, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
-    if (!product) throw new ExistingProductEditError("EXISTING_PRODUCT_NOT_FOUND", "The trusted product is no longer available.");
-    const current = await this.editableTree({ organizationId: input.organizationId, product });
-    if (!current || current.id !== validation.proposal.treeId || new Date(current.updatedAt).toISOString() !== validation.proposal.treeUpdatedAt) {
-      throw new ExistingProductEditError("EXISTING_PRODUCT_EDIT_STALE", "The product's editable PBV2 DRAFT changed; review a fresh preview.");
+    if (!validation.proposal.treeId || !validation.proposal.treeUpdatedAt) throw new ExistingProductEditError("EXISTING_PRODUCT_EDIT_STALE", "The PBV2 option proposal is incomplete; review it again.");
+    try {
+      const result = await canonicalPbv2OptionConfigurationOperations.execute({ organizationId: input.organizationId, actorUserId: input.userId, productId: input.productId, mutations: canonicalPbv2Mutations(operations), expectedTreeId: validation.proposal.treeId, expectedTreeUpdatedAt: validation.proposal.treeUpdatedAt, auditContext: { source: "assistant_go", reference: `assistant-plan:${input.expectedFingerprint}` } });
+      return { ...validation.proposal, changes: result.appliedChanges, canonicalOperationReference: result.operationReference };
+    } catch (error) {
+      if (error instanceof CanonicalPbv2OptionConfigurationError) throw new ExistingProductEditError(error.code === "PBV2_DRAFT_STALE" ? "EXISTING_PRODUCT_EDIT_STALE" : error.code, error.message);
+      throw error;
     }
-    const applied = applyOperations(current.treeJson as Record<string, any>, operations);
-    if (current.status === "DRAFT") {
-      const [updated] = await db.update(pbv2TreeVersions).set({ treeJson: { ...applied.tree, status: "DRAFT" }, updatedByUserId: input.userId, updatedAt: new Date() })
-        .where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.productId, input.productId), eq(pbv2TreeVersions.id, current.id), eq(pbv2TreeVersions.status, "DRAFT"), eq(pbv2TreeVersions.updatedAt, current.updatedAt))).returning({ id: pbv2TreeVersions.id });
-      if (!updated) throw new ExistingProductEditError("EXISTING_PRODUCT_EDIT_STALE", "The product's editable PBV2 DRAFT changed; review a fresh preview.");
-    } else {
-      await db.insert(pbv2TreeVersions).values({ organizationId: input.organizationId, productId: input.productId, status: "DRAFT", schemaVersion: current.schemaVersion, treeJson: { ...applied.tree, status: "DRAFT" }, createdByUserId: input.userId, updatedByUserId: input.userId });
-    }
-    return { ...validation.proposal, changes: applied.changes };
   }
 }
 

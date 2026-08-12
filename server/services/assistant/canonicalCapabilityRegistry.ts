@@ -38,7 +38,7 @@ export type CanonicalCapabilityDescriptor = {
   uiSurfaceReference: string | "unknown";
   aiExposure: "existing" | "not_exposed";
   migrationStatus: "wrapped_existing" | "shared_canonical" | "compatibility_only" | "security_policy";
-  canonicalOperationReference: string | "not_applicable";
+  canonicalOperationReference: string;
   parityStatus: "shared_canonical" | "ai_specific" | "ui_only_not_migrated" | "security_policy";
   aiEligibility: AiCapabilityEligibility;
   hardDenyReason: string | null;
@@ -105,10 +105,10 @@ const commandCapabilities: readonly CanonicalCapabilityDescriptor[] = assistantP
     outputSchemaReference: "server/services/assistant/execution/*Command.ts", requiredGrant,
     allowedOrganizationRoles: command.startsWith("products.") ? adminRoles : operationalRoles,
     tenantScope: "organization", confirmation: "go_required", idempotency: "server_generated_with_request_hash", risk: "high",
-    lifecycleValidationReference: "server/services/assistant/execution/*ExecutionCommand.ts", handlerReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations.update" : "AssistantCommandDefinition.adapter",
-    auditReference: "ExecutionPlanningService", uiSurfaceReference: command === "products.update_existing_product" ? "Product Editor /api/products/:id" : "unknown", aiExposure: "existing",
+    lifecycleValidationReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations" : "server/services/assistant/execution/*ExecutionCommand.ts", handlerReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations; CanonicalPbv2OptionConfigurationOperations" : "AssistantCommandDefinition.adapter",
+    auditReference: "ExecutionPlanningService", uiSurfaceReference: command === "products.update_existing_product" ? "Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft" : "unknown", aiExposure: "existing",
     migrationStatus: command === "products.update_existing_product" ? "shared_canonical" : "wrapped_existing",
-    canonicalOperationReference: command === "products.update_existing_product" ? "products.update_configuration.v1" : "not_applicable",
+    canonicalOperationReference: command === "products.update_existing_product" ? "products.update_configuration.v1; products.update_option_configuration.v1" : "not_applicable",
     parityStatus: command === "products.update_existing_product" ? "shared_canonical" : "ai_specific",
     aiEligibility: "eligible", hardDenyReason: null, skillId: skillForDomain(domain),
   };

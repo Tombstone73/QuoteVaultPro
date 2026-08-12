@@ -113,6 +113,28 @@ describe("AI Operator routing (replacement for retired AI-first planner coverage
     contextSpy.mockRestore(); proposalSpy.mockRestore();
   });
 
+  test("natural language conditional text-input work plans canonical PBV2 structures without a phrase handler", async () => {
+    const { AssistantService } = await import("../services/assistant/assistantService");
+    const { existingProductEditService } = await import("../services/assistant/existingProductEditService");
+    const repo = repository(); const product = { beginCanonicalProductDraft: jest.fn(), respondPlannedCanonicalProductIntent: jest.fn() };
+    const contextOnProduct = assistantContextEnvelopeSchema.parse({ ...context, route: "/products/product_1/edit", pageTitle: "Edit Product", entityType: "product", entityId: "product_1" });
+    const contextSpy = jest.spyOn(existingProductEditService, "trustedContext").mockResolvedValue({ name: "Banner", lifecycle: "active", pricingLifecycle: "DRAFT", optionGroups: [{ label: "Grommets", selectionKey: "grommets", inputType: "select", required: false, defaultValue: "None", values: ["None", "Custom"], choices: [{ value: "none", label: "None" }, { value: "custom", label: "Custom" }] }] });
+    const operations = [{ op: "update_pbv2_option_configuration", mutations: [{ kind: "add_input", group: "Finishing", input: { selectionKey: "grommet_placement_note", label: "Describe grommet placement", type: "textarea", required: true, visibilityRules: [{ type: "equals", selectionKey: "grommets", value: "custom" }] } }] }];
+    const proposalSpy = jest.spyOn(existingProductEditService, "buildProposal").mockResolvedValue({ productId: "product_1", productName: "Banner", productActive: true, treeId: "tree_1", treeUpdatedAt: "2026-08-10T00:00:00.000Z", sourceLifecycle: "DRAFT", canonicalOperationReference: "products.update_option_configuration.v1", changes: [{ field: "Input Describe grommet placement", before: "(missing)", after: "textarea created" }], fingerprint: "b".repeat(64) });
+    const provider = { decide: jest.fn(async ({ observations, toolCatalog }: any) => {
+      const tool = toolCatalog.find((candidate: any) => candidate.name === "products.apply_existing_operations");
+      expect(JSON.stringify(tool?.inputSchema)).toContain("update_pbv2_option_configuration");
+      expect(JSON.stringify(tool?.inputSchema)).not.toContain("set_option_default");
+      return observations.length ? { kind: "complete", response: "Prepared the conditional text input." } : { kind: "call_tools", calls: [{ toolName: "products.apply_existing_operations", arguments: { operations } }] };
+    }) };
+    const service = new AssistantService(repo as any, { getCapabilities: jest.fn(async () => ({ enabled: true, toolsEnabled: true, providerConfigured: true })) }, undefined, undefined, undefined, undefined, product as any, () => provider, tasks(), undefined, undefined, operatorProviderResolver() as any);
+    await service.createTurn(scope, "conversation_1", { ...actor, permissions: ["assistant.products.update_existing_product"] }, { message: "When Grommets is Custom, add a text box asking where to place them.", context: contextOnProduct });
+    expect(proposalSpy).toHaveBeenCalledWith(expect.objectContaining({ operations: { operations } }));
+    expect(product.beginCanonicalProductDraft).not.toHaveBeenCalled();
+    expect(repo.createFoundationTurn).toHaveBeenCalledWith(expect.objectContaining({ structuredCards: expect.arrayContaining([expect.objectContaining({ plan: expect.objectContaining({ operations }) })]) }));
+    contextSpy.mockRestore(); proposalSpy.mockRestore();
+  });
+
   test("a same-turn canonical product read binds an existing-product mutation and blocks a blank draft", async () => {
     const { AssistantService } = await import("../services/assistant/assistantService");
     const { existingProductEditService } = await import("../services/assistant/existingProductEditService");

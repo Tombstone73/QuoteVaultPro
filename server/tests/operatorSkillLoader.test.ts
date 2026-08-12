@@ -34,7 +34,9 @@ describe("Operator runtime skills", () => {
   it("keeps the partial Product skill grounded in the migrated shared-operation knowledge", async () => {
     const result = await resolveOperatorSkills(selected(["products"]));
     expect(result.skills[0]).toMatchObject({ skillId: "products.pbv2", knowledgeCompleteness: "partial" });
-    expect(result.skills[0]?.content).toContain("shared canonical Product operation");
+    expect(result.skills[0]?.content).toContain("shared canonical PBV2 DRAFT operation");
+    expect(result.skills[0]?.content).toContain("Shared option configuration");
+    expect(result.skills[0]?.content).toContain("visibility rules");
     expect(result.skills[0]?.contentChars).toBeLessThanOrEqual(OPERATOR_SKILL_MAX_CHARS_PER_SKILL);
   });
 
