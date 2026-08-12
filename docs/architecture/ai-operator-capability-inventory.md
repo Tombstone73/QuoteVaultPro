@@ -30,9 +30,9 @@ None.
 | Category / type | shared_canonical_today | Category and validated Product type are shared for existing Products. |
 | Measurement mode | shared_canonical_today | Existing edits and pre-persistence semantic proposals share the canonical configuration shape. |
 | Workflow intent | shared_canonical_today | Workflow intent and established service-fee defaults are shared canonical. |
-| Scalar pricing | ai_specific_narrow_implementation | Contained new-draft compatibility path; pricing was not migrated in Phase 7. |
-| Pricing matrices | partial_or_indirect | AI command is limited to inactive drafts, not existing Product Editor parity. |
-| Quantity tiers | partial_or_indirect | AI command is limited to inactive drafts. |
+| Scalar pricing | shared_canonical_today | Product Editor metadata/PBV2 saves, canonical Product intent proposals, and scalar change sets share products.update_pricing.v1 validation and persistence boundaries. |
+| Pricing matrices | shared_canonical_today | Product Editor DRAFT saves and the inactive-DRAFT compatibility command share canonical matrix validation; AI lifecycle scope remains intentionally narrower. |
+| Quantity tiers | shared_canonical_today | Product Editor DRAFT saves and the inactive-DRAFT compatibility command share canonical tier validation; AI lifecycle scope remains intentionally narrower. |
 | Materials | ai_specific_narrow_implementation | Contained label-based new-draft compatibility path; existing Product adapter remains missing. |
 | Option groups and values | shared_canonical_today | Existing edits execute the shared operation; new drafts compose and apply its mutation schema through a pre-persistence adapter. |
 | Defaults | shared_canonical_today | Defaults are validated against choice values; set_option_default is compatibility-only and translates to the shared operation. |
@@ -68,10 +68,10 @@ None.
 
 | Provisional capability | Mode | UI | AI | Tool / command | Permission | Parity |
 |---|---|---|---|---|---|---|
-| ai.command.products.adjust_pricing | mutation | unknown | command_plan_only | products.adjust_pricing | assistant.products.adjust_pricing | partial_or_indirect |
-| ai.command.products.rollback_pricing_change_set | mutation | unknown | command_plan_only | products.rollback_pricing_change_set | assistant.products.adjust_pricing | partial_or_indirect |
-| ai.command.products.replace_inactive_matrix | mutation | unknown | command_plan_only | products.replace_inactive_matrix | assistant.products.replace_inactive_matrix | partial_or_indirect |
-| ai.command.products.replace_inactive_quantity_tiers | mutation | unknown | command_plan_only | products.replace_inactive_quantity_tiers | assistant.products.replace_inactive_quantity_tiers | partial_or_indirect |
+| ai.command.products.adjust_pricing | mutation | unknown | command_plan_only | products.adjust_pricing | assistant.products.adjust_pricing | shared_canonical_today |
+| ai.command.products.rollback_pricing_change_set | mutation | unknown | command_plan_only | products.rollback_pricing_change_set | assistant.products.adjust_pricing | shared_canonical_today |
+| ai.command.products.replace_inactive_matrix | mutation | unknown | command_plan_only | products.replace_inactive_matrix | assistant.products.replace_inactive_matrix | shared_canonical_today |
+| ai.command.products.replace_inactive_quantity_tiers | mutation | unknown | command_plan_only | products.replace_inactive_quantity_tiers | assistant.products.replace_inactive_quantity_tiers | shared_canonical_today |
 | ui.pbv2.save_draft_tree | mutation | page_and_route | command_plan_only | products.update_existing_product | authenticated_tenant_user (UI); assistant.products.update_existing_product (AI) | shared_canonical_today |
 
 ### quotes

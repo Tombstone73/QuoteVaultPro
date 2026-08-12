@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import type { ProductOptionPricingMatrix, ProductOptionPricingMatrixRow } from "@shared/productOptionPricingMatrix";
-import { sanitizePbv2PricingMatrix } from "@shared/pbv2/pricingMatrixSanitizer";
+import type { ProductOptionPricingMatrix } from "@shared/productOptionPricingMatrix";
+import { CanonicalProductPricingError, validateCanonicalPricingMatrixReplacement } from "../products/canonicalProductPricingOperations";
 
 /** Reserved command identity for the assistant integration layer. */
 export const inactivePbv2PricingMatrixEditAction = "products.update_inactive_draft_matrix" as const;
@@ -150,67 +150,13 @@ function matrixAt(treeJson: Record<string, unknown>): { location: InactivePbv2Pr
   throw new InactivePbv2PricingMatrixEditError("PBV2_MATRIX_NOT_FOUND", "The bound PBV2 DRAFT does not have a pricing matrix to replace.");
 }
 
-function matrixMatch(row: ProductOptionPricingMatrixRow): Record<string, unknown> {
-  return (row.when ?? row.match ?? row.combination ?? {}) as Record<string, unknown>;
-}
-
-function inputChoiceValues(treeJson: Record<string, unknown>, dimensions: string[]): Map<string, unknown[]> {
-  const rawNodes = treeJson.nodes;
-  const nodes = Array.isArray(rawNodes) ? rawNodes : Object.values(asRecord(rawNodes) ?? {});
-  const wanted = new Set(dimensions);
-  const found = new Map<string, unknown[]>();
-  for (const node of nodes) {
-    const record = asRecord(node);
-    if (!record) continue;
-    const input = asRecord(record.input) ?? asRecord(record.data);
-    const key = typeof input?.selectionKey === "string" ? input.selectionKey : "";
-    if (!wanted.has(key)) continue;
-    const choices = Array.isArray(record.choices) ? record.choices : [];
-    const values = choices.flatMap((choice) => {
-      const choiceRecord = asRecord(choice);
-      return choiceRecord && Object.prototype.hasOwnProperty.call(choiceRecord, "value") ? [choiceRecord.value] : [];
-    });
-    if (values.length) found.set(key, values);
-  }
-  return found;
-}
-
-function combinationKey(dimensions: string[], match: Record<string, unknown>): string {
-  return stable(dimensions.map((dimension) => [dimension, match[dimension]]));
-}
-
 function requireCompleteReplacement(treeJson: Record<string, unknown>, replacement: InactivePbv2PricingMatrixReplacement): ProductOptionPricingMatrix {
-  const candidate: ProductOptionPricingMatrix = cloneJson(replacement) as ProductOptionPricingMatrix;
-  // Do not silently repair an assistant request. The canonical sanitizer is
-  // the source of truth for legal PBV2 dimension/choice references; any
-  // sanitization indicates an invalid replacement and is rejected.
-  const sanitized = sanitizePbv2PricingMatrix({ ...cloneJson(treeJson), pricingMatrix: candidate });
-  if (sanitized.changed || !(sanitized.tree as Record<string, unknown>).pricingMatrix) {
-    throw new InactivePbv2PricingMatrixEditError("PBV2_MATRIX_INVALID", "The replacement matrix contains dimensions, choices, or rows that are not valid for this PBV2 DRAFT.");
+  try {
+    return validateCanonicalPricingMatrixReplacement(treeJson, replacement);
+  } catch (error) {
+    if (error instanceof CanonicalProductPricingError) throw new InactivePbv2PricingMatrixEditError(error.code, error.message);
+    throw error;
   }
-  const choiceValues = inputChoiceValues(treeJson, candidate.dimensions);
-  if (choiceValues.size !== candidate.dimensions.length) {
-    throw new InactivePbv2PricingMatrixEditError("PBV2_MATRIX_DIMENSIONS_UNRESOLVABLE", "Every pricing matrix dimension must be an INPUT with explicit PBV2 choices.");
-  }
-  const expected = new Set<string>();
-  const combinations = candidate.dimensions.reduce<unknown[][]>((all, dimension) =>
-    all.flatMap((prefix) => (choiceValues.get(dimension) ?? []).map((value) => [...prefix, value])), [[]]);
-  for (const values of combinations) expected.add(combinationKey(candidate.dimensions, Object.fromEntries(candidate.dimensions.map((dimension, index) => [dimension, values[index]]))));
-
-  const seen = new Set<string>();
-  for (const row of candidate.rows) {
-    const match = matrixMatch(row);
-    const keys = Object.keys(match);
-    if (keys.length !== candidate.dimensions.length || candidate.dimensions.some((dimension) => !Object.prototype.hasOwnProperty.call(match, dimension))) {
-      throw new InactivePbv2PricingMatrixEditError("PBV2_MATRIX_CELL_INCOMPLETE", "Every replacement row must specify exactly one complete pricing-matrix cell.");
-    }
-    const key = combinationKey(candidate.dimensions, match);
-    if (!expected.has(key)) throw new InactivePbv2PricingMatrixEditError("PBV2_MATRIX_CELL_UNKNOWN", "A replacement row references an option combination outside the bound PBV2 DRAFT.");
-    if (seen.has(key)) throw new InactivePbv2PricingMatrixEditError("PBV2_MATRIX_CELL_DUPLICATE", "A replacement pricing matrix contains the same option combination more than once.");
-    seen.add(key);
-  }
-  if (seen.size !== expected.size) throw new InactivePbv2PricingMatrixEditError("PBV2_MATRIX_CELLS_MISSING", "A complete pricing-matrix replacement must include every option combination exactly once.");
-  return candidate;
 }
 
 /** Shared with the transactional store so the write boundary repeats the exact

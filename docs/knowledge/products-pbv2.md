@@ -26,4 +26,17 @@ A new Product may be described in one request or over several turns before it ha
 
 Existing Product identity and operational configuration use the shared canonical Product operation for name, description, category, product type, measurement mode, workflow intent, proof requirement, and production-job requirement. These edits are separate from new Product drafting and require a trusted existing Product reference. Assistant proposals for this operation require GO; server validation and current Product state win over skill guidance.
 
-The shared operation does not replace PBV2 pricing matrix changes, quantity tiers, option-tree editing, publishing, activation, cloning, deletion, or customer-specific availability. Product Editor supports those through their existing paths until a later canonical migration. A service-fee workflow is quantity-only and does not require proof approval or a production job.
+## Shared Product pricing
+
+Product Editor saves and Operator pricing proposals use the shared canonical Product pricing boundary. It supports integer-cent scalar prices, pricing basis, complete one- and two-dimensional matrices, complete quantity-tier replacements, minimum charges, and established percentage-of-base option impacts. A service-fee workflow is quantity-only and does not require proof approval or a production job.
+
+- A scalar price is one saved integer-cent amount with a basis such as per piece, per square foot, or flat fee.
+- A matrix rate is controlled by one or two option axes. Every expected combination must appear exactly once; missing, duplicate, or unknown cells are invalid.
+- Quantity and square-foot tier thresholds begin at 1 and increase strictly. Product-intent quantity ranges are gapless and end with one open-ended tier.
+- A percentage impact is evaluated against the resolved base using the existing PBV2 calculation engine. Dependent total percentages retain their prerequisite and established stacking semantics.
+
+Pricing configuration and pricing calculation are different responsibilities. The shared operation validates and persists configuration; quote and order pricing still use the existing PBV2 pricing engine, including its rounding, minimum-charge, tier selection, matrix lookup, snapshot, and customer-override behavior. Staff and the Operator must not recompute or guess a final price.
+
+Missing required pricing information stays explicit. The Operator may keep a new draft unresolved, and the Product Editor may save an incomplete empty matrix while it is being authored. A confirmed pricing change still requires a trusted Product, current lifecycle state, preview, GO, a fresh fingerprint, and the applicable permission. Active scalar changes create a replacement ACTIVE tree version; existing pricing change-set snapshots and compensating rollback remain authoritative.
+
+The shared pricing operation does not broaden publish/activate, clone, deletion, batch, material, or customer-specific pricing authority. Those remain in their existing bounded paths.

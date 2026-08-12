@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
-import { pricingV2TierSchema, type PricingV2Tier } from "@shared/optionTreeV2";
+import { pricingV2TierSchema } from "@shared/optionTreeV2";
+import { CanonicalProductPricingError, validateCanonicalPricingTierReplacement } from "../products/canonicalProductPricingOperations";
 
 /** Reserved assistant command identity; route wiring is intentionally separate. */
 export const inactivePbv2QuantityTierEditAction = "products.update_inactive_draft_tiers" as const;
@@ -81,19 +82,12 @@ function tierSetAt(treeJson: Record<string, unknown>, tierType: InactivePbv2Tier
  * of 1 and strict ascending bounds means each implicit range starts exactly
  * where the prior range ends, with no overlap or unpriced starting range. */
 function validateCompleteTierReplacement(set: InactivePbv2TierSet): InactivePbv2TierSet {
-  const tiers = set.tiers as PricingV2Tier[];
-  const bound = set.tierType === "qtyTiers" ? "minQty" : "minSqft";
-  const rateFields = ["perSqftCents", "perPieceCents", "minimumChargeCents"] as const;
-  const values = tiers.map((tier) => tier[bound]);
-  if (values.some((value) => typeof value !== "number" || !Number.isFinite(value))) throw new InactivePbv2QuantityTierEditError("PBV2_TIER_BOUND_MISSING", `Every ${set.tierType} tier must provide ${bound}.`);
-  if (values[0] !== 1) throw new InactivePbv2QuantityTierEditError("PBV2_TIER_COVERAGE_INVALID", `${set.tierType} must begin at 1.`);
-  for (let index = 1; index < values.length; index += 1) if (values[index]! <= values[index - 1]!) throw new InactivePbv2QuantityTierEditError("PBV2_TIER_ORDER_INVALID", `${set.tierType} bounds must be strictly increasing without duplicates or overlap.`);
-  for (const tier of tiers) {
-    if (!rateFields.some((field) => typeof tier[field] === "number" && Number.isFinite(tier[field]!))) throw new InactivePbv2QuantityTierEditError("PBV2_TIER_RATE_MISSING", "Every replacement quantity tier must define at least one finite PBV2 price field.");
-    const foreignBound = set.tierType === "qtyTiers" ? tier.minSqft : tier.minQty;
-    if (foreignBound !== undefined) throw new InactivePbv2QuantityTierEditError("PBV2_TIER_BASIS_MIXED", "A tier set cannot mix quantity and square-foot lower bounds.");
+  try {
+    return validateCanonicalPricingTierReplacement(set);
+  } catch (error) {
+    if (error instanceof CanonicalProductPricingError) throw new InactivePbv2QuantityTierEditError(error.code, error.message);
+    throw error;
   }
-  return cloneJson(set);
 }
 
 function sourceFingerprint(source: InactivePbv2QuantityTierSourceSnapshot): string { return fingerprint(source); }

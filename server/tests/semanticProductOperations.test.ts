@@ -113,6 +113,27 @@ describe("semantic product operations", () => {
     expect(next.unresolvedFields.map((field) => field.path)).not.toEqual(expect.arrayContaining(["identity.name", "measurement.mode"]));
   });
 
+  test("preserves missing matrix-rate questions across canonical pricing continuations", () => {
+    const current = productDraftIntentSchema.parse({
+      ...translucentIntent,
+      pricing: { model: "unresolved" },
+      optionGroups: [],
+      unresolvedFields: [],
+      fieldMetadata: {},
+    });
+    const first = applyProductDraftIntentPatch(current, compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [
+      { op: "add_option_group", optionGroup: "Layers", required: true, selectionMode: "single" },
+      { op: "add_option_value", optionGroup: "Layers", value: "3 Layer" },
+      { op: "add_option_value", optionGroup: "Layers", value: "5 Layer" },
+      { op: "set_option_rate", optionGroup: "Layers", value: "3 Layer", priceCents: 400, basis: "per_square_foot" },
+    ] }, current.revision));
+    expect(first.unresolvedFields).toEqual(expect.arrayContaining([expect.objectContaining({ path: "pricing.optionRates.layers.5_layer", code: "OPTION_RATE_UNRESOLVED" })]));
+    const completed = applyProductDraftIntentPatch(first, compileSemanticProductOperations(first, { kind: "semantic_operations", operations: [
+      { op: "set_option_rate", optionGroup: "Layers", value: "5 Layer", priceCents: 500, basis: "per_square_foot" },
+    ] }, first.revision));
+    expect(completed.unresolvedFields.map((field) => field.path)).not.toContain("pricing.optionRates.layers.5_layer");
+  });
+
   test("preserves the literal product-for name even when the initial operation batch omits a rename", () => {
     const current = productDraftIntentSchema.parse({
       ...translucentIntent,

@@ -55,12 +55,8 @@ import {
   zodIssuesToPreviewDetails,
 } from "../services/pricing/pricingPreviewValidation";
 import { applyProductTypeIdUpdateGuard } from "../lib/productUpdateGuards";
-import { getDefaultFormula } from "@shared/pricingProfiles";
 import { filterProductsForCatalog } from "@shared/productCatalogVisibility";
 import { requiresPublishedPbv2BeforeActivation } from "@shared/pbv2/productionLifecycle";
-import {
-  getProductAllowRotation,
-} from "@shared/pbv2/productPricingRotation";
 import { normalizeProductRotationForWrite } from "../lib/productPricingRotationWrite";
 import {
   ProductParsingDescriptionGeneratorError,
@@ -68,6 +64,7 @@ import {
 } from "../services/products/ProductParsingDescriptionGeneratorService";
 import { CanonicalProductConfigurationError, canonicalProductConfigurationOperations, takeCanonicalProductConfigurationChanges } from "../services/products/canonicalProductConfigurationOperations";
 import { CanonicalPbv2OptionConfigurationError, canonicalPbv2OptionConfigurationOperations } from "../services/products/canonicalPbv2OptionConfigurationOperations";
+import { CanonicalProductPricingError, canonicalProductPricingOperations, takeCanonicalProductPricingMetadataChanges } from "../services/products/canonicalProductPricingOperations";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -163,24 +160,6 @@ async function buildPbv2MaterialValidationFindings(organizationId: string, produ
   });
 }
 
-function numericFormulaVariables(value: unknown): Record<string, number> {
-  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
-  const out: Record<string, number> = {};
-  for (const [key, raw] of Object.entries(value as Record<string, unknown>)) {
-    const numeric = Number(raw);
-    if (key && Number.isFinite(numeric)) out[key] = numeric;
-  }
-  return out;
-}
-
-function formulaVariablesFromProductConfig(config: unknown): Record<string, number> {
-  if (!config || typeof config !== "object" || Array.isArray(config)) return {};
-  const variables = numericFormulaVariables((config as Record<string, unknown>).formulaVariables);
-  const allowRotation = getProductAllowRotation(config);
-  if (allowRotation !== null) variables.allow_rotation = Number(allowRotation);
-  return variables;
-}
-
 /** Service/Fee is a billing-only workflow intent, never a production default. */
 function applyProductWorkflowIntentDefaults(productData: Record<string, any>, existingWorkflowIntent?: string | null) {
   const workflowIntent = String(productData.workflowIntent ?? existingWorkflowIntent ?? "standard_production");
@@ -193,32 +172,6 @@ function applyProductWorkflowIntentDefaults(productData: Record<string, any>, ex
     requiresProductionJob: false,
     requiresProofApproval: false,
   };
-}
-
-function resolveFormulaMetaForActiveTree(product: any, draftTree: any): {
-  pricingProfileKey: string;
-  pricingFormula: string;
-  formulaVariables: Record<string, number>;
-} {
-  const draftMeta = draftTree && typeof draftTree === "object" ? draftTree.meta || {} : {};
-  const pricingProfileKey = String(
-    product?.pricingProfileKey ||
-    draftMeta.pricingProfileKey ||
-    "default",
-  );
-  const pricingFormula = String(
-    draftMeta.pricingFormula ||
-    product?.pricingFormula ||
-    getDefaultFormula(pricingProfileKey) ||
-    "",
-  ).trim();
-  const formulaVariables = {
-    ...numericFormulaVariables(draftMeta.pricingFormulaVariables),
-    ...numericFormulaVariables(draftMeta.formulaVariables),
-    ...formulaVariablesFromProductConfig(product?.pricingProfileConfig),
-  };
-
-  return { pricingProfileKey, pricingFormula, formulaVariables };
 }
 
 interface PolePocketsConfig extends BaseOptionConfig {
@@ -2182,10 +2135,9 @@ export function registerProductRoutes(
         }
       });
 
-      // Phase 5: Product Editor identity and operational configuration use the
-      // same transport-independent operation available to the AI GO adapter.
-      // Complex pricing/tree/lifecycle fields remain on their existing route
-      // path until their invariants are migrated as a coherent later slice.
+      // Product Editor identity, operational configuration, and pricing
+      // metadata use the same transport-independent operations available to
+      // confirmed Operator paths. Lifecycle and unrelated fields remain here.
       const canonicalChanges = takeCanonicalProductConfigurationChanges(productData);
       if (canonicalChanges) {
         const actorUserId = getUserId(req.user);
@@ -2194,6 +2146,19 @@ export function registerProductRoutes(
           organizationId, actorUserId,
           productId, changes: canonicalChanges,
           auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` },
+        });
+        existingProduct = result.product;
+      }
+
+      const pricingMetadataChanges = takeCanonicalProductPricingMetadataChanges(productData);
+      if (pricingMetadataChanges) {
+        const actorUserId = getUserId(req.user);
+        if (!actorUserId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
+        const result = await canonicalProductPricingOperations.updateProductMetadata({
+          organizationId,
+          actorUserId,
+          productId,
+          changes: pricingMetadataChanges,
         });
         existingProduct = result.product;
       }
@@ -2339,165 +2304,14 @@ export function registerProductRoutes(
         });
       }
 
-      // ============================================================
-      // PBV2 BASE PRICING PROPAGATION
-      // ============================================================
-      // After product save, propagate DRAFT base pricing to ACTIVE tree
-      // This ensures /calculate uses current pricing without manual publish
       const userId = getUserId(req.user);
-
-      if (product.pbv2ActiveTreeVersionId) {
+      if (product.pbv2ActiveTreeVersionId && userId) {
         try {
-          // Load DRAFT tree version
-          const [draftTreeVersion] = await db
-            .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
-            .from(pbv2TreeVersions)
-            .where(
-              and(
-                eq(pbv2TreeVersions.organizationId, organizationId),
-                eq(pbv2TreeVersions.productId, productId),
-                eq(pbv2TreeVersions.status, "DRAFT")
-              )
-            )
-            .limit(1);
-
-          if (draftTreeVersion) {
-            // Load current ACTIVE tree version
-            const [activeTreeVersion] = await db
-              .select({ id: pbv2TreeVersions.id, treeJson: pbv2TreeVersions.treeJson })
-              .from(pbv2TreeVersions)
-              .where(
-                and(
-                  eq(pbv2TreeVersions.id, product.pbv2ActiveTreeVersionId),
-                  eq(pbv2TreeVersions.organizationId, organizationId),
-                  eq(pbv2TreeVersions.status, "ACTIVE")
-                )
-              )
-              .limit(1);
-
-            if (activeTreeVersion) {
-              // Extract base pricing from DRAFT and ACTIVE
-              const draftTree = draftTreeVersion.treeJson as any;
-              const activeTree = activeTreeVersion.treeJson as any;
-              const draftBasePricing = draftTree?.meta?.pricingV2?.base;
-              const activeBasePricing = activeTree?.meta?.pricingV2?.base;
-              const nextFormulaMeta = resolveFormulaMetaForActiveTree(product, draftTree);
-              const activeFormulaMeta = {
-                pricingProfileKey: activeTree?.meta?.pricingProfileKey ?? null,
-                pricingFormula: activeTree?.meta?.pricingFormula ?? null,
-                formulaVariables: activeTree?.meta?.formulaVariables ?? {},
-                pricingFormulaVariables: activeTree?.meta?.pricingFormulaVariables ?? {},
-              };
-              const desiredFormulaMeta = {
-                pricingProfileKey: nextFormulaMeta.pricingProfileKey,
-                pricingFormula: nextFormulaMeta.pricingFormula,
-                formulaVariables: nextFormulaMeta.formulaVariables,
-                pricingFormulaVariables: nextFormulaMeta.formulaVariables,
-              };
-
-              // Compare base pricing - only propagate if changed
-              const basePricingChanged = JSON.stringify(draftBasePricing) !== JSON.stringify(activeBasePricing);
-              const formulaMetadataChanged = JSON.stringify(activeFormulaMeta) !== JSON.stringify(desiredFormulaMeta);
-
-              if ((basePricingChanged && draftBasePricing) || formulaMetadataChanged) {
-                console.log('[PBV2_ACTIVE_PRICING_PROPAGATION] detected change', {
-                  productId,
-                  activeTreeVersionId: activeTreeVersion.id,
-                  draftBasePricing,
-                  activeBasePricing,
-                  formulaMetadataChanged,
-                  desiredFormulaMeta,
-                });
-
-                // Deep clone ACTIVE tree and update only meta.pricingV2.base
-                const updatedActiveTree = JSON.parse(JSON.stringify(activeTree));
-                if (!updatedActiveTree.meta) updatedActiveTree.meta = {};
-                if (draftBasePricing) {
-                  if (!updatedActiveTree.meta.pricingV2) updatedActiveTree.meta.pricingV2 = {};
-                  updatedActiveTree.meta.pricingV2.base = draftBasePricing;
-                }
-                updatedActiveTree.meta.pricingProfileKey = nextFormulaMeta.pricingProfileKey;
-                updatedActiveTree.meta.pricingFormula = nextFormulaMeta.pricingFormula;
-                updatedActiveTree.meta.formulaVariables = nextFormulaMeta.formulaVariables;
-                updatedActiveTree.meta.pricingFormulaVariables = nextFormulaMeta.formulaVariables;
-
-                // Use transaction to ensure atomic state transition: DEPRECATE old → INSERT new → UPDATE pointer
-                const newActiveVersion = await db.transaction(async (tx) => {
-                  // STEP 1: Deprecate old ACTIVE version FIRST (removes unique constraint conflict)
-                  await tx
-                    .update(pbv2TreeVersions)
-                    .set({
-                      status: "DEPRECATED",
-                      updatedAt: new Date(),
-                      updatedByUserId: userId ?? null
-                    })
-                    .where(
-                      and(
-                        eq(pbv2TreeVersions.id, activeTreeVersion.id),
-                        eq(pbv2TreeVersions.organizationId, organizationId)
-                      )
-                    );
-
-                  // STEP 2: Create NEW ACTIVE tree version (immutability preserved)
-                  const [newVersion] = await tx
-                    .insert(pbv2TreeVersions)
-                    .values({
-                      organizationId,
-                      productId,
-                      status: "ACTIVE",
-                      schemaVersion: updatedActiveTree.schemaVersion ?? 2,
-                      treeJson: updatedActiveTree,
-                      publishedAt: new Date(),
-                      createdByUserId: userId ?? null,
-                      updatedByUserId: userId ?? null,
-                    })
-                    .returning();
-
-                  // STEP 3: Update product pointer and sync optionTreeJson
-                  await tx
-                    .update(products)
-                    .set({
-                      pbv2ActiveTreeVersionId: newVersion.id,
-                      optionTreeJson: updatedActiveTree,
-                      updatedAt: new Date()
-                    })
-                    .where(
-                      and(
-                        eq(products.id, productId),
-                        eq(products.organizationId, organizationId)
-                      )
-                    );
-
-                  return newVersion;
-                });
-
-                console.log('[PBV2_ACTIVE_PRICING_PROPAGATION] success - status transitions completed', {
-                  productId,
-                  oldActiveId: activeTreeVersion.id,
-                  oldStatus: 'ACTIVE → DEPRECATED',
-                  newActiveId: newActiveVersion.id,
-                  newStatus: 'ACTIVE',
-                  basePricing: draftBasePricing,
-                  formulaVariables: nextFormulaMeta.formulaVariables,
-                });
-
-                // Update product object for response
-                product.pbv2ActiveTreeVersionId = newActiveVersion.id;
-              } else {
-                console.log('[PBV2_ACTIVE_PRICING_PROPAGATION] skipped - no change', {
-                  productId,
-                  activeTreeVersionId: activeTreeVersion.id,
-                });
-              }
-            }
-          }
+          const propagation = await canonicalProductPricingOperations.propagateEditorDraftBaseToActive({ organizationId, actorUserId: userId, productId });
+          if (propagation.changed && propagation.activeTreeVersionId) product.pbv2ActiveTreeVersionId = propagation.activeTreeVersionId;
         } catch (propagationError: any) {
-          // Don't fail product save if propagation fails
-          console.error('[PBV2_BASE_PRICING_PROPAGATION] failed', {
-            productId,
-            error: propagationError.message,
-            stack: propagationError.stack,
-          });
+          // Preserve the established fail-soft Product Editor behavior.
+          console.error('[PBV2_BASE_PRICING_PROPAGATION] failed', { productId, error: propagationError.message, stack: propagationError.stack });
         }
       }
 
@@ -2509,6 +2323,10 @@ export function registerProductRoutes(
       if (error instanceof CanonicalProductConfigurationError) {
         const status = error.code === "PRODUCT_NOT_FOUND" ? 404 : error.code === "PRODUCT_CONFIGURATION_STALE" ? 409 : 400;
         return res.status(status).json({ success: false, code: error.code, message: error.message });
+      }
+      if (error instanceof CanonicalProductPricingError) {
+        const status = error.code === "PRODUCT_NOT_FOUND" ? 404 : error.code === "PRODUCT_PRICING_STALE" ? 409 : 400;
+        return res.status(status).json({ success: false, code: error.code, message: error.message, findings: error.findings });
       }
 
       const errorId = (() => {

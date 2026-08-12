@@ -191,6 +191,13 @@ const commandSourceByName: Partial<Record<(typeof assistantProductionCommandAllo
   "payments.add_payment_note": source("server/services/assistant/execution/paymentOperationsCommands.ts", "createPaymentOperationCommandDefinition"),
 };
 
+const sharedCanonicalPricingCommands = new Set([
+  "products.adjust_pricing",
+  "products.rollback_pricing_change_set",
+  "products.replace_inactive_matrix",
+  "products.replace_inactive_quantity_tiers",
+]);
+
 const commandInventory: CapabilityInventoryItem[] = assistantProductionCommandAllowlist.map((command) => {
   const definition = commandSourceByName[command] ?? "unknown";
   const permission = Object.prototype.hasOwnProperty.call(capabilityMirrorCommandPermissions, command)
@@ -213,11 +220,15 @@ const commandInventory: CapabilityInventoryItem[] = assistantProductionCommandAl
     confirmation: "go_required",
     idempotency: "server_generated_with_request_hash",
     lifecycleValidationSource: definition,
-    canonicalCandidate: definition,
+    canonicalCandidate: sharedCanonicalPricingCommands.has(command)
+      ? source("server/services/products/canonicalProductPricingOperations.ts", "CanonicalProductPricingOperations")
+      : definition,
     routes: [source(executionRoute, "registerAssistantExecutionRoutes", "/api/assistant/conversations/:conversationId/plans")],
     audit: source("server/services/assistant/execution/executionPlanningService.ts", "ExecutionPlanningService"),
-    parity: "partial_or_indirect",
-    migrationNotes: "Registered, confirmation-bound AI command. UI parity and canonical ownership require source-by-source confirmation.",
+    parity: sharedCanonicalPricingCommands.has(command) ? "shared_canonical_today" : "partial_or_indirect",
+    migrationNotes: sharedCanonicalPricingCommands.has(command)
+      ? "Compatibility command delegates pricing validation or persistence to the shared canonical Product pricing boundary; existing GO, stale-state, snapshot, rollback, and audit controls remain authoritative."
+      : "Registered, confirmation-bound AI command. UI parity and canonical ownership require source-by-source confirmation.",
   };
 });
 
@@ -285,9 +296,9 @@ export const productParityInventory = Object.freeze([
   { id: "products.category_type", productArea: "Category / type", uiSource: source(productRoute, undefined, "PATCH /api/products/:id"), normalOperatorSource: source("server/services/products/canonicalProductConfigurationOperations.ts"), classification: "shared_canonical_today", notes: "Category and validated Product type are shared for existing Products." },
   { id: "products.measurement", productArea: "Measurement mode", uiSource: source(productRoute, undefined, "PATCH /api/products/:id"), normalOperatorSource: source("server/services/products/canonicalProductConfigurationOperations.ts"), classification: "shared_canonical_today", notes: "Existing edits and pre-persistence semantic proposals share the canonical configuration shape." },
   { id: "products.workflow", productArea: "Workflow intent", uiSource: source(productRoute, undefined, "PATCH /api/products/:id"), normalOperatorSource: source("server/services/products/canonicalProductConfigurationOperations.ts"), classification: "shared_canonical_today", notes: "Workflow intent and established service-fee defaults are shared canonical." },
-  { id: "products.pricing", productArea: "Scalar pricing", uiSource: source(productRoute, undefined, "PATCH /api/products/:id"), normalOperatorSource: source("server/services/productIntentCompiler/semanticProductOperations.ts", "set_scalar_price"), classification: "ai_specific_narrow_implementation", notes: "Contained new-draft compatibility path; pricing was not migrated in Phase 7." },
-  { id: "products.pricing_matrices", productArea: "Pricing matrices", uiSource: source(productRoute, undefined, "PUT /api/products/:productId/pbv2/draft"), normalOperatorSource: source("server/services/assistant/execution/inactivePbv2PricingMatrixEditCommand.ts"), classification: "partial_or_indirect", notes: "AI command is limited to inactive drafts, not existing Product Editor parity." },
-  { id: "products.quantity_tiers", productArea: "Quantity tiers", uiSource: source(productRoute, undefined, "PUT /api/products/:productId/pbv2/draft"), normalOperatorSource: source("server/services/assistant/execution/inactivePbv2QuantityTierEditCommand.ts"), classification: "partial_or_indirect", notes: "AI command is limited to inactive drafts." },
+  { id: "products.pricing", productArea: "Scalar pricing", uiSource: source(productRoute, undefined, "PATCH /api/products/:id"), normalOperatorSource: source("server/services/products/canonicalProductPricingOperations.ts", "CanonicalProductPricingOperations"), classification: "shared_canonical_today", notes: "Product Editor metadata/PBV2 saves, canonical Product intent proposals, and scalar change sets share products.update_pricing.v1 validation and persistence boundaries." },
+  { id: "products.pricing_matrices", productArea: "Pricing matrices", uiSource: source(productRoute, undefined, "PUT /api/products/:productId/pbv2/draft"), normalOperatorSource: source("server/services/products/canonicalProductPricingOperations.ts", "validateCanonicalPricingMatrixReplacement"), classification: "shared_canonical_today", notes: "Product Editor DRAFT saves and the inactive-DRAFT compatibility command share canonical matrix validation; AI lifecycle scope remains intentionally narrower." },
+  { id: "products.quantity_tiers", productArea: "Quantity tiers", uiSource: source(productRoute, undefined, "PUT /api/products/:productId/pbv2/draft"), normalOperatorSource: source("server/services/products/canonicalProductPricingOperations.ts", "validateCanonicalPricingTierReplacement"), classification: "shared_canonical_today", notes: "Product Editor DRAFT saves and the inactive-DRAFT compatibility command share canonical tier validation; AI lifecycle scope remains intentionally narrower." },
   { id: "products.materials", productArea: "Materials", uiSource: source(productRoute, undefined, "PATCH /api/products/:id"), normalOperatorSource: source("server/services/productIntentCompiler/semanticProductOperations.ts", "set_material"), classification: "ai_specific_narrow_implementation", notes: "Contained label-based new-draft compatibility path; existing Product adapter remains missing." },
   { id: "products.option_groups_values", productArea: "Option groups and values", uiSource: source(productRoute, undefined, "PUT /api/products/:productId/pbv2/draft"), normalOperatorSource: source("server/services/products/canonicalPbv2OptionConfigurationOperations.ts"), classification: "shared_canonical_today", notes: "Existing edits execute the shared operation; new drafts compose and apply its mutation schema through a pre-persistence adapter." },
   { id: "products.defaults", productArea: "Defaults", uiSource: source(productRoute, undefined, "PUT /api/products/:productId/pbv2/draft"), normalOperatorSource: source("server/services/products/canonicalPbv2OptionConfigurationOperations.ts"), classification: "shared_canonical_today", notes: "Defaults are validated against choice values; set_option_default is compatibility-only and translates to the shared operation." },

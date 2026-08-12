@@ -3,7 +3,8 @@ import { z } from "zod";
 
 /** Server-owned V1 revision/resolver compatibility contract for an inactive
  * Product Builder draft. Canonical proposal state owns migrated Product/PBV2
- * fields; pricing, material and current creation transport remain V1-only. */
+ * fields. Pricing is canonical proposal-backed; material and current creation
+ * transport remain V1-only. */
 export const PRODUCT_DRAFT_INTENT_VERSION = 1 as const;
 
 const nonEmpty = z.string().trim().min(1);

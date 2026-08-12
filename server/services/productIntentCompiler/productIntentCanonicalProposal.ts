@@ -12,14 +12,14 @@ import {
   validateCanonicalPbv2OptionConfigurationTree,
   type Pbv2OptionConfigurationMutation,
 } from "../products/canonicalPbv2OptionConfigurationOperations";
+import {
+  canonicalProductPricingProposalSchema,
+  normalizeCanonicalProductPricingConfiguration,
+  type CanonicalProductPricingProposal,
+} from "../products/canonicalProductPricingOperations";
 
 const compatibilityOperationNameSchema = z.enum([
   "set_material",
-  "set_pricing_basis",
-  "set_scalar_price",
-  "set_option_rate",
-  "set_matrix_rate",
-  "set_option_price_impact",
   "remove_option_value",
   "remove_option_group",
 ]);
@@ -36,10 +36,11 @@ export const canonicalProductIntentProposalSchema = z.object({
   kind: z.literal("canonical_product_intent_proposal"),
   productConfiguration: productConfigurationChangesSchema.optional(),
   pbv2OptionConfiguration: pbv2OptionConfigurationMutationsSchema.optional(),
+  productPricing: canonicalProductPricingProposalSchema.optional(),
   unsupportedDetails: z.array(unsupportedDetailSchema).default([]),
   compatibilityOperations: z.array(z.object({ index: z.number().int().nonnegative(), op: compatibilityOperationNameSchema }).strict()).default([]),
 }).strict().refine(
-  (proposal) => proposal.productConfiguration || proposal.pbv2OptionConfiguration || proposal.unsupportedDetails.length || proposal.compatibilityOperations.length,
+  (proposal) => proposal.productConfiguration || proposal.pbv2OptionConfiguration || proposal.productPricing || proposal.unsupportedDetails.length || proposal.compatibilityOperations.length,
   "At least one Product intent proposal fragment is required.",
 );
 export type CanonicalProductIntentProposal = z.infer<typeof canonicalProductIntentProposalSchema>;
@@ -49,6 +50,9 @@ export type CanonicalProductIntentProposal = z.infer<typeof canonicalProductInte
 export const canonicalProductIntentStateSchema = z.object({
   kind: z.literal("canonical_product_intent_proposal_state"),
   productConfiguration: productConfigurationChangesSchema,
+  /** Item 8 rows predate canonical pricing state. They are imported from the
+   * V1 compatibility envelope on their next write. */
+  productPricing: canonicalProductPricingProposalSchema.optional(),
   /** Each batch is the exact Phase 6 mutation input contract. Chunking keeps
    * historical V1 drafts with more than one command-sized option set loadable
    * without weakening the live operation's 24-mutation safety ceiling. */
@@ -118,9 +122,65 @@ function findValue(group: ProductDraftIntent["optionGroups"][number], label: str
   return matches[0]!;
 }
 
+function pricingProposalFromIntent(intent: ProductDraftIntent): CanonicalProductPricingProposal {
+  const percentageImpacts: CanonicalProductPricingProposal["percentageImpacts"] = [];
+  for (const group of intent.optionGroups) for (const value of group.values) {
+    if (value.priceImpact) percentageImpacts.push({ optionGroupKey: group.key, optionValueKey: value.key, impact: value.priceImpact });
+    else if (value.totalPercentOfBaseWhenEnabled) percentageImpacts.push({ optionGroupKey: group.key, optionValueKey: value.key, impact: { kind: "total_percentage_of_base", percent: value.totalPercentOfBaseWhenEnabled.percent, prerequisite: value.totalPercentOfBaseWhenEnabled.prerequisite } });
+  }
+  return canonicalProductPricingProposalSchema.parse({
+    operationReference: "products.update_pricing.v1",
+    configuration: normalizeCanonicalProductPricingConfiguration(intent.pricing),
+    percentageImpacts,
+    missingInformation: intent.unresolvedFields.filter((field) => field.path === "pricing.unit" || field.path === "pricing.matrix.unit" || field.path.startsWith("pricing.optionRates.")),
+  });
+}
+
+function applyPricingProposalOperation(proposal: CanonicalProductPricingProposal, operation: SemanticOperation, knownGroups: Array<{ key: string; label: string; values: Array<{ key: string; label: string }> }>): CanonicalProductPricingProposal {
+  const next = structuredClone(proposal);
+  const removeMissing = (...paths: string[]) => { const removing = new Set(paths); next.missingInformation = next.missingInformation.filter((field) => !removing.has(field.path)); };
+  const ratePath = (groupKey: string, valueKey: string) => `pricing.optionRates.${groupKey}.${valueKey}`;
+  const addMissingRate = (group: (typeof knownGroups)[number], value: (typeof knownGroups)[number]["values"][number]) => {
+    const path = ratePath(group.key, value.key);
+    if (!next.missingInformation.some((field) => field.path === path)) next.missingInformation.push({ path, code: "OPTION_RATE_UNRESOLVED", question: `What is the price for ${value.label} in ${group.label}?` });
+  };
+  const pricingGroup = (label: string) => { const matches = knownGroups.filter((group) => normalized(group.label) === normalized(label) || normalized(group.key) === normalized(label)); if (matches.length !== 1) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_GROUP_UNRESOLVED"); return matches[0]!; };
+  const pricingValue = (group: (typeof knownGroups)[number], label: string) => { const matches = group.values.filter((value) => normalized(value.label) === normalized(label) || normalized(value.key) === normalized(label)); if (matches.length !== 1) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_VALUE_UNRESOLVED"); return matches[0]!; };
+  if (operation.op === "set_pricing_basis") {
+    if (!["one_dimensional_matrix", "two_dimensional_matrix", "unresolved"].includes(next.configuration.model)) throw new Error("PRODUCT_INTENT_SEMANTIC_PRICING_BASIS_UNSUPPORTED");
+    next.configuration = normalizeCanonicalProductPricingConfiguration({ ...next.configuration, unit: operation.basis });
+    removeMissing("pricing.unit", "pricing.matrix.unit");
+  } else if (operation.op === "set_scalar_price") {
+    if (!["unresolved", "scalar"].includes(next.configuration.model)) throw new Error("PRODUCT_INTENT_SEMANTIC_SCALAR_PRICE_UNSUPPORTED");
+    next.configuration = normalizeCanonicalProductPricingConfiguration({ model: "scalar", unit: operation.basis, priceCents: operation.priceCents });
+    removeMissing("pricing.unit", "pricing.matrix.unit");
+  } else if (operation.op === "set_option_rate" || operation.op === "set_matrix_rate") {
+    const group = pricingGroup(String(operation.optionGroup)); const value = pricingValue(group, String(operation.value)); const basis = operation.basis;
+    if (next.configuration.model === "unresolved") {
+      next.configuration = normalizeCanonicalProductPricingConfiguration({ model: "one_dimensional_matrix", unit: basis ?? next.configuration.unit ?? "unresolved", optionKey: group.key, cells: group.values.map((candidate) => ({ option: candidate.key, priceCents: candidate.key === value.key ? operation.priceCents : 0 })) });
+      for (const candidate of group.values) if (candidate.key !== value.key) addMissingRate(group, candidate);
+    }
+    else if (next.configuration.model === "one_dimensional_matrix") {
+      if (group.key !== next.configuration.optionKey) throw new Error("PRODUCT_INTENT_SEMANTIC_MATRIX_AXIS_UNRESOLVED");
+      next.configuration = normalizeCanonicalProductPricingConfiguration({ ...next.configuration, ...(basis ? { unit: basis } : {}), cells: next.configuration.cells.map((cell) => cell.option === value.key ? { ...cell, priceCents: operation.priceCents } : cell) });
+    } else if (next.configuration.model === "two_dimensional_matrix") {
+      const axis = group.key === next.configuration.rowOptionKey ? "row" : group.key === next.configuration.columnOptionKey ? "column" : null; if (!axis) throw new Error("PRODUCT_INTENT_SEMANTIC_MATRIX_AXIS_UNRESOLVED");
+      next.configuration = normalizeCanonicalProductPricingConfiguration({ ...next.configuration, ...(basis ? { unit: basis } : {}), cells: next.configuration.cells.map((cell) => cell[axis] === value.key ? { ...cell, priceCents: operation.priceCents } : cell) });
+    } else throw new Error("PRODUCT_INTENT_SEMANTIC_MATRIX_RATE_UNSUPPORTED");
+    removeMissing(ratePath(group.key, value.key));
+  } else if (operation.op === "set_option_price_impact") {
+    const group = pricingGroup(String(operation.optionGroup)); const value = pricingValue(group, String(operation.value));
+    next.percentageImpacts = next.percentageImpacts.filter((impact) => impact.optionGroupKey !== group.key || impact.optionValueKey !== value.key);
+    if (operation.replacesPercentageWhen) {
+      const prerequisiteGroup = pricingGroup(String((operation.replacesPercentageWhen as any).optionGroup)); const prerequisiteValue = pricingValue(prerequisiteGroup, String((operation.replacesPercentageWhen as any).value));
+      next.percentageImpacts.push({ optionGroupKey: group.key, optionValueKey: value.key, impact: { kind: "total_percentage_of_base", percent: Number(operation.percent), prerequisite: { optionGroupKey: prerequisiteGroup.key, optionValueKey: prerequisiteValue.key } } });
+    } else next.percentageImpacts.push({ optionGroupKey: group.key, optionValueKey: value.key, impact: { kind: "percentage_of_base", percent: Number(operation.percent) } });
+  }
+  return canonicalProductPricingProposalSchema.parse(next);
+}
+
 /** Classifies semantic operations and builds canonical-operation-shaped
- * fragments. Pricing, material, and deletion remain narrow compatibility
- * operations because Phases 5/6 intentionally did not migrate them. */
+ * fragments. Material and deletion remain narrow compatibility operations. */
 export function buildCanonicalProductIntentProposal(
   current: ProductDraftIntent,
   operations: readonly SemanticOperation[],
@@ -131,6 +191,7 @@ export function buildCanonicalProductIntentProposal(
   const mutations: Pbv2OptionConfigurationMutation[] = [];
   const unsupportedDetails: Array<{ code: "customer_specific_availability" | "grommet_quantity"; blocking: false }> = [];
   const compatibilityOperations: Array<{ index: number; op: z.infer<typeof compatibilityOperationNameSchema> }> = [];
+  let productPricing: CanonicalProductPricingProposal | undefined;
   const knownGroups = current.optionGroups.map((group) => ({ key: group.key, label: group.label, values: group.values.map((value) => ({ key: value.key, label: value.label })) }));
   const suppliedName = explicitProductName(request);
   const nameOperations = operations.filter((operation) => operation.op === "set_product_name");
@@ -227,6 +288,13 @@ export function buildCanonicalProductIntentProposal(
         mutations.push({ kind: "update_input", input: group.key, changes: { visibilityRules: [{ type: "equals", selectionKey: prerequisite.key, value: choice.key }] } });
         return;
       }
+      case "set_pricing_basis":
+      case "set_scalar_price":
+      case "set_option_rate":
+      case "set_matrix_rate":
+      case "set_option_price_impact":
+        productPricing = applyPricingProposalOperation(productPricing ?? pricingProposalFromIntent(current), operation, knownGroups);
+        return;
       case "record_unsupported_detail": {
         const code = operation.detail;
         if (code === "customer_specific_availability" || code === "grommet_quantity") unsupportedDetails.push({ code, blocking: false });
@@ -237,12 +305,21 @@ export function buildCanonicalProductIntentProposal(
     }
   });
 
+  // Square-foot pricing is direct business evidence that dimensions are
+  // required. Pricing now crosses the canonical proposal boundary, so this
+  // established inference must cross it too.
+  if (
+    productPricing?.configuration.unit === "per_square_foot"
+    && !operations.some((operation) => operation.op === "set_measurement_mode")
+  ) productConfiguration.measurementMode = "dimensions_required";
+
   const parsedConfiguration = Object.keys(productConfiguration).length ? normalizeCanonicalProductConfigurationChanges(productConfiguration) : undefined;
   const parsedMutations = mutations.length ? pbv2OptionConfigurationMutationsSchema.parse(mutations) : undefined;
   return canonicalProductIntentProposalSchema.parse({
     kind: "canonical_product_intent_proposal",
     ...(parsedConfiguration ? { productConfiguration: parsedConfiguration } : {}),
     ...(parsedMutations ? { pbv2OptionConfiguration: parsedMutations } : {}),
+    ...(productPricing ? { productPricing } : {}),
     unsupportedDetails,
     compatibilityOperations,
   });
@@ -303,6 +380,7 @@ export function canonicalProductIntentStateFromV1Draft(intentValue: unknown): Ca
   return canonicalProductIntentStateSchema.parse({
     kind: "canonical_product_intent_proposal_state",
     productConfiguration,
+    productPricing: pricingProposalFromIntent(intent),
     pbv2OptionConfigurationBatches: Array.from({ length: Math.ceil(mutations.length / 24) }, (_, index) => mutations.slice(index * 24, (index + 1) * 24)),
     unsupportedDetails: snapshotUnsupportedDetails(intent),
   });
@@ -357,15 +435,36 @@ function groupsFromTree(intent: ProductDraftIntent, tree: Record<string, any>): 
   });
 }
 
+function applyCanonicalPercentageImpacts(groups: ProductDraftIntent["optionGroups"], pricing: CanonicalProductPricingProposal): ProductDraftIntent["optionGroups"] {
+  const byValue = new Map(pricing.percentageImpacts.map((impact) => [`${impact.optionGroupKey}\u0000${impact.optionValueKey}`, impact]));
+  for (const impact of pricing.percentageImpacts) {
+    const group = groups.find((candidate) => candidate.key === impact.optionGroupKey); const value = group?.values.find((candidate) => candidate.key === impact.optionValueKey);
+    if (!value) throw new Error("PRODUCT_PRICING_PERCENTAGE_REFERENCE_UNRESOLVED");
+    const definition = impact.impact;
+    if (definition.kind === "total_percentage_of_base") {
+      const prerequisite = groups.find((candidate) => candidate.key === definition.prerequisite.optionGroupKey)?.values.find((candidate) => candidate.key === definition.prerequisite.optionValueKey);
+      if (!prerequisite) throw new Error("PRODUCT_PRICING_PERCENTAGE_PREREQUISITE_UNRESOLVED");
+    }
+  }
+  return groups.map((group) => ({ ...group, values: group.values.map((value) => {
+    const impact = byValue.get(`${group.key}\u0000${value.key}`);
+    if (!impact) { const { priceImpact: _priceImpact, totalPercentOfBaseWhenEnabled: _total, ...rest } = value; return rest; }
+    return impact.impact.kind === "percentage_of_base"
+      ? { ...value, priceImpact: impact.impact, totalPercentOfBaseWhenEnabled: undefined }
+      : { ...value, priceImpact: undefined, totalPercentOfBaseWhenEnabled: { percent: impact.impact.percent, prerequisite: impact.impact.prerequisite } };
+  }) }));
+}
+
 /** Authoritative-state projection for consumers that still require the V1
- * ProductDraftIntent revision contract. Pricing impacts are overlaid from the
- * compatibility source; Product/PBV2 shape always comes from canonical state. */
+ * ProductDraftIntent revision contract. Product, PBV2 shape, and pricing come
+ * from canonical state; material and removal compatibility remain unchanged. */
 export function projectCanonicalProductIntentStateToV1Draft(
   currentValue: unknown,
   stateValue: unknown,
 ): ProductDraftIntent {
   const current = productDraftIntentSchema.parse(currentValue);
   const state = canonicalProductIntentStateSchema.parse(stateValue);
+  const productPricing = state.productPricing ? canonicalProductPricingProposalSchema.parse(state.productPricing) : pricingProposalFromIntent(current);
   const configuration = normalizeCanonicalProductConfigurationChanges(state.productConfiguration);
   const category = configuration.category === undefined || configuration.category === null
     ? current.identity.category
@@ -384,7 +483,10 @@ export function projectCanonicalProductIntentStateToV1Draft(
   const unsupportedCodes = new Set(state.unsupportedDetails.map((detail) => detail.code));
   const fieldMetadata = Object.fromEntries(Object.entries(current.fieldMetadata).filter(([path]) => !path.startsWith(unsupportedMetadataPrefix)));
   for (const code of unsupportedCodes) fieldMetadata[`${unsupportedMetadataPrefix}${code}`] = { source: "explicit_user" };
-  let unresolvedFields = current.unresolvedFields.filter((field) => field.code !== "GROMMET_QUANTITY_UNRESOLVED");
+  let unresolvedFields = [
+    ...current.unresolvedFields.filter((field) => field.code !== "GROMMET_QUANTITY_UNRESOLVED" && field.path !== "pricing.unit" && field.path !== "pricing.matrix.unit" && !field.path.startsWith("pricing.optionRates.")),
+    ...productPricing.missingInformation,
+  ];
   if (unsupportedCodes.has("grommet_quantity")) unresolvedFields = [...unresolvedFields, {
     path: "optionGroups.grommets.quantity",
     code: "GROMMET_QUANTITY_UNRESOLVED",
@@ -404,7 +506,8 @@ export function projectCanonicalProductIntentStateToV1Draft(
       requiresProductionJob: configuration.requiresProductionJob ?? current.workflow.requiresProductionJob,
       requiresProofApproval: configuration.requiresProofApproval ?? current.workflow.requiresProofApproval,
     },
-    optionGroups: groupsFromTree(current, tree),
+    pricing: productPricing.configuration,
+    optionGroups: applyCanonicalPercentageImpacts(groupsFromTree(current, tree), productPricing),
     unresolvedFields,
     fieldMetadata,
   });
@@ -471,7 +574,20 @@ export function applyCanonicalProductIntentProposal(
       for (const value of group.values) if (!prior.values.some((candidate) => candidate.key === value.key)) metadata[`optionGroups.${group.key}.${value.key}`] = { source: "explicit_user" };
     }
   }
+  if (proposal.productPricing) {
+    const pricing = canonicalProductPricingProposalSchema.parse(proposal.productPricing);
+    operations.push({ op: "set_pricing", value: pricing.configuration });
+    const sourceGroups = proposal.pbv2OptionConfiguration
+      ? groupsFromTree(current, applyPbv2OptionConfigurationMutations(draftTree(current), proposal.pbv2OptionConfiguration).tree)
+      : current.optionGroups;
+    operations.push({ op: "replace_option_groups", value: applyCanonicalPercentageImpacts(sourceGroups, pricing) });
+    metadata["pricing"] = { source: "explicit_user" };
+  }
   let unresolved = current.unresolvedFields.filter((field) => !resolvedPaths.has(field.path));
+  if (proposal.productPricing) unresolved = [
+    ...unresolved.filter((field) => field.path !== "pricing.unit" && field.path !== "pricing.matrix.unit" && !field.path.startsWith("pricing.optionRates.")),
+    ...proposal.productPricing.missingInformation,
+  ];
   if (proposal.unsupportedDetails.some((detail) => detail.code === "grommet_quantity")) {
     const path = "optionGroups.grommets.quantity";
     if (!unresolved.some((field) => field.path === path)) unresolved = [...unresolved, { path, code: "GROMMET_QUANTITY_UNRESOLVED", question: "How should the requested counted grommet quantity be represented?" }];
@@ -509,15 +625,14 @@ The persisted \`canonicalProposalState\` is authoritative for migrated Product c
 
 | Status | Operations |
 |---|---|
-| Retained interpretation operations | set_product_name, set_product_description, set_category, set_measurement_mode, set_proof_requirement, add/rename option group, add option value/text input, set default, set availability, record unsupported detail |
-| Canonical proposal-backed | Product identity/configuration plus PBV2 groups, inputs, choices, defaults, ordering and simple visibility |
-| Compatibility only | set_material, set_pricing_basis, set_scalar_price, set_option_rate/set_matrix_rate, set_option_price_impact, remove option value/group |
+| Retained interpretation operations | set_product_name, set_product_description, set_category, set_measurement_mode, set_proof_requirement, add/rename option group, add option value/text input, set default, set availability, pricing basis/scalar/matrix/percentage impact, record unsupported detail |
+| Canonical proposal-backed | Product identity/configuration, PBV2 groups/inputs/choices/defaults/ordering/simple visibility, and Product pricing configuration/percentage impacts |
+| Compatibility only | set_material, remove option value/group |
 | Removed obsolete behavior | Migrated-field branches in the compatibility translator, grommet phrase repair, implicit Yes/No choices, grommet-placement cleanup and provider operation-order requirements |
 
 ## ProductDraftIntent classification
 
-- **Canonical proposal-backed compatibility projection:** identity/configuration, workflow, measurement and PBV2 option groups/inputs/choices/defaults/visibility. These are regenerated from \`canonicalProposalState\` on new writes.
-- **Pricing compatibility:** scalar price, basis, matrices/rates, quantity tiers and option percentage impacts.
+- **Canonical proposal-backed compatibility projection:** identity/configuration, workflow, measurement, PBV2 option groups/inputs/choices/defaults/visibility, and pricing. These are regenerated from \`canonicalProposalState\` on new writes.
 - **Material compatibility:** material interpretation and tenant reference resolution.
 - **Lifecycle compatibility:** inactive/unpublished draft state, creation transport and final Product/PBV2 projection.
 - **Historical compatibility:** V1 JSONB rows without \`canonicalProposalState\` load unchanged and are imported through one explicit V1 adapter on their next write.
@@ -529,6 +644,6 @@ Unsupported detail is stored in canonical proposal state. Customer-specific avai
 
 ## Remaining Product-domain migration work
 
-Pricing, materials, lifecycle operations, deletion, clone/batch behavior and customer-specific configuration remain outside this closeout. They are compatibility-only candidates for item 9; they were not redesigned here.
+Materials, lifecycle operations, deletion, clone/batch behavior and customer-specific configuration remain outside this closeout. Pricing is now shared canonical under item 9.
 `;
 }

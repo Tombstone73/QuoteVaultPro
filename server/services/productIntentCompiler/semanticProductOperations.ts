@@ -249,9 +249,8 @@ function compileCompatibilitySemanticProductOperations(
   return { contractVersion: 1, baseRevision, preserveUnchanged: true, operations };
 }
 
-/** Continuations now plan through the shared Phase 5/6 proposal contracts.
- * Pricing, material, and deletion are passed to the contained legacy adapter
- * until their own canonical application operations exist. */
+/** Continuations plan through shared Product, PBV2, and pricing proposal
+ * contracts. Material and deletion remain in the contained legacy adapter. */
 export function compileSemanticProductOperations(
   current: ProductDraftIntent,
   raw: unknown,

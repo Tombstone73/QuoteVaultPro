@@ -85,7 +85,7 @@ describe("thin canonical Product intent proposal", () => {
     expect(parent).toMatchObject({ type: "GROUP", key: "grommets_group", label: "Grommets" });
   });
 
-  test("keeps pricing and deletion compatibility-only while preserving unsupported detail beside supported work", () => {
+  test("routes pricing canonically while keeping deletion compatibility-only and unsupported detail", () => {
     const proposal = buildCanonicalProductIntentProposal(draft, [
       { op: "set_product_description", description: "Supported description" },
       { op: "set_scalar_price", priceCents: 900, basis: "per_piece" },
@@ -93,7 +93,13 @@ describe("thin canonical Product intent proposal", () => {
       { op: "record_unsupported_detail", detail: "customer_specific_availability" },
     ]);
     expect(proposal.productConfiguration).toEqual({ description: "Supported description" });
-    expect(proposal.compatibilityOperations).toEqual([{ index: 1, op: "set_scalar_price" }, { index: 2, op: "remove_option_group" }]);
+    expect(proposal.productPricing).toEqual({
+      operationReference: "products.update_pricing.v1",
+      configuration: { model: "scalar", unit: "per_piece", priceCents: 900 },
+      percentageImpacts: [],
+      missingInformation: [],
+    });
+    expect(proposal.compatibilityOperations).toEqual([{ index: 2, op: "remove_option_group" }]);
     expect(proposal.unsupportedDetails).toEqual([{ code: "customer_specific_availability", blocking: false }]);
   });
 
@@ -113,7 +119,7 @@ describe("thin canonical Product intent proposal", () => {
     expect(() => applyCanonicalProductIntentProposal(draft, proposal, 2)).toThrow("STALE");
   });
 
-  test("projects migrated Product/PBV2 fields from canonical state while preserving compatibility pricing and material", () => {
+  test("projects migrated Product/PBV2/pricing fields from canonical state while preserving compatibility material", () => {
     const source = productDraftIntentSchema.parse({
       ...draft,
       identity: { name: "Canonical Banner", description: "Canonical description", category: { state: "unresolved", label: "Roll Printing" } },
@@ -139,7 +145,7 @@ describe("thin canonical Product intent proposal", () => {
       identity: { name: "Canonical Banner", description: "Canonical description", category: { label: "Roll Printing" } },
       measurement: { mode: "dimensions_required" },
       workflow: { kind: "fulfillment_only", requiresProofApproval: true, requiresProductionJob: false },
-      pricing: staleCompatibility.pricing,
+      pricing: source.pricing,
       material: staleCompatibility.material,
     });
     expect(projected.optionGroups).toEqual(source.optionGroups);
@@ -156,9 +162,11 @@ describe("thin canonical Product intent proposal", () => {
       { op: "add_option_value", optionGroup: "Grommets", value: "None" },
       { op: "add_option_value", optionGroup: "Grommets", value: "Custom" },
       { op: "set_option_default", optionGroup: "Grommets", value: "None" },
+      { op: "set_option_rate", optionGroup: "Grommets", value: "None", priceCents: 0, basis: "per_piece" },
+      { op: "set_option_rate", optionGroup: "Grommets", value: "Custom", priceCents: 250, basis: "per_piece" },
       { op: "add_text_input", optionGroup: "Grommets", label: "Placement notes", multiline: true, required: false, whenOptionGroup: "Grommets", whenValue: "Custom" },
     ] } as const;
-    const request = "Create Conditional Banner in Roll Printing. Outdoor banner, dimensions required, proof required. Add required Grommets with None and Custom, default None; when Custom show a Placement notes textarea.";
+    const request = "Create Conditional Banner in Roll Printing. Outdoor banner, dimensions required, proof required. Add required Grommets with None at $0 and Custom at $2.50 per piece, default None; when Custom show a Placement notes textarea.";
     const continuation = applyProductDraftIntentPatch(draft, compileSemanticProductOperations(draft, operations, draft.revision, request, { categoryLabels: ["Roll Printing"] }));
     const initialCompleteIntent = productDraftIntentSchema.parse({ ...continuation, revision: 0, revisionMetadata: { parentRevision: null } });
     expect(canonicalProductIntentStateFromV1Draft(initialCompleteIntent)).toEqual(canonicalProductIntentStateFromV1Draft(continuation));

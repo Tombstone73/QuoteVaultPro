@@ -1,6 +1,7 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { aiProductPricingChangeSetRows, aiProductPricingChangeSets, pbv2TreeVersions, products } from "@shared/schema";
 import { db } from "../../db";
+import { canonicalProductPricingOperations } from "../products/canonicalProductPricingOperations";
 import {
   fingerprintProductPricingTarget,
   productPricingChangeSetMaxTargets,
@@ -95,29 +96,7 @@ export class DbProductPricingCanonicalService implements ProductPricingCanonical
     return product ? this.toTarget(product) : null;
   }
   async applyConfirmedPricing(input: { organizationId: string; productId: string; expectedFingerprint: string; values: ProductPricingValues; actorUserId: string; correlationId: string }) {
-    if (!Object.keys(input.values).length) throw new Error("A product pricing update requires at least one field.");
-    const current = await this.loadProduct({ organizationId: input.organizationId, productId: input.productId });
-    if (!current || current.fingerprint !== input.expectedFingerprint) throw new Error("The product changed after proposal confirmation.");
-    const nextBase = { ...current.pricing, ...input.values };
-    const now = new Date();
-    const result = await db.transaction(async (tx) => {
-      const [tree] = await tx.select().from(pbv2TreeVersions).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, current.activeTreeVersionId!))).limit(1);
-      if (!tree) throw new Error("The canonical PBV2 pricing tree is no longer available.");
-      const treeJson = JSON.parse(JSON.stringify(tree.treeJson ?? {}));
-      treeJson.meta ??= {}; treeJson.meta.pricingV2 ??= {}; treeJson.meta.pricingV2.base = nextBase;
-      let activeTreeVersionId = tree.id;
-      if (current.active) {
-        await tx.update(pbv2TreeVersions).set({ status: "DEPRECATED", updatedAt: now, updatedByUserId: input.actorUserId }).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, tree.id), eq(pbv2TreeVersions.status, "ACTIVE")));
-        const [replacement] = await tx.insert(pbv2TreeVersions).values({ organizationId: input.organizationId, productId: input.productId, status: "ACTIVE", schemaVersion: tree.schemaVersion, treeJson, publishedAt: now, createdByUserId: input.actorUserId, updatedByUserId: input.actorUserId }).returning();
-        if (!replacement) throw new Error("Failed to create the replacement active pricing tree.");
-        activeTreeVersionId = replacement.id;
-        await tx.update(products).set({ pbv2ActiveTreeVersionId: replacement.id, optionTreeJson: treeJson, updatedAt: now }).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId), eq(products.isActive, current.active)));
-      } else {
-        await tx.update(pbv2TreeVersions).set({ treeJson, updatedAt: now, updatedByUserId: input.actorUserId }).where(and(eq(pbv2TreeVersions.organizationId, input.organizationId), eq(pbv2TreeVersions.id, tree.id), eq(pbv2TreeVersions.status, "DRAFT")));
-      }
-      return { activeTreeVersionId };
-    });
-    return { fingerprint: fingerprintProductPricingTarget({ ...current, activeTreeVersionId: result.activeTreeVersionId, pricing: nextBase }), values: input.values, active: current.active, activeTreeVersionId: result.activeTreeVersionId };
+    return canonicalProductPricingOperations.applyScalarPricing(input);
   }
 }
 

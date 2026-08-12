@@ -24,15 +24,14 @@ The persisted `canonicalProposalState` is authoritative for migrated Product con
 
 | Status | Operations |
 |---|---|
-| Retained interpretation operations | set_product_name, set_product_description, set_category, set_measurement_mode, set_proof_requirement, add/rename option group, add option value/text input, set default, set availability, record unsupported detail |
-| Canonical proposal-backed | Product identity/configuration plus PBV2 groups, inputs, choices, defaults, ordering and simple visibility |
-| Compatibility only | set_material, set_pricing_basis, set_scalar_price, set_option_rate/set_matrix_rate, set_option_price_impact, remove option value/group |
+| Retained interpretation operations | set_product_name, set_product_description, set_category, set_measurement_mode, set_proof_requirement, add/rename option group, add option value/text input, set default, set availability, pricing basis/scalar/matrix/percentage impact, record unsupported detail |
+| Canonical proposal-backed | Product identity/configuration, PBV2 groups/inputs/choices/defaults/ordering/simple visibility, and Product pricing configuration/percentage impacts |
+| Compatibility only | set_material, remove option value/group |
 | Removed obsolete behavior | Migrated-field branches in the compatibility translator, grommet phrase repair, implicit Yes/No choices, grommet-placement cleanup and provider operation-order requirements |
 
 ## ProductDraftIntent classification
 
-- **Canonical proposal-backed compatibility projection:** identity/configuration, workflow, measurement and PBV2 option groups/inputs/choices/defaults/visibility. These are regenerated from `canonicalProposalState` on new writes.
-- **Pricing compatibility:** scalar price, basis, matrices/rates, quantity tiers and option percentage impacts.
+- **Canonical proposal-backed compatibility projection:** identity/configuration, workflow, measurement, PBV2 option groups/inputs/choices/defaults/visibility, and pricing. These are regenerated from `canonicalProposalState` on new writes.
 - **Material compatibility:** material interpretation and tenant reference resolution.
 - **Lifecycle compatibility:** inactive/unpublished draft state, creation transport and final Product/PBV2 projection.
 - **Historical compatibility:** V1 JSONB rows without `canonicalProposalState` load unchanged and are imported through one explicit V1 adapter on their next write.
@@ -44,4 +43,4 @@ Unsupported detail is stored in canonical proposal state. Customer-specific avai
 
 ## Remaining Product-domain migration work
 
-Pricing, materials, lifecycle operations, deletion, clone/batch behavior and customer-specific configuration remain outside this closeout. They are compatibility-only candidates for item 9; they were not redesigned here.
+Materials, lifecycle operations, deletion, clone/batch behavior and customer-specific configuration remain outside this closeout. Pricing is now shared canonical under item 9.

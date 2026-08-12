@@ -53,6 +53,12 @@ const commandCapabilityOverrides: Readonly<Record<string, string>> = {
   "products.create_configurable_draft": "assistant.products.create_inactive_draft",
   "products.create_from_canonical_intent": "assistant.products.create_inactive_draft",
 };
+const sharedPricingCommands = new Set([
+  "products.adjust_pricing",
+  "products.rollback_pricing_change_set",
+  "products.replace_inactive_matrix",
+  "products.replace_inactive_quantity_tiers",
+]);
 
 function domainForCommand(command: string): OperatorDomain {
   if (command.startsWith("products.")) return command.includes("pricing") || command.includes("matrix") || command.includes("quantity_tiers") ? "pricing" : "products";
@@ -105,11 +111,11 @@ const commandCapabilities: readonly CanonicalCapabilityDescriptor[] = assistantP
     outputSchemaReference: "server/services/assistant/execution/*Command.ts", requiredGrant,
     allowedOrganizationRoles: command.startsWith("products.") ? adminRoles : operationalRoles,
     tenantScope: "organization", confirmation: "go_required", idempotency: "server_generated_with_request_hash", risk: "high",
-    lifecycleValidationReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations" : "server/services/assistant/execution/*ExecutionCommand.ts", handlerReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations; CanonicalPbv2OptionConfigurationOperations" : "AssistantCommandDefinition.adapter",
-    auditReference: "ExecutionPlanningService", uiSurfaceReference: command === "products.update_existing_product" ? "Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft" : "unknown", aiExposure: "existing",
-    migrationStatus: command === "products.update_existing_product" ? "shared_canonical" : "wrapped_existing",
-    canonicalOperationReference: command === "products.update_existing_product" ? "products.update_configuration.v1; products.update_option_configuration.v1" : "not_applicable",
-    parityStatus: command === "products.update_existing_product" ? "shared_canonical" : "ai_specific",
+    lifecycleValidationReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations" : sharedPricingCommands.has(command) ? "CanonicalProductPricingOperations" : "server/services/assistant/execution/*ExecutionCommand.ts", handlerReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations; CanonicalPbv2OptionConfigurationOperations" : sharedPricingCommands.has(command) ? "CanonicalProductPricingOperations with compatibility command adapter" : "AssistantCommandDefinition.adapter",
+    auditReference: "ExecutionPlanningService", uiSurfaceReference: command === "products.update_existing_product" ? "Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft" : sharedPricingCommands.has(command) ? "Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft" : "unknown", aiExposure: "existing",
+    migrationStatus: command === "products.update_existing_product" || sharedPricingCommands.has(command) ? "shared_canonical" : "wrapped_existing",
+    canonicalOperationReference: command === "products.update_existing_product" ? "products.update_configuration.v1; products.update_option_configuration.v1" : command === "products.replace_inactive_matrix" ? "products.replace_pricing_matrix.v1" : command === "products.replace_inactive_quantity_tiers" ? "products.replace_quantity_tiers.v1" : sharedPricingCommands.has(command) ? "products.update_pricing.v1" : "not_applicable",
+    parityStatus: command === "products.update_existing_product" || sharedPricingCommands.has(command) ? "shared_canonical" : "ai_specific",
     aiEligibility: "eligible", hardDenyReason: null, skillId: skillForDomain(domain),
   };
 });
