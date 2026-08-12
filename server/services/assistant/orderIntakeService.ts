@@ -14,6 +14,7 @@ import {
 } from "@shared/schema";
 import { db } from "../../db";
 import { storage } from "../../storage";
+import { canonicalOrderOperations } from "../orders/canonicalOrderOperations";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings } from "../../quoteOrderPricing";
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
 import { priceLineItem } from "../pricing/PricingService";
@@ -377,9 +378,9 @@ export class OrderIntakeService {
     if (!validation.valid) throw new AssistantOrderIntakeError(validation.code, validation.summary);
     const intake = session.intakeJson as Intake;
     const order = intake.kind === "update"
-      ? await storage.updateOrder(input.organizationId, intake.orderId, { dueDate: intake.dueDate } as any)
+      ? await canonicalOrderOperations.updateEditableHeader({ organizationId: input.organizationId, actorUserId: input.actorUserId, orderId: intake.orderId, changes: { dueDate: intake.dueDate } as any, expectedUpdatedAt: (validation as any).orderUpdatedAt ?? undefined, auditDescription: `Assistant updated due date from confirmed intake ${session.id}.` })
       : intake.kind === "conversion"
-      ? await storage.convertQuoteToOrder(input.organizationId, intake.quoteId, input.actorUserId, { ...(intake.dueDate ? { dueDate: new Date(intake.dueDate) } : {}), productionIntakePolicy: "deferred" } as any)
+      ? await canonicalOrderOperations.convertQuoteToOrder({ organizationId: input.organizationId, actorUserId: input.actorUserId, quoteId: intake.quoteId, options: { ...(intake.dueDate ? { dueDate: new Date(intake.dueDate) } : {}), productionIntakePolicy: "deferred" } as any })
       : await this.createDirect(input.organizationId, input.actorUserId, intake, validation.proposal);
     await db.transaction(async (tx) => {
       await tx.update(assistantOrderIntakeSessions).set({ status: "created", orderId: order.id, updatedAt: new Date() }).where(eq(assistantOrderIntakeSessions.id, session.id));
@@ -404,7 +405,7 @@ export class OrderIntakeService {
     ]);
     if (!org || (intake.customerId && !customer) || (intake.contactId && !contact) || (!customer && !contact)) throw new AssistantOrderIntakeError("ORDER_IDENTITY_REQUIRED", "The selected customer or contact is unavailable.");
     const totals = await calculateQuoteOrderTotals(priced.map(({ product, line, result }) => ({ productId: product.id, linePrice: result.lineTotalCents / 100, isTaxable: product.isTaxable ?? true })), getOrganizationTaxSettings(org), customer, null, null);
-    return storage.createOrder(organizationId, { customerId: intake.customerId, contactId: intake.contactId, status: "new", dueDate: intake.dueDate, createdByUserId: actorUserId, taxRate: totals.taxRate, taxAmount: totals.taxAmount, taxableSubtotal: totals.taxableSubtotal, productionIntakePolicy: "deferred", lineItems: priced.map(({ product, line, result, index, size }) => ({ productId: product.id, productType: product.productTypeId ?? "wide_roll", description: product.name, width: size.widthIn, height: size.heightIn, quantity: line.quantity, unitPrice: result.lineTotalCents / 100 / line.quantity, totalPrice: result.lineTotalCents / 100, selectedOptions: result.pbv2SnapshotJson.selectedOptions ?? [], optionSelectionsJson: line.pbv2Selections, pbv2TreeVersionId: result.pbv2TreeVersionId, pbv2SnapshotJson: result.pbv2SnapshotJson, pricedAt: new Date(), sortOrder: index, taxAmount: totals.lineItemsWithTax[index]?.taxAmount ?? 0, isTaxableSnapshot: Boolean(product.isTaxable), requiresPrepress: Boolean((product as any).requiresPrepress), requiresProofApproval: Boolean((product as any).requiresProofApproval) })) } as any);
+    return canonicalOrderOperations.create({ organizationId, actorUserId, payload: { customerId: intake.customerId, contactId: intake.contactId, status: "new", dueDate: intake.dueDate, createdByUserId: actorUserId, taxRate: totals.taxRate, taxAmount: totals.taxAmount, taxableSubtotal: totals.taxableSubtotal, productionIntakePolicy: "deferred", lineItems: priced.map(({ product, line, result, index, size }) => ({ productId: product.id, productType: product.productTypeId ?? "wide_roll", description: product.name, width: size.widthIn, height: size.heightIn, quantity: line.quantity, unitPrice: result.lineTotalCents / 100 / line.quantity, totalPrice: result.lineTotalCents / 100, selectedOptions: result.pbv2SnapshotJson.selectedOptions ?? [], optionSelectionsJson: line.pbv2Selections, pbv2TreeVersionId: result.pbv2TreeVersionId, pbv2SnapshotJson: result.pbv2SnapshotJson, pricedAt: new Date(), sortOrder: index, taxAmount: totals.lineItemsWithTax[index]?.taxAmount ?? 0, isTaxableSnapshot: Boolean(product.isTaxable), requiresPrepress: Boolean((product as any).requiresPrepress), requiresProofApproval: Boolean((product as any).requiresProofApproval) })) } as any });
   }
 
   private async priceDirectLines(organizationId: string, lines: DirectLine[]) {

@@ -94,6 +94,7 @@ import { generateQuotePdfBytes, QuotePdfEligibilityError } from "../lib/quotePdf
 import { skipsRequiredPrintOptionValidation } from "@shared/productPricingValidation";
 import { parentBundlePricingUpdate } from "../services/lineItemBundles";
 import { assertValidParentLink } from "../services/lineItemParentLinking";
+import { canonicalQuoteOperations } from "../services/quotes/canonicalQuoteOperations";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -788,7 +789,14 @@ export function registerQuoteRoutes(
         }
       }
 
-      await validateQuoteIdentity(organizationId, finalCustomerId ?? null, contactId ?? null);
+      const canonicalIdentity = await canonicalQuoteOperations.normalizeOwnerIdentity({
+        organizationId,
+        customerId: finalCustomerId ?? null,
+        contactId: contactId ?? null,
+      });
+      finalCustomerId = canonicalIdentity.customerId;
+      const finalContactId = canonicalIdentity.contactId;
+      await validateQuoteIdentity(organizationId, finalCustomerId ?? null, finalContactId);
 
       // Load organization for tax settings
       const [org] = await db
@@ -918,7 +926,7 @@ export function registerQuoteRoutes(
           snapshotData = await snapshotCustomerData(
             organizationId,
             finalCustomerId,
-            contactId || null,
+            finalContactId,
             quotePayload.shippingMethod || null,
             quotePayload.shippingMode || null
           );
@@ -928,11 +936,11 @@ export function registerQuoteRoutes(
         }
       }
 
-      const quote = await storage.createQuote(organizationId, {
+      const quote = await canonicalQuoteOperations.createDraft({ organizationId, actorUserId: userId, payload: {
         ...quotePayload,
         userId,
         customerId: finalCustomerId,
-        contactId: contactId || undefined,
+        contactId: finalContactId || undefined,
         customerName: customerName || undefined,
         source: source || 'internal',
         visibleInCustomerPortal,
@@ -950,7 +958,7 @@ export function registerQuoteRoutes(
         carrier: quotePayload.carrier || undefined,
         carrierAccountNumber: quotePayload.carrierAccountNumber || undefined,
         shippingInstructions: quotePayload.shippingInstructions || undefined,
-      });
+      } });
 
       if (proofApprovalManualOverrideIndexes.length > 0 && Array.isArray((quote as any).lineItems)) {
         const userName = getAuditUserName(req.user);
@@ -1632,7 +1640,12 @@ export function registerQuoteRoutes(
         console.log(`[PATCH /api/quotes/${id}] label value:`, updateData.label);
       }
 
-      let updatedQuote = await storage.updateQuote(organizationId, id, updateData);
+      let updatedQuote = await canonicalQuoteOperations.updateEditableHeader({
+        organizationId,
+        actorUserId: userId,
+        quoteId: id,
+        changes: updateData,
+      });
 
       if (
         visibleInCustomerPortal !== undefined &&

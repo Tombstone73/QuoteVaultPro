@@ -11,6 +11,7 @@ import {
 } from "@shared/schema";
 import { db } from "../../db";
 import { storage } from "../../storage";
+import { canonicalQuoteOperations } from "../quotes/canonicalQuoteOperations";
 import { calculateQuoteOrderTotals, getOrganizationTaxSettings } from "../../quoteOrderPricing";
 import { normalizeQuoteCreateLineItem } from "../../lib/quoteCreateLineItemNormalizer";
 import { dimensionsForProductPricing } from "@shared/productMeasurementMode";
@@ -191,7 +192,7 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
     if (proposal.fingerprint !== input.proposalFingerprint || session.proposalFingerprint !== input.proposalFingerprint) throw new QuoteDraftIntakeError("PROPOSAL_STALE", "The draft quote inputs or pricing changed. Review a new preview before confirming.");
     const intake = session.intakeJson as Intake;
     const lineItems = proposal.priced.map(({ line, product, result, widthIn, heightIn }, index) => normalizeQuoteCreateLineItem({ productId: line.productId, productName: line.productName, productType: product.productTypeId ?? "wide_roll", width: product.measurementMode === "quantity_only" ? 1 : widthIn, height: product.measurementMode === "quantity_only" ? 1 : heightIn, quantity: line.quantity, optionSelectionsJson: { selected: line.optionSelections }, selectedOptions: result.pbv2SnapshotJson.selectedOptions ?? [], linePrice: result.lineTotalCents / 100, priceBreakdown: { basePrice: result.breakdown.baseCents / 100, optionsPrice: result.breakdown.optionsCents / 100, total: result.lineTotalCents / 100, formula: "" }, pbv2TreeVersionId: result.pbv2TreeVersionId, pbv2SnapshotJson: result.pbv2SnapshotJson, pricedAt: new Date(), displayOrder: index }, index, proposal.totals.lineItemsWithTax[index] ?? { taxAmount: 0, isTaxableSnapshot: Boolean(product.isTaxable) }).lineItem);
-    const quote = await storage.createQuote(input.organizationId, { userId: input.actorUserId, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, source: "internal", status: "draft", requestedDueDate: intake.requestedDueDate, lineItems: lineItems as any, taxRate: proposal.totals.taxRate, taxAmount: proposal.totals.taxAmount, taxableSubtotal: proposal.totals.taxableSubtotal });
+    const quote = await canonicalQuoteOperations.createDraft({ organizationId: input.organizationId, actorUserId: input.actorUserId, payload: { userId: input.actorUserId, customerId: intake.customerId, contactId: intake.contactId, customerName: intake.customerName, source: "internal", status: "draft", requestedDueDate: intake.requestedDueDate, lineItems: lineItems as any, taxRate: proposal.totals.taxRate, taxAmount: proposal.totals.taxAmount, taxableSubtotal: proposal.totals.taxableSubtotal }, auditDescription: `Assistant created draft quote from confirmed intake ${session.id}.` });
     await db.transaction(async (tx) => {
       await tx.update(assistantQuoteIntakeSessions).set({ status: "created", quoteId: quote.id, updatedAt: new Date() }).where(and(eq(assistantQuoteIntakeSessions.id, session.id), eq(assistantQuoteIntakeSessions.organizationId, input.organizationId)));
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "quote", entityId: quote.id, actionType: "assistant_quote_draft_created", description: `Assistant created draft quote ${quote.displayNumber ?? quote.quoteNumber} from confirmed intake ${session.id}.` });
@@ -205,7 +206,7 @@ export class QuoteDraftIntakeService implements QuoteDraftCreateCanonicalService
     const validation = await this.revalidateUpdateProposal({ organizationId: input.organizationId, quoteId: input.quoteId, quoteIntakeSessionId: input.quoteIntakeSessionId, expectedProposalFingerprint: input.proposalFingerprint, expectedQuoteFingerprint: input.expectedQuoteFingerprint });
     if (!validation.valid) throw new QuoteDraftIntakeError(validation.code, validation.summary);
     const dueDate = (session.intakeJson as Intake).requestedDueDate;
-    const quote = await storage.updateQuote(input.organizationId, input.quoteId, { requestedDueDate: dueDate });
+    const quote = await canonicalQuoteOperations.updateEditableHeader({ organizationId: input.organizationId, actorUserId: input.actorUserId, quoteId: input.quoteId, changes: { requestedDueDate: dueDate }, expectedUpdatedAt: (validation as any).quoteUpdatedAt ?? undefined, requireDraft: true, auditDescription: `Assistant updated requested due date from confirmed intake ${session.id}.` });
     await db.transaction(async (tx) => {
       await tx.update(assistantQuoteIntakeSessions).set({ status: "created", updatedAt: new Date() }).where(eq(assistantQuoteIntakeSessions.id, session.id));
       await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType: "quote", entityId: quote.id, actionType: "assistant_quote_draft_updated", description: `Assistant updated requested due date on draft quote ${quote.displayNumber ?? quote.quoteNumber} from confirmed intake ${session.id}.` });

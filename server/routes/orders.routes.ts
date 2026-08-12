@@ -161,6 +161,7 @@ import { generateOrderPdfBytes, orderPdfFilename, OrderPdfEligibilityError } fro
 import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineItemCreationPolicy";
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
+import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
 
 // Helper function to get userId from request user object
 function getUserId(user: any): string | undefined {
@@ -2396,7 +2397,7 @@ export async function registerOrderRoutes(
             }
 
             // Create order with line items and tax totals
-            const order = await storage.createOrder(organizationId, {
+            const order = await canonicalOrderOperations.create({ organizationId, actorUserId: userId, payload: {
                 ...orderFields,
                 dueDate: sanitizeDateField(orderFields.dueDate),
                 promisedDate: sanitizeDateField(orderFields.promisedDate),
@@ -2416,7 +2417,7 @@ export async function registerOrderRoutes(
                 carrier: orderFields.carrier || undefined,
                 carrierAccountNumber: orderFields.carrierAccountNumber || undefined,
                 shippingInstructions: orderFields.shippingInstructions || undefined,
-            });
+            } });
 
             // Create audit log
             await storage.createAuditLog(organizationId, {
@@ -2779,9 +2780,15 @@ export async function registerOrderRoutes(
             }
 
             // Update order - now returns full OrderWithRelations
-            const order = await storage.updateOrder(organizationId, req.params.id, {
+            const order = await canonicalOrderOperations.updateEditableHeader({
+                organizationId,
+                actorUserId: userId,
+                orderId: req.params.id,
+                allowNonNew: true, // route already enforces its terminal-edit policy
+                changes: {
                 ...updateDataWithCustomer,
                 ...snapshotData,
+                },
             });
 
             // If per-order billing policy changed, recompute readiness and return refreshed order.
@@ -5663,13 +5670,13 @@ export async function registerOrderRoutes(
             if (!userId) return res.status(401).json({ success: false, message: "User not authenticated" });
             const { poNumber, dueDate, promisedDate, priority, notesInternal } = req.body || {};
             const convertQuoteForRequest = async () => {
-                return await storage.convertQuoteToOrder(organizationId, req.params.id, userId, {
+                return await canonicalOrderOperations.convertQuoteToOrder({ organizationId, actorUserId: userId, quoteId: req.params.id, options: {
                     poNumber: poNumber ? String(poNumber) : undefined,
                     dueDate: dueDate ? new Date(dueDate) : undefined,
                     promisedDate: promisedDate ? new Date(promisedDate) : undefined,
                     priority: priority || "normal",
                     notesInternal: notesInternal ?? undefined,
-                });
+                } });
             };
             const key = extractOrderCreationIdempotencyKey(req);
             const fingerprint = buildOrderCreationFingerprint({
@@ -5802,13 +5809,13 @@ export async function registerOrderRoutes(
             }
 
             const convertQuoteForRequest = async () => {
-                const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
+                const order = await canonicalOrderOperations.convertQuoteToOrder({ organizationId, actorUserId: userId, quoteId, options: {
                     poNumber: poNumber ? String(poNumber) : undefined,
                     dueDate: dueDate || undefined,
                     promisedDate: promisedDate || undefined,
                     priority,
                     notesInternal,
-                });
+                } });
 
                 await storage.createAuditLog(organizationId, {
                     userId,
@@ -5961,12 +5968,12 @@ export async function registerOrderRoutes(
             if (!existingState || existingState.status !== 'customer_approved') {
                 await storage.updateQuoteWorkflowState(quoteId, { status: 'customer_approved', approvedByCustomerUserId: userId, customerNotes: req.body?.customerNotes || null });
             }
-            const order = await storage.convertQuoteToOrder(organizationId, quoteId, userId, {
+            const order = await canonicalOrderOperations.convertQuoteToOrder({ organizationId, actorUserId: userId, quoteId, options: {
                 priority: req.body?.priority,
                 dueDate: req.body?.dueDate || undefined,
                 promisedDate: req.body?.promisedDate || undefined,
                 notesInternal: req.body?.internalNotes,
-            });
+            } });
             await storage.createOrderAuditLog({
                 orderId: order.id,
                 userId,
