@@ -1038,36 +1038,54 @@ export async function registerOrderRoutes(
                         actorUserId: args.userId,
                     });
                 }
-                const [created] = await tx.insert(orderAttachments).values({
-                    orderId: args.orderId,
-                    orderLineItemId: args.orderLineItemId ?? null,
-                    quoteId: args.quoteId || null,
-                    fileRecordId: stored.fileRecord.id,
-                    uploadedByUserId: args.userId,
-                    uploadedByName: args.userName,
-                    description: args.description || null,
-                    fileName: stored.storedObject.originalFilename,
-                    fileUrl: null,
-                    fileSize: stored.storedObject.sizeBytes,
-                    mimeType: stored.storedObject.mimeType,
-                    originalFilename: stored.storedObject.originalFilename,
-                    storedFilename: stored.storedObject.storedFilename,
-                    relativePath: null,
-                    storageProvider: null,
-                    extension: stored.storedObject.extension,
-                    checksum: stored.storedObject.checksum,
-                    sizeBytes: stored.storedObject.sizeBytes,
-                    thumbStatus: isPdfSource ? 'thumb_pending' : 'uploaded',
-                    role: args.role ?? 'other',
-                    side: args.side ?? 'na',
-                    isPrimary: args.isPrimary ?? false,
-                    productionQuantity: args.orderLineItemId && (args.role === "artwork" || args.role === "output")
-                        ? args.productionQuantity ?? defaultNewProductionArtworkAllocation(args.role)
-                        : null,
-                    productionGroupId: args.orderLineItemId && (args.role === "artwork" || args.role === "output")
-                        ? args.productionGroupId ?? null
-                        : null,
-                }).returning();
+                let created: typeof orderAttachments.$inferSelect | undefined;
+                try {
+                    [created] = await tx.insert(orderAttachments).values({
+                        orderId: args.orderId,
+                        orderLineItemId: args.orderLineItemId ?? null,
+                        quoteId: args.quoteId || null,
+                        fileRecordId: stored.fileRecord.id,
+                        uploadedByUserId: args.userId,
+                        uploadedByName: args.userName,
+                        description: args.description || null,
+                        fileName: stored.storedObject.originalFilename,
+                        fileUrl: null,
+                        fileSize: stored.storedObject.sizeBytes,
+                        mimeType: stored.storedObject.mimeType,
+                        originalFilename: stored.storedObject.originalFilename,
+                        storedFilename: stored.storedObject.storedFilename,
+                        relativePath: null,
+                        storageProvider: null,
+                        extension: stored.storedObject.extension,
+                        checksum: stored.storedObject.checksum,
+                        sizeBytes: stored.storedObject.sizeBytes,
+                        thumbStatus: isPdfSource ? 'thumb_pending' : 'uploaded',
+                        role: args.role ?? 'other',
+                        side: args.side ?? 'na',
+                        isPrimary: args.isPrimary ?? false,
+                        productionQuantity: args.orderLineItemId && (args.role === "artwork" || args.role === "output")
+                            ? args.productionQuantity ?? defaultNewProductionArtworkAllocation(args.role)
+                            : null,
+                        productionGroupId: args.orderLineItemId && (args.role === "artwork" || args.role === "output")
+                            ? args.productionGroupId ?? null
+                            : null,
+                    }).returning();
+                } catch (error: any) {
+                    console.error("[OrderAttachments:COMPATIBILITY_PROJECTION] Failed", {
+                        stage: "compatibility_projection",
+                        organizationId: args.organizationId,
+                        orderId: args.orderId,
+                        lineItemId: args.orderLineItemId ?? null,
+                        fileRecordId: stored.fileRecord.id,
+                        actorUserId: args.userId,
+                        role: args.role ?? "other",
+                        side: args.side ?? "na",
+                        error: error?.message ?? String(error),
+                        code: error?.code ?? null,
+                        stack: error?.stack ?? null,
+                    });
+                    throw error;
+                }
 
                 if (!created) {
                     throw new Error("Failed to create order attachment link");
