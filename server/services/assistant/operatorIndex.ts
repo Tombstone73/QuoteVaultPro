@@ -1,7 +1,7 @@
 /**
  * Phase 3 Operator Index. It is deliberately concise, code-versioned
- * selection metadata. It does not load knowledge into provider prompts and it
- * never grants a capability or changes actor authority.
+ * selection metadata. Phase 4 resolves only the selected, manifest-approved
+ * knowledge into provider context; it never grants a capability or authority.
  */
 export const operatorDomainValues = [
   "products", "pricing", "quotes", "orders", "proofing", "prepress", "production",
@@ -48,5 +48,5 @@ export function selectOperatorDomains(text: string): readonly OperatorIndexEntry
 
 export function renderOperatorIndexMarkdown(): string {
   const rows = operatorIndex.map((entry) => `| ${entry.domain} | ${entry.skillId}@${entry.skillVersion} | ${entry.relatedDomains.join(", ")} | ${entry.capabilityCategories.join(", ")} | ${entry.purpose} |`).join("\n");
-  return `# AI Operator Index\n\n> Generated from \`server/services/assistant/operatorIndex.ts\`. It selects domain metadata only; Phase 3 does not inject skill content into provider prompts.\n\n| Domain | Skill | Related domains | Capability categories | Purpose |\n|---|---|---|---|---|\n${rows}\n`;
+  return `# AI Operator Index\n\n> Generated from \`server/services/assistant/operatorIndex.ts\`. It selects domain metadata for bounded, manifest-approved operating knowledge. It never grants capabilities or authority.\n\n| Domain | Skill | Related domains | Capability categories | Purpose |\n|---|---|---|---|---|\n${rows}\n`;
 }

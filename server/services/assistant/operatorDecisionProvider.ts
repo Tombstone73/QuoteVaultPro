@@ -5,6 +5,7 @@ import { resolveAiOperatorProviderTimeoutMs } from "../ai/providers/configuredPr
 import { resolveAiProviderCapabilities } from "../ai/providers/providerCapabilities";
 import { ASSISTANT_MESSAGE_MAX_CONTENT_CHARS } from "@shared/assistantContracts";
 import { parseAssistantOperatorDecisionText, type AssistantOperatorDecisionProvider, type ProviderDecisionShape } from "./operatorRuntime";
+import { renderOperatorSkillsForProvider, resolveOperatorSkills, selectOperatorSkills } from "./operatorSkillLoader";
 
 export interface AssistantOperatorProviderResolver {
   resolveProvider(input: { orgId: string; feature: "assistant" }): Promise<ResolvedAiProvider>;
@@ -30,6 +31,23 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
   async decide(input: Parameters<AssistantOperatorDecisionProvider["decide"]>[0]): Promise<unknown> {
     const contextTrace = trustedContextTrace(input);
     console.info("[AI_OPERATOR_TRACE]", { stage: "authoritative_context_available", taskId: input.taskId, ...contextTrace });
+    const skillSelection = selectOperatorSkills({
+      request: input.goal,
+      activeDomain: input.task?.domain,
+      trustedEntityTypes: input.task?.entityReferences.map((reference) => reference.type),
+    });
+    const loadedSkills = await resolveOperatorSkills(skillSelection);
+    console.info("[AI_OPERATOR_TRACE]", {
+      stage: "operator_skill_context_resolved", taskId: input.taskId,
+      selectedDomains: loadedSkills.diagnostics.selectedDomains,
+      selectedSkillIds: loadedSkills.diagnostics.selectedSkillIds,
+      skillVersions: loadedSkills.diagnostics.skills.map((skill) => `${skill.skillId}@${skill.version}`),
+      sourceVersions: loadedSkills.diagnostics.skills.flatMap((skill) => skill.sourceVersions),
+      contentChars: loadedSkills.diagnostics.skills.map((skill) => skill.contentChars),
+      skippedSkillCount: loadedSkills.diagnostics.skipped.length,
+      fallback: loadedSkills.diagnostics.fallback,
+      selectionReasons: skillSelection.reasons,
+    });
     const config = await this.resolver.resolveProvider({ orgId: this.organizationId, feature: "assistant" });
     if (!config.enabled || !config.endpoint || !config.apiKey || !config.model || (config.provider !== "openai" && config.provider !== "openai_compatible")) {
       throw new AiProviderUnavailableError("AI Operator is unavailable.");
@@ -45,7 +63,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       '{"kind":"complete","response":"concise answer grounded in observations","workingSummary":"safe short summary"}',
       '{"kind":"fail","response":"safe explanation","recoverySummary":"safe short summary"}.',
       capabilities.responsesApi
-        ? "When a PrintersHero function is useful, call its provided native function instead of returning call_tools text. Public web search is a read-only provider capability: use it only when useful, without asking for GO. A request that asks to research, look up, compare, or find information about a named public product, material, supplier item, or concept and includes requested fields such as thickness, durability, or uses is actionable public research; use manufacturer or other authoritative public sources where possible and do not ask a clarification unless the subject itself is unidentified. For follow-ups that add requested research fields, keep the subject from safeWorkingSummary or activeTask context and continue the same public research. Never put private customer, contact, invoice, token, or internal-note data in a public search. Do not invent or present model-generated domains as verified sources: provider-returned source links are appended separately when available. If the user requests sources but research has no provider source metadata, say that verified links were unavailable."
+        ? "When a PrintersHero function is useful, call its provided native function instead of returning call_tools text. Public web search is a read-only provider capability: use it only when useful, without asking for GO. Never put private customer, contact, invoice, token, or internal-note data in a public search. Do not invent or present model-generated domains as verified sources: provider-returned source links are appended separately when available. If the user requests sources but research has no provider source metadata, say that verified links were unavailable."
         : "Use only registered tool names and documented arguments. You may use multiple sequential decisions after observations arrive.",
       "Never request or emit IDs not returned by a tool or included in trusted active-task references, organization/user information, permissions, SQL, persistence paths, fingerprints, confirmation tokens, or GO execution. The sole URL exception is web.open, which may use a public URL returned by web.search or supplied by the user; never use URLs to access PrintersHero or private infrastructure.",
       "A direct complete response is a first-class outcome: use trusted observations from this turn or active task to format, reorganize, compare, summarize, explain, shorten, expand, sort, or select already-established results without a tool call. Read only when the user asks for new or freshness-sensitive facts.",
@@ -68,6 +86,7 @@ export class ConfiguredAssistantOperatorDecisionProvider implements AssistantOpe
       "For an explicit existing-product edit, 'do not apply/change it yet' means prepare the protected products.apply_existing_operations preview now; it does not mean skip that capability. Only the separate GO confirmation executes the persisted change.",
       "For a read-only question about the active product draft, answer directly from activeSemanticProductDraft when it contains the requested current business facts; no tool is required. If a conditional request says not to change anything unless current state is wrong and the authoritative context shows it is already correct, complete with that no-op outcome and do not request a mutation.",
       "Protected mutations are represented only by semantic planning tools and must never execute a mutation directly.",
+      renderOperatorSkillsForProvider(loadedSkills.skills),
       input.finalSynthesis
         ? "Investigation capacity is exhausted. Produce one truthful final synthesis using only supplied observations and active-task context. You have no tools in this response: do not return call_tools or continue, do not claim unobserved research, and clearly state evidence gaps."
         : "",

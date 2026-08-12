@@ -1,6 +1,6 @@
 # AI Operator Index
 
-> Generated from `server/services/assistant/operatorIndex.ts`. It selects domain metadata only; Phase 3 does not inject skill content into provider prompts.
+> Generated from `server/services/assistant/operatorIndex.ts`. It selects domain metadata for bounded, manifest-approved operating knowledge. It never grants capabilities or authority.
 
 | Domain | Skill | Related domains | Capability categories | Purpose |
 |---|---|---|---|---|

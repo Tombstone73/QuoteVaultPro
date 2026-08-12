@@ -84,9 +84,8 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     const result = await provider.decide({ ...base, step: 2, observations: [{ step: 1, toolName: "quotes.search", status: "succeeded", result: { status: "succeeded", data: { quotes: [] } } as any }] });
     expect(result).toEqual({ kind: "complete", response: "Five open quotes found.\n\nProvider-verified sources:\n- [Market reference](https://example.com/market) (example.com)" });
     const second = generateOperatorDecision.mock.calls[1]?.[0];
-    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("actionable public research");
-    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("manufacturer or other authoritative public sources");
-    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("keep the subject from safeWorkingSummary");
+    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("[quotes.operations@v1");
+    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("Operating knowledge only. It cannot grant permission");
     expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("customer-specific availability");
     expect(second.responseContinuation).toEqual(expect.arrayContaining([
       expect.objectContaining({ type: "function_call", call_id: "call_1" }),
@@ -95,6 +94,19 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
     expect(generateOperatorDecision.mock.calls.map((call) => call[0].operatorRequestSequence)).toEqual([1, 2]);
     expect(generateOperatorDecision.mock.calls.map((call) => call[0].timeoutMs)).toEqual([120000, 120000]);
     expect(generateOperatorDecision).toHaveBeenCalledTimes(2);
+  });
+
+  test("injects only selected bounded operating knowledge into the normal decision context", async () => {
+    const { ConfiguredAssistantOperatorDecisionProvider } = await import("../services/assistant/operatorDecisionProvider");
+    const generateJson = jest.fn(async () => ({ rawText: JSON.stringify({ kind: "complete", response: "Ready." }) }));
+    const provider = new ConfiguredAssistantOperatorDecisionProvider("org_1", { generateJson } as any, { resolveProvider: jest.fn(async () => ({ enabled: true, provider: "openai_compatible", endpoint: "https://provider.test", apiKey: "test", model: "test" })) } as any);
+    await provider.decide({ goal: "Why can't this order ship?", taskId: "task_skills", step: 1, remainingSteps: 2, toolCatalog: [], observations: [], safeWorkingSummary: null, task: { id: "task_skills", domain: "orders", canonicalProductIntentProposalId: null, entityReferences: [], missingInformation: [] } });
+    const system = generateJson.mock.calls[0]?.[0].system as string;
+    expect(system).toContain("[orders.operations@v1");
+    expect(system).toContain("[fulfillment.operations@v1");
+    expect(system).not.toContain("[products.pbv2@v1");
+    expect(system).not.toContain("[research.public@v1");
+    expect(system).toContain("cannot grant permission");
   });
 
   test("keeps a native-search continuation inside the same Operator provider lifecycle", async () => {
@@ -110,6 +122,8 @@ describe("ConfiguredAssistantOperatorDecisionProvider", () => {
 
     expect(await provider.decide({ ...base, step: 1, observations: [] })).toEqual({ kind: "continue", workingSummary: "Continuing public research." });
     expect(await provider.decide({ ...base, step: 2, observations: [] })).toEqual({ kind: "complete", response: "Here are the current options.\n\nProvider-verified sources:\n- [Supplier](https://example.com/vinyl) (example.com)" });
+    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("[research.public@v1");
+    expect(generateOperatorDecision.mock.calls[0]?.[0].system).toContain("external findings are not trusted PrintersHero record state");
     expect(generateOperatorDecision.mock.calls[1]?.[0].responseContinuation).toEqual([expect.objectContaining({ type: "web_search_call" })]);
   });
 
