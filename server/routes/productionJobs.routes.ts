@@ -79,8 +79,10 @@ import {
   resolveCompletedArtworkQuantityMode,
 } from "@shared/productionCompleted";
 import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
-import { ReturnToPrepressError, getReturnToPrepressBlockedReason, returnProductionJobsToPrepressInTransaction } from "../services/productionReturnToPrepressService";
+import { ReturnToPrepressError, getReturnToPrepressBlockedReason } from "../services/productionReturnToPrepressService";
 import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
+import { canonicalPrepressOperations } from "../services/canonicalPrepressOperations";
+import { canonicalProductionOperations } from "../services/canonicalProductionOperations";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -637,57 +639,6 @@ async function updateProductionJobStatusWorkflow(
     ipAddress: args.ipAddress || null,
     userAgent: args.userAgent || null,
   } as any);
-
-  const updatedRows = await tx
-    .select()
-    .from(productionJobs)
-    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
-    .limit(1);
-  return updatedRows[0];
-}
-
-async function startProductionJobWorkflow(
-  tx: any,
-  args: { organizationId: string; userId?: string | null; jobId: string },
-) {
-  const now = new Date();
-  const jobRows = await tx
-    .select()
-    .from(productionJobs)
-    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)))
-    .limit(1);
-  const job = jobRows[0];
-  if (!job) throw Object.assign(new Error("Production job not found"), { statusCode: 404 });
-  if (!job.orderId || !job.lineItemId) {
-    throw Object.assign(new Error("Production job is missing its order line item"), { statusCode: 409 });
-  }
-  if (isTerminalProductionStatus(job.status)) {
-    throw Object.assign(new Error("Job is terminal; reopen or restore first"), { statusCode: 400 });
-  }
-  await assertParentOrderInProductionForJob(tx, {
-    organizationId: args.organizationId,
-    job,
-    action: "start production job",
-  });
-
-  const timerState = await getTimerStateForJob(args.organizationId, args.jobId, tx);
-  if (timerState.isRunning) return job;
-
-  await appendEvent({
-    tx,
-    organizationId: args.organizationId,
-    productionJobId: args.jobId,
-    type: "timer_started",
-    actorUserId: args.userId ?? null,
-  });
-  await tx
-    .update(productionJobs)
-    .set({
-      status: job.status === "queued" ? "in_progress" : job.status,
-      startedAt: job.startedAt ?? now,
-      updatedAt: now,
-    })
-    .where(and(eq(productionJobs.organizationId, args.organizationId), eq(productionJobs.id, args.jobId)));
 
   const updatedRows = await tx
     .select()
@@ -3495,13 +3446,13 @@ export function registerProductionJobsRoutes(
       if (!parsed.success) return res.status(400).json({ error: fromZodError(parsed.error).message });
       const jobIds = dedupeProductionJobIds(parsed.data.jobIds);
       if (jobIds.length > MAX_PRODUCTION_BULK_ITEMS) return res.status(400).json({ error: `A maximum of ${MAX_PRODUCTION_BULK_ITEMS} jobs can be returned to Prepress at once.` });
-      const jobs = await db.transaction(async (tx) => returnProductionJobsToPrepressInTransaction(tx, {
+      const jobs = await canonicalPrepressOperations.returnProductionJobs({
         organizationId,
         actorUserId: userId,
         station: parsed.data.station,
         jobIds,
         reason: parsed.data.reason || "Return to Prepress requested from production board",
-      }));
+      });
       return res.json({ success: true, data: {
         requestedItemCount: parsed.data.jobIds.length,
         uniqueItemCount: jobIds.length,
@@ -3538,9 +3489,9 @@ export function registerProductionJobsRoutes(
         });
         const results = [];
         for (const jobId of jobIds) {
-          results.push(await startProductionJobWorkflow(tx, {
+          results.push(await canonicalProductionOperations.startJobInTransaction(tx, {
             organizationId,
-            userId: getUserId(req.user) ?? null,
+            actorUserId: getUserId(req.user) ?? null,
             jobId,
           }));
         }
@@ -3707,11 +3658,11 @@ export function registerProductionJobsRoutes(
       const userId = getUserId(req.user);
 
       const jobId = req.params.jobId;
-      const result = await db.transaction((tx) => startProductionJobWorkflow(tx, {
+      const result = await canonicalProductionOperations.startJob({
         organizationId,
-        userId: userId ?? null,
+        actorUserId: userId ?? null,
         jobId,
-      }));
+      });
 
       res.json({ success: true, data: result });
     } catch (error: any) {

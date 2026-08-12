@@ -38,14 +38,13 @@ import {
   listEligibleProofArtworkSources,
   listProofingQueue,
   markLineItemProofNotRequired,
-  markProofVersionSent,
   recordManualProofApprovalOverride,
   recordManualProofApprovalOverrides,
-  recordProofResponse,
   resolveEligibleProofArtworkPreviewForDisplay,
   resendProofVersion,
   resolveLineItemProofingTruth,
 } from "../services/proofingService";
+import { canonicalProofingOperations } from "../services/canonicalProofingOperations";
 import { createProofAccessToken } from "../services/proofAccessTokenService";
 import { emailService } from "../emailService";
 
@@ -665,7 +664,7 @@ export function registerProofingRoutes(
       type SendEmailPayload = { to: string; rawToken: string; versionNumber: number; sentToName: string | null; customerMessage: string | null; subject: string | null };
 
       const { emailPayload: sendEmailPayload, ...result } = await db.transaction(async (tx) => {
-        const sendResult = await markProofVersionSent(tx, {
+        const sendResult = await canonicalProofingOperations.sendVersion(tx, {
           organizationId,
           proofVersionId: String(req.params.proofVersionId),
           actorUserId: userId,
@@ -961,7 +960,7 @@ export function registerProofingRoutes(
       }
 
       const result = await db.transaction(async (tx) => {
-        const responseResult = await recordProofResponse(tx, {
+        const responseResult = await canonicalProofingOperations.recordResponse(tx, {
           organizationId,
           proofVersionId: String(req.params.proofVersionId),
           actorUserId: userId,

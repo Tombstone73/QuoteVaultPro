@@ -18,7 +18,8 @@ import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { fromZodError } from "zod-validation-error";
 import { validateProofToken } from "../services/proofAccessTokenService";
-import { buildProofArtifactSummary, buildProofInputSnapshot, INCOMPLETE_PROOF_MESSAGE, recordProofResponse } from "../services/proofingService";
+import { buildProofArtifactSummary, buildProofInputSnapshot, INCOMPLETE_PROOF_MESSAGE } from "../services/proofingService";
+import { canonicalProofingOperations } from "../services/canonicalProofingOperations";
 import { enrichAttachmentWithUrls, resolveOriginalFileAccess, resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
 import { isSupabaseConfigured, SupabaseStorageService } from "../supabaseStorage";
 
@@ -369,7 +370,7 @@ export function registerPortalProofRoutes(app: Express): void {
             ? "rejected"
             : "revision_requested";
 
-        const responseResult = await recordProofResponse(tx, {
+        const responseResult = await canonicalProofingOperations.recordResponse(tx, {
           organizationId: validation.lineItem.organizationId,
           proofVersionId: validation.proofVersion.id,
           actorUserId: null,

@@ -41,7 +41,7 @@ import {
   pickupReadySchema,
 } from "../services/fulfillment/schemas";
 import { FulfillmentHttpError } from "../services/fulfillment/types";
-import { fulfillmentServiceV2 } from "../services/fulfillment/service";
+import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
 
 // Handles both Replit auth (claims.sub) and local auth (id) formats
 const getUserId = (user: any): string | undefined => user?.claims?.sub || user?.id;
@@ -74,7 +74,7 @@ export function registerFulfillmentRoutes(
       const organizationId = getRequestOrganizationId(req);
       const parsed = listQueueQuerySchema.parse(req.query || {});
 
-      const data = await fulfillmentServiceV2.listQueue(organizationId, {
+      const data = await canonicalFulfillmentOperations.listQueue(organizationId, {
         type: parsed.type,
         status: parsed.status,
         showArchived: parsed.showArchived,
@@ -102,7 +102,7 @@ export function registerFulfillmentRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
       const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
-      const data = await fulfillmentServiceV2.getOrderDetail(organizationId, req.params.orderId, actorOrgRole);
+      const data = await canonicalFulfillmentOperations.getOrderDetail(organizationId, req.params.orderId, actorOrgRole);
       return res.json({ success: true, data });
     } catch (error) {
       if (error instanceof FulfillmentHttpError) {
@@ -119,7 +119,7 @@ export function registerFulfillmentRoutes(
       if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
       const actorUserId = getUserId(req.user) || null;
       const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
-      const data = await fulfillmentServiceV2.markOrderReady(organizationId, req.params.orderId, actorUserId, actorOrgRole);
+      const data = await canonicalFulfillmentOperations.markOrderReady(organizationId, req.params.orderId, actorUserId, actorOrgRole);
       return res.json({ success: true, data, message: 'Fulfillment marked ready' });
     } catch (error: any) {
       if (error instanceof FulfillmentHttpError) {
@@ -141,7 +141,7 @@ export function registerFulfillmentRoutes(
       const actorUserId = getUserId(req.user) || null;
       const actorUserRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
       const parsed = pickupReadySchema.parse(req.body || {});
-      const data = await fulfillmentServiceV2.markOrderReadyForPickup(organizationId, req.params.orderId, parsed, actorUserId, actorUserRole);
+      const data = await canonicalFulfillmentOperations.markOrderReadyForPickup(organizationId, req.params.orderId, parsed, actorUserId, actorUserRole);
       return res.json({ success: true, data, message: 'Pickup marked ready' });
     } catch (error: any) {
       if (error?.name === 'ZodError') {
@@ -165,7 +165,7 @@ export function registerFulfillmentRoutes(
       if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
       const parsed = fulfillmentNoteSchema.parse(req.body || {});
       const actorUserId = getUserId(req.user) || null;
-      const data = await fulfillmentServiceV2.addOrderNote(organizationId, req.params.orderId, parsed.note, actorUserId);
+      const data = await canonicalFulfillmentOperations.addOrderNote(organizationId, req.params.orderId, parsed.note, actorUserId);
       return res.json({ success: true, data, message: 'Fulfillment note added' });
     } catch (error: any) {
       if (error?.name === 'ZodError') {
@@ -186,7 +186,7 @@ export function registerFulfillmentRoutes(
       const parsed = fulfillmentUnreadySchema.parse(req.body || {});
       const actorUserId = getUserId(req.user) || null;
       const actorOrgRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
-      const data = await fulfillmentServiceV2.unreadyOrder(organizationId, req.params.orderId, parsed.reason, actorUserId, actorOrgRole);
+      const data = await canonicalFulfillmentOperations.unreadyOrder(organizationId, req.params.orderId, parsed.reason, actorUserId, actorOrgRole);
       return res.json({ success: true, data, message: 'Fulfillment status reverted' });
     } catch (error: any) {
       if (error?.name === 'ZodError') {
@@ -206,7 +206,7 @@ export function registerFulfillmentRoutes(
       if (!organizationId) return res.status(500).json({ success: false, message: 'Missing organization context' });
       const parsed = fulfillmentChecklistItemSchema.parse(req.body || {});
       const actorUserId = getUserId(req.user) || null;
-      const data = await fulfillmentServiceV2.updateChecklistItem(
+      const data = await canonicalFulfillmentOperations.updateChecklistItem(
         organizationId,
         req.params.orderId,
         req.params.lineItemId,
@@ -237,7 +237,7 @@ export function registerFulfillmentRoutes(
       const actorUserId = getUserId(req.user) || null;
       const parsed = createFulfillmentShipmentSchema.parse(req.body || {});
 
-      const shipment = await fulfillmentServiceV2.createShipment(organizationId, {
+      const shipment = await canonicalFulfillmentOperations.createShipment(organizationId, {
         scope: parsed.scope,
         orderIds: parsed.orderIds,
         primaryOrderId: parsed.primaryOrderId,
@@ -260,7 +260,7 @@ export function registerFulfillmentRoutes(
   app.get('/api/fulfillment/shipments/:shipmentId', isAuthenticated, tenantContext, async (req: any, res) => {
     try {
       const organizationId = getRequestOrganizationId(req);
-      const shipment = await fulfillmentServiceV2.getShipment(organizationId, req.params.shipmentId);
+      const shipment = await canonicalFulfillmentOperations.getShipment(organizationId, req.params.shipmentId);
 
       if (!shipment) {
         return res.status(404).json({ success: false, message: 'Shipment not found', code: 'NOT_FOUND' });
@@ -279,7 +279,7 @@ export function registerFulfillmentRoutes(
       const actorUserId = getUserId(req.user) || null;
       const parsed = patchFulfillmentShipmentSchema.parse(req.body || {});
 
-      const shipment = await fulfillmentServiceV2.patchShipment(organizationId, req.params.shipmentId, {
+      const shipment = await canonicalFulfillmentOperations.patchShipment(organizationId, req.params.shipmentId, {
         carrier: parsed.carrier,
         serviceLevel: parsed.serviceLevel,
         trackingNumber: parsed.trackingNumber,
@@ -310,7 +310,7 @@ export function registerFulfillmentRoutes(
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) || null;
 
-      const shipment = await fulfillmentServiceV2.markShipmentShipped(organizationId, req.params.shipmentId, actorUserId);
+      const shipment = await canonicalFulfillmentOperations.markShipmentShipped(organizationId, req.params.shipmentId, actorUserId);
       return res.json({ success: true, data: shipment });
     } catch (error: any) {
       if (error instanceof FulfillmentHttpError) {
@@ -330,7 +330,7 @@ export function registerFulfillmentRoutes(
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) || null;
 
-      const shipment = await fulfillmentServiceV2.voidShipment(organizationId, req.params.shipmentId, actorUserId);
+      const shipment = await canonicalFulfillmentOperations.voidShipment(organizationId, req.params.shipmentId, actorUserId);
       return res.json({ success: true, data: shipment });
     } catch (error: any) {
       if (error instanceof FulfillmentHttpError) {
@@ -346,7 +346,7 @@ export function registerFulfillmentRoutes(
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) || null;
 
-      const ticket = await fulfillmentServiceV2.createOrGetPickupTicket(organizationId, req.params.orderId, actorUserId);
+      const ticket = await canonicalFulfillmentOperations.createOrGetPickupTicket(organizationId, req.params.orderId, actorUserId);
       return res.json({ success: true, data: ticket });
     } catch (error: any) {
       if (error instanceof FulfillmentHttpError) {
@@ -364,7 +364,7 @@ export function registerFulfillmentRoutes(
       const actorUserRole = req.orgRole || (req.user as any)?.orgRole || (req.user as any)?.role || null;
       const parsed = pickupReadySchema.parse(req.body || {});
 
-      const result = await fulfillmentServiceV2.markPickupReady(organizationId, req.params.ticketId, parsed, actorUserId, actorUserRole);
+      const result = await canonicalFulfillmentOperations.markPickupReady(organizationId, req.params.ticketId, parsed, actorUserId, actorUserRole);
       return res.json({
         success: true,
         data: {
@@ -389,7 +389,7 @@ export function registerFulfillmentRoutes(
       const organizationId = getRequestOrganizationId(req);
       const actorUserId = getUserId(req.user) || null;
 
-      const ticket = await fulfillmentServiceV2.markPickupPickedUp(organizationId, req.params.ticketId, actorUserId);
+      const ticket = await canonicalFulfillmentOperations.markPickupPickedUp(organizationId, req.params.ticketId, actorUserId);
       return res.json({ success: true, data: ticket });
     } catch (error: any) {
       if (error instanceof FulfillmentHttpError) {

@@ -59,6 +59,15 @@ const sharedPricingCommands = new Set([
   "products.replace_inactive_matrix",
   "products.replace_inactive_quantity_tiers",
 ]);
+const sharedOperationalCommands = new Set([
+  "production.intake_line_items", "production.send_to_prepress", "production.update_job_status", "production.add_job_note",
+  "fulfillment.create_shipment", "fulfillment.update_shipment_details", "fulfillment.mark_shipped", "fulfillment.create_pickup_ticket", "fulfillment.add_note",
+]);
+function sharedOperationalReference(command: string): string | null {
+  if (command.startsWith("production.")) return "CanonicalProductionOperations / CanonicalPrepressOperations";
+  if (command.startsWith("fulfillment.")) return "CanonicalFulfillmentOperations / FulfillmentService";
+  return null;
+}
 
 function domainForCommand(command: string): OperatorDomain {
   if (command.startsWith("products.")) return command.includes("pricing") || command.includes("matrix") || command.includes("quantity_tiers") ? "pricing" : "products";
@@ -111,11 +120,11 @@ const commandCapabilities: readonly CanonicalCapabilityDescriptor[] = assistantP
     outputSchemaReference: "server/services/assistant/execution/*Command.ts", requiredGrant,
     allowedOrganizationRoles: command.startsWith("products.") ? adminRoles : operationalRoles,
     tenantScope: "organization", confirmation: "go_required", idempotency: "server_generated_with_request_hash", risk: "high",
-    lifecycleValidationReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations + CanonicalProductMaterialOperations" : sharedPricingCommands.has(command) ? "CanonicalProductPricingOperations" : "server/services/assistant/execution/*ExecutionCommand.ts", handlerReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations; CanonicalPbv2OptionConfigurationOperations; CanonicalProductMaterialOperations" : sharedPricingCommands.has(command) ? "CanonicalProductPricingOperations with compatibility command adapter" : "AssistantCommandDefinition.adapter",
-    auditReference: "ExecutionPlanningService", uiSurfaceReference: command === "products.update_existing_product" ? "Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft" : sharedPricingCommands.has(command) ? "Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft" : "unknown", aiExposure: "existing",
-    migrationStatus: command === "products.update_existing_product" || sharedPricingCommands.has(command) ? "shared_canonical" : "wrapped_existing",
-    canonicalOperationReference: command === "products.update_existing_product" ? "products.update_configuration.v1; products.update_option_configuration.v1; products.update_material_configuration.v1" : command === "products.replace_inactive_matrix" ? "products.replace_pricing_matrix.v1" : command === "products.replace_inactive_quantity_tiers" ? "products.replace_quantity_tiers.v1" : sharedPricingCommands.has(command) ? "products.update_pricing.v1" : "not_applicable",
-    parityStatus: command === "products.update_existing_product" || sharedPricingCommands.has(command) ? "shared_canonical" : "ai_specific",
+    lifecycleValidationReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations + CanonicalPbv2OptionConfigurationOperations + CanonicalProductMaterialOperations" : sharedPricingCommands.has(command) ? "CanonicalProductPricingOperations" : sharedOperationalReference(command) ?? "server/services/assistant/execution/*ExecutionCommand.ts", handlerReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations; CanonicalPbv2OptionConfigurationOperations; CanonicalProductMaterialOperations" : sharedPricingCommands.has(command) ? "CanonicalProductPricingOperations with compatibility command adapter" : sharedOperationalReference(command) ?? "AssistantCommandDefinition.adapter",
+    auditReference: "ExecutionPlanningService", uiSurfaceReference: command === "products.update_existing_product" ? "Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft" : sharedPricingCommands.has(command) ? "Product Editor PATCH /api/products/:id; PUT /api/products/:productId/pbv2/draft" : command.startsWith("production.") ? "Production board routes" : command.startsWith("fulfillment.") ? "Fulfillment routes" : "unknown", aiExposure: "existing",
+    migrationStatus: command === "products.update_existing_product" || sharedPricingCommands.has(command) || sharedOperationalCommands.has(command) ? "shared_canonical" : "wrapped_existing",
+    canonicalOperationReference: command === "products.update_existing_product" ? "products.update_configuration.v1; products.update_option_configuration.v1; products.update_material_configuration.v1" : command === "products.replace_inactive_matrix" ? "products.replace_pricing_matrix.v1" : command === "products.replace_inactive_quantity_tiers" ? "products.replace_quantity_tiers.v1" : sharedPricingCommands.has(command) ? "products.update_pricing.v1" : command === "production.intake_line_items" ? "production.intake_line_items.v1" : command === "production.send_to_prepress" ? "prepress.return_from_production.v1" : command === "production.update_job_status" ? "production.start_job.v1" : command === "production.add_job_note" ? "production.add_job_note.v1" : command.startsWith("fulfillment.") ? "fulfillment.update_shipment.v1" : "not_applicable",
+    parityStatus: command === "products.update_existing_product" || sharedPricingCommands.has(command) || sharedOperationalCommands.has(command) ? "shared_canonical" : "ai_specific",
     aiEligibility: "eligible", hardDenyReason: null, skillId: skillForDomain(domain),
   };
 });

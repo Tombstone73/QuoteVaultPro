@@ -43,7 +43,8 @@ import { getInvoiceOrderContext } from "./invoiceOrderContext";
 import { storage } from "../storage";
 import { canonicalOrderOperations } from "./orders/canonicalOrderOperations";
 import { resolveOriginalFileAccess } from "../lib/supabaseObjectHelpers";
-import { buildProofArtifactSummary, INCOMPLETE_PROOF_MESSAGE, recordProofResponse } from "./proofingService";
+import { buildProofArtifactSummary, INCOMPLETE_PROOF_MESSAGE } from "./proofingService";
+import { canonicalProofingOperations } from "./canonicalProofingOperations";
 import { recordPortalFollowUpItem } from "./portalFollowUps";
 import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@shared/paymentProviderResolution";
@@ -2897,7 +2898,7 @@ export async function submitPortalProofAction(req: Request, proofId: string, act
         throw new PortalAccessError(400, INCOMPLETE_PROOF_MESSAGE);
       }
 
-      const responseResult = await recordProofResponse(tx, {
+      const responseResult = await canonicalProofingOperations.recordResponse(tx, {
         organizationId: scope.organizationId,
         proofVersionId: row.id,
         actorUserId: scope.userId,

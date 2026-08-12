@@ -38,7 +38,7 @@ describe("portal proof boundary", () => {
 
     expect(routes).toContain('"/api/portal/proofs"');
     expect(routes).toContain('"/api/portal/proofs/:id/approve"');
-    expect(service).toContain("recordProofResponse");
+    expect(service).toContain("canonicalProofingOperations.recordResponse");
     expect(service).toContain("PortalProofDto");
     expect(tokenRoute).toContain('"/api/portal/proof/:token"');
     expect(tokenRoute).toContain("validateProofToken");

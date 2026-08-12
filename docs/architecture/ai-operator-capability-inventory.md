@@ -106,7 +106,7 @@ None.
 
 | Provisional capability | Mode | UI | AI | Tool / command | Permission | Parity |
 |---|---|---|---|---|---|---|
-| ui.prepress.manage_sessions_and_files | mutation | page_and_route | none | — | route_specific_or_unknown | ui_supported_ai_adapter_missing |
+| ui.prepress.manage_sessions_and_files | mutation | page_and_route | command_plan_only | — | route_specific_or_unknown | partial_or_indirect |
 
 ### production
 
@@ -114,22 +114,22 @@ None.
 |---|---|---|---|---|---|---|
 | ai.read.production.get_queue_summary | read | unknown | read_tool | production.get_queue_summary | internal_staff | partial_or_indirect |
 | ai.read.production.get_completed_jobs | read | unknown | read_tool | production.get_completed_jobs | internal_staff | partial_or_indirect |
-| ai.command.production.intake_line_items | mutation | unknown | command_plan_only | production.intake_line_items | assistant.production.intake_line_items | partial_or_indirect |
-| ai.command.production.send_to_prepress | mutation | unknown | command_plan_only | production.send_to_prepress | assistant.production.send_to_prepress | partial_or_indirect |
-| ai.command.production.update_job_status | mutation | unknown | command_plan_only | production.update_job_status | assistant.production.update_job_status | partial_or_indirect |
-| ai.command.production.add_job_note | mutation | unknown | command_plan_only | production.add_job_note | assistant.production.add_job_note | partial_or_indirect |
-| ui.production.manage_jobs | mutation | page_and_route | none | — | authenticated_tenant_user | partial_or_indirect |
+| ai.command.production.intake_line_items | mutation | unknown | command_plan_only | production.intake_line_items | assistant.production.intake_line_items | shared_canonical_today |
+| ai.command.production.send_to_prepress | mutation | unknown | command_plan_only | production.send_to_prepress | assistant.production.send_to_prepress | shared_canonical_today |
+| ai.command.production.update_job_status | mutation | unknown | command_plan_only | production.update_job_status | assistant.production.update_job_status | shared_canonical_today |
+| ai.command.production.add_job_note | mutation | unknown | command_plan_only | production.add_job_note | assistant.production.add_job_note | shared_canonical_today |
+| ui.production.manage_jobs | mutation | page_and_route | command_plan_only | — | authenticated_tenant_user (UI); reviewed GO command subset (AI) | partial_or_indirect |
 
 ### fulfillment
 
 | Provisional capability | Mode | UI | AI | Tool / command | Permission | Parity |
 |---|---|---|---|---|---|---|
-| ai.command.fulfillment.create_shipment | mutation | unknown | command_plan_only | fulfillment.create_shipment | assistant.fulfillment.create_shipment | partial_or_indirect |
-| ai.command.fulfillment.update_shipment_details | mutation | unknown | command_plan_only | fulfillment.update_shipment_details | assistant.fulfillment.update_shipment_details | partial_or_indirect |
-| ai.command.fulfillment.mark_shipped | mutation | unknown | command_plan_only | fulfillment.mark_shipped | assistant.fulfillment.mark_shipped | partial_or_indirect |
-| ai.command.fulfillment.create_pickup_ticket | mutation | unknown | command_plan_only | fulfillment.create_pickup_ticket | assistant.fulfillment.create_pickup_ticket | partial_or_indirect |
-| ai.command.fulfillment.add_note | mutation | unknown | command_plan_only | fulfillment.add_note | assistant.fulfillment.add_note | partial_or_indirect |
-| ui.fulfillment.manage_orders_shipments_pickups | mutation | page_and_route | none | — | authenticated_tenant_user | partial_or_indirect |
+| ai.command.fulfillment.create_shipment | mutation | unknown | command_plan_only | fulfillment.create_shipment | assistant.fulfillment.create_shipment | shared_canonical_today |
+| ai.command.fulfillment.update_shipment_details | mutation | unknown | command_plan_only | fulfillment.update_shipment_details | assistant.fulfillment.update_shipment_details | shared_canonical_today |
+| ai.command.fulfillment.mark_shipped | mutation | unknown | command_plan_only | fulfillment.mark_shipped | assistant.fulfillment.mark_shipped | shared_canonical_today |
+| ai.command.fulfillment.create_pickup_ticket | mutation | unknown | command_plan_only | fulfillment.create_pickup_ticket | assistant.fulfillment.create_pickup_ticket | shared_canonical_today |
+| ai.command.fulfillment.add_note | mutation | unknown | command_plan_only | fulfillment.add_note | assistant.fulfillment.add_note | shared_canonical_today |
+| ui.fulfillment.manage_orders_shipments_pickups | mutation | page_and_route | command_plan_only | — | authenticated_tenant_user (UI); reviewed GO command subset (AI) | partial_or_indirect |
 
 ### invoicing
 
