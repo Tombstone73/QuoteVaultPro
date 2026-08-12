@@ -73,7 +73,11 @@ const repository: ProductConfigurationRepository = {
   },
 };
 
-function applyWorkflowDefaults(changes: ProductConfigurationChanges): ProductConfigurationChanges {
+/** Shared, persistence-free validation for canonical Product configuration
+ * proposals. Pre-persistence Product intent uses this exact boundary without
+ * inventing a Product id or persisted-version metadata. */
+export function normalizeCanonicalProductConfigurationChanges(raw: unknown): ProductConfigurationChanges {
+  const changes = productConfigurationChangesSchema.parse(raw);
   return changes.workflowIntent === "service_fee"
     ? { ...changes, measurementMode: "quantity_only", requiresProductionJob: false, requiresProofApproval: false }
     : changes;
@@ -97,7 +101,7 @@ export class CanonicalProductConfigurationOperations {
   private async normalizedChanges(product: ProductConfigurationRecord, raw: unknown): Promise<ProductConfigurationChanges> {
     const parsed = productConfigurationChangesSchema.safeParse(raw);
     if (!parsed.success) throw new CanonicalProductConfigurationError("NO_PRODUCT_CONFIGURATION_CHANGES", "A supported product configuration change is required.");
-    let changes = applyWorkflowDefaults(parsed.data);
+    let changes = normalizeCanonicalProductConfigurationChanges(parsed.data);
     if (Object.prototype.hasOwnProperty.call(changes, "productTypeId")) {
       const guarded = applyProductTypeIdUpdateGuard({ productData: changes, existingProductTypeId: product.productTypeId, knownProductTypeIds: await this.store.listProductTypeIds(product.organizationId) });
       if (!guarded.ok) throw new CanonicalProductConfigurationError(guarded.code, guarded.message);

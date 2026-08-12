@@ -25,6 +25,7 @@ import {
   type TenantIntentReference,
 } from "./productIntentResolver";
 import { generateProductIntentCandidateActions, generateProductIntentRecommendations, parseProductIntentCandidateAction, parseProductIntentRecommendation, type ExistingProductCandidate } from "./productIntentInteractions";
+import { canonicalProductIntentStateFromV1Draft, projectCanonicalProductIntentStateToV1Draft } from "./productIntentCanonicalProposal";
 
 export type CanonicalProductIntentCandidates = {
   categories: readonly TenantIntentReference[];
@@ -704,11 +705,17 @@ export class CanonicalProductIntentService {
     const diagnostics = compiled.diagnostics;
     let stage: CanonicalIntentPipelineStage = "tenant_reference_resolution";
     try {
-      const { intent, issues } = await this.validate(compiled.result.intent, (nextStage) => { stage = nextStage; });
+      // complete_intent is a provider compatibility payload. Import it once
+      // into the canonical Phase 5/6 proposal state before resolution so the
+      // initial and continuation paths share the same Product/PBV2 validators.
+      const canonicalProposalState = canonicalProductIntentStateFromV1Draft(compiled.result.intent);
+      const canonicalDraft = projectCanonicalProductIntentStateToV1Draft(compiled.result.intent, canonicalProposalState);
+      const { intent, issues } = await this.validate(canonicalDraft, (nextStage) => { stage = nextStage; });
+      const resolvedCanonicalProposalState = canonicalProductIntentStateFromV1Draft(intent);
       stage = "presentation";
       const card = await this.presentation(intent, issues);
       stage = "persistence_preparation";
-      const session = await this.persistence.create({ organizationId: input.organizationId, actorUserId: input.actorUserId, conversationId: input.conversationId, intent, compilerResult: compiled.result, unresolvedQuestions: questionsFrom(intent, issues), resolutionMetadata: { architecture: "canonical_product_intent", dismissedRecommendationIds: [] } });
+      const session = await this.persistence.create({ organizationId: input.organizationId, actorUserId: input.actorUserId, conversationId: input.conversationId, intent, canonicalProposalState: resolvedCanonicalProposalState, compilerResult: compiled.result, unresolvedQuestions: questionsFrom(intent, issues), resolutionMetadata: { architecture: "canonical_product_intent", dismissedRecommendationIds: [] } });
       return { ok: true, session, issues, card };
     } catch (error) {
       return await pipelineFailure({

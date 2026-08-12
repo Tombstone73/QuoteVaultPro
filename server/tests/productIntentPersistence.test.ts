@@ -25,4 +25,26 @@ describe("ProductIntentPersistenceService", () => {
     expect(updated.specification.session.revisions).toHaveLength(2);
     await expect(service.appendPatch({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.proposalId, expectedRevision: 0, expectedFingerprint: created.fingerprint, reason: "correction", patch: { contractVersion: 1, baseRevision: 0, preserveUnchanged: true, operations: [{ op: "set_visibility", value: { catalogVisible: false } }] } })).rejects.toMatchObject({ code: "PRODUCT_INTENT_STALE_REVISION" });
   });
+
+  test("loads historical V1 JSONB without canonical state and upgrades it on the next write", async () => {
+    const store = new MemoryStore();
+    const service = new ProductIntentPersistenceService(store);
+    const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "historical-v1", intent: intent() });
+    expect(created.specification.canonicalProposalState).toBeDefined();
+    const historical = store.rows.get(created.proposalId)!;
+    delete (historical.specification as any).canonicalProposalState;
+    store.rows.set(created.proposalId, historical);
+    const loaded = await service.load({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.proposalId });
+    expect(loaded.specification.canonicalProposalState).toBeUndefined();
+    const upgraded = await service.appendPatch({
+      organizationId: "org-1", actorUserId: "user-1", proposalId: created.proposalId,
+      expectedRevision: 0, expectedFingerprint: loaded.fingerprint, reason: "correction",
+      patch: { contractVersion: 1, baseRevision: 0, preserveUnchanged: true, operations: [{ op: "set_pricing", value: { model: "scalar", unit: "per_piece", priceCents: 275 } }] },
+    });
+    expect(upgraded.specification.canonicalProposalState).toMatchObject({
+      productConfiguration: { name: "Stickers", category: "Print", measurementMode: "quantity_only" },
+      pbv2OptionConfigurationBatches: [],
+    });
+    expect(upgraded.specification.session.revisions.at(-1)!.intent.pricing).toEqual({ model: "scalar", unit: "per_piece", priceCents: 275 });
+  });
 });

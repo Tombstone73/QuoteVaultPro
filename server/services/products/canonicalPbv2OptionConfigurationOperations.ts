@@ -279,6 +279,13 @@ function validateOptionConfiguration(tree: Record<string, any>, strict: boolean)
   return [...findings, ...existingFindings];
 }
 
+/** Persistence-free canonical PBV2 validation for pre-persistence proposals.
+ * Draft mode permits genuinely missing choices while still enforcing keys,
+ * defaults, ordering structure, and visibility references. */
+export function validateCanonicalPbv2OptionConfigurationTree(tree: Record<string, any>, strict = false): readonly unknown[] {
+  return validateOptionConfiguration(tree, strict);
+}
+
 export type CanonicalPbv2OptionConfigurationProposal = { productId: string; productName: string; productActive: boolean; sourceTreeId: string; sourceTreeStatus: "DRAFT" | "ACTIVE"; expectedTreeUpdatedAt: string; changes: Array<{ field: string; before: string; after: string }>; fingerprint: string; operationReference: "products.update_option_configuration.v1" };
 export type CanonicalPbv2OptionConfigurationResult = { draft: TreeRow; appliedChanges: readonly { field: string; before: string; after: string }[]; resultingVersion: string; operationReference: "products.update_option_configuration.v1"; auditReference: string };
 

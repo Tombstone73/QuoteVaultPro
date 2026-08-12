@@ -50,62 +50,6 @@ function normalized(value: string): string {
   return value.normalize("NFKC").toLocaleLowerCase().replace(/[^a-z0-9]+/g, " ").trim().replace(/\s+/g, " ");
 }
 
-function containsWholePhrase(source: string, phrase: string): boolean {
-  const sourceTokens = normalized(source).split(" ").filter(Boolean);
-  const phraseTokens = normalized(phrase).split(" ").filter(Boolean);
-  return phraseTokens.length > 0 && sourceTokens.some((_, index) => phraseTokens.every((token, offset) => sourceTokens[index + offset] === token));
-}
-
-function normalizeWhitespace(value: string): string { return value.trim().replace(/\s+/g, " "); }
-
-/** A quoted name introduced with ordinary product-naming language is direct
- * user evidence. The server preserves it rather than accepting a shortened
- * model paraphrase of the same name. */
-function explicitProductNameFromRequest(request: string | undefined): string | null {
-  if (!request) return null;
-  const productForSingleQuoted = /\b(?:product|item)\s+for\s*'([^']+)'/i.exec(request);
-  if (productForSingleQuoted?.[1]) return normalizeWhitespace(productForSingleQuoted[1]);
-  const productForQuoted = /\b(?:product|item)\s+for\s*["“]([^"”]+)[”"]/i.exec(request);
-  if (productForQuoted?.[1]) return normalizeWhitespace(productForQuoted[1]);
-  const singleQuoted = /\b(?:called|named)\s*'([^']+)'/i.exec(request);
-  if (singleQuoted?.[1]) return normalizeWhitespace(singleQuoted[1]);
-  const match = /\b(?:called|named)\s*["“]([^"”]+)["”]/i.exec(request);
-  if (match?.[1]) return normalizeWhitespace(match[1]);
-  const unquoted = /\b(?:called|named)\s+(.+?)(?=\s*[.!?](?:\s|$)|$)/i.exec(request);
-  return unquoted?.[1] ? normalizeWhitespace(unquoted[1]) : null;
-}
-
-function requestUniquelyIdentifiesCandidate(request: string | undefined, candidate: string, labels: readonly string[]): boolean {
-  if (!request) return false;
-  const requestTokens = new Set(normalized(request).split(" ").filter(Boolean));
-  const candidateTokens = new Set(normalized(candidate).split(" ").filter(Boolean));
-  return Array.from(candidateTokens).some((token) => requestTokens.has(token)
-    && labels.filter((label) => normalized(label).split(" ").includes(token)).length === 1);
-}
-
-function resolveCategoryLabel(category: string, request: string | undefined, labels: readonly string[] | undefined): string {
-  const exactCandidate = (labels ?? []).find((label) => normalized(label) === normalized(category));
-  if (request && !containsWholePhrase(request, category) && !(exactCandidate && requestUniquelyIdentifiesCandidate(request, exactCandidate, labels ?? []))) {
-    throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
-  }
-  const candidates = Array.from(new Set((labels ?? []).map((label) => label.trim()).filter(Boolean))).filter((label) => containsWholePhrase(label, category));
-  if (candidates.length === 1) return candidates[0]!;
-  if (candidates.length > 1) throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_AMBIGUOUS");
-  if (!labels?.length) return category;
-  throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
-}
-
-function serverKey(label: string, existing: readonly string[]): string {
-  const base = normalized(label).replace(/ /g, "_").replace(/[^a-z0-9_]/g, "").slice(0, 80) || "option";
-  const used = new Set(existing.map((key) => key.toLocaleLowerCase()));
-  if (!used.has(base)) return base;
-  for (let index = 2; index <= 999; index += 1) {
-    const candidate = `${base}_${index}`;
-    if (!used.has(candidate)) return candidate;
-  }
-  throw new Error("PRODUCT_INTENT_SEMANTIC_KEY_EXHAUSTED");
-}
-
 type UnresolvedField = ProductDraftIntent["unresolvedFields"][number];
 
 function requiredRatePath(groupKey: string, valueKey: string): string { return `pricing.optionRates.${groupKey}.${valueKey}`; }
@@ -120,8 +64,6 @@ function compileCompatibilitySemanticProductOperations(
   current: ProductDraftIntent,
   raw: unknown,
   baseRevision: number,
-  request?: string,
-  options: SemanticProductOperationOptions = {},
 ): ProductDraftIntentPatch {
   const semantic = semanticProductOperationsResultSchema.parse(raw);
   if (baseRevision !== current.revision) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_STALE");
@@ -133,12 +75,9 @@ function compileCompatibilitySemanticProductOperations(
   let pricingChanged = false;
   let nextIdentity = structuredClone(current.identity);
   let identityChanged = false;
-  let categoryChanged = false;
   let nextMaterial = structuredClone(current.material);
   let materialChanged = false;
   let constructionMaterial: string | null = null;
-  let nextWorkflow = structuredClone(current.workflow);
-  let workflowChanged = false;
   let nextMeasurement = structuredClone(current.measurement);
   let measurementChanged = false;
   let nextUnresolved = structuredClone(current.unresolvedFields);
@@ -192,93 +131,11 @@ function compileCompatibilitySemanticProductOperations(
   for (let operationIndex = 0; operationIndex < orderedOperations.length; operationIndex += 1) {
     const operation = orderedOperations[operationIndex]!;
     try {
-    if (operation.op === "set_category") {
-      // Identity is one canonical object, but a valid ordered creation batch
-      // commonly establishes its name and then its category.  Reject only a
-      // second category assignment in the same atomic batch, not the name.
-      if (categoryChanged) throw new Error("PRODUCT_INTENT_SEMANTIC_CATEGORY_UNRESOLVED");
-      nextIdentity = { ...nextIdentity, category: { state: "unresolved", label: resolveCategoryLabel(operation.category, request, options.categoryLabels) } };
-      identityChanged = true;
-      categoryChanged = true;
-      mark("identity.category");
-      continue;
-    }
-    if (operation.op === "set_product_name") {
-      if (request && !containsWholePhrase(request, operation.name)) throw new Error("PRODUCT_INTENT_SEMANTIC_PRODUCT_NAME_UNRESOLVED");
-      nextIdentity = { ...nextIdentity, name: operation.name };
-      identityChanged = true;
-      clearUnresolved("identity.name");
-      mark("identity.name");
-      continue;
-    }
-    if (operation.op === "set_product_description") {
-      nextIdentity = { ...nextIdentity, description: operation.description };
-      identityChanged = true;
-      mark("identity.description");
-      continue;
-    }
     if (operation.op === "set_material") {
       nextMaterial = { state: "unresolved", label: operation.material };
       materialChanged = true;
       constructionMaterial = operation.material;
       mark("material");
-      continue;
-    }
-    if (operation.op === "set_measurement_mode") {
-      nextMeasurement = operation.mode === "dimensions_required" ? { mode: "dimensions_required" } : { mode: "quantity_only" };
-      measurementChanged = true;
-      clearUnresolved("measurement.mode");
-      mark("measurement.mode");
-      continue;
-    }
-    if (operation.op === "set_proof_requirement") {
-      nextWorkflow = { ...nextWorkflow, requiresProofApproval: operation.requiresProofApproval };
-      workflowChanged = true;
-      mark("workflow.requiresProofApproval");
-      continue;
-    }
-    if (operation.op === "add_option_group") {
-      // Repeating an already-established business group is an idempotent no-op,
-      // not grounds to discard the rest of a valid continuation batch.
-      if (nextGroups.some((group) => normalized(group.label) === normalized(operation.optionGroup))) continue;
-      const key = serverKey(operation.optionGroup, nextGroups.map((group) => group.key));
-      nextGroups.push({ key, label: operation.optionGroup, required: operation.required, selectionMode: operation.selectionMode, values: [] });
-      groupsChanged = true;
-      mark(`optionGroups.${key}`);
-      continue;
-    }
-    if (operation.op === "add_option_value") {
-      const group = findGroup(operation.optionGroup);
-      // The same value can be emitted by a retry or a model that restates the
-      // active context. It is already satisfied, so preserve the other edits.
-      if (group.values.some((value) => normalized(value.label) === normalized(operation.value))) continue;
-      const value = { key: serverKey(operation.value, group.values.map((item) => item.key)), label: operation.value, isDefault: false };
-      group.values.push(value);
-      if (nextPricing.model === "one_dimensional_matrix" && nextPricing.optionKey === group.key) {
-        nextPricing = { ...nextPricing, cells: [...nextPricing.cells, { option: value.key, priceCents: 0 }] };
-        pricingChanged = true;
-        addRateQuestion(group, value);
-      }
-      groupsChanged = true;
-      mark(`optionGroups.${group.key}.${value.key}`);
-      continue;
-    }
-    if (operation.op === "rename_option_group") {
-      const group = findGroup(operation.optionGroup);
-      if (nextGroups.some((candidate) => candidate.key !== group.key && normalized(candidate.label) === normalized(operation.name))) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_GROUP_EXISTS");
-      group.label = operation.name;
-      groupsChanged = true;
-      mark(`optionGroups.${group.key}.label`);
-      continue;
-    }
-    if (operation.op === "set_option_group_availability") {
-      const group = findGroup(operation.optionGroup);
-      const prerequisiteGroup = findGroup(operation.whenOptionGroup);
-      const prerequisiteValue = findValue(prerequisiteGroup, operation.whenValue);
-      if (group.key === prerequisiteGroup.key) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_DEPENDENCY_INVALID");
-      group.availableWhen = { optionGroupKey: prerequisiteGroup.key, optionValueKey: prerequisiteValue.key };
-      groupsChanged = true;
-      mark(`optionGroups.${group.key}.availableWhen`);
       continue;
     }
     if (operation.op === "set_option_price_impact") {
@@ -313,21 +170,6 @@ function compileCompatibilitySemanticProductOperations(
       clearUnresolved("pricing.unit");
       mark("pricing.scalar");
       inferMeasurementFromPricingBasis(operation.basis);
-      continue;
-    }
-    if (operation.op === "record_unsupported_detail") {
-      if (operation.detail === "grommet_quantity") {
-        const path = "optionGroups.grommets.quantity";
-        const updated = addUnresolved(nextUnresolved, {
-          path,
-          code: "GROMMET_QUANTITY_UNRESOLVED",
-          question: "Grommet quantity is one per placement (two total). How should that counted selection be represented?",
-        });
-        if (updated.length !== nextUnresolved.length) {
-          nextUnresolved = updated;
-          unresolvedChanged = true;
-        }
-      }
       continue;
     }
     if (operation.op === "set_option_rate" || operation.op === "set_matrix_rate") {
@@ -367,19 +209,16 @@ function compileCompatibilitySemanticProductOperations(
       mark(`optionGroups.${group.key}`);
       continue;
     }
-    const group = findGroup(operation.optionGroup);
-    const value = findValue(group, operation.value);
     if (operation.op === "remove_option_value") {
+      const group = findGroup(operation.optionGroup);
+      const value = findValue(group, operation.value);
       if (nextPricing.model === "one_dimensional_matrix" && nextPricing.optionKey === group.key) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_VALUE_REQUIRED");
       group.values = group.values.filter((candidate) => candidate.key !== value.key);
       groupsChanged = true;
       mark(`optionGroups.${group.key}.${value.key}`);
-    } else {
-      if (group.selectionMode !== "single") throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_GROUP_UNRESOLVED");
-      group.values = group.values.map((candidate) => ({ ...candidate, isDefault: candidate.key === value.key }));
-      groupsChanged = true;
-      mark(`optionGroups.${group.key}.default`);
+      continue;
     }
+    throw new Error("PRODUCT_INTENT_SEMANTIC_COMPATIBILITY_OPERATION_UNREACHABLE");
     }
     catch (error) {
       if (error instanceof SemanticProductOperationError) throw error;
@@ -404,7 +243,6 @@ function compileCompatibilitySemanticProductOperations(
   if (measurementChanged) operations.push({ op: "set_measurement", value: nextMeasurement });
   if (groupsChanged) operations.push({ op: "replace_option_groups", value: nextGroups });
   if (pricingChanged) operations.push({ op: "set_pricing", value: nextPricing });
-  if (workflowChanged) operations.push({ op: "set_workflow", value: nextWorkflow });
   if (unresolvedChanged) operations.push({ op: "set_unresolved_fields", value: nextUnresolved });
   if (Object.keys(metadata).length) operations.push({ op: "merge_field_metadata", value: metadata });
   if (!operations.length) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_EMPTY");
@@ -438,8 +276,6 @@ export function compileSemanticProductOperations(
     working,
     { kind: "semantic_operations", operations: compatibilityOperations },
     working.revision,
-    request,
-    options,
   );
   const final = applyProductDraftIntentPatch(working, compatibilityPatch, { parentRevision: current.revision });
   const operations: ProductDraftIntentPatch["operations"] = [];

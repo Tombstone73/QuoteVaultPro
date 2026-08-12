@@ -19,6 +19,12 @@ import {
   productIntentSessionEnvelopeSchema,
   type ProductIntentSessionEnvelope,
 } from "./productIntentStateMachine";
+import {
+  canonicalProductIntentStateFromV1Draft,
+  canonicalProductIntentStateSchema,
+  projectCanonicalProductIntentStateToV1Draft,
+  type CanonicalProductIntentState,
+} from "./productIntentCanonicalProposal";
 
 /** This discriminator deliberately distinguishes canonical sessions from every
  * legacy payload that shares ai_configurable_product_proposals.specification. */
@@ -29,6 +35,7 @@ export const canonicalProductIntentProposalSpecificationSchema = z.object({
   kind: z.literal(PRODUCT_INTENT_PROPOSAL_KIND),
   version: z.literal(PRODUCT_INTENT_PROPOSAL_VERSION),
   session: productIntentSessionEnvelopeSchema,
+  canonicalProposalState: canonicalProductIntentStateSchema.optional(),
   latestCompilerResult: productIntentCompilerResultSchema.optional(),
   latestUnresolvedQuestions: unresolvedQuestionSetSchema.optional(),
   resolutionMetadata: z.record(z.unknown()).default({}),
@@ -82,14 +89,18 @@ export function isCanonicalProductIntentSpecification(value: unknown): value is 
 
 function specificationFor(input: {
   session: ProductIntentSessionEnvelope;
+  canonicalProposalState?: CanonicalProductIntentState;
   latestCompilerResult?: ProductIntentCompilerResult;
   latestUnresolvedQuestions?: z.infer<typeof unresolvedQuestionSetSchema>;
   resolutionMetadata?: Record<string, unknown>;
 }): CanonicalProductIntentProposalSpecification {
+  const canonicalProposalState = input.canonicalProposalState
+    ?? canonicalProductIntentStateFromV1Draft(currentProductIntent(input.session));
   return canonicalProductIntentProposalSpecificationSchema.parse({
     kind: PRODUCT_INTENT_PROPOSAL_KIND,
     version: PRODUCT_INTENT_PROPOSAL_VERSION,
     session: input.session,
+    canonicalProposalState,
     ...(input.latestCompilerResult ? { latestCompilerResult: input.latestCompilerResult } : {}),
     ...(input.latestUnresolvedQuestions ? { latestUnresolvedQuestions: input.latestUnresolvedQuestions } : {}),
     resolutionMetadata: input.resolutionMetadata ?? {},
@@ -127,6 +138,7 @@ export class ProductIntentPersistenceService {
     actorUserId: string;
     conversationId?: string | null;
     intent: ProductDraftIntent;
+    canonicalProposalState?: CanonicalProductIntentState;
     compilerResult?: ProductIntentCompilerResult;
     unresolvedQuestions?: z.infer<typeof unresolvedQuestionSetSchema>;
     resolutionMetadata?: Record<string, unknown>;
@@ -135,9 +147,11 @@ export class ProductIntentPersistenceService {
     const parsedIntent = productDraftIntentSchema.parse(input.intent);
     if (parsedIntent.organizationId !== input.organizationId) throw new ProductIntentPersistenceError("PRODUCT_INTENT_ACTOR_MISMATCH", "Product intent organization does not match the persistence scope.");
     const proposalId = randomUUID();
-    const actorBoundIntent = productDraftIntentSchema.parse({ ...parsedIntent, revisionMetadata: { ...parsedIntent.revisionMetadata, actorUserId: input.actorUserId } });
+    const canonicalProposalState = canonicalProductIntentStateSchema.parse(input.canonicalProposalState ?? canonicalProductIntentStateFromV1Draft(parsedIntent));
+    const authoritativeIntent = projectCanonicalProductIntentStateToV1Draft(parsedIntent, canonicalProposalState);
+    const actorBoundIntent = productDraftIntentSchema.parse({ ...authoritativeIntent, revisionMetadata: { ...authoritativeIntent.revisionMetadata, actorUserId: input.actorUserId } });
     const session = createProductIntentSession({ organizationId: input.organizationId, sessionId: proposalId, intent: actorBoundIntent, now: input.now });
-    const specification = specificationFor({ session, latestCompilerResult: input.compilerResult, latestUnresolvedQuestions: input.unresolvedQuestions, resolutionMetadata: input.resolutionMetadata });
+    const specification = specificationFor({ session, canonicalProposalState, latestCompilerResult: input.compilerResult, latestUnresolvedQuestions: input.unresolvedQuestions, resolutionMetadata: input.resolutionMetadata });
     let row: CanonicalProductIntentProposalRow;
     try {
       row = await this.store.insert({
@@ -176,13 +190,21 @@ export class ProductIntentPersistenceService {
     compilerResult?: ProductIntentCompilerResult;
     unresolvedQuestions?: z.infer<typeof unresolvedQuestionSetSchema>;
     resolutionMetadata?: Record<string, unknown>;
+    canonicalProposalState?: CanonicalProductIntentState;
     now?: Date;
   }): Promise<CanonicalProductIntentSession> {
     const current = await this.load(input);
     const session = current.specification.session;
     if (session.currentRevision !== input.expectedRevision || current.fingerprint !== input.expectedFingerprint) throw new ProductIntentPersistenceError("PRODUCT_INTENT_STALE_REVISION", "The product intent changed; review the latest revision.");
-    const nextSession = applyProductIntentSessionPatch({ envelope: session, patch: input.patch, reason: input.reason, actorUserId: input.actorUserId, now: input.now });
-    return this.persistTransition({ current, expectedRevision: input.expectedRevision, expectedFingerprint: input.expectedFingerprint, session: nextSession, actorUserId: input.actorUserId, latestCompilerResult: input.compilerResult, latestUnresolvedQuestions: input.unresolvedQuestions, resolutionMetadata: input.resolutionMetadata });
+    const patchedSession = applyProductIntentSessionPatch({ envelope: session, patch: input.patch, reason: input.reason, actorUserId: input.actorUserId, now: input.now });
+    const patchedIntent = currentProductIntent(patchedSession);
+    const canonicalProposalState = canonicalProductIntentStateSchema.parse(input.canonicalProposalState ?? canonicalProductIntentStateFromV1Draft(patchedIntent));
+    const authoritativeIntent = projectCanonicalProductIntentStateToV1Draft(patchedIntent, canonicalProposalState);
+    const nextSession = productIntentSessionEnvelopeSchema.parse({
+      ...patchedSession,
+      revisions: patchedSession.revisions.map((revision, index) => index === patchedSession.revisions.length - 1 ? { ...revision, intent: authoritativeIntent } : revision),
+    });
+    return this.persistTransition({ current, expectedRevision: input.expectedRevision, expectedFingerprint: input.expectedFingerprint, session: nextSession, canonicalProposalState, actorUserId: input.actorUserId, latestCompilerResult: input.compilerResult, latestUnresolvedQuestions: input.unresolvedQuestions, resolutionMetadata: input.resolutionMetadata });
   }
 
   async bindConfirmation(input: { organizationId: string; actorUserId: string; proposalId: string; expectedRevision: number; expectedFingerprint: string }): Promise<CanonicalProductIntentSession> {
@@ -218,6 +240,7 @@ export class ProductIntentPersistenceService {
     expectedRevision: number;
     expectedFingerprint: string;
     session: ProductIntentSessionEnvelope;
+    canonicalProposalState?: CanonicalProductIntentState;
     actorUserId: string;
     latestCompilerResult?: ProductIntentCompilerResult;
     latestUnresolvedQuestions?: z.infer<typeof unresolvedQuestionSetSchema>;
@@ -225,6 +248,7 @@ export class ProductIntentPersistenceService {
   }): Promise<CanonicalProductIntentSession> {
     const specification = specificationFor({
       session: input.session,
+      canonicalProposalState: input.canonicalProposalState ?? input.current.specification.canonicalProposalState,
       latestCompilerResult: input.latestCompilerResult ?? input.current.specification.latestCompilerResult,
       latestUnresolvedQuestions: input.latestUnresolvedQuestions ?? input.current.specification.latestUnresolvedQuestions,
       resolutionMetadata: input.resolutionMetadata ?? input.current.specification.resolutionMetadata,
@@ -246,6 +270,10 @@ export class ProductIntentPersistenceService {
     if (specification.session.organizationId !== row.organizationId || specification.session.sessionId !== row.id) throw new ProductIntentPersistenceError("PRODUCT_INTENT_SESSION_ID_MISMATCH", "The canonical product-intent session binding is invalid.");
     const expectedFingerprint = productDraftIntentFingerprint(currentProductIntent(specification.session));
     if (row.fingerprint !== expectedFingerprint) throw new ProductIntentPersistenceError("PRODUCT_INTENT_STALE_REVISION", "The canonical product-intent fingerprint is invalid.");
+    if (specification.canonicalProposalState) {
+      const projected = projectCanonicalProductIntentStateToV1Draft(currentProductIntent(specification.session), specification.canonicalProposalState);
+      if (productDraftIntentFingerprint(projected) !== expectedFingerprint) throw new ProductIntentPersistenceError("PRODUCT_INTENT_STALE_REVISION", "The canonical proposal state and compatibility projection are inconsistent.");
+    }
     return { proposalId: row.id, organizationId: row.organizationId, actorUserId, conversationId: row.conversationId, fingerprint: row.fingerprint, status: row.status, specification };
   }
 }

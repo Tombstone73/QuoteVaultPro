@@ -1,12 +1,15 @@
 import { z } from "zod";
-import { type ProductDraftIntent, type ProductDraftIntentPatch } from "@shared/productDraftIntent";
+import { productDraftIntentSchema, type ProductDraftIntent, type ProductDraftIntentPatch } from "@shared/productDraftIntent";
 import {
+  normalizeCanonicalProductConfigurationChanges,
   productConfigurationChangesSchema,
   type ProductConfigurationChanges,
 } from "../products/canonicalProductConfigurationOperations";
 import {
   applyPbv2OptionConfigurationMutations,
+  CanonicalPbv2OptionConfigurationError,
   pbv2OptionConfigurationMutationsSchema,
+  validateCanonicalPbv2OptionConfigurationTree,
   type Pbv2OptionConfigurationMutation,
 } from "../products/canonicalPbv2OptionConfigurationOperations";
 
@@ -40,6 +43,19 @@ export const canonicalProductIntentProposalSchema = z.object({
   "At least one Product intent proposal fragment is required.",
 );
 export type CanonicalProductIntentProposal = z.infer<typeof canonicalProductIntentProposalSchema>;
+/** Persisted pre-persistence state uses the same canonical proposal contract.
+ * Unlike an incremental proposal, this value is a complete snapshot of the
+ * already-migrated Product/PBV2 surface. */
+export const canonicalProductIntentStateSchema = z.object({
+  kind: z.literal("canonical_product_intent_proposal_state"),
+  productConfiguration: productConfigurationChangesSchema,
+  /** Each batch is the exact Phase 6 mutation input contract. Chunking keeps
+   * historical V1 drafts with more than one command-sized option set loadable
+   * without weakening the live operation's 24-mutation safety ceiling. */
+  pbv2OptionConfigurationBatches: z.array(pbv2OptionConfigurationMutationsSchema).default([]),
+  unsupportedDetails: z.array(unsupportedDetailSchema).default([]),
+}).strict();
+export type CanonicalProductIntentState = z.infer<typeof canonicalProductIntentStateSchema>;
 
 type SemanticOperation = Record<string, unknown> & { op: string };
 export type CanonicalProductIntentPlanningOptions = { categoryLabels?: readonly string[] };
@@ -221,7 +237,7 @@ export function buildCanonicalProductIntentProposal(
     }
   });
 
-  const parsedConfiguration = Object.keys(productConfiguration).length ? productConfigurationChangesSchema.parse(productConfiguration) : undefined;
+  const parsedConfiguration = Object.keys(productConfiguration).length ? normalizeCanonicalProductConfigurationChanges(productConfiguration) : undefined;
   const parsedMutations = mutations.length ? pbv2OptionConfigurationMutationsSchema.parse(mutations) : undefined;
   return canonicalProductIntentProposalSchema.parse({
     kind: "canonical_product_intent_proposal",
@@ -229,6 +245,65 @@ export function buildCanonicalProductIntentProposal(
     ...(parsedMutations ? { pbv2OptionConfiguration: parsedMutations } : {}),
     unsupportedDetails,
     compatibilityOperations,
+  });
+}
+
+const unsupportedMetadataPrefix = "unsupportedDetails.";
+
+function snapshotUnsupportedDetails(intent: ProductDraftIntent) {
+  const codes = new Set<"customer_specific_availability" | "grommet_quantity">();
+  if (intent.fieldMetadata[`${unsupportedMetadataPrefix}customer_specific_availability`]) codes.add("customer_specific_availability");
+  if (intent.fieldMetadata[`${unsupportedMetadataPrefix}grommet_quantity`]
+    || intent.unresolvedFields.some((field) => field.code === "GROMMET_QUANTITY_UNRESOLVED")) codes.add("grommet_quantity");
+  return Array.from(codes).map((code) => ({ code, blocking: false as const }));
+}
+
+/** Compatibility-only V1 reader. Historical ProductDraftIntent rows did not
+ * persist canonical proposal state, so migrated fields are imported once into
+ * the Phase 5/6 contract. New writes persist this state and project the legacy
+ * representation from it instead of maintaining two mutable truths. */
+export function canonicalProductIntentStateFromV1Draft(intentValue: unknown): CanonicalProductIntentState {
+  const intent = productDraftIntentSchema.parse(intentValue);
+  const productConfiguration = normalizeCanonicalProductConfigurationChanges({
+    name: intent.identity.name,
+    description: intent.identity.description,
+    category: intent.identity.category.label,
+    ...(intent.measurement.mode === "fixed_size" ? {} : { measurementMode: intent.measurement.mode }),
+    workflowIntent: intent.workflow.kind,
+    requiresProductionJob: intent.workflow.requiresProductionJob,
+    requiresProofApproval: intent.workflow.requiresProofApproval,
+  });
+  const parentGroups = new Map<string, { key: string; label: string }>();
+  for (const group of intent.optionGroups) {
+    const parentKey = group.parentGroupKey ?? group.key;
+    if (!parentGroups.has(parentKey)) {
+      const parent = intent.optionGroups.find((candidate) => candidate.key === parentKey);
+      parentGroups.set(parentKey, { key: parentKey, label: parent?.label ?? group.label });
+    }
+  }
+  const mutations: Pbv2OptionConfigurationMutation[] = [];
+  for (const group of parentGroups.values()) mutations.push({ kind: "add_group", group: { key: `${group.key}_group`, label: group.label } });
+  for (const group of intent.optionGroups) {
+    const defaults = group.values.filter((value) => value.isDefault).map((value) => value.key);
+    mutations.push({
+      kind: "add_input",
+      group: `${group.parentGroupKey ?? group.key}_group`,
+      input: {
+        selectionKey: group.key,
+        label: group.label,
+        type: group.inputType ?? (group.selectionMode === "multiple" ? "multiselect" : "select"),
+        required: group.required,
+        ...(group.inputType ? {} : { choices: group.values.map((value, sortOrder) => ({ value: value.key, label: value.label, sortOrder })) }),
+        ...(defaults.length ? { defaultValue: group.selectionMode === "multiple" ? defaults : defaults[0]! } : {}),
+        ...(group.availableWhen ? { visibilityRules: [{ type: "equals" as const, selectionKey: group.availableWhen.optionGroupKey, value: group.availableWhen.optionValueKey }] } : {}),
+      },
+    });
+  }
+  return canonicalProductIntentStateSchema.parse({
+    kind: "canonical_product_intent_proposal_state",
+    productConfiguration,
+    pbv2OptionConfigurationBatches: Array.from({ length: Math.ceil(mutations.length / 24) }, (_, index) => mutations.slice(index * 24, (index + 1) * 24)),
+    unsupportedDetails: snapshotUnsupportedDetails(intent),
   });
 }
 
@@ -281,6 +356,57 @@ function groupsFromTree(intent: ProductDraftIntent, tree: Record<string, any>): 
   });
 }
 
+/** Authoritative-state projection for consumers that still require the V1
+ * ProductDraftIntent revision contract. Pricing impacts are overlaid from the
+ * compatibility source; Product/PBV2 shape always comes from canonical state. */
+export function projectCanonicalProductIntentStateToV1Draft(
+  currentValue: unknown,
+  stateValue: unknown,
+): ProductDraftIntent {
+  const current = productDraftIntentSchema.parse(currentValue);
+  const state = canonicalProductIntentStateSchema.parse(stateValue);
+  const configuration = normalizeCanonicalProductConfigurationChanges(state.productConfiguration);
+  const category = configuration.category === undefined || configuration.category === null
+    ? current.identity.category
+    : normalized(current.identity.category.label) === normalized(configuration.category)
+      ? current.identity.category
+      : { state: "unresolved" as const, label: configuration.category };
+  const emptyTree: Record<string, unknown> = { schemaVersion: 2, status: "DRAFT", nodes: {}, edges: [], rootNodeIds: [] };
+  const tree = state.pbv2OptionConfigurationBatches.reduce<Record<string, any>>(
+    (working, batch) => applyPbv2OptionConfigurationMutations(working, batch).tree,
+    emptyTree,
+  );
+  const findings = validateCanonicalPbv2OptionConfigurationTree(tree, false);
+  if (findings.length) throw new CanonicalPbv2OptionConfigurationError("PBV2_CONFIGURATION_INVALID", "The pre-persistence PBV2 proposal state is invalid.", findings);
+  const unsupportedCodes = new Set(state.unsupportedDetails.map((detail) => detail.code));
+  const fieldMetadata = Object.fromEntries(Object.entries(current.fieldMetadata).filter(([path]) => !path.startsWith(unsupportedMetadataPrefix)));
+  for (const code of unsupportedCodes) fieldMetadata[`${unsupportedMetadataPrefix}${code}`] = { source: "explicit_user" };
+  let unresolvedFields = current.unresolvedFields.filter((field) => field.code !== "GROMMET_QUANTITY_UNRESOLVED");
+  if (unsupportedCodes.has("grommet_quantity")) unresolvedFields = [...unresolvedFields, {
+    path: "optionGroups.grommets.quantity",
+    code: "GROMMET_QUANTITY_UNRESOLVED",
+    question: "How should the requested counted grommet quantity be represented?",
+  }];
+  return productDraftIntentSchema.parse({
+    ...current,
+    identity: {
+      ...current.identity,
+      name: configuration.name ?? current.identity.name,
+      description: configuration.description ?? current.identity.description,
+      category,
+    },
+    measurement: configuration.measurementMode ? { mode: configuration.measurementMode } : current.measurement,
+    workflow: {
+      kind: configuration.workflowIntent ?? current.workflow.kind,
+      requiresProductionJob: configuration.requiresProductionJob ?? current.workflow.requiresProductionJob,
+      requiresProofApproval: configuration.requiresProofApproval ?? current.workflow.requiresProofApproval,
+    },
+    optionGroups: groupsFromTree(current, tree),
+    unresolvedFields,
+    fieldMetadata,
+  });
+}
+
 /** Applies only the shared Phase 5/6 proposal fragments to an unpublished
  * ProductDraftIntent. The canonical PBV2 transformer owns reference/default
  * validity; this adapter merely projects the resulting pre-persistence state
@@ -295,7 +421,9 @@ export function applyCanonicalProductIntentProposal(
   const operations: ProductDraftIntentPatch["operations"] = [];
   const metadata: ProductDraftIntent["fieldMetadata"] = {};
   const resolvedPaths = new Set<string>();
-  const configuration = proposal.productConfiguration as ProductConfigurationChanges | undefined;
+  const configuration = proposal.productConfiguration
+    ? normalizeCanonicalProductConfigurationChanges(proposal.productConfiguration) as ProductConfigurationChanges
+    : undefined;
   if (configuration) {
     if (configuration.name !== undefined || configuration.description !== undefined || configuration.category !== undefined) {
       operations.push({ op: "set_identity", value: {
@@ -314,9 +442,16 @@ export function applyCanonicalProductIntentProposal(
       metadata["measurement.mode"] = { source: "explicit_user" };
       resolvedPaths.add("measurement.mode");
     }
-    if (configuration.requiresProofApproval !== undefined) {
-      operations.push({ op: "set_workflow", value: { ...current.workflow, requiresProofApproval: configuration.requiresProofApproval } });
-      metadata["workflow.requiresProofApproval"] = { source: "explicit_user" };
+    if (configuration.workflowIntent !== undefined || configuration.requiresProductionJob !== undefined || configuration.requiresProofApproval !== undefined) {
+      operations.push({ op: "set_workflow", value: {
+        ...current.workflow,
+        ...(configuration.workflowIntent !== undefined ? { kind: configuration.workflowIntent } : {}),
+        ...(configuration.requiresProductionJob !== undefined ? { requiresProductionJob: configuration.requiresProductionJob } : {}),
+        ...(configuration.requiresProofApproval !== undefined ? { requiresProofApproval: configuration.requiresProofApproval } : {}),
+      } });
+      if (configuration.workflowIntent !== undefined) metadata["workflow.kind"] = { source: "explicit_user" };
+      if (configuration.requiresProductionJob !== undefined) metadata["workflow.requiresProductionJob"] = { source: "explicit_user" };
+      if (configuration.requiresProofApproval !== undefined) metadata["workflow.requiresProofApproval"] = { source: "explicit_user" };
     }
   }
   if (proposal.pbv2OptionConfiguration) {
@@ -338,6 +473,7 @@ export function applyCanonicalProductIntentProposal(
     const path = "optionGroups.grommets.quantity";
     if (!unresolved.some((field) => field.path === path)) unresolved = [...unresolved, { path, code: "GROMMET_QUANTITY_UNRESOLVED", question: "How should the requested counted grommet quantity be represented?" }];
   }
+  for (const detail of proposal.unsupportedDetails) metadata[`${unsupportedMetadataPrefix}${detail.code}`] = { source: "explicit_user" };
   if (JSON.stringify(unresolved) !== JSON.stringify(current.unresolvedFields)) operations.push({ op: "set_unresolved_fields", value: unresolved });
   if (Object.keys(metadata).length) operations.push({ op: "merge_field_metadata", value: metadata });
   return operations.length ? { contractVersion: 1, baseRevision, preserveUnchanged: true, operations } : null;
@@ -346,36 +482,50 @@ export function applyCanonicalProductIntentProposal(
 export function renderProductIntentCompilerMigrationMarkdown(): string {
   return `# ProductIntentCompiler responsibility migration
 
-> Generated from \`server/services/productIntentCompiler/productIntentCanonicalProposal.ts\`. The semantic layer interprets and plans; it is not capability or execution authority.
+> Generated from \`server/services/productIntentCompiler/productIntentCanonicalProposal.ts\`. Item 8 is architecturally complete: the semantic layer interprets and plans; it is not capability or execution authority.
 
-## Responsibility map
+## Final request path
 
-| Class | Responsibility | Phase 7 disposition | Owner |
-|---|---|---|---|
-| A | Natural-language interpretation, terminology, ambiguity and evidence | keep in semantic layer | ProductIntentCompiler / proposal planner |
-| B | Active draft, revisions, multi-turn continuity and trusted references | keep | canonical Product intent session |
-| C | Missing required information and non-blocking unresolved detail | keep | resolver plus semantic proposal context |
-| D | Product and option proposal construction | compose canonical structures | \`products.update_configuration.v1\` and \`products.update_option_configuration.v1\` schemas |
-| E | Product field validity and service-fee invariants | move to canonical Product operation; legacy initial projection temporarily retained | canonical Product service |
-| F | PBV2 references, defaults, selection keys and visibility validity | move to canonical PBV2 transformer/validator | canonical PBV2 service |
-| G | Tenant, actor, stale state, persistence, lifecycle and GO | never semantic-layer owned | authority, persistence, lifecycle and execution layers |
-| H | Pricing, material, deletion and legacy initial complete-intent projection | retain temporarily as compatibility | contained ProductDraftIntent adapter |
-| I | Unsupported underlying-model detail | preserve explicitly without poisoning supported work | semantic unresolved context |
+Both first-turn \`complete_intent\` compatibility payloads and multi-turn semantic operations now cross the same pre-persistence boundary:
+
+\`natural language -> canonical Product/PBV2 proposal state -> resolver/canonical validation -> V1 compatibility projection -> final creation projection\`
+
+The persisted \`canonicalProposalState\` is authoritative for migrated Product configuration and PBV2 shape. \`ProductDraftIntent\` remains the revision envelope and compatibility carrier required by the current resolver and final inactive-Product creation workflow.
+
+## Responsibility ownership
+
+| Owner | Final responsibility |
+|---|---|
+| ProductIntentCompiler / semantic planner | Natural-language interpretation, ambiguity, direct evidence, missing information, unsupported-detail preservation and proposal construction |
+| Canonical Product configuration | \`products.update_configuration.v1\` input shape for name, description, category/type, measurement mode, workflow intent, proof and production-job normalization/validation |
+| Canonical PBV2 option configuration | \`products.update_option_configuration.v1\` input shape for groups, inputs, choices, required/default state, text/textarea inputs, ordering and supported visibility reference validation |
+| Canonical Product intent session | Tenant/actor-bound revisions, continuity, CAS fingerprints, stale-state protection and resolver presentation |
+| Authority / lifecycle / execution | Capability truth, AI eligibility, GO, revalidation, idempotency, audit and final persisted execution |
 
 ## Semantic operation catalog
 
 | Status | Operations |
 |---|---|
 | Retained interpretation operations | set_product_name, set_product_description, set_category, set_measurement_mode, set_proof_requirement, add/rename option group, add option value/text input, set default, set availability, record unsupported detail |
-| Simplified through canonical proposal fragments | Product identity/configuration plus PBV2 groups, inputs, choices, defaults and simple visibility |
-| Compatibility only | set_material, pricing basis/rates/impacts/scalar price, remove option value/group, legacy set_matrix_rate |
-| Removed obsolete behavior | grommet phrase repair, implicit Yes/No choices, grommet-placement cleanup, provider operation-order requirement |
+| Canonical proposal-backed | Product identity/configuration plus PBV2 groups, inputs, choices, defaults, ordering and simple visibility |
+| Compatibility only | set_material, set_pricing_basis, set_scalar_price, set_option_rate/set_matrix_rate, set_option_price_impact, remove option value/group |
+| Removed obsolete behavior | Migrated-field branches in the compatibility translator, grommet phrase repair, implicit Yes/No choices, grommet-placement cleanup and provider operation-order requirements |
 
-## Remaining AI-specific Product logic
+## ProductDraftIntent classification
 
-- Initial provider \`complete_intent\` normalization and legacy ProductDraftIntent projection.
-- Pricing interpretation, matrix/rate compatibility, material resolution and delete safety.
-- Natural-language name/category evidence, unresolved-question generation and multi-turn revision presentation.
-- Final new-product projection remains compatible with the established ProductDraftIntent until later canonical pricing work.
+- **Canonical proposal-backed compatibility projection:** identity/configuration, workflow, measurement and PBV2 option groups/inputs/choices/defaults/visibility. These are regenerated from \`canonicalProposalState\` on new writes.
+- **Pricing compatibility:** scalar price, basis, matrices/rates, quantity tiers and option percentage impacts.
+- **Material compatibility:** material interpretation and tenant reference resolution.
+- **Lifecycle compatibility:** inactive/unpublished draft state, creation transport and final Product/PBV2 projection.
+- **Historical compatibility:** V1 JSONB rows without \`canonicalProposalState\` load unchanged and are imported through one explicit V1 adapter on their next write.
+- **Removed as capability truth:** independently mutable migrated Product/PBV2 fields and their dormant compatibility-translator handlers.
+
+## Unsupported and missing information
+
+Unsupported detail is stored in canonical proposal state. Customer-specific availability remains non-blocking, while counted grommet detail remains an explicit unresolved question because the underlying model cannot encode it. Required missing information, ambiguity, unresolved tenant references and partial multi-turn drafting remain semantic/resolver responsibilities.
+
+## Remaining Product-domain migration work
+
+Pricing, materials, lifecycle operations, deletion, clone/batch behavior and customer-specific configuration remain outside this closeout. They are compatibility-only candidates for item 9; they were not redesigned here.
 `;
 }

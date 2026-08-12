@@ -20,7 +20,7 @@ Existing option configuration uses the shared canonical PBV2 DRAFT operation. St
 
 ## Semantic drafting and persisted editing
 
-A new Product may be described over several turns before it has an ID. The Operator keeps draft continuity, missing information, trusted references, and unsupported detail while building shared Product/PBV2-shaped proposals. Optional detail is not a blocker; required information remains explicit. Proposals cannot grant execution: tenant, capability, lifecycle, stale-state, GO, and canonical validation still win.
+A new Product may be described in one request or over several turns before it has an ID. First-turn details and later corrections use the same shared Product/PBV2 proposal rules for Product configuration and option structure. The Operator keeps draft continuity, missing information, trusted references, and unsupported detail. Optional detail is not a blocker; required information remains explicit. Proposals cannot grant execution: tenant, capability, lifecycle, stale-state, GO, and canonical validation still win.
 
 ## Existing Product configuration
 

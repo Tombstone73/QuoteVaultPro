@@ -86,6 +86,11 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const persisted = result.session.specification.session.revisions[0]!.intent;
     expect(result.session.specification.session.currentRevision).toBe(0);
     expect(result.session.specification.session.revisions).toHaveLength(1);
+    expect(result.session.specification.canonicalProposalState).toMatchObject({
+      kind: "canonical_product_intent_proposal_state",
+      productConfiguration: { measurementMode: "dimensions_required", workflowIntent: "standard_production", requiresProductionJob: true, requiresProofApproval: false },
+    });
+    expect(result.session.specification.canonicalProposalState!.pbv2OptionConfigurationBatches.flat().filter((mutation) => mutation.kind === "add_input")).toHaveLength(3);
     expect(store.rows.size).toBe(1);
     expect(persisted).toMatchObject({ state: "needs_answers", measurement: { mode: "dimensions_required" }, quantity: { behavior: "customer_entered" }, material: { state: "explicitly_unset" }, production: { route: { state: "explicitly_unset" } }, workflow: { requiresProductionJob: true, requiresProofApproval: false } });
     expect(persisted.optionGroups.map((group) => group.key)).toEqual(["surface", "layers", "finishing"]);
@@ -820,6 +825,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(intent.optionGroups.find((group) => group.label === "Grommet Placement")?.values).toEqual([]);
     expect(created.issues).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.grommet_placement.values", code: "OPTION_GROUP_VALUES_UNRESOLVED" })]));
     expect(created.issues).not.toEqual(expect.arrayContaining([expect.objectContaining({ path: "identity.name" }), expect.objectContaining({ path: "pricing.model" })]));
+    expect(created.session.specification.canonicalProposalState!.unsupportedDetails).toEqual([{ code: "customer_specific_availability", blocking: false }]);
 
     const followUp = await service.applySemanticOperations({
       organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
@@ -845,6 +851,10 @@ describe("CanonicalProductIntentService compiler failures", () => {
     ]));
     expect(followedIntent.optionGroups.find((group) => group.label === "Grommet Placement")?.values).toEqual([{ key: "top_and_bottom", label: "Top and Bottom", isDefault: true }]);
     expect(followedIntent.unresolvedFields).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.grommets.quantity", code: "GROMMET_QUANTITY_UNRESOLVED" })]));
+    expect(followUp.session.specification.canonicalProposalState!.unsupportedDetails).toEqual([
+      { code: "customer_specific_availability", blocking: false },
+      { code: "grommet_quantity", blocking: false },
+    ]);
   });
 
   test("does not blame set_product_name when a later unsupported operation fails schema validation", async () => {

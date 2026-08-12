@@ -70,10 +70,18 @@ test("persists a continuation compiler JSON failure under its caller-issued pic 
 test("persists an initial canonical pipeline failure under the displayed compiler reference", async () => {
   persisted.length = 0; persistAiDiagnostic.mockClear();
   const { CanonicalProductIntentService } = await import("../services/productIntentCompiler/canonicalProductIntentService");
-  const compiler = { compile: jest.fn(async () => ({ ok: true, result: { kind: "complete_intent", intent: { revision: 0 } }, diagnostics: { correlationId: "pic-22222222-2222-4222-8222-222222222222", provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {}, attempts: 1, stage: "success" } })) } as any;
+  const initialIntent = {
+    contractVersion: 1, intentId: "intent_1", organizationId: "org_1", revision: 0, state: "ready_for_review", operation: "new_product",
+    identity: { name: "Test product", description: "", category: { state: "unresolved", label: "Product category" } },
+    lifecycle: { productStatus: "inactive", published: false }, measurement: { mode: "quantity_only" }, quantity: { behavior: "customer_entered", minimum: 1 },
+    pricing: { model: "scalar", unit: "per_piece", priceCents: 100 }, material: { state: "explicitly_unset" }, optionGroups: [],
+    workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true }, production: { route: { state: "explicitly_unset" }, configuration: {} },
+    visibility: { catalogVisible: false }, unresolvedFields: [], fieldMetadata: {}, revisionMetadata: { parentRevision: null }, operationContext: {},
+  };
+  const compiler = { compile: jest.fn(async () => ({ ok: true, result: { kind: "complete_intent", intent: initialIntent }, diagnostics: { correlationId: "pic-22222222-2222-4222-8222-222222222222", provider: "openai_compatible", model: "deepseek-v4-flash", requestMetadata: {}, attempts: 1, stage: "success" } })) } as any;
   const persistence = { create: jest.fn(async () => { const error: any = new Error("write conflict"); error.code = "PRODUCT_INTENT_CREATE_CONFLICT"; throw error; }) } as any;
   const service = new CanonicalProductIntentService(compiler, persistence, { categories: [], materials: [], productionRoutes: [] });
-  (service as any).validate = jest.fn(async () => ({ intent: { revision: 0 }, issues: [] }));
+  (service as any).validate = jest.fn(async (intent: unknown) => ({ intent, issues: [] }));
   (service as any).presentation = jest.fn(async () => ({ readiness: { ready: true, blockers: [], questions: [] } }));
 
   const outcome = await service.create({ organizationId: "org_1", actorUserId: "user_1", conversationId: "conversation_1", compilerInput: { orgId: "org_1", request: "Create a product", operationContext: {}, schemaDescription: "schema", allowedEnums: {}, supportedArchetypes: [] } });

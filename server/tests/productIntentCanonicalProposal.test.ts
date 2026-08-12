@@ -4,7 +4,9 @@ import path from "node:path";
 import {
   applyCanonicalProductIntentProposal,
   buildCanonicalProductIntentProposal,
+  canonicalProductIntentStateFromV1Draft,
   canonicalProductIntentProposalSchema,
+  projectCanonicalProductIntentStateToV1Draft,
   renderProductIntentCompilerMigrationMarkdown,
 } from "../services/productIntentCompiler/productIntentCanonicalProposal";
 import { compileSemanticProductOperations } from "../services/productIntentCompiler/semanticProductOperations";
@@ -109,6 +111,97 @@ describe("thin canonical Product intent proposal", () => {
     expect(() => buildCanonicalProductIntentProposal(draft, [{ op: "set_measurement_mode", mode: "invented" }])).toThrow();
     const proposal = buildCanonicalProductIntentProposal(draft, [{ op: "set_product_description", description: "Safe" }]);
     expect(() => applyCanonicalProductIntentProposal(draft, proposal, 2)).toThrow("STALE");
+  });
+
+  test("projects migrated Product/PBV2 fields from canonical state while preserving compatibility pricing and material", () => {
+    const source = productDraftIntentSchema.parse({
+      ...draft,
+      identity: { name: "Canonical Banner", description: "Canonical description", category: { state: "unresolved", label: "Roll Printing" } },
+      measurement: { mode: "dimensions_required" },
+      pricing: { model: "scalar", unit: "per_square_foot", priceCents: 900 },
+      material: { state: "unresolved", label: "13 oz Vinyl" },
+      workflow: { kind: "fulfillment_only", requiresProofApproval: true, requiresProductionJob: false },
+      optionGroups: [
+        { key: "finish", label: "Finish", required: true, selectionMode: "single", values: [{ key: "matte", label: "Matte", isDefault: true, priceImpact: { kind: "percentage_of_base", percent: 10 } }] },
+        { key: "notes", label: "Notes", parentGroupKey: "finish", inputType: "textarea", required: false, selectionMode: "single", values: [], availableWhen: { optionGroupKey: "finish", optionValueKey: "matte" } },
+      ],
+    });
+    const state = canonicalProductIntentStateFromV1Draft(source);
+    const staleCompatibility = productDraftIntentSchema.parse({
+      ...source,
+      identity: { name: "Stale legacy name", description: "", category: { state: "unresolved", label: "Wrong" } },
+      measurement: { mode: "quantity_only" },
+      workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true },
+      optionGroups: source.optionGroups.map((group) => group.key === "finish" ? { ...group, label: "Stale finish label", required: false } : group),
+    });
+    const projected = projectCanonicalProductIntentStateToV1Draft(staleCompatibility, state);
+    expect(projected).toMatchObject({
+      identity: { name: "Canonical Banner", description: "Canonical description", category: { label: "Roll Printing" } },
+      measurement: { mode: "dimensions_required" },
+      workflow: { kind: "fulfillment_only", requiresProofApproval: true, requiresProductionJob: false },
+      pricing: staleCompatibility.pricing,
+      material: staleCompatibility.material,
+    });
+    expect(projected.optionGroups).toEqual(source.optionGroups);
+  });
+
+  test("initial complete-intent import and equivalent continuation produce the same canonical proposal state", () => {
+    const operations = { kind: "semantic_operations", operations: [
+      { op: "set_product_name", name: "Conditional Banner" },
+      { op: "set_product_description", description: "Outdoor banner" },
+      { op: "set_category", category: "Roll Printing" },
+      { op: "set_measurement_mode", mode: "dimensions_required" },
+      { op: "set_proof_requirement", requiresProofApproval: true },
+      { op: "add_option_group", optionGroup: "Grommets", required: true, selectionMode: "single" },
+      { op: "add_option_value", optionGroup: "Grommets", value: "None" },
+      { op: "add_option_value", optionGroup: "Grommets", value: "Custom" },
+      { op: "set_option_default", optionGroup: "Grommets", value: "None" },
+      { op: "add_text_input", optionGroup: "Grommets", label: "Placement notes", multiline: true, required: false, whenOptionGroup: "Grommets", whenValue: "Custom" },
+    ] } as const;
+    const request = "Create Conditional Banner in Roll Printing. Outdoor banner, dimensions required, proof required. Add required Grommets with None and Custom, default None; when Custom show a Placement notes textarea.";
+    const continuation = applyProductDraftIntentPatch(draft, compileSemanticProductOperations(draft, operations, draft.revision, request, { categoryLabels: ["Roll Printing"] }));
+    const initialCompleteIntent = productDraftIntentSchema.parse({ ...continuation, revision: 0, revisionMetadata: { parentRevision: null } });
+    expect(canonicalProductIntentStateFromV1Draft(initialCompleteIntent)).toEqual(canonicalProductIntentStateFromV1Draft(continuation));
+  });
+
+  test("imports a large historical V1 option set in command-sized canonical PBV2 batches", () => {
+    const historical = productDraftIntentSchema.parse({
+      ...draft,
+      optionGroups: Array.from({ length: 13 }, (_, index) => ({
+        key: `option_${index + 1}`,
+        label: `Option ${index + 1}`,
+        required: false,
+        selectionMode: "single" as const,
+        values: [{ key: "none", label: "None", isDefault: true }],
+      })),
+    });
+    const state = canonicalProductIntentStateFromV1Draft(historical);
+    expect(state.pbv2OptionConfigurationBatches.map((batch) => batch.length)).toEqual([24, 2]);
+    expect(projectCanonicalProductIntentStateToV1Draft(historical, state).optionGroups).toEqual(historical.optionGroups);
+  });
+
+  test("uses canonical PBV2 validation for pre-persistence visibility references", () => {
+    const invalid = productDraftIntentSchema.parse({
+      ...draft,
+      optionGroups: [{
+        key: "finish", label: "Finish", required: false, selectionMode: "single",
+        values: [{ key: "matte", label: "Matte", isDefault: false }],
+        availableWhen: { optionGroupKey: "missing_group", optionValueKey: "missing_value" },
+      }],
+    });
+    const state = canonicalProductIntentStateFromV1Draft(invalid);
+    expect(() => projectCanonicalProductIntentStateToV1Draft(invalid, state)).toThrow("pre-persistence PBV2 proposal state is invalid");
+  });
+
+  test("preserves non-blocking unsupported detail in canonical state beside supported configuration", () => {
+    const proposal = buildCanonicalProductIntentProposal(draft, [
+      { op: "set_product_description", description: "Supported work" },
+      { op: "record_unsupported_detail", detail: "customer_specific_availability" },
+    ]);
+    const next = applyProductDraftIntentPatch(draft, applyCanonicalProductIntentProposal(draft, proposal, draft.revision)!);
+    expect(canonicalProductIntentStateFromV1Draft(next).unsupportedDetails).toEqual([{ code: "customer_specific_availability", blocking: false }]);
+    expect(next.identity.description).toBe("Supported work");
+    expect(next.unresolvedFields).not.toEqual(expect.arrayContaining([expect.objectContaining({ code: expect.stringContaining("CUSTOMER") })]));
   });
 
   test("keeps the generated responsibility report synchronized", () => {

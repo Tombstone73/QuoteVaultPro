@@ -1,33 +1,47 @@
 # ProductIntentCompiler responsibility migration
 
-> Generated from `server/services/productIntentCompiler/productIntentCanonicalProposal.ts`. The semantic layer interprets and plans; it is not capability or execution authority.
+> Generated from `server/services/productIntentCompiler/productIntentCanonicalProposal.ts`. Item 8 is architecturally complete: the semantic layer interprets and plans; it is not capability or execution authority.
 
-## Responsibility map
+## Final request path
 
-| Class | Responsibility | Phase 7 disposition | Owner |
-|---|---|---|---|
-| A | Natural-language interpretation, terminology, ambiguity and evidence | keep in semantic layer | ProductIntentCompiler / proposal planner |
-| B | Active draft, revisions, multi-turn continuity and trusted references | keep | canonical Product intent session |
-| C | Missing required information and non-blocking unresolved detail | keep | resolver plus semantic proposal context |
-| D | Product and option proposal construction | compose canonical structures | `products.update_configuration.v1` and `products.update_option_configuration.v1` schemas |
-| E | Product field validity and service-fee invariants | move to canonical Product operation; legacy initial projection temporarily retained | canonical Product service |
-| F | PBV2 references, defaults, selection keys and visibility validity | move to canonical PBV2 transformer/validator | canonical PBV2 service |
-| G | Tenant, actor, stale state, persistence, lifecycle and GO | never semantic-layer owned | authority, persistence, lifecycle and execution layers |
-| H | Pricing, material, deletion and legacy initial complete-intent projection | retain temporarily as compatibility | contained ProductDraftIntent adapter |
-| I | Unsupported underlying-model detail | preserve explicitly without poisoning supported work | semantic unresolved context |
+Both first-turn `complete_intent` compatibility payloads and multi-turn semantic operations now cross the same pre-persistence boundary:
+
+`natural language -> canonical Product/PBV2 proposal state -> resolver/canonical validation -> V1 compatibility projection -> final creation projection`
+
+The persisted `canonicalProposalState` is authoritative for migrated Product configuration and PBV2 shape. `ProductDraftIntent` remains the revision envelope and compatibility carrier required by the current resolver and final inactive-Product creation workflow.
+
+## Responsibility ownership
+
+| Owner | Final responsibility |
+|---|---|
+| ProductIntentCompiler / semantic planner | Natural-language interpretation, ambiguity, direct evidence, missing information, unsupported-detail preservation and proposal construction |
+| Canonical Product configuration | `products.update_configuration.v1` input shape for name, description, category/type, measurement mode, workflow intent, proof and production-job normalization/validation |
+| Canonical PBV2 option configuration | `products.update_option_configuration.v1` input shape for groups, inputs, choices, required/default state, text/textarea inputs, ordering and supported visibility reference validation |
+| Canonical Product intent session | Tenant/actor-bound revisions, continuity, CAS fingerprints, stale-state protection and resolver presentation |
+| Authority / lifecycle / execution | Capability truth, AI eligibility, GO, revalidation, idempotency, audit and final persisted execution |
 
 ## Semantic operation catalog
 
 | Status | Operations |
 |---|---|
 | Retained interpretation operations | set_product_name, set_product_description, set_category, set_measurement_mode, set_proof_requirement, add/rename option group, add option value/text input, set default, set availability, record unsupported detail |
-| Simplified through canonical proposal fragments | Product identity/configuration plus PBV2 groups, inputs, choices, defaults and simple visibility |
-| Compatibility only | set_material, pricing basis/rates/impacts/scalar price, remove option value/group, legacy set_matrix_rate |
-| Removed obsolete behavior | grommet phrase repair, implicit Yes/No choices, grommet-placement cleanup, provider operation-order requirement |
+| Canonical proposal-backed | Product identity/configuration plus PBV2 groups, inputs, choices, defaults, ordering and simple visibility |
+| Compatibility only | set_material, set_pricing_basis, set_scalar_price, set_option_rate/set_matrix_rate, set_option_price_impact, remove option value/group |
+| Removed obsolete behavior | Migrated-field branches in the compatibility translator, grommet phrase repair, implicit Yes/No choices, grommet-placement cleanup and provider operation-order requirements |
 
-## Remaining AI-specific Product logic
+## ProductDraftIntent classification
 
-- Initial provider `complete_intent` normalization and legacy ProductDraftIntent projection.
-- Pricing interpretation, matrix/rate compatibility, material resolution and delete safety.
-- Natural-language name/category evidence, unresolved-question generation and multi-turn revision presentation.
-- Final new-product projection remains compatible with the established ProductDraftIntent until later canonical pricing work.
+- **Canonical proposal-backed compatibility projection:** identity/configuration, workflow, measurement and PBV2 option groups/inputs/choices/defaults/visibility. These are regenerated from `canonicalProposalState` on new writes.
+- **Pricing compatibility:** scalar price, basis, matrices/rates, quantity tiers and option percentage impacts.
+- **Material compatibility:** material interpretation and tenant reference resolution.
+- **Lifecycle compatibility:** inactive/unpublished draft state, creation transport and final Product/PBV2 projection.
+- **Historical compatibility:** V1 JSONB rows without `canonicalProposalState` load unchanged and are imported through one explicit V1 adapter on their next write.
+- **Removed as capability truth:** independently mutable migrated Product/PBV2 fields and their dormant compatibility-translator handlers.
+
+## Unsupported and missing information
+
+Unsupported detail is stored in canonical proposal state. Customer-specific availability remains non-blocking, while counted grommet detail remains an explicit unresolved question because the underlying model cannot encode it. Required missing information, ambiguity, unresolved tenant references and partial multi-turn drafting remain semantic/resolver responsibilities.
+
+## Remaining Product-domain migration work
+
+Pricing, materials, lifecycle operations, deletion, clone/batch behavior and customer-specific configuration remain outside this closeout. They are compatibility-only candidates for item 9; they were not redesigned here.
