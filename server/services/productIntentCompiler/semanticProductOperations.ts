@@ -157,7 +157,7 @@ export function compileSemanticProductOperations(
   // Creation batches sometimes mention a value before the group that owns it.
   // Move only that dependency immediately before its dependent value; unrelated
   // operations retain their original provider order.
-  const semanticOperations = [...nameOperation, ...semantic.operations.filter((operation) => !(request && /\bgrommets?\s+with\s+placement\b/i.test(request) && operation.op === "add_option_value" && normalized(operation.optionGroup) === "grommet placement" && normalized(operation.value) === "grommets")), ...explicitGrommetFollowUpOperations(request, current)];
+  const semanticOperations = [...nameOperation, ...semantic.operations.filter((operation) => !(request && /\bgrommets?\s+with\s+placement\b/i.test(request) && operation.op === "add_option_value" && normalized(operation.optionGroup) === "grommet placement" && normalized(operation.value) === "grommets")).map((operation) => operation.op === "set_product_name" && explicitName ? { ...operation, name: explicitName } : operation), ...explicitGrommetFollowUpOperations(request, current)];
   const orderedOperations = [...semanticOperations];
   for (let changed = true; changed;) {
     changed = false;

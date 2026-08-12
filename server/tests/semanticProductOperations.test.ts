@@ -133,6 +133,12 @@ describe("semantic product operations", () => {
     expect(next.optionGroups[0]?.values.find((value) => value.isDefault)?.label).toBe("Single Sided");
   });
 
+  test("preserves the literal product-for name over a conflicting model paraphrase", () => {
+    const current = productDraftIntentSchema.parse({ ...translucentIntent, identity: { ...translucentIntent.identity, name: "Unfinished product draft" } });
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [{ op: "set_product_name", name: "Reflective Pole Signs" }] }, 4, 'Add a product for "Relective Pole Signs".');
+    expect(applyProductDraftIntentPatch(current, patch).identity.name).toBe("Relective Pole Signs");
+  });
+
   test("applies an out-of-order grommet continuation incrementally and treats duplicates as already satisfied", () => {
     const current = productDraftIntentSchema.parse({
       ...translucentIntent,
