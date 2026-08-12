@@ -132,6 +132,19 @@ describe("Assistant workspace presentation", () => {
     act(() => root.unmount());
   });
 
+  test("exposes a semantic product-operation diagnostic by its visible pso reference only to admins", async () => {
+    const fetchMock = jest.fn(async () => ({ ok: true, json: async () => ({ success: true, data: [{ referenceId: "pso-ae39a6f3-0127-4b59-b62c-7b5b793f1785", correlationId: "pso-ae39a6f3-0127-4b59-b62c-7b5b793f1785", diagnosticType: "product_intent_compiler", stage: "semantic_operation_validation", provider: null, model: null, parseMethod: "none", repairResult: "not_attempted", validationSchema: null, validationIssuePaths: [], validationIssueCodes: [], semanticBatch: { operationCount: 4, operationTypes: ["set_option_default", "add_option_value"], failingOperation: { index: 1, type: "set_option_default", targetLabels: ["Grommets", "Yes"], validationStage: "semantic_operation_execution", dependsOnPriorBatchOperation: true, failureCode: "PRODUCT_INTENT_SEMANTIC_OPTION_VALUE_UNRESOLVED" }, originalRevisionUnchanged: true }, persistenceResult: "not_attempted", createdAt: "2026-08-12T12:17:00.000Z" }] }) }));
+    (globalThis as any).fetch = fetchMock;
+    const cards = [{ kind: "product_validation_errors", title: "Product change could not be applied", summary: "No new revision was created.", sourceLinks: [], details: { errors: ["I could not apply that product change safely. Reference: pso-ae39a6f3-0127-4b59-b62c-7b5b793f1785."] } }];
+    const { container, root } = render(cards, { diagnosticsEnabled: true, correlationId: "pso-ae39a6f3-0127-4b59-b62c-7b5b793f1785", responseState: { kind: "validation_error", retryable: false, diagnosticsAvailable: true } });
+    const button = Array.from(container.querySelectorAll("button")).find((candidate) => candidate.textContent === "Technical diagnostics") as HTMLButtonElement;
+    await act(async () => { button.click(); await Promise.resolve(); });
+    expect(fetchMock).toHaveBeenCalledWith("/api/assistant/diagnostics/pso-ae39a6f3-0127-4b59-b62c-7b5b793f1785", { credentials: "include" });
+    expect(container.textContent).toContain("semantic_operation_validation");
+    expect(container.textContent).toContain("failed operation 1 (set_option_default) targeting Grommets / Yes");
+    act(() => root.unmount());
+  });
+
   test("terminates a canonical continuation diagnostic load failure", async () => {
     (globalThis as any).fetch = jest.fn(async () => ({ ok: false, json: async () => ({ success: false }) }));
     const cards = [{ kind: "product_validation_errors", title: "Canonical product intent needs correction", summary: "No new revision was created.", sourceLinks: [], details: { errors: ["Reference: pic-2957ab77-f9bc-4cc5-a18b-bfc8cb421aca"] } }];
