@@ -6314,7 +6314,11 @@ export async function registerOrderRoutes(
                     requestedTarget,
                     orderNumber: orderNumber ? String(orderNumber) : (order.orderNumber ? String(order.orderNumber) : undefined),
                     orderLineItemId: orderLineItemId ? String(orderLineItemId) : null,
-                    role: (role || 'other') as FileRole,
+                    // A file explicitly targeted to an order line item from this
+                    // artwork upload route is source artwork unless the caller
+                    // supplied a more specific compatibility role. Order-level
+                    // attachments remain non-artwork by default.
+                    role: (role || (orderLineItemId ? 'artwork' : 'other')) as FileRole,
                     side: (side || 'na') as FileSide,
                     isPrimary: isPrimary || false,
                     source: {
