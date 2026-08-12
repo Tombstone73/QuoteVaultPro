@@ -649,7 +649,7 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
             <Label htmlFor="customerId">Company</Label>
             <Select
               value={formData.customerId || "__unlinked__"}
-              onValueChange={(customerId) => setFormData({ ...formData, customerId: customerId === "__unlinked__" ? "" : customerId })}
+              onValueChange={(customerId) => setFormData((current) => ({ ...current, customerId: customerId === "__unlinked__" ? "" : customerId }))}
               disabled={customersLoading}
             >
               <SelectTrigger id="customerId">
@@ -675,7 +675,7 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
                 <Input
                   id="firstName"
                   value={formData.firstName}
-                  onChange={(e) => setFormData({ ...formData, firstName: e.target.value })}
+                  onChange={(e) => setFormData((current) => ({ ...current, firstName: e.target.value }))}
                   required
                 />
               </div>
@@ -684,7 +684,7 @@ function EditContactDialog({ contact, open, onOpenChange, onSave }: EditContactD
                 <Input
                   id="lastName"
                   value={formData.lastName}
-                  onChange={(e) => setFormData({ ...formData, lastName: e.target.value })}
+                  onChange={(e) => setFormData((current) => ({ ...current, lastName: e.target.value }))}
                   required
                 />
               </div>

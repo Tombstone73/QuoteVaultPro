@@ -1,7 +1,8 @@
 import { createHash } from "node:crypto";
-import { and, eq, ilike, sql } from "drizzle-orm";
-import { assistantCrmIntakeSessions, auditLogs, customerContactLinks, customerContacts, customers, type AssistantCrmIntakeSessionRow } from "@shared/schema";
+import { and, eq, ilike } from "drizzle-orm";
+import { assistantCrmIntakeSessions, customerContactLinks, customerContacts, customers, type AssistantCrmIntakeSessionRow } from "@shared/schema";
 import { db } from "../../db";
+import { canonicalCustomerContactOperations } from "../customers/canonicalCustomerContactOperations";
 
 export const crmCommandNames = ["customers.create", "customers.update_profile", "customers.update_commercial_terms", "contacts.create", "contacts.update"] as const;
 export type CrmCommandName = typeof crmCommandNames[number];
@@ -12,7 +13,6 @@ type Intake = { command: CrmCommandName; customer?: CustomerPatch; customerId?: 
 
 export class CrmManagementError extends Error { constructor(readonly code: string, message: string) { super(message); } }
 const hash = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
-const normalize = (value: string) => value.trim().toLocaleLowerCase();
 const profileFields = new Set(["companyName", "customerType", "email", "phone", "website", "notes", "assignedTo", "billingStreet1", "billingStreet2", "billingCity", "billingState", "billingPostalCode", "billingCountry", "shippingStreet1", "shippingStreet2", "shippingCity", "shippingState", "shippingPostalCode", "shippingCountry"]);
 const commercialFields = new Set(["pricingTier", "isTaxExempt", "taxExemptReason", "taxExemptCertificateRef", "taxRateOverride", "paymentTerms", "defaultDiscountPercent", "defaultMarkupPercent", "defaultMarginPercent", "blindShipping"]);
 
@@ -81,30 +81,72 @@ export class CrmManagementService {
     let expectedFingerprint = "new"; let changes: Array<{ field: string; before: unknown; after: unknown }> = [];
     if (intake.command === "customers.create") { assertPatch(intake.customer ?? {}, new Set(Array.from(profileFields).concat(Array.from(commercialFields))), "Customer creation"); validateCommercial(intake.customer ?? {}); changes = Object.entries(intake.customer ?? {}).map(([field, after]) => ({ field, before: null, after })); }
     else if (intake.command.startsWith("customers.")) { const customer = await this.customer(organizationId, intake.customerId ?? session.customerId ?? ""); const patch = intake.customer ?? {}; assertPatch(patch, intake.command === "customers.update_profile" ? profileFields : commercialFields, "Customer update"); if (intake.command === "customers.update_commercial_terms") validateCommercial(patch); expectedFingerprint = recordFingerprint(customer as unknown as Record<string, unknown>); sourceLinks.push({ label: `Open ${customer.companyName}`, href: `/customers/${customer.id}` }); changes = Object.entries(patch).map(([field, after]) => ({ field, before: (customer as any)[field] ?? null, after })); }
-    else { const patch = intake.contact ?? {}; if (intake.command === "contacts.create") { const customer = await this.customer(organizationId, intake.customerId ?? session.customerId ?? ""); sourceLinks.push({ label: `Open ${customer.companyName}`, href: `/customers/${customer.id}` }); if (!patch.firstName || !patch.lastName) throw new CrmManagementError("CONTACT_NAME_REQUIRED", "Contact first and last name are required."); await this.assertEmailUnique(organizationId, customer.id, patch.email ?? null); changes = Object.entries(patch).map(([field, after]) => ({ field, before: null, after })); } else { const contact = await this.contact(organizationId, intake.contactId ?? session.contactId ?? ""); if (!contact.customerId) throw new CrmManagementError("CONTACT_ORPHANED", "The contact no longer belongs to a customer."); expectedFingerprint = recordFingerprint(contact as unknown as Record<string, unknown>); await this.assertEmailUnique(organizationId, contact.customerId, patch.email ?? null, contact.id); sourceLinks.push({ label: `Open contact ${contact.firstName} ${contact.lastName}`, href: `/customers/${contact.customerId}` }); changes = Object.entries(patch).map(([field, after]) => ({ field, before: (contact as any)[field] ?? null, after })); } }
+    else { const patch = intake.contact ?? {}; if (intake.command === "contacts.create") { const customer = await this.customer(organizationId, intake.customerId ?? session.customerId ?? ""); sourceLinks.push({ label: `Open ${customer.companyName}`, href: `/customers/${customer.id}` }); if (!patch.firstName || !patch.lastName) throw new CrmManagementError("CONTACT_NAME_REQUIRED", "Contact first and last name are required."); await this.assertEmailUnique(organizationId, customer.id, patch.email ?? null); changes = Object.entries(patch).map(([field, after]) => ({ field, before: null, after })); } else { const contact = await this.contact(organizationId, intake.contactId ?? session.contactId ?? ""); const relationshipCustomerIds = await this.activeCustomerIdsForContact(organizationId, contact.id); const requestedCustomerId = intake.customerId ?? session.customerId ?? null; if (requestedCustomerId && !relationshipCustomerIds.includes(requestedCustomerId)) throw new CrmManagementError("CONTACT_RELATIONSHIP_NOT_FOUND", "The contact is not actively linked to the selected customer."); const relationshipCustomerId = requestedCustomerId ?? (relationshipCustomerIds.length === 1 ? relationshipCustomerIds[0] : null); if (!relationshipCustomerId && relationshipCustomerIds.length > 1 && (patch.role !== undefined || patch.isPrimary !== undefined)) throw new CrmManagementError("CONTACT_RELATIONSHIP_AMBIGUOUS", "Select the customer relationship whose role or primary state should change."); expectedFingerprint = recordFingerprint({ ...contact, relationshipCustomerIds }); if (relationshipCustomerId) await this.assertEmailUnique(organizationId, relationshipCustomerId, patch.email ?? null, contact.id); sourceLinks.push({ label: `Open contact ${contact.firstName} ${contact.lastName}`, href: relationshipCustomerId ? `/customers/${relationshipCustomerId}` : `/contacts/${contact.id}` }); changes = Object.entries(patch).map(([field, after]) => ({ field, before: (contact as any)[field] ?? null, after })); } }
     const proposalFingerprint = hash({ sessionId: session.id, command: intake.command, intake, expectedFingerprint, changes });
     return { crmIntakeSessionId: session.id, commandName: intake.command, proposalFingerprint, expectedFingerprint, changes, warnings: intake.warnings ?? [], duplicateCandidates: intake.duplicateCandidates ?? [], sourceLinks, summary: `${intake.command}: ${changes.map((change) => `${change.field} → ${String(change.after)}`).join(", ")}.`, downstreamActionsExcluded: ["quote_creation", "order_creation", "invoice_creation", "payment_processing", "production", "fulfillment"] };
   }
-  private async assertEmailUnique(organizationId: string, customerId: string, email: string | null, exceptId?: string) { if (!email?.trim()) return; const rows = await db.select({ id: customerContacts.id }).from(customerContacts).where(and(eq(customerContacts.organizationId, organizationId), eq(customerContacts.customerId, customerId), ilike(customerContacts.email, email.trim()))).limit(5); if (rows.some((row) => row.id !== exceptId)) throw new CrmManagementError("CONTACT_EMAIL_DUPLICATE", "A contact with that email already exists for this customer."); }
+  private async activeCustomerIdsForContact(organizationId: string, contactId: string) { const rows = await db.select({ customerId: customerContactLinks.customerId }).from(customerContactLinks).where(and(eq(customerContactLinks.organizationId, organizationId), eq(customerContactLinks.contactId, contactId), eq(customerContactLinks.status, "active"))); return rows.map((row) => row.customerId); }
+  private async assertEmailUnique(organizationId: string, customerId: string, email: string | null, exceptId?: string) { if (!email?.trim()) return; const rows = await db.select({ id: customerContacts.id }).from(customerContactLinks).innerJoin(customerContacts, and(eq(customerContacts.id, customerContactLinks.contactId), eq(customerContacts.organizationId, organizationId))).where(and(eq(customerContactLinks.organizationId, organizationId), eq(customerContactLinks.customerId, customerId), eq(customerContactLinks.status, "active"), ilike(customerContacts.email, email.trim()))).limit(5); if (rows.some((row) => row.id !== exceptId)) throw new CrmManagementError("CONTACT_EMAIL_DUPLICATE", "A contact with that email already exists for this customer."); }
   async revalidateProposal(input: { organizationId: string; crmIntakeSessionId: string; expectedProposalFingerprint: string }) { const session = await this.load(input.organizationId, input.crmIntakeSessionId); if (session.status !== "preview_ready") return { valid: false as const, code: "CRM_INTAKE_NOT_READY", summary: "The CRM proposal is no longer ready for confirmation." }; const proposal = await this.buildProposal(input.organizationId, session); return session.proposalFingerprint === input.expectedProposalFingerprint && proposal.proposalFingerprint === input.expectedProposalFingerprint ? { valid: true as const, proposal } : { valid: false as const, code: "CRM_PROPOSAL_STALE", summary: "The CRM record or proposal changed. Review a fresh preview." }; }
   async executeConfirmed(input: { organizationId: string; actorUserId: string; crmIntakeSessionId: string; proposalFingerprint: string }) {
     const session = await this.load(input.organizationId, input.crmIntakeSessionId); if (session.userId !== input.actorUserId) throw new CrmManagementError("CRM_SESSION_FORBIDDEN", "Only the user who prepared this CRM proposal can confirm it.");
     const intake = session.intakeJson as Intake;
     if (session.status === "created") { const id = intake.command.startsWith("contacts.") ? session.contactId : session.customerId; if (id) return { id, entityType: intake.command.startsWith("contacts.") ? "contact" : "customer", sourceLink: intake.command.startsWith("contacts.") ? `/customers/${session.customerId}` : `/customers/${id}` }; }
     const validation = await this.revalidateProposal({ organizationId: input.organizationId, crmIntakeSessionId: session.id, expectedProposalFingerprint: input.proposalFingerprint }); if (!validation.valid) throw new CrmManagementError(validation.code, validation.summary);
-    return db.transaction(async (tx) => {
-      let customerId = session.customerId; let contactId = session.contactId; const patch = intake.customer ?? {};
-      if (intake.command === "customers.create") { await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${input.organizationId}:customer:${normalize(String(patch.companyName))}`}))`); const dupes = await tx.select({ id: customers.id }).from(customers).where(and(eq(customers.organizationId, input.organizationId), ilike(customers.companyName, String(patch.companyName)))).limit(1); if (dupes[0]) throw new CrmManagementError("CUSTOMER_DUPLICATE", "A customer with that company name already exists."); const [customer] = await tx.insert(customers).values({ organizationId: input.organizationId, ...(patch as any), taxRateOverride: patch.taxRateOverride != null ? String(patch.taxRateOverride) : null, defaultDiscountPercent: patch.defaultDiscountPercent != null ? String(patch.defaultDiscountPercent) : null, defaultMarkupPercent: patch.defaultMarkupPercent != null ? String(patch.defaultMarkupPercent) : null, defaultMarginPercent: patch.defaultMarginPercent != null ? String(patch.defaultMarginPercent) : null }).returning(); customerId = customer.id; if (intake.initialContact) contactId = await this.createContactTx(tx, input.organizationId, customerId, intake.initialContact); }
-      else if (intake.command.startsWith("customers.")) { await tx.update(customers).set({ ...(patch as any), updatedAt: new Date() }).where(and(eq(customers.id, customerId!), eq(customers.organizationId, input.organizationId))); }
-      else if (intake.command === "contacts.create") contactId = await this.createContactTx(tx, input.organizationId, customerId!, intake.contact!);
-      else { const contactPatch = intake.contact!; const { isPrimary, role, ...fields } = contactPatch; await tx.update(customerContacts).set({ ...(fields as any), updatedAt: new Date() }).where(and(eq(customerContacts.id, contactId!), eq(customerContacts.organizationId, input.organizationId))); if (isPrimary !== undefined || role !== undefined) await this.updateContactLinkTx(tx, input.organizationId, customerId!, contactId!, isPrimary, role); }
-      await tx.update(assistantCrmIntakeSessions).set({ status: "created", customerId: customerId ?? null, contactId: contactId ?? null, updatedAt: new Date() }).where(eq(assistantCrmIntakeSessions.id, session.id));
-      const entityType = intake.command.startsWith("contacts.") ? "customer_contact" : "customer"; const entityId = intake.command.startsWith("contacts.") ? contactId! : customerId!;
-      await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, entityType, entityId, actionType: `assistant_${intake.command.replace(".", "_")}`, description: `Assistant confirmed ${intake.command} from CRM proposal ${session.id}.`, newValues: { assistantCrmIntakeSessionId: session.id, command: intake.command } });
-      return { id: entityId, entityType: intake.command.startsWith("contacts.") ? "contact" : "customer", sourceLink: intake.command.startsWith("contacts.") ? `/customers/${customerId}` : `/customers/${customerId}` };
-    });
+    let customerId = session.customerId;
+    let contactId = session.contactId;
+    const auditReference = `assistant-crm:${session.id}`;
+
+    if (intake.command === "customers.create") {
+      const result = await canonicalCustomerContactOperations.createCustomer({
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        customer: intake.customer ?? {},
+        primaryContact: intake.initialContact as any,
+        rejectExactDuplicate: true,
+        auditReference,
+      });
+      customerId = result.customer.id;
+      contactId = result.contact?.id ?? null;
+    } else if (intake.command.startsWith("customers.")) {
+      const customer = await canonicalCustomerContactOperations.updateCustomer({
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        customerId: customerId!,
+        patch: intake.customer ?? {},
+        auditReference,
+      });
+      customerId = customer.id;
+    } else if (intake.command === "contacts.create") {
+      const contactPatch = intake.contact!;
+      const { role, ...contact } = contactPatch;
+      const created = await canonicalCustomerContactOperations.createContact({
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        customerId: customerId!,
+        contact,
+        role,
+        auditReference,
+      });
+      contactId = created.id;
+    } else {
+      const contactPatch = intake.contact!;
+      const { role, ...patch } = contactPatch;
+      const updated = await canonicalCustomerContactOperations.updateContact({
+        organizationId: input.organizationId,
+        actorUserId: input.actorUserId,
+        contactId: contactId!,
+        customerId,
+        patch,
+        role,
+        auditReference,
+      });
+      contactId = updated.id;
+    }
+
+    await db.update(assistantCrmIntakeSessions).set({ status: "created", customerId: customerId ?? null, contactId: contactId ?? null, updatedAt: new Date() }).where(eq(assistantCrmIntakeSessions.id, session.id));
+    const entityId = intake.command.startsWith("contacts.") ? contactId! : customerId!;
+    return { id: entityId, entityType: intake.command.startsWith("contacts.") ? "contact" : "customer", sourceLink: customerId ? `/customers/${customerId}` : `/contacts/${contactId}` };
   }
-  private async createContactTx(tx: any, organizationId: string, customerId: string, contact: ContactPatch) { if (contact.email?.trim()) await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`${organizationId}:contact:${customerId}:${normalize(contact.email)}`}))`); await this.assertEmailUnique(organizationId, customerId, contact.email ?? null); if (contact.isPrimary) await tx.update(customerContactLinks).set({ isPrimary: false, updatedAt: new Date() }).where(and(eq(customerContactLinks.customerId, customerId), eq(customerContactLinks.status, "active"))); const { isPrimary, role, ...personFields } = contact; const [created] = await tx.insert(customerContacts).values({ organizationId, customerId, ...(personFields as any), isPrimary: false, status: "active" }).returning(); await tx.insert(customerContactLinks).values({ organizationId, customerId, contactId: created.id, status: "active", isPrimary: isPrimary === true, role: role ?? null }); return created.id; }
-  private async updateContactLinkTx(tx: any, organizationId: string, customerId: string, contactId: string, isPrimary?: boolean, role?: string | null) { if (isPrimary) await tx.update(customerContactLinks).set({ isPrimary: false, updatedAt: new Date() }).where(and(eq(customerContactLinks.customerId, customerId), eq(customerContactLinks.status, "active"), sql`${customerContactLinks.contactId} <> ${contactId}`)); await tx.update(customerContactLinks).set({ ...(isPrimary === undefined ? {} : { isPrimary }), ...(role === undefined ? {} : { role }), updatedAt: new Date() }).where(and(eq(customerContactLinks.organizationId, organizationId), eq(customerContactLinks.customerId, customerId), eq(customerContactLinks.contactId, contactId), eq(customerContactLinks.status, "active"))); }
 }
 export const crmManagementService = new CrmManagementService();

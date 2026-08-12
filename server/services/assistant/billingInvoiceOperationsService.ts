@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray, ne, sql } from "drizzle-orm";
+import { and, eq, inArray, ne } from "drizzle-orm";
 import {
   assistantBillingIntakeSessions,
-  auditLogs,
   customerContacts,
   customers,
   invoices,
@@ -12,12 +11,7 @@ import {
   type AssistantBillingIntakeSessionRow,
 } from "@shared/schema";
 import { db } from "../../db";
-import {
-  appendInvoiceInternalNoteForAssistant,
-  createInvoiceFromOrderInTransaction,
-  markInvoiceSentForAssistant,
-  updateInvoiceSafeDraftForAssistant,
-} from "../../invoicesService";
+import { canonicalInvoiceOperations } from "../billing/canonicalInvoiceOperations";
 import { resolveInvoiceFinancialEligibility } from "../orderBillingService";
 import { isCanceledOrder } from "@shared/operationalState";
 
@@ -131,6 +125,7 @@ export class BillingInvoiceOperationsService {
     if (intake.command === "billing.create_invoice") {
       const requestedOrderIds = Array.from(new Set(intake.orderIds ?? []));
       const requestedLineItemIds = Array.from(new Set(intake.lineItemIds ?? []));
+      if (requestedLineItemIds.length) throw new BillingInvoiceOperationError("PARTIAL_INVOICE_UNSUPPORTED", "Invoice creation is order-scoped; partial line-item invoicing is not supported.");
       if ((!requestedOrderIds.length && !requestedLineItemIds.length) || requestedOrderIds.length + requestedLineItemIds.length > 10) throw new BillingInvoiceOperationError("ORDER_REQUIRED", "Select between one and ten orders or line items.");
       const selectedLines = requestedLineItemIds.length
         ? await db.select({ id: orderLineItems.id, orderId: orderLineItems.orderId }).from(orderLineItems).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
@@ -188,48 +183,20 @@ export class BillingInvoiceOperationsService {
       const proposal = validation.proposal;
       const orderLinks = proposal.sourceLinks.filter((link) => link.href.startsWith("/orders/"));
       const orderIds = orderLinks.map((link) => link.href.split("/").pop()!).sort();
-      const createdLinks = await db.transaction(async (tx) => {
-        // Lock every requested order in a stable order before the duplicate check.
-        // This makes the multi-order proposal atomic even when concurrent invoice
-        // creation is attempted through another billing path.
-        for (const orderId of orderIds) {
-          await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${input.organizationId}:${orderId}`}))`);
-        }
-        const existing = await tx
-          .select({ id: invoices.id })
-          .from(invoices)
-          .where(and(
-            eq(invoices.organizationId, input.organizationId),
-            inArray(invoices.orderId, orderIds),
-            ne(invoices.status, "void"),
-          ));
-        if (existing.length > 0) {
-          throw new BillingInvoiceOperationError("INVOICE_ALREADY_EXISTS", "One or more selected orders already has an active invoice.");
-        }
-
-        const links: SourceLink[] = [];
-        for (const orderId of orderIds) {
-          const invoice = await createInvoiceFromOrderInTransaction(tx, input.organizationId, orderId, input.actorUserId, {
-            terms: "due_on_receipt",
-            customDueDate: null,
-          });
-          await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.actorUserId, actionType: "assistant_invoice_created", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Assistant created an invoice through canonical billing.", newValues: { orderId } as any } as any);
-          links.push(sourceLinkForInvoice(invoice.id), sourceLinkForOrder(orderId));
-        }
-        return links;
-      });
+      const created = await canonicalInvoiceOperations.createDraftsFromOrders({ organizationId: input.organizationId, actorUserId: input.actorUserId, orderIds, terms: "due_on_receipt", customDueDate: null, auditSource: "assistant" });
+      const createdLinks = created.flatMap((invoice: any) => [sourceLinkForInvoice(invoice.id), sourceLinkForOrder(String(invoice.orderId))]);
       sourceLinks.push(...createdLinks);
     } else if (intake.command === "billing.update_invoice_draft") {
       const patch = intake.patch!;
-      const result = await updateInvoiceSafeDraftForAssistant({ organizationId: input.organizationId, invoiceId: intake.invoiceId!, userId: input.actorUserId, patch: { ...patch, customDueDate: patch.customDueDate ? new Date(patch.customDueDate) : undefined } });
+      const result = await canonicalInvoiceOperations.updateSafeDraft({ organizationId: input.organizationId, invoiceId: intake.invoiceId!, actorUserId: input.actorUserId, patch: { ...patch, customDueDate: patch.customDueDate ? new Date(patch.customDueDate) : undefined } });
       if (!result.updated.orderId) throw new BillingInvoiceOperationError("ORDER_NOT_FOUND", "The invoice has no billable order context.");
       sourceLinks.push(sourceLinkForInvoice(result.updated.id), sourceLinkForOrder(result.updated.orderId));
     } else if (intake.command === "billing.send_invoice") {
-      const invoice = await markInvoiceSentForAssistant({ organizationId: input.organizationId, invoiceId: intake.invoiceId!, userId: input.actorUserId });
+      const invoice = await canonicalInvoiceOperations.markSent({ organizationId: input.organizationId, invoiceId: intake.invoiceId!, actorUserId: input.actorUserId });
       if (!invoice.orderId) throw new BillingInvoiceOperationError("ORDER_NOT_FOUND", "The invoice has no billable order context.");
       sourceLinks.push(sourceLinkForInvoice(invoice.id), sourceLinkForOrder(invoice.orderId));
     } else {
-      const result = await appendInvoiceInternalNoteForAssistant({ organizationId: input.organizationId, invoiceId: intake.invoiceId!, userId: input.actorUserId, note: intake.note!.trim() });
+      const result = await canonicalInvoiceOperations.addInternalNote({ organizationId: input.organizationId, invoiceId: intake.invoiceId!, actorUserId: input.actorUserId, note: intake.note!.trim() });
       if (!result.updated.orderId) throw new BillingInvoiceOperationError("ORDER_NOT_FOUND", "The invoice has no billable order context.");
       sourceLinks.push(sourceLinkForInvoice(result.updated.id), sourceLinkForOrder(result.updated.orderId));
     }

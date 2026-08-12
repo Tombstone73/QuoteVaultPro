@@ -37,6 +37,14 @@ import {
   CustomerIdentityConflictError,
   mergeDuplicateCustomers,
 } from "../services/customerCanonicalIdentityService";
+import {
+  CanonicalCustomerContactError,
+  canonicalCustomerContactOperations,
+} from "../services/customers/canonicalCustomerContactOperations";
+
+function getUserId(user: any): string | undefined {
+  return user?.claims?.sub || user?.id;
+}
 
 // =============================
 // Customer Production Folder Helpers
@@ -185,7 +193,11 @@ export function registerCustomerRoutes(
       const parsed = createCustomerWithContactSchema.parse(req.body);
       const { primaryContact, ...customerData } = parsed;
 
-      const result = await storage.createCustomerWithPrimaryContact(organizationId, {
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return res.status(401).json({ message: "Authenticated user is required" });
+      const result = await canonicalCustomerContactOperations.createCustomer({
+        organizationId,
+        actorUserId,
         customer: customerData,
         primaryContact: primaryContact || null,
       });
@@ -195,6 +207,9 @@ export function registerCustomerRoutes(
       if (error instanceof z.ZodError) {
         console.error("Zod validation error:", error.errors);
         return res.status(400).json({ message: fromZodError(error).message });
+      }
+      if (error instanceof CanonicalCustomerContactError) {
+        return res.status(error.statusCode).json({ message: error.message, code: error.code });
       }
       console.error("Error creating customer:", error);
       res.status(500).json({ message: "Failed to create customer" });
@@ -221,7 +236,14 @@ export function registerCustomerRoutes(
       }
 
       if (Object.keys(customerData).length > 0) {
-        await storage.updateCustomer(organizationId, req.params.id, customerData);
+        const actorUserId = getUserId(req.user);
+        if (!actorUserId) return res.status(401).json({ message: "Authenticated user is required" });
+        await canonicalCustomerContactOperations.updateCustomer({
+          organizationId,
+          actorUserId,
+          customerId: req.params.id,
+          patch: customerData,
+        });
       }
 
       if (localCompanyFolderPath !== undefined) {
@@ -238,6 +260,9 @@ export function registerCustomerRoutes(
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ message: fromZodError(error).message });
+      }
+      if (error instanceof CanonicalCustomerContactError) {
+        return res.status(error.statusCode).json({ message: error.message, code: error.code });
       }
       console.error("Error updating customer:", error);
       res.status(500).json({ message: "Failed to update customer" });

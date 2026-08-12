@@ -2,7 +2,7 @@ import type { Express } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
 import { auditLogs, companySettings, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema } from "../../shared/schema";
-import { applyPayment, createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus } from "../invoicesService";
+import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus } from "../invoicesService";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
 import { updateInvoiceReminderSettingsSchema } from "../../shared/schema";
@@ -26,6 +26,8 @@ import { createInvoicePdfEmailAttachment } from "../services/invoiceEmailAttachm
 import { buildInvoiceEmailHtml, buildInvoicePortalPaymentUrl } from "../services/invoiceEmailContent";
 import { getInvoiceOrderContext } from "../services/invoiceOrderContext";
 import { prepareSingleContactPortalAccessForInvoice } from "../services/customerPortalAccessService";
+import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoiceOperations";
+import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -167,64 +169,13 @@ export async function registerMvpInvoicingRoutes(
     userId?: string | null;
     userName?: string | null;
   }) {
-    const rel = await getInvoiceWithRelations(input.invoiceId);
-    if (!rel) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
-    const inv: any = rel.invoice;
-    if (inv.organizationId !== input.organizationId) {
-      throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
-    }
-
-    const status = String(inv.status || "").toLowerCase();
-    if (status === "void") throw Object.assign(new Error("Void invoices cannot be finalized"), { statusCode: 400 });
-    if (status !== "draft") return inv;
-
-    const issuedAt = new Date();
-    await db
-      .update(invoices)
-      .set({
-        status: "finalized",
-        issuedAt,
-        qbSyncStatus: "not_synced",
-        qbLastError: null,
-        updatedAt: new Date(),
-      } as any)
-      .where(and(eq(invoices.id, inv.id), eq(invoices.organizationId, input.organizationId)));
-
-    if (inv.orderId) {
-      await db
-        .update(orders)
-        .set({ billingStatus: "billed", updatedAt: sql`now()` as any } as any)
-        .where(and(eq(orders.id, inv.orderId), eq(orders.organizationId, input.organizationId)));
-
-      const { applyWorkflowStatusPillFailSoft } = await import("../services/workflowStatusPillService");
-      await applyWorkflowStatusPillFailSoft({
-        organizationId: input.organizationId,
-        orderId: String(inv.orderId),
-        triggerKey: "invoice_finalized",
-        actorUserId: String(input.userId || inv.createdByUserId),
-        actorUserName: input.userName || "System",
-        source: "system",
-        reason: "Invoice finalized",
-        metadata: { invoiceId: inv.id },
-      });
-    }
-
-    try {
-      await db.insert(auditLogs).values({
-        organizationId: input.organizationId,
-        userId: input.userId || null,
-        userName: input.userName || null,
-        actionType: "invoice_finalized",
-        entityType: "invoice",
-        entityId: inv.id,
-        entityName: String(inv.invoiceNumber),
-        description: "Invoice finalized",
-        createdAt: new Date(),
-      } as any);
-    } catch {}
-
-    const refreshed = await getInvoiceWithRelations(inv.id);
-    return refreshed?.invoice ?? { ...inv, status: "finalized", issuedAt };
+    if (!input.userId) throw Object.assign(new Error("Missing user"), { statusCode: 401 });
+    return canonicalInvoiceOperations.finalize({
+      organizationId: input.organizationId,
+      invoiceId: input.invoiceId,
+      actorUserId: input.userId,
+      actorUserName: input.userName,
+    });
   }
 
   async function sendInvoiceEmailForOperations(input: {
@@ -1121,85 +1072,34 @@ export async function registerMvpInvoicingRoutes(
         });
       }
 
-      const currency = String(inv.currency || 'USD');
-      const now = new Date();
+      if (!(canonicalManualPaymentMethodValues as readonly string[]).includes(body.method)) {
+        return res.status(400).json({ error: 'Unsupported manual payment method' });
+      }
+      const idempotencyKey = String(req.headers['idempotency-key'] || req.body?.idempotencyKey || '').trim();
+      if (!idempotencyKey) return res.status(400).json({ error: 'Idempotency-Key header is required', code: 'IDEMPOTENCY_KEY_REQUIRED' });
 
-      const [payment] = await db
-        .insert(payments)
-        .values({
-          organizationId,
-          invoiceId: inv.id,
-          provider: 'manual',
-          status: 'succeeded',
-          amount: (amountCents / 100).toFixed(2),
-          amountCents,
-          currency,
-          method: body.method,
-          notes: body.notes,
-          note: body.notes,
-          appliedAt,
-          paidAt: appliedAt,
-          succeededAt: appliedAt,
-          metadata: {
-            ...(body.reference ? { reference: body.reference } : {}),
-            importedQuickBooksInvoice: isImportedQuickBooksInvoice(inv),
-            qbInvoiceId: inv.qbInvoiceId || null,
-          },
-          createdByUserId: userId,
-          syncStatus: 'pending',
-          createdAt: now,
-          updatedAt: now,
-        } as any)
-        .returning();
-
-      const updatedInvoice = await refreshInvoiceStatus(inv.id);
-
-      const paymentRowsAfter = await db
-        .select()
-        .from(payments)
-        .where(and(eq(payments.invoiceId, inv.id), eq(payments.organizationId, organizationId)));
-
-      const rollup = computeInvoicePaymentRollup({
-        invoiceTotalCents: Number(inv.totalCents || 0),
-        payments: paymentRowsAfter.map((p: any) => ({
-          id: p.id,
-          status: String(p.status || 'succeeded'),
-          amountCents: Number(p.amountCents || 0),
-        })),
+      const canonicalResult = await canonicalPaymentOperations.recordManualPayment({
+        organizationId,
+        actorUserId: userId,
+        invoiceId: inv.id,
+        amountCents,
+        method: body.method,
+        appliedAt,
+        notes: body.notes,
+        reference: body.reference,
+        idempotencyKey: `ui:${idempotencyKey}`,
+        source: 'ui',
       });
 
-      try {
-        await db.insert(auditLogs).values({
-          organizationId,
-          userId: userId || null,
-          userName,
-          actionType: 'manual_payment_recorded',
-          entityType: 'invoice',
-          entityId: inv.id,
-          entityName: String(inv.invoiceNumber),
-          description: 'Manual payment recorded',
-          newValues: {
-            paymentId: payment?.id,
-            amountCents,
-            method: body.method,
-            appliedAt: appliedAt.toISOString(),
-            reference: body.reference || null,
-          } as any,
-          createdAt: now,
-        } as any);
-      } catch {}
-
-      return res.json({
-        success: true,
-        data: {
-          payment,
-          invoice: updatedInvoice,
-          rollup,
-        },
-      });
+      return res.json({ success: true, data: canonicalResult });
     } catch (error: any) {
       if (error?.name === 'ZodError') {
         return res.status(400).json({ error: error.message || 'Invalid request' });
+      }
+      if (error?.code) {
+        const conflictCodes = new Set(['INVOICE_NOT_PAYABLE', 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED', 'OVERPAYMENT_NOT_ALLOWED', 'IDEMPOTENCY_KEY_CONFLICT']);
+        const notFound = error.code === 'INVOICE_NOT_FOUND' || error.code === 'ORDER_NOT_FOUND';
+        return res.status(notFound ? 404 : conflictCodes.has(error.code) ? 409 : Number(error.statusCode || 400)).json({ error: error.message, code: error.code });
       }
       console.error('Error recording manual payment:', error);
       return res.status(500).json({ error: error.message || 'Failed to record manual payment' });
@@ -1803,10 +1703,7 @@ export async function registerMvpInvoicingRoutes(
         });
       }
 
-      const invoice = await createInvoiceFromOrder(organizationId, orderId, userId, {
-        terms: terms || "due_on_receipt",
-        customDueDate: customDueDate ? new Date(customDueDate) : null,
-      });
+      const [invoice] = await canonicalInvoiceOperations.createDraftsFromOrders({ organizationId, actorUserId: userId, orderIds: [orderId], terms: terms || "due_on_receipt", customDueDate: customDueDate ? new Date(customDueDate) : null, auditSource: "ui" });
 
       res.json({ success: true, data: invoice });
     } catch (error: any) {
@@ -2228,24 +2125,11 @@ export async function registerMvpInvoicingRoutes(
       const amt = amountCents !== undefined ? Number(amountCents) / 100 : Number(amount);
       if (!amt || !method) return res.status(400).json({ error: "amountCents/amount and method required" });
 
-      const payment = await applyPayment(inv.id, userId, { amount: amt, method, notes: note ?? notes });
-
-      try {
-        await db.insert(auditLogs).values({
-          organizationId,
-          userId: userId || null,
-          userName,
-          actionType: "payment_recorded",
-          entityType: "invoice",
-          entityId: inv.id,
-          entityName: String(inv.invoiceNumber),
-          description: "Payment recorded",
-          newValues: { amount: amt, method } as any,
-          createdAt: new Date(),
-        } as any);
-      } catch {}
-
-      res.json({ success: true, data: payment });
+      if (!(canonicalManualPaymentMethodValues as readonly string[]).includes(String(method))) return res.status(400).json({ error: "Unsupported manual payment method" });
+      const idempotencyKey = String(req.headers["idempotency-key"] || req.body?.idempotencyKey || "").trim();
+      if (!idempotencyKey) return res.status(400).json({ error: "Idempotency-Key header is required", code: "IDEMPOTENCY_KEY_REQUIRED" });
+      const result = await canonicalPaymentOperations.recordManualPayment({ organizationId, actorUserId: userId, invoiceId: inv.id, amountCents: Math.round(amt * 100), method, notes: note ?? notes, idempotencyKey: `ui:${idempotencyKey}`, source: "ui" });
+      res.json({ success: true, data: result.payment });
     } catch (error: any) {
       console.error("Error recording payment:", error);
       res.status(500).json({ error: error.message || "Failed to record payment" });
@@ -2277,6 +2161,24 @@ export async function registerMvpInvoicingRoutes(
       const isBilledUnpaid = existingStatus === "billed" && balanceDue > 0;
 
       const existingInvoiceVersion = Number(existing.invoiceVersion || 1);
+
+      const requestKeys = Object.keys(req.body || {});
+      const safeCanonicalKeys = new Set(["terms", "customDueDate", "notesPublic"]);
+      if (userId && existingStatus === "draft" && !isImportedQuickBooks && requestKeys.length > 0 && requestKeys.every((key) => safeCanonicalKeys.has(key))) {
+        const customDueDate = typeof req.body.customDueDate === "string" ? new Date(req.body.customDueDate) : undefined;
+        if (customDueDate && Number.isNaN(customDueDate.getTime())) return res.status(400).json({ error: "Invalid customDueDate" });
+        const result = await canonicalInvoiceOperations.updateSafeDraft({
+          organizationId,
+          actorUserId: userId,
+          invoiceId: id,
+          patch: {
+            ...(typeof req.body.terms === "string" ? { terms: req.body.terms } : {}),
+            ...(customDueDate ? { customDueDate } : {}),
+            ...(typeof req.body.notesPublic === "string" ? { notesPublic: req.body.notesPublic } : {}),
+          } as any,
+        });
+        return res.json({ success: true, data: result.updated });
+      }
 
       const updates: any = {};
       if (typeof req.body.notesPublic === "string") updates.notesPublic = req.body.notesPublic;
@@ -2501,41 +2403,8 @@ export async function registerMvpInvoicingRoutes(
         return res.status(400).json({ error: "Invalid via. Expected 'email' | 'manual' | 'portal'" });
       }
 
-      const rel = await getInvoiceWithRelations(id);
-      if (!rel) return res.status(404).json({ error: "Invoice not found" });
-      const inv: any = rel.invoice;
-      if (inv.organizationId !== organizationId) return res.status(404).json({ error: "Invoice not found" });
-
-      const now = new Date();
-      const invoiceVersion = Number(inv.invoiceVersion || 1);
-      const currentStatus = String(inv.status || "").toLowerCase();
-      const nextStatus = ["paid", "partially_paid", "void"].includes(currentStatus) ? currentStatus : "sent";
-
-      await db
-        .update(invoices)
-        .set({
-          status: nextStatus,
-          lastSentAt: now,
-          lastSentVersion: invoiceVersion,
-          lastSentVia: via,
-          updatedAt: now,
-        } as any)
-        .where(and(eq(invoices.id, id), eq(invoices.organizationId, organizationId)));
-
-      try {
-        await db.insert(auditLogs).values({
-          organizationId,
-          userId: userId || null,
-          userName,
-          actionType: "invoice.sent",
-          entityType: "invoice",
-          entityId: id,
-          entityName: String(inv.invoiceNumber),
-          description: "Invoice marked as sent",
-          newValues: { via, invoiceVersion } as any,
-          createdAt: now,
-        } as any);
-      } catch {}
+      if (!userId) return res.status(401).json({ error: "Missing user" });
+      await canonicalInvoiceOperations.markSent({ organizationId, actorUserId: userId, invoiceId: id, via });
 
       res.json({ success: true });
     } catch (error: any) {
@@ -2610,8 +2479,15 @@ export async function registerMvpInvoicingRoutes(
       if (!rel) return res.status(404).json({ error: 'Invoice not found' });
       if ((rel.invoice as any).organizationId !== organizationId) return res.status(404).json({ error: 'Invoice not found' });
 
-      const payment = await applyPayment(invoiceId, userId!, { amount: Number(amount), method, notes });
-      res.json({ success: true, data: payment });
+      if (!userId) return res.status(401).json({ error: 'Missing user' });
+      const importedPaymentBlockReason = getImportedQuickBooksPaymentBlockReason(rel.invoice as any, rel.payments as any);
+      if (importedPaymentBlockReason) return res.status(409).json({ error: importedPaymentBlockReason, code: 'IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED' });
+      if (!(canonicalManualPaymentMethodValues as readonly string[]).includes(String(method))) return res.status(400).json({ error: 'Unsupported manual payment method' });
+      const amountCents = Math.round(Number(amount) * 100);
+      const idempotencyKey = String(req.headers['idempotency-key'] || req.body?.idempotencyKey || '').trim();
+      if (!idempotencyKey) return res.status(400).json({ error: 'Idempotency-Key header is required', code: 'IDEMPOTENCY_KEY_REQUIRED' });
+      const result = await canonicalPaymentOperations.recordManualPayment({ organizationId, actorUserId: userId, invoiceId, amountCents, method, notes, idempotencyKey: `ui:${idempotencyKey}`, source: 'ui' });
+      res.json({ success: true, data: result.payment });
     } catch (error: any) {
       console.error('Error applying payment:', error);
       res.status(500).json({ error: error.message || 'Failed to apply payment' });

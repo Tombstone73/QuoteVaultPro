@@ -135,19 +135,19 @@ None.
 
 | Provisional capability | Mode | UI | AI | Tool / command | Permission | Parity |
 |---|---|---|---|---|---|---|
-| ai.command.billing.create_invoice | mutation | unknown | command_plan_only | billing.create_invoice | assistant.billing.create_invoice | partial_or_indirect |
-| ai.command.billing.update_invoice_draft | mutation | unknown | command_plan_only | billing.update_invoice_draft | assistant.billing.update_invoice_draft | partial_or_indirect |
-| ai.command.billing.send_invoice | mutation | unknown | command_plan_only | billing.send_invoice | assistant.billing.send_invoice | partial_or_indirect |
-| ai.command.billing.add_invoice_note | mutation | unknown | command_plan_only | billing.add_invoice_note | assistant.billing.add_invoice_note | partial_or_indirect |
-| ui.invoicing.manage_invoice | mutation | page_and_route | none | — | route_specific_or_unknown | partial_or_indirect |
+| ai.command.billing.create_invoice | mutation | unknown | command_plan_only | billing.create_invoice | assistant.billing.create_invoice | shared_canonical_today |
+| ai.command.billing.update_invoice_draft | mutation | unknown | command_plan_only | billing.update_invoice_draft | assistant.billing.update_invoice_draft | shared_canonical_today |
+| ai.command.billing.send_invoice | mutation | unknown | command_plan_only | billing.send_invoice | assistant.billing.send_invoice | shared_canonical_today |
+| ai.command.billing.add_invoice_note | mutation | unknown | command_plan_only | billing.add_invoice_note | assistant.billing.add_invoice_note | shared_canonical_today |
+| ui.invoicing.manage_invoice | mutation | page_and_route | command_plan_only | — | route_specific_or_unknown | partial_or_indirect |
 
 ### payments
 
 | Provisional capability | Mode | UI | AI | Tool / command | Permission | Parity |
 |---|---|---|---|---|---|---|
-| ai.command.payments.record_manual_payment | mutation | unknown | command_plan_only | payments.record_manual_payment | assistant.payments.record_manual_payment | partial_or_indirect |
-| ai.command.payments.add_payment_note | mutation | unknown | command_plan_only | payments.add_payment_note | assistant.payments.add_payment_note | partial_or_indirect |
-| ui.payments.record_and_manage | mutation | page_and_route | none | — | route_specific_or_unknown | partial_or_indirect |
+| ai.command.payments.record_manual_payment | mutation | unknown | command_plan_only | payments.record_manual_payment | assistant.payments.record_manual_payment | shared_canonical_today |
+| ai.command.payments.add_payment_note | mutation | unknown | command_plan_only | payments.add_payment_note | assistant.payments.add_payment_note | shared_canonical_today |
+| ui.payments.record_and_manage | mutation | page_and_route | command_plan_only | — | authenticated_tenant_user (UI); reviewed GO command subset (AI) | partial_or_indirect |
 
 ### customers
 
@@ -158,18 +158,18 @@ None.
 | ai.read.analytics.customer_product_sales | read | unknown | read_tool | analytics.customer_product_sales | finance_read | partial_or_indirect |
 | ai.read.analytics.customer_uninvoiced_orders | read | unknown | read_tool | analytics.customer_uninvoiced_orders | finance_read | partial_or_indirect |
 | ai.read.analytics.invoice_activity | read | unknown | read_tool | analytics.invoice_activity | finance_read | partial_or_indirect |
-| ai.command.customers.create | mutation | unknown | command_plan_only | customers.create | assistant.customers.create | partial_or_indirect |
-| ai.command.customers.update_profile | mutation | unknown | command_plan_only | customers.update_profile | assistant.customers.update_profile | partial_or_indirect |
-| ai.command.customers.update_commercial_terms | mutation | unknown | command_plan_only | customers.update_commercial_terms | assistant.customers.update_commercial_terms | partial_or_indirect |
-| ui.customers.manage_customer | mutation | page_and_route | none | — | route_specific_or_unknown | partial_or_indirect |
+| ai.command.customers.create | mutation | unknown | command_plan_only | customers.create | assistant.customers.create | shared_canonical_today |
+| ai.command.customers.update_profile | mutation | unknown | command_plan_only | customers.update_profile | assistant.customers.update_profile | shared_canonical_today |
+| ai.command.customers.update_commercial_terms | mutation | unknown | command_plan_only | customers.update_commercial_terms | assistant.customers.update_commercial_terms | shared_canonical_today |
+| ui.customers.manage_customer | mutation | page_and_route | command_plan_only | — | route_specific_or_unknown | partial_or_indirect |
 
 ### contacts
 
 | Provisional capability | Mode | UI | AI | Tool / command | Permission | Parity |
 |---|---|---|---|---|---|---|
-| ai.command.contacts.create | mutation | unknown | command_plan_only | contacts.create | assistant.contacts.create | partial_or_indirect |
-| ai.command.contacts.update | mutation | unknown | command_plan_only | contacts.update | assistant.contacts.update | partial_or_indirect |
-| ui.contacts.manage_contact_relationships | mutation | page_and_route | none | — | authenticated_tenant_user | partial_or_indirect |
+| ai.command.contacts.create | mutation | unknown | command_plan_only | contacts.create | assistant.contacts.create | shared_canonical_today |
+| ai.command.contacts.update | mutation | unknown | command_plan_only | contacts.update | assistant.contacts.update | shared_canonical_today |
+| ui.contacts.manage_contact_relationships | mutation | page_and_route | command_plan_only | — | authenticated_tenant_user | partial_or_indirect |
 
 ### materials
 

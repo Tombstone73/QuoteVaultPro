@@ -490,6 +490,7 @@ export default function InvoiceDetailPage() {
       await recordManualPayment.mutateAsync({
         invoiceId,
         amountCents,
+        idempotencyKey: crypto.randomUUID(),
         method: methodForBackend,
         appliedAt: manualAppliedAt ? new Date(manualAppliedAt).toISOString() : undefined,
         notes: methodNote,

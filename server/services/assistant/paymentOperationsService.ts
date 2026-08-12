@@ -10,13 +10,10 @@ import {
   type AssistantPaymentIntakeSessionRow,
 } from "@shared/schema";
 import { db } from "../../db";
-import {
-  appendPaymentNoteForAssistant,
-  assistantManualPaymentMethodValues,
-  recordManualPaymentForAssistant,
-  type AssistantManualPaymentMethod,
-} from "../../invoicesService";
+import { assistantManualPaymentMethodValues, type AssistantManualPaymentMethod } from "../../invoicesService";
 import { isCanceledOrder } from "@shared/operationalState";
+import { isPayableInvoiceStatus } from "@shared/paymentOrchestration";
+import { canonicalPaymentOperations } from "../billing/canonicalPaymentOperations";
 
 export const paymentOperationCommandNames = [
   "payments.record_manual_payment",
@@ -145,7 +142,7 @@ export class PaymentOperationsService {
       if (!intake.invoiceId || !intake.method || intake.amount === undefined) throw new PaymentOperationError("PAYMENT_INPUT_REQUIRED", "Invoice, amount, and method are required.");
       const context = await this.resolveInvoiceContext(organizationId, intake.invoiceId);
       const status = String(context.invoice.status || "").toLowerCase();
-      if (["void", "voided", "cancelled", "canceled", "paid"].includes(status)) throw new PaymentOperationError("INVOICE_NOT_PAYABLE", "This invoice cannot receive a manual payment in its current status.");
+      if (!isPayableInvoiceStatus(status)) throw new PaymentOperationError("INVOICE_NOT_PAYABLE", "This invoice cannot receive a manual payment in its current status.");
       if (isCanceledOrder(context.order)) throw new PaymentOperationError("ORDER_CANCELLED", "Cancelled orders cannot receive payments.");
       if (String((context.invoice as any).importSource || "").toLowerCase() === "quickbooks") throw new PaymentOperationError("IMPORTED_QB_PAYMENT_RECONCILIATION_REQUIRED", "Imported QuickBooks invoices must be reconciled from QuickBooks.");
       const due = Number(context.invoice.balanceDue ?? 0);
@@ -181,15 +178,17 @@ export class PaymentOperationsService {
     const intake = session.intakeJson as Intake;
     let sourceLinks: SourceLink[];
     if (intake.command === "payments.record_manual_payment") {
-      const payment = await recordManualPaymentForAssistant({
-        organizationId: input.organizationId, invoiceId: intake.invoiceId!, userId: input.actorUserId, amount: intake.amount!, method: intake.method!,
-        ...(intake.paidAt ? { paidAt: parseDate(intake.paidAt) } : {}), ...(intake.note ? { notes: intake.note } : {}),
+      const result = await canonicalPaymentOperations.recordManualPayment({
+        organizationId: input.organizationId, invoiceId: intake.invoiceId!, actorUserId: input.actorUserId, amountCents: Math.round(intake.amount! * 100), method: intake.method!,
+        ...(intake.paidAt ? { appliedAt: parseDate(intake.paidAt) } : {}), ...(intake.note ? { notes: intake.note } : {}),
         idempotencyKey: `assistant:${input.idempotencyKey}`,
+        source: "assistant",
       });
+      const payment = result.payment;
       const context = await this.resolveInvoiceContext(input.organizationId, payment.invoiceId);
       sourceLinks = [sourceLinkForPayment(payment.id), sourceLinkForInvoice(context.invoice.id), sourceLinkForCustomer(context.customer.id), sourceLinkForOrder(context.order.id)];
     } else {
-      const result = await appendPaymentNoteForAssistant({ organizationId: input.organizationId, paymentId: intake.paymentId!, userId: input.actorUserId, note: intake.note!.trim() });
+      const result = await canonicalPaymentOperations.addInternalNote({ organizationId: input.organizationId, paymentId: intake.paymentId!, actorUserId: input.actorUserId, note: intake.note!.trim() });
       const context = await this.resolveInvoiceContext(input.organizationId, result.updated.invoiceId);
       sourceLinks = [sourceLinkForPayment(result.updated.id), sourceLinkForInvoice(context.invoice.id), sourceLinkForCustomer(context.customer.id), sourceLinkForOrder(context.order.id)];
     }

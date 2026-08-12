@@ -47,6 +47,10 @@ import {
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
+  CanonicalCustomerContactError,
+  canonicalCustomerContactOperations,
+} from "../services/customers/canonicalCustomerContactOperations";
+import {
   safeIso as stmtSafeIso,
   normaliseDateTo,
   orderEffectiveDate,
@@ -195,7 +199,14 @@ export function registerCustomerRelationsRoutes(
       });
       const { organizationId: _ignoredOrganizationId, customerId, ...contactFields } = contactData;
       if (!customerId) return jsonError(res, 400, "Customer is required");
-      const contact = await storage.createCustomerContactForOrganization(organizationId, customerId, contactFields);
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return jsonError(res, 401, "Authenticated user is required");
+      const contact = await canonicalCustomerContactOperations.createContact({
+        organizationId,
+        actorUserId,
+        customerId,
+        contact: contactFields,
+      });
       res.json(contact);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -204,6 +215,7 @@ export function registerCustomerRelationsRoutes(
       if (error instanceof Error && error.message === "Customer not found") {
         return jsonError(res, 404, error.message);
       }
+      if (error instanceof CanonicalCustomerContactError) return jsonError(res, error.statusCode, error.message);
       console.error("Error creating customer contact:", error);
       jsonError(res, 500, "Failed to create customer contact");
     }
@@ -220,9 +232,14 @@ export function registerCustomerRelationsRoutes(
         isPrimary: false,
       });
       const { organizationId: _ignoredOrganizationId, customerId, ...contactFields } = contactData;
-      const contact = customerId
-        ? await storage.createCustomerContactForOrganization(organizationId, customerId, contactFields)
-        : await storage.createContactForOrganization(organizationId, contactFields);
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return jsonError(res, 401, "Authenticated user is required");
+      const contact = await canonicalCustomerContactOperations.createContact({
+        organizationId,
+        actorUserId,
+        customerId,
+        contact: contactFields,
+      });
       res.json(contact);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -231,6 +248,7 @@ export function registerCustomerRelationsRoutes(
       if (error instanceof Error && error.message === "Customer not found") {
         return jsonError(res, 404, error.message);
       }
+      if (error instanceof CanonicalCustomerContactError) return jsonError(res, error.statusCode, error.message);
       console.error("Error creating contact:", error);
       jsonError(res, 500, "Failed to create contact");
     }
@@ -371,7 +389,14 @@ export function registerCustomerRelationsRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return jsonError(res, 500, "Missing organization context");
       const contactData = updateCustomerContactSchema.parse(req.body);
-      const contact = await storage.updateCustomerContactForOrganization(organizationId, req.params.id, contactData);
+      const actorUserId = getUserId(req.user);
+      if (!actorUserId) return jsonError(res, 401, "Authenticated user is required");
+      const contact = await canonicalCustomerContactOperations.updateContact({
+        organizationId,
+        actorUserId,
+        contactId: req.params.id,
+        patch: contactData,
+      });
       res.json(contact);
     } catch (error) {
       if (error instanceof z.ZodError) {
@@ -380,6 +405,7 @@ export function registerCustomerRelationsRoutes(
       if (error instanceof Error && (error.message === "Customer contact not found" || error.message === "Customer not found")) {
         return jsonError(res, 404, error.message);
       }
+      if (error instanceof CanonicalCustomerContactError) return jsonError(res, error.statusCode, error.message);
       console.error("Error updating customer contact:", error);
       jsonError(res, 500, "Failed to update customer contact");
     }

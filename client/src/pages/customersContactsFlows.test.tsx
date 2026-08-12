@@ -281,7 +281,9 @@ test("Contacts Add Contact flow renders and submits a company-linked payload", a
     addButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
   });
 
-  const select = container.querySelector("select") as HTMLSelectElement;
+  const select = Array.from(container.querySelectorAll("select")).find((candidate) =>
+    Array.from(candidate.options).some((option) => option.value === "customer-2"),
+  ) as HTMLSelectElement;
   const form = container.querySelector("form") as HTMLFormElement;
   const firstName = form.querySelector("#firstName") as HTMLInputElement;
   const lastName = form.querySelector("#lastName") as HTMLInputElement;

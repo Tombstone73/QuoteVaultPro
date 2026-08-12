@@ -13,6 +13,7 @@ import { resolveOrderLineItemInvoicePricing } from './lib/downstreamEffectivePri
 import { getBillableBundleRoots } from './services/lineItemBundles';
 import type { BillingInvoiceMilestone, InvoiceCreationSource } from '../shared/billingInvoicePolicy';
 import { isCanceledOrder } from '../shared/operationalState';
+import { isPayableInvoiceStatus } from '../shared/paymentOrchestration';
 import {
   resolveBillingCustomerForOrder,
   writeContactAccountingPromotionAudit,
@@ -677,63 +678,68 @@ export async function createInvoiceFromOrder(
   return createInvoiceFromOrderImpl(organizationId, orderId, userId, opts);
 }
 
-export type AssistantSafeInvoiceDraftPatch = {
+export type CanonicalSafeInvoiceDraftPatch = {
   terms?: "due_on_receipt" | "net_15" | "net_30" | "net_45" | "custom";
   customDueDate?: Date | null;
   notesPublic?: string;
 };
 
-/** Canonical, non-financial draft edit boundary for assistant operations. */
-export async function updateInvoiceSafeDraftForAssistant(input: {
+/** Canonical, non-financial draft edit boundary shared by reviewed callers. */
+export async function updateInvoiceSafeDraftCanonical(input: {
   organizationId: string;
   invoiceId: string;
   userId: string;
-  patch: AssistantSafeInvoiceDraftPatch;
+  patch: CanonicalSafeInvoiceDraftPatch;
 }) {
-  const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
-  if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
-  if (String(invoice.status || "").toLowerCase() !== "draft") throw Object.assign(new Error("Only draft invoices can be edited."), { code: "INVOICE_NOT_EDITABLE" });
-  if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") throw Object.assign(new Error("Imported QuickBooks invoices are read-only."), { code: "INVOICE_IMPORTED_READ_ONLY" });
-
-  const updates: Record<string, unknown> = { updatedAt: new Date() };
-  if (input.patch.terms !== undefined) updates.terms = input.patch.terms;
-  if (input.patch.customDueDate !== undefined) updates.dueDate = input.patch.customDueDate;
-  if (input.patch.notesPublic !== undefined) updates.notesPublic = input.patch.notesPublic;
-  if (Object.keys(updates).length === 1) throw Object.assign(new Error("Provide at least one safe draft field to update."), { code: "INVOICE_PATCH_EMPTY" });
-
-  const [updated] = await db.update(invoices).set(updates as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
-  await db.insert(auditLogs).values({
-    organizationId: input.organizationId, userId: input.userId, actionType: "assistant_invoice_draft_updated", entityType: "invoice", entityId: invoice.id,
-    entityName: String(invoice.invoiceNumber), description: "Assistant updated safe draft invoice details.",
-    oldValues: { terms: invoice.terms, dueDate: invoice.dueDate, notesPublic: invoice.notesPublic } as any,
-    newValues: { terms: updated.terms, dueDate: updated.dueDate, notesPublic: updated.notesPublic } as any,
-  } as any);
-  return { previous: invoice, updated };
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${input.organizationId}:${input.invoiceId}`}))`);
+    const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
+    if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
+    if (String(invoice.status || "").toLowerCase() !== "draft") throw Object.assign(new Error("Only draft invoices can be edited."), { code: "INVOICE_NOT_EDITABLE" });
+    if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") throw Object.assign(new Error("Imported QuickBooks invoices are read-only."), { code: "INVOICE_IMPORTED_READ_ONLY" });
+    const updates: Record<string, unknown> = { updatedAt: new Date() };
+    if (input.patch.terms !== undefined) updates.terms = input.patch.terms;
+    if (input.patch.customDueDate !== undefined) updates.dueDate = input.patch.customDueDate;
+    if (input.patch.notesPublic !== undefined) updates.notesPublic = input.patch.notesPublic;
+    if (Object.keys(updates).length === 1) throw Object.assign(new Error("Provide at least one safe draft field to update."), { code: "INVOICE_PATCH_EMPTY" });
+    const [updated] = await tx.update(invoices).set(updates as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
+    await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "invoice_draft_updated", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Updated safe draft invoice details through the canonical Invoice operation.", oldValues: { terms: invoice.terms, dueDate: invoice.dueDate, notesPublic: invoice.notesPublic } as any, newValues: { terms: updated.terms, dueDate: updated.dueDate, notesPublic: updated.notesPublic } as any } as any);
+    return { previous: invoice, updated };
+  });
 }
 
 /** Canonical status-only send marker; never changes payment or financial state. */
-export async function markInvoiceSentForAssistant(input: { organizationId: string; invoiceId: string; userId: string }) {
-  const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
-  if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
-  const status = String(invoice.status || "").toLowerCase();
-  if (["void", "paid", "partially_paid"].includes(status)) throw Object.assign(new Error("This invoice cannot be marked sent in its current status."), { code: "INVOICE_NOT_SENDABLE" });
-  const now = new Date();
-  const [updated] = await db.update(invoices).set({ status: "sent", lastSentAt: now, lastSentVersion: Number((invoice as any).invoiceVersion || 1), lastSentVia: "manual", updatedAt: now } as any)
-    .where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
-  await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "assistant_invoice_marked_sent", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Assistant marked invoice as sent manually.", newValues: { via: "manual" } as any } as any);
-  return updated;
+export async function markInvoiceSentCanonical(input: { organizationId: string; invoiceId: string; userId: string; via?: "email" | "manual" | "portal" }) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${input.organizationId}:${input.invoiceId}`}))`);
+    const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
+    if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
+    const status = String(invoice.status || "").toLowerCase();
+    if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") throw Object.assign(new Error("Imported QuickBooks invoices are read-only."), { code: "INVOICE_IMPORTED_READ_ONLY" });
+    const now = new Date();
+    const via = input.via ?? "manual";
+    const nextStatus = ["void", "paid", "partially_paid"].includes(status) ? status : "sent";
+    const [updated] = await tx.update(invoices).set({ status: nextStatus as any, lastSentAt: now, lastSentVersion: Number((invoice as any).invoiceVersion || 1), lastSentVia: via, updatedAt: now } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
+    await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "invoice_marked_sent", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Marked invoice as sent through the canonical Invoice operation.", newValues: { via, invoiceVersion: Number((invoice as any).invoiceVersion || 1) } as any } as any);
+    return updated;
+  });
 }
 
 /** Appends an internal-only billing note without touching workflow or payment state. */
-export async function appendInvoiceInternalNoteForAssistant(input: { organizationId: string; invoiceId: string; userId: string; note: string }) {
-  const [invoice] = await db.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
-  if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
-  if (String(invoice.status || "").toLowerCase() === "void") throw Object.assign(new Error("Void invoices cannot be updated."), { code: "INVOICE_NOT_EDITABLE" });
-  const previous = String(invoice.notesInternal || "").trim();
-  const notesInternal = previous ? `${previous}\n${input.note}` : input.note;
-  const [updated] = await db.update(invoices).set({ notesInternal, updatedAt: new Date() } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
-  await db.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "assistant_invoice_internal_note_added", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Assistant added an internal invoice note.", newValues: { noteLength: input.note.length } as any } as any);
-  return { previousNotesInternal: invoice.notesInternal ?? null, updated };
+export async function appendInvoiceInternalNoteCanonical(input: { organizationId: string; invoiceId: string; userId: string; note: string }) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`invoice:${input.organizationId}:${input.invoiceId}`}))`);
+    const [invoice] = await tx.select().from(invoices).where(and(eq(invoices.id, input.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
+    if (!invoice) throw Object.assign(new Error("Invoice not found"), { code: "INVOICE_NOT_FOUND" });
+    if (String(invoice.status || "").toLowerCase() === "void") throw Object.assign(new Error("Void invoices cannot be updated."), { code: "INVOICE_NOT_EDITABLE" });
+    const note = input.note.trim();
+    if (!note) throw Object.assign(new Error("An invoice note is required."), { code: "INVOICE_NOTE_REQUIRED" });
+    const previous = String(invoice.notesInternal || "").trim();
+    const notesInternal = previous ? `${previous}\n${note}` : note;
+    const [updated] = await tx.update(invoices).set({ notesInternal, updatedAt: new Date() } as any).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId))).returning();
+    await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "invoice_internal_note_added", entityType: "invoice", entityId: invoice.id, entityName: String(invoice.invoiceNumber), description: "Added an internal invoice note through the canonical Invoice operation.", newValues: { noteLength: note.length } as any } as any);
+    return { previousNotesInternal: invoice.notesInternal ?? null, updated };
+  });
 }
 
 export async function getInvoiceWithRelations(id: string) {
@@ -822,6 +828,7 @@ export async function applyPayment(invoiceId: string, userId: string, data: { am
 
 export const assistantManualPaymentMethodValues = ["cash", "check", "wire", "bank_transfer", "other"] as const;
 export type AssistantManualPaymentMethod = typeof assistantManualPaymentMethodValues[number];
+export type CanonicalInternalManualPaymentMethod = AssistantManualPaymentMethod | "ach";
 
 /**
  * Canonical assistant boundary for internal/manual payment recording. It is
@@ -829,20 +836,23 @@ export type AssistantManualPaymentMethod = typeof assistantManualPaymentMethodVa
  * or a card/ACH processor, and it uses the payment provider idempotency key
  * already protected by a tenant-scoped unique index.
  */
-export async function recordManualPaymentForAssistant(input: {
+export async function recordManualPaymentCanonical(input: {
   organizationId: string;
   invoiceId: string;
   userId: string;
   amount: number;
-  method: AssistantManualPaymentMethod;
+  method: CanonicalInternalManualPaymentMethod;
   paidAt?: Date;
   notes?: string;
   idempotencyKey: string;
+  source?: "ui" | "assistant";
+  reference?: string;
 }) {
   if (!Number.isFinite(input.amount) || toCents(input.amount) <= 0) {
     throw Object.assign(new Error("Payment amount must be greater than zero."), { code: "PAYMENT_AMOUNT_INVALID" });
   }
-  if (!assistantManualPaymentMethodValues.includes(input.method)) {
+  const allowedMethods = input.source === "ui" ? [...assistantManualPaymentMethodValues, "ach"] : [...assistantManualPaymentMethodValues];
+  if (!allowedMethods.includes(input.method)) {
     throw Object.assign(new Error("This payment method is not available for assistant payment recording."), { code: "PAYMENT_METHOD_NOT_ALLOWED" });
   }
 
@@ -853,7 +863,13 @@ export async function recordManualPaymentForAssistant(input: {
       eq(payments.provider, "manual"),
       eq(payments.providerIdempotencyKey, input.idempotencyKey),
     )).limit(1);
-    if (existing) return { payment: existing, becamePaid: false, orderId: null as string | null, reused: true };
+    if (existing) {
+      if (existing.invoiceId !== input.invoiceId || Number(existing.amountCents || 0) !== toCents(input.amount) || String(existing.method) !== input.method) {
+        throw Object.assign(new Error("The idempotency key was already used for a different payment request."), { code: "IDEMPOTENCY_KEY_CONFLICT" });
+      }
+      const [existingInvoice] = await tx.select().from(invoices).where(and(eq(invoices.id, existing.invoiceId), eq(invoices.organizationId, input.organizationId))).limit(1);
+      return { payment: existing, becamePaid: String(existingInvoice?.status || "").toLowerCase() === "paid", orderId: existingInvoice?.orderId ? String(existingInvoice.orderId) : null, reused: true };
+    }
 
     const [invoice] = await tx.select().from(invoices).where(and(
       eq(invoices.id, input.invoiceId),
@@ -861,7 +877,7 @@ export async function recordManualPaymentForAssistant(input: {
     )).limit(1);
     if (!invoice) throw Object.assign(new Error("Invoice not found."), { code: "INVOICE_NOT_FOUND" });
     const invoiceStatus = String(invoice.status || "").toLowerCase();
-    if (["void", "voided", "cancelled", "canceled", "paid"].includes(invoiceStatus)) {
+    if (!isPayableInvoiceStatus(invoiceStatus)) {
       throw Object.assign(new Error("This invoice cannot receive a manual payment in its current status."), { code: "INVOICE_NOT_PAYABLE" });
     }
     if (String((invoice as any).importSource || "").toLowerCase() === "quickbooks") {
@@ -895,7 +911,7 @@ export async function recordManualPaymentForAssistant(input: {
       paidAt: input.paidAt ?? new Date(),
       createdByUserId: input.userId,
       syncStatus: "pending",
-      metadata: { source: "assistant_manual_payment" },
+      metadata: { source: `${input.source ?? "assistant"}_manual_payment`, ...(input.reference ? { reference: input.reference } : {}) },
     } as any).returning();
     const nextRows = [...paymentRows, payment] as any;
     const nextState = computeInvoiceFinancialState(invoice as any, nextRows);
@@ -906,10 +922,10 @@ export async function recordManualPaymentForAssistant(input: {
       updatedAt: new Date(),
     }).where(and(eq(invoices.id, invoice.id), eq(invoices.organizationId, input.organizationId)));
     await tx.insert(auditLogs).values({
-      organizationId: input.organizationId, userId: input.userId, actionType: "assistant_manual_payment_recorded",
+      organizationId: input.organizationId, userId: input.userId, actionType: "manual_payment_recorded",
       entityType: "payment", entityId: payment.id, entityName: String(invoice.invoiceNumber),
-      description: "Assistant recorded an internal manual payment through the canonical billing service.",
-      newValues: { invoiceId: invoice.id, amountCents, method: input.method } as any,
+      description: "Recorded an internal manual payment through the canonical Payment operation.",
+      newValues: { invoiceId: invoice.id, amountCents, method: input.method, source: input.source ?? "assistant", reference: input.reference ?? null } as any,
     } as any);
     return { payment, becamePaid: String(nextState.status).toLowerCase() === "paid", orderId: invoice.orderId ? String(invoice.orderId) : null, reused: false };
   });
@@ -925,20 +941,19 @@ export async function recordManualPaymentForAssistant(input: {
 }
 
 /** Canonical internal note boundary; it never changes payment or invoice state. */
-export async function appendPaymentNoteForAssistant(input: { organizationId: string; paymentId: string; userId: string; note: string }) {
-  const [payment] = await db.select().from(payments).where(and(eq(payments.id, input.paymentId), eq(payments.organizationId, input.organizationId))).limit(1);
-  if (!payment) throw Object.assign(new Error("Payment not found."), { code: "PAYMENT_NOT_FOUND" });
-  const trimmed = input.note.trim();
-  if (!trimmed) throw Object.assign(new Error("A payment note is required."), { code: "PAYMENT_NOTE_REQUIRED" });
-  const previous = String(payment.notes ?? payment.note ?? "").trim();
-  const notes = previous ? `${previous}\n${trimmed}` : trimmed;
-  const [updated] = await db.update(payments).set({ notes, note: notes, updatedAt: new Date() }).where(and(eq(payments.id, payment.id), eq(payments.organizationId, input.organizationId))).returning();
-  await db.insert(auditLogs).values({
-    organizationId: input.organizationId, userId: input.userId, actionType: "assistant_payment_note_added",
-    entityType: "payment", entityId: payment.id, entityName: payment.id,
-    description: "Assistant added an internal payment note without changing financial state.", newValues: { noteLength: trimmed.length } as any,
-  } as any);
-  return { previousNotes: payment.notes ?? payment.note ?? null, updated };
+export async function appendPaymentNoteCanonical(input: { organizationId: string; paymentId: string; userId: string; note: string }) {
+  return db.transaction(async (tx) => {
+    await tx.execute(sql`SELECT pg_advisory_xact_lock(hashtext(${`payment-note:${input.organizationId}:${input.paymentId}`}))`);
+    const [payment] = await tx.select().from(payments).where(and(eq(payments.id, input.paymentId), eq(payments.organizationId, input.organizationId))).limit(1);
+    if (!payment) throw Object.assign(new Error("Payment not found."), { code: "PAYMENT_NOT_FOUND" });
+    const trimmed = input.note.trim();
+    if (!trimmed) throw Object.assign(new Error("A payment note is required."), { code: "PAYMENT_NOTE_REQUIRED" });
+    const previous = String(payment.notes ?? payment.note ?? "").trim();
+    const notes = previous ? `${previous}\n${trimmed}` : trimmed;
+    const [updated] = await tx.update(payments).set({ notes, note: notes, updatedAt: new Date() }).where(and(eq(payments.id, payment.id), eq(payments.organizationId, input.organizationId))).returning();
+    await tx.insert(auditLogs).values({ organizationId: input.organizationId, userId: input.userId, actionType: "payment_note_added", entityType: "payment", entityId: payment.id, entityName: payment.id, description: "Added an internal payment note through the canonical Payment operation.", newValues: { noteLength: trimmed.length } as any } as any);
+    return { previousNotes: payment.notes ?? payment.note ?? null, updated };
+  });
 }
 
 export async function markInvoiceSent(id: string) {

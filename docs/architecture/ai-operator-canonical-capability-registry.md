@@ -50,11 +50,11 @@
 | capability.command.orders.create | orders | mutation | command | orders.create | assistant.orders.create | eligible | — | orders.operations | wrapped_existing |
 | capability.command.orders.update_editable | orders | mutation | command | orders.update_editable | assistant.orders.update_editable | eligible | — | orders.operations | wrapped_existing |
 | capability.command.quotes.convert_to_order | quotes | mutation | command | quotes.convert_to_order | assistant.quotes.convert_to_order | eligible | — | quotes.operations | wrapped_existing |
-| capability.command.customers.create | customers_contacts | mutation | command | customers.create | assistant.customers.create | eligible | — | customers.contacts | wrapped_existing |
-| capability.command.customers.update_profile | customers_contacts | mutation | command | customers.update_profile | assistant.customers.update_profile | eligible | — | customers.contacts | wrapped_existing |
-| capability.command.customers.update_commercial_terms | customers_contacts | mutation | command | customers.update_commercial_terms | assistant.customers.update_commercial_terms | eligible | — | customers.contacts | wrapped_existing |
-| capability.command.contacts.create | customers_contacts | mutation | command | contacts.create | assistant.contacts.create | eligible | — | customers.contacts | wrapped_existing |
-| capability.command.contacts.update | customers_contacts | mutation | command | contacts.update | assistant.contacts.update | eligible | — | customers.contacts | wrapped_existing |
+| capability.command.customers.create | customers_contacts | mutation | command | customers.create | assistant.customers.create | eligible | — | customers.contacts | shared_canonical |
+| capability.command.customers.update_profile | customers_contacts | mutation | command | customers.update_profile | assistant.customers.update_profile | eligible | — | customers.contacts | shared_canonical |
+| capability.command.customers.update_commercial_terms | customers_contacts | mutation | command | customers.update_commercial_terms | assistant.customers.update_commercial_terms | eligible | — | customers.contacts | shared_canonical |
+| capability.command.contacts.create | customers_contacts | mutation | command | contacts.create | assistant.contacts.create | eligible | — | customers.contacts | shared_canonical |
+| capability.command.contacts.update | customers_contacts | mutation | command | contacts.update | assistant.contacts.update | eligible | — | customers.contacts | shared_canonical |
 | capability.command.production.intake_line_items | production | mutation | command | production.intake_line_items | assistant.production.intake_line_items | eligible | — | production.operations | shared_canonical |
 | capability.command.production.send_to_prepress | production | mutation | command | production.send_to_prepress | assistant.production.send_to_prepress | eligible | — | production.operations | shared_canonical |
 | capability.command.production.update_job_status | production | mutation | command | production.update_job_status | assistant.production.update_job_status | eligible | — | production.operations | shared_canonical |
@@ -64,12 +64,12 @@
 | capability.command.fulfillment.mark_shipped | fulfillment | mutation | command | fulfillment.mark_shipped | assistant.fulfillment.mark_shipped | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.create_pickup_ticket | fulfillment | mutation | command | fulfillment.create_pickup_ticket | assistant.fulfillment.create_pickup_ticket | eligible | — | fulfillment.operations | shared_canonical |
 | capability.command.fulfillment.add_note | fulfillment | mutation | command | fulfillment.add_note | assistant.fulfillment.add_note | eligible | — | fulfillment.operations | shared_canonical |
-| capability.command.billing.create_invoice | invoicing | mutation | command | billing.create_invoice | assistant.billing.create_invoice | eligible | — | invoicing.operations | wrapped_existing |
-| capability.command.billing.update_invoice_draft | invoicing | mutation | command | billing.update_invoice_draft | assistant.billing.update_invoice_draft | eligible | — | invoicing.operations | wrapped_existing |
-| capability.command.billing.send_invoice | invoicing | mutation | command | billing.send_invoice | assistant.billing.send_invoice | eligible | — | invoicing.operations | wrapped_existing |
-| capability.command.billing.add_invoice_note | invoicing | mutation | command | billing.add_invoice_note | assistant.billing.add_invoice_note | eligible | — | invoicing.operations | wrapped_existing |
-| capability.command.payments.record_manual_payment | payments | mutation | command | payments.record_manual_payment | assistant.payments.record_manual_payment | eligible | — | payments.operations | wrapped_existing |
-| capability.command.payments.add_payment_note | payments | mutation | command | payments.add_payment_note | assistant.payments.add_payment_note | eligible | — | payments.operations | wrapped_existing |
+| capability.command.billing.create_invoice | invoicing | mutation | command | billing.create_invoice | assistant.billing.create_invoice | eligible | — | invoicing.operations | shared_canonical |
+| capability.command.billing.update_invoice_draft | invoicing | mutation | command | billing.update_invoice_draft | assistant.billing.update_invoice_draft | eligible | — | invoicing.operations | shared_canonical |
+| capability.command.billing.send_invoice | invoicing | mutation | command | billing.send_invoice | assistant.billing.send_invoice | eligible | — | invoicing.operations | shared_canonical |
+| capability.command.billing.add_invoice_note | invoicing | mutation | command | billing.add_invoice_note | assistant.billing.add_invoice_note | eligible | — | invoicing.operations | shared_canonical |
+| capability.command.payments.record_manual_payment | payments | mutation | command | payments.record_manual_payment | assistant.payments.record_manual_payment | eligible | — | payments.operations | shared_canonical |
+| capability.command.payments.add_payment_note | payments | mutation | command | payments.add_payment_note | assistant.payments.add_payment_note | eligible | — | payments.operations | shared_canonical |
 | capability.ui.products.activate | products | lifecycle | ui_compatibility | products.activate | products.activate | ineligible | — | products.pbv2 | compatibility_only |
 | capability.ui.settings.organization_preferences | settings_permissions | administrative | ui_compatibility | organization.preferences.update | organization.settings.update | ineligible | — | settings.permissions | compatibility_only |
 | capability.hard_deny.organization.delete | security | administrative | security_policy | organization.delete | — | hard_denied | Owner-only destructive organization action. | — | security_policy |

@@ -14,7 +14,7 @@
 | fulfillment | fulfillment.operations@v1 | partial | docs/knowledge/production-to-fulfillment.md<br>docs/knowledge/fulfillment-invoicing.md | No |
 | invoicing | invoicing.operations@v1 | partial | docs/knowledge/fulfillment-invoicing.md<br>docs/knowledge/invoicing-payments.md | No |
 | payments | payments.operations@v1 | partial | docs/knowledge/invoicing-payments.md | No |
-| customers_contacts | customers.contacts@v1 | minimal | docs/knowledge/customer-pricing-tax.md | Yes |
+| customers_contacts | customers.contacts@v1 | partial | docs/knowledge/customer-pricing-tax.md | No |
 | materials | materials.operations@v1 | partial | docs/knowledge/materials-sell-units.md | No |
 | settings_permissions | settings.permissions@v1 | partial | docs/knowledge/permissions-roles.md<br>docs/knowledge/customer-pricing-tax.md | No |
 | public_research | research.public@v1 | minimal | No domain manual | Yes |

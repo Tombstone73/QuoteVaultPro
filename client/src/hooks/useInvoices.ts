@@ -117,10 +117,11 @@ export function useRecordManualInvoicePayment() {
       appliedAt?: string;
       notes?: string;
       reference?: string;
+      idempotencyKey: string;
     }) => {
       const res = await fetch(`/api/invoices/${payload.invoiceId}/payments/manual`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': payload.idempotencyKey },
         body: JSON.stringify({
           amountCents: payload.amountCents,
           method: payload.method,
@@ -326,7 +327,7 @@ export function useApplyInvoicePayment() {
     mutationFn: async (payload: { invoiceId: string; amount: number; method: string; note?: string }) => {
       const res = await fetch(`/api/invoices/${payload.invoiceId}/payments`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify({ amount: payload.amount, method: payload.method, note: payload.note }),
         credentials: 'include',
       });
@@ -449,7 +450,7 @@ export function useApplyPayment() {
     mutationFn: async (payload: { invoiceId: string; amount: number; method: string; notes?: string }) => {
       const res = await fetch('/api/payments', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', 'Idempotency-Key': crypto.randomUUID() },
         body: JSON.stringify(payload),
         credentials: 'include',
       });
