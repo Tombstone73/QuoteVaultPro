@@ -1,17 +1,18 @@
 import { z } from "zod";
 import type { ExecutionCommandDefinition, ExecutionCommandResult, ExecutionPlanPreview } from "./types";
 import type { AssistantCommandDefinition } from "./commandRegistry";
-import { ExistingProductEditService, existingProductEditOperationsSchema } from "../existingProductEditService";
+import type { ExistingProductEditService } from "../existingProductEditService";
+import { existingProductEditOperationListSchema } from "../existingProductEditContract";
 
 export const existingProductEditCommandName = "products.update_existing_product" as const;
-const inputSchema = z.object({ productId: z.string().trim().min(1).max(128), operations: existingProductEditOperationsSchema.shape.operations, proposalFingerprint: z.string().regex(/^[a-f0-9]{64}$/i) }).strict();
+const inputSchema = z.object({ productId: z.string().trim().min(1).max(128), operations: existingProductEditOperationListSchema, proposalFingerprint: z.string().regex(/^[a-f0-9]{64}$/i) }).strict();
 type Input = z.infer<typeof inputSchema>;
 
 function preview(proposal: Awaited<ReturnType<ExistingProductEditService["buildProposal"]>>): ExecutionPlanPreview {
   const changeSummary = proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}`).join("; ");
   return {
     title: `Update existing product: ${proposal.productName}`,
-    summary: `${changeSummary}. This is a protected existing-product edit; no product, pricing rate, dependency, active-tree pointer, or lifecycle changes before GO.`,
+    summary: `${changeSummary}. This is a protected existing-product edit; no pricing rate, dependency, active-tree pointer, publishing, or activation changes before GO.`,
     sideEffects: proposal.changes.map((change) => `${change.field}: ${change.before} → ${change.after}.`),
     affectedRecords: [{ entityType: "product", entityId: proposal.productId, fingerprint: proposal.fingerprint }],
   } as ExecutionPlanPreview;
@@ -20,7 +21,7 @@ function preview(proposal: Awaited<ReturnType<ExistingProductEditService["buildP
 export function createExistingProductEditCommandDefinition(service: ExistingProductEditService): AssistantCommandDefinition<Input, unknown, unknown> {
   return {
     name: existingProductEditCommandName, version: "v1", domain: "products", mode: "write",
-    description: "Apply a confirmed semantic change to an existing product's current PBV2 DRAFT without creating a product or changing its active-tree lifecycle.",
+    description: "Apply a confirmed existing-product edit through the shared canonical Product configuration operation, or the temporary PBV2 DRAFT default compatibility operation.",
     risk: "high", requiredCapability: "assistant.products.update_existing_product", allowedRoles: ["owner", "admin"],
     inputSchema, previewSchema: z.unknown(), resultSchema: z.unknown(), maxAffectedRecords: 1, bulkAllowed: false,
     confirmationRequired: true, reauthenticationRequired: true, confirmationExpiresInMs: 10 * 60_000,
@@ -47,7 +48,7 @@ export function createExistingProductEditExecutionCommand(service: ExistingProdu
     async execute({ plan, scope }): Promise<ExecutionCommandResult> {
       const input = inputSchema.parse(plan.sanitizedArguments);
       const result = await service.execute({ organizationId: scope.organizationId, productId: input.productId, operations: { operations: input.operations }, expectedFingerprint: input.proposalFingerprint, userId: scope.userId });
-      return { status: "succeeded", summary: `Updated existing product ${result.productName}.`, details: { existingProductEdit: { productId: result.productId, changes: result.changes } } as any, steps: [{ commandName: `${existingProductEditCommandName}@v1`, status: "succeeded", summary: "Updated the current PBV2 DRAFT after GO." }] };
+      return { status: "succeeded", summary: `Updated existing product ${result.productName}.`, details: { existingProductEdit: { productId: result.productId, changes: result.changes, canonicalOperationReference: result.canonicalOperationReference ?? null } } as any, steps: [{ commandName: `${existingProductEditCommandName}@v1`, status: "succeeded", summary: result.canonicalOperationReference ? "Applied the shared canonical Product configuration operation after GO." : "Updated the current PBV2 DRAFT after GO." }] };
     },
   };
 }

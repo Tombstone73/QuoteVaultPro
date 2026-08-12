@@ -34,4 +34,14 @@ describe("existing product edit execution command", () => {
     await expect(command.buildPreview({ scope, arguments: input, context: {} as any })).rejects.toThrow("EXISTING_PRODUCT_EDIT_STALE");
     expect(service.execute).not.toHaveBeenCalled();
   });
+
+  test("keeps a canonical configuration proposal behind the same GO command", async () => {
+    const configurationInput = { productId: "product_1", operations: [{ op: "update_product_configuration", changes: { name: "Updated banner", requiresProofApproval: true } }], proposalFingerprint: fingerprint };
+    const canonicalProposal = { ...proposal, sourceLifecycle: "PRODUCT", canonicalOperationReference: "products.update_configuration.v1", expectedProductUpdatedAt: "2026-08-10T00:00:00.000Z", changes: [{ field: "name", before: "Translucent Vinyl", after: "Updated banner" }] };
+    const service = { revalidateProposal: jest.fn(async () => ({ valid: true as const, proposal: canonicalProposal })), execute: jest.fn(async () => canonicalProposal) } as any;
+    const command = createExistingProductEditExecutionCommand(service);
+    const result = await command.execute({ plan: { sanitizedArguments: configurationInput, id: "plan_1", idempotencyKey: "key", correlationId: "correlation" } as any, scope });
+    expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ operations: { operations: configurationInput.operations } }));
+    expect(result.steps[0]?.summary).toContain("shared canonical Product configuration");
+  });
 });

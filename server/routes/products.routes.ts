@@ -66,6 +66,7 @@ import {
   ProductParsingDescriptionGeneratorError,
   productParsingDescriptionGeneratorService,
 } from "../services/products/ProductParsingDescriptionGeneratorService";
+import { CanonicalProductConfigurationError, canonicalProductConfigurationOperations, takeCanonicalProductConfigurationChanges } from "../services/products/canonicalProductConfigurationOperations";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -2311,7 +2312,7 @@ export function registerProductRoutes(
       const productId = String(req.params.id);
 
       const parsedData = updateProductSchema.parse(req.body);
-      const existingProduct = await storage.getProductById(organizationId, productId);
+      let existingProduct = await storage.getProductById(organizationId, productId);
       if (!existingProduct) {
         return res.status(404).json({ success: false, message: "Product not found" });
       }
@@ -2325,6 +2326,22 @@ export function registerProductRoutes(
           productData[k] = v === "" ? null : v;
         }
       });
+
+      // Phase 5: Product Editor identity and operational configuration use the
+      // same transport-independent operation available to the AI GO adapter.
+      // Complex pricing/tree/lifecycle fields remain on their existing route
+      // path until their invariants are migrated as a coherent later slice.
+      const canonicalChanges = takeCanonicalProductConfigurationChanges(productData);
+      if (canonicalChanges) {
+        const actorUserId = getUserId(req.user);
+        if (!actorUserId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
+        const result = await canonicalProductConfigurationOperations.execute({
+          organizationId, actorUserId,
+          productId, changes: canonicalChanges,
+          auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` },
+        });
+        existingProduct = result.product;
+      }
 
       if (Object.prototype.hasOwnProperty.call(productData, "productTypeId")) {
         const knownProductTypeRows = await db
@@ -2361,7 +2378,7 @@ export function registerProductRoutes(
 
       // Guard: do not attempt an update with no fields.
       if (Object.keys(productData).length === 0) {
-        return res.status(400).json({ success: false, message: "No fields to update" });
+        return res.json(existingProduct);
       }
 
       // DEV-ONLY: Log productData before storage.updateProduct
@@ -2633,6 +2650,10 @@ export function registerProductRoutes(
     } catch (error) {
       if (error instanceof z.ZodError) {
         return res.status(400).json({ success: false, message: fromZodError(error).message, errors: error.errors });
+      }
+      if (error instanceof CanonicalProductConfigurationError) {
+        const status = error.code === "PRODUCT_NOT_FOUND" ? 404 : error.code === "PRODUCT_CONFIGURATION_STALE" ? 409 : 400;
+        return res.status(status).json({ success: false, code: error.code, message: error.message });
       }
 
       const errorId = (() => {

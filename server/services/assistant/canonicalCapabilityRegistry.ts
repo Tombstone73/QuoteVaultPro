@@ -37,7 +37,9 @@ export type CanonicalCapabilityDescriptor = {
   auditReference: string | "not_applicable";
   uiSurfaceReference: string | "unknown";
   aiExposure: "existing" | "not_exposed";
-  migrationStatus: "wrapped_existing" | "compatibility_only" | "security_policy";
+  migrationStatus: "wrapped_existing" | "shared_canonical" | "compatibility_only" | "security_policy";
+  canonicalOperationReference: string | "not_applicable";
+  parityStatus: "shared_canonical" | "ai_specific" | "ui_only_not_migrated" | "security_policy";
   aiEligibility: AiCapabilityEligibility;
   hardDenyReason: string | null;
   skillId: string | null;
@@ -89,6 +91,7 @@ const readCapabilities: readonly CanonicalCapabilityDescriptor[] = Array.from(as
     idempotency: "not_required", risk: tool.dataClassification === "restricted_finance" ? "moderate" : "low",
     lifecycleValidationReference: "not_applicable", handlerReference: "server/services/assistant/assistantToolAdapters.ts",
     auditReference: tool.auditCategory, uiSurfaceReference: "unknown", aiExposure: "existing", migrationStatus: "wrapped_existing",
+    canonicalOperationReference: "not_applicable", parityStatus: "ui_only_not_migrated",
     aiEligibility: "eligible", hardDenyReason: null, skillId: skillForDomain(domain),
   };
 });
@@ -102,15 +105,18 @@ const commandCapabilities: readonly CanonicalCapabilityDescriptor[] = assistantP
     outputSchemaReference: "server/services/assistant/execution/*Command.ts", requiredGrant,
     allowedOrganizationRoles: command.startsWith("products.") ? adminRoles : operationalRoles,
     tenantScope: "organization", confirmation: "go_required", idempotency: "server_generated_with_request_hash", risk: "high",
-    lifecycleValidationReference: "server/services/assistant/execution/*ExecutionCommand.ts", handlerReference: "AssistantCommandDefinition.adapter",
-    auditReference: "ExecutionPlanningService", uiSurfaceReference: "unknown", aiExposure: "existing", migrationStatus: "wrapped_existing",
+    lifecycleValidationReference: "server/services/assistant/execution/*ExecutionCommand.ts", handlerReference: command === "products.update_existing_product" ? "CanonicalProductConfigurationOperations.update" : "AssistantCommandDefinition.adapter",
+    auditReference: "ExecutionPlanningService", uiSurfaceReference: command === "products.update_existing_product" ? "Product Editor /api/products/:id" : "unknown", aiExposure: "existing",
+    migrationStatus: command === "products.update_existing_product" ? "shared_canonical" : "wrapped_existing",
+    canonicalOperationReference: command === "products.update_existing_product" ? "products.update_configuration.v1" : "not_applicable",
+    parityStatus: command === "products.update_existing_product" ? "shared_canonical" : "ai_specific",
     aiEligibility: "eligible", hardDenyReason: null, skillId: skillForDomain(domain),
   };
 });
 
 const ineligibleCapabilities: readonly CanonicalCapabilityDescriptor[] = [
-  { id: "capability.ui.products.activate", domain: "products", version: "v1", purpose: "Activate or publish a product configuration through the Product Editor.", mode: "lifecycle", source: "ui_compatibility", sourceId: "products.activate", inputSchemaReference: "server/routes/products.routes.ts", outputSchemaReference: "unknown", requiredGrant: "products.activate", allowedOrganizationRoles: adminRoles, tenantScope: "organization", confirmation: "not_required", idempotency: "not_required", risk: "high", lifecycleValidationReference: "server/routes/products.routes.ts", handlerReference: "not_applicable", auditReference: "unknown", uiSurfaceReference: "Product Editor", aiExposure: "not_exposed", migrationStatus: "compatibility_only", aiEligibility: "ineligible", hardDenyReason: null, skillId: "products.pbv2" },
-  { id: "capability.ui.settings.organization_preferences", domain: "settings_permissions", version: "v1", purpose: "Update organization preferences through settings UI.", mode: "administrative", source: "ui_compatibility", sourceId: "organization.preferences.update", inputSchemaReference: "server/routes/organization.routes.ts", outputSchemaReference: "unknown", requiredGrant: "organization.settings.update", allowedOrganizationRoles: adminRoles, tenantScope: "organization", confirmation: "not_required", idempotency: "not_required", risk: "high", lifecycleValidationReference: "not_applicable", handlerReference: "not_applicable", auditReference: "unknown", uiSurfaceReference: "Organization Settings", aiExposure: "not_exposed", migrationStatus: "compatibility_only", aiEligibility: "ineligible", hardDenyReason: null, skillId: "settings.permissions" },
+  { id: "capability.ui.products.activate", domain: "products", version: "v1", purpose: "Activate or publish a product configuration through the Product Editor.", mode: "lifecycle", source: "ui_compatibility", sourceId: "products.activate", inputSchemaReference: "server/routes/products.routes.ts", outputSchemaReference: "unknown", requiredGrant: "products.activate", allowedOrganizationRoles: adminRoles, tenantScope: "organization", confirmation: "not_required", idempotency: "not_required", risk: "high", lifecycleValidationReference: "server/routes/products.routes.ts", handlerReference: "not_applicable", auditReference: "unknown", uiSurfaceReference: "Product Editor", aiExposure: "not_exposed", migrationStatus: "compatibility_only", canonicalOperationReference: "not_applicable", parityStatus: "ui_only_not_migrated", aiEligibility: "ineligible", hardDenyReason: null, skillId: "products.pbv2" },
+  { id: "capability.ui.settings.organization_preferences", domain: "settings_permissions", version: "v1", purpose: "Update organization preferences through settings UI.", mode: "administrative", source: "ui_compatibility", sourceId: "organization.preferences.update", inputSchemaReference: "server/routes/organization.routes.ts", outputSchemaReference: "unknown", requiredGrant: "organization.settings.update", allowedOrganizationRoles: adminRoles, tenantScope: "organization", confirmation: "not_required", idempotency: "not_required", risk: "high", lifecycleValidationReference: "not_applicable", handlerReference: "not_applicable", auditReference: "unknown", uiSurfaceReference: "Organization Settings", aiExposure: "not_exposed", migrationStatus: "compatibility_only", canonicalOperationReference: "not_applicable", parityStatus: "ui_only_not_migrated", aiEligibility: "ineligible", hardDenyReason: null, skillId: "settings.permissions" },
 ];
 
 const hardDeniedCapabilities: readonly CanonicalCapabilityDescriptor[] = [
@@ -128,7 +134,7 @@ const hardDeniedCapabilities: readonly CanonicalCapabilityDescriptor[] = [
   confirmation: "not_required" as const, idempotency: "not_required" as const, risk: "critical" as const,
   lifecycleValidationReference: "not_applicable" as const, handlerReference: "not_applicable" as const, auditReference: "security_policy" as const,
   uiSurfaceReference: "unknown" as const, aiExposure: "not_exposed" as const, migrationStatus: "security_policy" as const,
-  aiEligibility: "hard_denied" as const, hardDenyReason, skillId: null,
+  aiEligibility: "hard_denied" as const, hardDenyReason, skillId: null, canonicalOperationReference: "not_applicable" as const, parityStatus: "security_policy" as const,
 }));
 
 export const canonicalCapabilityRegistry = Object.freeze([...readCapabilities, ...commandCapabilities, ...ineligibleCapabilities, ...hardDeniedCapabilities] as const);

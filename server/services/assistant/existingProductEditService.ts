@@ -1,9 +1,10 @@
 import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { z } from "zod";
 import { pbv2TreeVersions, products } from "@shared/schema";
-import { db } from "../../db";
 import { loadCurrentPbv2DraftTreeVersion } from "../pricing/PricingService";
+import { CanonicalProductConfigurationError, canonicalProductConfigurationOperations, type ProductConfigurationChanges } from "../products/canonicalProductConfigurationOperations";
+import { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
+export { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
 
 /**
  * This is deliberately the narrow first existing-product operation.  It uses
@@ -11,23 +12,15 @@ import { loadCurrentPbv2DraftTreeVersion } from "../pricing/PricingService";
  * target is the Product Editor's current linked PBV2 DRAFT rather than an
  * unfinished new-product intent.
  */
-export const existingProductEditOperationsSchema = z.object({
-  operations: z.array(z.object({
-    op: z.literal("set_option_default"),
-    optionGroup: z.string().trim().min(1).max(160),
-    value: z.string().trim().min(1).max(160),
-  }).strict()).min(1).max(12),
-}).strict();
-
-export type ExistingProductEditOperations = z.infer<typeof existingProductEditOperationsSchema>;
-
 export type ExistingProductEditProposal = {
   productId: string;
   productName: string;
   productActive: boolean;
-  treeId: string;
-  treeUpdatedAt: string;
-  sourceLifecycle: "DRAFT" | "ACTIVE";
+  treeId?: string;
+  treeUpdatedAt?: string;
+  sourceLifecycle: "DRAFT" | "ACTIVE" | "PRODUCT";
+  canonicalOperationReference?: "products.update_configuration.v1";
+  expectedProductUpdatedAt?: string;
   changes: Array<{ field: string; before: string; after: string }>;
   fingerprint: string;
 };
@@ -95,6 +88,7 @@ function applyOperations(tree: Record<string, any>, operations: ExistingProductE
   const next = structuredClone(tree);
   const changes: ExistingProductEditProposal["changes"] = [];
   for (const operation of operations.operations) {
+    if (operation.op !== "set_option_default") continue;
     const node = optionNode(next, operation.optionGroup);
     if (node?.input?.type && node.input.type !== "select") throw new ExistingProductEditError("EXISTING_PRODUCT_DEFAULT_UNSUPPORTED", "Only single-select option defaults can be changed through this capability.");
     const choice = optionChoice(node, operation.value);
@@ -111,6 +105,7 @@ function applyOperations(tree: Record<string, any>, operations: ExistingProductE
 
 export class ExistingProductEditService {
   private async editableTree(input: { organizationId: string; product: { id: string; pbv2ActiveTreeVersionId: string | null } }) {
+    const { db } = await import("../../db");
     const draft = await loadCurrentPbv2DraftTreeVersion({ organizationId: input.organizationId, productId: input.product.id });
     if (draft) return draft;
     if (!input.product.pbv2ActiveTreeVersionId) return null;
@@ -121,6 +116,7 @@ export class ExistingProductEditService {
   }
 
   async trustedContext(input: { organizationId: string; productId: string }): Promise<TrustedExistingProductEditContext | null> {
+    const { db } = await import("../../db");
     const [product] = await db.select({ id: products.id, name: products.name, isActive: products.isActive, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
       .from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
     if (!product) return null;
@@ -136,7 +132,15 @@ export class ExistingProductEditService {
   }
 
   async buildProposal(input: { organizationId: string; productId: string; operations: unknown }): Promise<ExistingProductEditProposal> {
+    const { db } = await import("../../db");
     const operations = existingProductEditOperationsSchema.parse(input.operations);
+    const configuration = operations.operations.find((operation): operation is { op: "update_product_configuration"; changes: ProductConfigurationChanges } => operation.op === "update_product_configuration");
+    if (configuration) {
+      const proposal = await canonicalProductConfigurationOperations.propose({ organizationId: input.organizationId, productId: input.productId, changes: configuration.changes });
+      const [product] = await db.select({ isActive: products.isActive }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
+      if (!product) throw new ExistingProductEditError("EXISTING_PRODUCT_NOT_FOUND", "The trusted product is no longer available.");
+      return { productId: proposal.productId, productName: proposal.productName, productActive: product.isActive, sourceLifecycle: "PRODUCT", canonicalOperationReference: proposal.operationReference, expectedProductUpdatedAt: proposal.expectedUpdatedAt, changes: proposal.appliedChanges.map((change) => ({ field: String(change.field), before: String(change.before ?? "(none)"), after: String(change.after ?? "(none)") })), fingerprint: proposal.fingerprint };
+    }
     const [product] = await db.select({ id: products.id, name: products.name, isActive: products.isActive, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
       .from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
     if (!product) throw new ExistingProductEditError("EXISTING_PRODUCT_NOT_FOUND", "The trusted product is no longer available.");
@@ -163,9 +167,21 @@ export class ExistingProductEditService {
   }
 
   async execute(input: { organizationId: string; productId: string; operations: unknown; expectedFingerprint: string; userId: string }) {
+    const { db } = await import("../../db");
     const validation = await this.revalidateProposal(input);
     if (!validation.valid) throw new ExistingProductEditError(validation.code, validation.summary);
     const operations = existingProductEditOperationsSchema.parse(input.operations);
+    const configuration = operations.operations.find((operation): operation is { op: "update_product_configuration"; changes: ProductConfigurationChanges } => operation.op === "update_product_configuration");
+    if (configuration) {
+      if (!validation.proposal.expectedProductUpdatedAt) throw new ExistingProductEditError("EXISTING_PRODUCT_EDIT_STALE", "The product configuration proposal is incomplete; review it again.");
+      try {
+        const result = await canonicalProductConfigurationOperations.execute({ organizationId: input.organizationId, actorUserId: input.userId, productId: input.productId, changes: configuration.changes, expectedUpdatedAt: validation.proposal.expectedProductUpdatedAt, auditContext: { source: "assistant_go", reference: `assistant-plan:${input.expectedFingerprint}` } });
+        return { ...validation.proposal, changes: result.appliedChanges.map((change) => ({ field: String(change.field), before: String(change.before ?? "(none)"), after: String(change.after ?? "(none)") })), canonicalOperationReference: result.operationReference };
+      } catch (error) {
+        if (error instanceof CanonicalProductConfigurationError) throw new ExistingProductEditError(error.code === "PRODUCT_CONFIGURATION_STALE" ? "EXISTING_PRODUCT_EDIT_STALE" : error.code, error.message);
+        throw error;
+      }
+    }
     const [product] = await db.select({ id: products.id, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
     if (!product) throw new ExistingProductEditError("EXISTING_PRODUCT_NOT_FOUND", "The trusted product is no longer available.");
     const current = await this.editableTree({ organizationId: input.organizationId, product });

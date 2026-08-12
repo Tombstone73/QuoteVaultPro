@@ -942,13 +942,16 @@ export class AssistantService {
     }] : [];
     const existingProductEditTools: AssistantOperatorSemanticTool[] = mayEditExistingProduct ? [{
       name: "products.apply_existing_operations",
-      description: "Prepare a protected edit to one trusted existing persisted product's current PBV2 DRAFT. Use this after the current context or a canonical products.get_pricing/products.get_summary result has resolved exactly one existing product. This is not new-product creation: it never calls Product Builder begin_draft, creates no product, makes no change before GO, and the server revalidates the current DRAFT at GO. Pass business labels only; product identity is supplied by trusted context.",
+      description: "Prepare a protected edit to one trusted existing persisted product. Use update_product_configuration for the shared canonical identity/operational slice: name, description, category, product type, measurement mode, workflow intent, proof requirement, or production-job requirement. set_option_default remains a temporary PBV2 DRAFT-only compatibility operation. This never creates a product or changes anything before GO; the server revalidates state at GO. Product identity is supplied by trusted context.",
       inputSchema: {
         type: "object", additionalProperties: false, required: ["operations"],
         properties: {
           operations: {
             type: "array", minItems: 1, maxItems: 12,
-            items: { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "set_option_default" }, optionGroup: { type: "string" }, value: { type: "string" } } },
+            items: { anyOf: [
+              { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "set_option_default" }, optionGroup: { type: "string" }, value: { type: "string" } } },
+              { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_configuration" }, changes: { type: "object", additionalProperties: false, minProperties: 1, properties: { name: { type: "string" }, description: { type: "string" }, category: { type: ["string", "null"] }, productTypeId: { type: ["string", "null"] }, measurementMode: { enum: ["dimensions_required", "quantity_only"] }, workflowIntent: { enum: ["standard_production", "fulfillment_only", "service_fee"] }, requiresProductionJob: { type: "boolean" }, requiresProofApproval: { type: "boolean" } } } } },
+            ] },
           },
         },
       },

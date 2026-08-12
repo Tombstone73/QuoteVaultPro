@@ -31,6 +31,13 @@ describe("Operator runtime skills", () => {
     expect(joined).not.toContain("database_url");
   });
 
+  it("keeps the partial Product skill grounded in the migrated shared-operation knowledge", async () => {
+    const result = await resolveOperatorSkills(selected(["products"]));
+    expect(result.skills[0]).toMatchObject({ skillId: "products.pbv2", knowledgeCompleteness: "partial" });
+    expect(result.skills[0]?.content).toContain("shared canonical Product operation");
+    expect(result.skills[0]?.contentChars).toBeLessThanOrEqual(OPERATOR_SKILL_MAX_CHARS_PER_SKILL);
+  });
+
   it("uses a minimal declared fallback and soft-fails a missing approved source", async () => {
     const research = await resolveOperatorSkills(selected(["public_research"]));
     expect(research.skills[0]).toMatchObject({ skillId: "research.public", knowledgeCompleteness: "minimal", sources: [] });
