@@ -4,14 +4,16 @@ import { readFileSync } from "node:fs";
 const source = (path: string) => readFileSync(new URL(path, import.meta.url), "utf8");
 
 describe("line-item artwork read migration", () => {
-  test("resolver is canonical-preferred, batch-safe, and retains typed fallbacks", () => {
+  test("resolver is canonical-only, batch-safe, and keeps production allocation separate", () => {
     const resolver = source("../services/artwork/LineItemArtworkReadResolver.ts");
     expect(resolver).toContain("resolveForLineItems");
     expect(resolver).toContain("if (!lineItemIds.length) return output");
     expect(resolver).toContain('source: "canonical"');
-    expect(resolver).toContain('source: "legacy_order_attachment"');
-    expect(resolver).toContain('source: "legacy_asset_link"');
-    expect(resolver).toContain('source: "legacy_line_item_file"');
+    expect(resolver).toContain("Canonical-only ordinary artwork ownership boundary");
+    expect(resolver).not.toContain("legacy_order_attachment");
+    expect(resolver).not.toContain("legacy_asset_link");
+    expect(resolver).not.toContain("legacy_line_item_file");
+    expect(resolver).toContain("unavailable: boolean");
     expect(resolver).toContain('contentPath: canonicalContentPath');
     expect(resolver).toContain("production: ResolvedProductionArtworkProjection[]");
   });
@@ -19,6 +21,8 @@ describe("line-item artwork read migration", () => {
   test("migrated readers call the shared resolver rather than choosing artwork independently", () => {
     expect(source("../routes/orders.routes.ts")).toContain("lineItemArtworkReadResolver.resolveForLineItems");
     expect(source("../routes/prepress.routes.ts")).toContain("lineItemArtworkReadResolver.resolveForLineItem");
+    expect(source("../routes/orderLineItemFiles.routes.ts")).toContain("lineItemArtworkReadResolver.resolveForLineItem");
+    expect(source("../services/fulfillment/repository.ts")).toContain("lineItemArtworkReadResolver.resolveForLineItems");
     expect(source("../services/proofingService.ts")).toContain("lineItemArtworkReadResolver.resolveForLineItem");
     const productionJobs = source("../routes/productionJobs.routes.ts");
     expect(productionJobs).toContain("lineItemArtworkReadResolver.resolveForLineItems");
@@ -28,5 +32,24 @@ describe("line-item artwork read migration", () => {
   test("production preview uses canonical authenticated file access when identity exists", () => {
     const panel = source("../../client/src/components/production/ProductionFilePreviewPanel.tsx");
     expect(panel).toContain("buildArtworkAccessUrl(file.fileRecordId, \"thumbnail\")");
+  });
+
+  test("remaining inbound, replacement, and portal paths write or read ordinary artwork canonically", () => {
+    const inbound = source("../services/inboundOrders/InboundOrderService.ts");
+    expect(inbound).toContain("canonicalArtworkWriteService.attachSourceArtwork");
+    expect(inbound).toContain("tx: args.tx");
+
+    const prepressFiles = source("../prepressFileService.ts");
+    expect(prepressFiles).toContain('if (role === "original")');
+    expect(prepressFiles).toContain("canonicalArtworkWriteService.supersedeArtwork");
+
+    const orderLineItemFiles = source("../routes/orderLineItemFiles.routes.ts");
+    expect(orderLineItemFiles).toContain("canonicalArtworkWriteService.attachSourceArtwork");
+
+    const portal = source("../services/portal.service.ts");
+    expect(portal).toContain("loadPortalCanonicalOrderArtwork");
+    expect(portal).toContain("readArtworkFileForOrganization");
+    expect(portal).toContain('fileId.startsWith("lia_")');
+    expect(portal).toContain('row.role !== "artwork"');
   });
 });

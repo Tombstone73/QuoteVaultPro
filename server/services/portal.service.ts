@@ -12,6 +12,8 @@ import {
   integrationConnections,
   invoiceLineItems,
   invoices,
+  fileRecords,
+  lineItemArtwork,
   lineItemProofApprovals,
   lineItemProofVersions,
   proofVersionLineItems,
@@ -46,6 +48,7 @@ import { resolveDocumentDisplayNumber } from "@shared/documentNumbering";
 import { resolveHostedPaymentProvider, type HostedPaymentProvider } from "@shared/paymentProviderResolution";
 import { getPaymentSettings } from "./payments/paymentProvider.service";
 import { storageApplicationService } from "./storage/StorageApplicationService";
+import { readArtworkFileForOrganization } from "./artwork/ArtworkFileAccessService";
 
 export type PortalSessionDto = {
   userId: string;
@@ -623,6 +626,17 @@ type PortalAttachmentRow = {
   customerUploadReviewStatus?: string | null;
   customerUploadReviewNote?: string | null;
   customerUploadPromotionType?: string | null;
+};
+
+/** Ordinary order artwork is exposed only through the portal-scoped wrapper. */
+type PortalCanonicalArtworkRow = {
+  relationshipId: string;
+  fileRecordId: string;
+  originalFilename: string | null;
+  mimeType: string | null;
+  sizeBytes: number | null;
+  createdAt: unknown;
+  side: "front" | "back" | "both" | "unknown" | "not_applicable";
 };
 
 type PortalProofRow = {
@@ -2196,6 +2210,28 @@ function mapPortalAttachmentFile(
   };
 }
 
+function mapPortalCanonicalArtworkFile(artwork: PortalCanonicalArtworkRow): PortalFileDto {
+  const displayName = sanitizeDownloadFilename(artwork.originalFilename, `artwork-${artwork.relationshipId}`);
+  return {
+    id: `lia_${artwork.relationshipId}`,
+    displayName,
+    description: artwork.side === "unknown" || artwork.side === "not_applicable" ? null : `${artwork.side[0].toUpperCase()}${artwork.side.slice(1)} artwork`,
+    fileTypeLabel: fileTypeLabel(artwork.mimeType, displayName),
+    uploadedAt: toIso(artwork.createdAt),
+    fileSize: artwork.sizeBytes,
+    categoryLabel: "Artwork",
+    // Portal artwork previews intentionally use the scoped download wrapper;
+    // proof previews remain proof-token artifacts below.
+    previewAvailable: false,
+    downloadAvailable: true,
+    customerUploadReviewStatus: null,
+    customerUploadReviewStatusLabel: null,
+    customerUploadReviewNote: null,
+    customerUploadPromotionType: null,
+    customerUploadPromotionLabel: null,
+  };
+}
+
 function mapInvoicePdfFile(invoice: InvoicePaymentPortalRow): PortalFileDto {
   const invoiceNumber = invoice.invoiceNumber ? String(invoice.invoiceNumber) : invoice.id;
   return {
@@ -2443,7 +2479,32 @@ async function loadVisibleOrderAttachments(scope: PortalScope, orderId: string):
     .where(eq(orderAttachments.orderId, scopedOrderId))
     .orderBy(desc(orderAttachments.createdAt));
 
-  return rows.filter((row) => isCustomerVisibleOrderAttachment(row, proofAttachmentIds, scope));
+  // `artwork` is now owned by line_item_artwork. These attachment rows are
+  // compatibility metadata only and must never become an ownership fallback.
+  return rows.filter((row) => row.role !== "artwork" && isCustomerVisibleOrderAttachment(row, proofAttachmentIds, scope));
+}
+
+async function loadPortalCanonicalOrderArtwork(scope: PortalScope, orderId: string): Promise<PortalCanonicalArtworkRow[] | null> {
+  const scopedOrderId = await getScopedPortalOrderId(scope, orderId);
+  if (!scopedOrderId) return null;
+  return db
+    .select({
+      relationshipId: lineItemArtwork.id,
+      fileRecordId: lineItemArtwork.fileRecordId,
+      originalFilename: fileRecords.originalFilename,
+      mimeType: fileRecords.mimeType,
+      sizeBytes: fileRecords.sizeBytes,
+      createdAt: lineItemArtwork.createdAt,
+      side: lineItemArtwork.side,
+    })
+    .from(lineItemArtwork)
+    .innerJoin(fileRecords, and(eq(fileRecords.id, lineItemArtwork.fileRecordId), eq(fileRecords.organizationId, scope.organizationId)))
+    .where(and(
+      eq(lineItemArtwork.organizationId, scope.organizationId),
+      eq(lineItemArtwork.orderId, scopedOrderId),
+      eq(lineItemArtwork.status, "current"),
+    ))
+    .orderBy(asc(lineItemArtwork.createdAt), asc(lineItemArtwork.id));
 }
 
 async function loadVisibleQuoteAttachments(scope: PortalScope, quoteId: string): Promise<PortalAttachmentRow[] | null> {
@@ -2488,10 +2549,16 @@ export async function listPortalInvoiceFiles(req: Request, invoiceId: string): P
 
 export async function listPortalOrderFiles(req: Request, orderId: string): Promise<PortalFileDto[] | null> {
   const scope = getPortalScope(req);
-  const attachments = await loadVisibleOrderAttachments(scope, orderId);
-  if (!attachments) return null;
+  const [attachments, artwork] = await Promise.all([
+    loadVisibleOrderAttachments(scope, orderId),
+    loadPortalCanonicalOrderArtwork(scope, orderId),
+  ]);
+  if (!attachments || !artwork) return null;
   const proofAttachmentIds = await getCustomerVisibleProofAttachmentIds(scope, orderId);
-  return attachments.map((attachment) => mapPortalAttachmentFile(attachment, orderAttachmentCategory(attachment, proofAttachmentIds), "oa_"));
+  return [
+    ...artwork.map(mapPortalCanonicalArtworkFile),
+    ...attachments.map((attachment) => mapPortalAttachmentFile(attachment, orderAttachmentCategory(attachment, proofAttachmentIds), "oa_")),
+  ];
 }
 
 export async function listPortalQuoteFiles(req: Request, quoteId: string): Promise<PortalFileDto[] | null> {
@@ -2520,6 +2587,20 @@ export async function getPortalInvoiceFileDownload(req: Request, invoiceId: stri
 
 export async function getPortalOrderFileDownload(req: Request, orderId: string, fileId: string): Promise<PortalFileDownloadResult | null> {
   const scope = getPortalScope(req);
+  if (fileId.startsWith("lia_")) {
+    const artwork = await loadPortalCanonicalOrderArtwork(scope, orderId);
+    if (!artwork) return null;
+    const relationshipId = fileId.slice(4);
+    const matching = artwork.find((row) => row.relationshipId === relationshipId);
+    if (!matching) return null;
+    const file = await readArtworkFileForOrganization({
+      organizationId: scope.organizationId,
+      fileRecordId: matching.fileRecordId,
+      variant: "original",
+    });
+    if (!file) return null;
+    return { filename: sanitizeDownloadFilename(file.filename, `artwork-${relationshipId}`), mimeType: file.mimeType, bytes: file.buffer };
+  }
   const normalizedFileId = fileId.startsWith("oa_") ? fileId.slice(3) : fileId;
   const attachments = await loadVisibleOrderAttachments(scope, orderId);
   if (!attachments) return null;

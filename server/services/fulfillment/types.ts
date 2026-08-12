@@ -93,7 +93,7 @@ export interface FulfillmentDetailDto extends QueueRowDto {
       mimeType: string | null;
       side: string | null;
       role: string | null;
-      source: 'order_attachment' | 'line_item_file' | 'asset';
+      source: 'canonical' | 'order_attachment' | 'line_item_file' | 'asset';
     }>;
     checklist: {
       id: string;

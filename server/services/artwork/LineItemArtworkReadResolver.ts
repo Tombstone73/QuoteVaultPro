@@ -1,45 +1,35 @@
-import { and, asc, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, asc, desc, eq, inArray } from "drizzle-orm";
 import {
-  assets,
-  assetLinks,
   fileRecords,
   lineItemArtwork,
   lineItemFiles,
-  orderLineItems,
-  orderAttachments,
-  orders,
 } from "@shared/schema";
 import { db } from "../../db";
 
-export type ArtworkReadPurpose = "order" | "proofing" | "prepress" | "production" | "print_ticket";
-export type ArtworkResolutionSource =
-  | "canonical"
-  | "legacy_order_attachment"
-  | "legacy_asset_link"
-  | "legacy_line_item_file";
+export type ArtworkReadPurpose = "order" | "proofing" | "prepress" | "production" | "print_ticket" | "portal" | "production_run";
 
 export type ResolvedLineItemArtwork = {
   id: string;
-  relationshipId: string | null;
+  relationshipId: string;
   lineItemId: string;
   orderId: string;
-  fileRecordId: string | null;
-  role: "customer_source" | "production" | "modified_production" | "legacy";
-  status: "current" | "superseded" | "legacy";
+  fileRecordId: string;
+  role: "customer_source" | "production" | "modified_production";
+  status: "current" | "superseded";
   side: "front" | "back" | "both" | "unknown";
   origin: string;
   parentArtworkId: string | null;
   supersedesArtworkId: string | null;
+  createdAt: Date;
   allocationQuantity: number | null;
   allocationGroupId: string | null;
-  source: ArtworkResolutionSource;
-  legacyState: "resolved" | "unavailable" | null;
+  source: "canonical";
   file: {
     originalFilename: string | null;
     mimeType: string | null;
     sizeBytes: number | null;
-    /** Internal clients use this canonical authenticated endpoint, never a raw object URL. */
-    contentPath: string | null;
+    /** Internal consumers use this authenticated endpoint, never an object-store URL. */
+    contentPath: string;
   };
 };
 
@@ -58,69 +48,51 @@ export type ResolvedProductionArtworkProjection = {
 };
 
 export type LineItemArtworkResolution = {
+  /** Canonical ordinary-artwork ownership only. Empty is a normal, soft failure. */
   artwork: ResolvedLineItemArtwork[];
-  /** `lineItemFiles` remains authoritative for active production allocation. */
+  /** `lineItemFiles` remains allocation/workflow projection authority only. */
   production: ResolvedProductionArtworkProjection[];
-  usedFallback: boolean;
+  unavailable: boolean;
 };
 
-const telemetry = new Map<string, number>();
-const telemetryLastLoggedAt = new Map<string, number>();
-
-function recordResolution(kind: string, organizationId: string, count: number) {
-  if (!count) return;
-  telemetry.set(kind, (telemetry.get(kind) ?? 0) + count);
-  if (process.env.ARTWORK_RESOLVER_OBSERVABILITY !== "1") return;
-  const key = `${organizationId}:${kind}`;
-  const now = Date.now();
-  if ((telemetryLastLoggedAt.get(key) ?? 0) + 60_000 > now) return;
-  telemetryLastLoggedAt.set(key, now);
-  console.info("[ArtworkResolver] resolution", { organizationId, kind, count });
+function canonicalContentPath(fileRecordId: string): string {
+  return `/api/artwork/file-records/${encodeURIComponent(fileRecordId)}/content`;
 }
 
-export function getArtworkResolverObservabilitySnapshot(): Record<string, number> {
-  return Object.fromEntries(telemetry.entries());
-}
-
-function canonicalContentPath(fileRecordId: string | null): string | null {
-  return fileRecordId ? `/api/artwork/file-records/${encodeURIComponent(fileRecordId)}/content` : null;
-}
-
-function toSide(value: unknown): ResolvedLineItemArtwork["side"] {
+function toSide(value: unknown): ResolvedProductionArtworkProjection["side"] {
   return value === "front" || value === "back" || value === "both" ? value : "unknown";
 }
 
 function roleRank(purpose: ArtworkReadPurpose, role: ResolvedLineItemArtwork["role"]): number {
-  if (purpose === "production" || purpose === "prepress") {
-    return role === "modified_production" ? 0 : role === "production" ? 1 : role === "customer_source" ? 2 : 3;
+  if (purpose === "production" || purpose === "prepress" || purpose === "production_run") {
+    return role === "modified_production" ? 0 : role === "production" ? 1 : 2;
   }
-  return role === "customer_source" ? 0 : role === "modified_production" ? 1 : role === "production" ? 2 : 3;
+  return role === "customer_source" ? 0 : role === "modified_production" ? 1 : 2;
 }
 
 /**
- * Canonical-preferred line-item artwork read boundary. Legacy tables are read
- * only for line items with no current canonical relationship; production files
- * are returned separately so they retain allocation authority during transition.
+ * Canonical-only ordinary artwork ownership boundary. It never reconstructs
+ * ownership from legacy attachments, assets, or line-item workflow files.
  */
 export class LineItemArtworkReadResolver {
   constructor(private readonly executor: any = db) {}
 
   async resolveForLineItem(args: { organizationId: string; lineItemId: string; purpose: ArtworkReadPurpose }, executor = this.executor) {
     const resolved = await this.resolveForLineItems({ ...args, lineItemIds: [args.lineItemId] }, executor);
-    return resolved.get(args.lineItemId) ?? { artwork: [], production: [], usedFallback: false };
+    return resolved.get(args.lineItemId) ?? { artwork: [], production: [], unavailable: true };
   }
 
   async resolveForLineItems(args: { organizationId: string; lineItemIds: string[]; purpose: ArtworkReadPurpose }, executor = this.executor): Promise<Map<string, LineItemArtworkResolution>> {
     const lineItemIds = Array.from(new Set(args.lineItemIds.filter((id): id is string => typeof id === "string" && id.length > 0)));
     const output = new Map<string, LineItemArtworkResolution>();
-    for (const lineItemId of lineItemIds) output.set(lineItemId, { artwork: [], production: [], usedFallback: false });
+    for (const lineItemId of lineItemIds) output.set(lineItemId, { artwork: [], production: [], unavailable: true });
     if (!lineItemIds.length) return output;
 
     const [canonicalRows, productionRows] = await Promise.all([
       executor
         .select({ relationship: lineItemArtwork, file: fileRecords })
         .from(lineItemArtwork)
-        .leftJoin(fileRecords, and(eq(fileRecords.id, lineItemArtwork.fileRecordId), eq(fileRecords.organizationId, args.organizationId)))
+        .innerJoin(fileRecords, and(eq(fileRecords.id, lineItemArtwork.fileRecordId), eq(fileRecords.organizationId, args.organizationId)))
         .where(and(
           eq(lineItemArtwork.organizationId, args.organizationId),
           eq(lineItemArtwork.status, "current"),
@@ -139,11 +111,12 @@ export class LineItemArtworkReadResolver {
         .orderBy(asc(lineItemFiles.lineItemId), desc(lineItemFiles.createdAt), desc(lineItemFiles.id)),
     ]);
 
-    const canonicalLineItemIds = new Set<string>();
     for (const row of canonicalRows) {
       const relationship = row.relationship;
-      canonicalLineItemIds.add(relationship.lineItemId);
-      output.get(relationship.lineItemId)?.artwork.push({
+      const target = output.get(relationship.lineItemId);
+      if (!target) continue;
+      target.unavailable = false;
+      target.artwork.push({
         id: relationship.id,
         relationshipId: relationship.id,
         lineItemId: relationship.lineItemId,
@@ -155,14 +128,14 @@ export class LineItemArtworkReadResolver {
         origin: relationship.origin,
         parentArtworkId: relationship.parentArtworkId,
         supersedesArtworkId: relationship.supersedesArtworkId,
+        createdAt: relationship.createdAt,
         allocationQuantity: relationship.allocationQuantity,
         allocationGroupId: relationship.allocationGroupId,
         source: "canonical",
-        legacyState: null,
         file: {
-          originalFilename: row.file?.originalFilename ?? null,
-          mimeType: row.file?.mimeType ?? null,
-          sizeBytes: row.file?.sizeBytes ?? null,
+          originalFilename: row.file.originalFilename,
+          mimeType: row.file.mimeType,
+          sizeBytes: row.file.sizeBytes,
           contentPath: canonicalContentPath(relationship.fileRecordId),
         },
       });
@@ -179,73 +152,10 @@ export class LineItemArtworkReadResolver {
       });
     }
 
-    const fallbackLineItemIds = lineItemIds.filter((id) => !canonicalLineItemIds.has(id));
-    if (fallbackLineItemIds.length) await this.addLegacyFallbacks(args, fallbackLineItemIds, output, executor);
-
     for (const resolution of Array.from(output.values())) {
       resolution.artwork.sort((left, right) => roleRank(args.purpose, left.role) - roleRank(args.purpose, right.role) || left.id.localeCompare(right.id));
     }
-    recordResolution("canonical", args.organizationId, canonicalRows.length);
-    recordResolution("legacy_fallback", args.organizationId, fallbackLineItemIds.filter((id) => output.get(id)?.usedFallback).length);
-    recordResolution("unavailable_legacy", args.organizationId, fallbackLineItemIds.filter((id) => !output.get(id)?.usedFallback).length);
     return output;
-  }
-
-  private async addLegacyFallbacks(args: { organizationId: string; purpose: ArtworkReadPurpose }, lineItemIds: string[], output: Map<string, LineItemArtworkResolution>, executor: any) {
-    const [attachmentRows, assetRows, fileRows] = await Promise.all([
-      executor.select({ attachment: orderAttachments, orderId: orders.id })
-        .from(orderAttachments).innerJoin(orders, eq(orders.id, orderAttachments.orderId))
-        .where(and(eq(orders.organizationId, args.organizationId), inArray(orderAttachments.orderLineItemId, lineItemIds), ne(orderAttachments.role, "proof")))
-        .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.createdAt), desc(orderAttachments.id)),
-      executor.select({ link: assetLinks, asset: assets, orderId: orders.id })
-        .from(assetLinks).innerJoin(assets, eq(assets.id, assetLinks.assetId))
-        .innerJoin(orderLineItems, eq(orderLineItems.id, assetLinks.parentId)).innerJoin(orders, eq(orders.id, orderLineItems.orderId))
-        .where(and(eq(assetLinks.organizationId, args.organizationId), eq(assets.organizationId, args.organizationId), eq(orders.organizationId, args.organizationId), eq(assetLinks.parentType, "order_line_item"), inArray(assetLinks.parentId, lineItemIds), ne(assetLinks.role, "proof")))
-        .orderBy(desc(assetLinks.createdAt), desc(assetLinks.id)),
-      executor.select().from(lineItemFiles)
-        .where(and(eq(lineItemFiles.organizationId, args.organizationId), inArray(lineItemFiles.lineItemId, lineItemIds), eq(lineItemFiles.status, "active")))
-        .orderBy(desc(lineItemFiles.createdAt), desc(lineItemFiles.id)),
-    ]);
-
-    for (const row of attachmentRows) {
-      const attachment = row.attachment;
-      if (!attachment.orderLineItemId) continue;
-      this.addFallback(output, attachment.orderLineItemId, {
-        id: `attachment:${attachment.id}`, relationshipId: null, lineItemId: attachment.orderLineItemId, orderId: attachment.orderId,
-        fileRecordId: attachment.fileRecordId ?? null, role: "legacy", status: "legacy", side: toSide(attachment.side), origin: "legacy_order_attachment",
-        parentArtworkId: null, supersedesArtworkId: null, allocationQuantity: attachment.productionQuantity ?? null, allocationGroupId: attachment.productionGroupId ?? null,
-        source: "legacy_order_attachment", legacyState: attachment.fileRecordId ? "resolved" : "unavailable",
-        file: { originalFilename: attachment.originalFilename ?? attachment.fileName, mimeType: attachment.mimeType ?? null, sizeBytes: attachment.sizeBytes ?? attachment.fileSize ?? null, contentPath: canonicalContentPath(attachment.fileRecordId ?? null) },
-      });
-    }
-    for (const row of assetRows) {
-      const link = row.link; const asset = row.asset;
-      this.addFallback(output, link.parentId, {
-        id: `asset:${asset.id}`, relationshipId: null, lineItemId: link.parentId, orderId: row.orderId,
-        fileRecordId: asset.fileRecordId ?? null, role: "legacy", status: "legacy", side: "unknown", origin: "legacy_asset_link",
-        parentArtworkId: null, supersedesArtworkId: null, allocationQuantity: null, allocationGroupId: null,
-        source: "legacy_asset_link", legacyState: asset.fileRecordId ? "resolved" : "unavailable",
-        file: { originalFilename: asset.fileName, mimeType: asset.mimeType ?? null, sizeBytes: asset.sizeBytes ?? null, contentPath: canonicalContentPath(asset.fileRecordId ?? null) },
-      });
-    }
-    for (const file of fileRows) {
-      this.addFallback(output, file.lineItemId, {
-        id: `line-item-file:${file.id}`, relationshipId: null, lineItemId: file.lineItemId, orderId: file.orderId,
-        fileRecordId: file.fileRecordId ?? null, role: "legacy", status: "legacy", side: toSide(file.sourceArtworkSide), origin: "legacy_line_item_file",
-        parentArtworkId: null, supersedesArtworkId: null, allocationQuantity: file.productionQuantity ?? null, allocationGroupId: file.productionGroupId ?? null,
-        source: "legacy_line_item_file", legacyState: file.fileRecordId ? "resolved" : "unavailable",
-        file: { originalFilename: file.originalFilename ?? null, mimeType: file.mimeType ?? null, sizeBytes: file.sizeBytes ?? null, contentPath: canonicalContentPath(file.fileRecordId ?? null) },
-      });
-    }
-  }
-
-  private addFallback(output: Map<string, LineItemArtworkResolution>, lineItemId: string, record: ResolvedLineItemArtwork) {
-    const target = output.get(lineItemId);
-    if (!target) return;
-    const identity = record.fileRecordId ?? record.id;
-    if (target.artwork.some((existing) => (existing.fileRecordId ?? existing.id) === identity)) return;
-    target.artwork.push(record);
-    target.usedFallback = true;
   }
 }
 

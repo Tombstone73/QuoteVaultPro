@@ -83,6 +83,7 @@ import {
 } from "../../storage/orders.repo";
 import { priceLineItem } from "../pricing/PricingService";
 import { CustomerIntelligenceService, customerIntelligenceService } from "./CustomerIntelligenceService";
+import { canonicalArtworkWriteService } from "../artwork/CanonicalArtworkWriteService";
 
 export type InboundQuoteSyncStatus =
   | "quote_missing"
@@ -3939,6 +3940,7 @@ export class InboundOrderService {
       const convertWithRepositories = async (
         conversionRepository: typeof this.repository,
         orderRepository: typeof this.orderRepository,
+        tx: any,
       ): Promise<OrderWithRelations | null> => {
         const claimed = await conversionRepository.claimInboundOrderForOrderConversion({
           organizationId: args.organizationId,
@@ -3979,6 +3981,7 @@ export class InboundOrderService {
           order,
           conversionRepository,
           orderRepository,
+          tx,
         });
 
         const lineItemLinks = (order.lineItems ?? []).map((lineItem: any, index: number) => ({
@@ -4027,9 +4030,14 @@ export class InboundOrderService {
           const orderRepository = typeof (this.orderRepository as any).withExecutor === "function"
             ? (this.orderRepository as any).withExecutor(tx)
             : this.orderRepository;
-          return convertWithRepositories(conversionRepository, orderRepository);
+          return convertWithRepositories(conversionRepository, orderRepository, tx);
         })
-        : await convertWithRepositories(this.repository, this.orderRepository);
+        : await this.repository.transaction(async (tx: any, conversionRepository: typeof this.repository) => {
+          const orderRepository = typeof (this.orderRepository as any).withExecutor === "function"
+            ? (this.orderRepository as any).withExecutor(tx)
+            : this.orderRepository;
+          return convertWithRepositories(conversionRepository, orderRepository, tx);
+        });
 
       if (!order) {
         const latest = await this.getDetail({
@@ -5560,6 +5568,7 @@ export class InboundOrderService {
     order: OrderWithRelations;
     conversionRepository: InboundOrdersRepository;
     orderRepository: OrdersRepository;
+    tx: any;
   }): Promise<void> {
     const filesById = new Map(args.files.map((file) => [file.id, file]));
 
@@ -5597,24 +5606,39 @@ export class InboundOrderService {
           : artworkLink.assignmentSide === "front" || artworkLink.assignmentSide === "back"
             ? [artworkLink.assignmentSide]
             : ["na"] as const;
-        const createdAttachments = await Promise.all(attachmentSides.map((side) => args.orderRepository.createOrderAttachment({
-          orderId: args.order.id,
-          orderLineItemId: String(orderLineItem.id),
-          fileRecordId: inboundFile.fileRecordId,
-          uploadedByUserId: args.actorUserId,
-          uploadedByName: null,
-          fileName: inboundFile.sourceFilename ?? artworkLink.filename ?? "Inbound artwork",
-          fileUrl: null,
-          fileSize: inboundFile.sizeBytes ?? artworkLink.sizeBytes ?? null,
-          mimeType: inboundFile.mimeType ?? artworkLink.mimeType ?? null,
-          description: `Artwork attached during inbound review conversion (${args.inboundRecordId})${artworkLink.assignmentSide === "both" ? "; same artwork for both sides." : ""}`,
-          originalFilename: inboundFile.sourceFilename ?? artworkLink.filename ?? null,
-          role: "artwork",
-          side,
-          isPrimary: side !== "na",
-          productionQuantity: artworkLink.productionQuantity,
-          productionGroupId: artworkLink.productionGroupId ?? null,
-        })));
+        const createdAttachments = [];
+        for (const side of attachmentSides) {
+          await canonicalArtworkWriteService.attachSourceArtwork({
+            tx: args.tx,
+            organizationId: args.organizationId,
+            orderId: args.order.id,
+            lineItemId: String(orderLineItem.id),
+            fileRecordId: inboundFile.fileRecordId,
+            side,
+            allocationQuantity: artworkLink.productionQuantity,
+            allocationGroupId: artworkLink.productionGroupId ?? null,
+            actorUserId: args.actorUserId,
+            origin: "customer_upload",
+          });
+          createdAttachments.push(await args.orderRepository.createOrderAttachment({
+            orderId: args.order.id,
+            orderLineItemId: String(orderLineItem.id),
+            fileRecordId: inboundFile.fileRecordId,
+            uploadedByUserId: args.actorUserId,
+            uploadedByName: null,
+            fileName: inboundFile.sourceFilename ?? artworkLink.filename ?? "Inbound artwork",
+            fileUrl: null,
+            fileSize: inboundFile.sizeBytes ?? artworkLink.sizeBytes ?? null,
+            mimeType: inboundFile.mimeType ?? artworkLink.mimeType ?? null,
+            description: `Artwork attached during inbound review conversion (${args.inboundRecordId})${artworkLink.assignmentSide === "both" ? "; same artwork for both sides." : ""}`,
+            originalFilename: inboundFile.sourceFilename ?? artworkLink.filename ?? null,
+            role: "artwork",
+            side,
+            isPrimary: side !== "na",
+            productionQuantity: artworkLink.productionQuantity,
+            productionGroupId: artworkLink.productionGroupId ?? null,
+          }));
+        }
 
         const updated = await args.conversionRepository.updateFile({
           organizationId: args.organizationId,

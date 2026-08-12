@@ -1752,7 +1752,7 @@ export function registerProductionJobsRoutes(
               previewUrl: artwork.fileRecordId ? `${artwork.file.contentPath}?variant=preview` : null,
               thumbnailUrl: artwork.fileRecordId ? `${artwork.file.contentPath}?variant=thumbnail` : null,
               side: artwork.side,
-              isPrimary: artwork.role !== "legacy",
+              isPrimary: true,
               productionQuantity: artwork.fileRecordId
                 ? finalFileAllocationByLineItemAndRecordId.get(`${row.lineItemId}:${artwork.fileRecordId}`)?.productionQuantity ?? null
                 : null,
@@ -2788,7 +2788,7 @@ export function registerProductionJobsRoutes(
         previewUrl: artwork.fileRecordId ? `${artwork.file.contentPath}?variant=preview` : null,
         thumbnailUrl: artwork.fileRecordId ? `${artwork.file.contentPath}?variant=thumbnail` : null,
         side: artwork.side,
-        isPrimary: artwork.role !== "legacy",
+        isPrimary: true,
         productionQuantity: artwork.allocationQuantity,
         productionGroupId: artwork.allocationGroupId,
         thumbStatus: null,

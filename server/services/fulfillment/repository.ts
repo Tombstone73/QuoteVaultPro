@@ -4,9 +4,7 @@ import {
   customers,
   fulfillmentChecklistItems,
   fulfillmentEvents,
-  lineItemFiles,
   materials,
-  orderAttachments,
   orderLineItems,
   orders,
   organizations,
@@ -23,13 +21,7 @@ import type { DerivedOrderFulfillmentStatus, FulfillmentDetailDto, QueueRowDto }
 import { TERMINAL_PRODUCTION_STATUSES } from '@shared/operationalState';
 import { buildPrepressOptionRows, extractFinishingBullets } from '../../routes/flatStockNesting.shared';
 import { fulfillmentQueueEligibleOrderCondition, isFulfillmentQueueEligibleOrder } from './eligibility';
-import {
-  createRequestLogOnce,
-  enrichAttachmentWithUrls,
-  resolveOriginalFileAccess,
-} from '../../lib/supabaseObjectHelpers';
-import { assetRepository } from '../assets/AssetRepository';
-import { enrichAssetsWithRoles } from '../assets/enrichAssetWithUrls';
+import { lineItemArtworkReadResolver } from '../artwork/LineItemArtworkReadResolver';
 
 const SHIP_READY_OVERDUE_HOURS = 48;
 const DEFAULT_PICKUP_RETENTION_DAYS_AFTER_PICKED_UP = 7;
@@ -1610,43 +1602,12 @@ export class FulfillmentDashboardRepo {
     const checklistByLineItemId = new Map(checklistRows.map((item) => [item.lineItemId, item]));
     const checklistSummary = summarizeFulfillmentChecklist(checklistRows);
 
-    const attachmentRows = lineItemIds.length > 0
-      ? await this.dbInstance
-        .select()
-        .from(orderAttachments)
-        .where(and(
-          eq(orderAttachments.orderId, orderId),
-          inArray(orderAttachments.orderLineItemId, lineItemIds),
-        ))
-        .orderBy(desc(orderAttachments.isPrimary), desc(orderAttachments.createdAt))
-      : [];
-
-    const fileRows = lineItemIds.length > 0
-      ? await this.dbInstance
-        .select({
-          id: lineItemFiles.id,
-          lineItemId: lineItemFiles.lineItemId,
-          fileName: lineItemFiles.originalFilename,
-          storageKey: lineItemFiles.storageKey,
-          storagePath: lineItemFiles.storagePath,
-          role: lineItemFiles.role,
-          tag: lineItemFiles.tag,
-          mimeType: lineItemFiles.mimeType,
-          fileRecordId: lineItemFiles.fileRecordId,
-          createdAt: lineItemFiles.createdAt,
-        })
-        .from(lineItemFiles)
-        .where(and(
-          eq(lineItemFiles.organizationId, orgId),
-          eq(lineItemFiles.orderId, orderId),
-          inArray(lineItemFiles.lineItemId, lineItemIds),
-          eq(lineItemFiles.status, 'active'),
-        ))
-        .orderBy(desc(lineItemFiles.createdAt))
-      : [];
-
-    const linkedAssetsByLineItemId = lineItemIds.length > 0
-      ? await assetRepository.listAssetsForParents(orgId, 'order_line_item', lineItemIds)
+    const artworkResolutions = lineItemIds.length > 0
+      ? await lineItemArtworkReadResolver.resolveForLineItems({
+        organizationId: orgId,
+        lineItemIds,
+        purpose: 'print_ticket',
+      }, this.dbInstance)
       : new Map();
 
     const productionSummary = await this.dbInstance
@@ -1671,75 +1632,25 @@ export class FulfillmentDashboardRepo {
 
     const artworkByLineItemId = new Map<string, FulfillmentArtworkDto[]>();
     const artworkSeen = new Set<string>();
-    const logOnce = createRequestLogOnce();
-    const enrichedAttachmentRows = await Promise.all(
-      attachmentRows.map((attachment) => enrichAttachmentWithUrls(attachment, { logOnce })),
-    );
-    for (const attachment of enrichedAttachmentRows) {
-      pushArtwork(artworkByLineItemId, attachment.orderLineItemId, {
-        id: attachment.id,
-        fileName: attachment.originalFilename ?? attachment.fileName,
-        fileUrl: attachment.originalUrl ?? attachment.downloadUrl ?? null,
-        originalUrl: attachment.originalUrl ?? null,
-        downloadUrl: attachment.downloadUrl ?? null,
-        previewUrl: attachment.previewUrl ?? null,
-        thumbUrl: attachment.thumbUrl ?? null,
-        thumbnailUrl: attachment.thumbnailUrl ?? attachment.thumbUrl ?? null,
-        thumbKey: attachment.thumbKey ?? null,
-        previewKey: attachment.previewKey ?? null,
-        objectPath: attachment.objectPath ?? null,
-        mimeType: attachment.mimeType ?? null,
-        side: attachment.side ?? null,
-        role: attachment.role ?? null,
-        source: 'order_attachment',
-      }, artworkSeen);
-    }
-    for (const file of fileRows) {
-      const originalAccess = await resolveOriginalFileAccess({
-        id: file.id,
-        fileRecordId: file.fileRecordId ?? null,
-        fileName: file.fileName,
-        originalFilename: file.fileName,
-        mimeType: file.mimeType,
-        fileUrl: file.storageKey || file.storagePath || null,
-      }, { logOnce });
-      pushArtwork(artworkByLineItemId, file.lineItemId, {
-        id: file.id,
-        fileName: file.fileName,
-        fileUrl: originalAccess.originalUrl ?? originalAccess.downloadUrl ?? null,
-        originalUrl: originalAccess.originalUrl ?? null,
-        downloadUrl: originalAccess.downloadUrl ?? null,
-        previewUrl: null,
-        thumbUrl: null,
-        thumbnailUrl: null,
-        thumbKey: null,
-        previewKey: null,
-        objectPath: originalAccess.objectPath ?? null,
-        mimeType: originalAccess.mimeType ?? file.mimeType ?? null,
-        side: file.tag ?? null,
-        role: file.role ?? null,
-        source: 'line_item_file',
-      }, artworkSeen);
-    }
-    for (const [lineItemId, assets] of Array.from(linkedAssetsByLineItemId.entries())) {
-      const enrichedAssets = await enrichAssetsWithRoles(assets);
-      for (const asset of enrichedAssets) {
+    for (const [lineItemId, resolution] of Array.from(artworkResolutions.entries())) {
+      for (const artwork of resolution.artwork) {
+        const originalUrl = artwork.file.contentPath;
         pushArtwork(artworkByLineItemId, lineItemId, {
-          id: asset.id,
-          fileName: asset.fileName ?? asset.id,
-          fileUrl: asset.originalUrl ?? asset.downloadUrl ?? null,
-          originalUrl: asset.originalUrl ?? null,
-          downloadUrl: asset.downloadUrl ?? null,
-          previewUrl: asset.previewUrl ?? null,
-          thumbUrl: asset.thumbUrl ?? null,
-          thumbnailUrl: asset.thumbnailUrl ?? asset.thumbUrl ?? null,
-          thumbKey: asset.thumbKey ?? null,
-          previewKey: asset.previewKey ?? null,
-          objectPath: asset.objectPath ?? null,
-          mimeType: asset.mimeType ?? null,
-          side: null,
-          role: asset.role ?? null,
-          source: 'asset',
+          id: artwork.relationshipId,
+          fileName: artwork.file.originalFilename ?? artwork.relationshipId,
+          fileUrl: originalUrl,
+          originalUrl,
+          downloadUrl: `${originalUrl}?download=1`,
+          previewUrl: `${originalUrl}?variant=preview`,
+          thumbUrl: `${originalUrl}?variant=thumbnail`,
+          thumbnailUrl: `${originalUrl}?variant=thumbnail`,
+          thumbKey: null,
+          previewKey: null,
+          objectPath: null,
+          mimeType: artwork.file.mimeType,
+          side: artwork.side,
+          role: artwork.role,
+          source: 'canonical',
         }, artworkSeen);
       }
     }

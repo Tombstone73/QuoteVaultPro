@@ -9,7 +9,7 @@
  */
 
 import { db } from "./db";
-import { auditLogs, lineItemFiles, orders, orderLineItems, orderAttachments, organizations, productionJobs, localFileDestinations, localFileCopyJobs } from "../shared/schema";
+import { auditLogs, lineItemArtwork, lineItemFiles, orders, orderLineItems, orderAttachments, organizations, productionJobs, localFileDestinations, localFileCopyJobs } from "../shared/schema";
 import { eq, and, desc } from "drizzle-orm";
 import { getStorageClient } from "./objectStorage";
 import type { Response } from "express";
@@ -466,6 +466,9 @@ export async function uploadLineItemFile(params: {
   tag?: string;
   productionQuantity?: number | null;
   productionGroupId?: string | null;
+  /** Original uploads are canonical source artwork; this remains the legacy workflow projection. */
+  sourceArtworkSide?: "front" | "back" | "both" | "na" | null;
+  sourceArtworkOrigin?: "customer_upload" | "staff_upload";
   buffer: Buffer;
   originalFilename: string;
   mimeType: string;
@@ -481,6 +484,8 @@ export async function uploadLineItemFile(params: {
     tag,
     productionQuantity,
     productionGroupId,
+    sourceArtworkSide,
+    sourceArtworkOrigin,
     buffer,
     originalFilename,
     mimeType,
@@ -508,6 +513,18 @@ export async function uploadLineItemFile(params: {
     },
     persistLink: async (tx, result) => {
       const storagePath = result.legacyRelativePath ?? result.legacyFileUrl;
+      if (role === "original") {
+        await canonicalArtworkWriteService.attachSourceArtwork({
+          tx,
+          organizationId,
+          orderId,
+          lineItemId,
+          fileRecordId: result.fileRecord.id,
+          side: sourceArtworkSide ?? "na",
+          actorUserId: createdByUserId,
+          origin: sourceArtworkOrigin ?? "staff_upload",
+        });
+      }
       const resolvedProductionQuantity = role === "final"
         ? productionQuantity ?? await defaultFinalProductionQuantityForLine(tx, { organizationId, lineItemId })
         : null;
@@ -523,6 +540,7 @@ export async function uploadLineItemFile(params: {
         tag: tag || null,
         productionQuantity: resolvedProductionQuantity,
         productionGroupId: role === "final" ? productionGroupId ?? null : null,
+        sourceArtworkSide: sourceArtworkSide ?? null,
         storageBucket: result.storedObject.bucket,
         storagePath,
         storageKey: result.storedObject.objectKey ?? result.storedObject.localPathRef,
@@ -1341,6 +1359,7 @@ export async function replaceLineItemFile(params: {
     tag: existingFile.tag || undefined,
     productionQuantity: existingFile.productionQuantity,
     productionGroupId: existingFile.productionGroupId,
+    sourceArtworkSide: existingFile.sourceArtworkSide as "front" | "back" | "both" | "na" | null,
     buffer,
     originalFilename,
     mimeType,
@@ -1358,6 +1377,48 @@ export async function replaceLineItemFile(params: {
     .update(lineItemFiles)
     .set({ supersedesFileId: fileId })
     .where(eq(lineItemFiles.id, newFile.id));
+
+  // An original-file replacement also advances canonical ordinary-artwork
+  // ownership. Older projections without a canonical predecessor are left as
+  // history; regular readers will report canonical artwork unavailable rather
+  // than reconstructing ownership from that projection.
+  if (existingFile.role === "original" && existingFile.fileRecordId && newFile.fileRecordId) {
+    const replacedFileRecordId = existingFile.fileRecordId;
+    const replacementFileRecordId = newFile.fileRecordId;
+    await db.transaction(async (tx) => {
+      const [replacementArtwork] = await tx
+        .select({ id: lineItemArtwork.id })
+        .from(lineItemArtwork)
+        .where(and(
+          eq(lineItemArtwork.organizationId, organizationId),
+          eq(lineItemArtwork.lineItemId, existingFile.lineItemId),
+          eq(lineItemArtwork.fileRecordId, replacementFileRecordId),
+          eq(lineItemArtwork.role, "customer_source"),
+          eq(lineItemArtwork.status, "current"),
+        ))
+        .limit(1);
+      if (!replacementArtwork) return;
+      const replacedArtwork = await tx
+        .select({ id: lineItemArtwork.id })
+        .from(lineItemArtwork)
+        .where(and(
+          eq(lineItemArtwork.organizationId, organizationId),
+          eq(lineItemArtwork.lineItemId, existingFile.lineItemId),
+          eq(lineItemArtwork.fileRecordId, replacedFileRecordId),
+          eq(lineItemArtwork.role, "customer_source"),
+          eq(lineItemArtwork.status, "current"),
+        ));
+      for (const artwork of replacedArtwork) {
+        await canonicalArtworkWriteService.supersedeArtwork({
+          tx,
+          organizationId,
+          artworkId: artwork.id,
+          replacementArtworkId: replacementArtwork.id,
+          actorUserId: createdByUserId,
+        });
+      }
+    });
+  }
 
   return newFile;
 }

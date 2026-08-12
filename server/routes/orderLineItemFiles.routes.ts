@@ -28,8 +28,6 @@ import {
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
 import {
-  createRequestLogOnce,
-  enrichAttachmentWithUrls,
   normalizeObjectKeyForDb,
 } from "../lib/supabaseObjectHelpers";
 import { canonicalFileReadResolver } from "../services/storage/CanonicalFileReadResolver";
@@ -38,9 +36,6 @@ import { createLineItemFileRecord } from "../services/lineItemFileRecordService"
 import { deleteStoredObjectKeysIfUnreferenced } from "../services/storage/storageReferenceGuard";
 import { fileDerivativeRepository } from "../storage/fileDerivative.repo";
 import { autoSyncCanonicalProofForLineItem } from "../services/proofingService";
-import { getFileUploadNamingPolicy } from "../prepressFileService";
-import { withOrderOriginalArtworkDisplayFilename } from "../services/originalArtworkFiles";
-import { buildOrderLineItemArtworkAssetsResponse } from "../services/orderLineItemArtworkAssets";
 import {
   assignOrderLineItemArtworkSide,
   isOrderArtworkSide,
@@ -52,6 +47,8 @@ import {
 } from "@shared/artworkSideAssignment";
 import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { repairArtworkRelationshipsForLineItem } from "../services/artworkRelationshipRepairService";
+import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
+import { canonicalArtworkWriteService } from "../services/artwork/CanonicalArtworkWriteService";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -155,38 +152,42 @@ export function registerOrderLineItemFileRoutes(
         return res.status(404).json({ error: "Line item not found" });
       }
 
-      // Query attachments by orderLineItemId (no direct organizationId column, validated via order)
-      const files = await db.select().from(orderAttachments)
-        .where(eq(orderAttachments.orderLineItemId, lineItemId))
-        .orderBy(desc(orderAttachments.createdAt));
-
-      // Enrich each attachment with signed URLs
-      const logOnce = createRequestLogOnce();
-      const namingPolicy = await getFileUploadNamingPolicy(organizationId);
-      const enrichedFiles = await Promise.all(files.map((f) =>
-        enrichAttachmentWithUrls(withOrderOriginalArtworkDisplayFilename(f, {
-          orderNumber: order.orderNumber,
-          namingPolicy,
-        }), { logOnce })
-      ));
-
-      // Artwork Assets rows represent user-manageable attachment or asset-link
-      // relationships. line_item_files is a prepress/proof mirror of a linked
-      // file, not a separate artwork relationship; including it here produced
-      // a second row with an ID that the delete route cannot unlink.
-      // Derivatives remain attached to their attachment or asset capabilities.
+      // Ordinary artwork is canonical-only. Assets remain here only for
+      // non-artwork reference material; neither legacy attachment nor asset
+      // rows can repopulate an empty canonical artwork relationship.
+      const resolution = await lineItemArtworkReadResolver.resolveForLineItem({
+        organizationId,
+        lineItemId,
+        purpose: "order",
+      });
+      const canonicalArtwork = resolution.artwork.map((artwork) => ({
+        id: artwork.relationshipId,
+        fileRecordId: artwork.fileRecordId,
+        fileName: artwork.file.originalFilename ?? "Artwork",
+        originalFilename: artwork.file.originalFilename,
+        fileUrl: artwork.file.contentPath,
+        originalUrl: artwork.file.contentPath,
+        downloadUrl: `${artwork.file.contentPath}?download=1`,
+        previewUrl: `${artwork.file.contentPath}?variant=preview`,
+        thumbUrl: `${artwork.file.contentPath}?variant=thumbnail`,
+        thumbnailUrl: `${artwork.file.contentPath}?variant=thumbnail`,
+        fileSize: artwork.file.sizeBytes,
+        sizeBytes: artwork.file.sizeBytes,
+        mimeType: artwork.file.mimeType,
+        createdAt: artwork.createdAt.toISOString(),
+        side: artwork.side === "unknown" ? "na" : artwork.side,
+        role: "artwork" as const,
+        productionQuantity: artwork.allocationQuantity,
+        productionGroupId: artwork.allocationGroupId,
+        source: "canonical" as const,
+      }));
       const { assetRepository } = await import('../services/assets/AssetRepository');
       const { enrichAssetsWithRoles } = await import('../services/assets/enrichAssetWithUrls');
       const linkedAssets = await assetRepository.listAssetsForParent(organizationId, 'order_line_item', lineItemId);
-      const enrichedAssets = (await enrichAssetsWithRoles(linkedAssets)).map((asset: any) =>
-        withOrderOriginalArtworkDisplayFilename(asset, {
-          orderNumber: order.orderNumber,
-          namingPolicy,
-        })
-      );
+      const enrichedAssets = await enrichAssetsWithRoles(linkedAssets.filter((asset: any) => asset.role === "reference"));
 
-      console.log(`[OrderLineItemFiles:GET] Found ${files.length} artwork attachments + ${linkedAssets.length} artwork assets for line item ${lineItemId}`);
-      res.json({ success: true, ...buildOrderLineItemArtworkAssetsResponse(enrichedFiles, enrichedAssets) });
+      console.log(`[OrderLineItemFiles:GET] Found ${canonicalArtwork.length} canonical artwork relationship(s) + ${enrichedAssets.length} reference asset(s) for line item ${lineItemId}`);
+      res.json({ success: true, data: canonicalArtwork, assets: enrichedAssets });
     } catch (error) {
       console.error("[OrderLineItemFiles:GET] Error:", error);
       res.status(500).json({ error: "Failed to fetch line item files" });
@@ -389,6 +390,8 @@ export function registerOrderLineItemFileRoutes(
 
       const createdAssets: any[] = [];
       for (const c of uniqueCandidates) {
+        const normalizedAssetRole = normalizeRole(c.role);
+        const createsOrdinaryArtwork = normalizedAssetRole !== "reference" && normalizedAssetRole !== "proof";
         const finalized: Awaited<ReturnType<typeof storageApplicationService.finalizeUpload<any>>> | null = c.kind === 'upload-session'
           ? await storageApplicationService.finalizeUpload({
               organizationId,
@@ -416,6 +419,18 @@ export function registerOrderLineItemFileRoutes(
                   sizeBytes: stored.storedObject.sizeBytes,
                 }).returning();
                 if (!created) throw new Error('Failed to create order line item asset');
+                if (createsOrdinaryArtwork) {
+                  await canonicalArtworkWriteService.attachSourceArtwork({
+                    tx,
+                    organizationId,
+                    orderId,
+                    lineItemId,
+                    fileRecordId: stored.fileRecord.id,
+                    side: "na",
+                    actorUserId: userId ?? null,
+                    origin: "staff_upload",
+                  });
+                }
                 return created;
               },
             })
@@ -446,8 +461,20 @@ export function registerOrderLineItemFileRoutes(
                     mimeType: stored.storedObject.mimeType,
                     sizeBytes: stored.storedObject.sizeBytes,
                   }).returning();
-                  if (!created) throw new Error('Failed to create order line item asset');
-                  return created;
+                if (!created) throw new Error('Failed to create order line item asset');
+                if (createsOrdinaryArtwork) {
+                  await canonicalArtworkWriteService.attachSourceArtwork({
+                    tx,
+                    organizationId,
+                    orderId,
+                    lineItemId,
+                    fileRecordId: stored.fileRecord.id,
+                    side: "na",
+                    actorUserId: userId ?? null,
+                    origin: "staff_upload",
+                  });
+                }
+                return created;
                 },
               })
             : null;
@@ -458,6 +485,18 @@ export function registerOrderLineItemFileRoutes(
             ? (c.fileName || 'upload')
             : (c.fileName || guessFileNameFromKey(c.fileKey));
 
+          if (createsOrdinaryArtwork && c.kind === "existing-file-record") {
+            await db.transaction((tx) => canonicalArtworkWriteService.attachSourceArtwork({
+              tx,
+              organizationId,
+              orderId,
+              lineItemId,
+              fileRecordId: c.fileRecordId,
+              side: "na",
+              actorUserId: userId ?? null,
+              origin: "staff_upload",
+            }));
+          }
           const asset: any = finalized?.linkedRecord ?? await assetRepository.createAsset(organizationId, {
             fileRecordId: candidateFileRecordId,
             fileKey: c.kind === 'existing-file-record' ? null : candidateFileKey,
@@ -466,7 +505,6 @@ export function registerOrderLineItemFileRoutes(
             sizeBytes: c.sizeBytes,
           } as any);
 
-        const normalizedAssetRole = normalizeRole(c.role);
         await assetRepository.linkAsset(organizationId, asset.id, 'order_line_item', lineItemId, normalizedAssetRole as any);
 
         const resolvedOriginal = asset.fileRecordId

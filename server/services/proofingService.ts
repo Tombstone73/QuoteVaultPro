@@ -1801,6 +1801,7 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
     lineItemId: args.lineItemId,
     purpose: "proofing",
   }, tx);
+  if (sharedResolution.unavailable) return [];
   const namingPolicy = await getFileUploadNamingPolicy(args.organizationId);
   const attachmentSources = await tx
     .select({
@@ -2121,7 +2122,7 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
   const selectedFileRecordIds = sharedResolution.artwork
     .map((artwork) => artwork.fileRecordId)
     .filter((id): id is string => !!id);
-  if (!selectedFileRecordIds.length) return resolved;
+  if (!selectedFileRecordIds.length) return [];
 
   const rank = new Map(selectedFileRecordIds.map((id, index) => [id, index]));
   return resolved
