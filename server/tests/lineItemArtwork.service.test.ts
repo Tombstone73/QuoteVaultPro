@@ -56,10 +56,12 @@ describe("LineItemArtworkService", () => {
 
   const sourceInput = () => ({ organizationId: "org_1", orderId: "order_1", lineItemId: "line_1", fileRecordId: "file_source", role: "customer_source", origin: "customer_upload", actorUserId: "user_1" });
 
-  test("attaches source artwork and permits the same physical file as production artwork", async () => {
+  test("persists source artwork, reads it back after refresh, and permits the same physical file as production artwork", async () => {
     const source = await service.attachArtwork(sourceInput());
+    const refreshedSource = await service.getCurrentArtwork({ organizationId: "org_1", lineItemId: "line_1", role: "customer_source" });
     const production = await service.attachArtwork({ ...sourceInput(), role: "production", origin: "promoted_existing" });
     expect(source.fileRecordId).toBe("file_source");
+    expect(refreshedSource).toEqual([source]);
     expect(production.fileRecordId).toBe("file_source");
     expect(store.fileRecords.size).toBe(4);
   });

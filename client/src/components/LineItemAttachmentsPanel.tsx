@@ -505,7 +505,7 @@ export function LineItemAttachmentsPanel({
               linkUrl: uploadApiPath,
               linkBody: {
                 orderLineItemId: targetLineItemId,
-                role: "other",
+                role: "artwork",
                 side: "na",
               },
             });

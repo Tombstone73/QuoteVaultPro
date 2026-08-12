@@ -8,7 +8,8 @@ describe("canonical artwork write migration", () => {
     const ordersRoutes = source("../routes/orders.routes.ts");
     expect(ordersRoutes).toContain("canonicalArtworkWriteService.attachSourceArtwork");
     expect(ordersRoutes.indexOf("canonicalArtworkWriteService.attachSourceArtwork")).toBeLessThan(ordersRoutes.indexOf("tx.insert(orderAttachments).values"));
-    expect(ordersRoutes).toContain("role: (role || (orderLineItemId ? 'artwork' : 'other')) as FileRole");
+    expect(ordersRoutes).toContain('if (args.orderLineItemId && args.role === "artwork")');
+    expect(ordersRoutes).toContain("role: (role || 'other') as FileRole");
   });
 
   test("production promotion creates the canonical production relation before its lineItemFiles projection", () => {

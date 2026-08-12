@@ -3,8 +3,15 @@ import { act, useState } from "react";
 import { describe, expect, jest, test } from "@jest/globals";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TextDecoder, TextEncoder } from "util";
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { createRoot } from "react-dom/client";
 import { LineItemAttachmentsPanel } from "./LineItemAttachmentsPanel";
+import { uploadAttachmentViaChunked } from "@/lib/uploads/chunkedAttachmentUpload";
+
+jest.mock("@/lib/uploads/chunkedAttachmentUpload", () => ({
+  uploadAttachmentViaChunked: jest.fn(),
+}));
 
 jest.mock("@/lib/apiConfig", () => ({
   objectsUrl: (value: string) => value,
@@ -104,6 +111,69 @@ function createDropEvent(files: File[]) {
 }
 
 describe("LineItemAttachmentsPanel artwork controls", () => {
+  test("existing Order line-item Upload Artwork sends the canonical artwork role", async () => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    const filesPath = "/api/orders/order-1/line-items/line-1/files";
+    client.setQueryData([filesPath], []);
+    client.setQueryData(["/api/system/status"], { thumbnailsEnabled: true });
+    const uploadMock = jest.mocked(uploadAttachmentViaChunked);
+    uploadMock.mockResolvedValueOnce({} as any);
+    const previousFetch = globalThis.fetch;
+    globalThis.fetch = jest.fn(async () => ({ ok: true, json: async () => ({ data: [], assets: [] }) })) as unknown as typeof fetch;
+    const host = document.createElement("div");
+    document.body.appendChild(host);
+    const root = createRoot(host);
+
+    try {
+      await act(async () => root.render(
+        <QueryClientProvider client={client}>
+          <LineItemAttachmentsPanel
+            quoteId={null}
+            parentType="order"
+            orderId="order-1"
+            lineItemId="line-1"
+            defaultExpanded
+          />
+        </QueryClientProvider>,
+      ));
+      const input = host.querySelector("input[type='file']") as HTMLInputElement;
+      setInputFiles(input, [new File(["art"], "order-art.pdf", { type: "application/pdf" })]);
+      await act(async () => {
+        input.dispatchEvent(new Event("change", { bubbles: true }));
+        await Promise.resolve();
+      });
+
+      expect(uploadMock).toHaveBeenCalledWith(expect.objectContaining({
+        purpose: "order-attachment",
+        parentId: "order-1",
+        linkUrl: "/api/orders/order-1/files",
+        linkBody: { orderLineItemId: "line-1", role: "artwork", side: "na" },
+      }));
+      expect(uploadMock).not.toHaveBeenCalledWith(expect.objectContaining({
+        linkBody: expect.objectContaining({ role: "other" }),
+      }));
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+      globalThis.fetch = previousFetch;
+      uploadMock.mockReset();
+    }
+  });
+
+  test("generic Order Attachments retain non-artwork classification", () => {
+    const genericAttachments = readFileSync(path.join(process.cwd(), "client/src/components/AttachmentsPanel.tsx"), "utf8");
+    expect(genericAttachments).toContain('? { role: "other", side: "na" }');
+    expect(genericAttachments).toContain('attachPayload.role = "other"');
+  });
+
+  test("quote artwork upload remains quote-scoped without an Order role override", () => {
+    const panel = readFileSync(path.join(process.cwd(), "client/src/components/LineItemAttachmentsPanel.tsx"), "utf8");
+    const quoteBranch = panel.slice(panel.indexOf('purpose: "quote-attachment"'), panel.indexOf("successCount++;", panel.indexOf('purpose: "quote-attachment"')));
+    expect(quoteBranch).toContain("parentId: targetQuoteId");
+    expect(quoteBranch).toContain("linkUrl: uploadApiPath");
+    expect(quoteBranch).not.toContain("linkBody");
+  });
+
   test("shows explicit Front/Back assignment controls only for double-sided line items", () => {
     const doubleSided = renderPanel(true);
     expect(doubleSided).toContain("Use same artwork on both sides");
