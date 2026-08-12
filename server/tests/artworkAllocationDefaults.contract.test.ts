@@ -16,6 +16,7 @@ describe("production artwork allocation defaults", () => {
   const prepressFilesRoute = fs.readFileSync(path.join(root, "server/routes/prepressFiles.routes.ts"), "utf8");
   const prepressQueueRoute = fs.readFileSync(path.join(root, "server/routes/prepress.routes.ts"), "utf8");
   const allocationRepairMigration = fs.readFileSync(path.join(root, "server/db/migrations_v2/0169_repair_order_attachment_production_allocation.sql"), "utf8");
+  const lineItemFileAllocationRepairMigration = fs.readFileSync(path.join(root, "server/db/migrations_v2/0170_repair_line_item_file_production_allocation.sql"), "utf8");
   const migrationJournal = fs.readFileSync(path.join(root, "server/db/migrations_v2/meta/_journal.json"), "utf8");
 
   test("new quote and order production artwork relationships default to one when no explicit allocation is supplied", () => {
@@ -67,5 +68,12 @@ describe("production artwork allocation defaults", () => {
     expect(allocationRepairMigration).toContain("ADD COLUMN IF NOT EXISTS production_quantity integer");
     expect(allocationRepairMigration).toContain("ADD COLUMN IF NOT EXISTS production_group_id varchar(128)");
     expect(migrationJournal).toContain('"tag": "0169_repair_order_attachment_production_allocation"');
+  });
+
+  test("repairs line-item workflow projection allocation columns required by canonical artwork reads", () => {
+    expect(lineItemFileAllocationRepairMigration).toContain("ALTER TABLE line_item_files");
+    expect(lineItemFileAllocationRepairMigration).toContain("ADD COLUMN IF NOT EXISTS production_quantity integer");
+    expect(lineItemFileAllocationRepairMigration).toContain("ADD COLUMN IF NOT EXISTS production_group_id varchar(128)");
+    expect(migrationJournal).toContain('"tag": "0170_repair_line_item_file_production_allocation"');
   });
 });

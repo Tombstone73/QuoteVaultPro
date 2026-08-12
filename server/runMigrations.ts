@@ -183,6 +183,9 @@ const RELEASE_CHECKS: ReleaseCheck[] = [
   // the compatibility projection within canonical artwork upload transactions.
   { type: "column_exists", table: "order_attachments", column: "production_quantity", label: "order_attachments.production_quantity" },
   { type: "column_exists", table: "order_attachments", column: "production_group_id", label: "order_attachments.production_group_id" },
+  // migration 0170 - repair the matching line-item-file projection columns.
+  { type: "column_exists", table: "line_item_files", column: "production_quantity", label: "line_item_files.production_quantity" },
+  { type: "column_exists", table: "line_item_files", column: "production_group_id", label: "line_item_files.production_group_id" },
   // migration 0070 - production completion recovery.
   { type: "column_exists", table: "production_jobs", column: "completed_by_user_id", label: "production_jobs.completed_by_user_id" },
   { type: "column_exists", table: "production_jobs", column: "previous_status", label: "production_jobs.previous_status" },
