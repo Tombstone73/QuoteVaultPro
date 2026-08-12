@@ -62,6 +62,7 @@ import {
 } from "@shared/productionHydration";
 import { resolveProofArtworkLayout } from "@shared/proofArtwork";
 import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
+import { lineItemArtworkReadResolver } from "./artwork/LineItemArtworkReadResolver";
 
 type ProofDecision = "approved" | "rejected" | "revision_requested";
 type ProofVersionStatus = "draft" | "awaiting_response" | "approved" | "rejected" | "revision_requested" | "cancelled" | "superseded";
@@ -1792,6 +1793,14 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
   organizationId: string;
   lineItemId: string;
 }): Promise<ResolvedEligibleArtworkSource[]> {
+  // The shared resolver owns canonical-first precedence. The legacy queries
+  // below only enrich its selected file identities with proof-specific preview
+  // lifecycle metadata while historical fallback remains necessary.
+  const sharedResolution = await lineItemArtworkReadResolver.resolveForLineItem({
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    purpose: "proofing",
+  }, tx);
   const namingPolicy = await getFileUploadNamingPolicy(args.organizationId);
   const attachmentSources = await tx
     .select({
@@ -2109,7 +2118,15 @@ async function resolveEligibleProofArtworkSourceRows(tx: any, args: {
     }
   }
 
-  return resolved;
+  const selectedFileRecordIds = sharedResolution.artwork
+    .map((artwork) => artwork.fileRecordId)
+    .filter((id): id is string => !!id);
+  if (!selectedFileRecordIds.length) return resolved;
+
+  const rank = new Map(selectedFileRecordIds.map((id, index) => [id, index]));
+  return resolved
+    .filter((source) => !!source.fileRecordId && rank.has(source.fileRecordId))
+    .sort((left, right) => (rank.get(left.fileRecordId!) ?? Number.MAX_SAFE_INTEGER) - (rank.get(right.fileRecordId!) ?? Number.MAX_SAFE_INTEGER));
 }
 
 export async function listEligibleProofArtworkSources(tx: any, args: {

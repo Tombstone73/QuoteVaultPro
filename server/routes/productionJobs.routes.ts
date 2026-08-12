@@ -80,6 +80,7 @@ import {
 } from "@shared/productionCompleted";
 import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
 import { ReturnToPrepressError, getReturnToPrepressBlockedReason, returnProductionJobsToPrepressInTransaction } from "../services/productionReturnToPrepressService";
+import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
 
 /**
  * Canonical station key for the Fulfillment station.
@@ -1429,6 +1430,14 @@ export function registerProductionJobsRoutes(
         lineItemById.set(li.id, mapped);
       }
 
+      // Batch once for the production board so every card shares canonical-first
+      // precedence and legacy fallback without an N+1 query pattern.
+      const resolvedArtworkByLineItem = await lineItemArtworkReadResolver.resolveForLineItems({
+        organizationId,
+        lineItemIds: productionLineItemIds,
+        purpose: "production",
+      });
+
       const alertScopeClauses: any[] = [
         inArray(productionAlerts.orderId, orderIds),
         inArray(productionAlerts.productionJobId, jobIds),
@@ -1729,10 +1738,34 @@ export function registerProductionJobsRoutes(
           : orderLineItemsList.slice(0, 3);
         const totalQuantity = orderLineItemsList.reduce((sum, li) => sum + (Number(li.quantity) || 0), 0);
 
+        const resolvedLineItemArtwork = row.lineItemId
+          ? (resolvedArtworkByLineItem.get(row.lineItemId)?.artwork ?? []).map((artwork) => ({
+              id: artwork.id,
+              orderLineItemId: artwork.lineItemId,
+              fileRecordId: artwork.fileRecordId,
+              fileName: artwork.file.originalFilename ?? "Artwork",
+              mimeType: artwork.file.mimeType,
+              fileUrl: artwork.file.contentPath,
+              thumbKey: null,
+              previewKey: null,
+              thumbUrl: artwork.fileRecordId ? `${artwork.file.contentPath}?variant=thumbnail` : null,
+              previewUrl: artwork.fileRecordId ? `${artwork.file.contentPath}?variant=preview` : null,
+              thumbnailUrl: artwork.fileRecordId ? `${artwork.file.contentPath}?variant=thumbnail` : null,
+              side: artwork.side,
+              isPrimary: artwork.role !== "legacy",
+              productionQuantity: artwork.fileRecordId
+                ? finalFileAllocationByLineItemAndRecordId.get(`${row.lineItemId}:${artwork.fileRecordId}`)?.productionQuantity ?? null
+                : null,
+              productionGroupId: artwork.fileRecordId
+                ? finalFileAllocationByLineItemAndRecordId.get(`${row.lineItemId}:${artwork.fileRecordId}`)?.productionGroupId ?? null
+                : null,
+              thumbStatus: null,
+            }))
+          : [];
         const artwork = row.lineItemId
           ? resolveLineItemProductionArtwork({
-              lineItemArtwork: artworkByLineItemId.get(row.lineItemId) ?? [],
-              orderArtwork: artworkByOrderId.get(row.orderId) ?? [],
+              lineItemArtwork: resolvedLineItemArtwork,
+              orderArtwork: [],
               productionFileRecordIds: finalFileRecordIdsByLineItem.get(row.lineItemId) ?? [],
             })
           : artworkByOrderId.get(row.orderId) ?? [];
@@ -2736,7 +2769,30 @@ export function registerProductionJobsRoutes(
         }
       }
 
-      const lineItemArtwork = byLineItem.get(lineItemId) ?? [];
+      const artworkResolution = await lineItemArtworkReadResolver.resolveForLineItem({
+        organizationId,
+        lineItemId,
+        purpose: "production",
+      });
+      const lineItemArtwork = artworkResolution.artwork.map((artwork) => ({
+        id: artwork.id,
+        orderLineItemId: artwork.lineItemId,
+        fileRecordId: artwork.fileRecordId,
+        fileName: artwork.file.originalFilename ?? "Artwork",
+        mimeType: artwork.file.mimeType,
+        fileUrl: artwork.file.contentPath,
+        availabilityStatus: artwork.fileRecordId ? "available" as const : "missing" as const,
+        thumbKey: null,
+        previewKey: null,
+        thumbUrl: artwork.fileRecordId ? `${artwork.file.contentPath}?variant=thumbnail` : null,
+        previewUrl: artwork.fileRecordId ? `${artwork.file.contentPath}?variant=preview` : null,
+        thumbnailUrl: artwork.fileRecordId ? `${artwork.file.contentPath}?variant=thumbnail` : null,
+        side: artwork.side,
+        isPrimary: artwork.role !== "legacy",
+        productionQuantity: artwork.allocationQuantity,
+        productionGroupId: artwork.allocationGroupId,
+        thumbStatus: null,
+      }));
       const finalFileRows = await db
         .select({
           id: lineItemFiles.id,
@@ -2811,7 +2867,7 @@ export function registerProductionJobsRoutes(
       );
       const artwork = resolveLineItemProductionArtwork({
         lineItemArtwork,
-        orderArtwork: byOrder,
+        orderArtwork: [],
         productionFileRecordIds: finalFileRows.map((file) => file.fileRecordId),
       }).map((file) => {
         const allocation = file.fileRecordId ? finalAllocationByFileRecordId.get(file.fileRecordId) : null;

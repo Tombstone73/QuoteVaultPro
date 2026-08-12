@@ -6,6 +6,7 @@ import { Button } from "@/components/ui/button";
 import { downloadAuthenticatedFile, getProductionFileAccessMessage, openAuthenticatedFile } from "@/lib/authenticatedFileAccess";
 import { resolveObjectsPublicUrl } from "@/lib/apiConfig";
 import { apiFetch } from "@/lib/queryClient";
+import { buildArtworkAccessUrl } from "@/lib/artworkAccess";
 import { useToast } from "@/hooks/use-toast";
 import type { ProductionFileSummary } from "@/hooks/useProduction";
 import { resolveProductionPreviewUrl } from "@shared/productionHydration";
@@ -17,6 +18,12 @@ import {
 
 export function resolveProductionFilePreviewImage(file: ProductionFileSummary | null | undefined): string | null {
   if (!file) return null;
+  // Final production files with a canonical identity must use the same
+  // authenticated access contract as the rest of artwork. The old /objects/
+  // fallback remains only for legacy rows without a file-record identity.
+  if (file.fileRecordId && (file.thumbnailUrl || file.previewUrl)) {
+    return buildArtworkAccessUrl(file.fileRecordId, "thumbnail");
+  }
   const resolved = resolveProductionPreviewUrl({
     thumbnailUrl: file.thumbnailUrl,
     previewUrl: file.previewUrl,

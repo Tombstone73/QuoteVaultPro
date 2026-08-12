@@ -53,7 +53,7 @@ describe("ProductionFilePreviewPanel", () => {
     const html = renderPanel([finalFile()]);
 
     expect(html).toContain("Production file / sheet layout");
-    expect(html).toContain("20000-coroplast-imposed-page-1.png");
+    expect(html).toContain("/api/artwork/file-records/record-1/content?variant=thumbnail");
     expect(html).not.toContain("href=\"/api/production/jobs/job-1/files/final-1/download");
     expect(html).toContain("Open");
     expect(html).toContain("Download");
@@ -127,7 +127,7 @@ describe("ProductionFilePreviewPanel", () => {
       credentials: "include",
     });
     expect(mockedApiFetch).toHaveBeenCalledTimes(2);
-    expect(container.innerHTML).toContain("generated-thumb.jpg");
+    expect(container.innerHTML).toContain("/api/artwork/file-records/record-1/content?variant=thumbnail");
     await act(async () => root.unmount());
     queryClient.clear();
     delete (globalThis as any).IS_REACT_ACT_ENVIRONMENT;

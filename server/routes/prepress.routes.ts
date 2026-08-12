@@ -94,6 +94,7 @@ import {
 } from "@shared/productionHydration";
 import { GENERATED_PROOF_DESCRIPTION_MARKER } from "@shared/prepressFileClassification";
 import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
+import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
 
 // ---------------------------------------------------------------------------
 // Local utility (mirrors top-level helper in routes.ts)
@@ -121,40 +122,16 @@ async function loadPrepressArtworkSideReadiness(executor: any, args: {
     .limit(1);
   if (!lineItem) return null;
 
-  const artwork = await executor
-    .select({
-      id: orderAttachments.id,
-      fileRecordId: orderAttachments.fileRecordId,
-      side: orderAttachments.side,
-    })
-    .from(orderAttachments)
-    .innerJoin(orders, eq(orderAttachments.orderId, orders.id))
-    .where(and(
-      eq(orderAttachments.orderLineItemId, args.lineItemId),
-      eq(orders.organizationId, args.organizationId),
-      eq(orderAttachments.role, "artwork"),
-    ));
-
-  const originalFiles = await executor
-    .select({
-      id: lineItemFiles.id,
-      fileRecordId: lineItemFiles.fileRecordId,
-      side: sql<string>`'na'`,
-    })
-    .from(lineItemFiles)
-    .where(and(
-      eq(lineItemFiles.organizationId, args.organizationId),
-      eq(lineItemFiles.lineItemId, args.lineItemId),
-      eq(lineItemFiles.role, "original"),
-      eq(lineItemFiles.status, "active"),
-    ));
-  const attachmentFileRecordIds = new Set(
-    artwork.map((file: any) => file.fileRecordId).filter((id: unknown): id is string => typeof id === "string"),
-  );
-  const canonicalArtwork = [
-    ...artwork,
-    ...originalFiles.filter((file: any) => !file.fileRecordId || !attachmentFileRecordIds.has(file.fileRecordId)),
-  ];
+  const resolution = await lineItemArtworkReadResolver.resolveForLineItem({
+    organizationId: args.organizationId,
+    lineItemId: args.lineItemId,
+    purpose: "prepress",
+  }, executor);
+  const canonicalArtwork = resolution.artwork.map((artwork) => ({
+    id: artwork.id,
+    fileRecordId: artwork.fileRecordId,
+    side: artwork.side,
+  }));
 
   const sides = resolveProductionSides(lineItem);
   const intent = resolveArtworkSideIntent(lineItem);

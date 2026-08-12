@@ -127,6 +127,7 @@ import {
 } from "../lib/manualInventoryReservationsRepo";
 import { createLineItemFileRecord } from "../services/lineItemFileRecordService";
 import { canonicalArtworkWriteService } from "../services/artwork/CanonicalArtworkWriteService";
+import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
 import {
     assertStage18PDevFixtureAccess,
     isStage18PDevFixtureCustomer,
@@ -4523,153 +4524,22 @@ export async function registerOrderRoutes(
             const out: Record<string, { thumbUrls: string[]; thumbCount: number }> = {};
             for (const id of lineItemIds) out[String(id)] = { thumbUrls: [], thumbCount: 0 };
 
-            const activeFinalRows = await db
-                .select({
-                    lineItemId: lineItemFiles.lineItemId,
-                    fileRecordId: lineItemFiles.fileRecordId,
-                })
-                .from(lineItemFiles)
-                .where(and(
-                    eq(lineItemFiles.organizationId, organizationId),
-                    inArray(lineItemFiles.lineItemId, lineItemIds),
-                    eq(lineItemFiles.role, 'final'),
-                    eq(lineItemFiles.status, 'active'),
-                ));
-            const finalRecordIdsByLineItem = new Map<string, Set<string>>();
-            for (const finalFile of activeFinalRows) {
-                if (!finalFile.fileRecordId) continue;
-                const ids = finalRecordIdsByLineItem.get(finalFile.lineItemId) ?? new Set<string>();
-                ids.add(finalFile.fileRecordId);
-                finalRecordIdsByLineItem.set(finalFile.lineItemId, ids);
-            }
-
-            // A promoted final relation points at the original fileRecordId. Use
-            // that stable identity to keep the Order header thumbnail aligned
-            // with Prepress and Production, even when the source attachment is
-            // stored at order scope.
-            if (finalRecordIdsByLineItem.size > 0) {
-                const attachmentRows = await db
-                    .select()
-                    .from(orderAttachments)
-                    .where(and(eq(orderAttachments.orderId, orderId), eq(orderAttachments.role, 'artwork')))
-                    .orderBy(desc(orderAttachments.createdAt));
-                const logOnce = createRequestLogOnce();
-                const enrichedAttachments = await Promise.all(
-                    attachmentRows.map((attachment) => enrichAttachmentWithUrls(attachment, { logOnce })),
-                );
-                for (const [lineItemId, finalRecordIds] of Array.from(finalRecordIdsByLineItem.entries())) {
-                    const matching = enrichedAttachments.filter((attachment) =>
-                        !!attachment.fileRecordId && finalRecordIds.has(attachment.fileRecordId),
-                    );
-                    const urls = matching
-                        .map((attachment) =>
-                            attachment.previewThumbnailUrl ?? attachment.thumbnailUrl ?? attachment.thumbUrl ?? attachment.previewUrl ?? null,
-                        )
-                        .filter((url): url is string => typeof url === 'string' && url.length > 0);
-                    out[lineItemId].thumbUrls = Array.from(new Set(urls)).slice(0, 3);
-                    out[lineItemId].thumbCount = finalRecordIds.size;
-                }
-            }
-
-            // 2) Fetch all asset links for these line items (batched)
-            const linkRows = await db
-                .select({
-                    lineItemId: assetLinks.parentId,
-                    assetId: assetLinks.assetId,
-                    createdAt: assetLinks.createdAt,
-                })
-                .from(assetLinks)
-                .where(
-                    and(
-                        eq(assetLinks.organizationId, organizationId),
-                        eq(assetLinks.parentType, 'order_line_item'),
-                        inArray(assetLinks.parentId, lineItemIds)
-                    )
-                )
-                .orderBy(desc(assetLinks.createdAt));
-
-            const assetIds = Array.from(new Set(linkRows.map((r) => r.assetId).filter(Boolean) as string[]));
-            if (!assetIds.length) {
-                return res.json({ success: true, data: out });
-            }
-
-            // 3) Fetch assets + variants (batched)
-            const [assetRows, variantRows] = await Promise.all([
-                db
-                    .select()
-                    .from(assets)
-                    .where(and(eq(assets.organizationId, organizationId), inArray(assets.id, assetIds))),
-                db
-                    .select()
-                    .from(assetVariants)
-                    .where(and(eq(assetVariants.organizationId, organizationId), inArray(assetVariants.assetId, assetIds))),
-            ]);
-
-            const variantsByAssetId = new Map<string, any[]>();
-            for (const v of variantRows as any[]) {
-                const key = String(v.assetId);
-                const list = variantsByAssetId.get(key) ?? [];
-                list.push(v);
-                variantsByAssetId.set(key, list);
-            }
-
-            const assetsById = new Map<string, any>();
-            for (const a of assetRows as any[]) {
-                assetsById.set(String(a.id), { ...a, variants: variantsByAssetId.get(String(a.id)) ?? [] });
-            }
-
-            // 4) Enrich URLs for thumb resolution (same helper used elsewhere)
-            const { enrichAssetPreviewUrls } = await import('../services/assets/enrichAssetWithUrls');
-
-            // 5) Aggregate per lineItemId
-            const assetIdsByLineItem = new Map<string, Set<string>>();
-            const seenUrlsByLineItem = new Map<string, Set<string>>();
-
-            for (const link of linkRows as any[]) {
-                const lineItemId = String(link.lineItemId);
-                const assetId = String(link.assetId);
-                if (!lineItemId || !assetId) continue;
-
-                const set = assetIdsByLineItem.get(lineItemId) ?? new Set<string>();
-                set.add(assetId);
-                assetIdsByLineItem.set(lineItemId, set);
-
-                // Only collect up to 3 urls per line item
-                const current = out[lineItemId];
-                if (!current) continue;
-                if (current.thumbUrls.length >= 3) continue;
-
-                const raw = assetsById.get(assetId);
-                if (!raw) continue;
-                const selectedFinalIds = finalRecordIdsByLineItem.get(lineItemId);
-                if (selectedFinalIds?.size && (!raw.fileRecordId || !selectedFinalIds.has(String(raw.fileRecordId)))) {
-                    continue;
-                }
-                const enriched = await enrichAssetPreviewUrls(raw);
-
-                // Use the same priority as client getThumbSrc (previewThumbnailUrl, thumbnailUrl, thumbUrl, previewUrl, pages[0].thumbUrl)
-                const url =
-                    (enriched as any).previewThumbnailUrl ??
-                    (enriched as any).thumbnailUrl ??
-                    (enriched as any).thumbUrl ??
-                    (enriched as any).previewUrl ??
-                    (enriched as any).pages?.[0]?.thumbUrl ??
-                    null;
-
-                if (typeof url !== 'string' || !url.length) continue;
-
-                const seen = seenUrlsByLineItem.get(lineItemId) ?? new Set<string>();
-                if (seen.has(url)) continue;
-                seen.add(url);
-                seenUrlsByLineItem.set(lineItemId, seen);
-
-                current.thumbUrls.push(url);
-            }
-
-            assetIdsByLineItem.forEach((set, lineItemId) => {
-                if (!out[lineItemId]) out[lineItemId] = { thumbUrls: [], thumbCount: 0 };
-                if (!finalRecordIdsByLineItem.has(lineItemId)) out[lineItemId].thumbCount = set.size;
+            const resolutions = await lineItemArtworkReadResolver.resolveForLineItems({
+                organizationId,
+                lineItemIds,
+                purpose: "order",
             });
+            for (const lineItemId of lineItemIds) {
+                const resolution = resolutions.get(lineItemId);
+                const thumbnailIds = resolution?.artwork
+                    .map((artwork) => artwork.fileRecordId)
+                    .filter((id): id is string => !!id)
+                    .slice(0, 3) ?? [];
+                out[lineItemId] = {
+                    thumbUrls: Array.from(new Set(thumbnailIds)).map((id) => `/api/artwork/file-records/${encodeURIComponent(id)}/content?variant=thumbnail`),
+                    thumbCount: resolution?.artwork.length ?? 0,
+                };
+            }
 
             return res.json({ success: true, data: out });
         } catch (error) {
