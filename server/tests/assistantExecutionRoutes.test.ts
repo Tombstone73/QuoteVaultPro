@@ -48,7 +48,13 @@ function app(executionService: any, options: { authenticated?: boolean; tenant?:
     if (options.tenant === false) return res.sendStatus(403);
     req.organizationId = options.orgId ?? "org_1"; req.orgRole = "member"; next();
   };
-  registerAssistantExecutionRoutes(instance, { isAuthenticated, tenantContext }, { service: executionService });
+  // Route fallback must preserve a safe not-found response without reaching a
+  // real composite service or its external transport during this local test.
+  const compositeService = {
+    getPlan: jest.fn(async () => { throw new ExecutionPlanError("PLAN_NOT_FOUND", "hidden"); }),
+    confirmAndExecute: jest.fn(async () => { throw new ExecutionPlanError("PLAN_NOT_FOUND", "hidden"); }),
+  };
+  registerAssistantExecutionRoutes(instance, { isAuthenticated, tenantContext }, { service: executionService, compositeService: compositeService as any });
   return instance;
 }
 

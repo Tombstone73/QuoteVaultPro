@@ -2,7 +2,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { AssistantContextEnvelope } from "@shared/assistantContracts";
 import { assertTransition, isExpired } from "./stateMachine";
 import type {
-  ExecutionActorScope, ExecutionCommandRegistry, ExecutionCommandResult, ExecutionConfirmationRecord,
+  ExecutionActorScope, ExecutionCommandDefinition, ExecutionCommandRegistry, ExecutionCommandResult, ExecutionConfirmationRecord,
   ExecutionPlanRecord, ExecutionPlanRepository,
 } from "./types";
 import { ExecutionPlanError } from "./types";
@@ -35,6 +35,19 @@ export class ExecutionPlanningService {
 
   private now() { return this.options.now?.() ?? new Date(); }
 
+  private assertCommandAuthorized(scope: ExecutionActorScope, command: ExecutionCommandDefinition, message: string): void {
+    if (scope.authorityStatus === "unknown") throw new ExecutionPlanError("PERMISSION_DENIED", message);
+    if (!command.requiredPermissions.every((permission) => scope.permissions.includes(permission))) {
+      throw new ExecutionPlanError("PERMISSION_DENIED", message);
+    }
+    if (command.allowedRoles?.length) {
+      const role = typeof scope.organizationRole === "string" ? scope.organizationRole.trim().toLowerCase() : "";
+      if (!role || !command.allowedRoles.map((allowed) => allowed.trim().toLowerCase()).includes(role)) {
+        throw new ExecutionPlanError("PERMISSION_DENIED", message);
+      }
+    }
+  }
+
   async getPlan(scope: ExecutionActorScope, planId: string): Promise<ExecutionPlanRecord> {
     return this.requirePlan(scope, planId);
   }
@@ -42,9 +55,7 @@ export class ExecutionPlanningService {
   async createPlan(scope: ExecutionActorScope, request: CreateExecutionPlanRequest): Promise<ExecutionPlanRecord> {
     const command = this.registry.get(request.commandName);
     if (!command) throw new ExecutionPlanError("COMMAND_NOT_REGISTERED", "This action is not available.");
-    if (!command.requiredPermissions.every((permission) => scope.permissions.includes(permission))) {
-      throw new ExecutionPlanError("PERMISSION_DENIED", "You are not allowed to plan this action.");
-    }
+    this.assertCommandAuthorized(scope, command, "You are not allowed to plan this action.");
     const prepared = await command.buildPreview({ scope, context: request.context, arguments: request.arguments });
     if (prepared.preview.affectedRecords.length > command.maxAffectedRecords) {
       throw new ExecutionPlanError("AFFECTED_RECORD_LIMIT", "This action affects too many records.");
@@ -87,6 +98,9 @@ export class ExecutionPlanningService {
 
   async issueConfirmation(scope: ExecutionActorScope, planId: string, expectedVersion: number): Promise<ConfirmationIssueResult> {
     const plan = await this.requirePlan(scope, planId);
+    const command = this.registry.get(plan.commandName);
+    if (!command) throw new ExecutionPlanError("COMMAND_NOT_REGISTERED", "This action is not available.");
+    this.assertCommandAuthorized(scope, command, "You are not allowed to confirm this action.");
     this.assertCurrentVersion(plan, expectedVersion);
     const current = await this.expireIfNeeded(plan);
     const awaiting = current.status === "awaiting_confirmation"
@@ -124,6 +138,15 @@ export class ExecutionPlanningService {
     plan = await this.expireIfNeeded(plan);
     if (plan.contextHash !== contextHash(input.context)) throw new ExecutionPlanError("CONTEXT_CHANGED", "The plan context changed; create a new plan.");
     if (plan.status !== "awaiting_confirmation") throw new ExecutionPlanError("PLAN_NOT_CONFIRMABLE", "This plan cannot be confirmed.");
+    const command = this.registry.get(plan.commandName);
+    if (!command) throw new ExecutionPlanError("COMMAND_NOT_REGISTERED", "This action is not available.");
+    try {
+      this.assertCommandAuthorized(scope, command, "Permissions changed before execution.");
+    } catch (error) {
+      if (!(error instanceof ExecutionPlanError)) throw error;
+      await this.transition(plan, "invalidated", "PERMISSION_CHANGED", "Permissions changed before execution.");
+      throw new ExecutionPlanError("PERMISSION_CHANGED", "Permissions changed before execution.");
+    }
     const consumed = await this.repository.consumeConfirmation({ planId: plan.id, organizationId: scope.organizationId, userId: scope.userId, tokenHash: sha256(input.token), now: this.now() });
     if (consumed !== "consumed") throw new ExecutionPlanError(consumed === "already_used" ? "CONFIRMATION_ALREADY_USED" : "INVALID_CONFIRMATION", "The confirmation token is invalid or expired.");
     plan = await this.transition(plan, "confirmed");
@@ -136,7 +159,10 @@ export class ExecutionPlanningService {
     if (plan.status !== "confirmed") throw new ExecutionPlanError("PLAN_NOT_CONFIRMED", "This plan is not confirmed.");
     const command = this.registry.get(plan.commandName);
     if (!command) throw new ExecutionPlanError("COMMAND_NOT_REGISTERED", "This action is not available.");
-    if (!command.requiredPermissions.every((permission) => scope.permissions.includes(permission))) {
+    try {
+      this.assertCommandAuthorized(scope, command, "Permissions changed before execution.");
+    } catch (error) {
+      if (!(error instanceof ExecutionPlanError)) throw error;
       const invalidated = await this.transition(plan, "invalidated", "PERMISSION_CHANGED", "Permissions changed before execution.");
       throw new ExecutionPlanError("PERMISSION_CHANGED", `Plan ${invalidated.id} was invalidated.`);
     }

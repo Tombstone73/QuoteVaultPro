@@ -36,7 +36,13 @@ describe("AI Operator capability inventory", () => {
   });
 
   it("keeps known command-permission mirror gaps explicit", () => {
-    const expected = [
+    expect(commandPermissionMetadataGaps).toEqual([]);
+  });
+
+  it("keeps the incomplete descriptive mirror out of authority decisions", async () => {
+    const source = await readFile(path.resolve(process.cwd(), "server/services/assistant/assistantCapabilities.ts"), "utf8");
+    const actualGaps = assistantProductionCommandAllowlist.filter((command) => !source.includes(`"${command}"`));
+    expect(actualGaps).toEqual([
       "products.create_inactive_draft_batch",
       "products.adjust_pricing",
       "products.rollback_pricing_change_set",
@@ -45,14 +51,8 @@ describe("AI Operator capability inventory", () => {
       "products.clone_to_inactive_draft",
       "products.replace_inactive_matrix",
       "products.replace_inactive_quantity_tiers",
-    ];
-    expect(commandPermissionMetadataGaps).toEqual(expected);
-  });
-
-  it("detects drift between the inventory snapshot and the live capability mirror source", async () => {
-    const source = await readFile(path.resolve(process.cwd(), "server/services/assistant/assistantCapabilities.ts"), "utf8");
-    const actualGaps = assistantProductionCommandAllowlist.filter((command) => !source.includes(`"${command}"`));
-    expect(actualGaps).toEqual(commandPermissionMetadataGaps);
+    ]);
+    expect(commandPermissionMetadataGaps).toEqual([]);
   });
 
   it("keeps AI mirrors anchored to known underlying tool or command inventory", () => {

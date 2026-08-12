@@ -26,6 +26,9 @@ export type ExecutionPlanState = (typeof executionPlanStates)[number];
 export interface ExecutionActorScope {
   organizationId: string;
   userId: string;
+  /** Resolved only from the tenant membership role; never from a plan or provider. */
+  organizationRole?: string | null;
+  authorityStatus?: "resolved" | "unknown";
   permissions: readonly string[];
   environment: "development" | "test" | "production" | string;
 }
@@ -264,6 +267,8 @@ export interface ExecutionCommandDefinition {
   confirmationTtlMs: number;
   maxAffectedRecords: number;
   requiredPermissions: readonly string[];
+  /** The command registry's explicit role restriction. Both it and requiredPermissions must pass. */
+  allowedRoles?: readonly string[];
   /** Validate and normalize model/user supplied arguments before any plan exists. */
   buildPreview(input: {
     scope: ExecutionActorScope;

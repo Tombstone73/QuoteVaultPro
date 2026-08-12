@@ -11,22 +11,15 @@ This is a source-backed baseline for the future canonical capability registry. `
 | Source | Applies to | Permission authority | Finding |
 |---|---|---|---|
 | ui.route.middleware | normal UI reads and mutations | server/routes.ts | Route middleware is the UI authority, but exact policy varies by route and several routes use only authentication plus tenant context. |
-| assistant.chat.actor | chat capability availability, normal Operator reads, normal Operator semantic tools | server/routes/assistant.routes.ts | Chat derives a deliberately narrow, role-based permission list; owner/admin receive the product and finance additions. |
+| assistant.shared.authority | chat, execution-plan creation, GO confirmation, command execution | shared/organizationRoleAuthority.ts | Shared tenant-role policy supplies grants to both chat and execution; command requiredCapability and allowedRoles are both enforced. |
 | assistant.read.tool | AI read tool execution | server/services/assistant/toolRegistry.ts | Read-tool policy is explicit and requires the server-derived internal-staff marker. |
-| assistant.capability.mirror | capability description and filtering | server/services/assistant/assistantCapabilities.ts | Informational permission mirror is incomplete relative to the production command allowlist; known gaps are captured below. |
-| assistant.execution.synthetic_scope | execution-plan creation, GO confirmation, command execution | server/routes/assistantExecution.routes.ts | Any internal role receives a broad synthetic command permission set; product permissions are separately limited to owner/admin. This differs from normal chat actor derivation. |
-| assistant.command.definition | command registration and execution metadata | server/services/assistant/execution/commandRegistry.ts | Commands declare their own required capability and allowed roles, but execution scope currently supplies synthetic permissions rather than a shared authority resolver. |
+| assistant.capability.mirror | capability description and filtering | server/services/assistant/capabilityInventory.ts | Descriptive metadata now covers the production allowlist but is not runtime authority; command definitions and the shared policy are authoritative. |
+| assistant.execution.shared_scope | execution-plan creation, GO confirmation, command execution | server/services/assistant/actorAuthorityResolver.ts | Execution uses the same resolver grants as chat and checks each command's required capability and allowed roles at planning, confirmation, and execution. |
+| assistant.command.definition | command registration and execution metadata | server/services/assistant/execution/commandRegistry.ts | Commands declare required capability and allowed roles; both are carried into the execution registry and enforced. |
 
 ## Known command-permission mirror gaps
 
-- `products.create_inactive_draft_batch`
-- `products.adjust_pricing`
-- `products.rollback_pricing_change_set`
-- `products.create_configurable_draft`
-- `products.create_from_canonical_intent`
-- `products.clone_to_inactive_draft`
-- `products.replace_inactive_matrix`
-- `products.replace_inactive_quantity_tiers`
+None.
 
 ## Product parity fixture
 
@@ -61,12 +54,12 @@ This is a source-backed baseline for the future canonical capability registry. `
 | ai.read.products.get_summary | read | unknown | read_tool | products.get_summary | catalog_read | partial_or_indirect |
 | ai.read.products.get_pricing | read | unknown | read_tool | products.get_pricing | finance_read | partial_or_indirect |
 | ai.command.products.create_inactive_draft | mutation | unknown | command_plan_only | products.create_inactive_draft | assistant.products.create_inactive_draft | partial_or_indirect |
-| ai.command.products.create_inactive_draft_batch | mutation | unknown | command_plan_only | products.create_inactive_draft_batch | unknown | partial_or_indirect |
+| ai.command.products.create_inactive_draft_batch | mutation | unknown | command_plan_only | products.create_inactive_draft_batch | assistant.products.create_inactive_draft_batch | partial_or_indirect |
 | ai.command.products.update_inactive_draft | mutation | unknown | command_plan_only | products.update_inactive_draft | assistant.products.update_inactive_draft | partial_or_indirect |
 | ai.command.products.update_inactive_draft_batch | mutation | unknown | command_plan_only | products.update_inactive_draft_batch | assistant.products.update_inactive_draft_batch | partial_or_indirect |
-| ai.command.products.create_configurable_draft | mutation | unknown | command_plan_only | products.create_configurable_draft | unknown | partial_or_indirect |
-| ai.command.products.create_from_canonical_intent | mutation | unknown | command_plan_only | products.create_from_canonical_intent | unknown | partial_or_indirect |
-| ai.command.products.clone_to_inactive_draft | mutation | unknown | command_plan_only | products.clone_to_inactive_draft | unknown | partial_or_indirect |
+| ai.command.products.create_configurable_draft | mutation | unknown | command_plan_only | products.create_configurable_draft | assistant.products.create_inactive_draft | partial_or_indirect |
+| ai.command.products.create_from_canonical_intent | mutation | unknown | command_plan_only | products.create_from_canonical_intent | assistant.products.create_inactive_draft | partial_or_indirect |
+| ai.command.products.clone_to_inactive_draft | mutation | unknown | command_plan_only | products.clone_to_inactive_draft | assistant.products.clone_to_inactive_draft | partial_or_indirect |
 | ai.command.products.update_existing_product | mutation | unknown | command_plan_only | products.update_existing_product | assistant.products.update_existing_product | partial_or_indirect |
 | ui.products.edit_primary_fields | mutation | page_and_route | none | — | owner_or_admin | ui_supported_ai_adapter_missing |
 | ui.products.activate_published_configuration | mutation | page_and_route | none | — | admin | ui_supported_ai_adapter_missing |
@@ -75,10 +68,10 @@ This is a source-backed baseline for the future canonical capability registry. `
 
 | Provisional capability | Mode | UI | AI | Tool / command | Permission | Parity |
 |---|---|---|---|---|---|---|
-| ai.command.products.adjust_pricing | mutation | unknown | command_plan_only | products.adjust_pricing | unknown | partial_or_indirect |
-| ai.command.products.rollback_pricing_change_set | mutation | unknown | command_plan_only | products.rollback_pricing_change_set | unknown | partial_or_indirect |
-| ai.command.products.replace_inactive_matrix | mutation | unknown | command_plan_only | products.replace_inactive_matrix | unknown | partial_or_indirect |
-| ai.command.products.replace_inactive_quantity_tiers | mutation | unknown | command_plan_only | products.replace_inactive_quantity_tiers | unknown | partial_or_indirect |
+| ai.command.products.adjust_pricing | mutation | unknown | command_plan_only | products.adjust_pricing | assistant.products.adjust_pricing | partial_or_indirect |
+| ai.command.products.rollback_pricing_change_set | mutation | unknown | command_plan_only | products.rollback_pricing_change_set | assistant.products.adjust_pricing | partial_or_indirect |
+| ai.command.products.replace_inactive_matrix | mutation | unknown | command_plan_only | products.replace_inactive_matrix | assistant.products.replace_inactive_matrix | partial_or_indirect |
+| ai.command.products.replace_inactive_quantity_tiers | mutation | unknown | command_plan_only | products.replace_inactive_quantity_tiers | assistant.products.replace_inactive_quantity_tiers | partial_or_indirect |
 | ui.pbv2.save_draft_tree | mutation | page_and_route | none | — | authenticated_tenant_user | ui_supported_ai_adapter_missing |
 
 ### quotes

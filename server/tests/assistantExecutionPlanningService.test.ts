@@ -102,6 +102,28 @@ describe("Stage 3 execution planning service", () => {
     await expect(service.createPlan(scope, { conversationId: "conversation_1", commandName: "test.change_order", arguments: {}, context })).rejects.toMatchObject({ code: "COMMAND_NOT_REGISTERED" });
   });
 
+  test("enforces both required capability and explicit allowed role before planning", async () => {
+    const registered = command({ allowedRoles: ["manager"] });
+    const service = new ExecutionPlanningService(repository(), registry([registered]));
+    const managerScope = { ...scope, organizationRole: "manager", authorityStatus: "resolved" as const };
+    await expect(service.createPlan({ ...managerScope, permissions: [] }, { conversationId: "conversation_1", commandName: "test.change_order", arguments: {}, context })).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    await expect(service.createPlan({ ...managerScope, organizationRole: "member" }, { conversationId: "conversation_1", commandName: "test.change_order", arguments: {}, context })).rejects.toMatchObject({ code: "PERMISSION_DENIED" });
+    await expect(service.createPlan(managerScope, { conversationId: "conversation_1", commandName: "test.change_order", arguments: {}, context })).resolves.toMatchObject({ commandName: "test.change_order" });
+  });
+
+  test("invalidates a plan before GO when current authority is removed", async () => {
+    const repo = repository();
+    const registered = command({ allowedRoles: ["manager"] });
+    const service = new ExecutionPlanningService(repo, registry([registered]), { now: () => now, allowTestOnlyExecution: true });
+    const managerScope = { ...scope, organizationRole: "manager", authorityStatus: "resolved" as const };
+    const plan = await service.createPlan(managerScope, { conversationId: "conversation_1", commandName: "test.change_order", arguments: {}, context });
+    const issued = await service.issueConfirmation(managerScope, plan.id, plan.version);
+    await expect(service.confirmAndExecute({ ...managerScope, permissions: [] }, { planId: plan.id, expectedVersion: issued.plan.version, token: issued.token, context })).rejects.toMatchObject({ code: "PERMISSION_CHANGED" });
+    expect(repo.plans.get(plan.id)).toMatchObject({ status: "invalidated", failureCode: "PERMISSION_CHANGED" });
+    expect(repo.consumeConfirmation).not.toHaveBeenCalled();
+    expect(registered.execute).not.toHaveBeenCalled();
+  });
+
   test("hashes a one-time confirmation token and executes only in test-enabled flow", async () => {
     const repo = repository();
     const registered = command();

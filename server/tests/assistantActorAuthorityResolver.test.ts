@@ -16,8 +16,8 @@ const trusted = (role: unknown, overrides: Partial<{ actorUserId: string; organi
   authenticationSource: "authenticated_request", tenantSource: "tenant_context",
 });
 
-describe("AssistantActorAuthorityResolver (Phase 2A shadow mode)", () => {
-  it("normalizes a standard authorized tenant actor using only the existing chat role translation", () => {
+describe("AssistantActorAuthorityResolver (Phase 2B authority convergence)", () => {
+  it("normalizes a standard authorized tenant actor using the shared role policy", () => {
     const authority = trusted("admin");
     expect(authority.status).toBe("resolved");
     expect(evaluateAssistantOperationAuthority(authority, { kind: "read_tool", toolName: "products.get_pricing" }).status).toBe("allowed");
@@ -46,8 +46,8 @@ describe("AssistantActorAuthorityResolver (Phase 2A shadow mode)", () => {
     info.mockRestore();
   });
 
-  it("reports missing descriptive command metadata as UNKNOWN", () => {
-    expect(evaluateAssistantOperationAuthority(trusted("owner"), { kind: "command", commandName: "products.adjust_pricing" })).toMatchObject({ status: "unknown", reason: "operation_permission_metadata_unknown" });
+  it("resolves the formerly missing product command metadata from command-definition evidence", () => {
+    expect(evaluateAssistantOperationAuthority(trusted("owner"), { kind: "command", commandName: "products.adjust_pricing" })).toMatchObject({ status: "allowed", requiredPermission: "assistant.products.adjust_pricing" });
   });
 
   it("identifies synthetic execution authority broader than normal actor authority and chat narrower than execution", () => {
@@ -55,7 +55,7 @@ describe("AssistantActorAuthorityResolver (Phase 2A shadow mode)", () => {
     const comparison = compareAssistantAuthority("execution", legacyExecutionSyntheticPermissionsForOrganizationRole("member"), member);
     expect(comparison.result).toBe("current_grants_more");
     expect(comparison.currentOnly).toContain("assistant.billing.send_invoice");
-    expect(compareAssistantAuthority("chat", legacyChatPermissionsForOrganizationRole("member"), member).result).toBe("exact_match");
+    expect(compareAssistantAuthority("chat", legacyChatPermissionsForOrganizationRole("member"), member).result).toBe("current_grants_more");
   });
 
   it("does not accept context, model, or synthetic permission fields as authority input", () => {

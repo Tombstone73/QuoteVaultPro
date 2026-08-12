@@ -19,13 +19,13 @@ export function renderAssistantAuthorityDivergenceMarkdown(): string {
   const adminBroader = adminExecution.filter((grant) => !adminChat.includes(grant));
   const unknownCommands = assistantProductionCommandAllowlist.filter((name) => commandPermission(name) === "unknown");
   return [
-    "# AI Operator authority divergence (Phase 2A)", "",
-    "Generated from the Phase 1 inventory and exact extractions of the current chat and execution route grant maps. This is developer-only shadow evidence, not runtime enforcement.", "",
+    "# AI Operator authority convergence (Phase 2B)", "",
+    "Generated from the Phase 1 inventory, authoritative command metadata, and retained legacy grant-map extractions. This is developer-only cutover evidence; runtime authority now uses the shared tenant-role policy.", "",
     "## Trusted authority sources", "",
     "- Authentication: authenticated request identity (`claims.sub` or `id`).",
     "- Tenant and organization role: `tenantContext`, backed by the tenant membership record.",
-    "- Current role-to-grant mapping: chat `buildActor`; Phase 2A wraps this as a legacy adapter only.",
-    "- Execution scope is synthetic and is explicitly not accepted as a resolver authority source.", "",
+    "- Runtime role-to-grant mapping: `shared/organizationRoleAuthority.ts` through `AssistantActorAuthorityResolver`.",
+    "- Legacy chat/execution maps remain diagnostic-only and cannot grant authority.", "",
     "## Known grant divergence", "",
     `- Member chat grants: ${memberChat.length}; member execution synthetic grants: ${memberExecution.length}; execution-only: ${memberBroader.length}.`,
     `- Admin chat grants: ${adminChat.length}; admin execution synthetic grants: ${adminExecution.length}; execution-only: ${adminBroader.length}.`,
@@ -33,13 +33,13 @@ export function renderAssistantAuthorityDivergenceMarkdown(): string {
     `- Commands with known permission metadata outside admin chat grants: ${commandsOutside(adminChat).length}.`, "",
     "## Execution-only permissions for a member", "",
     ...memberBroader.map((permission) => `- \`${permission}\``), "",
-    "## Unresolvable command permission metadata", "",
-    ...unknownCommands.map((name) => `- \`${name}\` (missing from descriptive command-permission mirror)`), "",
-    "## Known descriptive mirror gaps", "",
-    ...commandPermissionMetadataGaps.map((name) => `- \`${name}\``), "",
-    "## Deliberate Phase 2B questions", "",
-    "- `super_admin` is not a tenant role mapped by chat authority and resolves UNKNOWN.",
-    "- Command `allowedRoles` is metadata, not the current execution gate; compare it before cutover.",
+    "## Command metadata resolution", "",
+    ...(unknownCommands.length ? unknownCommands.map((name) => `- \`${name}\` remains unresolved.`) : ["All production command permission mappings are source-backed by command definitions."]), "",
+    "## Descriptive mirror gaps", "",
+    ...(commandPermissionMetadataGaps.length ? commandPermissionMetadataGaps.map((name) => `- \`${name}\``) : ["None."]), "",
+    "## Remaining authority questions", "",
+    "- `super_admin` is not a tenant role mapped by the shared policy and resolves UNKNOWN.",
+    "- Command `allowedRoles` and `requiredCapability` are both runtime execution gates.",
     "- Route families use non-uniform authorization middleware, so normal application authority remains partly unproven.", "",
   ].join("\n");
 }

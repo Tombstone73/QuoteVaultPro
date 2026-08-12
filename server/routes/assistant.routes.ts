@@ -47,6 +47,8 @@ function getUserId(user: unknown): string | null {
 function buildActor(req: Request, userId: string): AssistantActor {
   const user = req.user as { email?: unknown; claims?: { email?: unknown } } | undefined;
   const email = user?.claims?.email ?? user?.email;
+  const organizationId = typeof req.organizationId === "string" ? req.organizationId : "";
+  const authority = resolveAssistantActorAuthority({ actorUserId: userId, organizationId, organizationRole: req.orgRole, authenticationSource: "authenticated_request", tenantSource: "tenant_context" });
   const actor = {
     userId,
     email: typeof email === "string" ? email : null,
@@ -54,13 +56,9 @@ function buildActor(req: Request, userId: string): AssistantActor {
     userAgent: req.get("user-agent") ?? null,
     // tenantContext has already excluded customer-portal identities. Do not
     // consume any permission claim or request body field here.
-    permissions: legacyChatPermissionsForOrganizationRole(req.orgRole),
+    permissions: authority.grants,
   };
-  const organizationId = typeof req.organizationId === "string" ? req.organizationId : null;
-  if (organizationId) {
-    const authority = resolveAssistantActorAuthority({ actorUserId: userId, organizationId, organizationRole: req.orgRole, authenticationSource: "authenticated_request", tenantSource: "tenant_context" });
-    emitAssistantAuthorityShadowDiagnostic(compareAssistantAuthority("chat", actor.permissions, authority));
-  }
+  emitAssistantAuthorityShadowDiagnostic(compareAssistantAuthority("chat", legacyChatPermissionsForOrganizationRole(req.orgRole), authority));
   return actor;
 }
 

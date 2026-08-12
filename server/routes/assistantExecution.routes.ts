@@ -74,13 +74,14 @@ function userId(req: Request): string | null {
 function scope(req: Request): ExecutionActorScope {
   const id = userId(req);
   if (!id) throw new ExecutionPlanError("AUTH_REQUIRED", "Unauthorized.");
+  const organizationId = getRequestOrganizationId(req);
+  const authority = resolveAssistantActorAuthority({ actorUserId: id, organizationId, organizationRole: req.orgRole, authenticationSource: "authenticated_request", tenantSource: "tenant_context" });
   const actorScope = {
-    organizationId: getRequestOrganizationId(req), userId: id,
-    permissions: legacyExecutionSyntheticPermissionsForOrganizationRole(req.orgRole),
+    organizationId, userId: id, organizationRole: authority.organizationRole, authorityStatus: authority.status,
+    permissions: authority.grants,
     environment: process.env.NODE_ENV || "development",
   };
-  const authority = resolveAssistantActorAuthority({ actorUserId: id, organizationId: actorScope.organizationId, organizationRole: req.orgRole, authenticationSource: "authenticated_request", tenantSource: "tenant_context" });
-  emitAssistantAuthorityShadowDiagnostic(compareAssistantAuthority("execution", actorScope.permissions, authority));
+  emitAssistantAuthorityShadowDiagnostic(compareAssistantAuthority("execution", legacyExecutionSyntheticPermissionsForOrganizationRole(req.orgRole), authority));
   return actorScope;
 }
 
@@ -225,10 +226,15 @@ function createProductionExecutionService(): ExecutionPlanningService {
     ...billingInvoiceOperationCommandNames.map((name) => [name, createBillingInvoiceOperationExecutionCommand(name, billingInvoiceOperationsService)] as [string, ExecutionCommandDefinition]),
     ...paymentOperationCommandNames.map((name) => [name, createPaymentOperationExecutionCommand(name, paymentOperationsService)] as [string, ExecutionCommandDefinition]),
   ]);
+  const withCommandAuthority = (name: string): ExecutionCommandDefinition | undefined => {
+    const execution = executionCommands.get(name);
+    const metadata = metadataRegistry.get(name);
+    return execution && metadata ? { ...execution, allowedRoles: metadata.allowedRoles } : undefined;
+  };
   const executionRegistry = {
-    get: (name: string) => metadataRegistry.has(name) ? executionCommands.get(name) : undefined,
+    get: withCommandAuthority,
     list: () => metadataRegistry.list().flatMap((command) => {
-      const execution = executionCommands.get(command.name);
+      const execution = withCommandAuthority(command.name);
       return execution ? [execution] : [];
     }),
   };

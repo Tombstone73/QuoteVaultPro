@@ -1,4 +1,4 @@
-import { legacyChatPermissionsForOrganizationRole, normalizeAssistantOrganizationRole } from "./actorAuthorityShadowAdapters";
+import { normalizeOrganizationRole, resolveOrganizationRoleAuthority } from "@shared/organizationRoleAuthority";
 
 export type AssistantAuthorityStatus = "allowed" | "denied" | "unknown";
 export type TrustedAssistantActorAuthorityInput = {
@@ -39,19 +39,15 @@ function normalizeGrants(grants: readonly string[]): readonly string[] {
   return Object.freeze([...new Set(grants.map((grant) => grant.trim().toLowerCase()).filter(Boolean))].sort());
 }
 
-/** Uses only tenantContext's persisted organization role. The legacy chat map
- * is the sole currently traceable role-to-grant translation; unknown roles
- * intentionally remain unresolved instead of becoming an AI-specific role. */
+/** Uses only tenantContext's persisted organization role. Unknown roles stay
+ * unresolved rather than becoming an AI-specific or platform-admin role. */
 export function resolveAssistantActorAuthority(input: TrustedAssistantActorAuthorityInput): AssistantActorAuthorityContext {
-  const role = normalizeAssistantOrganizationRole(input.organizationRole);
+  const role = normalizeOrganizationRole(input.organizationRole);
   if (!input.actorUserId || !input.organizationId || !role) {
-    return { actorUserId: input.actorUserId, organizationId: input.organizationId, organizationRole: role || null, grants: [], status: "unknown", authoritySourceTrace: [input.authenticationSource, input.tenantSource, "missing_trusted_actor_tenant_or_role"] };
+    return { actorUserId: input.actorUserId, organizationId: input.organizationId, organizationRole: role, grants: [], status: "unknown", authoritySourceTrace: [input.authenticationSource, input.tenantSource, "missing_trusted_actor_tenant_or_role"] };
   }
-  const grants = legacyChatPermissionsForOrganizationRole(role);
-  if (!grants.length) {
-    return { actorUserId: input.actorUserId, organizationId: input.organizationId, organizationRole: role, grants: [], status: "unknown", authoritySourceTrace: [input.authenticationSource, input.tenantSource, "organization_role_not_mapped_by_existing_chat_authority"] };
-  }
-  return { actorUserId: input.actorUserId, organizationId: input.organizationId, organizationRole: role, grants: normalizeGrants(grants), status: "resolved", authoritySourceTrace: [input.authenticationSource, input.tenantSource, "userOrganizations.role", "legacy_chat_role_translation_shadow_adapter"] };
+  const policy = resolveOrganizationRoleAuthority(role);
+  return { actorUserId: input.actorUserId, organizationId: input.organizationId, organizationRole: policy.role, grants: normalizeGrants(policy.grants), status: policy.status, authoritySourceTrace: [input.authenticationSource, input.tenantSource, ...policy.sourceTrace] };
 }
 
 export function compareAssistantAuthority(surface: AssistantAuthorityComparison["surface"], currentGrants: readonly string[], authority: AssistantActorAuthorityContext): AssistantAuthorityComparison {
@@ -64,7 +60,7 @@ export function compareAssistantAuthority(surface: AssistantAuthorityComparison[
 export function compareAssistantCommandMetadata(metadata: { requiredCapability: string; allowedRoles: readonly string[] }, authority: AssistantActorAuthorityContext): AssistantAuthorityComparison {
   const role = authority.organizationRole;
   if (authority.status !== "resolved" || !role) return { surface: "command_metadata", result: "unknown", currentOnly: [], resolverOnly: [] };
-  const allowedRoles = metadata.allowedRoles.map(normalizeAssistantOrganizationRole);
+  const allowedRoles = metadata.allowedRoles.map(normalizeOrganizationRole).filter((candidate): candidate is NonNullable<typeof candidate> => candidate !== null);
   const roleAllowsCommand = allowedRoles.includes(role);
   const resolverAllowsCommand = authority.grants.includes(metadata.requiredCapability);
   if (roleAllowsCommand === resolverAllowsCommand) return { surface: "command_metadata", result: "exact_match", currentOnly: [], resolverOnly: [] };
@@ -75,7 +71,8 @@ export function compareAssistantCommandMetadata(metadata: { requiredCapability: 
  * role against the same trusted-role normalization and emit one safe summary. */
 export function emitAssistantCommandRegistryShadowDiagnostic(commands: readonly { name: string; requiredCapability: string; allowedRoles: readonly string[] }[]): void {
   if (process.env.NODE_ENV === "production") return;
-  const mismatches = commands.flatMap((command) => command.allowedRoles.map(normalizeAssistantOrganizationRole).flatMap((role) => {
+  const mismatches = commands.flatMap((command) => command.allowedRoles.map(normalizeOrganizationRole).flatMap((role) => {
+    if (!role) return [`${command.name}:unknown_role`];
     const authority = resolveAssistantActorAuthority({ actorUserId: "diagnostic_actor", organizationId: "diagnostic_tenant", organizationRole: role, authenticationSource: "authenticated_request", tenantSource: "tenant_context" });
     const comparison = compareAssistantCommandMetadata(command, authority);
     return comparison.result === "exact_match" ? [] : [`${command.name}:${role}`];
