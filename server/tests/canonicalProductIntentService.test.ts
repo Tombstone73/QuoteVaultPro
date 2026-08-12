@@ -810,7 +810,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     if (!created.ok) throw new Error("Expected supported Reflective Pole Signs details to persist.");
     const intent = created.session.specification.session.revisions.at(-1)!.intent;
     expect(intent).toMatchObject({
-      identity: { name: "Relective Pole Signs", description: "Coroplast signs with reflective vinyl mounted to them.", category: { state: "resolved", id: "rigid-signs", label: "Rigid Signs" } },
+      identity: { name: "Relective Pole Signs", description: "Coroplast signs with reflective vinyl mounted to them.\nConstruction: Coroplast", category: { state: "resolved", id: "rigid-signs", label: "Rigid Signs" } },
       material: { state: "unresolved", label: "Coroplast" },
       measurement: { mode: "dimensions_required" },
       pricing: { model: "scalar", unit: "per_piece", priceCents: 900 },
@@ -824,22 +824,19 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const followUp = await service.applySemanticOperations({
       organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
       request: "Grommets would be default, top and bottom. 1 each so each one gets 2 grommets. Product is called Reflective Pole Signs - Rick",
-      operations: [
-        { op: "add_option_value", optionGroup: "Grommet Placement", value: "Top and Bottom" },
-        { op: "add_option_group", optionGroup: "Grommets", required: false, selectionMode: "single" },
-        { op: "add_option_value", optionGroup: "Grommets", value: "Included" },
-        { op: "add_option_value", optionGroup: "Grommets", value: "Included" },
-        { op: "set_option_default", optionGroup: "Grommets", value: "Included" },
-        { op: "set_option_default", optionGroup: "Grommet Placement", value: "Top and Bottom" },
-        { op: "set_product_name", name: "Reflective Pole Signs - Rick" },
-        { op: "record_unsupported_detail", detail: "grommet_quantity" },
-      ],
+      // Reproduces the historical Operator omission: the only emitted
+      // operation was the already-recorded unsupported count. The explicit
+      // user facts must still reconcile atomically into the next revision.
+      operations: [{ op: "record_unsupported_detail", detail: "grommet_quantity" }],
     });
     expect(followUp).toMatchObject({ ok: true });
     if (!followUp.ok) throw new Error("Expected the supported follow-up details to persist.");
     const followedIntent = followUp.session.specification.session.revisions.at(-1)!.intent;
     expect(followedIntent.identity.name).toBe("Reflective Pole Signs - Rick");
-    expect(followedIntent.optionGroups.find((group) => group.label === "Grommets")?.values).toEqual([{ key: "included", label: "Included", isDefault: true }]);
+    expect(followedIntent.optionGroups.find((group) => group.label === "Grommets")?.values).toEqual(expect.arrayContaining([
+      { key: "yes", label: "Yes", isDefault: true },
+      { key: "no", label: "No", isDefault: false },
+    ]));
     expect(followedIntent.optionGroups.find((group) => group.label === "Grommet Placement")?.values).toEqual([{ key: "top_and_bottom", label: "Top and Bottom", isDefault: true }]);
     expect(followedIntent.unresolvedFields).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.grommets.quantity", code: "GROMMET_QUANTITY_UNRESOLVED" })]));
   });

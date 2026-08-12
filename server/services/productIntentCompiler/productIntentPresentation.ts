@@ -15,7 +15,7 @@ export type CanonicalProductIntentProposalDto = {
 };
 
 function money(cents: number): string { return new Intl.NumberFormat("en-US", { style: "currency", currency: "USD" }).format(cents / 100); }
-function reference(value: ProductDraftIntent["material"], unresolvedLabel = "Not selected"): string { return value.state === "resolved" ? value.label : value.state === "explicitly_unset" ? unresolvedLabel : unresolvedLabel; }
+function reference(value: ProductDraftIntent["material"], unresolvedLabel = "Not selected"): string { return value.state === "resolved" ? value.label : value.state === "explicitly_unset" ? unresolvedLabel : `Unresolved: ${value.label}`; }
 function pricing(intent: ProductDraftIntent): string {
   const value = intent.pricing;
   if (value.model === "scalar") return `${money(value.priceCents)} ${value.unit === "per_square_foot" ? "per square foot" : value.unit === "per_piece" ? "per piece" : "flat fee"}${value.minimumChargeCents == null ? "" : `; minimum ${money(value.minimumChargeCents)}`}`;

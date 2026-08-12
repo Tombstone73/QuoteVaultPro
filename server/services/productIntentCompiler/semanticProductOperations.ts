@@ -56,6 +56,31 @@ function containsWholePhrase(source: string, phrase: string): boolean {
 
 function normalizeWhitespace(value: string): string { return value.trim().replace(/\s+/g, " "); }
 
+function hasOptionGroup(groups: readonly ProductDraftIntent["optionGroups"], label: string): boolean {
+  return groups.some((group) => normalized(group.label) === normalized(label));
+}
+
+/** Applies the reusable Banner-style grommet vocabulary only when the user
+ * explicitly supplies those concepts in ordinary language. */
+function explicitGrommetFollowUpOperations(request: string | undefined, current: ProductDraftIntent): SemanticProductOperationsResult["operations"] {
+  if (!request || !/\bgrommets?\b/i.test(request)) return [];
+  const operations: SemanticProductOperationsResult["operations"] = [];
+  if (!hasOptionGroup(current.optionGroups, "Grommets")) operations.push({ op: "add_option_group", optionGroup: "Grommets", required: false, selectionMode: "single" });
+  const hasPlacement = /\bgrommets?\s+with\s+placement\b|\btop\s+and\s+bottom\b/i.test(request);
+  if (!/\bdefault\b/i.test(request)) {
+    if (hasPlacement && !hasOptionGroup(current.optionGroups, "Grommet Placement")) operations.push({ op: "add_option_group", optionGroup: "Grommet Placement", required: false, selectionMode: "single" });
+    return operations;
+  }
+  operations.push({ op: "add_option_value", optionGroup: "Grommets", value: "Yes" }, { op: "add_option_value", optionGroup: "Grommets", value: "No" }, { op: "set_option_default", optionGroup: "Grommets", value: "Yes" });
+  if (/\btop\s+and\s+bottom\b/i.test(request)) {
+    if (!hasOptionGroup(current.optionGroups, "Grommet Placement")) operations.push({ op: "add_option_group", optionGroup: "Grommet Placement", required: false, selectionMode: "single" });
+    const malformedPlacement = current.optionGroups.find((group) => normalized(group.label) === "grommet placement")?.values.some((value) => normalized(value.label) === "grommets");
+    if (malformedPlacement) operations.push({ op: "remove_option_value", optionGroup: "Grommet Placement", value: "Grommets" });
+    operations.push({ op: "add_option_value", optionGroup: "Grommet Placement", value: "Top and Bottom" }, { op: "set_option_default", optionGroup: "Grommet Placement", value: "Top and Bottom" });
+  }
+  return operations;
+}
+
 /** A quoted name introduced with ordinary product-naming language is direct
  * user evidence. The server preserves it rather than accepting a shortened
  * model paraphrase of the same name. */
@@ -126,22 +151,27 @@ export function compileSemanticProductOperations(
   const explicitName = explicitProductNameFromRequest(request);
   // A quoted name supplied as "product for <name>" is direct user evidence.
   // Do not depend on the model remembering to emit a separate rename operation.
-  const nameOperation = explicitName && current.identity.name === "Unfinished product draft" && !semantic.operations.some((operation) => operation.op === "set_product_name")
+  const nameOperation = explicitName && normalized(current.identity.name) !== normalized(explicitName) && !semantic.operations.some((operation) => operation.op === "set_product_name")
     ? [{ op: "set_product_name" as const, name: explicitName }]
     : [];
   // Creation batches sometimes mention a value before the group that owns it.
   // Move only that dependency immediately before its dependent value; unrelated
   // operations retain their original provider order.
-  const semanticOperations = [...nameOperation, ...semantic.operations];
+  const semanticOperations = [...nameOperation, ...semantic.operations.filter((operation) => !(request && /\bgrommets?\s+with\s+placement\b/i.test(request) && operation.op === "add_option_value" && normalized(operation.optionGroup) === "grommet placement" && normalized(operation.value) === "grommets")), ...explicitGrommetFollowUpOperations(request, current)];
   const orderedOperations = [...semanticOperations];
-  for (let index = 0; index < orderedOperations.length; index += 1) {
-    const operation = orderedOperations[index]!;
-    if (operation.op !== "add_option_value") continue;
-    const dependencyIndex = orderedOperations.findIndex((candidate, candidateIndex) => candidateIndex > index
-      && candidate.op === "add_option_group" && normalized(candidate.optionGroup) === normalized(operation.optionGroup));
-    if (dependencyIndex < 0) continue;
-    const [dependency] = orderedOperations.splice(dependencyIndex, 1);
-    orderedOperations.splice(index, 0, dependency!);
+  for (let changed = true; changed;) {
+    changed = false;
+    for (let index = 0; index < orderedOperations.length; index += 1) {
+      const operation = orderedOperations[index]!;
+      const group = "optionGroup" in operation ? operation.optionGroup : null;
+      const needsValue = operation.op === "set_option_default" || operation.op === "set_option_rate" || operation.op === "set_matrix_rate" || operation.op === "set_option_price_impact";
+      const dependencyIndex = group && ((operation.op === "add_option_value" && orderedOperations.findIndex((candidate, candidateIndex) => candidateIndex > index && candidate.op === "add_option_group" && normalized(candidate.optionGroup) === normalized(group))) || (needsValue && orderedOperations.findIndex((candidate, candidateIndex) => candidateIndex > index && candidate.op === "add_option_value" && normalized(candidate.optionGroup) === normalized(group) && normalized(candidate.value) === normalized(operation.value))));
+      if (typeof dependencyIndex !== "number" || dependencyIndex < 0) continue;
+      const [dependency] = orderedOperations.splice(dependencyIndex, 1);
+      orderedOperations.splice(index, 0, dependency!);
+      changed = true;
+      break;
+    }
   }
   const nextGroups = structuredClone(current.optionGroups);
   const metadata: Record<string, ProductDraftIntent["fieldMetadata"][string]> = {};
@@ -153,6 +183,7 @@ export function compileSemanticProductOperations(
   let categoryChanged = false;
   let nextMaterial = structuredClone(current.material);
   let materialChanged = false;
+  let constructionMaterial: string | null = null;
   let nextWorkflow = structuredClone(current.workflow);
   let workflowChanged = false;
   let nextMeasurement = structuredClone(current.measurement);
@@ -236,6 +267,7 @@ export function compileSemanticProductOperations(
     if (operation.op === "set_material") {
       nextMaterial = { state: "unresolved", label: operation.material };
       materialChanged = true;
+      constructionMaterial = operation.material;
       mark("material");
       continue;
     }
@@ -399,6 +431,17 @@ export function compileSemanticProductOperations(
     catch (error) {
       if (error instanceof SemanticProductOperationError) throw error;
       throw new SemanticProductOperationError(operationIndex, operation.op, error);
+    }
+  }
+
+  if (constructionMaterial) {
+    const construction = `Construction: ${constructionMaterial}`;
+    const description = (nextIdentity.description ?? "").split(/\r?\n/).filter((line) => !/^Construction:\s*/i.test(line.trim())).filter(Boolean);
+    const nextDescription = [...description, construction].join("\n");
+    if (nextIdentity.description !== nextDescription) {
+      nextIdentity = { ...nextIdentity, description: nextDescription };
+      identityChanged = true;
+      mark("identity.description");
     }
   }
 

@@ -144,21 +144,21 @@ describe("semantic product operations", () => {
       ],
     });
     const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [
-      // Provider order is intentionally value-first; the compiler establishes
-      // its parent group before applying the dependent value/default.
+      // Defaults deliberately precede their values and placement's group.
+      { op: "set_option_default", optionGroup: "Grommets", value: "Yes" },
+      { op: "add_option_value", optionGroup: "Grommets", value: "Yes" },
+      { op: "add_option_value", optionGroup: "Grommets", value: "Yes" },
+      { op: "set_option_default", optionGroup: "Grommet Placement", value: "Top and Bottom" },
       { op: "add_option_value", optionGroup: "Grommet Placement", value: "Top and Bottom" },
       { op: "add_option_group", optionGroup: "Grommet Placement", required: false, selectionMode: "single" },
-      { op: "add_option_group", optionGroup: "Grommets", required: false, selectionMode: "single" },
-      { op: "add_option_value", optionGroup: "Grommets", value: "Included" },
-      { op: "add_option_value", optionGroup: "Grommets", value: "Included" },
-      { op: "set_option_default", optionGroup: "Grommets", value: "Included" },
-      { op: "set_option_default", optionGroup: "Grommet Placement", value: "Top and Bottom" },
-      { op: "set_product_name", name: "Reflective Pole Signs - Rick" },
       { op: "record_unsupported_detail", detail: "grommet_quantity" },
     ] }, 4, "Grommets would be default, top and bottom. 1 each so each one gets 2 grommets. Product is called Reflective Pole Signs - Rick.");
     const next = applyProductDraftIntentPatch(current, patch);
     expect(next.identity.name).toBe("Reflective Pole Signs - Rick");
-    expect(next.optionGroups.find((group) => group.label === "Grommets")?.values).toEqual([{ key: "included", label: "Included", isDefault: true }]);
+    expect(next.optionGroups.find((group) => group.label === "Grommets")?.values).toEqual(expect.arrayContaining([
+      { key: "yes", label: "Yes", isDefault: true },
+      { key: "no", label: "No", isDefault: false },
+    ]));
     expect(next.optionGroups.find((group) => group.label === "Grommet Placement")?.values).toEqual([{ key: "top_and_bottom", label: "Top and Bottom", isDefault: true }]);
     expect(next.unresolvedFields).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.grommets.quantity", code: "GROMMET_QUANTITY_UNRESOLVED" })]));
   });
