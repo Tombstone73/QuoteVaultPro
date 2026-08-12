@@ -13,10 +13,9 @@ import { isPublicWebResearchConfigured } from "./publicWebResearch";
  */
 export const assistantCapabilityProductionCommands = assistantProductionCommandAllowlist;
 
-/** Capability reporting deliberately mirrors the command registry allowlist,
- * but permissions and presentation stay explicit per reviewed command. This
- * lets a later composition enable a reviewed command without a fall-through
- * permission or a misleading generic action claim. */
+/** Compatibility-only display projection retained for existing Operator
+ * behavior. It is intentionally incomplete during migration and is neither
+ * canonical capability metadata nor an authority/eligibility source. */
 export const assistantCapabilityCommandPermissions = {
   "quotes.add_internal_note": "assistant.quotes.add_internal_note",
   "quotes.create_draft": "assistant.quotes.create_draft",

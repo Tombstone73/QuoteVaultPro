@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import type { AssistantContextEnvelope } from "@shared/assistantContracts";
+import { getCanonicalCapabilityForCommand, isAiExecutableCanonicalCapability } from "../canonicalCapabilityRegistry";
 import { assertTransition, isExpired } from "./stateMachine";
 import type {
   ExecutionActorScope, ExecutionCommandDefinition, ExecutionCommandRegistry, ExecutionCommandResult, ExecutionConfirmationRecord,
@@ -36,6 +37,9 @@ export class ExecutionPlanningService {
   private now() { return this.options.now?.() ?? new Date(); }
 
   private assertCommandAuthorized(scope: ExecutionActorScope, command: ExecutionCommandDefinition, message: string): void {
+    if (!command.testOnly && !isAiExecutableCanonicalCapability(getCanonicalCapabilityForCommand(command.name))) {
+      throw new ExecutionPlanError("COMMAND_NOT_REGISTERED", "This action is not available.");
+    }
     if (scope.authorityStatus === "unknown") throw new ExecutionPlanError("PERMISSION_DENIED", message);
     if (!command.requiredPermissions.every((permission) => scope.permissions.includes(permission))) {
       throw new ExecutionPlanError("PERMISSION_DENIED", message);
