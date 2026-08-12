@@ -42,7 +42,7 @@ describe("ProductIntentPersistenceService", () => {
       patch: { contractVersion: 1, baseRevision: 0, preserveUnchanged: true, operations: [{ op: "set_pricing", value: { model: "scalar", unit: "per_piece", priceCents: 275 } }] },
     });
     expect(upgraded.specification.canonicalProposalState).toMatchObject({
-      productConfiguration: { name: "Stickers", category: "Print", measurementMode: "quantity_only" },
+      productConfiguration: { name: "Stickers", category: "Print", productTypeId: "cat-1", measurementMode: "quantity_only" },
       pbv2OptionConfigurationBatches: [],
     });
     expect(upgraded.specification.session.revisions.at(-1)!.intent.pricing).toEqual({ model: "scalar", unit: "per_piece", priceCents: 275 });

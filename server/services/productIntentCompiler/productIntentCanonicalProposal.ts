@@ -268,6 +268,7 @@ export function canonicalProductIntentStateFromV1Draft(intentValue: unknown): Ca
     name: intent.identity.name,
     description: intent.identity.description,
     category: intent.identity.category.label,
+    ...(intent.identity.category.state === "resolved" ? { productTypeId: intent.identity.category.id } : {}),
     ...(intent.measurement.mode === "fixed_size" ? {} : { measurementMode: intent.measurement.mode }),
     workflowIntent: intent.workflow.kind,
     requiresProductionJob: intent.workflow.requiresProductionJob,
@@ -368,9 +369,11 @@ export function projectCanonicalProductIntentStateToV1Draft(
   const configuration = normalizeCanonicalProductConfigurationChanges(state.productConfiguration);
   const category = configuration.category === undefined || configuration.category === null
     ? current.identity.category
-    : normalized(current.identity.category.label) === normalized(configuration.category)
-      ? current.identity.category
-      : { state: "unresolved" as const, label: configuration.category };
+    : configuration.productTypeId
+      ? { state: "resolved" as const, id: configuration.productTypeId, label: configuration.category }
+      : normalized(current.identity.category.label) === normalized(configuration.category)
+        ? current.identity.category
+        : { state: "unresolved" as const, label: configuration.category };
   const emptyTree: Record<string, unknown> = { schemaVersion: 2, status: "DRAFT", nodes: {}, edges: [], rootNodeIds: [] };
   const tree = state.pbv2OptionConfigurationBatches.reduce<Record<string, any>>(
     (working, batch) => applyPbv2OptionConfigurationMutations(working, batch).tree,
