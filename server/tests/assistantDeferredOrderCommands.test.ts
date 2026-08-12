@@ -48,4 +48,19 @@ describe("assistant deferred-production order commands", () => {
     expect(prepared.arguments).not.toHaveProperty("organizationId");
     expect(prepared.arguments).not.toHaveProperty("productionIntakePolicy");
   });
+
+  it("post-GO conversion retries preserve the canonical same-Order result", async () => {
+    const conversionService = {
+      ...service,
+      createConfirmedOrder: async () => ({ id: "order_existing", displayNumber: "O-20016", totalCents: 12_500, sourceLink: "/orders/order_existing" }),
+    };
+    const command = createQuoteConvertOrderCommandDefinition(conversionService);
+    const context = { organizationId: "org_1", actorUserId: "user_1", planId: "plan_1", idempotencyKey: "retry_1", correlationId: "correlation_1", signal: new AbortController().signal };
+    const args = { orderIntakeSessionId: "order_intake_1", proposalFingerprint: fingerprint };
+
+    const first = await command.adapter.execute(args, context);
+    const retried = await command.adapter.execute(args, { ...context, idempotencyKey: "retry_2" });
+    expect(retried).toEqual(first);
+    expect(retried.id).toBe("order_existing");
+  });
 });

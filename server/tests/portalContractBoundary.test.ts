@@ -147,7 +147,7 @@ describe("customer portal contract boundary", () => {
       expect(actionSource).toContain("getScopedPortalQuoteRecord(scope, quoteId)");
       expect(actionSource).toContain("writePortalQuoteAudit");
     }
-    expect(sourceForExport(service, "approvePortalQuote")).toContain("storage.convertQuoteToOrder(scope.organizationId, quote.id, scope.userId)");
+    expect(sourceForExport(service, "approvePortalQuote")).toContain("canonicalOrderOperations.convertQuoteToOrder({");
   });
 
   test("Stripe payment confirmation verifies server-side Stripe state and scoped metadata before invoice mutation", () => {

@@ -7,7 +7,7 @@ import { resolveOrderCustomerContactIds } from "../orderCustomerResolutionServic
 
 type CreateOrderPayload = Parameters<typeof storage.createOrder>[1];
 type UpdateOrderPayload = Parameters<typeof storage.updateOrder>[2];
-type ConvertOptions = Parameters<typeof storage.convertQuoteToOrder>[3];
+export type CanonicalQuoteConversionOptions = Parameters<typeof storage.convertQuoteToOrder>[3];
 
 export class CanonicalOrderOperationError extends Error {
   constructor(readonly code: "ORDER_NOT_FOUND" | "ORDER_NOT_EDITABLE" | "ORDER_STALE", message: string) { super(message); }
@@ -36,7 +36,7 @@ class CanonicalOrderOperations {
     return order;
   }
 
-  async convertQuoteToOrder(input: { organizationId: string; actorUserId: string; quoteId: string; options?: ConvertOptions }) {
+  async convertQuoteToOrder(input: { organizationId: string; actorUserId: string; quoteId: string; options?: CanonicalQuoteConversionOptions }) {
     return storage.convertQuoteToOrder(input.organizationId, input.quoteId, input.actorUserId, input.options);
   }
 }

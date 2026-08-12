@@ -33,6 +33,7 @@ const organizationId = `org_workflow_contract_${suffix}`;
 const userId = `user_workflow_contract_${suffix}`;
 const customerId = `cust_workflow_contract_${suffix}`;
 const standaloneContactId = `contact_workflow_contract_${suffix}`;
+const linkedContactId = `contact_linked_contract_${suffix}`;
 const productId = `prod_workflow_contract_${suffix}`;
 const pbv2PricingSnapshotFixture = {
   pbv2PricingSnapshot: {
@@ -94,7 +95,9 @@ beforeAll(async () => {
 
   await db.execute(sql`
     insert into customer_contacts (id, organization_id, customer_id, first_name, last_name, email, status)
-    values (${standaloneContactId}, ${organizationId}, ${null}, ${"Standalone"}, ${"Buyer"}, ${`standalone-${suffix}@example.com`}, ${"active"})
+    values
+      (${standaloneContactId}, ${organizationId}, ${null}, ${"Standalone"}, ${"Buyer"}, ${`standalone-${suffix}@example.com`}, ${"active"}),
+      (${linkedContactId}, ${organizationId}, ${customerId}, ${"Linked"}, ${"Buyer"}, ${`linked-${suffix}@example.com`}, ${"active"})
     on conflict (id) do nothing
   `);
 
@@ -178,7 +181,7 @@ afterAll(async () => {
   await db.execute(sql`delete from product_design_configs where organization_id = ${organizationId}`);
   await db.execute(sql`delete from global_variables where organization_id = ${organizationId}`);
   await db.execute(sql`delete from stations where organization_id = ${organizationId}`);
-  await db.execute(sql`delete from customer_contacts where id = ${standaloneContactId}`);
+  await db.execute(sql`delete from customer_contacts where id in (${standaloneContactId}, ${linkedContactId})`);
   await db.execute(sql`delete from user_organizations where user_id = ${userId} and organization_id = ${organizationId}`);
   await db.execute(sql`delete from products where id = ${productId}`);
   await db.execute(sql`delete from customers where id = ${customerId}`);
@@ -730,6 +733,19 @@ describe("quote routing persistence and conversion contract", () => {
     expect(orderRow.billToEmail).toBe(`standalone-${suffix}@example.com`);
   });
 
+  test("a linked selected contact preserves the contact and resolves account ownership", async () => {
+    const quote = await quotesRepo.createQuote(organizationId, {
+      ...buildPrepressOnlyQuoteInput(`Linked contact conversion ${suffix}`),
+      customerId: null,
+      contactId: linkedContactId,
+      customerName: null,
+    } as any);
+
+    const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId, { productionIntakePolicy: "deferred" });
+    expect(createdOrder.customerId).toBe(customerId);
+    expect(createdOrder.contactId).toBe(linkedContactId);
+  });
+
   test("production ownership cannot advance while parent order is not in production", async () => {
     const quote = await createPrepressOnlyQuote(`Gate parent order ${suffix}`);
     const createdOrder = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId);
@@ -915,6 +931,60 @@ describe("quote routing persistence and conversion contract", () => {
     expect(detail?.effectiveRequiresDesign).toBe(false);
     expect(detail?.designBriefRequired).toBe(false);
     expect(detail?.status).toBe("not_required");
+  });
+
+  test("repeated conversion returns the same Order without creating a duplicate", async () => {
+    const quote = await createPrepressOnlyQuote(`Sequential retry ${suffix}`);
+    const first = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId, { productionIntakePolicy: "deferred" });
+    const retried = await ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId, { productionIntakePolicy: "deferred" });
+    const orderRows = await db.select({ id: orders.id }).from(orders).where(and(eq(orders.organizationId, organizationId), eq(orders.quoteId, quote.id)));
+
+    expect(retried.id).toBe(first.id);
+    expect(orderRows).toEqual([{ id: first.id }]);
+  });
+
+  test("two simultaneous conversions serialize on the Quote and return one Order", async () => {
+    const quote = await createPrepressOnlyQuote(`Concurrent retry ${suffix}`);
+    const [first, second] = await Promise.all([
+      ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId, { productionIntakePolicy: "deferred" }),
+      ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId, { productionIntakePolicy: "deferred" }),
+    ]);
+    const orderRows = await db.select({ id: orders.id }).from(orders).where(and(eq(orders.organizationId, organizationId), eq(orders.quoteId, quote.id)));
+
+    expect(second.id).toBe(first.id);
+    expect(orderRows).toEqual([{ id: first.id }]);
+  });
+
+  test("a failure after Order insertion rolls back Order and Quote linkage", async () => {
+    const quote = await createMixedRoutingQuote(`Atomic rollback ${suffix}`);
+    const sourceLines = await db.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quote.id));
+    expect(sourceLines.length).toBeGreaterThanOrEqual(2);
+    await db.update(quoteLineItems).set({ status: "canceled", lineItemRole: "parent" }).where(eq(quoteLineItems.id, sourceLines[0].id));
+    await db.update(quoteLineItems).set({ status: "active", lineItemRole: "child", parentLineItemId: sourceLines[0].id }).where(eq(quoteLineItems.id, sourceLines[1].id));
+
+    await expect(ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId, { productionIntakePolicy: "deferred" })).rejects.toThrow("Unable to preserve quote line item bundle");
+
+    const orderRows = await db.select({ id: orders.id }).from(orders).where(eq(orders.quoteId, quote.id));
+    const [quoteAfter] = await db.select({ convertedToOrderId: quotes.convertedToOrderId }).from(quotes).where(eq(quotes.id, quote.id));
+    expect(orderRows).toHaveLength(0);
+    expect(quoteAfter?.convertedToOrderId).toBeNull();
+  });
+
+  test("cross-tenant conversion fails closed", async () => {
+    const quote = await createPrepressOnlyQuote(`Tenant isolation ${suffix}`);
+    await expect(ordersRepo.convertQuoteToOrder(`other_${organizationId}`, quote.id, userId, { productionIntakePolicy: "deferred" })).rejects.toThrow("Quote not found");
+    const orderRows = await db.select({ id: orders.id }).from(orders).where(eq(orders.quoteId, quote.id));
+    expect(orderRows).toHaveLength(0);
+  });
+
+  test("an invalid pre-existing Quote to Order linkage fails closed", async () => {
+    const quote = await createPrepressOnlyQuote(`Invalid linkage ${suffix}`);
+    const otherQuote = await createPrepressOnlyQuote(`Other linkage ${suffix}`);
+    const otherOrder = await ordersRepo.convertQuoteToOrder(organizationId, otherQuote.id, userId, { productionIntakePolicy: "deferred" });
+    await db.update(quotes).set({ convertedToOrderId: otherOrder.id }).where(eq(quotes.id, quote.id));
+    await expect(ordersRepo.convertQuoteToOrder(organizationId, quote.id, userId, { productionIntakePolicy: "deferred" })).rejects.toThrow("Quote conversion linkage is invalid");
+    const orderRows = await db.select({ id: orders.id }).from(orders).where(eq(orders.quoteId, quote.id));
+    expect(orderRows).toHaveLength(0);
   });
 });
 

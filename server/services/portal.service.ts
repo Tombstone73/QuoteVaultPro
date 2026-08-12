@@ -41,6 +41,7 @@ import { generateInvoicePdfBytes } from "./invoicePdf";
 import { getBillableBundleRoots, getCustomerVisibleBundleLines } from "./lineItemBundles";
 import { getInvoiceOrderContext } from "./invoiceOrderContext";
 import { storage } from "../storage";
+import { canonicalOrderOperations } from "./orders/canonicalOrderOperations";
 import { resolveOriginalFileAccess } from "../lib/supabaseObjectHelpers";
 import { buildProofArtifactSummary, INCOMPLETE_PROOF_MESSAGE, recordProofResponse } from "./proofingService";
 import { recordPortalFollowUpItem } from "./portalFollowUps";
@@ -4294,7 +4295,11 @@ export async function approvePortalQuote(req: Request, quoteId: string): Promise
 
     let createdOrder: QuotePortalOrderSummaryDto | null = null;
     try {
-      const order = await storage.convertQuoteToOrder(scope.organizationId, quote.id, scope.userId);
+      const order = await canonicalOrderOperations.convertQuoteToOrder({
+        organizationId: scope.organizationId,
+        actorUserId: scope.userId,
+        quoteId: quote.id,
+      });
       createdOrder = {
         id: order.id,
         orderNumber: order.orderNumber,

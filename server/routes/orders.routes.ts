@@ -5801,13 +5801,6 @@ export async function registerOrderRoutes(
                 }
             }
 
-            if (quote.customerId !== finalCustomerId || quote.contactId !== finalContactId) {
-                await storage.updateQuote(organizationId, quoteId, {
-                    customerId: finalCustomerId,
-                    contactId: finalContactId,
-                });
-            }
-
             const convertQuoteForRequest = async () => {
                 const order = await canonicalOrderOperations.convertQuoteToOrder({ organizationId, actorUserId: userId, quoteId, options: {
                     poNumber: poNumber ? String(poNumber) : undefined,
@@ -5815,6 +5808,8 @@ export async function registerOrderRoutes(
                     promisedDate: promisedDate || undefined,
                     priority,
                     notesInternal,
+                    customerId: finalCustomerId,
+                    contactId: finalContactId,
                 } });
 
                 await storage.createAuditLog(organizationId, {

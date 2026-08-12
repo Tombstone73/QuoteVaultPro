@@ -28,6 +28,8 @@ import {
     jobs,
     jobStatusLog,
     auditLogs,
+    assets,
+    assetLinks,
     type Order,
     type InsertOrder,
     type OrderWithRelations,
@@ -72,6 +74,7 @@ import {
 } from "../services/productionIntakePolicy";
 import { defaultNewProductionArtworkAllocation } from "@shared/artworkAllocation";
 import { resolveLineItemProofApprovalRequirement, resolveProofingPolicyFromOrgPreferences } from "@shared/proofApprovalLock";
+import { resolveOrderCustomerIdForContact } from "@shared/orderCustomerResolution";
 
 type ProductionSummaryStatus = "none" | "clear" | "needs_handoff" | "partial" | "in_production" | "complete";
 
@@ -340,10 +343,13 @@ function formatProductionStationLabel(value: unknown): string {
 }
 
 export class OrdersRepository {
-    constructor(private readonly dbInstance = db) { }
+    constructor(
+        private readonly dbInstance = db,
+        private readonly atomicConversionScoped = false,
+    ) { }
 
-    withExecutor(executor: any): OrdersRepository {
-        return new OrdersRepository(executor as typeof db);
+    withExecutor(executor: any, atomicConversionScoped = false): OrdersRepository {
+        return new OrdersRepository(executor as typeof db, atomicConversionScoped);
     }
 
     private normalizeWorkflowStateForSummary(value: unknown): string {
@@ -1637,6 +1643,7 @@ export class OrdersRepository {
                         } as InsertJobStatusLog).returning();
                     }
                 } catch (error) {
+                    if (this.atomicConversionScoped) throw error;
                     console.error('[createOrder] Failed job_status_log insert (non-blocking)', {
                         organizationId,
                         orderId: created.order.id,
@@ -1761,14 +1768,74 @@ export class OrdersRepository {
         notesInternal?: string | null;
         poNumber?: string | null;
         productionIntakePolicy?: ProductionIntakePolicy;
+        customerId?: string | null;
+        contactId?: string | null;
     }): Promise<OrderWithRelations> {
+        if (!this.atomicConversionScoped) {
+            return this.dbInstance.transaction(async (tx) => {
+                return this.withExecutor(tx, true).convertQuoteToOrder(organizationId, quoteId, createdByUserId, options);
+            });
+        }
+
         // Fetch the quote with line items
-        const [quote] = await this.dbInstance.select().from(quotes).where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
+        const [storedQuote] = await this.dbInstance
+            .select()
+            .from(quotes)
+            .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)))
+            .for("update");
+        let quote = storedQuote;
         if (!quote) throw new Error('Quote not found');
         
-        // Prevent double conversion
+        // The quote row is the serialization point for conversion. A retry or a
+        // concurrent request observes the committed linkage and returns it.
         if (quote.convertedToOrderId) {
-            throw new Error('Quote is already converted to an order');
+            const existingOrder = await this.getOrderById(organizationId, quote.convertedToOrderId);
+            if (!existingOrder || existingOrder.quoteId !== quote.id) {
+                throw new Error('Quote conversion linkage is invalid');
+            }
+            return existingOrder;
+        }
+
+        // Legacy callers may request an identity correction during conversion.
+        // Apply and validate it only after the Quote lock has been acquired.
+        let resolvedContactId = options?.contactId !== undefined ? options.contactId : quote.contactId;
+        let resolvedCustomerId = options?.customerId !== undefined ? options.customerId : quote.customerId;
+        if (resolvedContactId) {
+            const [contact] = await this.dbInstance
+                .select({ id: customerContacts.id, customerId: customerContacts.customerId })
+                .from(customerContacts)
+                .where(and(eq(customerContacts.id, resolvedContactId), eq(customerContacts.organizationId, organizationId)))
+                .limit(1);
+            if (contact) {
+                const linkedCustomers = await this.dbInstance
+                    .select({ id: customers.id, isPrimary: customerContactLinks.isPrimary })
+                    .from(customerContactLinks)
+                    .innerJoin(customers, and(eq(customers.id, customerContactLinks.customerId), eq(customers.organizationId, organizationId)))
+                    .where(and(
+                        eq(customerContactLinks.organizationId, organizationId),
+                        eq(customerContactLinks.contactId, contact.id),
+                        eq(customerContactLinks.status, "active"),
+                    ))
+                    .orderBy(desc(customerContactLinks.isPrimary), asc(customers.companyName), asc(customers.id));
+                if (contact.customerId && !linkedCustomers.some((link) => link.id === contact.customerId)) {
+                    const [legacyCustomer] = await this.dbInstance.select({ id: customers.id }).from(customers)
+                        .where(and(eq(customers.id, contact.customerId), eq(customers.organizationId, organizationId))).limit(1);
+                    if (legacyCustomer) linkedCustomers.push({ id: legacyCustomer.id, isPrimary: false });
+                }
+                resolvedCustomerId = resolveOrderCustomerIdForContact({
+                    currentCustomerId: resolvedCustomerId,
+                    legacyCustomerId: contact.customerId,
+                    linkedCustomers,
+                });
+            }
+        }
+        await this.validateOrderIdentity(organizationId, resolvedCustomerId, resolvedContactId);
+        if (resolvedCustomerId !== quote.customerId || resolvedContactId !== quote.contactId) {
+            const [updatedQuote] = await this.dbInstance.update(quotes)
+                .set({ customerId: resolvedCustomerId, contactId: resolvedContactId })
+                .where(and(eq(quotes.id, quote.id), eq(quotes.organizationId, organizationId)))
+                .returning();
+            quote = updatedQuote;
         }
         
         const quoteLines = await this.dbInstance.select().from(quoteLineItems).where(eq(quoteLineItems.quoteId, quoteId));
@@ -1983,15 +2050,14 @@ export class OrdersRepository {
                 .where(eq(orderLineItems.id, childOrderId));
         }
 
-        try {
-            const [quoteListNote] = await this.dbInstance
+        const [quoteListNote] = await this.dbInstance
                 .select({ listLabel: quoteListNotes.listLabel })
                 .from(quoteListNotes)
                 .where(and(eq(quoteListNotes.organizationId, organizationId), eq(quoteListNotes.quoteId, quoteId)))
                 .limit(1);
 
-            if (quoteListNote && quoteListNote.listLabel !== undefined) {
-                await this.dbInstance
+        if (quoteListNote && quoteListNote.listLabel !== undefined) {
+            await this.dbInstance
                     .insert(orderListNotes)
                     .values({
                         organizationId,
@@ -2008,9 +2074,6 @@ export class OrdersRepository {
                             updatedAt: new Date(),
                         },
                     });
-            }
-        } catch (listNoteError) {
-            console.error('[CONVERT QUOTE] Failed to copy quote flags to order list note (non-blocking):', listNoteError);
         }
         
         console.log('[CONVERT QUOTE TO ORDER] Order created:', {
@@ -2028,30 +2091,45 @@ export class OrdersRepository {
             .where(and(eq(quotes.id, quoteId), eq(quotes.organizationId, organizationId)));
 
         if (shouldApplyQuoteConversionProductionIntake(options?.productionIntakePolicy) && (createdOrder.lineItems?.length ?? 0) > 0) {
-            await this.dbInstance.transaction(async (tx) => {
-                for (const lineItem of createdOrder.lineItems || []) {
-                    const targetWorkflowState = (lineItem.workflowState ?? getInitialWorkflowState({
-                        requiresDesign: Boolean(lineItem.requiresDesign),
-                        requiresPrepress: typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : true,
-                    })) as any;
+            for (const lineItem of createdOrder.lineItems || []) {
+                const targetWorkflowState = (lineItem.workflowState ?? getInitialWorkflowState({
+                    requiresDesign: Boolean(lineItem.requiresDesign),
+                    requiresPrepress: typeof lineItem.requiresPrepress === 'boolean' ? lineItem.requiresPrepress : true,
+                })) as any;
 
-                    await transitionLineItemWorkflowState(tx, {
-                        organizationId,
-                        lineItemId: lineItem.id,
-                        toState: targetWorkflowState,
-                        actorUserId: createdByUserId,
-                        metadata: {
-                            source: 'quote_to_order_conversion',
-                            quoteId,
-                        },
-                    });
-                }
-            });
+                await transitionLineItemWorkflowState(this.dbInstance, {
+                    organizationId,
+                    lineItemId: lineItem.id,
+                    toState: targetWorkflowState,
+                    actorUserId: createdByUserId,
+                    metadata: {
+                        source: 'quote_to_order_conversion',
+                        quoteId,
+                    },
+                });
+            }
         }
 
-        // PHASE 2: Copy asset_links from quote line items to order line items (fail-soft)
-        try {
-            const { assetRepository } = await import('../services/assets/AssetRepository');
+        // Copy asset links through the transaction-bound executor.
+        {
+            const transactionAssets = {
+                listAssetsForParents: async (tenantId: string, parentType: string, parentIds: string[]) => {
+                    const rows = await this.dbInstance
+                        .select({ asset: assets, role: assetLinks.role, parentId: assetLinks.parentId })
+                        .from(assetLinks)
+                        .innerJoin(assets, eq(assetLinks.assetId, assets.id))
+                        .where(and(
+                            eq(assetLinks.organizationId, tenantId),
+                            eq(assets.organizationId, tenantId),
+                            eq(assetLinks.parentType, parentType),
+                            inArray(assetLinks.parentId, parentIds as [string, ...string[]]),
+                        ));
+                    const grouped = new Map<string, Array<(typeof rows)[number]["asset"] & { role: string }>>();
+                    for (const row of rows) grouped.set(row.parentId, [...(grouped.get(row.parentId) || []), { ...row.asset, role: row.role }]);
+                    return grouped;
+                },
+                linkAssetsBatch: async (links: Array<typeof assetLinks.$inferInsert>) => this.dbInstance.insert(assetLinks).values(links).returning(),
+            };
             
             // Build mapping of quoteLineItemId → orderLineItemId
             const lineItemMap = new Map<string, string>();
@@ -2064,7 +2142,7 @@ export class OrdersRepository {
             // Query asset_links for all source quote line items
             const sourceQuoteLineItemIds = Array.from(lineItemMap.keys());
             if (sourceQuoteLineItemIds.length > 0) {
-                const assetsMap = await assetRepository.listAssetsForParents(
+                const assetsMap = await transactionAssets.listAssetsForParents(
                     organizationId,
                     'quote_line_item',
                     sourceQuoteLineItemIds
@@ -2087,16 +2165,14 @@ export class OrdersRepository {
                 }
 
                 if (newLinks.length > 0) {
-                    await assetRepository.linkAssetsBatch(newLinks);
+                    await transactionAssets.linkAssetsBatch(newLinks);
                     console.log(`[CONVERT QUOTE] Copied ${newLinks.length} asset_links from quote to order`);
                 }
             }
-        } catch (assetLinkError) {
-            console.error('[CONVERT QUOTE] Failed to copy asset_links (non-blocking):', assetLinkError);
         }
 
-        // Copy quote line item attachments to order line items (fail-soft)
-        try {
+        // Copy quote line item attachments to order line items transactionally.
+        {
             // Build mapping of quoteLineItemId → orderLineItemId
             const lineItemMap = new Map<string, string>();
             for (const orderLineItem of createdOrder.lineItems || []) {
@@ -2202,12 +2278,10 @@ export class OrdersRepository {
                     }
                 }
             }
-        } catch (lineItemAttachmentError) {
-            console.error('[CONVERT QUOTE] Failed to copy line item attachments (non-blocking):', lineItemAttachmentError);
         }
 
-        // Create timeline entry for the conversion (fail-soft)
-        try {
+        // Create timeline entry for the conversion in the same transaction.
+        {
             const [user] = await this.dbInstance
                 .select({ firstName: users.firstName, lastName: users.lastName, email: users.email })
                 .from(users)
@@ -2229,9 +2303,6 @@ export class OrdersRepository {
                 oldValues: { converted: false },
                 newValues: { converted: true, orderId: createdOrder.id, orderNumber: createdOrder.orderNumber },
             });
-        } catch (timelineError) {
-            console.error('[CONVERT QUOTE] Failed to create timeline entry:', timelineError);
-            // Continue - don't fail conversion if timeline creation fails
         }
 
         return createdOrder;
