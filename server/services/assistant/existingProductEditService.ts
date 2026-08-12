@@ -1,9 +1,10 @@
 import { and, eq } from "drizzle-orm";
-import { pbv2TreeVersions, products } from "@shared/schema";
+import { materials, pbv2TreeVersions, products } from "@shared/schema";
 import { loadCurrentPbv2DraftTreeVersion } from "../pricing/PricingService";
 import { CanonicalProductConfigurationError, canonicalProductConfigurationOperations, type ProductConfigurationChanges } from "../products/canonicalProductConfigurationOperations";
 import { CanonicalPbv2OptionConfigurationError, canonicalPbv2OptionConfigurationOperations, type Pbv2OptionConfigurationMutations } from "../products/canonicalPbv2OptionConfigurationOperations";
 import { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
+import { CanonicalProductMaterialError, canonicalProductMaterialOperations, canonicalProductMaterialProposalFromReference, resolveCanonicalProductMaterialProposal, type CanonicalProductMaterialProposal } from "../products/canonicalProductMaterialOperations";
 export { existingProductEditOperationsSchema, type ExistingProductEditOperations } from "./existingProductEditContract";
 
 /**
@@ -19,8 +20,9 @@ export type ExistingProductEditProposal = {
   treeId?: string;
   treeUpdatedAt?: string;
   sourceLifecycle: "DRAFT" | "ACTIVE" | "PRODUCT";
-  canonicalOperationReference?: "products.update_configuration.v1" | "products.update_option_configuration.v1";
+  canonicalOperationReference?: "products.update_configuration.v1" | "products.update_option_configuration.v1" | "products.update_material_configuration.v1";
   expectedProductUpdatedAt?: string;
+  materialProposal?: CanonicalProductMaterialProposal;
   changes: Array<{ field: string; before: string; after: string }>;
   fingerprint: string;
 };
@@ -29,6 +31,8 @@ export type TrustedExistingProductEditContext = {
   name: string;
   lifecycle: "active" | "inactive";
   pricingLifecycle: "DRAFT" | "ACTIVE";
+  primaryMaterial: { label: string; active: boolean } | null;
+  availableMaterials: string[];
   optionGroups: Array<{ label: string; selectionKey?: string; inputType?: string; required?: boolean; defaultValue: string | null; values: string[]; choices?: Array<{ value: string; label: string }> }>;
 };
 
@@ -69,24 +73,43 @@ export class ExistingProductEditService {
 
   async trustedContext(input: { organizationId: string; productId: string }): Promise<TrustedExistingProductEditContext | null> {
     const { db } = await import("../../db");
-    const [product] = await db.select({ id: products.id, name: products.name, isActive: products.isActive, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId })
+    const [product] = await db.select({ id: products.id, name: products.name, isActive: products.isActive, pbv2ActiveTreeVersionId: products.pbv2ActiveTreeVersionId, primaryMaterialId: products.primaryMaterialId })
       .from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1);
     if (!product) return null;
+    const [materialRows, currentMaterialRows] = await Promise.all([
+      db.select({ name: materials.name }).from(materials).where(and(eq(materials.organizationId, input.organizationId), eq(materials.isActive, true))),
+      product.primaryMaterialId ? db.select({ name: materials.name, isActive: materials.isActive }).from(materials).where(and(eq(materials.organizationId, input.organizationId), eq(materials.id, product.primaryMaterialId))).limit(1) : Promise.resolve([]),
+    ]);
     const tree = await this.editableTree({ organizationId: input.organizationId, product });
-    if (!tree || !tree.treeJson || typeof tree.treeJson !== "object" || Array.isArray(tree.treeJson)) return null;
-    const optionGroups = asNodes(tree.treeJson as Record<string, any>).flatMap((node) => {
+    const optionGroups = !tree || !tree.treeJson || typeof tree.treeJson !== "object" || Array.isArray(tree.treeJson) ? [] : asNodes(tree.treeJson as Record<string, any>).flatMap((node) => {
       if (node.kind === "group") return [];
       const label = typeof node.label === "string" && node.label.trim() ? node.label : node.input?.selectionKey;
       if (typeof label !== "string" || !label.trim() || !Array.isArray(node.choices)) return [];
       const choices = node.choices.flatMap((choice: any) => typeof choice?.value === "string" && choice.value.trim() ? [{ value: choice.value, label: typeof choice?.label === "string" && choice.label.trim() ? choice.label : choice.value }] : []);
       return [{ label, selectionKey: String(node.input?.selectionKey ?? node.key ?? node.id), inputType: String(node.input?.type ?? "unknown"), required: Boolean(node.input?.required), defaultValue: displayDefault(node) === "(none)" ? null : displayDefault(node), values: choices.map((choice: any) => choice.label), choices }];
     }).slice(0, 24);
-    return { name: product.name, lifecycle: product.isActive ? "active" : "inactive", pricingLifecycle: tree.status === "DRAFT" ? "DRAFT" : "ACTIVE", optionGroups };
+    return { name: product.name, lifecycle: product.isActive ? "active" : "inactive", pricingLifecycle: tree?.status === "DRAFT" ? "DRAFT" : "ACTIVE", primaryMaterial: currentMaterialRows[0] ? { label: currentMaterialRows[0].name, active: currentMaterialRows[0].isActive } : null, availableMaterials: materialRows.map((row) => row.name), optionGroups };
   }
 
   async buildProposal(input: { organizationId: string; productId: string; operations: unknown }): Promise<ExistingProductEditProposal> {
     const { db } = await import("../../db");
     const operations = existingProductEditOperationsSchema.parse(input.operations);
+    const materialOperation = operations.operations.find((operation): operation is { op: "update_product_material"; materialLabel: string | null } => operation.op === "update_product_material");
+    if (materialOperation) {
+      const candidates = await db.select({ id: materials.id, label: materials.name, isActive: materials.isActive }).from(materials).where(eq(materials.organizationId, input.organizationId));
+      const materialProposal = materialOperation.materialLabel === null
+        ? canonicalProductMaterialProposalFromReference({ state: "explicitly_unset" })
+        : resolveCanonicalProductMaterialProposal(materialOperation.materialLabel, candidates);
+      try {
+        const proposal = await canonicalProductMaterialOperations.propose({ organizationId: input.organizationId, productId: input.productId, material: materialProposal });
+        const beforeId = proposal.appliedChanges[0]?.before;
+        const [before] = beforeId ? await db.select({ name: materials.name }).from(materials).where(and(eq(materials.organizationId, input.organizationId), eq(materials.id, beforeId))).limit(1) : [];
+        return { productId: proposal.productId, productName: proposal.productName, productActive: (await db.select({ isActive: products.isActive }).from(products).where(and(eq(products.organizationId, input.organizationId), eq(products.id, input.productId))).limit(1))[0]?.isActive ?? false, sourceLifecycle: "PRODUCT", canonicalOperationReference: proposal.operationReference, expectedProductUpdatedAt: proposal.expectedUpdatedAt, materialProposal: { operationReference: proposal.operationReference, material: proposal.material }, changes: [{ field: "Primary material", before: before?.name ?? "(none)", after: proposal.material.state === "resolved" ? proposal.material.label : "(none)" }], fingerprint: proposal.fingerprint };
+      } catch (error) {
+        if (error instanceof CanonicalProductMaterialError) throw new ExistingProductEditError(error.code, error.message);
+        throw error;
+      }
+    }
     const configuration = operations.operations.find((operation): operation is { op: "update_product_configuration"; changes: ProductConfigurationChanges } => operation.op === "update_product_configuration");
     if (configuration) {
       const proposal = await canonicalProductConfigurationOperations.propose({ organizationId: input.organizationId, productId: input.productId, changes: configuration.changes });
@@ -105,7 +128,7 @@ export class ExistingProductEditService {
 
   async revalidateProposal(input: { organizationId: string; productId: string; operations: unknown; expectedFingerprint: string }) {
     const proposal = await this.buildProposal(input);
-    if (proposal.fingerprint !== input.expectedFingerprint) return { valid: false as const, code: "EXISTING_PRODUCT_EDIT_STALE", summary: "The product's editable PBV2 DRAFT changed; review a fresh preview." };
+    if (proposal.fingerprint !== input.expectedFingerprint) return { valid: false as const, code: "EXISTING_PRODUCT_EDIT_STALE", summary: "The Product configuration changed; review a fresh preview." };
     return { valid: true as const, proposal };
   }
 
@@ -113,6 +136,17 @@ export class ExistingProductEditService {
     const validation = await this.revalidateProposal(input);
     if (!validation.valid) throw new ExistingProductEditError(validation.code, validation.summary);
     const operations = existingProductEditOperationsSchema.parse(input.operations);
+    const materialOperation = operations.operations.find((operation) => operation.op === "update_product_material");
+    if (materialOperation) {
+      if (!validation.proposal.expectedProductUpdatedAt || !validation.proposal.materialProposal) throw new ExistingProductEditError("EXISTING_PRODUCT_EDIT_STALE", "The Product material proposal is incomplete; review it again.");
+      try {
+        const result = await canonicalProductMaterialOperations.execute({ organizationId: input.organizationId, actorUserId: input.userId, productId: input.productId, material: validation.proposal.materialProposal, expectedUpdatedAt: validation.proposal.expectedProductUpdatedAt, auditContext: { source: "assistant_go", reference: `assistant-plan:${input.expectedFingerprint}` } });
+        return { ...validation.proposal, canonicalOperationReference: result.operationReference };
+      } catch (error) {
+        if (error instanceof CanonicalProductMaterialError) throw new ExistingProductEditError(error.code === "PRODUCT_MATERIAL_STALE" ? "EXISTING_PRODUCT_EDIT_STALE" : error.code, error.message);
+        throw error;
+      }
+    }
     const configuration = operations.operations.find((operation): operation is { op: "update_product_configuration"; changes: ProductConfigurationChanges } => operation.op === "update_product_configuration");
     if (configuration) {
       if (!validation.proposal.expectedProductUpdatedAt) throw new ExistingProductEditError("EXISTING_PRODUCT_EDIT_STALE", "The product configuration proposal is incomplete; review it again.");

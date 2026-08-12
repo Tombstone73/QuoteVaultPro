@@ -12,6 +12,7 @@ export const semanticProductOperationsResultSchema = z.object({
     z.object({ op: z.literal("set_product_description"), description: z.string().trim().min(1).max(10_000) }).strict(),
     z.object({ op: z.literal("set_category"), category: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("set_material"), material: z.string().trim().min(1).max(160) }).strict(),
+    z.object({ op: z.literal("clear_material") }).strict(),
     z.object({ op: z.literal("set_measurement_mode"), mode: z.enum(["dimensions_required", "quantity_only"]) }).strict(),
     z.object({ op: z.literal("set_pricing_basis"), basis: z.enum(["per_piece", "per_square_foot"]) }).strict(),
     z.object({ op: z.literal("add_option_group"), optionGroup: z.string().trim().min(1).max(160), required: z.boolean(), selectionMode: z.enum(["single", "multiple"]) }).strict(),
@@ -73,11 +74,6 @@ function compileCompatibilitySemanticProductOperations(
   let groupsChanged = false;
   let nextPricing = structuredClone(current.pricing);
   let pricingChanged = false;
-  let nextIdentity = structuredClone(current.identity);
-  let identityChanged = false;
-  let nextMaterial = structuredClone(current.material);
-  let materialChanged = false;
-  let constructionMaterial: string | null = null;
   let nextMeasurement = structuredClone(current.measurement);
   let measurementChanged = false;
   let nextUnresolved = structuredClone(current.unresolvedFields);
@@ -131,13 +127,6 @@ function compileCompatibilitySemanticProductOperations(
   for (let operationIndex = 0; operationIndex < orderedOperations.length; operationIndex += 1) {
     const operation = orderedOperations[operationIndex]!;
     try {
-    if (operation.op === "set_material") {
-      nextMaterial = { state: "unresolved", label: operation.material };
-      materialChanged = true;
-      constructionMaterial = operation.material;
-      mark("material");
-      continue;
-    }
     if (operation.op === "set_option_price_impact") {
       const group = findGroup(operation.optionGroup);
       const value = findValue(group, operation.value);
@@ -226,20 +215,7 @@ function compileCompatibilitySemanticProductOperations(
     }
   }
 
-  if (constructionMaterial) {
-    const construction = `Construction: ${constructionMaterial}`;
-    const description = (nextIdentity.description ?? "").split(/\r?\n/).filter((line) => !/^Construction:\s*/i.test(line.trim())).filter(Boolean);
-    const nextDescription = [...description, construction].join("\n");
-    if (nextIdentity.description !== nextDescription) {
-      nextIdentity = { ...nextIdentity, description: nextDescription };
-      identityChanged = true;
-      mark("identity.description");
-    }
-  }
-
   const operations: ProductDraftIntentPatch["operations"] = [];
-  if (identityChanged) operations.push({ op: "set_identity", value: nextIdentity });
-  if (materialChanged) operations.push({ op: "set_material", value: nextMaterial });
   if (measurementChanged) operations.push({ op: "set_measurement", value: nextMeasurement });
   if (groupsChanged) operations.push({ op: "replace_option_groups", value: nextGroups });
   if (pricingChanged) operations.push({ op: "set_pricing", value: nextPricing });
@@ -249,8 +225,8 @@ function compileCompatibilitySemanticProductOperations(
   return { contractVersion: 1, baseRevision, preserveUnchanged: true, operations };
 }
 
-/** Continuations plan through shared Product, PBV2, and pricing proposal
- * contracts. Material and deletion remain in the contained legacy adapter. */
+/** Continuations plan through shared Product, PBV2, pricing, and material
+ * proposal contracts. Only destructive option removal remains compatible. */
 export function compileSemanticProductOperations(
   current: ProductDraftIntent,
   raw: unknown,

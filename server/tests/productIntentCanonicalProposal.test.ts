@@ -119,7 +119,7 @@ describe("thin canonical Product intent proposal", () => {
     expect(() => applyCanonicalProductIntentProposal(draft, proposal, 2)).toThrow("STALE");
   });
 
-  test("projects migrated Product/PBV2/pricing fields from canonical state while preserving compatibility material", () => {
+  test("projects migrated Product/PBV2/pricing/material fields from canonical state", () => {
     const source = productDraftIntentSchema.parse({
       ...draft,
       identity: { name: "Canonical Banner", description: "Canonical description", category: { state: "unresolved", label: "Roll Printing" } },
@@ -137,6 +137,7 @@ describe("thin canonical Product intent proposal", () => {
       ...source,
       identity: { name: "Stale legacy name", description: "", category: { state: "unresolved", label: "Wrong" } },
       measurement: { mode: "quantity_only" },
+      material: { state: "explicitly_unset" },
       workflow: { kind: "standard_production", requiresProofApproval: false, requiresProductionJob: true },
       optionGroups: source.optionGroups.map((group) => group.key === "finish" ? { ...group, label: "Stale finish label", required: false } : group),
     });
@@ -146,7 +147,7 @@ describe("thin canonical Product intent proposal", () => {
       measurement: { mode: "dimensions_required" },
       workflow: { kind: "fulfillment_only", requiresProofApproval: true, requiresProductionJob: false },
       pricing: source.pricing,
-      material: staleCompatibility.material,
+      material: source.material,
     });
     expect(projected.optionGroups).toEqual(source.optionGroups);
   });
@@ -156,6 +157,7 @@ describe("thin canonical Product intent proposal", () => {
       { op: "set_product_name", name: "Conditional Banner" },
       { op: "set_product_description", description: "Outdoor banner" },
       { op: "set_category", category: "Roll Printing" },
+      { op: "set_material", material: "13oz Banner" },
       { op: "set_measurement_mode", mode: "dimensions_required" },
       { op: "set_proof_requirement", requiresProofApproval: true },
       { op: "add_option_group", optionGroup: "Grommets", required: true, selectionMode: "single" },
@@ -170,6 +172,10 @@ describe("thin canonical Product intent proposal", () => {
     const continuation = applyProductDraftIntentPatch(draft, compileSemanticProductOperations(draft, operations, draft.revision, request, { categoryLabels: ["Roll Printing"] }));
     const initialCompleteIntent = productDraftIntentSchema.parse({ ...continuation, revision: 0, revisionMetadata: { parentRevision: null } });
     expect(canonicalProductIntentStateFromV1Draft(initialCompleteIntent)).toEqual(canonicalProductIntentStateFromV1Draft(continuation));
+    expect(canonicalProductIntentStateFromV1Draft(continuation).productMaterial).toEqual({
+      operationReference: "products.update_material_configuration.v1",
+      material: { state: "unresolved", requestedLabel: "13oz Banner", candidates: [] },
+    });
   });
 
   test("imports a large historical V1 option set in command-sized canonical PBV2 batches", () => {

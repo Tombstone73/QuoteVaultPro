@@ -65,6 +65,7 @@ import {
 import { CanonicalProductConfigurationError, canonicalProductConfigurationOperations, takeCanonicalProductConfigurationChanges } from "../services/products/canonicalProductConfigurationOperations";
 import { CanonicalPbv2OptionConfigurationError, canonicalPbv2OptionConfigurationOperations } from "../services/products/canonicalPbv2OptionConfigurationOperations";
 import { CanonicalProductPricingError, canonicalProductPricingOperations, takeCanonicalProductPricingMetadataChanges } from "../services/products/canonicalProductPricingOperations";
+import { CanonicalProductMaterialError, canonicalProductMaterialOperations, canonicalProductMaterialProposalFromTrustedId, takeCanonicalProductMaterialChange, validateCanonicalProductMaterialSelection } from "../services/products/canonicalProductMaterialOperations";
 
 // ---------------------------------------------------------------------------
 // Local JSON typing helpers (do NOT touch shared/schema.ts)
@@ -2091,12 +2092,21 @@ export function registerProductRoutes(
 
       console.log("[POST /api/products] Parsed & cleaned data:", JSON.stringify(productData, null, 2));
 
+      if (typeof productData.primaryMaterialId === "string" && productData.primaryMaterialId.trim()) {
+        const [material] = await db.select({ id: materials.id, organizationId: materials.organizationId, name: materials.name, isActive: materials.isActive }).from(materials).where(and(eq(materials.organizationId, organizationId), eq(materials.id, productData.primaryMaterialId.trim()))).limit(1);
+        validateCanonicalProductMaterialSelection(canonicalProductMaterialProposalFromTrustedId(productData.primaryMaterialId.trim()), material ?? null);
+      }
+
       const sanitizedProductData = sanitizeLegacyPriceBreaksForPbv2(
         applyProductWorkflowIntentDefaults(normalizeProductRotationForWrite(productData)),
       );
       const product = await storage.createProduct(organizationId, sanitizedProductData as InsertProduct);
       res.json(product);
     } catch (error) {
+      if (error instanceof CanonicalProductMaterialError) {
+        const status = error.code === "MATERIAL_NOT_FOUND" ? 404 : 400;
+        return res.status(status).json({ success: false, code: error.code, message: error.message });
+      }
       if (error instanceof z.ZodError) {
         console.error("[POST /api/products] Zod validation error:", error.errors);
         return res.status(400).json({
@@ -2135,6 +2145,8 @@ export function registerProductRoutes(
         }
       });
 
+      const requestedPrimaryMaterialId = takeCanonicalProductMaterialChange(productData);
+
       // Product Editor identity, operational configuration, and pricing
       // metadata use the same transport-independent operations available to
       // confirmed Operator paths. Lifecycle and unrelated fields remain here.
@@ -2159,6 +2171,20 @@ export function registerProductRoutes(
           actorUserId,
           productId,
           changes: pricingMetadataChanges,
+        });
+        existingProduct = result.product;
+      }
+
+      if (requestedPrimaryMaterialId !== undefined) {
+        const actorUserId = getUserId(req.user);
+        if (!actorUserId) return res.status(401).json({ success: false, code: "ACTOR_REQUIRED", message: "An authenticated actor is required." });
+        const result = await canonicalProductMaterialOperations.execute({
+          organizationId,
+          actorUserId,
+          productId,
+          material: canonicalProductMaterialProposalFromTrustedId(requestedPrimaryMaterialId),
+          expectedUpdatedAt: new Date(existingProduct.updatedAt).toISOString(),
+          auditContext: { source: "product_editor", reference: `route:PATCH:/api/products/${productId}` },
         });
         existingProduct = result.product;
       }
@@ -2327,6 +2353,10 @@ export function registerProductRoutes(
       if (error instanceof CanonicalProductPricingError) {
         const status = error.code === "PRODUCT_NOT_FOUND" ? 404 : error.code === "PRODUCT_PRICING_STALE" ? 409 : 400;
         return res.status(status).json({ success: false, code: error.code, message: error.message, findings: error.findings });
+      }
+      if (error instanceof CanonicalProductMaterialError) {
+        const status = error.code === "PRODUCT_NOT_FOUND" || error.code === "MATERIAL_NOT_FOUND" ? 404 : error.code === "PRODUCT_MATERIAL_STALE" ? 409 : 400;
+        return res.status(status).json({ success: false, code: error.code, message: error.message });
       }
 
       const errorId = (() => {

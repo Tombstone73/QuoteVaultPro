@@ -331,6 +331,7 @@ const semanticProductOperationsToolInputSchema: Record<string, unknown> = {
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "value"], properties: { op: { const: "set_option_default" }, optionGroup: { type: "string" }, value: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "category"], properties: { op: { const: "set_category" }, category: { type: "string" } } },
           { type: "object", additionalProperties: false, required: ["op", "material"], properties: { op: { const: "set_material" }, material: { type: "string" } } },
+          { type: "object", additionalProperties: false, required: ["op"], properties: { op: { const: "clear_material" } } },
           { type: "object", additionalProperties: false, required: ["op", "mode"], properties: { op: { const: "set_measurement_mode" }, mode: { enum: ["dimensions_required", "quantity_only"] } } },
           { type: "object", additionalProperties: false, required: ["op", "basis"], properties: { op: { const: "set_pricing_basis" }, basis: { enum: ["per_piece", "per_square_foot"] } } },
           { type: "object", additionalProperties: false, required: ["op", "optionGroup", "required", "selectionMode"], properties: { op: { const: "add_option_group" }, optionGroup: { type: "string" }, required: { type: "boolean" }, selectionMode: { enum: ["single", "multiple"] } } },
@@ -903,7 +904,7 @@ export class AssistantService {
       }] : [];
     const applyProductIntentTools: AssistantOperatorSemanticTool[] = mayApplyProductOperations ? [{
       name: "products.apply_operations",
-      description: "Apply one atomic batch of one or more business changes to the current unfinished product draft. Use the original request and current draft context to include every supported change; do not make the user repeat supplied facts. Preserve an enumerated unsupported detail with record_unsupported_detail while retaining independent supported changes. Shared Product/PBV2 proposal schemas validate migrated configuration; contained compatibility handles pricing, material, and safe removals. Begin a draft first when none is active. Draft edits do not require GO; final product creation remains review/GO-gated. Pass only displayed business labels and values; never pass IDs, patch paths, persistence data, or PBV2 structures.",
+      description: "Apply one atomic batch of one or more business changes to the current unfinished product draft. Use the original request and current draft context to include every supported change; do not make the user repeat supplied facts. Preserve an enumerated unsupported detail with record_unsupported_detail while retaining independent supported changes. Shared Product/PBV2/pricing/material proposal schemas validate migrated configuration; contained compatibility handles safe removals. Begin a draft first when none is active. Draft edits do not require GO; final product creation remains review/GO-gated. Pass only displayed business labels and values; never pass IDs, patch paths, persistence data, or PBV2 structures.",
       inputSchema: semanticProductOperationsToolInputSchema,
       execute: async ({ arguments: args, context }) => {
         const operations = Array.isArray(args.operations) ? args.operations : null;
@@ -944,7 +945,7 @@ export class AssistantService {
     }] : [];
     const existingProductEditTools: AssistantOperatorSemanticTool[] = mayEditExistingProduct ? [{
       name: "products.apply_existing_operations",
-      description: "Prepare a protected edit to one trusted existing persisted product. Use update_product_configuration for identity/workflow fields. Use update_pbv2_option_configuration for shared PBV2 group/input/choice labels, required state, defaults, text inputs, choice order, and simple visibility relationships. Use trusted selectionKey and choice value data when supplied. Pricing and lifecycle changes are excluded. This never changes anything before GO; the server revalidates state at GO. Product identity is supplied by trusted context.",
+      description: "Prepare a protected edit to one trusted existing persisted product. Use update_product_configuration for identity/workflow fields, update_product_material with an exact displayed active material label (or null to clear), and update_pbv2_option_configuration for shared PBV2 group/input/choice behavior. Never invent a material ID. Pricing and lifecycle changes are excluded. This never changes anything before GO; the server revalidates state at GO. Product identity and available materials are supplied by trusted context.",
       inputSchema: {
         type: "object", additionalProperties: false, required: ["operations"],
         properties: {
@@ -952,6 +953,7 @@ export class AssistantService {
             type: "array", minItems: 1, maxItems: 12,
             items: { anyOf: [
               { type: "object", additionalProperties: false, required: ["op", "changes"], properties: { op: { const: "update_product_configuration" }, changes: { type: "object", additionalProperties: false, minProperties: 1, properties: { name: { type: "string" }, description: { type: "string" }, category: { type: ["string", "null"] }, productTypeId: { type: ["string", "null"] }, measurementMode: { enum: ["dimensions_required", "quantity_only"] }, workflowIntent: { enum: ["standard_production", "fulfillment_only", "service_fee"] }, requiresProductionJob: { type: "boolean" }, requiresProofApproval: { type: "boolean" } } } } },
+              { type: "object", additionalProperties: false, required: ["op", "materialLabel"], properties: { op: { const: "update_product_material" }, materialLabel: { type: ["string", "null"] } } },
               { type: "object", additionalProperties: false, required: ["op", "mutations"], properties: { op: { const: "update_pbv2_option_configuration" }, mutations: { type: "array", minItems: 1, maxItems: 24, items: { type: "object", required: ["kind"], properties: {
                 kind: { enum: ["add_group", "update_group", "add_input", "update_input", "add_choice", "update_choice", "reorder_groups", "reorder_choices"] },
                 group: { anyOf: [{ type: "string" }, { type: "object" }] }, input: { anyOf: [{ type: "string" }, { type: "object" }] }, choice: { anyOf: [{ type: "string" }, { type: "object" }] }, changes: { type: "object" }, orderedGroups: { type: "array", items: { type: "string" } }, orderedValues: { type: "array", items: { type: "string" } },

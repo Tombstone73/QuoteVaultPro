@@ -96,6 +96,7 @@ function unsupportedProductDetailNotice(operations: unknown): string {
 export type ActiveSemanticProductDraftContext = {
   name: string;
   category: { state: "resolved" | "unresolved"; label: string; provenance: "explicit_user" | "structured_candidate" | "ai_interpreted" | "selected_template" | "canonical_default" | "unresolved" };
+  material: { state: "resolved" | "unresolved" | "explicitly_unset"; label: string | null; provenance: string };
   measurementMode: "dimensions_required" | "quantity_only" | "fixed_size";
   pricing: { model: string; basis: string | null; optionGroup: string | null; rates: Array<{ option: string; priceCents: number }> };
   optionGroups: Array<{ label: string; required: boolean; selectionMode: "single" | "multiple"; defaultValue: string | null; values: Array<{ label: string; priceImpactPercent: number | null; totalPercentWhenEnabled: { percent: number; prerequisite: { optionGroup: string; value: string } } | null }>; availableWhen: { optionGroup: string; value: string } | null }>;
@@ -146,7 +147,7 @@ export class ConfiguredCanonicalProductIntentRouter implements CanonicalProductI
   private async candidates(organizationId: string): Promise<{ categories: Array<{ id: string; label: string }>; materials: Array<{ id: string; label: string }>; productionRoutes: Array<{ id: string; label: string }>; existingProducts: Array<{ id: string; name: string; isActive: boolean; cloneSupported: boolean }> }> {
     const [categoryRows, materialRows, routeRows, existingProducts] = await Promise.all([
       db.select({ id: productTypes.id, label: productTypes.name }).from(productTypes).where(eq(productTypes.organizationId, organizationId)),
-      db.select({ id: materials.id, label: materials.name }).from(materials).where(eq(materials.organizationId, organizationId)),
+      db.select({ id: materials.id, label: materials.name }).from(materials).where(and(eq(materials.organizationId, organizationId), eq(materials.isActive, true))),
       db.select({ id: stations.id, label: stations.name }).from(stations).where(and(eq(stations.organizationId, organizationId), eq(stations.active, true))),
       db.select({ id: products.id, name: products.name, isActive: products.isActive }).from(products).where(eq(products.organizationId, organizationId)),
     ]);
@@ -239,6 +240,7 @@ function activeSemanticProductDraftContext(intent: ProductDraftIntent, inspectio
   return {
     name: intent.identity.name,
     category: { state: intent.identity.category.state, label: intent.identity.category.label, provenance: intent.fieldMetadata["identity.category"]?.source ?? "unresolved" },
+    material: { state: intent.material.state, label: intent.material.state === "explicitly_unset" ? null : intent.material.label, provenance: intent.fieldMetadata.material?.source ?? (intent.material.state === "explicitly_unset" ? "canonical_default" : "unresolved") },
     measurementMode: intent.measurement.mode,
     pricing,
     optionGroups: intent.optionGroups.map((group) => ({
@@ -257,6 +259,7 @@ function activeSemanticProductDraftContext(intent: ProductDraftIntent, inspectio
       .slice(-16),
     trustedSelections: [
       ...(intent.identity.category.state === "resolved" ? [{ field: "category", label: intent.identity.category.label, provenance: intent.fieldMetadata["identity.category"]?.source ?? "structured_candidate" }] : []),
+      ...(intent.material.state === "resolved" ? [{ field: "material", label: intent.material.label, provenance: intent.fieldMetadata.material?.source ?? "structured_candidate" }] : []),
       ...intent.optionGroups.flatMap((group) => group.values.filter((value) => value.isDefault).map((value) => ({ field: `${group.label} default`, label: value.label, provenance: intent.fieldMetadata[`optionGroups.${group.key}.default`]?.source ?? "explicit_user" }))),
     ],
     readyForReview: inspection?.card.readiness.ready ?? false,

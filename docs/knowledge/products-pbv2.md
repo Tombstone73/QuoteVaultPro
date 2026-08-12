@@ -26,6 +26,14 @@ A new Product may be described in one request or over several turns before it ha
 
 Existing Product identity and operational configuration use the shared canonical Product operation for name, description, category, product type, measurement mode, workflow intent, proof requirement, and production-job requirement. These edits are separate from new Product drafting and require a trusted existing Product reference. Assistant proposals for this operation require GO; server validation and current Product state win over skill guidance.
 
+## Product primary material
+
+A Product may reference one primary material. Product Editor assignments and existing-Product Operator changes use the same tenant-scoped material operation. A new Product draft may keep a requested material label before it has a Product ID, but only the server may resolve that text to an active tenant Material. One exact active match may continue normally; missing or ambiguous matches remain an explicit decision. Existing-Product changes require preview and GO.
+
+Inactive Materials remain historical references, but cannot be newly assigned. A Product can retain an inactive primary material during unrelated edits and can explicitly change or clear it. Deleting a Material clears the relational Product primary reference under the existing database rule.
+
+Primary material, Product-linked Materials, and PBV2 Material references are different concepts. Primary material is the Product default and a weight/display fallback. Material links support association and suggestion behavior. PBV2 choice overrides, planned inventory consumption, and pricing material effects are selection/version-specific. Changing the primary Material does not rewrite those other relationships.
+
 ## Shared Product pricing
 
 Product Editor saves and Operator pricing proposals use the shared canonical Product pricing boundary. It supports integer-cent scalar prices, pricing basis, complete one- and two-dimensional matrices, complete quantity-tier replacements, minimum charges, and established percentage-of-base option impacts. A service-fee workflow is quantity-only and does not require proof approval or a production job.
@@ -39,4 +47,4 @@ Pricing configuration and pricing calculation are different responsibilities. Th
 
 Missing required pricing information stays explicit. The Operator may keep a new draft unresolved, and the Product Editor may save an incomplete empty matrix while it is being authored. A confirmed pricing change still requires a trusted Product, current lifecycle state, preview, GO, a fresh fingerprint, and the applicable permission. Active scalar changes create a replacement ACTIVE tree version; existing pricing change-set snapshots and compensating rollback remain authoritative.
 
-The shared pricing operation does not broaden publish/activate, clone, deletion, batch, material, or customer-specific pricing authority. Those remain in their existing bounded paths.
+The shared pricing operation does not broaden publish/activate, clone, deletion, batch, or customer-specific pricing authority. Those remain in their existing bounded paths.

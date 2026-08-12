@@ -1,5 +1,6 @@
 import { productDraftIntentSchema, type ProductDraftIntent } from "@shared/productDraftIntent";
 import { canonicalProductPricingConfigurationSchema } from "../products/canonicalProductPricingOperations";
+import { resolveCanonicalProductMaterialProposal } from "../products/canonicalProductMaterialOperations";
 
 export type TenantIntentReference = { id: string; label: string };
 
@@ -112,7 +113,16 @@ export function resolveProductDraftIntentReferences(rawIntent: unknown, candidat
   // Retain an unresolved material hint. It is distinct from an explicit choice
   // to leave material unset and can safely drive a nonblocking, relevant
   // suggestion when material is optional.
-  intent.material = resolve(intent.material, candidates.materials, "material", "unresolved");
+  if (intent.material.state !== "explicitly_unset") {
+    const requestedLabel = String(intent.material.label ?? "").trim();
+    const proposal = resolveCanonicalProductMaterialProposal(requestedLabel || "Not selected", candidates.materials.map((candidate) => ({ ...candidate, isActive: true })));
+    // The model contributes only a label. The candidate ID and exact-match
+    // decision are server-owned, so a unique active tenant match is trusted
+    // without trusting a provider-supplied ID or confidence value.
+    intent.material = proposal.material.state === "resolved"
+      ? { state: "resolved", id: proposal.material.materialId, label: proposal.material.label }
+      : { state: "unresolved", label: requestedLabel || "Not selected" };
+  }
   intent.production.route = resolve(intent.production.route, candidates.productionRoutes, "production.route", "explicitly_unset");
   return productDraftIntentSchema.parse(intent);
 }
@@ -130,7 +140,8 @@ export async function resolveAndValidateProductDraftIntent(rawIntent: unknown, c
   if (intent.identity.category.state === "unresolved") issues.push({ code: "CATEGORY_UNRESOLVED", path: "identity.category", severity: "question", message: "Choose a product category." });
   else if (!includesLabel(context.categoryLabels, intent.identity.category.label)) issues.push({ code: "CATEGORY_NOT_FOUND", path: "identity.category", severity: "question", message: `The category ${intent.identity.category.label} is not available for this tenant.` });
   const materialRequired = isMaterialRequired(intent, context);
-  if (intent.material.state === "unresolved" && materialRequired) issues.push({ code: "MATERIAL_UNRESOLVED", path: "material", severity: "question", message: "Which material should this product use?" });
+  if (intent.material.state === "unresolved") issues.push({ code: "MATERIAL_UNRESOLVED", path: "material", severity: "question", message: materialRequired ? "Which material should this product use?" : `The requested material ${intent.material.label} was not an unambiguous active tenant material. Choose a material or explicitly leave it unset.` });
+  if (intent.material.state === "explicitly_unset" && materialRequired) issues.push({ code: "MATERIAL_UNRESOLVED", path: "material", severity: "question", message: "Which material should this product use?" });
   if (intent.material.state === "resolved" && !includesLabel(context.materialLabels, intent.material.label)) issues.push({ code: "MATERIAL_NOT_FOUND", path: "material", severity: "question", message: `The material ${intent.material.label} is not available for this tenant.` });
   if (intent.production.route.state === "unresolved") issues.push({ code: "ROUTE_UNRESOLVED", path: "production.route", severity: "question", message: "Which production route should this product use?" });
   if (intent.production.route.state === "resolved" && !includesLabel(context.productionRouteLabels, intent.production.route.label)) issues.push({ code: "ROUTE_NOT_FOUND", path: "production.route", severity: "question", message: `The production route ${intent.production.route.label} is not available for this tenant.` });

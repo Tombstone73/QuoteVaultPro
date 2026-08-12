@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto";
 import { z } from "zod";
 
-/** Server-owned V1 revision/resolver compatibility contract for an inactive
- * Product Builder draft. Canonical proposal state owns migrated Product/PBV2
- * fields. Pricing is canonical proposal-backed; material and current creation
- * transport remain V1-only. */
+/** Server-owned V1 revision/resolver compatibility envelope for an inactive
+ * Product Builder draft. Canonical proposal state owns migrated Product,
+ * PBV2, pricing, and primary-material fields; the current creation transport
+ * still projects through this historical shape. */
 export const PRODUCT_DRAFT_INTENT_VERSION = 1 as const;
 
 const nonEmpty = z.string().trim().min(1);

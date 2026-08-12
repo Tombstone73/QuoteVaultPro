@@ -460,7 +460,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const persistedIntent = result.session.specification.session.revisions[0]!.intent;
     expect(result.session.status).toBe("needs_answers");
     expect(result.session.specification.session.currentRevision).toBe(0);
-    expect(persistedIntent).toMatchObject({ state: "needs_answers", identity: { category: { state: "unresolved", label: "Product category" } }, material: { state: "unresolved" }, production: { route: { state: "explicitly_unset" } }, pricing: { unit: "unresolved" } });
+    expect(persistedIntent).toMatchObject({ state: "needs_answers", identity: { category: { state: "unresolved", label: "Product category" } }, material: { state: "resolved", id: "pvc-3" }, production: { route: { state: "explicitly_unset" } }, pricing: { unit: "unresolved" } });
     expect(result.issues).toEqual(expect.arrayContaining([
       expect.objectContaining({ id: "0:identity.category:candidate", code: "CATEGORY_UNRESOLVED" }),
       expect.objectContaining({ id: "0:pricing.matrix.unit:required", code: "PRICING_UNIT_UNRESOLVED", path: "pricing.matrix.unit" }),
@@ -506,7 +506,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(intent.revision).toBe(1);
     expect(intent.pricing).toMatchObject({ model: "two_dimensional_matrix", unit: answer.toLocaleLowerCase().includes("sqft") ? "per_square_foot" : "per_piece", cells: expect.arrayContaining([{ row: "3mm", column: "single", priceCents: 1200 }, { row: "6mm", column: "double", priceCents: 2200 }]) });
     expect(intent.identity.category).toMatchObject({ state: "unresolved" });
-    expect(intent.material).toMatchObject({ state: "unresolved" });
+    expect(intent.material).toEqual({ state: "resolved", id: "pvc-3", label: "PVC - 3mm (Foamed PVC Sheets)" });
     expect(intent.production.route).toEqual({ state: "explicitly_unset" });
     expect(continued.issues).toEqual([expect.objectContaining({ code: "CATEGORY_UNRESOLVED", id: "1:identity.category:candidate" })]);
     expect(continued.card.requiredQuestions).toEqual([]);
@@ -515,7 +515,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
 
   test("does not turn unrelated or already-resolved answers into a deterministic patch", async () => {
     const provider = jest.fn(async () => ({ rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }));
-    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [], productionRoutes: [] });
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [{ id: "pvc-3", label: "PVC - 3mm (Foamed PVC Sheets)" }], productionRoutes: [] });
     const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-unmatched", compilerInput: compilerInput() });
     if (!created.ok) throw new Error("Expected canonical session creation.");
     const unrelated = await service.continue({ organizationId: "org-1", actorUserId: "user-1", proposalId: created.session.proposalId, request: "Make it excellent", compilerInput: compilerInput() });
@@ -530,7 +530,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
       if (calls === 1) return { rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
       return { rawText: JSON.stringify({ kind: "semantic_operations", operations: [{ op: "set_pricing_basis", basis: "per_piece" }] }), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} };
     });
-    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [], productionRoutes: [] });
+    const service = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), new ProductIntentPersistenceService(new MemoryStore()), { categories: [], materials: [{ id: "pvc-3", label: "PVC - 3mm (Foamed PVC Sheets)" }], productionRoutes: [] });
     const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-provider-patch", compilerInput: compilerInput() });
     if (!created.ok) throw new Error("Expected canonical session creation.");
 
@@ -561,7 +561,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(selectedIntent.fieldMetadata["identity.category"]).toEqual(expect.objectContaining({ source: "explicit_user" }));
     expect(selectedIntent.pricing).toMatchObject({ model: "two_dimensional_matrix", unit: "unresolved", cells: yardSignsPayload.intent.pricing.cells });
     expect(selectedIntent.optionGroups).toEqual(yardSignsPayload.intent.optionGroups);
-    expect(selectedIntent.material).toMatchObject({ state: "unresolved" });
+    expect(selectedIntent.material).toEqual({ state: "resolved", id: "pvc-3", label: "PVC - 3mm (Foamed PVC Sheets)" });
     expect(selectedIntent.production.route).toEqual({ state: "explicitly_unset" });
     expect(selected.outcome.issues).not.toEqual(expect.arrayContaining([expect.objectContaining({ code: "CATEGORY_UNRESOLVED" })]));
     expect(selected.outcome.card.candidateResolutions.filter((action) => action.kind === "select_category")).toEqual([]);
@@ -576,7 +576,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     const service = new CanonicalProductIntentService(new ProductIntentCompiler({
       generateJson: jest.fn(async () => ({ rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} })),
     }), new ProductIntentPersistenceService(new MemoryStore()), {
-      categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [], productionRoutes: [],
+      categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [{ id: "pvc-3", label: "PVC - 3mm (Foamed PVC Sheets)" }], productionRoutes: [],
     });
     const created = await service.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-pricing-first", compilerInput: compilerInput() });
     if (!created.ok) throw new Error("Expected canonical session creation.");
@@ -623,7 +623,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
   test("inspects the latest ready revision without a compiler, patch validation, persistence write, or fingerprint change", async () => {
     const provider = jest.fn(async () => ({ rawText: JSON.stringify(yardSignsPayload), provider: "openai_compatible", model: "deepseek-test", requestMetadata: {} }));
     const persistence = new ProductIntentPersistenceService(new MemoryStore());
-    const candidates = { categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [], productionRoutes: [] };
+    const candidates = { categories: [{ id: "flatbed-printing", label: "Flatbed Printing" }], materials: [{ id: "pvc-3", label: "PVC - 3mm (Foamed PVC Sheets)" }], productionRoutes: [] };
     const writer = new CanonicalProductIntentService(new ProductIntentCompiler({ generateJson: provider }), persistence, candidates);
     const created = await writer.create({ organizationId: "org-1", actorUserId: "user-1", conversationId: "yard-read-only", compilerInput: compilerInput() });
     if (!created.ok) throw new Error("Expected canonical session creation.");
@@ -815,7 +815,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     if (!created.ok) throw new Error("Expected supported Reflective Pole Signs details to persist.");
     const intent = created.session.specification.session.revisions.at(-1)!.intent;
     expect(intent).toMatchObject({
-      identity: { name: "Relective Pole Signs", description: "Coroplast signs with reflective vinyl mounted to them.\nConstruction: Coroplast", category: { state: "resolved", id: "rigid-signs", label: "Rigid Signs" } },
+      identity: { name: "Relective Pole Signs", description: "Coroplast signs with reflective vinyl mounted to them.", category: { state: "resolved", id: "rigid-signs", label: "Rigid Signs" } },
       material: { state: "unresolved", label: "Coroplast" },
       measurement: { mode: "dimensions_required" },
       pricing: { model: "scalar", unit: "per_piece", priceCents: 900 },

@@ -21,7 +21,7 @@ function preview(proposal: Awaited<ReturnType<ExistingProductEditService["buildP
 export function createExistingProductEditCommandDefinition(service: ExistingProductEditService): AssistantCommandDefinition<Input, unknown, unknown> {
   return {
     name: existingProductEditCommandName, version: "v1", domain: "products", mode: "write",
-    description: "Apply a confirmed existing-product edit through the shared canonical Product configuration or PBV2 option-configuration operation. Legacy option-default plans are translated through the PBV2 operation.",
+    description: "Apply a confirmed existing-product edit through the shared canonical Product configuration, Product material, or PBV2 option-configuration operation. Legacy option-default plans are translated through the PBV2 operation.",
     risk: "high", requiredCapability: "assistant.products.update_existing_product", allowedRoles: ["owner", "admin"],
     inputSchema, previewSchema: z.unknown(), resultSchema: z.unknown(), maxAffectedRecords: 1, bulkAllowed: false,
     confirmationRequired: true, reauthenticationRequired: true, confirmationExpiresInMs: 10 * 60_000,
@@ -48,7 +48,11 @@ export function createExistingProductEditExecutionCommand(service: ExistingProdu
     async execute({ plan, scope }): Promise<ExecutionCommandResult> {
       const input = inputSchema.parse(plan.sanitizedArguments);
       const result = await service.execute({ organizationId: scope.organizationId, productId: input.productId, operations: { operations: input.operations }, expectedFingerprint: input.proposalFingerprint, userId: scope.userId });
-      const operationSummary = result.canonicalOperationReference === "products.update_option_configuration.v1" ? "Applied the shared canonical PBV2 option configuration operation after GO." : "Applied the shared canonical Product configuration operation after GO.";
+      const operationSummary = result.canonicalOperationReference === "products.update_option_configuration.v1"
+        ? "Applied the shared canonical PBV2 option configuration operation after GO."
+        : result.canonicalOperationReference === "products.update_material_configuration.v1"
+          ? "Applied the shared canonical Product material operation after GO."
+          : "Applied the shared canonical Product configuration operation after GO.";
       return { status: "succeeded", summary: `Updated existing product ${result.productName}.`, details: { existingProductEdit: { productId: result.productId, changes: result.changes, canonicalOperationReference: result.canonicalOperationReference ?? null } } as any, steps: [{ commandName: `${existingProductEditCommandName}@v1`, status: "succeeded", summary: operationSummary }] };
     },
   };

@@ -267,7 +267,7 @@ function providerPatchIsExplicitSemanticCorrection(intent: ProductDraftIntent, p
     if (operation.op === "set_pricing") {
       const currentPricing = intent.pricing;
       const nextPricing = operation.value;
-      if (!metadataPaths.has("pricing.matrix") || (currentPricing.model !== "one_dimensional_matrix" && currentPricing.model !== "two_dimensional_matrix")) return false;
+      if ((!metadataPaths.has("pricing") && !metadataPaths.has("pricing.matrix")) || (currentPricing.model !== "one_dimensional_matrix" && currentPricing.model !== "two_dimensional_matrix")) return false;
       if (currentPricing.model === "one_dimensional_matrix") {
         if (nextPricing.model !== "one_dimensional_matrix" || nextPricing.unit !== currentPricing.unit || nextPricing.optionKey !== currentPricing.optionKey || nextPricing.cells.length !== currentPricing.cells.length) return false;
         const group = intent.optionGroups.find((candidate) => candidate.key === currentPricing.optionKey);
@@ -363,7 +363,7 @@ function providerPatchIsScopedToActiveAnswers(intent: ProductDraftIntent, patch:
     }
     if (operation.op === "merge_field_metadata") {
       for (const path of Object.keys(operation.value)) {
-        const canonicalPath = path === "pricing.unit" ? "pricing.matrix.unit" : path;
+        const canonicalPath = path === "pricing.unit" || path === "pricing" ? "pricing.matrix.unit" : path;
         if (canonicalPath !== "identity.category" && !answers.some((answer) => answer.canonicalPath === canonicalPath)) return false;
         metadataPaths.add(canonicalPath);
       }

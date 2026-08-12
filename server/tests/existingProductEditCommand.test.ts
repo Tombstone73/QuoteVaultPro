@@ -56,4 +56,17 @@ describe("existing product edit execution command", () => {
     const result = await command.execute({ plan: { sanitizedArguments: pbv2Input } as any, scope });
     expect(result.steps[0]?.summary).toContain("canonical PBV2 option configuration");
   });
+
+  test("keeps trusted existing-Product material assignment behind the same GO command", async () => {
+    const materialInput = { productId: "product_1", operations: [{ op: "update_product_material", materialLabel: "13oz Banner" }], proposalFingerprint: fingerprint };
+    const materialProposal = { ...proposal, sourceLifecycle: "PRODUCT", canonicalOperationReference: "products.update_material_configuration.v1", expectedProductUpdatedAt: "2026-08-10T00:00:00.000Z", changes: [{ field: "Primary material", before: "(none)", after: "13oz Banner" }] };
+    const service = { revalidateProposal: jest.fn(async () => ({ valid: true as const, proposal: materialProposal })), execute: jest.fn(async () => materialProposal) } as any;
+    const command = createExistingProductEditExecutionCommand(service);
+    const built = await command.buildPreview({ scope, arguments: materialInput, context: {} as any });
+    expect(service.execute).not.toHaveBeenCalled();
+    expect(built.preview.summary).toContain("Primary material: (none) → 13oz Banner");
+    const result = await command.execute({ plan: { sanitizedArguments: materialInput, id: "plan_1", idempotencyKey: "key", correlationId: "correlation" } as any, scope });
+    expect(service.execute).toHaveBeenCalledWith(expect.objectContaining({ operations: { operations: materialInput.operations }, expectedFingerprint: fingerprint }));
+    expect(result.steps[0]?.summary).toContain("shared canonical Product material operation");
+  });
 });

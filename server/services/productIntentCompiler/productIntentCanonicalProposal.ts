@@ -17,9 +17,13 @@ import {
   normalizeCanonicalProductPricingConfiguration,
   type CanonicalProductPricingProposal,
 } from "../products/canonicalProductPricingOperations";
+import {
+  canonicalProductMaterialProposalFromReference,
+  canonicalProductMaterialProposalSchema,
+  type CanonicalProductMaterialProposal,
+} from "../products/canonicalProductMaterialOperations";
 
 const compatibilityOperationNameSchema = z.enum([
-  "set_material",
   "remove_option_value",
   "remove_option_group",
 ]);
@@ -37,10 +41,11 @@ export const canonicalProductIntentProposalSchema = z.object({
   productConfiguration: productConfigurationChangesSchema.optional(),
   pbv2OptionConfiguration: pbv2OptionConfigurationMutationsSchema.optional(),
   productPricing: canonicalProductPricingProposalSchema.optional(),
+  productMaterial: canonicalProductMaterialProposalSchema.optional(),
   unsupportedDetails: z.array(unsupportedDetailSchema).default([]),
   compatibilityOperations: z.array(z.object({ index: z.number().int().nonnegative(), op: compatibilityOperationNameSchema }).strict()).default([]),
 }).strict().refine(
-  (proposal) => proposal.productConfiguration || proposal.pbv2OptionConfiguration || proposal.productPricing || proposal.unsupportedDetails.length || proposal.compatibilityOperations.length,
+  (proposal) => proposal.productConfiguration || proposal.pbv2OptionConfiguration || proposal.productPricing || proposal.productMaterial || proposal.unsupportedDetails.length || proposal.compatibilityOperations.length,
   "At least one Product intent proposal fragment is required.",
 );
 export type CanonicalProductIntentProposal = z.infer<typeof canonicalProductIntentProposalSchema>;
@@ -53,6 +58,9 @@ export const canonicalProductIntentStateSchema = z.object({
   /** Item 8 rows predate canonical pricing state. They are imported from the
    * V1 compatibility envelope on their next write. */
   productPricing: canonicalProductPricingProposalSchema.optional(),
+  /** Item 8/early Item 9 rows are imported from the V1 material envelope on
+   * their next write, just like the canonical pricing compatibility bridge. */
+  productMaterial: canonicalProductMaterialProposalSchema.optional(),
   /** Each batch is the exact Phase 6 mutation input contract. Chunking keeps
    * historical V1 drafts with more than one command-sized option set loadable
    * without weakening the live operation's 24-mutation safety ceiling. */
@@ -192,6 +200,7 @@ export function buildCanonicalProductIntentProposal(
   const unsupportedDetails: Array<{ code: "customer_specific_availability" | "grommet_quantity"; blocking: false }> = [];
   const compatibilityOperations: Array<{ index: number; op: z.infer<typeof compatibilityOperationNameSchema> }> = [];
   let productPricing: CanonicalProductPricingProposal | undefined;
+  let productMaterial: CanonicalProductMaterialProposal | undefined;
   const knownGroups = current.optionGroups.map((group) => ({ key: group.key, label: group.label, values: group.values.map((value) => ({ key: value.key, label: value.label })) }));
   const suppliedName = explicitProductName(request);
   const nameOperations = operations.filter((operation) => operation.op === "set_product_name");
@@ -295,6 +304,12 @@ export function buildCanonicalProductIntentProposal(
       case "set_option_price_impact":
         productPricing = applyPricingProposalOperation(productPricing ?? pricingProposalFromIntent(current), operation, knownGroups);
         return;
+      case "set_material":
+        productMaterial = canonicalProductMaterialProposalFromReference({ state: "unresolved", label: String(operation.material) });
+        return;
+      case "clear_material":
+        productMaterial = canonicalProductMaterialProposalFromReference({ state: "explicitly_unset" });
+        return;
       case "record_unsupported_detail": {
         const code = operation.detail;
         if (code === "customer_specific_availability" || code === "grommet_quantity") unsupportedDetails.push({ code, blocking: false });
@@ -320,6 +335,7 @@ export function buildCanonicalProductIntentProposal(
     ...(parsedConfiguration ? { productConfiguration: parsedConfiguration } : {}),
     ...(parsedMutations ? { pbv2OptionConfiguration: parsedMutations } : {}),
     ...(productPricing ? { productPricing } : {}),
+    ...(productMaterial ? { productMaterial } : {}),
     unsupportedDetails,
     compatibilityOperations,
   });
@@ -381,6 +397,7 @@ export function canonicalProductIntentStateFromV1Draft(intentValue: unknown): Ca
     kind: "canonical_product_intent_proposal_state",
     productConfiguration,
     productPricing: pricingProposalFromIntent(intent),
+    productMaterial: canonicalProductMaterialProposalFromReference(intent.material),
     pbv2OptionConfigurationBatches: Array.from({ length: Math.ceil(mutations.length / 24) }, (_, index) => mutations.slice(index * 24, (index + 1) * 24)),
     unsupportedDetails: snapshotUnsupportedDetails(intent),
   });
@@ -456,8 +473,8 @@ function applyCanonicalPercentageImpacts(groups: ProductDraftIntent["optionGroup
 }
 
 /** Authoritative-state projection for consumers that still require the V1
- * ProductDraftIntent revision contract. Product, PBV2 shape, and pricing come
- * from canonical state; material and removal compatibility remain unchanged. */
+ * ProductDraftIntent revision contract. Product, PBV2 shape, pricing, and
+ * primary material come from canonical proposal state. */
 export function projectCanonicalProductIntentStateToV1Draft(
   currentValue: unknown,
   stateValue: unknown,
@@ -465,6 +482,7 @@ export function projectCanonicalProductIntentStateToV1Draft(
   const current = productDraftIntentSchema.parse(currentValue);
   const state = canonicalProductIntentStateSchema.parse(stateValue);
   const productPricing = state.productPricing ? canonicalProductPricingProposalSchema.parse(state.productPricing) : pricingProposalFromIntent(current);
+  const productMaterial = state.productMaterial ? canonicalProductMaterialProposalSchema.parse(state.productMaterial) : canonicalProductMaterialProposalFromReference(current.material);
   const configuration = normalizeCanonicalProductConfigurationChanges(state.productConfiguration);
   const category = configuration.category === undefined || configuration.category === null
     ? current.identity.category
@@ -507,6 +525,11 @@ export function projectCanonicalProductIntentStateToV1Draft(
       requiresProofApproval: configuration.requiresProofApproval ?? current.workflow.requiresProofApproval,
     },
     pricing: productPricing.configuration,
+    material: productMaterial.material.state === "resolved"
+      ? { state: "resolved", id: productMaterial.material.materialId, label: productMaterial.material.label }
+      : productMaterial.material.state === "unresolved"
+        ? { state: "unresolved", label: productMaterial.material.requestedLabel }
+        : { state: "explicitly_unset" },
     optionGroups: applyCanonicalPercentageImpacts(groupsFromTree(current, tree), productPricing),
     unresolvedFields,
     fieldMetadata,
@@ -583,6 +606,15 @@ export function applyCanonicalProductIntentProposal(
     operations.push({ op: "replace_option_groups", value: applyCanonicalPercentageImpacts(sourceGroups, pricing) });
     metadata["pricing"] = { source: "explicit_user" };
   }
+  if (proposal.productMaterial) {
+    const material = canonicalProductMaterialProposalSchema.parse(proposal.productMaterial).material;
+    operations.push({ op: "set_material", value: material.state === "resolved"
+      ? { state: "resolved", id: material.materialId, label: material.label }
+      : material.state === "unresolved"
+        ? { state: "unresolved", label: material.requestedLabel }
+        : { state: "explicitly_unset" } });
+    metadata.material = { source: "explicit_user" };
+  }
   let unresolved = current.unresolvedFields.filter((field) => !resolvedPaths.has(field.path));
   if (proposal.productPricing) unresolved = [
     ...unresolved.filter((field) => field.path !== "pricing.unit" && field.path !== "pricing.matrix.unit" && !field.path.startsWith("pricing.optionRates.")),
@@ -625,15 +657,15 @@ The persisted \`canonicalProposalState\` is authoritative for migrated Product c
 
 | Status | Operations |
 |---|---|
-| Retained interpretation operations | set_product_name, set_product_description, set_category, set_measurement_mode, set_proof_requirement, add/rename option group, add option value/text input, set default, set availability, pricing basis/scalar/matrix/percentage impact, record unsupported detail |
-| Canonical proposal-backed | Product identity/configuration, PBV2 groups/inputs/choices/defaults/ordering/simple visibility, and Product pricing configuration/percentage impacts |
-| Compatibility only | set_material, remove option value/group |
+| Retained interpretation operations | set_product_name, set_product_description, set_category, set_material/clear_material, set_measurement_mode, set_proof_requirement, add/rename option group, add option value/text input, set default, set availability, pricing basis/scalar/matrix/percentage impact, record unsupported detail |
+| Canonical proposal-backed | Product identity/configuration, PBV2 groups/inputs/choices/defaults/ordering/simple visibility, Product pricing configuration/percentage impacts, and Product primary material |
+| Compatibility only | remove option value/group |
 | Removed obsolete behavior | Migrated-field branches in the compatibility translator, grommet phrase repair, implicit Yes/No choices, grommet-placement cleanup and provider operation-order requirements |
 
 ## ProductDraftIntent classification
 
-- **Canonical proposal-backed compatibility projection:** identity/configuration, workflow, measurement, PBV2 option groups/inputs/choices/defaults/visibility, and pricing. These are regenerated from \`canonicalProposalState\` on new writes.
-- **Material compatibility:** material interpretation and tenant reference resolution.
+- **Canonical proposal-backed compatibility projection:** identity/configuration, workflow, measurement, PBV2 option groups/inputs/choices/defaults/visibility, pricing, and primary material. These are regenerated from \`canonicalProposalState\` on new writes.
+- **Material semantics:** natural-language labels and ambiguity remain semantic; trusted active-tenant resolution and assignment validity are canonical.
 - **Lifecycle compatibility:** inactive/unpublished draft state, creation transport and final Product/PBV2 projection.
 - **Historical compatibility:** V1 JSONB rows without \`canonicalProposalState\` load unchanged and are imported through one explicit V1 adapter on their next write.
 - **Removed as capability truth:** independently mutable migrated Product/PBV2 fields and their dormant compatibility-translator handlers.
@@ -644,6 +676,6 @@ Unsupported detail is stored in canonical proposal state. Customer-specific avai
 
 ## Remaining Product-domain migration work
 
-Materials, lifecycle operations, deletion, clone/batch behavior and customer-specific configuration remain outside this closeout. Pricing is now shared canonical under item 9.
+Lifecycle operations, deletion, clone/batch behavior and customer-specific configuration remain outside this closeout. Pricing and primary materials are shared canonical under item 9.
 `;
 }

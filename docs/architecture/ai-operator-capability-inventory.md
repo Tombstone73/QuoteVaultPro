@@ -33,7 +33,7 @@ None.
 | Scalar pricing | shared_canonical_today | Product Editor metadata/PBV2 saves, canonical Product intent proposals, and scalar change sets share products.update_pricing.v1 validation and persistence boundaries. |
 | Pricing matrices | shared_canonical_today | Product Editor DRAFT saves and the inactive-DRAFT compatibility command share canonical matrix validation; AI lifecycle scope remains intentionally narrower. |
 | Quantity tiers | shared_canonical_today | Product Editor DRAFT saves and the inactive-DRAFT compatibility command share canonical tier validation; AI lifecycle scope remains intentionally narrower. |
-| Materials | ai_specific_narrow_implementation | Contained label-based new-draft compatibility path; existing Product adapter remains missing. |
+| Primary material | shared_canonical_today | Product Editor, confirmed existing-Product edits, and canonical new-draft proposals share products.update_material_configuration.v1 tenant/active validation. Material links and PBV2 consumption/overrides remain separate. |
 | Option groups and values | shared_canonical_today | Existing edits execute the shared operation; new drafts compose and apply its mutation schema through a pre-persistence adapter. |
 | Defaults | shared_canonical_today | Defaults are validated against choice values; set_option_default is compatibility-only and translates to the shared operation. |
 | Required state | shared_canonical_today | Group and input required state use the same PBV2 DRAFT operation. |

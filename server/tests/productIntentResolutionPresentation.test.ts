@@ -44,16 +44,16 @@ describe("canonical Product Intent issue aggregation and presentation", () => {
     const fingerprint = productDraftIntentFingerprint(validation.intent);
     const actions = generateProductIntentCandidateActions(validation.intent, fingerprint, validation.issues, candidates);
     const card = presentProductDraftIntent(validation.intent, validation.issues, { candidateResolutions: actions, optionalRecommendations: generateProductIntentRecommendations(validation.intent, fingerprint) });
-    expect(card.fields).toMatchObject({ Category: "Not selected", Material: "Unresolved: PVC - 3mm (Foamed PVC Sheets)", "Production route": "Not set", Pricing: "Matrix — pricing unit not selected (4 prices)" });
+    expect(card.fields).toMatchObject({ Category: "Not selected", Material: "PVC - 3mm (Foamed PVC Sheets)", "Production route": "Not set", Pricing: "Matrix — pricing unit not selected (4 prices)" });
     expect(card.candidateResolutions.filter((action) => action.kind === "select_category")).toHaveLength(candidates.categories.length);
     expect(card.requiredQuestions).toEqual([expect.objectContaining({ id: "1:pricing.matrix.unit:required", path: "pricing.matrix.unit" })]);
     expect(card.readiness.ready).toBe(false);
     expect(card.optionalRecommendations).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "enable_proof_approval" })]));
   });
 
-  test("does not resolve a material or route from a low-confidence provider guess", () => {
+  test("resolves a unique exact material through server candidates but not a low-confidence route guess", () => {
     const resolved = resolveProductDraftIntentReferences(yardSignsIntent(), candidates);
-    expect(resolved.material).toMatchObject({ state: "unresolved", label: "PVC - 3mm (Foamed PVC Sheets)" });
+    expect(resolved.material).toEqual({ state: "resolved", id: "pvc-3", label: "PVC - 3mm (Foamed PVC Sheets)" });
     expect(resolved.production.route).toEqual({ state: "explicitly_unset" });
     expect(resolved.optionGroups[0]!.values.map((value) => value.key)).toEqual(["3mm", "6mm"]);
   });

@@ -7,6 +7,7 @@ import {
   type ProjectedProductBuilderDraft,
 } from "./productIntentProjection";
 import { db as defaultDb } from "../../db";
+import { canonicalProductMaterialProposalFromReference, validateCanonicalProductMaterialSelection } from "../products/canonicalProductMaterialOperations";
 
 /** A write failure which is safe to present as a failed canonical GO action. */
 export class ProductIntentDraftExecutionError extends Error {
@@ -104,11 +105,16 @@ function projectedTreeWithExecutionMetadata(projected: ProjectedProductBuilderDr
 
 async function validateResolvedRelationships(tx: any, intent: ProductDraftIntent, organizationId: string): Promise<void> {
   if (intent.material.state === "resolved") {
-    const [material] = await tx.select({ id: materials.id }).from(materials).where(and(
+    const [material] = await tx.select({ id: materials.id, organizationId: materials.organizationId, name: materials.name, isActive: materials.isActive }).from(materials).where(and(
       eq(materials.organizationId, organizationId),
       eq(materials.id, intent.material.id),
     )).limit(1);
-    if (!material) throw new ProductIntentDraftExecutionError("MATERIAL_NOT_FOUND", "The selected material is no longer available for this tenant.");
+    try {
+      validateCanonicalProductMaterialSelection(canonicalProductMaterialProposalFromReference(intent.material), material ?? null);
+    } catch (error) {
+      const code = error && typeof error === "object" && "code" in error ? String((error as { code: unknown }).code) : "MATERIAL_NOT_FOUND";
+      throw new ProductIntentDraftExecutionError(code, error instanceof Error ? error.message : "The selected material is no longer available for this tenant.");
+    }
   }
   if (intent.production.route.state === "resolved") {
     const [station] = await tx.select({ id: stations.id }).from(stations).where(and(
@@ -228,7 +234,7 @@ export function createCanonicalProductDraftExecutionWriter(database: any = defau
           entityId: ids.productId,
           entityName: projected.product.name,
           description: `Canonical Product Intent created inactive product ${ids.productId} and PBV2 DRAFT ${ids.pbv2TreeVersionId}.`,
-          newValues: { canonicalExecution: executionMetadata, productIsActive: false, pbv2Status: "DRAFT", activeTreeAssigned: false },
+          newValues: { canonicalExecution: executionMetadata, productIsActive: false, pbv2Status: "DRAFT", activeTreeAssigned: false, materialOperationReference: "products.update_material_configuration.v1", primaryMaterialId: projected.relationships.material.state === "resolved" ? projected.relationships.material.id : null },
         } as any);
         return {
           productId: ids.productId,
