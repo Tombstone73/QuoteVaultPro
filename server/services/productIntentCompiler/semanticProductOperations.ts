@@ -26,9 +26,9 @@ export const semanticProductOperationsResultSchema = z.object({
     z.object({ op: z.literal("remove_option_value"), optionGroup: z.string().trim().min(1).max(160), value: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("remove_option_group"), optionGroup: z.string().trim().min(1).max(160) }).strict(),
     z.object({ op: z.literal("set_scalar_price"), priceCents: z.number().int().min(0).max(10_000_000), basis: z.enum(["per_piece", "per_square_foot"]) }).strict(),
-    // Preserve valid product details when an optional availability restriction
-    // is unsupported by the current Product Builder model.
-    z.object({ op: z.literal("record_unsupported_detail"), detail: z.literal("customer_specific_availability") }).strict(),
+    // Preserve valid product details when a related detail cannot be represented
+    // by the current Product Builder draft model.
+    z.object({ op: z.literal("record_unsupported_detail"), detail: z.enum(["customer_specific_availability", "grommet_quantity"]) }).strict(),
     z.object({ op: z.literal("set_proof_requirement"), requiresProofApproval: z.boolean() }).strict(),
   ])).min(1).max(24),
 }).strict();
@@ -61,6 +61,10 @@ function normalizeWhitespace(value: string): string { return value.trim().replac
  * model paraphrase of the same name. */
 function explicitProductNameFromRequest(request: string | undefined): string | null {
   if (!request) return null;
+  const productForSingleQuoted = /\b(?:product|item)\s+for\s*'([^']+)'/i.exec(request);
+  if (productForSingleQuoted?.[1]) return normalizeWhitespace(productForSingleQuoted[1]);
+  const productForQuoted = /\b(?:product|item)\s+for\s*["“]([^"”]+)[”"]/i.exec(request);
+  if (productForQuoted?.[1]) return normalizeWhitespace(productForQuoted[1]);
   const singleQuoted = /\b(?:called|named)\s*'([^']+)'/i.exec(request);
   if (singleQuoted?.[1]) return normalizeWhitespace(singleQuoted[1]);
   const match = /\b(?:called|named)\s*["“]([^"”]+)["”]/i.exec(request);
@@ -119,6 +123,26 @@ export function compileSemanticProductOperations(
 ): ProductDraftIntentPatch {
   const semantic = semanticProductOperationsResultSchema.parse(raw);
   if (baseRevision !== current.revision) throw new Error("PRODUCT_INTENT_SEMANTIC_OPERATION_STALE");
+  const explicitName = explicitProductNameFromRequest(request);
+  // A quoted name supplied as "product for <name>" is direct user evidence.
+  // Do not depend on the model remembering to emit a separate rename operation.
+  const nameOperation = explicitName && current.identity.name === "Unfinished product draft" && !semantic.operations.some((operation) => operation.op === "set_product_name")
+    ? [{ op: "set_product_name" as const, name: explicitName }]
+    : [];
+  // Creation batches sometimes mention a value before the group that owns it.
+  // Move only that dependency immediately before its dependent value; unrelated
+  // operations retain their original provider order.
+  const semanticOperations = [...nameOperation, ...semantic.operations];
+  const orderedOperations = [...semanticOperations];
+  for (let index = 0; index < orderedOperations.length; index += 1) {
+    const operation = orderedOperations[index]!;
+    if (operation.op !== "add_option_value") continue;
+    const dependencyIndex = orderedOperations.findIndex((candidate, candidateIndex) => candidateIndex > index
+      && candidate.op === "add_option_group" && normalized(candidate.optionGroup) === normalized(operation.optionGroup));
+    if (dependencyIndex < 0) continue;
+    const [dependency] = orderedOperations.splice(dependencyIndex, 1);
+    orderedOperations.splice(index, 0, dependency!);
+  }
   const nextGroups = structuredClone(current.optionGroups);
   const metadata: Record<string, ProductDraftIntent["fieldMetadata"][string]> = {};
   let groupsChanged = false;
@@ -181,8 +205,8 @@ export function compileSemanticProductOperations(
     metadata["measurement.mode"] = { source: "explicit_user" };
   };
 
-  for (let operationIndex = 0; operationIndex < semantic.operations.length; operationIndex += 1) {
-    const operation = semantic.operations[operationIndex];
+  for (let operationIndex = 0; operationIndex < orderedOperations.length; operationIndex += 1) {
+    const operation = orderedOperations[operationIndex]!;
     try {
     if (operation.op === "set_category") {
       // Identity is one canonical object, but a valid ordered creation batch
@@ -229,7 +253,9 @@ export function compileSemanticProductOperations(
       continue;
     }
     if (operation.op === "add_option_group") {
-      if (nextGroups.some((group) => normalized(group.label) === normalized(operation.optionGroup))) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_GROUP_EXISTS");
+      // Repeating an already-established business group is an idempotent no-op,
+      // not grounds to discard the rest of a valid continuation batch.
+      if (nextGroups.some((group) => normalized(group.label) === normalized(operation.optionGroup))) continue;
       const key = serverKey(operation.optionGroup, nextGroups.map((group) => group.key));
       nextGroups.push({ key, label: operation.optionGroup, required: operation.required, selectionMode: operation.selectionMode, values: [] });
       groupsChanged = true;
@@ -238,7 +264,9 @@ export function compileSemanticProductOperations(
     }
     if (operation.op === "add_option_value") {
       const group = findGroup(operation.optionGroup);
-      if (group.values.some((value) => normalized(value.label) === normalized(operation.value))) throw new Error("PRODUCT_INTENT_SEMANTIC_OPTION_VALUE_EXISTS");
+      // The same value can be emitted by a retry or a model that restates the
+      // active context. It is already satisfied, so preserve the other edits.
+      if (group.values.some((value) => normalized(value.label) === normalized(operation.value))) continue;
       const value = { key: serverKey(operation.value, group.values.map((item) => item.key)), label: operation.value, isDefault: false };
       group.values.push(value);
       if (nextPricing.model === "one_dimensional_matrix" && nextPricing.optionKey === group.key) {
@@ -303,6 +331,18 @@ export function compileSemanticProductOperations(
       continue;
     }
     if (operation.op === "record_unsupported_detail") {
+      if (operation.detail === "grommet_quantity") {
+        const path = "optionGroups.grommets.quantity";
+        const updated = addUnresolved(nextUnresolved, {
+          path,
+          code: "GROMMET_QUANTITY_UNRESOLVED",
+          question: "Grommet quantity is one per placement (two total). How should that counted selection be represented?",
+        });
+        if (updated.length !== nextUnresolved.length) {
+          nextUnresolved = updated;
+          unresolvedChanged = true;
+        }
+      }
       continue;
     }
     if (operation.op === "set_option_rate" || operation.op === "set_matrix_rate") {

@@ -781,7 +781,7 @@ describe("CanonicalProductIntentService compiler failures", () => {
     expect(weedTape?.availableWhen).toEqual({ optionGroupKey: contour?.key, optionValueKey: contour?.values[0]?.key });
   });
 
-  test("retains supported Reflective Pole Signs details when customer-specific availability is outside the draft model", async () => {
+  test("retains the exact two-turn Reflective Pole Signs conversation while customer-specific availability stays unsupported", async () => {
     const service = new CanonicalProductIntentService(null, new ProductIntentPersistenceService(new MemoryStore()), {
       categories: [{ id: "rigid-signs", label: "Rigid Signs" }], materials: [], productionRoutes: [],
     });
@@ -790,17 +790,17 @@ describe("CanonicalProductIntentService compiler failures", () => {
 
     const created = await service.applySemanticOperations({
       organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
-      request: "Add a product for 'Reflective Pole Signs' and it will be a product that we only use for a certain customer. The options will be grommets with placement, they will be logged as single sided as the only option for sides and they will be on coroplast with reflective vinyl mounted to them. They are priced at $9 each.",
+      request: 'Add a product for "Relective Pole Signs" and it will be a product that we only use for a certain customer. The options will be grommets with placement, they will be logged as single sided as the only option for sides and they will be on coroplast with reflective vinyl mounted to them. They are priced at $9 each.',
       operations: [
-        { op: "set_product_name", name: "Reflective Pole Signs" },
         { op: "set_product_description", description: "Coroplast signs with reflective vinyl mounted to them." },
         { op: "set_category", category: "Rigid Signs" },
         { op: "set_material", material: "Coroplast" },
-        { op: "set_measurement_mode", mode: "quantity_only" },
+        { op: "set_measurement_mode", mode: "dimensions_required" },
         { op: "set_scalar_price", priceCents: 900, basis: "per_piece" },
         { op: "add_option_group", optionGroup: "Sides", required: true, selectionMode: "single" },
         { op: "add_option_value", optionGroup: "Sides", value: "Single Sided" },
         { op: "set_option_default", optionGroup: "Sides", value: "Single Sided" },
+        { op: "add_option_group", optionGroup: "Grommets", required: false, selectionMode: "single" },
         { op: "add_option_group", optionGroup: "Grommet Placement", required: false, selectionMode: "single" },
         { op: "record_unsupported_detail", detail: "customer_specific_availability" },
       ],
@@ -810,24 +810,38 @@ describe("CanonicalProductIntentService compiler failures", () => {
     if (!created.ok) throw new Error("Expected supported Reflective Pole Signs details to persist.");
     const intent = created.session.specification.session.revisions.at(-1)!.intent;
     expect(intent).toMatchObject({
-      identity: { name: "Reflective Pole Signs", description: "Coroplast signs with reflective vinyl mounted to them.", category: { state: "resolved", id: "rigid-signs", label: "Rigid Signs" } },
+      identity: { name: "Relective Pole Signs", description: "Coroplast signs with reflective vinyl mounted to them.", category: { state: "resolved", id: "rigid-signs", label: "Rigid Signs" } },
       material: { state: "unresolved", label: "Coroplast" },
-      measurement: { mode: "quantity_only" },
+      measurement: { mode: "dimensions_required" },
       pricing: { model: "scalar", unit: "per_piece", priceCents: 900 },
     });
     expect(intent.optionGroups.find((group) => group.label === "Sides")?.values).toEqual([{ key: "single_sided", label: "Single Sided", isDefault: true }]);
+    expect(intent.optionGroups.find((group) => group.label === "Grommets")?.values).toEqual([]);
     expect(intent.optionGroups.find((group) => group.label === "Grommet Placement")?.values).toEqual([]);
     expect(created.issues).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.grommet_placement.values", code: "OPTION_GROUP_VALUES_UNRESOLVED" })]));
     expect(created.issues).not.toEqual(expect.arrayContaining([expect.objectContaining({ path: "identity.name" }), expect.objectContaining({ path: "pricing.model" })]));
 
-    const repeatedName = await service.applySemanticOperations({
+    const followUp = await service.applySemanticOperations({
       organizationId: "org-1", actorUserId: "user-1", proposalId: begun.session.proposalId,
-      request: "Name it Reflective Pole Signs and do not worry about the customer-specific availability.",
-      operations: [{ op: "set_product_name", name: "Reflective Pole Signs" }],
+      request: "Grommets would be default, top and bottom. 1 each so each one gets 2 grommets. Product is called Reflective Pole Signs - Rick",
+      operations: [
+        { op: "add_option_value", optionGroup: "Grommet Placement", value: "Top and Bottom" },
+        { op: "add_option_group", optionGroup: "Grommets", required: false, selectionMode: "single" },
+        { op: "add_option_value", optionGroup: "Grommets", value: "Included" },
+        { op: "add_option_value", optionGroup: "Grommets", value: "Included" },
+        { op: "set_option_default", optionGroup: "Grommets", value: "Included" },
+        { op: "set_option_default", optionGroup: "Grommet Placement", value: "Top and Bottom" },
+        { op: "set_product_name", name: "Reflective Pole Signs - Rick" },
+        { op: "record_unsupported_detail", detail: "grommet_quantity" },
+      ],
     });
-    expect(repeatedName).toMatchObject({ ok: true, changed: false, session: { specification: { session: { currentRevision: 1 } } } });
-    if (!repeatedName.ok) throw new Error("Expected an already-satisfied name to preserve the active draft.");
-    expect(repeatedName.session.specification.session.revisions.at(-1)?.intent.identity.name).toBe("Reflective Pole Signs");
+    expect(followUp).toMatchObject({ ok: true });
+    if (!followUp.ok) throw new Error("Expected the supported follow-up details to persist.");
+    const followedIntent = followUp.session.specification.session.revisions.at(-1)!.intent;
+    expect(followedIntent.identity.name).toBe("Reflective Pole Signs - Rick");
+    expect(followedIntent.optionGroups.find((group) => group.label === "Grommets")?.values).toEqual([{ key: "included", label: "Included", isDefault: true }]);
+    expect(followedIntent.optionGroups.find((group) => group.label === "Grommet Placement")?.values).toEqual([{ key: "top_and_bottom", label: "Top and Bottom", isDefault: true }]);
+    expect(followedIntent.unresolvedFields).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.grommets.quantity", code: "GROMMET_QUANTITY_UNRESOLVED" })]));
   });
 
   test("does not blame set_product_name when a later unsupported operation fails schema validation", async () => {

@@ -113,6 +113,56 @@ describe("semantic product operations", () => {
     expect(next.unresolvedFields.map((field) => field.path)).not.toEqual(expect.arrayContaining(["identity.name", "measurement.mode"]));
   });
 
+  test("preserves the literal product-for name even when the initial operation batch omits a rename", () => {
+    const current = productDraftIntentSchema.parse({
+      ...translucentIntent,
+      identity: { ...translucentIntent.identity, name: "Unfinished product draft" },
+      pricing: { model: "unresolved" }, optionGroups: [],
+      unresolvedFields: [{ path: "identity.name", code: "PRODUCT_NAME_UNRESOLVED" }],
+      fieldMetadata: { "identity.name": { source: "unresolved" } },
+    });
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [
+      { op: "set_scalar_price", priceCents: 900, basis: "per_piece" },
+      { op: "add_option_group", optionGroup: "Sides", required: true, selectionMode: "single" },
+      { op: "add_option_value", optionGroup: "Sides", value: "Single Sided" },
+      { op: "set_option_default", optionGroup: "Sides", value: "Single Sided" },
+    ] }, 4, 'Add a product for "Relective Pole Signs". It is $9 per piece.');
+    const next = applyProductDraftIntentPatch(current, patch);
+    expect(next.identity.name).toBe("Relective Pole Signs");
+    expect(next.pricing).toEqual({ model: "scalar", unit: "per_piece", priceCents: 900 });
+    expect(next.optionGroups[0]?.values.find((value) => value.isDefault)?.label).toBe("Single Sided");
+  });
+
+  test("applies an out-of-order grommet continuation incrementally and treats duplicates as already satisfied", () => {
+    const current = productDraftIntentSchema.parse({
+      ...translucentIntent,
+      identity: { ...translucentIntent.identity, name: "Relective Pole Signs" },
+      pricing: { model: "scalar", unit: "per_piece", priceCents: 900 },
+      optionGroups: [
+        { key: "sides", label: "Sides", required: true, selectionMode: "single", values: [{ key: "single_sided", label: "Single Sided", isDefault: true }] },
+        { key: "grommets", label: "Grommets", required: false, selectionMode: "single", values: [] },
+      ],
+    });
+    const patch = compileSemanticProductOperations(current, { kind: "semantic_operations", operations: [
+      // Provider order is intentionally value-first; the compiler establishes
+      // its parent group before applying the dependent value/default.
+      { op: "add_option_value", optionGroup: "Grommet Placement", value: "Top and Bottom" },
+      { op: "add_option_group", optionGroup: "Grommet Placement", required: false, selectionMode: "single" },
+      { op: "add_option_group", optionGroup: "Grommets", required: false, selectionMode: "single" },
+      { op: "add_option_value", optionGroup: "Grommets", value: "Included" },
+      { op: "add_option_value", optionGroup: "Grommets", value: "Included" },
+      { op: "set_option_default", optionGroup: "Grommets", value: "Included" },
+      { op: "set_option_default", optionGroup: "Grommet Placement", value: "Top and Bottom" },
+      { op: "set_product_name", name: "Reflective Pole Signs - Rick" },
+      { op: "record_unsupported_detail", detail: "grommet_quantity" },
+    ] }, 4, "Grommets would be default, top and bottom. 1 each so each one gets 2 grommets. Product is called Reflective Pole Signs - Rick.");
+    const next = applyProductDraftIntentPatch(current, patch);
+    expect(next.identity.name).toBe("Reflective Pole Signs - Rick");
+    expect(next.optionGroups.find((group) => group.label === "Grommets")?.values).toEqual([{ key: "included", label: "Included", isDefault: true }]);
+    expect(next.optionGroups.find((group) => group.label === "Grommet Placement")?.values).toEqual([{ key: "top_and_bottom", label: "Top and Bottom", isDefault: true }]);
+    expect(next.unresolvedFields).toEqual(expect.arrayContaining([expect.objectContaining({ path: "optionGroups.grommets.quantity", code: "GROMMET_QUANTITY_UNRESOLVED" })]));
+  });
+
   test("atomically retains a stated pricing basis while applying the exact multi-change follow-up", () => {
     const current = productDraftIntentSchema.parse({
       ...translucentIntent,
