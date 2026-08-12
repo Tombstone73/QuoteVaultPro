@@ -31,6 +31,8 @@ import { and, asc, desc, eq, or, sql } from "drizzle-orm";
 import { db } from "../db";
 import { aiAuditEvents } from "@shared/schema";
 import { aiDiagnosticEnvelopeSchema } from "@shared/aiDiagnostics";
+import { legacyChatPermissionsForOrganizationRole } from "../services/assistant/actorAuthorityShadowAdapters";
+import { compareAssistantAuthority, emitAssistantAuthorityShadowDiagnostic, resolveAssistantActorAuthority } from "../services/assistant/actorAuthorityResolver";
 
 const canonicalInteractionRequestSchema = z.object({
   proposalId: z.string().uuid(), action: z.enum(["accept_recommendation", "dismiss_recommendation", "apply_candidate"]), actionId: z.string().min(3).max(128), newProductName: z.string().trim().min(1).max(160).optional(),
@@ -45,32 +47,21 @@ function getUserId(user: unknown): string | null {
 function buildActor(req: Request, userId: string): AssistantActor {
   const user = req.user as { email?: unknown; claims?: { email?: unknown } } | undefined;
   const email = user?.claims?.email ?? user?.email;
-  return {
+  const actor = {
     userId,
     email: typeof email === "string" ? email : null,
     ipAddress: req.ip ?? null,
     userAgent: req.get("user-agent") ?? null,
     // tenantContext has already excluded customer-portal identities. Do not
     // consume any permission claim or request body field here.
-    permissions: (() => {
-      const role = String(req.orgRole ?? "").toLowerCase();
-      if (!["owner", "admin", "manager", "member", "employee"].includes(role)) return [];
-      return [
-        "assistant.internal_staff",
-        "catalog.read",
-        "assistant.quotes.add_internal_note",
-        ...(role === "owner" || role === "admin" ? [
-          "assistant.products.create_inactive_draft",
-          "assistant.products.update_inactive_draft",
-          "assistant.products.update_existing_product",
-          "assistant.diagnostics.view",
-          // Financial reporting is deliberately derived from the server-owned
-          // tenant role, never a browser supplied capability or model input.
-          "finance.read",
-        ] : []),
-      ];
-    })(),
+    permissions: legacyChatPermissionsForOrganizationRole(req.orgRole),
   };
+  const organizationId = typeof req.organizationId === "string" ? req.organizationId : null;
+  if (organizationId) {
+    const authority = resolveAssistantActorAuthority({ actorUserId: userId, organizationId, organizationRole: req.orgRole, authenticationSource: "authenticated_request", tenantSource: "tenant_context" });
+    emitAssistantAuthorityShadowDiagnostic(compareAssistantAuthority("chat", actor.permissions, authority));
+  }
+  return actor;
 }
 
 function conversationSummary(row: any) {

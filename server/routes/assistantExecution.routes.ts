@@ -62,6 +62,8 @@ import { paymentOperationCommandNames, paymentOperationsService } from "../servi
 import { CompositeExecutionPlanningService } from "../services/assistant/execution/compositeExecutionPlanningService";
 import { createQuoteInternalNoteCompositeExecutionService } from "../services/assistant/execution/quoteInternalNoteCompositeTool";
 import { createPaymentOperationCommandDefinition, createPaymentOperationExecutionCommand } from "../services/assistant/execution/paymentOperationsCommands";
+import { legacyExecutionSyntheticPermissionsForOrganizationRole } from "../services/assistant/actorAuthorityShadowAdapters";
+import { compareAssistantAuthority, emitAssistantAuthorityShadowDiagnostic, emitAssistantCommandRegistryShadowDiagnostic, resolveAssistantActorAuthority } from "../services/assistant/actorAuthorityResolver";
 
 function userId(req: Request): string | null {
   const user = req.user as { id?: unknown; claims?: { sub?: unknown } } | undefined;
@@ -72,13 +74,14 @@ function userId(req: Request): string | null {
 function scope(req: Request): ExecutionActorScope {
   const id = userId(req);
   if (!id) throw new ExecutionPlanError("AUTH_REQUIRED", "Unauthorized.");
-  const role = String(req.orgRole ?? "").toLowerCase();
-  const internal = ["owner", "admin", "manager", "member", "employee"].includes(role);
-  return {
+  const actorScope = {
     organizationId: getRequestOrganizationId(req), userId: id,
-    permissions: internal ? ["assistant.internal_staff", "catalog.read", "assistant.quotes.add_internal_note", "assistant.quotes.create_draft", "assistant.quotes.update_draft", "assistant.orders.create", "assistant.orders.update_editable", "assistant.quotes.convert_to_order", "assistant.customers.create", "assistant.customers.update_profile", "assistant.customers.update_commercial_terms", "assistant.contacts.create", "assistant.contacts.update", "assistant.production.intake_line_items", "assistant.production.send_to_prepress", "assistant.production.update_job_status", "assistant.production.add_job_note", "assistant.fulfillment.create_shipment", "assistant.fulfillment.update_shipment_details", "assistant.fulfillment.mark_shipped", "assistant.fulfillment.create_pickup_ticket", "assistant.fulfillment.add_note", "assistant.billing.create_invoice", "assistant.billing.update_invoice_draft", "assistant.billing.send_invoice", "assistant.billing.add_invoice_note", "assistant.payments.record_manual_payment", "assistant.payments.add_payment_note", ...(role === "owner" || role === "admin" ? ["assistant.products.create_inactive_draft", "assistant.products.create_inactive_draft_batch", "assistant.products.update_inactive_draft", "assistant.products.update_inactive_draft_batch", "assistant.products.update_existing_product", "assistant.products.adjust_pricing", "assistant.products.clone_to_inactive_draft", "assistant.products.replace_inactive_matrix", "assistant.products.replace_inactive_quantity_tiers"] : [])] : [],
+    permissions: legacyExecutionSyntheticPermissionsForOrganizationRole(req.orgRole),
     environment: process.env.NODE_ENV || "development",
   };
+  const authority = resolveAssistantActorAuthority({ actorUserId: id, organizationId: actorScope.organizationId, organizationRole: req.orgRole, authenticationSource: "authenticated_request", tenantSource: "tenant_context" });
+  emitAssistantAuthorityShadowDiagnostic(compareAssistantAuthority("execution", actorScope.permissions, authority));
+  return actorScope;
 }
 
 function planDto(plan: ExecutionPlanRecord, executionStarted = false): AssistantExecutionPlan {
@@ -196,6 +199,7 @@ function createProductionExecutionService(): ExecutionPlanningService {
     ...billingInvoiceOperationCommandNames.map((name) => createBillingInvoiceOperationCommandDefinition(name, billingInvoiceOperationsService)),
     ...paymentOperationCommandNames.map((name) => createPaymentOperationCommandDefinition(name, paymentOperationsService)),
   );
+  emitAssistantCommandRegistryShadowDiagnostic(metadataRegistry.list());
   const executionCommands = new Map<string, ExecutionCommandDefinition>([
     [quoteInternalNoteCommandName, createQuoteInternalNoteExecutionCommand(quoteInternalNotesService)],
     [productInactiveDraftCommandName, createProductInactiveDraftExecutionCommand(productService)],
