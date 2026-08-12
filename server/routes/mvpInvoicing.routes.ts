@@ -2199,6 +2199,8 @@ export async function registerMvpInvoicingRoutes(
         if (isImportedQuickBooks) return res.status(400).json({ error: "Imported QuickBooks invoices are read-only for customer/accounting fields" });
         if (isPaid) return res.status(400).json({ error: "Paid invoices are locked" });
         if (isVoid) return res.status(400).json({ error: "Void invoices are locked" });
+        const [targetCustomer] = await db.select({ id: customers.id }).from(customers).where(and(eq(customers.id, req.body.customerId), eq(customers.organizationId, organizationId))).limit(1);
+        if (!targetCustomer) return res.status(404).json({ error: "Customer not found", code: "CUSTOMER_NOT_FOUND" });
         updates.customerId = req.body.customerId;
       }
 
