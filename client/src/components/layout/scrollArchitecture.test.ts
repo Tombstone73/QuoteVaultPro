@@ -20,9 +20,13 @@ describe("application scroll architecture", () => {
     expect(productEditor).not.toContain('min-h-screen h-screen');
     expect(splitWorkspace).toContain('flex min-w-0 flex-col lg:flex-row');
     expect(splitWorkspace).not.toContain('overflow-y-auto p-4');
+    expect(splitWorkspace).toContain('data-testid="split-workspace-preview"');
+    expect(splitWorkspace).toContain('h-auto min-w-0 max-h-none overflow-visible');
     expect(builderLayout).toContain('flex min-w-0 flex-col bg-[#1e293b] lg:min-h-[600px] lg:flex-row');
     expect(builderLayout).not.toContain('overflow-y-auto bg-[#1e293b]');
     expect(optionGroups).not.toContain('ScrollArea');
     expect(pricingPreview).not.toContain('ScrollArea');
+    expect(pricingPreview).toContain('data-testid="pricing-validation-panel"');
+    expect(pricingPreview).toContain('h-auto w-full min-w-0 max-w-full overflow-visible bg-card');
   });
 });

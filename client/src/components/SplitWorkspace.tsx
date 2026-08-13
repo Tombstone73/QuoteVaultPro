@@ -35,11 +35,14 @@ const SplitWorkspace: React.FC<SplitWorkspaceProps> = ({ left, right, rightTitle
     <div className="min-w-0 bg-background">
       {header ? <div className="shrink-0 border-b border-border bg-background/80 backdrop-blur">{header}</div> : null}
 
-      <div className="flex min-w-0 flex-col lg:flex-row">
-        <div className="min-w-0 flex-1 p-4">{left}</div>
+      <div data-testid="split-workspace" className="flex min-w-0 flex-col lg:flex-row">
+        <div data-testid="split-workspace-main" className="min-w-0 flex-1 p-4">{left}</div>
 
         {!isRightPanelCollapsed ? (
-          <aside className="min-w-0 border-t border-border/60 lg:basis-[420px] lg:w-[420px] lg:max-w-[420px] lg:shrink-0 lg:self-start lg:border-l lg:border-t-0">
+          <aside
+            data-testid="split-workspace-preview"
+            className="h-auto min-w-0 max-h-none overflow-visible border-t border-border/60 lg:basis-[420px] lg:w-[420px] lg:max-w-[420px] lg:shrink-0 lg:self-start lg:border-l lg:border-t-0"
+          >
             <div className="p-3 border-b border-border/60 min-w-0">
               <div className="flex justify-between items-center gap-2 min-w-0">
                 <h2 className="font-semibold text-sm min-w-0 truncate">{rightTitle || 'Preview'}</h2>
@@ -54,7 +57,9 @@ const SplitWorkspace: React.FC<SplitWorkspaceProps> = ({ left, right, rightTitle
                 </Button>
               </div>
             </div>
-            <div className="min-w-0">{right}</div>
+            {/* The workspace itself never owns vertical scrolling. The app main viewport
+                remains the scroll owner while this preview grows in normal page flow. */}
+            <div className="h-auto min-w-0 max-h-none overflow-visible">{right}</div>
           </aside>
         ) : (
           <div className="flex h-12 items-center justify-center border-t border-border/60 lg:h-auto lg:w-12 lg:border-l lg:border-t-0">

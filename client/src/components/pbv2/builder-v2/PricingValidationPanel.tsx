@@ -1095,8 +1095,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   }, [hasInputErrors, requestSignature, treeForPreview, previewWidth, previewHeight, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload]);
 
   return (
-    <aside className="w-full max-w-full min-w-0 bg-card">
-      <div className="p-4 space-y-4 min-w-0 max-w-full overflow-hidden [overflow-wrap:anywhere]">
+    <aside data-testid="pricing-validation-panel" className="h-auto w-full min-w-0 max-w-full overflow-visible bg-card">
+      <div className="h-auto min-w-0 max-w-full space-y-4 overflow-visible p-4 [overflow-wrap:anywhere]">
           <div className="space-y-3 min-w-0">
             <div className="flex items-center gap-2">
               <DollarSign className="h-4 w-4 text-blue-400" />
