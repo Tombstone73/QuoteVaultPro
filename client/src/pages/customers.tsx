@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Search, Plus, Building2, LayoutGrid, SplitSquareHorizontal } from "lucide-react";
 import CustomerList from "@/components/CustomerList";
 import { CustomerMergeDialog } from "@/components/CustomerMergeDialog";
@@ -56,7 +57,7 @@ function ViewModeToggle({ viewMode, onChangeViewMode }: ViewModeToggleProps) {
       <button
         onClick={() => onChangeViewMode("split")}
         className={cn(
-          "flex items-center gap-1.5 px-3 py-1.5 rounded-titan-md text-titan-sm font-medium transition-all",
+          "flex h-7 items-center gap-1.5 px-2.5 rounded-titan-md text-titan-sm font-medium transition-all",
           viewMode === "split"
             ? "bg-titan-accent text-white shadow-titan-sm"
             : "text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card"
@@ -69,7 +70,7 @@ function ViewModeToggle({ viewMode, onChangeViewMode }: ViewModeToggleProps) {
       <button
         onClick={() => onChangeViewMode("enhanced")}
         className={cn(
-          "flex items-center gap-1.5 px-3 py-1.5 rounded-titan-md text-titan-sm font-medium transition-all",
+          "flex h-7 items-center gap-1.5 px-2.5 rounded-titan-md text-titan-sm font-medium transition-all",
           viewMode === "enhanced"
             ? "bg-titan-accent text-white shadow-titan-sm"
             : "text-titan-text-secondary hover:text-titan-text-primary hover:bg-titan-bg-card"
@@ -128,6 +129,8 @@ export default function Customers({ embedded = false }: CustomersProps) {
   
   // Search state
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("all");
+  const [typeFilter, setTypeFilter] = useState("all");
   const [mergeCustomerIds, setMergeCustomerIds] = useState<string[]>([]);
 
   // Fetch customer for editing
@@ -224,12 +227,12 @@ export default function Customers({ embedded = false }: CustomersProps) {
       <PageHeader
         title="Customers"
         subtitle="Manage your customer relationships and accounts"
-        className="pb-3"
+        className="mb-3 pb-0"
         backButton={
           <BackNavControls onBack={onSmartBack} />
         }
         actions={
-          <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
             {/* View Mode Toggle */}
             <ViewModeToggle 
               viewMode={viewMode} 
@@ -240,7 +243,7 @@ export default function Customers({ embedded = false }: CustomersProps) {
             <Button 
               size="sm" 
               onClick={handleNewCustomer}
-              className="bg-titan-accent hover:bg-titan-accent-hover text-white rounded-titan-md text-titan-sm font-medium"
+              className="h-8 bg-titan-accent hover:bg-titan-accent-hover px-3 text-titan-sm font-medium"
             >
               <Plus className="w-4 h-4 mr-2" />
               New Customer
@@ -249,10 +252,10 @@ export default function Customers({ embedded = false }: CustomersProps) {
         }
       />
 
-      <ContentLayout className="space-y-3">
-        {/* Search Bar */}
-        <div className="flex flex-row items-center gap-3">
-          <div className="relative flex-1 max-w-md">
+      <ContentLayout className="space-y-2">
+        {/* Compact desktop toolbar; wraps naturally on narrow screens. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="relative min-w-[240px] flex-1 basis-[45%] max-w-2xl">
             <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-4 w-4 text-titan-text-muted" />
             <Input
               placeholder="Search companies..."
@@ -261,6 +264,14 @@ export default function Customers({ embedded = false }: CustomersProps) {
               className="pl-8 h-9 bg-titan-bg-input border-titan-border-subtle text-titan-text-primary placeholder:text-titan-text-muted rounded-titan-md"
             />
           </div>
+          <Select value={statusFilter} onValueChange={setStatusFilter}>
+            <SelectTrigger aria-label="Customer status" className="h-9 w-[132px] text-sm"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="all">All Status</SelectItem><SelectItem value="active">Active</SelectItem><SelectItem value="inactive">Inactive</SelectItem><SelectItem value="suspended">Suspended</SelectItem><SelectItem value="on_hold">On Hold</SelectItem></SelectContent>
+          </Select>
+          <Select value={typeFilter} onValueChange={setTypeFilter}>
+            <SelectTrigger aria-label="Customer type" className="h-9 w-[132px] text-sm"><SelectValue /></SelectTrigger>
+            <SelectContent><SelectItem value="all">All Types</SelectItem><SelectItem value="business">Business</SelectItem><SelectItem value="individual">Individual</SelectItem><SelectItem value="retail">Retail</SelectItem><SelectItem value="wholesale">Wholesale</SelectItem><SelectItem value="corporate">Corporate</SelectItem></SelectContent>
+          </Select>
         </div>
 
         {/* Customer List/Detail View */}
@@ -276,6 +287,11 @@ export default function Customers({ embedded = false }: CustomersProps) {
                 search={search}
                 viewMode="split"
                 onMergeCustomers={setMergeCustomerIds}
+                statusFilter={statusFilter}
+                onStatusFilterChange={setStatusFilter}
+                typeFilter={typeFilter}
+                onTypeFilterChange={setTypeFilter}
+                showFilterControls={false}
               />
             </DataCard>
             
@@ -302,6 +318,11 @@ export default function Customers({ embedded = false }: CustomersProps) {
               search={search}
               viewMode="enhanced"
               onMergeCustomers={setMergeCustomerIds}
+              statusFilter={statusFilter}
+              onStatusFilterChange={setStatusFilter}
+              typeFilter={typeFilter}
+              onTypeFilterChange={setTypeFilter}
+              showFilterControls={false}
             />
           </DataCard>
         )}

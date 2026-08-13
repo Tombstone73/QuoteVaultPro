@@ -129,6 +129,11 @@ interface CustomerListProps {
   viewMode?: CustomerListViewMode;
   collapseOnSelect?: boolean;
   onMergeCustomers?: (customerIds: string[]) => void;
+  statusFilter?: string;
+  onStatusFilterChange?: (value: string) => void;
+  typeFilter?: string;
+  onTypeFilterChange?: (value: string) => void;
+  showFilterControls?: boolean;
 }
 
 export default function CustomerList({
@@ -139,9 +144,18 @@ export default function CustomerList({
   viewMode = "split",
   collapseOnSelect = false,
   onMergeCustomers,
+  statusFilter: controlledStatusFilter,
+  onStatusFilterChange,
+  typeFilter: controlledTypeFilter,
+  onTypeFilterChange,
+  showFilterControls = true,
 }: CustomerListProps) {
-  const [statusFilter, setStatusFilter] = useState<string>("all");
-  const [typeFilter, setTypeFilter] = useState<string>("all");
+  const [localStatusFilter, setLocalStatusFilter] = useState<string>("all");
+  const [localTypeFilter, setLocalTypeFilter] = useState<string>("all");
+  const statusFilter = controlledStatusFilter ?? localStatusFilter;
+  const typeFilter = controlledTypeFilter ?? localTypeFilter;
+  const setStatusFilter = onStatusFilterChange ?? setLocalStatusFilter;
+  const setTypeFilter = onTypeFilterChange ?? setLocalTypeFilter;
   const [sortBy, setSortBy] = useState<CustomerListSortBy>("name");
   const [sortDir, setSortDir] = useState<CustomerListSortDir>("asc");
   const [page, setPage] = useState(1);
@@ -276,6 +290,8 @@ export default function CustomerList({
   );
 
   const filterControls = (
+    <>
+      {showFilterControls && (
     <div className="p-2 border-b border-border/40">
       <div className={viewMode === "enhanced" ? "grid grid-cols-2 md:grid-cols-3 gap-2" : "grid grid-cols-2 gap-2"}>
         <Select value={statusFilter} onValueChange={setStatusFilter}>
@@ -319,6 +335,21 @@ export default function CustomerList({
           </Select>
         )}
       </div>
+    </div>
+      )}
+      {!showFilterControls && viewMode === "split" && (
+        <div className="flex justify-end border-b border-border/40 px-2 py-1.5">
+          <Select value={`${sortBy}:${sortDir}`} onValueChange={handleSplitSort}>
+            <SelectTrigger aria-label="Customer sort" className="h-7 w-[142px] text-xs"><SelectValue /></SelectTrigger>
+            <SelectContent>
+              <SelectItem value="name:asc">Company A-Z</SelectItem>
+              <SelectItem value="name:desc">Company Z-A</SelectItem>
+              <SelectItem value="updatedAt:desc">Recently Updated</SelectItem>
+              <SelectItem value="createdAt:desc">Recently Created</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+      )}
       {pagination && (
         <p className="text-[11px] text-muted-foreground mt-1.5 px-0.5">
           {pagination.total === 0
@@ -328,8 +359,8 @@ export default function CustomerList({
               : `${pagination.total} customer${pagination.total !== 1 ? "s" : ""}`}
         </p>
       )}
-      {onMergeCustomers && selectedForMerge.size >= 2 && <div className="mt-2 px-0.5"><Button size="sm" variant="outline" onClick={() => onMergeCustomers(Array.from(selectedForMerge))}><GitMerge className="w-4 h-4 mr-2" />Merge {selectedForMerge.size} customers</Button></div>}
-    </div>
+      {onMergeCustomers && selectedForMerge.size >= 2 && <div className="mt-2 px-2"><Button size="sm" variant="outline" onClick={() => onMergeCustomers(Array.from(selectedForMerge))}><GitMerge className="w-4 h-4 mr-2" />Merge {selectedForMerge.size} customers</Button></div>}
+    </>
   );
 
   const splitList = (
