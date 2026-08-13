@@ -223,30 +223,23 @@ describe("fulfillment operational workflow helpers", () => {
     expect(result.billingAutomation).toBeUndefined();
   });
 
-  test("ready for pickup requires completed checklist with specific error message", async () => {
-    const fakeDashboardRepo = {
-      assertOrderChecklistComplete: jest.fn(async () => ({
-        ok: false,
-        code: "FULFILLMENT_CHECKLIST_INCOMPLETE",
-        message: "old generic message",
-        summary: { total: 1, checked: 0, unchecked: 1, complete: false },
-      })),
-    };
+  test("ready-for-pickup notification does not replace quantity-aware handoffs with a checklist gate", async () => {
     const service = new FulfillmentService({
-      dashboardRepo: fakeDashboardRepo as any,
+      dashboardRepo: {} as any,
       shipmentRepo: {} as any,
       pickupRepo: {} as any,
       dbInstance: {} as any,
     });
+    const requireChecklist = jest.spyOn(service as any, "requireChecklistComplete");
+    jest.spyOn(service, "createOrGetPickupTicket").mockResolvedValue({ id: "ticket-1" } as any);
+    jest.spyOn(service, "markPickupReady").mockResolvedValue({ billingAutomation: null } as any);
+    jest.spyOn(service, "getOrderDetail").mockResolvedValue({ orderId: "order-1", status: "READY_FOR_PICKUP" } as any);
 
-    await expect(service.markOrderReadyForPickup("org-1", "order-1", {}, "user-1", "manager")).rejects.toMatchObject({
-      status: 409,
-      code: "FULFILLMENT_CHECKLIST_INCOMPLETE",
-      message: "Verify all fulfillment checklist items before marking ready for pickup.",
-    });
+    await expect(service.markOrderReadyForPickup("org-1", "order-1", {}, "user-1", "manager")).resolves.toMatchObject({ orderId: "order-1" });
+    expect(requireChecklist).not.toHaveBeenCalled();
   });
 
-  test("mark shipped rejects allocations beyond the verified ready quantity", async () => {
+  test("mark shipped uses the canonical produced cap rather than a manual verification quantity", async () => {
     const fakeShipmentRepo = {
       getShipmentById: jest.fn(async () => ({
         id: "shipment-1",
@@ -254,31 +247,26 @@ describe("fulfillment operational workflow helpers", () => {
         orders: [{ orderId: "order-1", orderState: "production_complete", orderStatus: "in_production", orderCanceledAt: null }],
         items: [{ orderId: "order-1", orderLineItemId: "line-1", quantity: 1 }],
       })),
-      markShipped: jest.fn(),
+      markShipped: jest.fn(async () => ({ ok: true, shipment: { id: "shipment-1" } })),
     };
     const fakeDashboardRepo = {
       getOrdersForCombinedShipmentValidation: jest.fn(async () => [{ id: "order-1", shippingMethod: "ship" }]),
+      logChecklistVerified: jest.fn(async () => undefined),
       listLineEligibility: jest.fn(async () => [{
         id: "line-1",
         orderId: "order-1",
         projection: { requiresFulfillment: true, eligibleQuantity: 1, shippedQuantity: 0 },
       }]),
     };
-    const select = jest.fn()
-      .mockImplementationOnce(() => selectChain([{ settings: { preferences: { fulfillment: { verificationPolicy: "strict_separate_verification" } } } }]))
-      .mockImplementationOnce(() => selectChain([{ lineItemId: "line-1", fulfilledQuantity: 0 }]));
+    const select = jest.fn().mockImplementationOnce(() => selectChain([{ settings: { preferences: { fulfillment: { verificationPolicy: "strict_separate_verification" } } } }]));
     const service = new FulfillmentService({
       dashboardRepo: fakeDashboardRepo as any,
       shipmentRepo: fakeShipmentRepo as any,
       pickupRepo: {} as any,
       dbInstance: { select } as any,
+      billingAutomationService: { ensureDraftInvoiceForOrderTrigger: jest.fn(async () => ({ status: "skipped" })) } as any,
     });
-
-    await expect(service.markShipmentShipped("org-1", "shipment-1", "user-1")).rejects.toMatchObject({
-      status: 409,
-      code: "QTY_EXCEEDS_READY",
-      message: "Shipment quantity exceeds the verified production-ready quantity for a line item.",
-    });
-    expect(fakeShipmentRepo.markShipped).not.toHaveBeenCalled();
+    await expect(service.markShipmentShipped("org-1", "shipment-1", "user-1")).resolves.toMatchObject({ id: "shipment-1" });
+    expect(fakeShipmentRepo.markShipped).toHaveBeenCalled();
   });
 });

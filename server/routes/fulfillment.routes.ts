@@ -445,7 +445,11 @@ export function registerFulfillmentRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       const parsed = pickupHandoffSchema.parse(req.body || {});
-      const data = await canonicalFulfillmentOperations.recordPickupHandoff(organizationId, req.params.ticketId, parsed, getUserId(req.user) || null);
+      const idempotencyHeader = String(req.get('Idempotency-Key') || '').trim();
+      const data = await canonicalFulfillmentOperations.recordPickupHandoff(organizationId, req.params.ticketId, {
+        ...parsed,
+        clientRequestId: idempotencyHeader || parsed.clientRequestId,
+      }, getUserId(req.user) || null);
       return res.json({ success: true, data, message: data.terminal ? 'Pickup completed' : 'Partial pickup recorded' });
     } catch (error: any) {
       if (error?.name === 'ZodError') return res.status(400).json({ success: false, message: 'Invalid pickup handoff payload', code: 'VALIDATION_ERROR' });

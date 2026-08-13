@@ -5612,12 +5612,15 @@ export const pickupHandoffs = pgTable("pickup_handoffs", {
   pickupTicketId: varchar("pickup_ticket_id").notNull().references(() => pickupTickets.id, { onDelete: 'cascade' }),
   orderId: varchar("order_id").notNull().references(() => orders.id, { onDelete: 'cascade' }),
   handedOffByUserId: varchar("handed_off_by_user_id").references(() => users.id, { onDelete: 'set null' }),
+  /** Client supplied replay key; nullable for historical handoffs. */
+  clientRequestId: varchar("client_request_id", { length: 128 }),
   notes: text("notes"),
   handedOffAt: timestamp("handed_off_at", { withTimezone: true }).defaultNow().notNull(),
   createdAt: timestamp("created_at", { withTimezone: true }).defaultNow().notNull(),
 }, (table) => [
   index("pickup_handoffs_org_order_idx").on(table.organizationId, table.orderId),
   index("pickup_handoffs_ticket_idx").on(table.pickupTicketId),
+  uniqueIndex("pickup_handoffs_ticket_request_uidx").on(table.organizationId, table.pickupTicketId, table.clientRequestId).where(sql`${table.clientRequestId} IS NOT NULL`),
 ]);
 
 /** Per-line quantities for one immutable pickup handoff. */

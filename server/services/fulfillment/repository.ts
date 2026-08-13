@@ -936,6 +936,7 @@ export class PickupRepo {
   async recordPartialPickup(orgId: string, ticketId: string, payload: {
     items: Array<{ orderLineItemId: string; quantity: number }>;
     notes?: string | null;
+    clientRequestId?: string | null;
   }, actorUserId?: string | null) {
     return this.dbInstance.transaction(async (tx) => {
       const [ticket] = await tx.select().from(pickupTickets).where(and(
@@ -945,6 +946,19 @@ export class PickupRepo {
       if (ticket.status !== 'READY_FOR_PICKUP') return { ok: false as const, code: 'INVALID_STATE', message: 'Only READY_FOR_PICKUP tickets can record a handoff' };
 
       await tx.execute(sql`SELECT ${orderLineItems.id} FROM ${orderLineItems} WHERE ${orderLineItems.orderId} = ${ticket.orderId} FOR UPDATE`);
+      // The line lock serializes concurrent pickup/shipment operations. Check
+      // the replay key after taking it so a retry cannot append a second
+      // immutable handoff while the first request is committing.
+      if (payload.clientRequestId) {
+        const [existing] = await tx.select().from(pickupHandoffs).where(and(
+          eq(pickupHandoffs.organizationId, orgId),
+          eq(pickupHandoffs.pickupTicketId, ticketId),
+          eq(pickupHandoffs.clientRequestId, payload.clientRequestId),
+        )).limit(1);
+        if (existing) {
+          return { ok: true as const, ticket, handoff: existing, terminal: ticket.status === 'PICKED_UP', replayed: true };
+        }
+      }
       const lines = await tx.select({
         id: orderLineItems.id, quantity: orderLineItems.quantity, workflowState: orderLineItems.workflowState,
         lifecycleStatus: orderLineItems.status, productionBypassed: orderLineItems.productionBypassed,
@@ -973,22 +987,18 @@ export class PickupRepo {
       const produced = new Map(producedRows.map((row) => [row.id, Number(row.quantity || 0)]));
       const shipped = new Map(shippedRows.map((row) => [row.id, Number(row.quantity || 0)]));
       const picked = new Map(pickedRows.map((row) => [row.id, Number(row.quantity || 0)]));
-      const verifiedRows = await tx.select({ lineItemId: fulfillmentChecklistItems.lineItemId, quantity: fulfillmentChecklistItems.fulfilledQuantity })
-        .from(fulfillmentChecklistItems).where(and(eq(fulfillmentChecklistItems.organizationId, orgId), eq(fulfillmentChecklistItems.orderId, ticket.orderId)));
-      const verified = new Map(verifiedRows.map((row) => [row.lineItemId, Number(row.quantity || 0)]));
       const projections = lines.map((line) => resolveFulfillmentLineQuantity({
         ...line, orderedQuantity: Number(line.quantity || 0), productionCompleteQuantity: produced.get(line.id) ?? 0,
         shippedQuantity: shipped.get(line.id) ?? 0, pickedUpQuantity: picked.get(line.id) ?? 0,
       }));
       for (const [lineItemId, handoffQuantity] of Array.from(requested.entries())) {
         const projection = projections[lines.findIndex((line) => line.id === lineItemId)];
-        const verifiedAvailable = Math.max(0, (verified.get(lineItemId) ?? 0) - projection.fulfilledQuantity);
-        if (!projection?.requiresFulfillment || handoffQuantity > projection.eligibleQuantity || handoffQuantity > verifiedAvailable) {
+        if (!projection?.requiresFulfillment || handoffQuantity > projection.eligibleQuantity) {
           return { ok: false as const, code: 'QTY_EXCEEDS_READY', message: 'Pickup quantity exceeds the usable produced quantity for a line item.' };
         }
       }
       const safeActorUserId = await resolveExistingActorUserId(tx, actorUserId);
-      const [handoff] = await tx.insert(pickupHandoffs).values({ organizationId: orgId, pickupTicketId: ticketId, orderId: ticket.orderId, handedOffByUserId: safeActorUserId, notes: payload.notes ?? null }).returning();
+      const [handoff] = await tx.insert(pickupHandoffs).values({ organizationId: orgId, pickupTicketId: ticketId, orderId: ticket.orderId, handedOffByUserId: safeActorUserId, notes: payload.notes ?? null, clientRequestId: payload.clientRequestId ?? null }).returning();
       await tx.insert(pickupHandoffItems).values(Array.from(requested.entries()).map(([orderLineItemId, quantity]) => ({ organizationId: orgId, pickupHandoffId: handoff.id, orderId: ticket.orderId, orderLineItemId, quantity })));
       const allFulfilled = projections.every((projection, index) => !projection.requiresFulfillment || projection.remainingQuantity - (requested.get(lines[index].id) ?? 0) <= 0);
       const now = new Date();
@@ -2064,6 +2074,39 @@ export class FulfillmentDashboardRepo {
       .where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.orderId, orderId)))
       .limit(1);
 
+    const handoffRows = pickupTicket
+      ? await this.dbInstance.select({
+        id: pickupHandoffs.id,
+        handedOffAt: pickupHandoffs.handedOffAt,
+        handedOffByUserId: pickupHandoffs.handedOffByUserId,
+        notes: pickupHandoffs.notes,
+        actorFirstName: users.firstName,
+        actorLastName: users.lastName,
+      }).from(pickupHandoffs)
+        .leftJoin(users, eq(users.id, pickupHandoffs.handedOffByUserId))
+        .where(and(eq(pickupHandoffs.organizationId, orgId), eq(pickupHandoffs.pickupTicketId, pickupTicket.id), eq(pickupHandoffs.orderId, orderId)))
+        .orderBy(desc(pickupHandoffs.handedOffAt))
+      : [];
+    const handoffIds = handoffRows.map((handoff) => handoff.id);
+    const handoffItems = handoffIds.length
+      ? await this.dbInstance.select({
+        pickupHandoffId: pickupHandoffItems.pickupHandoffId,
+        orderLineItemId: pickupHandoffItems.orderLineItemId,
+        quantity: pickupHandoffItems.quantity,
+        productName: products.name,
+        description: orderLineItems.description,
+      }).from(pickupHandoffItems)
+        .innerJoin(orderLineItems, eq(orderLineItems.id, pickupHandoffItems.orderLineItemId))
+        .leftJoin(products, eq(products.id, orderLineItems.productId))
+        .where(and(eq(pickupHandoffItems.organizationId, orgId), eq(pickupHandoffItems.orderId, orderId), inArray(pickupHandoffItems.pickupHandoffId, handoffIds)))
+      : [];
+    const handoffItemsByHandoffId = new Map<string, typeof handoffItems>();
+    for (const item of handoffItems) {
+      const rows = handoffItemsByHandoffId.get(item.pickupHandoffId) ?? [];
+      rows.push(item);
+      handoffItemsByHandoffId.set(item.pickupHandoffId, rows);
+    }
+
     const shipmentRows = await this.dbInstance
       .select({
         id: shipments.id,
@@ -2224,6 +2267,19 @@ export class FulfillmentDashboardRepo {
         contactEmail: pickupTicket.contactEmail ?? null,
         contactPhone: pickupTicket.contactPhone ?? null,
       } : null,
+      pickupHandoffs: handoffRows.map((handoff) => ({
+        id: handoff.id,
+        handedOffAt: toIso(handoff.handedOffAt) || new Date().toISOString(),
+        handedOffByUserId: handoff.handedOffByUserId ?? null,
+        handedOffByName: [handoff.actorFirstName, handoff.actorLastName].filter(Boolean).join(' ') || null,
+        notes: handoff.notes ?? null,
+        items: (handoffItemsByHandoffId.get(handoff.id) ?? []).map((item) => ({
+          orderLineItemId: item.orderLineItemId,
+          quantity: Number(item.quantity),
+          productName: item.productName ?? null,
+          description: item.description ?? null,
+        })),
+      })),
       shipments: uniqueShipmentRows.map((shipment, index) => ({
         id: shipment.id,
         shipmentReference: shipmentDetails[index]?.shipmentReference ?? null,

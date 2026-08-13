@@ -84,6 +84,7 @@ export const pickupHandoffSchema = z.object({
     quantity: z.coerce.number().int().positive(),
   })).min(1),
   notes: z.string().trim().max(2000).optional().nullable(),
+  clientRequestId: z.string().trim().min(1).max(128).optional(),
 });
 
 export const fulfillmentNoteSchema = z.object({

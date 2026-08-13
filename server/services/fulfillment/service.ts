@@ -8,7 +8,6 @@ import { isCanceledOrder } from '@shared/operationalState';
 import { isFulfillmentQueueEligibleOrder } from './eligibility';
 import { billingInvoiceAutomationService, type BillingInvoiceAutomationResult } from '../billingInvoiceAutomation';
 import { fulfillmentPackingModeFromSettings, fulfillmentVerificationPolicyFromSettings, hasExplicitSplitAllocations, parseShipmentDate, type FulfillmentPackingMode, type FulfillmentVerificationPolicy } from '@shared/fulfillmentVerification';
-import { resolveFulfillmentAllocatableQuantity } from '@shared/fulfillmentReadiness';
 
 export const FULFILLMENT_REVERT_STATUS_PERMISSION = 'fulfillment.revert_status';
 
@@ -98,7 +97,6 @@ export class FulfillmentService {
     contactEmail?: string | null;
     contactPhone?: string | null;
   }, actorUserId?: string | null, actorUserRole?: string | null) {
-    await this.requireChecklistComplete(orgId, orderId, 'ready_for_pickup');
     const ticket = await this.createOrGetPickupTicket(orgId, orderId, actorUserId);
     const pickupReadyResult = await this.markPickupReady(orgId, ticket.id, payload, actorUserId, actorUserRole);
     const detail = await this.getOrderDetail(orgId, orderId, actorUserRole);
@@ -127,12 +125,6 @@ export class FulfillmentService {
     if (!result.ok) {
       if (result.code === 'NOT_FOUND') throw new FulfillmentHttpError(404, result.message, result.code);
       throw new FulfillmentHttpError(400, result.message, result.code);
-    }
-    if (await this.getPackingMode(orgId) === 'simple_verified_packing') {
-      const drafts = await this.dbInstance.select({ shipmentId: shipmentOrders.shipmentId })
-        .from(shipmentOrders).innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
-        .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.orderId, orderId), eq(shipments.organizationId, orgId), eq(shipments.status, 'DRAFT')));
-      for (const draft of drafts) await this.syncSimpleShipmentAllocations(orgId, draft.shipmentId, actorUserId);
     }
     return this.getOrderDetail(orgId, orderId);
   }
@@ -384,14 +376,6 @@ export class FulfillmentService {
     if (!lineItemIds.length) return;
     const lines = await this.dashboardRepo.listLineEligibility(orgId, { lineItemIds });
     const byId = new Map(lines.map((line) => [line.id, line]));
-    const checklistRows = await this.dbInstance.select({
-      lineItemId: fulfillmentChecklistItems.lineItemId,
-      fulfilledQuantity: fulfillmentChecklistItems.fulfilledQuantity,
-    }).from(fulfillmentChecklistItems).where(and(
-      eq(fulfillmentChecklistItems.organizationId, orgId),
-      inArray(fulfillmentChecklistItems.lineItemId, lineItemIds),
-    ));
-    const verifiedByLine = new Map(checklistRows.map((row) => [row.lineItemId, Number(row.fulfilledQuantity || 0)]));
     const quantityByLine = new Map<string, number>();
     for (const item of items) quantityByLine.set(item.orderLineItemId, (quantityByLine.get(item.orderLineItemId) ?? 0) + Number(item.quantity));
     for (const [lineItemId, quantity] of quantityByLine) {
@@ -399,7 +383,7 @@ export class FulfillmentService {
       if (!line || line.orderId !== items.find((item) => item.orderLineItemId === lineItemId)?.orderId || !line.projection.requiresFulfillment) {
         throw new FulfillmentHttpError(409, 'Shipment quantities require a physical fulfillment line item.', 'LINE_NOT_FULFILLABLE');
       }
-      const allowed = resolveFulfillmentAllocatableQuantity(line.projection, verifiedByLine.get(lineItemId) ?? 0);
+      const allowed = line.projection.eligibleQuantity;
       if (quantity > allowed) throw new FulfillmentHttpError(409, 'Shipment quantity exceeds the verified production-ready quantity for a line item.', 'QTY_EXCEEDS_READY');
     }
   }
@@ -412,14 +396,10 @@ export class FulfillmentService {
     const orderIds = Array.from(new Set(shipment.orders.map((order: any) => String(order.orderId)).filter(Boolean)));
     if (!orderIds.length) return;
     const lines = await this.dashboardRepo.listLineEligibility(orgId, { orderIds });
-    const lineItemIds = lines.map((line) => line.id);
-    const checklistRows = lineItemIds.length ? await this.dbInstance.select({ lineItemId: fulfillmentChecklistItems.lineItemId, fulfilledQuantity: fulfillmentChecklistItems.fulfilledQuantity })
-      .from(fulfillmentChecklistItems).where(and(eq(fulfillmentChecklistItems.organizationId, orgId), inArray(fulfillmentChecklistItems.lineItemId, lineItemIds))) : [];
-    const fulfilledByLine = new Map(checklistRows.map((row) => [row.lineItemId, Number(row.fulfilledQuantity || 0)]));
     let defaultPackage = shipment.packages[0] ?? null;
     if (!defaultPackage) defaultPackage = await this.createShipmentPackage(orgId, shipmentId, { actorUserId });
     const items = lines.flatMap((line) => {
-      const allocatableQuantity = resolveFulfillmentAllocatableQuantity(line.projection, fulfilledByLine.get(line.id) ?? 0);
+      const allocatableQuantity = line.projection.eligibleQuantity;
       return line.projection.requiresFulfillment && allocatableQuantity > 0
         ? [{ orderId: line.orderId, orderLineItemId: line.id, quantity: allocatableQuantity, packageId: defaultPackage!.id }]
         : [];
@@ -765,6 +745,7 @@ export class FulfillmentService {
   async recordPickupHandoff(orgId: string, ticketId: string, payload: {
     items: Array<{ orderLineItemId: string; quantity: number }>;
     notes?: string | null;
+    clientRequestId?: string | null;
   }, actorUserId?: string | null) {
     const [ticketWithOrder] = await this.dbInstance.select({
       orderId: pickupTickets.orderId, shippingMethod: orders.shippingMethod, state: orders.state, status: orders.status, canceledAt: orders.canceledAt,

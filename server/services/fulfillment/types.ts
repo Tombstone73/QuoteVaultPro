@@ -152,6 +152,14 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     contactEmail: string | null;
     contactPhone: string | null;
   } | null;
+  pickupHandoffs: Array<{
+    id: string;
+    handedOffAt: string;
+    handedOffByUserId: string | null;
+    handedOffByName: string | null;
+    notes: string | null;
+    items: Array<{ orderLineItemId: string; quantity: number; productName: string | null; description: string | null }>;
+  }>;
   shipments: Array<{
     id: string;
     shipmentReference: string | null;

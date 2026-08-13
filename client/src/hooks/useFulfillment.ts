@@ -149,6 +149,14 @@ export interface FulfillmentDetail extends FulfillmentQueueRow {
     contactEmail: string | null;
     contactPhone: string | null;
   } | null;
+  pickupHandoffs: Array<{
+    id: string;
+    handedOffAt: string;
+    handedOffByUserId: string | null;
+    handedOffByName: string | null;
+    notes: string | null;
+    items: Array<{ orderLineItemId: string; quantity: number; productName: string | null; description: string | null }>;
+  }>;
   shipments: Array<{
     id: string;
     shipmentReference: string | null;
@@ -515,18 +523,25 @@ export function useCreatePickupTicketMutation() {
   });
 }
 
-export function useMarkPickupReadyMutation(ticketId: string, orderId?: string) {
+export function useMarkPickupReadyMutation(orderId?: string) {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: (payload: {
+      ticketId: string;
       stagingLocation?: string | null;
       pickupNotes?: string | null;
       contactName?: string | null;
       contactEmail?: string | null;
       contactPhone?: string | null;
-    }) => apiCall<any>(`/api/fulfillment/pickup/${ticketId}/ready`, {
+    }) => apiCall<any>(`/api/fulfillment/pickup/${payload.ticketId}/ready`, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({
+        stagingLocation: payload.stagingLocation,
+        pickupNotes: payload.pickupNotes,
+        contactName: payload.contactName,
+        contactEmail: payload.contactEmail,
+        contactPhone: payload.contactPhone,
+      }),
     }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });
@@ -540,11 +555,13 @@ export function useMarkPickupPickedUpMutation(ticketId: string, orderId?: string
   });
 }
 
-export function useRecordPickupHandoffMutation(ticketId: string, orderId?: string) {
+export function useRecordPickupHandoffMutation(orderId?: string) {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: (payload: { items: Array<{ orderLineItemId: string; quantity: number }>; notes?: string | null }) => apiCall<any>(`/api/fulfillment/pickup/${ticketId}/handoffs`, {
-      method: "POST", body: JSON.stringify(payload),
+    mutationFn: (payload: { ticketId: string; items: Array<{ orderLineItemId: string; quantity: number }>; notes?: string | null; clientRequestId?: string }) => apiCall<any>(`/api/fulfillment/pickup/${payload.ticketId}/handoffs`, {
+      method: "POST",
+      headers: payload.clientRequestId ? { "Idempotency-Key": payload.clientRequestId } : undefined,
+      body: JSON.stringify({ items: payload.items, notes: payload.notes, clientRequestId: payload.clientRequestId }),
     }),
     onSuccess: () => invalidateFulfillment(queryClient, orderId),
   });

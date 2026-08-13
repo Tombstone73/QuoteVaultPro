@@ -48,6 +48,22 @@ describe("canonical fulfillment quantity projection", () => {
     });
   });
 
+  test("does not turn a lifecycle-complete line into unproduced inventory", () => {
+    expect(resolveFulfillmentLineQuantity({
+      workflowIntent: "standard_production",
+      requiresProductionJob: true,
+      workflowState: "completed",
+      lifecycleStatus: "complete",
+      orderedQuantity: 1000,
+      productionCompleteQuantity: 600,
+    })).toMatchObject({
+      productionCompleteQuantity: 600,
+      eligibleQuantity: 600,
+      blockedQuantity: 400,
+      status: "partially_ready",
+    });
+  });
+
   test("shares the produced cap between shipment and pickup handoffs", () => {
     const line = resolveFulfillmentLineQuantity({ orderedQuantity: 400, productionCompleteQuantity: 400, shippedQuantity: 150, pickedUpQuantity: 100 });
     expect(line).toMatchObject({ fulfilledQuantity: 250, eligibleQuantity: 150, blockedQuantity: 0 });

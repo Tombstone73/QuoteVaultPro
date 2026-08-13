@@ -142,7 +142,10 @@ export function resolveFulfillmentLineQuantity(input: {
   const productionRequired = workflowIntent !== "fulfillment_only" && input.requiresProductionJob !== false && input.productionBypassed !== true;
   const lifecycleReadiness = resolveFulfillmentLineReadiness(input);
   const productionCompleteQuantity = productionRequired
-    ? Math.min(orderedQuantity, lifecycleReadiness.eligible ? orderedQuantity : quantity(input.productionCompleteQuantity))
+    // Successful production-run quantity is the physical ceiling.  Lifecycle
+    // state can explain why a line is eligible, but must never manufacture the
+    // missing quantity when a run is only partially complete.
+    ? Math.min(orderedQuantity, quantity(input.productionCompleteQuantity))
     : orderedQuantity;
   const eligibleQuantity = Math.max(0, productionCompleteQuantity - fulfilledQuantity);
   const blockedQuantity = Math.max(0, remainingQuantity - eligibleQuantity);
