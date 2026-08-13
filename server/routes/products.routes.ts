@@ -14,6 +14,8 @@ import { storage } from "../storage";
 import { db } from "../db";
 import {
   products,
+  productOptions,
+  productVariants,
   productIntakeSessions,
   productDesignConfigs,
   pbv2TreeVersions,
@@ -377,7 +379,7 @@ export function registerProductRoutes(
     }
   });
 
-  app.get("/api/products/csv-template", isAuthenticated, isAdmin, async (req, res) => {
+  app.get("/api/products/csv-template", isAuthenticated, tenantContext, isAdmin, async (req, res) => {
     try {
       const templateData = [
         { Type: 'PRODUCT', 'Product Name': 'Business Cards', 'Product Description': 'High-quality business cards', 'Pricing Formula': 'basePrice * quantity', 'Measurement Mode': 'dimensions_required', 'Variant Label': 'Media Type', Category: 'Cards', 'Store URL': 'https://example.com/business-cards', 'Show Store Link': 'true', 'Thumbnail URLs': '', 'Is Active': 'true', 'Variant Name': '', 'Variant Description': '', 'Base Price Per Sqft': '', 'Is Default Variant': '', 'Variant Display Order': '', 'Option Name': '', 'Option Description': '', 'Option Type': '', 'Default Value': '', 'Default Selection': '', 'Is Default Enabled': '', 'Setup Cost': '', 'Price Formula': '', 'Parent Option Name': '', 'Option Display Order': '' },
@@ -2338,8 +2340,10 @@ export function registerProductRoutes(
     }
   });
 
-  app.post("/api/products/:id/options", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/products/:id/options", isAuthenticated, tenantContext, isAdmin, async (req, res) => {
     try {
+      const product = await storage.getProductById(getRequestOrganizationId(req), req.params.id);
+      if (!product) return res.status(404).json({ message: "Product not found" });
       const optionData = insertProductOptionSchema.parse({
         ...req.body,
         productId: req.params.id,
@@ -2355,8 +2359,12 @@ export function registerProductRoutes(
     }
   });
 
-  app.patch("/api/products/:productId/options/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.patch("/api/products/:productId/options/:id", isAuthenticated, tenantContext, isAdmin, async (req, res) => {
     try {
+      const product = await storage.getProductById(getRequestOrganizationId(req), req.params.productId);
+      if (!product) return res.status(404).json({ message: "Product not found" });
+      const [existingOption] = await db.select({ id: productOptions.id }).from(productOptions).where(and(eq(productOptions.id, req.params.id), eq(productOptions.productId, req.params.productId))).limit(1);
+      if (!existingOption) return res.status(404).json({ message: "Product option not found" });
       const optionData = updateProductOptionSchema.parse({
         ...req.body,
         id: req.params.id,
@@ -2372,8 +2380,12 @@ export function registerProductRoutes(
     }
   });
 
-  app.delete("/api/products/:productId/options/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.delete("/api/products/:productId/options/:id", isAuthenticated, tenantContext, isAdmin, async (req, res) => {
     try {
+      const product = await storage.getProductById(getRequestOrganizationId(req), req.params.productId);
+      if (!product) return res.status(404).json({ message: "Product not found" });
+      const [existingOption] = await db.select({ id: productOptions.id }).from(productOptions).where(and(eq(productOptions.id, req.params.id), eq(productOptions.productId, req.params.productId))).limit(1);
+      if (!existingOption) return res.status(404).json({ message: "Product option not found" });
       await storage.deleteProductOption(req.params.id);
       res.json({ message: "Product option deleted successfully" });
     } catch (error) {
@@ -2396,8 +2408,10 @@ export function registerProductRoutes(
     }
   });
 
-  app.post("/api/products/:id/variants", isAuthenticated, isAdmin, async (req, res) => {
+  app.post("/api/products/:id/variants", isAuthenticated, tenantContext, isAdmin, async (req, res) => {
     try {
+      const product = await storage.getProductById(getRequestOrganizationId(req), req.params.id);
+      if (!product) return res.status(404).json({ message: "Product not found" });
       const variantData = insertProductVariantSchema.parse({
         ...req.body,
         productId: req.params.id,
@@ -2413,8 +2427,12 @@ export function registerProductRoutes(
     }
   });
 
-  app.patch("/api/products/:productId/variants/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.patch("/api/products/:productId/variants/:id", isAuthenticated, tenantContext, isAdmin, async (req, res) => {
     try {
+      const product = await storage.getProductById(getRequestOrganizationId(req), req.params.productId);
+      if (!product) return res.status(404).json({ message: "Product not found" });
+      const [existingVariant] = await db.select({ id: productVariants.id }).from(productVariants).where(and(eq(productVariants.id, req.params.id), eq(productVariants.productId, req.params.productId))).limit(1);
+      if (!existingVariant) return res.status(404).json({ message: "Product variant not found" });
       const variantData = updateProductVariantSchema.parse({
         ...req.body,
         id: req.params.id,
@@ -2430,8 +2448,12 @@ export function registerProductRoutes(
     }
   });
 
-  app.delete("/api/products/:productId/variants/:id", isAuthenticated, isAdmin, async (req, res) => {
+  app.delete("/api/products/:productId/variants/:id", isAuthenticated, tenantContext, isAdmin, async (req, res) => {
     try {
+      const product = await storage.getProductById(getRequestOrganizationId(req), req.params.productId);
+      if (!product) return res.status(404).json({ message: "Product not found" });
+      const [existingVariant] = await db.select({ id: productVariants.id }).from(productVariants).where(and(eq(productVariants.id, req.params.id), eq(productVariants.productId, req.params.productId))).limit(1);
+      if (!existingVariant) return res.status(404).json({ message: "Product variant not found" });
       await storage.deleteProductVariant(req.params.id);
       res.json({ message: "Product variant deleted successfully" });
     } catch (error) {

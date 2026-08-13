@@ -31,8 +31,10 @@ export default function SelectOrgPage() {
 
   const selectMutation = useMutation({
     mutationFn: (orgId: string) => setActiveOrg(orgId),
-    onSuccess: () => {
-      queryClient.invalidateQueries();
+    onSuccess: async (result) => {
+      if (!result.success) return;
+      await queryClient.cancelQueries();
+      queryClient.clear();
       navigate("/dashboard", { replace: true });
     },
   });

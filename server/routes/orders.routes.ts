@@ -2619,7 +2619,7 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
             const userId = getUserId(req.user);
-            const userRole = req.user?.role || 'customer';
+            const userRole = String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase();
 
             // Safe per-order billing readiness policy updates
             if (req.body.billingReadyPolicy !== undefined) {
@@ -5760,7 +5760,7 @@ export async function registerOrderRoutes(
 
             const { quoteId } = req.params;
             const { poNumber, dueDate, promisedDate, priority, notesInternal, customerId, contactId } = req.body;
-            const userRole = req.user.role || 'employee';
+            const userRole = String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase();
 
             console.log('[CONVERT QUOTE TO ORDER] Starting conversion:', {
                 quoteId,
@@ -5897,7 +5897,7 @@ export async function registerOrderRoutes(
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
-            if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
+            if (!['owner', 'admin', 'manager'].includes(String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase())) {
                 return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
             }
 

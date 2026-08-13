@@ -33,9 +33,11 @@ export function OrgSwitcher() {
 
   const switchMutation = useMutation({
     mutationFn: (orgId: string) => setActiveOrg(orgId),
-    onSuccess: () => {
-      // Invalidate all cached queries so org-scoped data refreshes
-      queryClient.invalidateQueries();
+    onSuccess: async (result) => {
+      if (!result.success) return;
+      // Permission and tenant data must not render from the previous active org.
+      await queryClient.cancelQueries();
+      queryClient.clear();
       navigate("/dashboard", { replace: true });
     },
   });

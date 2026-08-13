@@ -2,7 +2,7 @@ import { useState } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { usePageVisible } from "@/hooks/usePageVisible";
 import { useNavigate } from "react-router-dom";
-import { useAuth } from "@/hooks/useAuth";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
@@ -42,7 +42,7 @@ interface PendingApproval {
 export default function ApprovalsPage() {
   const navigate = useNavigate();
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { isApprover, isLoading: isRoleLoading } = useActiveOrganizationRole();
   const { preferences } = useOrgPreferences();
   const queryClient = useQueryClient();
   const isPageVisible = usePageVisible();
@@ -50,8 +50,6 @@ export default function ApprovalsPage() {
   const [approveAndSendingId, setApproveAndSendingId] = useState<string | null>(null);
 
   // Check permissions
-  const userRole = (user?.role || '').toLowerCase();
-  const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
   const requireApproval = preferences?.quotes?.requireApproval || false;
 
   // Fetch pending approvals
@@ -71,7 +69,7 @@ export default function ApprovalsPage() {
         count: number;
       }>;
     },
-    enabled: isApprover && requireApproval,
+    enabled: !isRoleLoading && isApprover && requireApproval,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
     refetchInterval: () => (isPageVisible ? 120_000 : false),

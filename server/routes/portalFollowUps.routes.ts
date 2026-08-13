@@ -23,10 +23,8 @@ async function requireInternalStaff(req: Request, res: Response, next: NextFunct
   try {
     const organizationId = getRequestOrganizationId(req);
     const userId = getUserId(req);
-    const user = (req as any).user || {};
     const orgRole = String((req as any).orgRole || "").toLowerCase();
-    const globalRole = String(user.role || "").toLowerCase();
-    const elevated = Boolean(user.isAdmin) || ["owner", "admin", "manager"].includes(orgRole) || ["owner", "admin", "manager"].includes(globalRole);
+    const elevated = ["owner", "admin", "manager"].includes(orgRole);
 
     if (!userId) {
       return res.status(401).json({ success: false, message: "Unauthorized" });

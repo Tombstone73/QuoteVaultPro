@@ -108,19 +108,24 @@ console.log(`[Auth] Selected provider: ${authProvider} (NODE_ENV=${nodeEnv}, REP
 const { setupAuth, isAuthenticated, isAdmin } = auth;
 
 // Role-based access control middleware
-const isOwner = (req: any, res: any, next: any) => {
-  if (req.user?.role === 'owner') {
+// Tenant route guards. tenantContext resolves req.orgRole from the active
+// user_organizations membership; global users.role/users.isAdmin are identity
+// fields and must not grant or suppress authority inside a tenant.
+const requireOrgOwner = (req: any, res: any, next: any) => {
+  if (String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase() === 'owner') {
     return next();
   }
-  return res.status(403).json({ message: "Access denied. Owner role required." });
+  return res.status(403).json({ message: "Access denied. Organization Owner role required." });
 };
 
-const isAdminOrOwner = (req: any, res: any, next: any) => {
-  if (hasAdminOrOwnerOperationalRole(req.user)) {
+const requireOrgAdminOrOwner = (req: any, res: any, next: any) => {
+  if (hasAdminOrOwnerOperationalRole(String(req.actorOrgRole ?? req.orgRole ?? ''))) {
     return next();
   }
-  return res.status(403).json({ message: "Access denied. Admin or Owner role required." });
+  return res.status(403).json({ message: "Access denied. Organization Admin or Owner role required." });
 };
+
+const requireOrgAdmin = requireOrgAdminOrOwner;
 
 // Org-scoped permission helpers.
 // NOTE: user_organizations.role is the authoritative org-scoped role.
@@ -336,10 +341,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerCustomerPortalAccessAdminRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
 
   // Attachment routes extracted to ./routes/attachments.routes.ts (do NOT re-add here)
-  await registerAttachmentRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  await registerAttachmentRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin, platformIsAdmin: isAdmin });
 
   // Order routes extracted to ./routes/orders.routes.ts (do NOT re-add here)
-  await registerOrderRoutes(app, { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner });
+  await registerOrderRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin, isAdminOrOwner: requireOrgAdminOrOwner });
 
   // MVP Invoicing + Payments routes extracted to ./routes/mvpInvoicing.routes.ts (do NOT re-add here)
   await registerMvpInvoicingRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
@@ -364,7 +369,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
 
   // Product routes extracted to ./routes/products.routes.ts (do NOT re-add here)
   // PBV2 pricing-preview routes restored and extracted to ./routes/products.routes.ts
-  registerProductRoutes(app, { isAuthenticated, isAdmin, isAdminOrOwner, requireOrgOwnerAdmin, tenantContext });
+  registerProductRoutes(app, { isAuthenticated, isAdmin: requireOrgAdmin, isAdminOrOwner: requireOrgAdminOrOwner, requireOrgOwnerAdmin, tenantContext });
   registerPbv2OptionGroupTemplateRoutes(app, { isAuthenticated, tenantContext });
 
 
@@ -373,7 +378,7 @@ export async function registerRoutes(app: Express): Promise<Server> {
   // Pricing Formulas routes extracted to ./routes/pricing.routes.ts (do NOT re-add here)
 
   // Quote routes extracted to ./routes/quotes.routes.ts (do NOT re-add here)
-  registerQuoteRoutes(app, { isAuthenticated, isAdmin, tenantContext });
+  registerQuoteRoutes(app, { isAuthenticated, isAdmin: requireOrgAdmin, tenantContext });
 
 
   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
@@ -417,10 +422,10 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerDebugRoutes(app, { isAuthenticated });
 
   // Pricing audit route (admin only, read-only)
-  registerPricingAuditRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  registerPricingAuditRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
 
   // Materials CSV import/export routes (admin only, staged workflow)
-  registerMaterialsImportExportRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  registerMaterialsImportExportRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
 
   const assertInternalUser = (req: any, res: any) => {
     if (isPortalCustomerIdentity(req.user)) {
@@ -435,22 +440,22 @@ export async function registerRoutes(app: Express): Promise<Server> {
   };
 
   // Proofing routes extracted to ./routes/proofing.routes.ts (do NOT re-add here)
-  registerProofingRoutes(app, { isAuthenticated, tenantContext, isAdmin, assertInternalUser });
+  registerProofingRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin, assertInternalUser });
   registerArtworkAccessRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
   registerLocalBridgeRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
   // Portal proof routes extracted to ./routes/portalProof.routes.ts (do NOT re-add here)
   registerPortalProofRoutes(app);
   // Production config routes extracted to ./routes/productionConfig.routes.ts (do NOT re-add here)
-  registerProductionConfigRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner, assertInternalUser });
-  registerPrinterProfileRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner });
+  registerProductionConfigRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner, assertInternalUser });
+  registerPrinterProfileRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner });
   // Production jobs routes extracted to ./routes/productionJobs.routes.ts (do NOT re-add here)
-  registerProductionJobsRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner, assertInternalUser });
+  registerProductionJobsRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner, assertInternalUser });
   registerProductionRunRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
   registerProductionAlertRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
   // Design queue routes extracted to ./routes/design.routes.ts (do NOT re-add here)
-  registerDesignRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner, assertInternalUser });
+  registerDesignRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner, assertInternalUser });
   // Prepress queue routes extracted to ./routes/prepress.routes.ts (do NOT re-add here)
-  registerPrepressQueueRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner, assertInternalUser });
+  registerPrepressQueueRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner, assertInternalUser });
   // Prepress file transport routes extracted to ./routes/prepressFiles.routes.ts (do NOT re-add here)
   registerPrepressFileRoutes(app, { isAuthenticated, tenantContext, assertInternalUser });
 
@@ -480,54 +485,54 @@ export async function registerRoutes(app: Express): Promise<Server> {
   registerOrderLineItemFileRoutes(app, { isAuthenticated, tenantContext });
 
   // Vendor and purchase order routes extracted to ./routes/procurement.routes.ts (do NOT re-add here)
-  registerProcurementRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner });
+  registerProcurementRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner });
 
   // QuickBooks integration routes extracted to ./routes/quickbooks.routes.ts (do NOT re-add here)
-  registerQuickBooksRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner });
+  registerQuickBooksRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner });
 
   // Stripe Connect integration routes extracted to ./routes/stripe.routes.ts (do NOT re-add here)
-  registerStripeRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner });
+  registerStripeRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner });
 
   // Payment provider settings + EPS gateway routes extracted to ./routes/paymentProvider.routes.ts.
-  registerPaymentProviderRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner });
+  registerPaymentProviderRoutes(app, { isAuthenticated, tenantContext, isAdminOrOwner: requireOrgAdminOrOwner });
 
   // Product Types + Global Variables routes extracted to ./routes/catalogSettings.routes.ts (do NOT re-add here)
-  registerCatalogSettingsRoutes(app, { isAuthenticated, tenantContext, isAdmin, requireOrgOwnerAdmin });
+  registerCatalogSettingsRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin, requireOrgOwnerAdmin });
 
   // Admin Storage Settings routes extracted to ./routes/adminStorage.routes.ts (do NOT re-add here)
-  registerAdminStorageRoutes(app, { isAuthenticated, tenantContext, isAdmin, requireOrgOwnerAdmin });
+  registerAdminStorageRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin, requireOrgOwnerAdmin });
 
   // Pricing Formulas, Pricing Rules, Formula Templates routes extracted to ./routes/pricing.routes.ts (do NOT re-add here)
-  registerPricingRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  registerPricingRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
 
   // Email Settings + Email Sending routes extracted to ./routes/email.routes.ts (do NOT re-add here)
-  registerEmailRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  registerEmailRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
 
   // Job Status Config + Line Item Workflow Transition + Jobs routes extracted to ./routes/jobs.routes.ts (do NOT re-add here)
   registerJobsRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin, assertInternalUser });
 
   // Timeline + Audit Logs routes extracted to ./routes/timeline.routes.ts (do NOT re-add here)
-  registerTimelineRoutes(app, { isAuthenticated, tenantContext, isOwner });
+  registerTimelineRoutes(app, { isAuthenticated, tenantContext, isOwner: requireOrgOwner });
 
   // Organization, List Settings, Org Danger Zone routes extracted to ./routes/organization.routes.ts (do NOT re-add here)
   registerOrganizationRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
 
   // Users + Admin Users routes extracted to ./routes/users.routes.ts (do NOT re-add here)
-  registerUsersRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin, requireOrgCanInvite, isAdminOrOwner });
+  registerUsersRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin, requireOrgCanInvite, isAdminOrOwner: requireOrgAdminOrOwner });
 
   // Company Settings routes extracted to ./routes/companySettings.routes.ts (do NOT re-add here)
   registerCompanySettingsRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
   registerAiFoundationRoutes(app, { isAuthenticated, tenantContext, requireOrgOwnerAdmin });
-  registerAssistantRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  registerAssistantRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
   registerAssistantExecutionRoutes(app, { isAuthenticated, tenantContext });
-  registerCustomerRelationsRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  registerCustomerRelationsRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
 
   // Customers + Enterprise Import Jobs routes extracted to ./routes/customers.routes.ts and ./routes/importJobs.routes.ts (do NOT re-add here)
-  registerCustomerRoutes(app, { isAuthenticated, tenantContext, isAdmin });
-  registerImportJobRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  registerCustomerRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
+  registerImportJobRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
 
   // Health, Dashboard, Media, and System Status routes extracted to ./routes/system.routes.ts (do NOT re-add here)
-  registerSystemRoutes(app, { isAuthenticated, tenantContext, isAdmin });
+  registerSystemRoutes(app, { isAuthenticated, tenantContext, isAdmin: requireOrgAdmin });
 
 
   // â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

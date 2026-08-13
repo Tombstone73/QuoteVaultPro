@@ -81,7 +81,7 @@ export function registerOrganizationRoutes(
 ): void {
   const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = middleware;
   const requireAdminToolsOwner = (req: any, res: any, next: any) => {
-    const role = req.actorOrgRole ?? req.orgRole ?? req.user?.orgRole ?? req.user?.role;
+    const role = req.actorOrgRole ?? req.orgRole;
     if (hasOwnerOnlyAdminToolsRole(role)) return next();
     return res.status(403).json({ message: "Access denied. Organization Owner role required for Admin Tools." });
   };
@@ -154,7 +154,7 @@ export function registerOrganizationRoutes(
       }
 
       // Only allow owners/admins to read preferences
-      const userRole = req.user?.role || 'customer';
+      const userRole = String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase();
       if (!['owner', 'admin'].includes(userRole)) {
         return res.status(403).json({ message: "Only owners and admins can view preferences" });
       }
@@ -239,7 +239,7 @@ export function registerOrganizationRoutes(
       }
 
       // Only allow owners/admins to update preferences
-      const userRole = req.user?.role || 'customer';
+      const userRole = String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase();
       if (!['owner', 'admin'].includes(userRole)) {
         return res.status(403).json({ message: "Only owners and admins can update preferences" });
       }
@@ -307,7 +307,7 @@ export function registerOrganizationRoutes(
         return res.status(403).json({ success: false, message: "No organization context" });
       }
 
-      const userRole = req.user?.role || 'customer';
+      const userRole = String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase();
       if (!['owner', 'admin'].includes(userRole)) {
         return res.status(403).json({ success: false, message: "Only owners and admins can update inbound email intake settings" });
       }
@@ -344,7 +344,7 @@ export function registerOrganizationRoutes(
       }
 
       // Only allow owners/admins to update preferences
-      const userRole = req.user?.role || 'customer';
+      const userRole = String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase();
       if (!['owner', 'admin'].includes(userRole)) {
         return res.status(403).json({ success: false, message: "Only owners and admins can update preferences" });
       }

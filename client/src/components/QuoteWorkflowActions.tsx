@@ -4,7 +4,7 @@
  */
 
 import { useState } from "react";
-import { useAuth } from "@/hooks/useAuth";
+import { useActiveOrganizationRole } from "@/hooks/useActiveOrganizationRole";
 import { useOrgPreferences } from "@/hooks/useOrgPreferences";
 import { Button } from "@/components/ui/button";
 import { 
@@ -56,7 +56,7 @@ export function QuoteWorkflowActions({
   className 
 }: QuoteWorkflowActionsProps) {
   const { toast } = useToast();
-  const { user } = useAuth();
+  const { isApprover: isInternalUser } = useActiveOrganizationRole();
   const { preferences, isLoading: prefsLoading } = useOrgPreferences();
   const queryClient = useQueryClient();
   const [dialogOpen, setDialogOpen] = useState(false);
@@ -65,8 +65,6 @@ export function QuoteWorkflowActions({
   const [isApproveAndSending, setIsApproveAndSending] = useState(false);
   
   // Check if user can approve quotes (case-insensitive role check)
-  const userRole = (user?.role || '').toLowerCase();
-  const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
   const requireApproval = preferences?.quotes?.requireApproval || false;
 
   const transitionMutation = useMutation({

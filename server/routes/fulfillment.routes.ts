@@ -478,7 +478,7 @@ export function registerFulfillmentRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
 
-      if (!['owner', 'admin', 'manager'].includes(req.user?.role)) {
+      if (!['owner', 'admin', 'manager'].includes(String(req.actorOrgRole ?? req.orgRole ?? '').toLowerCase())) {
         return res.status(403).json({ error: 'Manager, Admin, or Owner role required' });
       }
 

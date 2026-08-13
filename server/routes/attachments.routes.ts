@@ -277,9 +277,10 @@ export async function registerAttachmentRoutes(
     isAuthenticated: any;
     tenantContext: any;
     isAdmin: any;
+    platformIsAdmin: any;
   }
 ) {
-  const { isAuthenticated, isAdmin, tenantContext: tenantContextMiddleware } = middleware;
+  const { isAuthenticated, isAdmin, platformIsAdmin, tenantContext: tenantContextMiddleware } = middleware;
 
   app.patch("/api/quotes/:quoteId/line-items/:lineItemId/attachments/:attachmentId/artwork-allocation", isAuthenticated, tenantContextMiddleware, async (req: any, res) => {
     const organizationId = getRequestOrganizationId(req);
@@ -1538,7 +1539,9 @@ export async function registerAttachmentRoutes(
    * Set ACL policy for an object (GCS only)
    * Admin-only endpoint
    */
-  app.post("/api/objects/acl", isAuthenticated, isAdmin, async (req: any, res) => {
+  // Object paths are not tenant-scoped by this legacy endpoint. Keep its
+  // established global-admin boundary until object ownership is enforced.
+  app.post("/api/objects/acl", isAuthenticated, platformIsAdmin, async (req: any, res) => {
     try {
       const { objectPath } = req.body;
       if (typeof objectPath !== "string" || !objectPath) {

@@ -1086,7 +1086,7 @@ export function registerQuoteRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
-      const userRole = (req.user.role || '').toLowerCase();
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isApprover = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
 
       if (!isApprover) {
@@ -1382,7 +1382,7 @@ export function registerQuoteRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
 
-      const userRole = req.user.role || "customer";
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ["owner", "admin", "manager", "employee"].includes(String(userRole).toLowerCase());
       if (!isInternalUser) {
         return res.status(403).json({ message: "Quote PDF preview is available to staff only." });
@@ -1425,7 +1425,7 @@ export function registerQuoteRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
 
@@ -1451,7 +1451,7 @@ export function registerQuoteRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
       const {
@@ -1763,7 +1763,7 @@ export function registerQuoteRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
 
@@ -1860,7 +1860,7 @@ export function registerQuoteRoutes(
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ message: "User not authenticated" });
 
-      const userRole = req.user?.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
 
       const { id: quoteId } = req.params;
@@ -1991,7 +1991,7 @@ export function registerQuoteRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       if (!['owner', 'admin', 'manager'].includes(userRole)) {
         return res.status(403).json({ message: 'Only staff can request changes.' });
       }
@@ -2018,7 +2018,7 @@ export function registerQuoteRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       if (!['owner', 'admin', 'manager'].includes(userRole)) {
         return res.status(403).json({ message: 'Only staff can approve.' });
       }
@@ -2051,7 +2051,7 @@ export function registerQuoteRoutes(
     try {
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       if (!['owner', 'admin', 'manager'].includes(userRole)) {
         return res.status(403).json({ message: 'Only staff can reject.' });
       }
@@ -2082,7 +2082,7 @@ export function registerQuoteRoutes(
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ message: "Not authenticated" });
 
-      const userRole = req.user?.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const sourceQuoteId = req.params.id;
       const mode = req.body?.mode;
@@ -2121,7 +2121,7 @@ export function registerQuoteRoutes(
       const userId = getUserId(req.user);
       if (!userId) return res.status(401).json({ message: "Not authenticated" });
 
-      const userRole = req.user?.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const sourceQuoteId = req.params.id;
 
@@ -2156,7 +2156,7 @@ export function registerQuoteRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id } = req.params;
       const lineItem = req.body;
@@ -2656,7 +2656,7 @@ export function registerQuoteRoutes(
       patchDiagnostics.organizationId = organizationId;
       const userId = getUserId(req.user);
       patchDiagnostics.userId = userId ?? null;
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id, lineItemId } = req.params;
       const lineItem = req.body;
@@ -2938,7 +2938,7 @@ export function registerQuoteRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
       const { id, lineItemId } = req.params;
 
