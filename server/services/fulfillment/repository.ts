@@ -1754,6 +1754,7 @@ export class FulfillmentDashboardRepo {
       .select({
         id: shipments.id,
         status: shipments.status,
+        scope: shipments.scope,
         carrier: shipments.carrier,
         serviceLevel: shipments.serviceLevel,
         trackingNumber: shipments.trackingNumber,
@@ -1877,6 +1878,8 @@ export class FulfillmentDashboardRepo {
         id: shipment.id,
         shipmentReference: shipmentDetails[index]?.shipmentReference ?? null,
         status: shipment.status,
+        scope: shipment.scope as 'SINGLE_ORDER' | 'MULTI_ORDER',
+        orderCount: shipmentDetails[index]?.orders.length ?? 1,
         carrier: shipment.carrier ?? null,
         serviceLevel: shipment.serviceLevel ?? null,
         trackingNumber: shipment.trackingNumber ?? null,

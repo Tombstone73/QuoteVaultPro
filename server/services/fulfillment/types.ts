@@ -133,6 +133,8 @@ export interface FulfillmentDetailDto extends QueueRowDto {
     id: string;
     shipmentReference: string | null;
     status: string;
+    scope: 'SINGLE_ORDER' | 'MULTI_ORDER';
+    orderCount: number;
     carrier: string | null;
     serviceLevel: string | null;
     trackingNumber: string | null;

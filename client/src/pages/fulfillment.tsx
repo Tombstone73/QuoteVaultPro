@@ -735,8 +735,8 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
         </div>
       </header>
 
-      <main className="flex-1 overflow-auto p-6 pb-24">
-        <div className="mx-auto max-w-[1500px]">
+      <div className="flex-1 p-4 pb-24 md:p-6">
+        <div className="w-full">
         {pickupTicketId && (
           <div className="mb-4 rounded-xl border border-primary/30 bg-primary/10 p-3 text-sm">
             <p className="font-semibold">Pickup ticket selected</p>
@@ -873,7 +873,7 @@ export default function FulfillmentPage({ title = "Fulfillment", initialType = "
         <FulfillmentDebugPanel enabled={debugEnabled} lastResponse={lastResponse ?? queueQuery.data ?? null} lastError={lastError} />
         </div>
 
-      </main>
+      </div>
 
       {selectedOrderIds.size > 0 && (
         <div className="fixed bottom-6 left-1/2 z-50 flex w-[90%] max-w-2xl -translate-x-1/2 items-center justify-between gap-4 rounded-xl border border-border bg-card p-4 text-foreground shadow-2xl">

@@ -162,6 +162,8 @@ import { shouldAutoScheduleCreatedOrderLineItem } from "../services/orderLineIte
 import { assignPromotedCustomerUpload, CustomerUploadReviewError, designateCustomerUploadArtworkSide, promoteCustomerUpload, reviewCustomerUpload, selectAssignedCustomerUploadForArtwork, selectCustomerUploadPrimaryArtworkCandidate } from "../services/customerUploadReview.service";
 import { duplicateMaterial, DuplicateMaterialError } from "../services/materialDuplicationService";
 import { canonicalOrderOperations } from "../services/orders/canonicalOrderOperations";
+import { canonicalFulfillmentOperations } from "../services/fulfillment/canonicalFulfillmentOperations";
+import { FulfillmentHttpError } from "../services/fulfillment/types";
 import { synchronizeDraftInvoiceFromOrder } from "../invoicesService";
 
 // Helper function to get userId from request user object
@@ -2645,6 +2647,10 @@ export async function registerOrderRoutes(
                 return res.status(404).json({ message: "Order not found" });
             }
 
+            if (req.body.shippingMethod !== undefined && req.body.shippingMethod !== existingOrder.shippingMethod) {
+                await canonicalFulfillmentOperations.assertFulfillmentMethodChangeAllowed(organizationId, req.params.id, req.body.shippingMethod);
+            }
+
             // Normalize shippingCents server-side (integer cents; never allow pickup + cents > 0)
             const finalShippingMethod = (req.body.shippingMethod ?? existingOrder.shippingMethod) as string | null | undefined;
             if (finalShippingMethod === 'pickup') {
@@ -2918,6 +2924,9 @@ export async function registerOrderRoutes(
 
             res.json(order);
         } catch (error) {
+            if (error instanceof FulfillmentHttpError) {
+                return res.status(error.status).json({ message: error.message, code: error.code });
+            }
             if (error instanceof z.ZodError) {
                 return res.status(400).json({ message: fromZodError(error).message });
             }

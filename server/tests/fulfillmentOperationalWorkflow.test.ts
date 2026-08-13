@@ -120,6 +120,34 @@ describe("fulfillment operational workflow helpers", () => {
     expect(canRevertFulfillmentStatus(null)).toBe(false);
   });
 
+  test("a fulfillment-method flip allows inactive draft execution history but blocks terminal fulfillment", async () => {
+    const chain = (rows: any[], combined = false) => ({
+      from: () => combined
+        ? ({ innerJoin: () => ({ where: () => ({ limit: async () => rows }) }) })
+        : ({ where: () => ({ limit: async () => rows }) }),
+    });
+    const draftOnlyDb = {
+      select: jest.fn()
+        .mockImplementationOnce(() => chain([{ id: "order-1", shippingMethod: "ship", fulfillmentStatus: "pending" }]))
+        .mockImplementationOnce(() => chain([{ status: "DRAFT" }]))
+        .mockImplementationOnce(() => chain([], true)),
+    };
+    const service = new FulfillmentService({ dbInstance: draftOnlyDb as any, shipmentRepo: {} as any, pickupRepo: {} as any, dashboardRepo: {} as any });
+    await expect(service.assertFulfillmentMethodChangeAllowed("org-1", "order-1", "pickup")).resolves.toBeUndefined();
+
+    const terminalDb = {
+      select: jest.fn()
+        .mockImplementationOnce(() => chain([{ id: "order-1", shippingMethod: "ship", fulfillmentStatus: "shipped" }]))
+        .mockImplementationOnce(() => chain([]))
+        .mockImplementationOnce(() => chain([], true)),
+    };
+    const terminalService = new FulfillmentService({ dbInstance: terminalDb as any, shipmentRepo: {} as any, pickupRepo: {} as any, dashboardRepo: {} as any });
+    await expect(terminalService.assertFulfillmentMethodChangeAllowed("org-1", "order-1", "pickup")).rejects.toMatchObject({
+      status: 409,
+      code: "FULFILLMENT_METHOD_TERMINAL",
+    });
+  });
+
   test("mark ready writes fulfillment event with nullable actor when request actor is not a persisted user", async () => {
     const insertedEvents: any[] = [];
     const updatedOrders: any[] = [];
@@ -228,6 +256,7 @@ describe("fulfillment operational workflow helpers", () => {
       markShipped: jest.fn(),
     };
     const fakeDashboardRepo = {
+      getOrdersForCombinedShipmentValidation: jest.fn(async () => [{ id: "order-1", shippingMethod: "ship" }]),
       assertOrderChecklistComplete: jest.fn(async () => ({
         ok: false,
         code: "FULFILLMENT_CHECKLIST_INCOMPLETE",

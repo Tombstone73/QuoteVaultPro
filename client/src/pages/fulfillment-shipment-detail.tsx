@@ -96,11 +96,20 @@ function parseNumber(value: string): number | null {
   return Number.isFinite(n) ? n : null;
 }
 
-export default function FulfillmentShipmentDetailPage() {
+export function FulfillmentShipmentEditor({
+  shipmentId: embeddedShipmentId,
+  embedded = false,
+  onMutationComplete,
+}: {
+  shipmentId?: string;
+  embedded?: boolean;
+  onMutationComplete?: () => void | Promise<void>;
+}) {
   const { toast } = useToast();
   const navigate = useNavigate();
   const { onSmartBack } = useSmartBack();
-  const { shipmentId } = useParams<{ shipmentId: string }>();
+  const { shipmentId: routeShipmentId } = useParams<{ shipmentId: string }>();
+  const shipmentId = embeddedShipmentId ?? routeShipmentId;
   const location = useLocation();
 
   const [form, setForm] = useState<ShipmentFormState>(defaultForm);
@@ -286,6 +295,7 @@ export default function FulfillmentShipmentDetailPage() {
       if (!silent) {
         toast({ title: "Draft saved", description: "Shipment draft updated" });
       }
+      await onMutationComplete?.();
       return response;
     } catch (error) {
       const parsed = toFulfillmentError(error);
@@ -303,6 +313,7 @@ export default function FulfillmentShipmentDetailPage() {
       const created = await createPackage.mutateAsync({});
       toast({ title: "Package added", description: created.packageReference });
       await shipmentQuery.refetch();
+      await onMutationComplete?.();
     } catch (error) {
       const parsed = toFulfillmentError(error);
       toast({ title: "Package could not be added", description: parsed.message, variant: "destructive" });
@@ -320,6 +331,7 @@ export default function FulfillmentShipmentDetailPage() {
       setLastResponse(response);
       toast({ title: "Shipment marked shipped", description: `${shipment.shipmentReference || "Shipment"} is now SHIPPED` });
       await shipmentQuery.refetch();
+      await onMutationComplete?.();
     } catch (error) {
       const parsed = toFulfillmentError(error);
       setLastError({ code: parsed.code, message: parsed.message });
@@ -370,9 +382,9 @@ export default function FulfillmentShipmentDetailPage() {
   };
 
   return (
-    <div className="min-h-full bg-background font-display text-foreground">
-      <header className="sticky top-0 z-50 border-b border-border bg-background px-6 py-3">
-        <div className="mx-auto flex max-w-[1600px] items-center justify-between">
+    <div className={embedded ? "bg-background font-display text-foreground" : "min-h-full bg-background font-display text-foreground"}>
+      <header className={`${embedded ? "hidden" : "sticky top-0 z-50"} border-b border-border bg-background px-6 py-3`}>
+        <div className="flex items-center justify-between">
           <div className="flex items-center gap-4">
             <button
               className="rounded-lg p-2 transition-colors hover:bg-accent"
@@ -400,9 +412,9 @@ export default function FulfillmentShipmentDetailPage() {
         </div>
       </header>
 
-      <main className="mx-auto max-w-[1600px] p-6">
-        <div className="grid grid-cols-1 items-start gap-6 lg:grid-cols-[320px_1fr_300px]">
-          <aside className="flex flex-col gap-4">
+      <main className={embedded ? "p-0" : "p-4 md:p-6"}>
+        <div className={`grid grid-cols-1 items-start gap-6 ${embedded ? "xl:grid-cols-[minmax(0,1fr)_300px]" : "xl:grid-cols-[320px_minmax(0,1fr)_300px]"}`}>
+          <aside className={embedded ? "hidden" : "flex flex-col gap-4"}>
             <div className="mb-2 flex items-center justify-between px-1">
               <h3 className="text-sm font-bold uppercase tracking-widest text-muted-foreground">Orders Included</h3>
               <span className="rounded bg-muted px-2 py-0.5 text-xs font-mono text-foreground">{shipment.orders.length.toString().padStart(2, "0")}</span>
@@ -756,4 +768,8 @@ export default function FulfillmentShipmentDetailPage() {
       </main>
     </div>
   );
+}
+
+export default function FulfillmentShipmentDetailPage() {
+  return <FulfillmentShipmentEditor />;
 }

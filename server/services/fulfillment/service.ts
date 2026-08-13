@@ -297,6 +297,30 @@ export class FulfillmentService {
     return this.shipmentRepo.getShipmentById(orgId, shipmentId);
   }
 
+  /** Order shippingMethod is the current fulfillment intent. Historical draft
+   * execution records remain auditable, but terminal fulfillment cannot be
+   * silently reclassified between Ship and Pickup. */
+  async assertFulfillmentMethodChangeAllowed(orgId: string, orderId: string, nextShippingMethod: string | null | undefined) {
+    const [order] = await this.dbInstance.select({
+      id: orders.id,
+      shippingMethod: orders.shippingMethod,
+      fulfillmentStatus: orders.fulfillmentStatus,
+    }).from(orders).where(and(eq(orders.organizationId, orgId), eq(orders.id, orderId))).limit(1);
+    if (!order) throw new FulfillmentHttpError(404, 'Order not found', 'NOT_FOUND');
+    const currentMethod = order.shippingMethod === 'pickup' ? 'pickup' : 'ship';
+    const targetMethod = nextShippingMethod === 'pickup' ? 'pickup' : 'ship';
+    if (currentMethod === targetMethod) return;
+
+    const [pickupTicket] = await this.dbInstance.select({ status: pickupTickets.status })
+      .from(pickupTickets).where(and(eq(pickupTickets.organizationId, orgId), eq(pickupTickets.orderId, orderId))).limit(1);
+    const shipped = await this.dbInstance.select({ id: shipments.id }).from(shipmentOrders)
+      .innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
+      .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.orderId, orderId), eq(shipments.organizationId, orgId), eq(shipments.status, 'SHIPPED'))).limit(1);
+    if (pickupTicket?.status === 'PICKED_UP' || shipped.length > 0 || ['shipped', 'delivered'].includes(String(order.fulfillmentStatus || '').toLowerCase())) {
+      throw new FulfillmentHttpError(409, 'Completed shipment or pickup fulfillment cannot be changed without the existing reversal workflow.', 'FULFILLMENT_METHOD_TERMINAL');
+    }
+  }
+
   private async getVerificationPolicy(orgId: string): Promise<FulfillmentVerificationPolicy> {
     const [organization] = await this.dbInstance.select({ settings: organizations.settings })
       .from(organizations).where(eq(organizations.id, orgId)).limit(1);
@@ -368,6 +392,10 @@ export class FulfillmentService {
     if (!existing) {
       throw new FulfillmentHttpError(404, 'Shipment not found', 'NOT_FOUND');
     }
+    const linkedOrders = await this.dashboardRepo.getOrdersForCombinedShipmentValidation(orgId, (existing.orders || []).map((order: any) => order.orderId));
+    if (linkedOrders.some((order: any) => order.shippingMethod === 'pickup')) {
+      throw new FulfillmentHttpError(409, 'This Order is currently Pickup. A draft shipment cannot be marked shipped.', 'FULFILLMENT_METHOD_MISMATCH');
+    }
     const canceledOrder = (existing.orders || []).find((order: any) =>
       isCanceledOrder({ state: order.orderState, status: order.orderStatus, canceledAt: order.orderCanceledAt }),
     );
@@ -379,7 +407,6 @@ export class FulfillmentService {
     if (await this.getVerificationPolicy(orgId) === 'strict_separate_verification') {
       for (const orderId of orderIds) await this.requireChecklistComplete(orgId, orderId, 'shipped');
     }
-
     const result = await this.shipmentRepo.markShipped(orgId, shipmentId, actorUserId);
 
     if (!result.ok) {
@@ -454,6 +481,7 @@ export class FulfillmentService {
         orderState: orders.state,
         orderStatus: orders.status,
         orderCanceledAt: orders.canceledAt,
+        shippingMethod: orders.shippingMethod,
         productionCompletedAt: orders.productionCompletedAt,
         completedProductionAt: orders.completedProductionAt,
         orderNumber: orders.orderNumber,
@@ -467,6 +495,11 @@ export class FulfillmentService {
       .limit(1);
 
     if (!ticketWithOrder) throw new FulfillmentHttpError(404, 'Pickup ticket not found', 'NOT_FOUND');
+    if (ticketWithOrder.shippingMethod !== 'pickup') throw new FulfillmentHttpError(409, 'This Order is currently Ship. Pickup cannot be marked ready.', 'FULFILLMENT_METHOD_MISMATCH');
+    const shippedForOrder = await this.dbInstance.select({ id: shipments.id }).from(shipmentOrders)
+      .innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
+      .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.orderId, ticketWithOrder.orderId), eq(shipments.organizationId, orgId), eq(shipments.status, 'SHIPPED'))).limit(1);
+    if (shippedForOrder.length) throw new FulfillmentHttpError(409, 'A shipped fulfillment record must be reversed before pickup can be readied.', 'FULFILLMENT_METHOD_TERMINAL');
     if (isCanceledOrder({
       state: ticketWithOrder.orderState,
       status: ticketWithOrder.orderStatus,
@@ -595,6 +628,7 @@ export class FulfillmentService {
         orderState: orders.state,
         orderStatus: orders.status,
         orderCanceledAt: orders.canceledAt,
+        shippingMethod: orders.shippingMethod,
       })
       .from(pickupTickets)
       .innerJoin(orders, eq(orders.id, pickupTickets.orderId))
@@ -602,6 +636,11 @@ export class FulfillmentService {
       .limit(1);
 
     if (!ticketWithOrder) throw new FulfillmentHttpError(404, 'Pickup ticket not found', 'NOT_FOUND');
+    if (ticketWithOrder.shippingMethod !== 'pickup') throw new FulfillmentHttpError(409, 'This Order is currently Ship. Pickup cannot be marked picked up.', 'FULFILLMENT_METHOD_MISMATCH');
+    const shippedForOrder = await this.dbInstance.select({ id: shipments.id }).from(shipmentOrders)
+      .innerJoin(shipments, eq(shipments.id, shipmentOrders.shipmentId))
+      .where(and(eq(shipmentOrders.organizationId, orgId), eq(shipmentOrders.orderId, ticketWithOrder.orderId), eq(shipments.organizationId, orgId), eq(shipments.status, 'SHIPPED'))).limit(1);
+    if (shippedForOrder.length) throw new FulfillmentHttpError(409, 'A shipped fulfillment record must be reversed before pickup can be marked picked up.', 'FULFILLMENT_METHOD_TERMINAL');
     if (isCanceledOrder({
       state: ticketWithOrder.orderState,
       status: ticketWithOrder.orderStatus,
