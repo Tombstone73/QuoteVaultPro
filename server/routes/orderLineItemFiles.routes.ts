@@ -50,6 +50,11 @@ import { buildArtworkAllocationStatus, defaultNewProductionArtworkAllocation } f
 import { repairArtworkRelationshipsForLineItem } from "../services/artworkRelationshipRepairService";
 import { lineItemArtworkReadResolver } from "../services/artwork/LineItemArtworkReadResolver";
 import { canonicalArtworkWriteService } from "../services/artwork/CanonicalArtworkWriteService";
+import {
+  ArtworkSetOperationError,
+  createArtworkSet,
+  updateArtworkSetQuantity,
+} from "../services/artwork/artworkSetOperations";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub || user?.id;
@@ -976,6 +981,56 @@ export function registerOrderLineItemFileRoutes(
         });
       }
       return res.status(500).json({ error: "Failed to assign artwork side", code: "ARTWORK_SIDE_UPDATE_FAILED" });
+    }
+  });
+
+  // An Artwork Set is one finished output. Its quantity is deliberately
+  // repeated on each member file for legacy projections, while the shared
+  // allocation validator counts the set once.
+  app.post("/api/orders/:orderId/line-items/:lineItemId/artwork-sets", isAuthenticated, tenantContext, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+    const artworkIds = Array.isArray(req.body?.artworkIds) ? req.body.artworkIds.map(String) : [];
+    try {
+      const result = await createArtworkSet({
+        organizationId,
+        orderId: req.params.orderId,
+        lineItemId: req.params.lineItemId,
+        artworkIds,
+        productionQuantity: req.body?.productionQuantity,
+        userId: getUserId(req.user) ?? null,
+        userName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+      });
+      return res.status(201).json({ success: true, data: result, allocation: result.allocation });
+    } catch (error: any) {
+      if (error instanceof ArtworkSetOperationError) {
+        return res.status(error.statusCode).json({ error: error.message, code: error.code });
+      }
+      console.error("[OrderLineItemFiles:ARTWORK_SET_CREATE] Failed", { orderId: req.params.orderId, lineItemId: req.params.lineItemId, message: error?.message });
+      return res.status(500).json({ error: "Failed to create Artwork Set", code: "ARTWORK_SET_CREATE_FAILED" });
+    }
+  });
+
+  app.patch("/api/orders/:orderId/line-items/:lineItemId/artwork-sets/:productionGroupId", isAuthenticated, tenantContext, async (req: any, res) => {
+    const organizationId = getRequestOrganizationId(req);
+    if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
+    try {
+      const result = await updateArtworkSetQuantity({
+        organizationId,
+        orderId: req.params.orderId,
+        lineItemId: req.params.lineItemId,
+        productionGroupId: String(req.params.productionGroupId ?? ""),
+        productionQuantity: req.body?.productionQuantity,
+        userId: getUserId(req.user) ?? null,
+        userName: `${req.user?.firstName || ""} ${req.user?.lastName || ""}`.trim() || req.user?.email || null,
+      });
+      return res.json({ success: true, data: result, allocation: result.allocation });
+    } catch (error: any) {
+      if (error instanceof ArtworkSetOperationError) {
+        return res.status(error.statusCode).json({ error: error.message, code: error.code });
+      }
+      console.error("[OrderLineItemFiles:ARTWORK_SET_UPDATE] Failed", { orderId: req.params.orderId, lineItemId: req.params.lineItemId, message: error?.message });
+      return res.status(500).json({ error: "Failed to update Artwork Set", code: "ARTWORK_SET_UPDATE_FAILED" });
     }
   });
 

@@ -20,6 +20,19 @@ export type ArtworkAllocationStatus = {
   groups: Array<{ id: string; quantity: number; memberIds: string[] }>;
 };
 
+/**
+ * A production group is an Artwork Set: one finished output and every file
+ * required to make it.  The production quantity remains denormalized on each
+ * member for compatibility with existing artwork/file projections, but the
+ * finished quantity is counted once per set.
+ */
+export type ArtworkOutputSet = {
+  id: string;
+  explicit: boolean;
+  quantity: number | null;
+  memberIds: string[];
+};
+
 const productionRoles = new Set(["artwork", "output", "final"]);
 export const DEFAULT_PRODUCTION_ARTWORK_ALLOCATION = 1;
 
@@ -28,34 +41,36 @@ function finiteInteger(value: unknown): number | null {
   return Number.isInteger(numeric) && numeric > 0 ? numeric : null;
 }
 
+export function buildArtworkOutputSets(members: ArtworkAllocationMember[]): ArtworkOutputSet[] {
+  const grouped = new Map<string, ArtworkOutputSet>();
+  for (const member of members) {
+    if (member.active === false || !productionRoles.has(String(member.role ?? "artwork").toLowerCase())) continue;
+    const explicitId = member.productionGroupId?.trim() || null;
+    const id = explicitId ?? member.id;
+    const quantity = member.productionQuantity == null ? null : finiteInteger(member.productionQuantity);
+    const current = grouped.get(id);
+    if (!current) {
+      grouped.set(id, { id, explicit: Boolean(explicitId), quantity, memberIds: [member.id] });
+      continue;
+    }
+    current.memberIds.push(member.id);
+    if (current.quantity !== quantity) current.quantity = null;
+  }
+  return Array.from(grouped.values());
+}
+
 export function buildArtworkAllocationStatus(args: {
   lineQuantity: unknown;
   members: ArtworkAllocationMember[];
 }): ArtworkAllocationStatus {
   const requiredQuantity = finiteInteger(args.lineQuantity);
-  const grouped = new Map<string, { quantity: number | null; memberIds: string[] }>();
-
-  for (const member of args.members) {
-    if (member.active === false || !productionRoles.has(String(member.role ?? "artwork").toLowerCase())) continue;
-    const quantity = member.productionQuantity == null ? null : finiteInteger(member.productionQuantity);
-    // A stable group is explicit when supplied. An individual file is its own
-    // group otherwise; callers can report an incomplete Front/Back grouping.
-    const groupId = member.productionGroupId?.trim() || member.id;
-    const current = grouped.get(groupId);
-    if (!current) {
-      grouped.set(groupId, { quantity, memberIds: [member.id] });
-    } else {
-      current.memberIds.push(member.id);
-      if (current.quantity !== quantity) current.quantity = null;
-    }
-  }
-
-  const groups = Array.from(grouped.entries()).map(([id, group]) => ({
-    id,
+  const outputSets = buildArtworkOutputSets(args.members);
+  const groups = outputSets.map((group) => ({
+    id: group.id,
     quantity: group.quantity ?? 0,
     memberIds: group.memberIds,
   }));
-  const hasMissing = Array.from(grouped.values()).some((group) => group.quantity == null);
+  const hasMissing = outputSets.some((group) => group.quantity == null);
   const allocatedTotal = groups.reduce((sum, group) => sum + group.quantity, 0);
   let issue: string | null = null;
   if (hasMissing) issue = "Production artwork is present but one or more allocations are missing or inconsistent within an output group.";

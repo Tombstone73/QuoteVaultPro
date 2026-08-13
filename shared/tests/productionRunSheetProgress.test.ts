@@ -37,6 +37,36 @@ describe("production run sheet progress", () => {
     expect(summarizeProductionRunSheetProgress(snapshot).requiredImpressions).toBe(12);
   });
 
+  test("keeps required layer impressions separate from finished-piece quantity for one multilayer output", () => {
+    const snapshot = buildInitialProductionRunSheetProgressSnapshot({
+      files: [
+        { id: "color", fileName: "color.pdf", productionQuantity: 250, productionGroupId: "window-cling-a", status: "active" },
+        { id: "white", fileName: "white.pdf", productionQuantity: 250, productionGroupId: "window-cling-a", status: "active" },
+      ],
+    });
+    const summary = summarizeProductionRunSheetProgress(snapshot);
+    expect(summary).toMatchObject({
+      requiredImpressions: 500,
+      requiredFinishedPieces: 250,
+      outputGroupCount: 1,
+      layeredOutputGroupCount: 1,
+      complete: false,
+    });
+  });
+
+  test("does not complete a multilayer output while one required layer is unfinished", () => {
+    const snapshot = buildInitialProductionRunSheetProgressSnapshot({
+      files: [
+        { id: "color", fileName: "color.pdf", productionQuantity: 250, productionGroupId: "window-cling-a", status: "active" },
+        { id: "white", fileName: "white.pdf", productionQuantity: 250, productionGroupId: "window-cling-a", status: "active" },
+      ],
+    });
+    if (!snapshot) throw new Error("expected sheet snapshot");
+    snapshot.sheets[0].goodImpressions = 250;
+    const summary = summarizeProductionRunSheetProgress(snapshot);
+    expect(summary).toMatchObject({ goodFinishedPieces: 0, remainingFinishedPieces: 250, complete: false });
+  });
+
   test("damaged impressions do not satisfy child allocated quantity", () => {
     const rollup = distributeProducedPiecesAcrossMembers({
       memberAllocatedQuantities: [

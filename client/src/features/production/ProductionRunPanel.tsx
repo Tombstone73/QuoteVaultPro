@@ -108,7 +108,9 @@ export function ProductionRunPanel({ run, focusNestedFileUpload = false, onNeste
   const sheetProgressSummary = useMemo(() => summarizeProductionRunSheetProgress(sheetProgressDraft), [sheetProgressDraft]);
   const currentSheet = sheetProgressDraft?.sheets[currentSheetIndex] ?? sheetProgressDraft?.sheets[0] ?? null;
   const currentSheetFile = currentSheet?.fileId ? run.files.find((file) => file.id === currentSheet.fileId) ?? null : null;
-  const sheetQuantityLabel = sheetProgressSummary.sheetCount === 1
+  const sheetQuantityLabel = sheetProgressSummary.layeredOutputGroupCount > 0
+    ? `${sheetProgressSummary.requiredFinishedPieces} finished pieces · ${sheetProgressSummary.sheetCount} required artwork layers`
+    : sheetProgressSummary.sheetCount === 1
     ? `Run quantity: ${currentSheet?.requiredImpressions || run.totalAllocatedQuantity || "-"}`
     : sheetProgressSummary.requiredImpressions > 0 && sheetProgressSummary.requiredImpressions === sheetProgressSummary.sheetCount
       ? "1 copy each"

@@ -24,6 +24,33 @@ describe("artwork allocation", () => {
     expect(result).toMatchObject({ allocatedTotal: 20, valid: true, groups: [{ id: "english", quantity: 12 }, { id: "spanish", quantity: 8 }] });
   });
 
+  test("counts two required artwork layers as one 250-piece finished output", () => {
+    const result = buildArtworkAllocationStatus({ lineQuantity: 250, members: [
+      { id: "color", productionGroupId: "window-cling-a", productionQuantity: 250 },
+      { id: "white", productionGroupId: "window-cling-a", productionQuantity: 250 },
+    ] });
+    expect(result).toMatchObject({ allocatedTotal: 250, valid: true, groups: [{ id: "window-cling-a", quantity: 250 }] });
+  });
+
+  test("counts mixed multilayer designs by output-group quantity rather than layer count", () => {
+    const result = buildArtworkAllocationStatus({ lineQuantity: 250, members: [
+      { id: "a-color", productionGroupId: "design-a", productionQuantity: 150 },
+      { id: "a-white", productionGroupId: "design-a", productionQuantity: 150 },
+      { id: "b-color", productionGroupId: "design-b", productionQuantity: 100 },
+      { id: "b-white", productionGroupId: "design-b", productionQuantity: 100 },
+    ] });
+    expect(result).toMatchObject({ allocatedTotal: 250, valid: true });
+  });
+
+  test("rejects a multilayer set whose member quantities disagree", () => {
+    const result = buildArtworkAllocationStatus({ lineQuantity: 250, members: [
+      { id: "color", productionGroupId: "window-cling-a", productionQuantity: 250 },
+      { id: "white", productionGroupId: "window-cling-a", productionQuantity: 1 },
+    ] });
+    expect(result.valid).toBe(false);
+    expect(result.issue).toContain("inconsistent within an output group");
+  });
+
   test("does not allocate reference files and detects incomplete work", () => {
     const result = buildArtworkAllocationStatus({ lineQuantity: 10, members: [
       { id: "final", productionQuantity: 7 }, { id: "instructions", role: "reference", productionQuantity: null },
@@ -76,6 +103,20 @@ describe("artwork allocation", () => {
       attachments: [{ uploadId: "art-1" }, { uploadId: "art-2" }],
     });
     expect(unresolved.map((attachment) => attachment.productionQuantity)).toEqual([null, null]);
+  });
+
+  test("preserves manually grouped staged layers when reconciling a line quantity", () => {
+    const grouped = reconcileStagedArtworkAllocations({
+      lineQuantity: 250,
+      attachments: [
+        { uploadId: "color", productionGroupId: "window-cling-a", productionQuantity: 250, allocationSource: "manual" as const },
+        { uploadId: "white", productionGroupId: "window-cling-a", productionQuantity: 250, allocationSource: "manual" as const },
+      ],
+    });
+    expect(grouped).toEqual(expect.arrayContaining([
+      expect.objectContaining({ productionGroupId: "window-cling-a", productionQuantity: 250 }),
+    ]));
+    expect(buildArtworkAllocationStatus({ lineQuantity: 250, members: grouped.map((file) => ({ id: file.uploadId, productionQuantity: file.productionQuantity, productionGroupId: file.productionGroupId })) })).toMatchObject({ valid: true, allocatedTotal: 250 });
   });
 
   test("repairs one unresolved final output group to the full line quantity", () => {

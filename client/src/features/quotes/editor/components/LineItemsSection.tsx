@@ -1589,6 +1589,19 @@ export function LineItemsSection({
                                       }
                                       : undefined
                                   }
+                                  onTemporaryOrderArtworkSetUpdate={
+                                    !readOnly && createTarget === "order"
+                                      ? (uploadIds, patch) => {
+                                        const selected = new Set(uploadIds);
+                                        const pendingOrderAttachments = reconcileStagedArtworkAllocations({
+                                          lineQuantity: item.quantity,
+                                          attachments: ((item.pendingOrderAttachments as TemporaryOrderAttachmentUpload[] | undefined) ?? [])
+                                            .map((attachment) => selected.has(attachment.uploadId) ? { ...attachment, ...patch } : attachment),
+                                        });
+                                        onUpdateLineItem(itemKey, { pendingOrderAttachments });
+                                      }
+                                      : undefined
+                                  }
                                   lineItemKey={itemKey}
                                 />
                               </div>

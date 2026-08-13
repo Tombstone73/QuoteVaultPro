@@ -25,6 +25,7 @@ import {
   type TicketPrintReason,
 } from "@/hooks/useProduction";
 import { buildTicketData, type TicketSourceData } from "@shared/productionTicket";
+import { buildArtworkOutputSets } from "@shared/artworkAllocation";
 import { loadTicketTemplate } from "@/lib/ticketSettings";
 import { buildJobTicketQrUrl, ticketRowStyle, THERMAL_PRINT_STYLES } from "@/lib/ticketRender";
 import {
@@ -225,7 +226,17 @@ export default function ProductionTicketPage() {
     fileName: art.fileName || art.originalFilename || "Artwork",
     thumbnailUrl: art.thumbnailUrl || art.thumbUrl || null,
     productionQuantity: art.productionQuantity ?? art.allocatedQuantity ?? null,
+    productionGroupId: art.productionGroupId ?? art.allocationGroupId ?? null,
     side: art.side || art.sourceArtworkSide || null,
+  }));
+  const ticketArtworkSets = buildArtworkOutputSets(ticketArtwork.map((art) => ({
+    id: art.id,
+    role: "final",
+    productionQuantity: art.productionQuantity,
+    productionGroupId: art.productionGroupId,
+  }))).map((set) => ({
+    ...set,
+    artwork: set.memberIds.map((id) => ticketArtwork.find((art) => art.id === id)).filter(Boolean),
   }));
 
   return (
@@ -324,32 +335,37 @@ export default function ProductionTicketPage() {
           <ThermalDivider />
           <ThermalSection compact>
             <ThermalLabel>Artwork</ThermalLabel>
-            {ticketArtwork.length > 0 ? (
-              ticketArtwork.map((art) => (
-                <div key={art.id} style={{ marginTop: "1.5mm" }}>
+            {ticketArtworkSets.length > 0 ? (
+              ticketArtworkSets.map((set, setIndex) => (
+                <div key={set.id} style={{ marginTop: "1.5mm" }}>
                   <div style={{ display: "flex", justifyContent: "space-between", gap: "2mm", fontSize: "13px", fontWeight: 900, lineHeight: 1.1 }}>
-                    <span>{art.fileName}</span>
-                    <span>{artworkQuantityLabel(art.productionQuantity)}</span>
+                    <span>Artwork Set {setIndex + 1}{set.artwork.length > 1 ? ` · ${set.artwork.length} required layers` : ""}</span>
+                    <span>{artworkQuantityLabel(set.quantity)}</span>
                   </div>
-                  {art.side ? (
-                    <div style={{ fontSize: "11px", fontWeight: 700, lineHeight: 1.1 }}>
-                      {String(art.side).toUpperCase()}
+                  {set.artwork.map((art: any) => (
+                    <div key={art.id} style={{ marginTop: "1mm" }}>
+                      <div style={{ fontSize: "11px", fontWeight: 700, lineHeight: 1.1 }}>{art.fileName}</div>
+                      {art.side ? (
+                        <div style={{ fontSize: "10px", fontWeight: 700, lineHeight: 1.1 }}>
+                          {String(art.side).toUpperCase()}
+                        </div>
+                      ) : null}
+                      {art.thumbnailUrl ? (
+                        <img
+                          src={art.thumbnailUrl}
+                          alt="Artwork preview"
+                          style={{
+                            width: "100%",
+                            maxHeight: "40mm",
+                            objectFit: "contain",
+                            filter: "grayscale(1) contrast(1.15)",
+                            border: "1.5px solid #000",
+                            marginTop: "1mm",
+                          }}
+                        />
+                      ) : null}
                     </div>
-                  ) : null}
-                  {art.thumbnailUrl ? (
-                    <img
-                      src={art.thumbnailUrl}
-                      alt="Artwork preview"
-                      style={{
-                        width: "100%",
-                        maxHeight: "40mm",
-                        objectFit: "contain",
-                        filter: "grayscale(1) contrast(1.15)",
-                        border: "1.5px solid #000",
-                        marginTop: "1mm",
-                      }}
-                    />
-                  ) : null}
+                  ))}
                 </div>
               ))
             ) : (

@@ -5,6 +5,8 @@ export type ProductionRunSheetProgressSheet = {
   label: string;
   fileId?: string | null;
   fileName?: string | null;
+  /** One finished output may require multiple file/layer sheets. */
+  productionGroupId?: string | null;
   requiredImpressions: number;
   goodImpressions: number;
   damagedImpressions: number;
@@ -26,12 +28,19 @@ export type ProductionRunSheetProgressSummary = {
   damagedImpressions: number;
   remainingGoodImpressions: number;
   complete: boolean;
+  /** Finished pieces, counted once per output group rather than once per layer. */
+  outputGroupCount: number;
+  layeredOutputGroupCount: number;
+  requiredFinishedPieces: number;
+  goodFinishedPieces: number;
+  remainingFinishedPieces: number;
 };
 
 type SheetSourceFile = {
   id: string;
   fileName: string;
   productionQuantity?: number | null;
+  productionGroupId?: string | null;
   status?: string | null;
 };
 
@@ -54,6 +63,7 @@ function normalizeSheet(sheet: Partial<ProductionRunSheetProgressSheet>, index: 
     label: String(sheet.label || `Sheet ${index + 1}`).trim(),
     fileId: sheet.fileId ?? null,
     fileName: sheet.fileName ?? null,
+    productionGroupId: sheet.productionGroupId?.trim() || null,
     requiredImpressions,
     goodImpressions: Math.min(nonNegativeInteger(sheet.goodImpressions), requiredImpressions),
     damagedImpressions: nonNegativeInteger(sheet.damagedImpressions),
@@ -100,6 +110,7 @@ export function buildInitialProductionRunSheetProgressSnapshot(input: {
         label: activeFiles.length === 1 ? "Sheet 1" : `Sheet ${index + 1}`,
         fileId: file.id,
         fileName: file.fileName,
+        productionGroupId: file.productionGroupId?.trim() || null,
         requiredImpressions: positiveInteger(file.productionQuantity) ?? positiveInteger(input.defaultRequiredImpressions) ?? 1,
         goodImpressions: 0,
         damagedImpressions: 0,
@@ -135,6 +146,16 @@ export function summarizeProductionRunSheetProgress(snapshot: ProductionRunSheet
   const requiredImpressions = sheets.reduce((sum, sheet) => sum + sheet.requiredImpressions, 0);
   const goodImpressions = sheets.reduce((sum, sheet) => sum + Math.min(sheet.goodImpressions, sheet.requiredImpressions), 0);
   const damagedImpressions = sheets.reduce((sum, sheet) => sum + sheet.damagedImpressions, 0);
+  const outputGroups = new Map<string, ProductionRunSheetProgressSheet[]>();
+  for (const sheet of sheets) {
+    const groupId = sheet.productionGroupId?.trim() || sheet.id;
+    outputGroups.set(groupId, [...(outputGroups.get(groupId) ?? []), sheet]);
+  }
+  const groupValues = Array.from(outputGroups.values());
+  const requiredFinishedPieces = groupValues.reduce((sum, group) => sum + Math.max(...group.map((sheet) => sheet.requiredImpressions)), 0);
+  // A multilayer output is finished only when every required layer reaches its
+  // shared group quantity. Keep the per-sheet impression totals above intact.
+  const goodFinishedPieces = groupValues.reduce((sum, group) => sum + Math.min(...group.map((sheet) => Math.min(sheet.goodImpressions, sheet.requiredImpressions))), 0);
   return {
     sheetCount: sheets.length,
     requiredImpressions,
@@ -142,6 +163,11 @@ export function summarizeProductionRunSheetProgress(snapshot: ProductionRunSheet
     damagedImpressions,
     remainingGoodImpressions: Math.max(0, requiredImpressions - goodImpressions),
     complete: requiredImpressions > 0 && goodImpressions >= requiredImpressions,
+    outputGroupCount: groupValues.length,
+    layeredOutputGroupCount: groupValues.filter((group) => group.length > 1).length,
+    requiredFinishedPieces,
+    goodFinishedPieces,
+    remainingFinishedPieces: Math.max(0, requiredFinishedPieces - goodFinishedPieces),
   };
 }
 

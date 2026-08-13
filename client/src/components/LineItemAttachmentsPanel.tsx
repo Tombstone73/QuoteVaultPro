@@ -22,7 +22,7 @@ import { Badge } from "@/components/ui/badge";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { Checkbox } from "@/components/ui/checkbox";
 import { assignOrderLineItemArtworkSide } from "@/lib/attachments/orderArtworkSideAssignment";
-import { buildArtworkAllocationStatus } from "@shared/artworkAllocation";
+import { buildArtworkAllocationStatus, buildArtworkOutputSets } from "@shared/artworkAllocation";
 
 const LOCAL_ORIGINAL_NOT_PRESENT = "local_original_not_present";
 
@@ -108,6 +108,8 @@ interface LineItemAttachmentsPanelProps {
   onTemporaryOrderAttachmentRemove?: (uploadId: string) => void;
   /** Update allocation metadata for an unsaved direct-order artwork upload. */
   onTemporaryOrderAttachmentUpdate?: (uploadId: string, patch: Pick<TemporaryOrderAttachmentUpload, "productionQuantity" | "productionGroupId" | "allocationSource">) => void;
+  /** Atomically update the staged members of one finished Artwork Set. */
+  onTemporaryOrderArtworkSetUpdate?: (uploadIds: string[], patch: Pick<TemporaryOrderAttachmentUpload, "productionQuantity" | "productionGroupId" | "allocationSource">) => void;
   /** Notify the line-item editor after a persisted attachment is unlinked. */
   onSavedAttachmentRemoved?: (file: Pick<LineItemAttachment, "id" | "fileRecordId" | "side">) => void;
   /** Show explicit Front/Back controls for a double-sided print line. */
@@ -132,6 +134,7 @@ export function LineItemAttachmentsPanel({
   onTemporaryOrderUpload,
   onTemporaryOrderAttachmentRemove,
   onTemporaryOrderAttachmentUpdate,
+  onTemporaryOrderArtworkSetUpdate,
   onSavedAttachmentRemoved,
   doubleSided = false,
   useSameArtworkBothSides: controlledUseSameArtworkBothSides,
@@ -153,6 +156,9 @@ export function LineItemAttachmentsPanel({
   const [isRepairingRelationships, setIsRepairingRelationships] = useState(false);
   const [previewIndex, setPreviewIndex] = useState<number | null>(null);
   const [uncontrolledUseSameArtworkBothSides, setUncontrolledUseSameArtworkBothSides] = useState(false);
+  const [selectedArtworkIds, setSelectedArtworkIds] = useState<string[]>([]);
+  const [newArtworkSetQuantity, setNewArtworkSetQuantity] = useState("");
+  const [artworkSetPending, setArtworkSetPending] = useState(false);
   const useSameArtworkBothSides = controlledUseSameArtworkBothSides ?? uncontrolledUseSameArtworkBothSides;
   // Store ensured IDs to use during upload (props may not have updated yet)
   const ensuredIdsRef = useRef<{ quoteId: string | null; lineItemId: string | null }>({
@@ -282,6 +288,17 @@ export function LineItemAttachmentsPanel({
       productionGroupId: file.productionGroupId ?? null,
     })),
   }), [lineQuantity, pendingOrderAttachments]);
+  const artworkSets = useMemo(() => buildArtworkOutputSets(productionRows), [productionRows]);
+  const stagedArtworkSets = useMemo(() => buildArtworkOutputSets(pendingOrderAttachments.map((file) => ({
+    id: file.uploadId,
+    role: "artwork",
+    productionQuantity: file.productionQuantity ?? null,
+    productionGroupId: file.productionGroupId ?? null,
+  }))), [pendingOrderAttachments]);
+  const displayedArtworkSets = parentType === "order" && orderId ? artworkSets : stagedArtworkSets;
+  const displayedArtworkMembers: Array<{ id: string; fileName: string; productionGroupId?: string | null }> = parentType === "order" && orderId
+    ? productionRows.map((file) => ({ id: file.id, fileName: getAttachmentDisplayName(file), productionGroupId: file.productionGroupId ?? null }))
+    : pendingOrderAttachments.map((file) => ({ id: file.uploadId, fileName: file.fileName, productionGroupId: file.productionGroupId ?? null }));
   // Asset-only uploads are assignable too. The backend materializes their
   // order_attachment link when the first explicit side is saved.
   const artworkAttachments = attachments;
@@ -348,6 +365,82 @@ export function LineItemAttachmentsPanel({
     } catch (error: any) {
       toast({ title: 'Artwork allocation failed', description: error?.message || 'Please try again.', variant: 'destructive' });
     }
+  };
+
+  const updateSavedArtworkSetQuantity = async (setId: string, quantity: number) => {
+    if (!orderId || !lineItemId || !filesApiPath) return;
+    setArtworkSetPending(true);
+    try {
+      const response = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/artwork-sets/${encodeURIComponent(setId)}`, {
+        method: "PATCH",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ productionQuantity: quantity }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error || "Failed to update Artwork Set");
+      await queryClient.invalidateQueries({ queryKey: [filesApiPath] });
+      toast({ title: "Artwork Set quantity updated", description: `${quantity} finished piece${quantity === 1 ? "" : "s"} will use every file in this set.` });
+    } catch (error: any) {
+      toast({ title: "Artwork Set update failed", description: error?.message || "Please try again.", variant: "destructive" });
+    } finally {
+      setArtworkSetPending(false);
+    }
+  };
+
+  const updateStagedArtworkSetQuantity = (setMemberIds: string[], quantity: number, groupId: string | null) => {
+    if (!onTemporaryOrderArtworkSetUpdate) return;
+    onTemporaryOrderArtworkSetUpdate(setMemberIds, {
+      productionQuantity: quantity,
+      productionGroupId: groupId,
+      allocationSource: "manual",
+    });
+  };
+
+  const createArtworkSetFromSelection = async () => {
+    const selectedIds = Array.from(new Set(selectedArtworkIds));
+    const quantity = Number(newArtworkSetQuantity || lineQuantity);
+    if (selectedIds.length < 2) {
+      toast({ title: "Select artwork files", description: "Select two or more files that make the same finished output.", variant: "destructive" });
+      return;
+    }
+    if (!Number.isInteger(quantity) || quantity <= 0) {
+      toast({ title: "Enter Artwork Set quantity", description: "Qty to produce must be a positive whole number.", variant: "destructive" });
+      return;
+    }
+    if (!orderId) {
+      const groupId = `artwork-set:${crypto.randomUUID()}`;
+      updateStagedArtworkSetQuantity(selectedIds, quantity, groupId);
+      setSelectedArtworkIds([]);
+      setNewArtworkSetQuantity("");
+      return;
+    }
+    if (!lineItemId || !filesApiPath) return;
+    setArtworkSetPending(true);
+    try {
+      const response = await fetch(`/api/orders/${orderId}/line-items/${lineItemId}/artwork-sets`, {
+        method: "POST",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ artworkIds: selectedIds, productionQuantity: quantity }),
+      });
+      const json = await response.json();
+      if (!response.ok) throw new Error(json?.error || "Failed to create Artwork Set");
+      setSelectedArtworkIds([]);
+      setNewArtworkSetQuantity("");
+      await queryClient.invalidateQueries({ queryKey: [filesApiPath] });
+      toast({ title: "Artwork Set created", description: `${quantity} finished piece${quantity === 1 ? "" : "s"} will use all selected files as required layers.` });
+    } catch (error: any) {
+      toast({ title: "Artwork Set creation failed", description: error?.message || "Please try again.", variant: "destructive" });
+    } finally {
+      setArtworkSetPending(false);
+    }
+  };
+
+  const toggleArtworkSetSelection = (id: string, selected: boolean) => {
+    setSelectedArtworkIds((current) => selected
+      ? Array.from(new Set([...current, id]))
+      : current.filter((candidate) => candidate !== id));
   };
 
   useEffect(() => {
@@ -996,6 +1089,76 @@ export function LineItemAttachmentsPanel({
               </div>
             </div>
           )}
+          {parentType === "order" && displayedArtworkSets.length > 0 && (
+            <div className="mt-2 rounded-md border border-sky-400/30 bg-sky-400/5 p-2.5 text-xs" data-testid="artwork-sets">
+              <div className="font-medium">Artwork Sets</div>
+              <p className="mt-0.5 text-muted-foreground">Each set is one finished output. All files in a set are required layers; Qty is counted once per set.</p>
+              <div className="mt-2 space-y-1.5">
+                {displayedArtworkSets.map((set, index) => {
+                  const members = set.memberIds.map((id) => displayedArtworkMembers.find((member) => member.id === id)).filter(Boolean) as Array<{ id: string; fileName: string }>;
+                  const quantity = set.quantity ?? "";
+                  const saveQuantity = (raw: string) => {
+                    const nextQuantity = Number(raw);
+                    if (!Number.isInteger(nextQuantity) || nextQuantity <= 0) return;
+                    if (orderId) {
+                      if (set.explicit) {
+                        void updateSavedArtworkSetQuantity(set.id, nextQuantity);
+                      } else {
+                        const file = productionRows.find((candidate) => candidate.id === set.memberIds[0]);
+                        if (file) void updateArtworkAllocation(file, { role: "artwork", productionQuantity: nextQuantity, productionGroupId: null });
+                      }
+                    } else {
+                      updateStagedArtworkSetQuantity(set.memberIds, nextQuantity, set.explicit ? set.id : null);
+                    }
+                  };
+                  return (
+                    <div key={set.id} className="flex flex-wrap items-center gap-2 rounded border border-border/60 bg-background/60 px-2 py-1.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="font-medium">Artwork Set {index + 1}{set.memberIds.length > 1 ? ` · ${set.memberIds.length} required layers` : ""}</div>
+                        <div className="truncate text-[11px] text-muted-foreground">{members.map((member) => member.fileName).join(" · ")}</div>
+                      </div>
+                      <label className="grid shrink-0 gap-0.5 text-[10px] text-muted-foreground">
+                        Qty to produce
+                        <input
+                          className="h-7 w-20 rounded border bg-background px-1 text-xs text-foreground"
+                          type="number"
+                          min="1"
+                          step="1"
+                          inputMode="numeric"
+                          aria-label={`Qty to produce for Artwork Set ${index + 1}`}
+                          defaultValue={quantity}
+                          disabled={artworkSetPending}
+                          onBlur={(event) => saveQuantity(event.currentTarget.value.trim())}
+                        />
+                      </label>
+                    </div>
+                  );
+                })}
+              </div>
+              {displayedArtworkMembers.filter((member) => !member.productionGroupId?.trim()).length >= 2 && (
+                <div className="mt-2 flex flex-wrap items-end gap-2 border-t border-border/60 pt-2">
+                  <label className="grid gap-0.5 text-[10px] text-muted-foreground">
+                    New set Qty to produce
+                    <input
+                      className="h-7 w-24 rounded border bg-background px-1 text-xs text-foreground"
+                      type="number"
+                      min="1"
+                      step="1"
+                      inputMode="numeric"
+                      placeholder={lineQuantity ? String(lineQuantity) : "Qty"}
+                      value={newArtworkSetQuantity}
+                      onChange={(event) => setNewArtworkSetQuantity(event.currentTarget.value)}
+                      disabled={artworkSetPending}
+                    />
+                  </label>
+                  <Button type="button" size="sm" variant="outline" disabled={selectedArtworkIds.length < 2 || artworkSetPending} onClick={() => void createArtworkSetFromSelection()}>
+                    Group selected as same finished output
+                  </Button>
+                  <span className="text-[11px] text-muted-foreground">Select ungrouped files below, then give the set one finished-piece quantity.</span>
+                </div>
+              )}
+            </div>
+          )}
           {parentType === 'order' && doubleSided && orderId && artworkAttachments.length > 0 && (
             <div className="mt-2 rounded-md border border-violet-400/30 bg-violet-400/5 p-2.5 space-y-2" data-testid="order-double-sided-artwork-assignment">
               <label className="flex items-center gap-2 text-xs font-medium cursor-pointer">
@@ -1060,25 +1223,14 @@ export function LineItemAttachmentsPanel({
                       <div className="text-[11px] text-muted-foreground">Auto-filled from line quantity</div>
                     )}
                   </div>
-                  {onTemporaryOrderAttachmentUpdate ? (
-                    <label className="grid shrink-0 gap-0.5 text-[10px] text-muted-foreground">
-                      Qty to produce
-                      <input
-                        className="h-7 w-20 rounded border bg-background px-1 text-xs text-foreground"
-                        type="number"
-                        min="1"
-                        step="1"
-                        inputMode="numeric"
-                        aria-label={`Qty to produce for staged artwork ${file.fileName}`}
-                        value={file.productionQuantity ?? ""}
-                        onChange={(event) => {
-                          const value = event.currentTarget.value.trim();
-                          onTemporaryOrderAttachmentUpdate(file.uploadId, {
-                            productionQuantity: value ? Number(value) : null,
-                            allocationSource: "manual",
-                          });
-                        }}
+                  {!file.productionGroupId?.trim() && onTemporaryOrderArtworkSetUpdate ? (
+                    <label className="flex shrink-0 items-center gap-1 text-[10px] text-muted-foreground">
+                      <Checkbox
+                        checked={selectedArtworkIds.includes(file.uploadId)}
+                        onCheckedChange={(checked) => toggleArtworkSetSelection(file.uploadId, checked === true)}
+                        aria-label={`Select staged artwork ${file.fileName} for an Artwork Set`}
                       />
+                      Set
                     </label>
                   ) : null}
                   {onTemporaryOrderAttachmentRemove ? (
@@ -1271,7 +1423,18 @@ export function LineItemAttachmentsPanel({
                             <option value="artwork">Production</option>
                             <option value="reference">Reference</option>
                           </select>
-                          {(file.role ?? file.productionRole) !== 'reference' && (
+                          {(file.role ?? file.productionRole) !== 'reference' && (parentType === "order" ? (
+                            !file.productionGroupId?.trim() ? (
+                              <label className="flex items-center gap-1 text-[10px] text-muted-foreground">
+                                <Checkbox
+                                  checked={selectedArtworkIds.includes(file.id)}
+                                  onCheckedChange={(checked) => toggleArtworkSetSelection(file.id, checked === true)}
+                                  aria-label={`Select ${fileName} for an Artwork Set`}
+                                />
+                                Set
+                              </label>
+                            ) : <span className="text-[10px] text-muted-foreground">Set layer</span>
+                          ) : (
                             <input
                               className="h-7 w-16 rounded border bg-background px-1 text-[10px]"
                               type="number" min="1" step="1" inputMode="numeric"
@@ -1283,7 +1446,7 @@ export function LineItemAttachmentsPanel({
                                 void updateArtworkAllocation(file, { role: 'artwork', productionQuantity: value ? Number(value) : null, productionGroupId: file.productionGroupId ?? null });
                               }}
                             />
-                          )}
+                          ))}
                         </div>
                       )}
                       <div className="flex gap-0.5 shrink-0">

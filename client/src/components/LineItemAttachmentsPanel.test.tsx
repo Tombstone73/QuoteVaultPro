@@ -275,6 +275,30 @@ describe("LineItemAttachmentsPanel artwork controls", () => {
     expect(html).toContain("Allocation complete");
   });
 
+  test("renders a multilayer staged artwork group as one finished-output quantity", () => {
+    const html = renderToStaticMarkup(
+      <QueryClientProvider client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}>
+        <LineItemAttachmentsPanel
+          quoteId={null}
+          parentType="order"
+          orderId={null}
+          lineItemId="temp-line-1"
+          defaultExpanded
+          lineQuantity={250}
+          pendingOrderAttachments={[
+            { uploadId: "color", fileName: "color.pdf", mimeType: "application/pdf", sizeBytes: 1200, uploadedAt: "2026-07-31T00:00:00.000Z", productionQuantity: 250, productionGroupId: "window-cling-a", allocationSource: "manual" },
+            { uploadId: "white", fileName: "white.pdf", mimeType: "application/pdf", sizeBytes: 1200, uploadedAt: "2026-07-31T00:00:00.000Z", productionQuantity: 250, productionGroupId: "window-cling-a", allocationSource: "manual" },
+          ]}
+          onTemporaryOrderArtworkSetUpdate={() => undefined}
+        />
+      </QueryClientProvider>,
+    );
+
+    expect(html).toContain("Artwork Set 1 · 2 required layers");
+    expect(html).toContain("Artwork allocation: Assigned 250 of 250");
+    expect(html).not.toContain("Assigned 500 of 250");
+  });
+
   test("automatically assigns the only artwork file to Both when shared-art intent is active", async () => {
     const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
     const filesPath = "/api/orders/order-1/line-items/line-1/files";
