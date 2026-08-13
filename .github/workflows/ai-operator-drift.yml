@@ -1,0 +1,28 @@
+name: AI Operator drift protection
+
+on:
+  pull_request:
+  push:
+    branches: [dev]
+
+jobs:
+  architecture:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npx jest --runInBand --runTestsByPath server/tests/canonicalCapabilityRegistry.test.ts server/tests/assistantCapabilityInventory.test.ts server/tests/finalMigrationInventory.test.ts server/tests/assistantCommandRegistry.test.ts server/tests/operatorIndex.test.ts server/tests/operatorSkillLoader.test.ts server/tests/assistantActorAuthorityResolver.test.ts server/tests/canonicalOperationalChain.contract.test.ts server/tests/canonicalFinancialCrmOperations.contract.test.ts
+      - run: npm run knowledge:validate
+      - run: npx tsx scripts/generate-ai-operator-canonical-capability-registry.ts
+      - run: npx tsx scripts/generate-ai-operator-capability-inventory.ts
+      - run: npx tsx scripts/generate-ai-operator-index.ts
+      - run: npx tsx scripts/generate-ai-operator-skill-inventory.ts
+      - run: npx tsx scripts/generate-ai-operator-authority-divergence-report.ts
+      - run: npx tsx scripts/generate-ai-operator-final-migration-inventory.ts
+      - run: git diff --exit-code

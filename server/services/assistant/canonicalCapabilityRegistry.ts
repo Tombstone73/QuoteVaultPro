@@ -241,16 +241,36 @@ export function getCapabilitiesForActor(input: AiCapabilityDiscoveryInput): AiCa
 export function validateCanonicalCapabilityRegistry(): void {
   validateOperatorSkillManifests();
   const ids = new Set<string>(); const skills = new Set(operatorSkillManifests.map((manifest) => manifest.skillId));
+  const domains = new Set(operatorIndex.map((entry) => entry.domain));
+  const commands = new Set<string>(); const readTools = new Set<string>();
   for (const capability of canonicalCapabilityRegistry) {
     if (ids.has(capability.id)) throw new Error(`Duplicate canonical capability ID: ${capability.id}`);
     ids.add(capability.id);
     if (capability.skillId && !skills.has(capability.skillId)) throw new Error(`Unknown capability skill: ${capability.skillId}`);
+    if (capability.domain !== "security" && !domains.has(capability.domain)) throw new Error(`Unknown Operator Index domain: ${capability.id}`);
     if (capability.mode === "mutation" && !aiCapabilityEligibilityValues.includes(capability.aiEligibility)) throw new Error(`Mutation capability missing AI eligibility: ${capability.id}`);
     if (capability.aiEligibility === "hard_denied" && !capability.hardDenyReason) throw new Error(`Hard-denied capability missing reason: ${capability.id}`);
     if (capability.aiEligibility === "hard_denied" && capability.aiExposure !== "not_exposed") throw new Error(`Hard-denied capability is exposed: ${capability.id}`);
-    if (capability.source === "command" && !assistantProductionCommandAllowlist.includes(capability.sourceId as never)) throw new Error(`Unknown command source: ${capability.id}`);
-    if (capability.source === "read_tool" && !assistantToolRegistry.has(capability.sourceId as never)) throw new Error(`Unknown read-tool source: ${capability.id}`);
+    if (capability.source === "command") {
+      if (!assistantProductionCommandAllowlist.includes(capability.sourceId as never)) throw new Error(`Unknown command source: ${capability.id}`);
+      if (commands.has(capability.sourceId!)) throw new Error(`Duplicate command descriptor: ${capability.sourceId}`);
+      commands.add(capability.sourceId!);
+      if (capability.aiEligibility === "eligible") {
+        if (!capability.requiredGrant || !capability.allowedOrganizationRoles.length || capability.confirmation !== "go_required" || capability.tenantScope !== "organization") throw new Error(`Eligible mutation lacks authority/GO/tenant metadata: ${capability.id}`);
+        const adminAuthority = resolveOrganizationRoleAuthority("admin");
+        if (!capability.allowedOrganizationRoles.includes("admin") || !adminAuthority.grants.includes(capability.requiredGrant)) throw new Error(`Eligible capability exceeds Admin AI ceiling: ${capability.id}`);
+      }
+      if (capability.migrationStatus === "shared_canonical" && (capability.canonicalOperationReference === "not_applicable" || capability.uiSurfaceReference === "unknown" || capability.lifecycleValidationReference === "not_applicable" || capability.auditReference === "not_applicable")) throw new Error(`Shared canonical command lacks operation/UI/lifecycle/audit metadata: ${capability.id}`);
+    }
+    if (capability.source === "read_tool") {
+      if (!assistantToolRegistry.has(capability.sourceId as never)) throw new Error(`Unknown read-tool source: ${capability.id}`);
+      if (readTools.has(capability.sourceId!)) throw new Error(`Duplicate read-tool descriptor: ${capability.sourceId}`);
+      readTools.add(capability.sourceId!);
+    }
+    if (capability.source === "ui_compatibility" && (capability.aiEligibility !== "ineligible" || capability.aiExposure !== "not_exposed" || capability.parityStatus !== "ui_only_not_migrated")) throw new Error(`UI-only capability has model-facing metadata: ${capability.id}`);
   }
+  if (commands.size !== assistantProductionCommandAllowlist.length) throw new Error("Canonical registry does not cover every production command.");
+  if (readTools.size !== assistantToolRegistry.size) throw new Error("Canonical registry does not cover every assistant read tool.");
 }
 
 export function renderCanonicalCapabilityRegistryMarkdown(): string {

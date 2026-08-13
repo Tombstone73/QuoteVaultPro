@@ -39,19 +39,11 @@ describe("AI Operator capability inventory", () => {
     expect(commandPermissionMetadataGaps).toEqual([]);
   });
 
-  it("keeps the incomplete descriptive mirror out of authority decisions", async () => {
+  it("keeps compatibility projections derived from canonical metadata", async () => {
     const source = await readFile(path.resolve(process.cwd(), "server/services/assistant/assistantCapabilities.ts"), "utf8");
-    const actualGaps = assistantProductionCommandAllowlist.filter((command) => !source.includes(`"${command}"`));
-    expect(actualGaps).toEqual([
-      "products.create_inactive_draft_batch",
-      "products.adjust_pricing",
-      "products.rollback_pricing_change_set",
-      "products.create_configurable_draft",
-      "products.create_from_canonical_intent",
-      "products.clone_to_inactive_draft",
-      "products.replace_inactive_matrix",
-      "products.replace_inactive_quantity_tiers",
-    ]);
+    expect(source).toContain("getAssistantCapabilityProjection");
+    expect(source).toContain('import("./canonicalCapabilityRegistry")');
+    expect(source).not.toContain('"products.update_inactive_draft": "assistant.products.update_inactive_draft"');
     expect(commandPermissionMetadataGaps).toEqual([]);
   });
 

@@ -12,6 +12,15 @@ jest.unstable_mockModule("../storage/assistant.repo", () => ({
 }));
 jest.unstable_mockModule("../services/assistant/assistantCapabilities", () => ({
   OrganizationAssistantCapabilityResolver: class {},
+  getAssistantCapabilityProjection: async () => ({
+    productionCommands: ["quotes.add_internal_note", "products.create_inactive_draft", "products.update_inactive_draft"],
+    commandPermissions: {
+      "quotes.add_internal_note": "assistant.quotes.add_internal_note",
+      "products.create_inactive_draft": "assistant.products.create_inactive_draft",
+      "products.update_inactive_draft": "assistant.products.update_inactive_draft",
+    },
+    readTools: ["search.global", "customers.get_summary", "orders.get_summary", "products.get_summary", "reports.operational_summary", "navigation.get_current_context"],
+  }),
   assistantCapabilityProductionCommands: ["quotes.add_internal_note", "products.create_inactive_draft", "products.update_inactive_draft"],
   assistantCapabilityCommandPermissions: {
     "quotes.add_internal_note": "assistant.quotes.add_internal_note",

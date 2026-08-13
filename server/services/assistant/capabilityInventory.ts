@@ -2,6 +2,7 @@ import { assistantToolNameValues, type AssistantToolName } from "@shared/assista
 import { assistantCapabilityCatalog } from "./aiFirstCapabilityCatalog";
 import { assistantProductionCommandAllowlist } from "./execution/commandRegistry";
 import { assistantToolRegistry } from "./toolRegistry";
+import { canonicalCapabilityRegistry, getCanonicalCapabilityForCommand } from "./canonicalCapabilityRegistry";
 
 /**
  * Phase 1 inventory only. This module deliberately has no execution API and
@@ -86,57 +87,12 @@ const assistantRoute = "server/routes/assistant.routes.ts";
 const executionRoute = "server/routes/assistantExecution.routes.ts";
 const productRoute = "server/routes/products.routes.ts";
 
-/** Dependency-free source-backed command metadata snapshot. Phase 2B completed
- * the eight former mirror gaps by tracing each command definition's
- * requiredCapability; command definitions remain the runtime source of truth. */
-const capabilityMirrorCommandPermissions: Readonly<Record<string, string>> = {
-  "quotes.add_internal_note": "assistant.quotes.add_internal_note",
-  "quotes.create_draft": "assistant.quotes.create_draft",
-  "quotes.update_draft": "assistant.quotes.update_draft",
-  "orders.create": "assistant.orders.create",
-  "orders.update_editable": "assistant.orders.update_editable",
-  "quotes.convert_to_order": "assistant.quotes.convert_to_order",
-  "customers.create": "assistant.customers.create",
-  "customers.update_profile": "assistant.customers.update_profile",
-  "customers.update_commercial_terms": "assistant.customers.update_commercial_terms",
-  "contacts.create": "assistant.contacts.create",
-  "contacts.update": "assistant.contacts.update",
-  "production.intake_line_items": "assistant.production.intake_line_items",
-  "production.send_to_prepress": "assistant.production.send_to_prepress",
-  "production.update_job_status": "assistant.production.update_job_status",
-  "production.add_job_note": "assistant.production.add_job_note",
-  "fulfillment.create_shipment": "assistant.fulfillment.create_shipment",
-  "fulfillment.update_shipment_details": "assistant.fulfillment.update_shipment_details",
-  "fulfillment.mark_shipped": "assistant.fulfillment.mark_shipped",
-  "fulfillment.create_pickup_ticket": "assistant.fulfillment.create_pickup_ticket",
-  "fulfillment.add_note": "assistant.fulfillment.add_note",
-  "billing.create_invoice": "assistant.billing.create_invoice",
-  "billing.update_invoice_draft": "assistant.billing.update_invoice_draft",
-  "billing.send_invoice": "assistant.billing.send_invoice",
-  "billing.add_invoice_note": "assistant.billing.add_invoice_note",
-  "payments.record_manual_payment": "assistant.payments.record_manual_payment",
-  "payments.add_payment_note": "assistant.payments.add_payment_note",
-  "products.create_inactive_draft": "assistant.products.create_inactive_draft",
-  "products.update_inactive_draft": "assistant.products.update_inactive_draft",
-  "products.update_inactive_draft_batch": "assistant.products.update_inactive_draft_batch",
-  "products.update_existing_product": "assistant.products.update_existing_product",
-  "products.create_inactive_draft_batch": "assistant.products.create_inactive_draft_batch",
-  "products.adjust_pricing": "assistant.products.adjust_pricing",
-  "products.rollback_pricing_change_set": "assistant.products.adjust_pricing",
-  "products.create_configurable_draft": "assistant.products.create_inactive_draft",
-  "products.create_from_canonical_intent": "assistant.products.create_inactive_draft",
-  "products.clone_to_inactive_draft": "assistant.products.clone_to_inactive_draft",
-  "products.replace_inactive_matrix": "assistant.products.replace_inactive_matrix",
-  "products.replace_inactive_quantity_tiers": "assistant.products.replace_inactive_quantity_tiers",
-};
-
-export const knownCapabilityMirrorReadTools = [
-  "search.global", "quotes.search", "quotes.get_detail", "customers.get_summary",
-  "orders.get_summary", "products.get_summary", "reports.operational_summary",
-  "navigation.get_current_context", "production.get_queue_summary",
-  "operations.get_attention_summary", "orders.get_due_summary", "production.get_completed_jobs",
-  "analytics.resolve_customer", "analytics.customer_product_sales", "analytics.customer_uninvoiced_orders",
-] as const;
+/** Developer inventory projections are deliberately derived from the
+ * canonical registry; this module records evidence, it does not define
+ * capability or permission policy. */
+export const knownCapabilityMirrorReadTools = canonicalCapabilityRegistry
+  .filter((capability) => capability.source === "read_tool" && capability.sourceId)
+  .map((capability) => capability.sourceId!);
 
 function commandDomain(command: (typeof assistantProductionCommandAllowlist)[number]): CapabilityInventoryDomain {
   if (command.startsWith("products.")) return command.includes("pricing") || command.includes("matrix") || command.includes("quantity_tiers") ? "pbv2_pricing" : "products";
@@ -232,9 +188,7 @@ function canonicalOperationSource(command: (typeof assistantProductionCommandAll
 
 const commandInventory: CapabilityInventoryItem[] = assistantProductionCommandAllowlist.map((command) => {
   const definition = commandSourceByName[command] ?? "unknown";
-  const permission = Object.prototype.hasOwnProperty.call(capabilityMirrorCommandPermissions, command)
-    ? capabilityMirrorCommandPermissions[command]!
-    : "unknown";
+  const permission = getCanonicalCapabilityForCommand(command)?.requiredGrant ?? "unknown";
   return {
     id: `ai.command.${command}`,
     domain: commandDomain(command),
@@ -246,7 +200,7 @@ const commandInventory: CapabilityInventoryItem[] = assistantProductionCommandAl
     commandName: command,
     inputSchemaSource: definition,
     resultContractSource: definition,
-    permissionSource: permission === "unknown" ? "unknown" : source("server/services/assistant/assistantCapabilities.ts", "assistantCapabilityCommandPermissions"),
+    permissionSource: permission === "unknown" ? "unknown" : source("server/services/assistant/canonicalCapabilityRegistry.ts", "canonicalCapabilityRegistry"),
     permissionRequirement: permission,
     tenantScopingSource: source(executionRoute, "scope", undefined, "Authenticated request supplies organizationId; commands reload scoped records."),
     confirmation: "go_required",
@@ -315,13 +269,13 @@ export const authorizationInventory = Object.freeze([
   { id: "ui.route.middleware", appliesTo: ["normal UI reads and mutations"], actorIdentitySource: source("server/routes.ts", "isAuthenticated"), tenantIdentitySource: source("server/tenantContext.ts", "tenantContext/getRequestOrganizationId"), permissionSource: source("server/routes.ts", "isAdminOrOwner/requireOrgOwnerAdmin"), roleTranslation: source("server/routes.ts", "isAdminOrOwner/requireOrgOwnerAdmin"), hardCodedPermissions: [], finding: "Route middleware is the UI authority, but exact policy varies by route and several routes use only authentication plus tenant context." },
   { id: "assistant.shared.authority", appliesTo: ["chat", "execution-plan creation", "GO confirmation", "command execution"], actorIdentitySource: source(assistantRoute, "getUserId"), tenantIdentitySource: source("server/tenantContext.ts", "tenantContext/getRequestOrganizationId"), permissionSource: source("shared/organizationRoleAuthority.ts", "resolveOrganizationRoleAuthority"), roleTranslation: source("shared/organizationRoleAuthority.ts", "resolveOrganizationRoleAuthority"), hardCodedPermissions: ["assistant.internal_staff", "catalog.read", "assistant.products.create_inactive_draft", "assistant.billing.send_invoice"], finding: "Shared tenant-role policy supplies grants to both chat and execution; command requiredCapability and allowedRoles are both enforced." },
   { id: "assistant.read.tool", appliesTo: ["AI read tool execution"], actorIdentitySource: source("server/services/assistant/toolRegistry.ts", "AssistantTrustedToolContext"), tenantIdentitySource: source("server/services/assistant/toolRegistry.ts", "AssistantTrustedToolContext"), permissionSource: source("server/services/assistant/toolRegistry.ts", "isAuthorizedForAssistantTool"), roleTranslation: "none_explicit", hardCodedPermissions: ["assistant.internal_staff", "catalog.read", "finance.read"], finding: "Read-tool policy is explicit and requires the server-derived internal-staff marker." },
-  { id: "assistant.capability.mirror", appliesTo: ["capability description and filtering"], actorIdentitySource: source(assistantRoute, "buildActor"), tenantIdentitySource: source(assistantRoute, "resolveScope"), permissionSource: source("server/services/assistant/capabilityInventory.ts", "capabilityMirrorCommandPermissions"), roleTranslation: source("shared/organizationRoleAuthority.ts", "resolveOrganizationRoleAuthority"), hardCodedPermissions: [], finding: "Descriptive metadata now covers the production allowlist but is not runtime authority; command definitions and the shared policy are authoritative." },
+  { id: "assistant.capability.registry", appliesTo: ["capability description and filtering"], actorIdentitySource: source(assistantRoute, "buildActor"), tenantIdentitySource: source(assistantRoute, "resolveScope"), permissionSource: source("server/services/assistant/canonicalCapabilityRegistry.ts", "canonicalCapabilityRegistry"), roleTranslation: source("shared/organizationRoleAuthority.ts", "resolveOrganizationRoleAuthority"), hardCodedPermissions: [], finding: "Canonical registry projections describe reviewed tools and commands; server-owned authority and execution definitions remain enforcement boundaries." },
   { id: "assistant.execution.shared_scope", appliesTo: ["execution-plan creation", "GO confirmation", "command execution"], actorIdentitySource: source(executionRoute, "userId"), tenantIdentitySource: source(executionRoute, "scope"), permissionSource: source("server/services/assistant/actorAuthorityResolver.ts", "resolveAssistantActorAuthority"), roleTranslation: source("shared/organizationRoleAuthority.ts", "resolveOrganizationRoleAuthority"), hardCodedPermissions: [], finding: "Execution uses the same resolver grants as chat and checks each command's required capability and allowed roles at planning, confirmation, and execution." },
   { id: "assistant.command.definition", appliesTo: ["command registration and execution metadata"], actorIdentitySource: source(executionRoute, "scope"), tenantIdentitySource: source(executionRoute, "scope"), permissionSource: source("server/services/assistant/execution/commandRegistry.ts", "AssistantCommandDefinition.requiredCapability/allowedRoles"), roleTranslation: source("server/services/assistant/execution/commandRegistry.ts", "AssistantCommandDefinition.allowedRoles"), hardCodedPermissions: [], finding: "Commands declare required capability and allowed roles; both are carried into the execution registry and enforced." },
 ] as const satisfies readonly AuthorizationInventorySource[]);
 
 export const commandPermissionMetadataGaps = Object.freeze(
-  assistantProductionCommandAllowlist.filter((command) => !Object.prototype.hasOwnProperty.call(capabilityMirrorCommandPermissions, command)),
+  assistantProductionCommandAllowlist.filter((command) => !getCanonicalCapabilityForCommand(command)?.requiredGrant),
 );
 
 export const productParityInventory = Object.freeze([
@@ -354,7 +308,7 @@ export function renderCapabilityInventoryMarkdown(): string {
   }).join("\n\n");
   const authority = authorizationInventory.map((item) => `| ${item.id} | ${item.appliesTo.join(", ")} | ${item.permissionSource === "none_explicit" ? "none explicit" : item.permissionSource.file} | ${item.finding} |`).join("\n");
   const product = productParityInventory.map((item) => `| ${item.productArea} | ${item.classification} | ${item.notes} |`).join("\n");
-  return `# AI Operator capability and authority inventory\n\n> Generated from \`server/services/assistant/capabilityInventory.ts\`. Phase 1 inventory only; it does not register or execute capabilities.\n\n## Scope\n\nThis is a source-backed baseline for the future canonical capability registry. \`unknown\` means the source audit did not establish the fact conclusively.\n\n## Authorization sources\n\n| Source | Applies to | Permission authority | Finding |\n|---|---|---|---|\n${authority}\n\n## Known command-permission mirror gaps\n\n${commandPermissionMetadataGaps.length ? commandPermissionMetadataGaps.map((command) => `- \`${command}\``).join("\n") : "None."}\n\n## Product parity fixture\n\n| Product area | Classification | Notes |\n|---|---|---|\n${product}\n\n## Capability inventory by domain\n\n${domains}\n`;
+  return `# AI Operator capability and authority inventory\n\n> Generated from \`server/services/assistant/capabilityInventory.ts\`. This is a source-backed developer projection; canonical registry metadata is the capability description authority.\n\n## Scope\n\n\`unknown\` means the source audit did not establish the fact conclusively. This report never registers or executes capabilities.\n\n## Authorization sources\n\n| Source | Applies to | Permission authority | Finding |\n|---|---|---|---|\n${authority}\n\n## Canonical command-metadata gaps\n\n${commandPermissionMetadataGaps.length ? commandPermissionMetadataGaps.map((command) => `- \`${command}\``).join("\n") : "None."}\n\n## Product parity fixture\n\n| Product area | Classification | Notes |\n|---|---|---|\n${product}\n\n## Capability inventory by domain\n\n${domains}\n`;
 }
 
 export const knownReadToolNames = assistantToolNameValues;

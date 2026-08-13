@@ -1,13 +1,23 @@
 import { beforeAll, beforeEach, describe, expect, jest, test } from "@jest/globals";
 import { assistantContextEnvelopeSchema } from "@shared/assistantContracts";
 
+jest.unstable_mockModule("../services/assistant/assistantCapabilities", () => ({
+  getAssistantCapabilityProjection: async () => ({
+    productionCommands: ["quotes.add_internal_note", "products.create_inactive_draft", "products.update_inactive_draft"],
+    commandPermissions: {
+      "quotes.add_internal_note": "assistant.quotes.add_internal_note",
+      "products.create_inactive_draft": "assistant.products.create_inactive_draft",
+      "products.update_inactive_draft": "assistant.products.update_inactive_draft",
+    },
+    readTools: ["search.global", "customers.get_summary", "orders.get_summary", "products.get_summary", "reports.operational_summary", "navigation.get_current_context"],
+  }),
+}));
+
 let AssistantService: any;
 let AssistantServiceError: any;
 let ASSISTANT_UNAVAILABLE_REPLY: string;
 let responseStateForCards: any;
 let titleFromMessage: any;
-let assistantCapabilityCommandPermissions: any;
-let assistantCapabilityCommandDescriptions: any;
 
 beforeAll(async () => {
   const module = await import("../services/assistant/assistantService");
@@ -16,9 +26,6 @@ beforeAll(async () => {
   ASSISTANT_UNAVAILABLE_REPLY = module.ASSISTANT_UNAVAILABLE_REPLY;
   responseStateForCards = module.responseStateForCards;
   titleFromMessage = module.titleFromMessage;
-  const capabilities = await import("../services/assistant/assistantCapabilities");
-  assistantCapabilityCommandPermissions = capabilities.assistantCapabilityCommandPermissions;
-  assistantCapabilityCommandDescriptions = capabilities.assistantCapabilityCommandDescriptions;
 });
 
 const scope = { organizationId: "org_1", userId: "user_1" };
@@ -131,15 +138,6 @@ describe("AssistantService", () => {
 
     expect(capability).toMatchObject({ externalResearchEnabled: true, readToolsEnabled: true });
     expect(capability.composerHelperText).toBe("Business lookups and external research are enabled. Write actions require additional permission.");
-  });
-
-  test("keeps reviewed command permissions and capability wording explicit for inactive-draft updates", () => {
-    expect(assistantCapabilityCommandPermissions["products.update_inactive_draft"])
-      .toBe("assistant.products.update_inactive_draft");
-    expect(assistantCapabilityCommandDescriptions["products.update_inactive_draft"])
-      .toBe("update an inactive product draft after your confirmation");
-    expect(assistantCapabilityCommandPermissions["products.update_inactive_draft"])
-      .not.toBe(assistantCapabilityCommandPermissions["products.create_inactive_draft"]);
   });
 
   test("keeps successful capability answers and safe not-found results non-retryable", () => {

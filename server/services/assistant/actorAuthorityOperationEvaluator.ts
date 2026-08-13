@@ -1,4 +1,4 @@
-import { capabilityInventory } from "./capabilityInventory";
+import { getCanonicalCapability, getCanonicalCapabilityForCommand } from "./canonicalCapabilityRegistry";
 import { assistantToolRegistry } from "./toolRegistry";
 import type { AssistantActorAuthorityContext, AssistantAuthorityDecision, AssistantAuthorityOperation } from "./actorAuthorityResolver";
 
@@ -11,12 +11,12 @@ function requiredPermission(operation: AssistantAuthorityOperation): { permissio
     if (tool.requiredPermission === "finance_read") return { permission: "finance.read", source: "assistantToolRegistry" };
     return { permission: null, source: "assistantToolRegistry:unknown_policy" };
   }
-  const item = operation.kind === "command"
-    ? capabilityInventory.find((candidate) => candidate.commandName === operation.commandName)
-    : capabilityInventory.find((candidate) => candidate.id === operation.capabilityId);
-  return item?.permissionRequirement && item.permissionRequirement !== "unknown"
-    ? { permission: item.permissionRequirement, source: "capabilityInventory" }
-    : { permission: null, source: "capabilityInventory:unknown_or_missing_permission_metadata" };
+  const capability = operation.kind === "command"
+    ? getCanonicalCapabilityForCommand(operation.commandName)
+    : getCanonicalCapability(operation.capabilityId);
+  return capability?.requiredGrant
+    ? { permission: capability.requiredGrant, source: "canonicalCapabilityRegistry" }
+    : { permission: null, source: "canonicalCapabilityRegistry:unknown_or_missing_permission_metadata" };
 }
 
 /** Metadata-aware evaluator is intentionally not imported by request routes.

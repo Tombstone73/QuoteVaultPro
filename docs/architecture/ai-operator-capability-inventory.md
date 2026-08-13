@@ -1,10 +1,10 @@
 # AI Operator capability and authority inventory
 
-> Generated from `server/services/assistant/capabilityInventory.ts`. Phase 1 inventory only; it does not register or execute capabilities.
+> Generated from `server/services/assistant/capabilityInventory.ts`. This is a source-backed developer projection; canonical registry metadata is the capability description authority.
 
 ## Scope
 
-This is a source-backed baseline for the future canonical capability registry. `unknown` means the source audit did not establish the fact conclusively.
+`unknown` means the source audit did not establish the fact conclusively. This report never registers or executes capabilities.
 
 ## Authorization sources
 
@@ -13,11 +13,11 @@ This is a source-backed baseline for the future canonical capability registry. `
 | ui.route.middleware | normal UI reads and mutations | server/routes.ts | Route middleware is the UI authority, but exact policy varies by route and several routes use only authentication plus tenant context. |
 | assistant.shared.authority | chat, execution-plan creation, GO confirmation, command execution | shared/organizationRoleAuthority.ts | Shared tenant-role policy supplies grants to both chat and execution; command requiredCapability and allowedRoles are both enforced. |
 | assistant.read.tool | AI read tool execution | server/services/assistant/toolRegistry.ts | Read-tool policy is explicit and requires the server-derived internal-staff marker. |
-| assistant.capability.mirror | capability description and filtering | server/services/assistant/capabilityInventory.ts | Descriptive metadata now covers the production allowlist but is not runtime authority; command definitions and the shared policy are authoritative. |
+| assistant.capability.registry | capability description and filtering | server/services/assistant/canonicalCapabilityRegistry.ts | Canonical registry projections describe reviewed tools and commands; server-owned authority and execution definitions remain enforcement boundaries. |
 | assistant.execution.shared_scope | execution-plan creation, GO confirmation, command execution | server/services/assistant/actorAuthorityResolver.ts | Execution uses the same resolver grants as chat and checks each command's required capability and allowed roles at planning, confirmation, and execution. |
 | assistant.command.definition | command registration and execution metadata | server/services/assistant/execution/commandRegistry.ts | Commands declare required capability and allowed roles; both are carried into the execution registry and enforced. |
 
-## Known command-permission mirror gaps
+## Canonical command-metadata gaps
 
 None.
 
