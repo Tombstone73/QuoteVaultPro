@@ -97,10 +97,10 @@ export default function MaterialDetailPage({ params }: Props) {
           <div className="text-sm space-y-1">
             <div><strong>Material Form:</strong> {units.materialForm}</div>
             <div><strong>Inventory Unit:</strong> {units.inventoryUnit}</div>
-            <div><strong>Vendor Cost Unit:</strong> {units.vendorCostUnit}</div>
+            <div><strong>Purchase Unit:</strong> {units.vendorCostUnit}</div>
             <div><strong>Consumption Unit:</strong> {units.consumptionUnit}</div>
             <div><strong>Weight:</strong> {formatMaterialWeight(material)}</div>
-            <div><strong>Material Rate:</strong> {material.costPerUnit}</div>
+            <div><strong>Normalized Internal Cost:</strong> {material.costPerUnit} / {units.inventoryUnit}</div>
             {material.color && <div><strong>Color:</strong> {material.color}</div>}
             {material.width && <div><strong>Width:</strong> {material.width}</div>}
             {material.height && <div><strong>Height:</strong> {material.height}</div>}
@@ -137,9 +137,10 @@ export default function MaterialDetailPage({ params }: Props) {
           <div className="text-sm space-y-1">
             <div><strong>Preferred Vendor:</strong> {vendorDisplayName || "Not set"}</div>
             {material.vendorSku ? <div><strong>Vendor SKU:</strong> {material.vendorSku}</div> : null}
-            {vendorPrice ? <div><strong>Last Known Price:</strong> {vendorPrice}</div> : null}
+            {material.vendorCostPerUnit ? <div><strong>Vendor Purchase Price:</strong> {material.vendorCostPerUnit} / {units.vendorCostUnit}</div> : null}
+            {vendorPrice ? <div><strong>Last Received Vendor Price:</strong> {vendorPrice}</div> : null}
             {material.vendorLastPriceUpdatedAt ? (
-              <div><strong>Price Updated:</strong> {new Date(material.vendorLastPriceUpdatedAt).toLocaleDateString()}</div>
+              <div><strong>Last Receipt Date:</strong> {new Date(material.vendorLastPriceUpdatedAt).toLocaleDateString()}</div>
             ) : null}
             {material.vendorProductUrl ? (
               <a

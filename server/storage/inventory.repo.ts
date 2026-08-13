@@ -1,4 +1,5 @@
 import { db } from "../db";
+import { calculateNormalizedMaterialCost, formatNormalizedMaterialCost } from "@shared/materialVendorCost";
 import {
     materials,
     materialProductLinks,
@@ -184,7 +185,7 @@ export class InventoryRepository {
             // `type` remains the existing storage classification during the migration bridge.
             type: materialFields.materialForm,
         } as any);
-        const [created] = await this.dbInstance.insert(materials).values({ ...materialWithWeight, organizationId } as any).returning();
+        const [created] = await this.dbInstance.insert(materials).values({ ...this.withNormalizedVendorCost(materialWithWeight), organizationId } as any).returning();
         return created;
     }
 
@@ -194,12 +195,33 @@ export class InventoryRepository {
             ...materialFields,
             ...(materialFields.materialForm ? { type: materialFields.materialForm } : {}),
         } as any, { preserveWhenAbsent: true });
+        const current = await this.getMaterialById(organizationId, id);
+        if (!current) throw new Error('Material not found');
+        const shouldRefreshNormalizedCost = [
+            'vendorCostPerUnit',
+            'inventoryUnitsPerPurchaseUnit',
+            'costPerRoll',
+            'inventoryUnit',
+            'width',
+            'rollLengthFt',
+            'edgeWasteInPerSide',
+            'leadWasteFt',
+            'tailWasteFt',
+        ].some((field) => Object.prototype.hasOwnProperty.call(materialWithWeight, field));
+        const mergedMaterial = { ...current, ...materialWithWeight };
         const [updated] = await this.dbInstance.update(materials)
-            .set({ ...materialWithWeight, updatedAt: new Date() } as any)
+            .set({ ...(shouldRefreshNormalizedCost ? this.withNormalizedVendorCost(mergedMaterial) : materialWithWeight), updatedAt: new Date() } as any)
             .where(and(eq(materials.id, id), eq(materials.organizationId, organizationId)))
             .returning();
         if (!updated) throw new Error('Material not found');
         return updated;
+    }
+
+    private withNormalizedVendorCost(material: Record<string, unknown>): Record<string, unknown> {
+        const normalized = calculateNormalizedMaterialCost(material);
+        return normalized === null
+            ? material
+            : { ...material, costPerUnit: formatNormalizedMaterialCost(normalized) };
     }
 
     async deleteMaterial(organizationId: string, id: string): Promise<void> {

@@ -11,6 +11,7 @@ import {
     type InsertPurchaseOrder,
     type UpdatePurchaseOrder,
 } from "@shared/schema";
+import { formatNormalizedMaterialCost } from "@shared/materialVendorCost";
 import { eq, and, or, gte, lte, ilike, desc, sql } from "drizzle-orm";
 import {
     allocateDocumentNumber,
@@ -239,10 +240,27 @@ export class AccountingRepository {
             return await this.dbInstance.transaction(async (tx) => {
                 const poNumber = await this.generateNextPoNumber(organizationId, tx);
                 const relatedOrderId = await this.assertRelatedOrderIsLinkable(organizationId, (data as any).relatedOrderId, tx);
-                const lineValues = data.lineItems.map(li => {
+                const lineValues: any[] = [];
+                for (const li of data.lineItems) {
+                    let inventoryUnitsPerPurchaseUnit = 1;
+                    if ((li as any).materialId) {
+                        const [material] = await tx.select().from(materials).where(and(
+                            eq(materials.id, (li as any).materialId),
+                            eq(materials.organizationId, organizationId),
+                        ));
+                        if (!material) throw new Error('Material not found');
+                        inventoryUnitsPerPurchaseUnit = Number(material.inventoryUnitsPerPurchaseUnit ?? 1);
+                        const minimumPurchaseQuantity = Number(material.minimumPurchaseQuantity ?? 1);
+                        if (Number(li.quantityOrdered) < minimumPurchaseQuantity) {
+                            throw new Error(`Material requires a minimum purchase quantity of ${minimumPurchaseQuantity}`);
+                        }
+                    }
+                    if (!Number.isFinite(inventoryUnitsPerPurchaseUnit) || inventoryUnitsPerPurchaseUnit <= 0) {
+                        throw new Error('Material has an invalid purchase-unit conversion');
+                    }
                     const lineTotal = Number(li.quantityOrdered) * Number(li.unitCost);
-                    return { ...li, lineTotal: lineTotal.toFixed(4) } as any;
-                });
+                    lineValues.push({ ...li, inventoryUnitsPerPurchaseUnit: inventoryUnitsPerPurchaseUnit.toFixed(6), lineTotal: lineTotal.toFixed(4) } as any);
+                }
                 const subtotal = lineValues.reduce((sum, li) => sum + Number(li.lineTotal), 0);
                 const taxTotal = 0;
                 const shippingTotal = 0;
@@ -293,10 +311,27 @@ export class AccountingRepository {
             if (Object.keys(headerUpdates).length) await tx.update(purchaseOrders).set(headerUpdates).where(and(eq(purchaseOrders.id, id), eq(purchaseOrders.organizationId, organizationId)));
             if (Array.isArray((data as any).lineItems)) {
                 await tx.delete(purchaseOrderLineItems).where(eq(purchaseOrderLineItems.purchaseOrderId, id));
-                const newLines: any[] = (data as any).lineItems.map((li: any) => {
+                const newLines: any[] = [];
+                for (const li of (data as any).lineItems) {
+                    let inventoryUnitsPerPurchaseUnit = 1;
+                    if (li.materialId) {
+                        const [material] = await tx.select().from(materials).where(and(
+                            eq(materials.id, li.materialId),
+                            eq(materials.organizationId, organizationId),
+                        ));
+                        if (!material) throw new Error('Material not found');
+                        inventoryUnitsPerPurchaseUnit = Number(material.inventoryUnitsPerPurchaseUnit ?? 1);
+                        const minimumPurchaseQuantity = Number(material.minimumPurchaseQuantity ?? 1);
+                        if (Number(li.quantityOrdered) < minimumPurchaseQuantity) {
+                            throw new Error(`Material requires a minimum purchase quantity of ${minimumPurchaseQuantity}`);
+                        }
+                    }
+                    if (!Number.isFinite(inventoryUnitsPerPurchaseUnit) || inventoryUnitsPerPurchaseUnit <= 0) {
+                        throw new Error('Material has an invalid purchase-unit conversion');
+                    }
                     const lineTotal = Number(li.quantityOrdered) * Number(li.unitCost);
-                    return { ...li, purchaseOrderId: id, lineTotal: lineTotal.toFixed(4) };
-                });
+                    newLines.push({ ...li, inventoryUnitsPerPurchaseUnit: inventoryUnitsPerPurchaseUnit.toFixed(6), purchaseOrderId: id, lineTotal: lineTotal.toFixed(4) });
+                }
                 for (const nl of newLines) await tx.insert(purchaseOrderLineItems).values(nl);
                 const subtotal = newLines.reduce((sum, li) => sum + Number(li.lineTotal), 0);
                 const grandTotal = subtotal;
@@ -336,8 +371,19 @@ export class AccountingRepository {
                 const newReceived = Number(line.quantityReceived) + item.quantityToReceive;
                 await tx.update(purchaseOrderLineItems).set({ quantityReceived: newReceived.toFixed(2), updatedAt: new Date() } as any).where(eq(purchaseOrderLineItems.id, (line as any).id));
                 if ((line as any).materialId) {
-                    await adjustInventoryFn(organizationId, (line as any).materialId, 'purchase_receipt', item.quantityToReceive, userId, `PO receipt ${existing.poNumber}`);
-                    await tx.update(materials).set({ vendorCostPerUnit: (line as any).unitCost, updatedAt: new Date() } as any).where(and(eq(materials.id, (line as any).materialId), eq(materials.organizationId, organizationId)));
+                    const conversion = Number((line as any).inventoryUnitsPerPurchaseUnit ?? 1);
+                    if (!Number.isFinite(conversion) || conversion <= 0) throw new Error('Purchase order line has an invalid inventory-unit conversion');
+                    const inventoryQuantity = item.quantityToReceive * conversion;
+                    await adjustInventoryFn(organizationId, (line as any).materialId, 'purchase_receipt', inventoryQuantity, userId, `PO receipt ${existing.poNumber}`);
+                    const purchasePrice = Number((line as any).unitCost);
+                    const receivedAt = item.receivedDate ?? new Date();
+                    await tx.update(materials).set({
+                        vendorCostPerUnit: purchasePrice.toFixed(4),
+                        costPerUnit: formatNormalizedMaterialCost(purchasePrice / conversion),
+                        vendorLastPriceCents: Math.round(purchasePrice * 100),
+                        vendorLastPriceUpdatedAt: receivedAt,
+                        updatedAt: new Date(),
+                    } as any).where(and(eq(materials.id, (line as any).materialId), eq(materials.organizationId, organizationId)));
                 }
             }
             const updated = await this.getPurchaseOrderWithLines(organizationId, purchaseOrderId);

@@ -61,6 +61,27 @@ describe("material vendor purchasing fields", () => {
     expect(updated.vendorCostUnit).toBe("each");
   });
 
+  it("accepts an explicit vendor purchase conversion and minimum order", () => {
+    const parsed = insertMaterialSchema.parse({
+      ...baseMaterialPayload,
+      materialForm: "sheet",
+      inventoryUnit: "sheet",
+      consumptionUnit: "sheet",
+      vendorCostUnit: "lot",
+      vendorCostPerUnit: "403.65",
+      inventoryUnitsPerPurchaseUnit: "15",
+      minimumPurchaseQuantity: "1",
+    });
+
+    expect(parsed.vendorCostUnit).toBe("lot");
+    expect(parsed.inventoryUnitsPerPurchaseUnit).toBe(15);
+    expect(parsed.minimumPurchaseQuantity).toBe(1);
+  });
+
+  it("rejects zero purchase conversions", () => {
+    expect(updateMaterialSchema.safeParse({ inventoryUnitsPerPurchaseUnit: 0 }).success).toBe(false);
+  });
+
   it("clears material vendor fields with blank or null values", () => {
     const parsed = updateMaterialSchema.parse({
       preferredVendorName: "",

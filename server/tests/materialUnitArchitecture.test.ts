@@ -32,4 +32,25 @@ describe("material unit architecture contracts", () => {
     expect(buildMaterialPayload(row, null)).toEqual(expect.objectContaining({ materialForm: "roll", inventoryUnit: "square_foot", consumptionUnit: "linear_foot" }));
     expect(validateNormalizedRow(normalizeRow({ material_name: "Bad", sku: "BAD", material_type: "roll", unit_of_measure: "sqft" }))).toEqual(expect.arrayContaining(["material_form is required"]));
   });
+
+  test("CSV preserves a vendor lot conversion without treating lot as an inventory unit", () => {
+    const row = normalizeRow({
+      material_name: "Coroplast",
+      sku: "COR-040",
+      material_form: "sheet",
+      inventory_unit: "sheet",
+      consumption_unit: "sheet",
+      cost_per_unit: "26.91",
+      vendor_cost_unit: "lot",
+      vendor_cost_per_unit: "403.65",
+      inventory_units_per_purchase_unit: "15",
+      minimum_purchase_quantity: "1",
+    });
+    expect(validateNormalizedRow(row)).toEqual([]);
+    expect(buildMaterialPayload(row, null)).toEqual(expect.objectContaining({
+      vendorCostUnit: "lot",
+      inventoryUnitsPerPurchaseUnit: "15",
+      minimumPurchaseQuantity: "1",
+    }));
+  });
 });

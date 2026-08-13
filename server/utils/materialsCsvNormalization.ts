@@ -15,6 +15,7 @@ import {
   MATERIAL_WEIGHT_BASES,
 } from "@shared/materialWeight";
 import { calculateUsableRollCapacity, MATERIAL_FORMS, MATERIAL_INVENTORY_UNITS, normalizeMaterialUnit } from "@shared/materialUnits";
+import { normalizeMaterialPurchaseUnit } from "@shared/materialVendorCost";
 
 export const VALID_TYPES: string[] = [...MATERIAL_FORMS];
 export const VALID_UNITS: string[] = [...MATERIAL_INVENTORY_UNITS];
@@ -40,6 +41,8 @@ export type NormalizedMaterialRow = {
   minStockAlert: number | undefined;
   vendorSku: string | undefined;
   vendorCostPerUnit: number | undefined;
+  inventoryUnitsPerPurchaseUnit: number | undefined;
+  minimumPurchaseQuantity: number | undefined;
   rollLengthFt: number | undefined;
   costPerRoll: number | undefined;
   edgeWasteInPerSide: number | undefined;
@@ -65,7 +68,7 @@ export function normalizeRow(row: Record<string, string>): NormalizedMaterialRow
     sku: (row["sku"] || "").trim(),
     materialForm: (row["material_form"] || "").trim().toLowerCase(),
     inventoryUnit: normalize(row["inventory_unit"]),
-    vendorCostUnit: normalize(row["vendor_cost_unit"]),
+    vendorCostUnit: normalizeMaterialPurchaseUnit(row["vendor_cost_unit"]) ?? undefined,
     consumptionUnit: normalize(row["consumption_unit"]),
     category: (row["category"] || "").trim() || undefined,
     color: (row["color"] || "").trim() || undefined,
@@ -78,6 +81,8 @@ export function normalizeRow(row: Record<string, string>): NormalizedMaterialRow
     minStockAlert: parseNum(row["reorder_point"]),
     vendorSku: (row["vendor_sku"] || "").trim() || undefined,
     vendorCostPerUnit: parseNum(row["vendor_cost_per_unit"]),
+    inventoryUnitsPerPurchaseUnit: parseNum(row["inventory_units_per_purchase_unit"]),
+    minimumPurchaseQuantity: parseNum(row["minimum_purchase_quantity"]),
     rollLengthFt: parseNum(row["roll_length_ft"]),
     costPerRoll: parseNum(row["cost_per_roll"]),
     edgeWasteInPerSide: parseNum(row["edge_waste_in_per_side"]),
@@ -147,6 +152,12 @@ export function validateNormalizedRow(n: NormalizedMaterialRow): string[] {
   }
   if (n.rollLengthFt != null && n.rollLengthFt <= 0) {
     errors.push("roll_length_ft must be > 0");
+  }
+  if (n.inventoryUnitsPerPurchaseUnit != null && n.inventoryUnitsPerPurchaseUnit <= 0) {
+    errors.push("inventory_units_per_purchase_unit must be > 0");
+  }
+  if (n.minimumPurchaseQuantity != null && n.minimumPurchaseQuantity <= 0) {
+    errors.push("minimum_purchase_quantity must be > 0");
   }
   if (n.materialForm === "roll") {
     const capacity = calculateUsableRollCapacity(n);
@@ -222,6 +233,8 @@ export function buildMaterialPayload(
     preferredVendorId: resolvedVendorId,
     vendorSku: n.vendorSku ?? null,
     vendorCostPerUnit: n.vendorCostPerUnit != null ? String(n.vendorCostPerUnit) : null,
+    inventoryUnitsPerPurchaseUnit: n.inventoryUnitsPerPurchaseUnit != null ? String(n.inventoryUnitsPerPurchaseUnit) : null,
+    minimumPurchaseQuantity: n.minimumPurchaseQuantity != null ? String(n.minimumPurchaseQuantity) : null,
     rollLengthFt: n.rollLengthFt != null ? String(n.rollLengthFt) : null,
     costPerRoll: n.costPerRoll != null ? String(n.costPerRoll) : null,
     edgeWasteInPerSide: n.edgeWasteInPerSide != null ? String(n.edgeWasteInPerSide) : null,

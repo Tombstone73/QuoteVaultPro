@@ -32,6 +32,8 @@ export interface Material {
   preferredVendorName?: string | null;
   vendorSku?: string | null;
   vendorCostPerUnit?: string | null;
+  inventoryUnitsPerPurchaseUnit?: string | null;
+  minimumPurchaseQuantity?: string | null;
   vendorProductUrl?: string | null;
   vendorNotes?: string | null;
   vendorLastPriceCents?: number | null;

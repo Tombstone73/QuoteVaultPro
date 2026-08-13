@@ -1,5 +1,6 @@
 import { useForm } from "react-hook-form";
 import { z } from "zod";
+import { calculateNormalizedMaterialCost, MATERIAL_PURCHASE_UNITS } from "@shared/materialVendorCost";
 import { zodResolver } from "@hookform/resolvers/zod";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -15,7 +16,7 @@ import { ExternalLink, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "@shared/materialWeight";
-import { centsToDollars, dollarsToCents, normalizeMaterialVendorProductUrl } from "@shared/materialVendorPurchasing";
+import { centsToDollars, normalizeMaterialVendorProductUrl } from "@shared/materialVendorPurchasing";
 
 type LinkableProduct = {
   id: string;
@@ -56,6 +57,10 @@ const materialUnitSchema = z.enum(MATERIAL_UNIT_VALUES);
 const optionalMaterialUnitSchema = z.preprocess(
   (v) => (v === "" || v == null ? undefined : v),
   materialUnitSchema.optional()
+);
+const optionalPurchaseUnitSchema = z.preprocess(
+  (v) => (v === "" || v == null ? undefined : v),
+  z.enum(MATERIAL_PURCHASE_UNITS).optional()
 );
 const MATERIAL_UNIT_OPTIONS = [
   { value: "sheet", label: "Sheet" },
@@ -104,7 +109,7 @@ const materialSchema = z
   category: z.string().trim().optional(),
   inventoryUnit: materialUnitSchema,
   consumptionUnit: materialUnitSchema,
-  vendorCostUnit: optionalMaterialUnitSchema,
+  vendorCostUnit: optionalPurchaseUnitSchema,
   weightValue: optionalNumber(z.coerce.number().positive()),
   weightUnit: optionalMaterialWeightUnitSchema,
   weightBasis: optionalMaterialWeightBasisSchema,
@@ -124,6 +129,8 @@ const materialSchema = z
   preferredVendorName: z.string().optional(),
   vendorSku: z.string().optional(),
   vendorCostPerUnit: optionalNumber(z.coerce.number().nonnegative()),
+  inventoryUnitsPerPurchaseUnit: optionalNumber(z.coerce.number().positive()),
+  minimumPurchaseQuantity: optionalNumber(z.coerce.number().positive()),
   vendorProductUrl: optionalVendorUrl,
   vendorNotes: z.string().optional(),
   vendorLastPrice: optionalNumber(z.coerce.number().nonnegative()),
@@ -225,6 +232,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       preferredVendorName: material.preferredVendorName || "",
       vendorSku: material.vendorSku || "",
       vendorCostPerUnit: material.vendorCostPerUnit ? parseFloat(material.vendorCostPerUnit) : undefined,
+      inventoryUnitsPerPurchaseUnit: material.inventoryUnitsPerPurchaseUnit ? parseFloat(material.inventoryUnitsPerPurchaseUnit) : undefined,
+      minimumPurchaseQuantity: material.minimumPurchaseQuantity ? parseFloat(material.minimumPurchaseQuantity) : undefined,
       vendorProductUrl: material.vendorProductUrl || "",
       vendorNotes: material.vendorNotes || "",
       vendorLastPrice: centsToDollars(material.vendorLastPriceCents),
@@ -263,6 +272,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       preferredVendorName: "",
       vendorSku: "",
       vendorCostPerUnit: undefined,
+      inventoryUnitsPerPurchaseUnit: 1,
+      minimumPurchaseQuantity: 1,
       vendorProductUrl: "",
       vendorNotes: "",
       vendorLastPrice: undefined,
@@ -327,10 +338,10 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
       preferredVendorName: nullableTrimmed(values.preferredVendorName),
       vendorSku: nullableTrimmed(values.vendorSku),
       vendorCostPerUnit: values.vendorCostPerUnit !== undefined ? values.vendorCostPerUnit.toString() : undefined,
+      inventoryUnitsPerPurchaseUnit: values.inventoryUnitsPerPurchaseUnit !== undefined ? values.inventoryUnitsPerPurchaseUnit.toString() : undefined,
+      minimumPurchaseQuantity: values.minimumPurchaseQuantity !== undefined ? values.minimumPurchaseQuantity.toString() : undefined,
       vendorProductUrl: nullableTrimmed(values.vendorProductUrl),
       vendorNotes: nullableTrimmed(values.vendorNotes),
-      vendorLastPriceCents: dollarsToCents(values.vendorLastPrice),
-      vendorLastPriceUpdatedAt: values.vendorLastPriceUpdatedAt || null,
       // Roll-specific fields
       rollLengthFt: values.rollLengthFt !== undefined ? values.rollLengthFt.toString() : undefined,
       costPerRoll: values.costPerRoll !== undefined ? values.costPerRoll.toString() : undefined,
@@ -428,6 +439,8 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
   const rollWidth = form.watch("width");
   const rollLength = form.watch("rollLengthFt");
   const rollCost = form.watch("costPerRoll");
+  const vendorPurchasePrice = form.watch("vendorCostPerUnit");
+  const unitsPerPurchase = form.watch("inventoryUnitsPerPurchaseUnit");
   const edgeWaste = form.watch("edgeWasteInPerSide") || 0;
   const leadWaste = form.watch("leadWasteFt") || 0;
   const tailWaste = form.watch("tailWasteFt") || 0;
@@ -441,6 +454,18 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
     if (!isRoll || !rollWidth || !rollLength || !rollCost) return null;
     return calculateRollDerivedValues(rollWidth, rollLength, rollCost, edgeWaste, leadWaste, tailWaste);
   }, [isRoll, rollWidth, rollLength, rollCost, edgeWaste, leadWaste, tailWaste]);
+
+  useEffect(() => {
+    if (isRoll) return;
+    const normalized = calculateNormalizedMaterialCost({
+      materialForm: materialType,
+      vendorCostPerUnit: vendorPurchasePrice,
+      inventoryUnitsPerPurchaseUnit: unitsPerPurchase,
+    });
+    if (normalized !== null) {
+      form.setValue("costPerUnit", Number(normalized.toFixed(4)), { shouldDirty: true, shouldValidate: true });
+    }
+  }, [form, isRoll, materialType, unitsPerPurchase, vendorPurchasePrice]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -531,17 +556,17 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                       <p className="text-xs text-muted-foreground mt-1">The unit production requirements use. Product sell units and pricing are separate.</p>
                     </div>
                     <div>
-                      <label className="text-sm font-medium">Vendor Cost Unit</label>
+                      <label className="text-sm font-medium">Purchase Unit</label>
                       <Select onValueChange={v=> form.setValue("vendorCostUnit", v === "__none__" ? undefined : v as any)} value={form.watch("vendorCostUnit") || "__none__"}>
                         <SelectTrigger><SelectValue/></SelectTrigger>
                         <SelectContent>
                           <SelectItem value="__none__">Not specified</SelectItem>
-                          {MATERIAL_UNIT_OPTIONS.map((option) => (
-                            <SelectItem key={option.value} value={option.value}>{option.label}</SelectItem>
+                          {MATERIAL_PURCHASE_UNITS.map((unit) => (
+                            <SelectItem key={unit} value={unit}>{unit.replaceAll("_", " ")}</SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
-                      <p className="text-xs text-muted-foreground mt-1">Supplier unit detail is retained for current purchasing workflows.</p>
+                      <p className="text-xs text-muted-foreground mt-1">The unit the vendor sells, such as a lot, pack, roll, or sheet.</p>
                     </div>
                   </div>
 
@@ -655,7 +680,7 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
               <Card>
                 <CardHeader className="pb-3">
                   <CardTitle className="text-base">Pricing / Costing</CardTitle>
-                  <p className="text-xs text-muted-foreground">Material cost and supplier cost values. Product sell pricing is configured on the product.</p>
+                  <p className="text-xs text-muted-foreground">One normalized internal cost is used for inventory and job costing. Product sell pricing remains separate.</p>
                 </CardHeader>
                 <CardContent className="space-y-5">
                   <div className="grid gap-4 lg:grid-cols-3">
@@ -666,19 +691,29 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                         step="0.0001" 
                         placeholder="Material cost"
                         {...form.register("costPerUnit", {valueAsNumber:true})}
+                        readOnly={Boolean(form.watch("vendorCostPerUnit")) && !isRoll}
                       />
                       <p className="text-xs text-muted-foreground mt-1">
-                        Internal material cost; it does not define a product sell price or sell unit.
+                        {Boolean(form.watch("vendorCostPerUnit")) && !isRoll
+                          ? `Calculated from the vendor purchase price and units per purchase unit. / ${inventoryUnit.replaceAll("_", " ")}`
+                          : "Internal material cost; it does not define a product sell price or sell unit."}
                       </p>
                     </div>
                     {!isRoll ? (
+                      <>
                       <div>
-                        <label className="text-sm font-medium">Vendor Cost per Unit</label>
-                        <Input type="number" step="0.0001" placeholder="What vendor charges you" {...form.register("vendorCostPerUnit", {valueAsNumber:true})}/>
+                        <label className="text-sm font-medium">Vendor Purchase Price</label>
+                        <Input type="number" step="0.0001" placeholder="What the vendor charges" {...form.register("vendorCostPerUnit", {valueAsNumber:true})}/>
                         <p className="text-xs text-muted-foreground mt-1">
-                          What your vendor charges you per Vendor Cost Unit unless otherwise stated.
+                          Price for one Purchase Unit. It is not a per-inventory-unit cost unless the conversion is one.
                         </p>
                       </div>
+                      <div>
+                        <label className="text-sm font-medium">{inventoryUnit.replaceAll("_", " ")}s per Purchase Unit</label>
+                        <Input type="number" min="0.000001" step="0.000001" {...form.register("inventoryUnitsPerPurchaseUnit", {valueAsNumber:true})}/>
+                        <p className="text-xs text-muted-foreground mt-1">For example, 15 sheets in one lot. Defaults to 1 for legacy records.</p>
+                      </div>
+                      </>
                     ) : null}
                   </div>
 
@@ -856,19 +891,24 @@ export function MaterialForm({ open, onOpenChange, material, isDuplicate }: Prop
                       <p className="text-xs text-muted-foreground mt-1">Vendor's product code for this material.</p>
                     </div>
                     <div>
-                      <label className="text-sm font-medium">Last Known Vendor Price</label>
-                      <Input type="number" min="0" step="0.01" placeholder="0.00" {...form.register("vendorLastPrice", { valueAsNumber: true })} />
-                      <p className="text-xs text-muted-foreground mt-1">Stored as cents for stable accounting later.</p>
+                      <label className="text-sm font-medium">Minimum Purchase Quantity</label>
+                      <Input type="number" min="0.000001" step="0.000001" {...form.register("minimumPurchaseQuantity", { valueAsNumber: true })} />
+                      <p className="text-xs text-muted-foreground mt-1">Minimum number of Purchase Units to order. Defaults to 1.</p>
                     </div>
                     <div>
-                      <label className="text-sm font-medium">Price Last Updated</label>
-                      <Input type="date" {...form.register("vendorLastPriceUpdatedAt")} />
+                      <label className="text-sm font-medium">Last Received Vendor Price</label>
+                      <Input type="number" min="0" step="0.01" readOnly value={form.watch("vendorLastPrice") ?? ""} />
+                      <p className="text-xs text-muted-foreground mt-1">System-maintained from the most recent purchase-order receipt.</p>
+                    </div>
+                    <div>
+                      <label className="text-sm font-medium">Last Receipt Date</label>
+                      <Input type="date" readOnly value={form.watch("vendorLastPriceUpdatedAt") || ""} />
                     </div>
                   </div>
 
                   <div>
                     <label className="text-sm font-medium">Vendor Notes</label>
-                    <Textarea rows={4} placeholder="Ordering notes, pack size, account terms, substitutions" {...form.register("vendorNotes")} />
+                    <Textarea rows={4} placeholder="Ordering notes, account terms, substitutions" {...form.register("vendorNotes")} />
                   </div>
                 </CardContent>
               </Card>

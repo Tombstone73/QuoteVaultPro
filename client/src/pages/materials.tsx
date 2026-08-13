@@ -384,10 +384,10 @@ export default function MaterialsListPage() {
       patch.minStockAlert = parseRequiredNonNegative(draft.minStockAlert, "Reorder point");
     }
     if (!numericValuesEqual(draft.costPerUnit, original.costPerUnit)) {
-      patch.costPerUnit = parseRequiredNonNegative(draft.costPerUnit, "Sell price");
+      patch.costPerUnit = parseRequiredNonNegative(draft.costPerUnit, "Internal cost");
     }
     if (!numericValuesEqual(draft.vendorCostPerUnit, original.vendorCostPerUnit)) {
-      patch.vendorCostPerUnit = parseOptionalNonNegative(draft.vendorCostPerUnit, "Vendor cost");
+      patch.vendorCostPerUnit = parseOptionalNonNegative(draft.vendorCostPerUnit, "Vendor purchase price");
     }
     if (!numericValuesEqual(draft.costPerRoll, original.costPerRoll)) {
       patch.costPerRoll = parseOptionalNonNegative(draft.costPerRoll, "Vendor roll cost");
@@ -599,12 +599,12 @@ export default function MaterialsListPage() {
           return (
             <div className="grid min-w-[15rem] gap-1.5" onClick={(event) => event.stopPropagation()}>
               <label className="grid grid-cols-[4.25rem_minmax(7rem,1fr)] items-center gap-2 text-[11px] text-titan-text-muted">
-                <span>Sell</span>
-                {compactNumberInput("costPerUnit", "Sell price", { step: "0.0001" })}
+                <span>Internal</span>
+                {compactNumberInput("costPerUnit", "Internal cost", { step: "0.0001" })}
               </label>
               <label className="grid grid-cols-[4.25rem_minmax(7rem,1fr)] items-center gap-2 text-[11px] text-titan-text-muted">
-                <span>Vendor</span>
-                {compactNumberInput("vendorCostPerUnit", "Vendor cost", { step: "0.0001" })}
+                <span>Vendor price</span>
+                {compactNumberInput("vendorCostPerUnit", "Vendor purchase price", { step: "0.0001" })}
               </label>
               {m.type === "roll" || m.costPerRoll ? (
                 <label className="grid grid-cols-[4.25rem_minmax(7rem,1fr)] items-center gap-2 text-[11px] text-titan-text-muted">

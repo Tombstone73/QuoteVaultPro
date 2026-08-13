@@ -27,6 +27,7 @@ const lineItemSchema = z.object({
   vendorSku: z.string().optional().or(z.literal("")),
   quantityOrdered: z.coerce.number().positive("Quantity must be positive"),
   unitCost: z.coerce.number().nonnegative("Unit cost cannot be negative"),
+  inventoryUnitsPerPurchaseUnit: z.coerce.number().positive().default(1),
   notes: z.string().optional().or(z.literal("")),
 });
 
@@ -148,7 +149,7 @@ function RelatedOrderPicker({
 }
 
 function defaultLine() {
-  return { materialId: "", description: "", vendorSku: "", quantityOrdered: 1, unitCost: 0, notes: "" };
+  return { materialId: "", description: "", vendorSku: "", quantityOrdered: 1, unitCost: 0, inventoryUnitsPerPurchaseUnit: 1, notes: "" };
 }
 
 export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, onSaved }: Props) {
@@ -173,6 +174,7 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
         vendorSku: li.vendorSku || "",
         quantityOrdered: parseFloat(li.quantityOrdered),
         unitCost: parseFloat(li.unitCost),
+        inventoryUnitsPerPurchaseUnit: parseFloat(li.inventoryUnitsPerPurchaseUnit || "1"),
         notes: li.notes || "",
       })),
     } : {
@@ -216,6 +218,14 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
     form.setValue(`lineItems.${index}.vendorSku`, material.vendorSku || "", { shouldDirty: true });
     const unitCost = Number(material.vendorCostPerUnit ?? material.costPerUnit ?? 0);
     if (Number.isFinite(unitCost)) form.setValue(`lineItems.${index}.unitCost`, unitCost, { shouldDirty: true, shouldValidate: true });
+    const inventoryUnits = Number(material.inventoryUnitsPerPurchaseUnit ?? 1);
+    if (Number.isFinite(inventoryUnits) && inventoryUnits > 0) {
+      form.setValue(`lineItems.${index}.inventoryUnitsPerPurchaseUnit`, inventoryUnits, { shouldDirty: true, shouldValidate: true });
+    }
+    const minimumPurchaseQuantity = Number(material.minimumPurchaseQuantity ?? 1);
+    if (Number.isFinite(minimumPurchaseQuantity) && minimumPurchaseQuantity > 0 && Number(form.getValues(`lineItems.${index}.quantityOrdered`)) < minimumPurchaseQuantity) {
+      form.setValue(`lineItems.${index}.quantityOrdered`, minimumPurchaseQuantity, { shouldDirty: true, shouldValidate: true });
+    }
     if (!form.getValues("vendorId") && material.preferredVendorId) {
       form.setValue("vendorId", material.preferredVendorId, { shouldDirty: true, shouldValidate: true });
     }
@@ -234,6 +244,7 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
         vendorSku: li.vendorSku || null,
         quantityOrdered: li.quantityOrdered,
         unitCost: li.unitCost,
+        inventoryUnitsPerPurchaseUnit: li.inventoryUnitsPerPurchaseUnit,
         notes: li.notes || null,
       })),
     };
@@ -286,7 +297,7 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
         </div>
       </DataCard>
 
-      <DataCard title="Line Items" description="Use inventory materials when available, or enter manual vendor lines.">
+      <DataCard title="Line Items" description="Quantities are vendor purchase units. Material lines retain the inventory conversion that was in effect when the PO was saved.">
         <div className="space-y-3">
           {fields.map((field, index) => {
             const line = watchedLines[index] || defaultLine();
@@ -305,6 +316,11 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
                         ))}
                       </SelectContent>
                     </Select>
+                    {line.materialId ? (
+                      <p className="text-[11px] text-titan-text-muted">
+                        1 purchase unit = {Number(line.inventoryUnitsPerPurchaseUnit || 1).toLocaleString()} inventory unit{Number(line.inventoryUnitsPerPurchaseUnit || 1) === 1 ? "" : "s"}
+                      </p>
+                    ) : null}
                   </div>
                   <div className="space-y-1 lg:col-span-4">
                     <label className="text-xs font-medium">Description</label>
@@ -315,11 +331,11 @@ export function PurchaseOrderForm({ purchaseOrder, initialVendorId, onCancel, on
                     <Input {...form.register(`lineItems.${index}.vendorSku` as const)} />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-medium">Qty</label>
+                    <label className="text-xs font-medium">Purchase Qty</label>
                     <Input type="number" step="0.01" {...form.register(`lineItems.${index}.quantityOrdered` as const, { valueAsNumber: true })} />
                   </div>
                   <div className="space-y-1">
-                    <label className="text-xs font-medium">Unit Cost</label>
+                    <label className="text-xs font-medium">Price / Purchase Unit</label>
                     <Input type="number" step="0.0001" {...form.register(`lineItems.${index}.unitCost` as const, { valueAsNumber: true })} />
                   </div>
                   <div className="space-y-1">

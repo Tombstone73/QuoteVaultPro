@@ -65,6 +65,8 @@ const TEMPLATE_COLUMNS = [
   "vendor_name",        // → lookup vendors by name → materials.preferredVendorId
   "vendor_sku",         // → materials.vendorSku
   "vendor_cost_per_unit",// → materials.vendorCostPerUnit
+  "inventory_units_per_purchase_unit", // → materials.inventoryUnitsPerPurchaseUnit
+  "minimum_purchase_quantity", // → materials.minimumPurchaseQuantity
   "roll_length_ft",     // → materials.rollLengthFt
   "cost_per_roll",      // → materials.costPerRoll
   "edge_waste_in_per_side",// → materials.edgeWasteInPerSide
@@ -647,6 +649,8 @@ TIPS
           vendor_name:            m.preferredVendorId ? (vendorById.get(m.preferredVendorId) ?? '') : '',
           vendor_sku:             m.vendorSku ?? '',
           vendor_cost_per_unit:   m.vendorCostPerUnit ?? '',
+          inventory_units_per_purchase_unit: m.inventoryUnitsPerPurchaseUnit ?? '',
+          minimum_purchase_quantity: m.minimumPurchaseQuantity ?? '',
           roll_length_ft:         m.rollLengthFt ?? '',
           cost_per_roll:          m.costPerRoll ?? '',
           edge_waste_in_per_side: m.edgeWasteInPerSide ?? '',

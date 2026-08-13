@@ -26,6 +26,7 @@ import {
 } from "./materialInventory";
 import { MATERIAL_WEIGHT_BASES, MATERIAL_WEIGHT_UNITS } from "./materialWeight";
 import { normalizeMaterialVendorProductUrl } from "./materialVendorPurchasing";
+import { MATERIAL_PURCHASE_UNITS, normalizeMaterialPurchaseUnit } from "./materialVendorCost";
 import { calculateUsableRollCapacity, MATERIAL_FORMS, MATERIAL_INVENTORY_UNITS, normalizeMaterialUnit } from "./materialUnits";
 import {
   workflowStatusPillAssignmentSourceSchema,
@@ -6156,6 +6157,7 @@ export const materials = pgTable("materials", {
   // PBV2 remains the owner of customer sell units and pricing until these columns can be retired in a future migration.
   sellPriceUnit: varchar("sell_price_unit", { length: 50 }),
   wholesalePriceUnit: varchar("wholesale_price_unit", { length: 50 }),
+  // Compatibility-safe column name. Its business meaning is the vendor purchase unit.
   vendorCostUnit: varchar("vendor_cost_unit", { length: 50 }),
   consumptionUnit: varchar("consumption_unit", { length: 50 }),
   weightValue: decimal("weight_value", { precision: 12, scale: 6 }),
@@ -6180,7 +6182,10 @@ export const materials = pgTable("materials", {
   preferredVendorId: varchar("preferred_vendor_id").references(() => vendors.id, { onDelete: 'set null' }),
   preferredVendorName: varchar("preferred_vendor_name", { length: 255 }),
   vendorSku: varchar("vendor_sku", { length: 150 }),
+  // Compatibility-safe column name. Its business meaning is the vendor purchase price.
   vendorCostPerUnit: decimal("vendor_cost_per_unit", { precision: 10, scale: 4 }),
+  inventoryUnitsPerPurchaseUnit: decimal("inventory_units_per_purchase_unit", { precision: 14, scale: 6 }),
+  minimumPurchaseQuantity: decimal("minimum_purchase_quantity", { precision: 14, scale: 6 }),
   vendorProductUrl: text("vendor_product_url"),
   vendorNotes: text("vendor_notes"),
   vendorLastPriceCents: integer("vendor_last_price_cents"),
@@ -6229,6 +6234,14 @@ const materialWeightBasisSchema = z.enum(MATERIAL_WEIGHT_BASES);
 const optionalMaterialUnitSchema = z.preprocess(
   (v) => (v === "" || v === undefined ? undefined : canonicalMaterialUnitInput(v)),
   z.enum(MATERIAL_INVENTORY_UNITS).optional().nullable()
+);
+const optionalMaterialPurchaseUnitSchema = z.preprocess(
+  (v) => {
+    if (v === "" || v === undefined) return undefined;
+    if (v === null) return null;
+    return normalizeMaterialPurchaseUnit(v) ?? v;
+  },
+  z.enum(MATERIAL_PURCHASE_UNITS).optional().nullable()
 );
 const optionalMaterialWeightUnitSchema = z.preprocess(
   (v) => (v === "" || v == null ? undefined : v),
@@ -6286,7 +6299,7 @@ const materialBaseSchema = createInsertSchema(materials).omit({
   inventoryUnit: materialUnitSchema,
   sellPriceUnit: z.never().optional(),
   wholesalePriceUnit: z.never().optional(),
-  vendorCostUnit: optionalMaterialUnitSchema,
+  vendorCostUnit: optionalMaterialPurchaseUnitSchema,
   consumptionUnit: materialUnitSchema,
   weightValue: z.preprocess(
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
@@ -6325,6 +6338,14 @@ const materialBaseSchema = createInsertSchema(materials).omit({
   vendorCostPerUnit: z.preprocess(
     (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
     z.coerce.number().nonnegative().optional().nullable()
+  ),
+  inventoryUnitsPerPurchaseUnit: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().positive().optional().nullable()
+  ),
+  minimumPurchaseQuantity: z.preprocess(
+    (v) => (v === "" || v == null || (typeof v === "number" && Number.isNaN(v)) ? undefined : v),
+    z.coerce.number().positive().optional().nullable()
   ),
   wholesaleBaseRate: z.never().optional(),
   wholesaleMinCharge: z.never().optional(),
@@ -6682,6 +6703,9 @@ export const purchaseOrderLineItems = pgTable('purchase_order_line_items', {
   vendorSku: varchar('vendor_sku', { length: 150 }),
   quantityOrdered: decimal('quantity_ordered', { precision: 10, scale: 2 }).notNull(),
   quantityReceived: decimal('quantity_received', { precision: 10, scale: 2 }).notNull().default('0'),
+  // Snapshot of the Material purchase conversion at PO creation. Receipts use
+  // this instead of mutable Material configuration.
+  inventoryUnitsPerPurchaseUnit: decimal('inventory_units_per_purchase_unit', { precision: 14, scale: 6 }).notNull().default('1'),
   unitCost: decimal('unit_cost', { precision: 10, scale: 4 }).notNull(),
   lineTotal: decimal('line_total', { precision: 10, scale: 4 }).notNull(),
   notes: text('notes'),
@@ -6702,6 +6726,7 @@ export const insertPurchaseOrderLineItemSchema = createInsertSchema(purchaseOrde
 }).extend({
   quantityOrdered: z.coerce.number().positive(),
   unitCost: z.coerce.number().nonnegative(),
+  inventoryUnitsPerPurchaseUnit: z.coerce.number().positive().default(1),
 });
 
 export const insertPurchaseOrderSchema = createInsertSchema(purchaseOrders).omit({

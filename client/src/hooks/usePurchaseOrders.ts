@@ -9,6 +9,7 @@ export interface PurchaseOrderLineItem {
   vendorSku?: string | null;
   quantityOrdered: string; // stored as decimal
   quantityReceived: string;
+  inventoryUnitsPerPurchaseUnit: string;
   unitCost: string; // decimal
   lineTotal: string; // decimal
   notes?: string | null;
@@ -102,7 +103,7 @@ export interface CreatePurchaseOrderInput {
   issueDate: string; // ISO
   expectedDate?: string | null;
   notes?: string | null;
-  lineItems: Array<{ materialId?: string | null; description: string; vendorSku?: string | null; quantityOrdered: number; unitCost: number; notes?: string | null; }>; 
+  lineItems: Array<{ materialId?: string | null; description: string; vendorSku?: string | null; quantityOrdered: number; unitCost: number; inventoryUnitsPerPurchaseUnit?: number; notes?: string | null; }>;
 }
 
 export function usePurchaseOrderRelatedOrderSearch(query: string, options?: { enabled?: boolean; recent?: boolean; limit?: number }) {
