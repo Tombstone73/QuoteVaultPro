@@ -30,7 +30,6 @@ import {
 import { CSS } from '@dnd-kit/utilities';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { ScrollArea } from '@/components/ui/scroll-area';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -236,7 +235,7 @@ export function OptionGroupsSidebar({
   };
 
   return (
-    <aside className="h-full w-full flex flex-col overflow-hidden bg-[#1e293b]">
+    <aside className="w-full bg-[#1e293b]">
       <div className="border-b border-[#334155] p-4 space-y-3">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
@@ -268,8 +267,7 @@ export function OptionGroupsSidebar({
         </Button>
       </div>
 
-      <ScrollArea className="flex-1">
-        <div className="p-2.5">
+      <div className="p-2.5">
           <DndContext
             sensors={sensors}
             collisionDetection={closestCenter}
@@ -293,8 +291,7 @@ export function OptionGroupsSidebar({
               ))}
             </SortableContext>
           </DndContext>
-        </div>
-      </ScrollArea>
+      </div>
 
       <div className="border-t border-[#334155] p-3 text-xs text-slate-400">
         Drag groups to reorder. Dev drawer: Ctrl+Shift+D.

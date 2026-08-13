@@ -32,14 +32,14 @@ const SplitWorkspace: React.FC<SplitWorkspaceProps> = ({ left, right, rightTitle
   };
 
   return (
-    <div className="h-full min-h-0 overflow-hidden flex flex-col">
+    <div className="min-w-0 bg-background">
       {header ? <div className="shrink-0 border-b border-border bg-background/80 backdrop-blur">{header}</div> : null}
 
-      <div className="flex flex-1 min-h-0 min-w-0 overflow-hidden">
-        <div className="flex-1 min-w-0 min-h-0 overflow-y-auto p-4">{left}</div>
+      <div className="flex min-w-0 flex-col lg:flex-row">
+        <div className="min-w-0 flex-1 p-4">{left}</div>
 
         {!isRightPanelCollapsed ? (
-          <div className="basis-[420px] w-[420px] max-w-[420px] shrink-0 min-h-0 min-w-0 overflow-hidden border-l border-border/60 flex flex-col">
+          <aside className="min-w-0 border-t border-border/60 lg:basis-[420px] lg:w-[420px] lg:max-w-[420px] lg:shrink-0 lg:self-start lg:border-l lg:border-t-0">
             <div className="p-3 border-b border-border/60 min-w-0">
               <div className="flex justify-between items-center gap-2 min-w-0">
                 <h2 className="font-semibold text-sm min-w-0 truncate">{rightTitle || 'Preview'}</h2>
@@ -54,10 +54,10 @@ const SplitWorkspace: React.FC<SplitWorkspaceProps> = ({ left, right, rightTitle
                 </Button>
               </div>
             </div>
-            <div className="flex-1 min-h-0 min-w-0 overflow-hidden">{right}</div>
-          </div>
+            <div className="min-w-0">{right}</div>
+          </aside>
         ) : (
-          <div className="w-12 border-l border-border/60 flex items-center justify-center">
+          <div className="flex h-12 items-center justify-center border-t border-border/60 lg:h-auto lg:w-12 lg:border-l lg:border-t-0">
             <Button
               onClick={toggleRightPanel}
               size="icon"

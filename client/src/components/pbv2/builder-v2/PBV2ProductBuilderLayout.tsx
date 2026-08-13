@@ -104,9 +104,9 @@ export function PBV2ProductBuilderLayout({
   const selectedGroup = editorModel.groups.find(g => g.id === selectedGroupId);
 
   return (
-    <div className="min-h-[600px] flex overflow-hidden bg-[#1e293b]">
-      {/* Left Sidebar: Fixed width 288px (w-72), independent scroll */}
-      <div className="w-72 shrink-0 border-r border-slate-700 bg-[#1e293b]">
+    <div className="flex min-w-0 flex-col bg-[#1e293b] lg:min-h-[600px] lg:flex-row">
+      {/* Option groups remain in normal page flow so long editor content has one scroll owner. */}
+      <div className="w-full border-b border-slate-700 bg-[#1e293b] lg:w-72 lg:shrink-0 lg:border-b-0 lg:border-r">
         <OptionGroupsSidebar
           optionGroups={editorModel.groups}
           options={editorModel.options}
@@ -120,8 +120,7 @@ export function PBV2ProductBuilderLayout({
         />
       </div>
 
-      {/* Middle Editor: Flex grow with min-w-0 for proper overflow, single unified scroll */}
-      <div className="flex-1 min-w-0 overflow-y-auto bg-[#1e293b]">
+      <div className="min-w-0 flex-1 bg-[#1e293b]">
         <div className="p-4 space-y-4">
           {/* Selected group editor */}
           {selectedGroup ? (

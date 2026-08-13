@@ -78,7 +78,7 @@ function InternalAppLayout() {
     location.pathname.startsWith("/settings/");
 
   return (
-    <div className="flex h-screen w-full bg-background">
+    <div className="flex h-dvh min-h-0 w-full overflow-hidden bg-background">
       {/* Desktop Sidebar */}
       <TitanSidebarNav
         isCollapsed={isSidebarCollapsed}
@@ -130,6 +130,7 @@ function InternalAppLayout() {
 function AssistantAppContent({ locationPath, orderRightCol }: { locationPath: string; orderRightCol: string }) {
   const { presentation, capabilities } = useAssistantWorkspace();
   const docked = Boolean(capabilities?.enabled && capabilities.conversationsEnabled) && (presentation === "dock_left" || presentation === "dock_right" || presentation === "dock_bottom");
+  // The application content viewport is the normal page-level vertical scroll owner.
   const main = (
     <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-y-auto bg-background" style={{ ["--titan-order-right-col" as any]: orderRightCol }}>
       <div className="flex min-h-full w-full flex-1 flex-col"><RouteErrorBoundary key={locationPath}><Outlet /></RouteErrorBoundary></div>

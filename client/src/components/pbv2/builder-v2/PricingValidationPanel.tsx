@@ -15,7 +15,6 @@ import {
 } from "@/lib/pbv2/pricing/previewError";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -1096,9 +1095,8 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
   }, [hasInputErrors, requestSignature, treeForPreview, previewWidth, previewHeight, previewState.quantity, pricingFormulaOverride, manualFormulaText, pricingFormulaId, formulaSourceMode, pricingProfileKey, pricingProfileConfig, selectionPayload]);
 
   return (
-    <aside className="h-full w-full max-w-full min-w-0 bg-card flex flex-col overflow-hidden">
-      <ScrollArea className="flex-1 min-w-0 max-w-full">
-        <div className="p-4 space-y-4 min-w-0 max-w-full overflow-hidden [overflow-wrap:anywhere]">
+    <aside className="w-full max-w-full min-w-0 bg-card">
+      <div className="p-4 space-y-4 min-w-0 max-w-full overflow-hidden [overflow-wrap:anywhere]">
           <div className="space-y-3 min-w-0">
             <div className="flex items-center gap-2">
               <DollarSign className="h-4 w-4 text-blue-400" />
@@ -1882,8 +1880,7 @@ export function PricingValidationPanel({ treeJson, pricingV2Override, pricingFor
               </div>
             )}
           </div>
-        </div>
-      </ScrollArea>
+      </div>
     </aside>
   );
 }

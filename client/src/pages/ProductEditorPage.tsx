@@ -1106,7 +1106,7 @@ const ProductEditorPage = () => {
 
   return (
     <Form {...form}>
-      <div className="min-h-screen h-screen w-full bg-background">
+      <div className="w-full bg-background">
         <SplitWorkspace
           header={header}
           rightTitle="Pricing Preview"
