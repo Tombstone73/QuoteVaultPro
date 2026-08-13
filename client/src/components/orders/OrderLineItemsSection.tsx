@@ -562,6 +562,8 @@ type OrderLineItemsSectionProps = {
   customerId?: string | null;
   readOnly: boolean;
   lineItems: OrderLineItem[];
+  /** Cancelled orders retain their sold line-item history for read-only review. */
+  showHistoricalCanceledLineItems?: boolean;
   productionFocusLineItemIds?: string[];
   productionPriorityLineItemIds?: string[];
   onAfterLineItemsChange?: () => Promise<void>;
@@ -577,6 +579,7 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   customerId,
   readOnly,
   lineItems,
+  showHistoricalCanceledLineItems = false,
   productionFocusLineItemIds = [],
   productionPriorityLineItemIds = [],
   onAfterLineItemsChange,
@@ -833,8 +836,8 @@ export const OrderLineItemsSection = forwardRef<OrderLineItemsSectionHandle, Ord
   const lineItemAssetsAssociationKnown = lineItemPreviewsQuery.isSuccess;
 
   const activeLineItems = useMemo(
-    () => sortOrderLineItemsByPersistedOrder(displayLineItems.filter((li) => li.status !== "canceled") as any[]) as OrderLineItem[],
-    [displayLineItems]
+    () => sortOrderLineItemsByPersistedOrder(displayLineItems.filter((li) => showHistoricalCanceledLineItems || li.status !== "canceled") as any[]) as OrderLineItem[],
+    [displayLineItems, showHistoricalCanceledLineItems]
   );
 
   const canEditLineItemRecord = useCallback(

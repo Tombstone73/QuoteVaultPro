@@ -1586,6 +1586,14 @@ export class OrdersRepository {
                     pbv2SnapshotJson: pbv2SnapshotJsonRaw,
                     pricedAt: (li as any).pricedAt ?? null,
                     nestingConfigSnapshot: (li as any).nestingConfigSnapshot || null,
+                    // These are commercial/material snapshots.  They are deliberately
+                    // accepted by the canonical create path so a safe order duplicate
+                    // can retain its sold configuration without carrying operational
+                    // state such as production jobs or reservations.
+                    materialId: (li as any).materialId ?? null,
+                    materialUsageJson: (li as any).materialUsageJson ?? null,
+                    materialUsages: Array.isArray((li as any).materialUsages) ? (li as any).materialUsages : [],
+                    requiresInventory: typeof (li as any).requiresInventory === "boolean" ? (li as any).requiresInventory : true,
                     sortOrder: (li as any).sortOrder ?? index, // Use provided sortOrder or default to index
                     overridePriceCents: effectivePricing.hasPriceOverride ? effectivePricing.effectiveTotalCents : null,
                     overrideAt: effectivePricing.hasPriceOverride ? new Date() : null,

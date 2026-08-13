@@ -519,6 +519,27 @@ export default function OrderDetail() {
 
   const deleteOrder = useDeleteOrder();
   const cancelOrderMutation = useCancelOrder(orderId!);
+  const duplicateOrderMutation = useMutation({
+    mutationFn: async () => {
+      const response = await fetch(`/api/orders/${orderId}/duplicate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({}),
+      });
+      const payload = await response.json().catch(() => null);
+      if (!response.ok || !payload?.success) throw new Error(payload?.message || "Failed to duplicate order");
+      return payload.data.order as { id: string; displayNumber?: string | null; orderNumber?: string | null };
+    },
+    onSuccess: async (duplicatedOrder) => {
+      await queryClient.invalidateQueries({ queryKey: ["orders", "list"] });
+      toast({ title: "Order duplicated", description: `Created ${duplicatedOrder.displayNumber || duplicatedOrder.orderNumber || "a new order"}.` });
+      navigate(ROUTES.orders.detail(duplicatedOrder.id));
+    },
+    onError: (error: Error) => {
+      toast({ title: "Unable to duplicate order", description: error.message, variant: "destructive" });
+    },
+  });
   const cancellationEligibilityQuery = useOrderCancellationEligibility(orderId);
   const updateOrder = useUpdateOrder(orderId!);
   const transitionStatus = useTransitionOrderStatus(orderId!);
@@ -2222,12 +2243,15 @@ export default function OrderDetail() {
               isUpdatingOrder={updateOrder.isPending}
               isTransitioningStatus={transitionStatus.isPending}
               isCancelingOrder={cancelOrderMutation.isPending}
+              canDuplicateOrder={Boolean(activeOrganization) && isAdminOrOwner}
+              isDuplicatingOrder={duplicateOrderMutation.isPending}
               hasDirtyLineItem={hasDirtyLineItem}
               cancelOrderUnavailableReason={cancelOrderUnavailableReason}
               onSaveOrder={handleSaveOrder}
               onSaveAndRoute={() => handleSaveOrder(true)}
               onDiscardChanges={handleCancelOrderEdits}
               onCancelOrder={() => setShowCancelOrderDialog(true)}
+              onDuplicateOrder={() => duplicateOrderMutation.mutate()}
               onMarkCompleted={() => {
                 if (requireLineItemsDone && incompleteLi.length > 0) {
                   setPendingStatusTransition({ toStatus: 'completed', requiresReason: false });
@@ -2988,6 +3012,7 @@ export default function OrderDetail() {
                 customerId={order.customerId}
                 readOnly={!(isAdminOrOwner && canEditOrder)}
                 lineItems={order.lineItems as any}
+                showHistoricalCanceledLineItems={orderIsCanceled}
                 productionFocusLineItemIds={productionFocus.highlightedIds}
                 productionPriorityLineItemIds={productionFocus.prioritizedIds}
                 onAfterLineItemsChange={recalculateOrderTotals}

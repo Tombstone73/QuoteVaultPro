@@ -139,6 +139,7 @@ import {
     updateOrderWorkflowStatus,
 } from "../services/orderWorkflowService";
 import { assessOrderCancellationEligibility, cancelOrder, OrderCancellationError } from "../services/orderCancellationService";
+import { duplicateOrder, OrderDuplicationError } from "../services/orderDuplicationService";
 import { assessOrderCloseEligibility } from "../services/orderCloseEligibility";
 import { assessOrderOperationalCompletion } from "../services/orderCompletionPolicy";
 import { cancelOrderRequestSchema } from "@shared/orderCancellation";
@@ -4458,6 +4459,42 @@ export async function registerOrderRoutes(
             }
             console.error("[POST /api/orders/:id/cancel] Error:", error);
             return res.status(500).json({ success: false, message: "Failed to cancel order" });
+        }
+    });
+
+    // A duplicate is a new commercial order, never a resurrection or mutation
+    // of the historical source.  Owner/Admin is resolved by tenantContext.
+    app.post("/api/orders/:id/duplicate", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+        try {
+            const organizationId = getRequestOrganizationId(req);
+            if (!organizationId) return res.status(500).json({ success: false, message: "Missing organization context" });
+            const userId = getUserId(req.user);
+            if (!userId) return res.status(401).json({ success: false, message: "User not authenticated" });
+
+            const createDuplicate = () => duplicateOrder({
+                organizationId,
+                sourceOrderId: req.params.id,
+                actorUserId: userId,
+                actorName: `${req.user.firstName || ""} ${req.user.lastName || ""}`.trim() || req.user.email || null,
+            });
+            const result = await orderCreationIdempotencyStore.run(
+                {
+                    scope: `${organizationId}:${userId}:orders:${req.params.id}:duplicate`,
+                    key: extractOrderCreationIdempotencyKey(req),
+                    fingerprint: buildOrderCreationFingerprint({ route: "POST /api/orders/:id/duplicate", orderId: req.params.id, body: req.body }),
+                },
+                createDuplicate,
+            );
+            return res.status(result.replayed ? 200 : 201).json({ success: true, data: { order: result.value } });
+        } catch (error: any) {
+            if (error instanceof OrderDuplicationError) {
+                return res.status(error.code === "ORDER_NOT_FOUND" ? 404 : 400).json({ success: false, message: error.message, code: error.code });
+            }
+            if (error?.code === "IDEMPOTENCY_KEY_REUSED_WITH_DIFFERENT_PAYLOAD") {
+                return res.status(409).json({ success: false, message: error.message, code: error.code });
+            }
+            console.error("[POST /api/orders/:id/duplicate] Error:", error);
+            return res.status(500).json({ success: false, message: "Failed to duplicate order" });
         }
     });
 

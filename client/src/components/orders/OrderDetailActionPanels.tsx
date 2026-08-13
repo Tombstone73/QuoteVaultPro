@@ -2,7 +2,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { CompleteOrderButton, CompleteProductionButton } from "@/components/StateTransitionButtons";
-import { Ban, Check } from "lucide-react";
+import { Ban, Check, Copy } from "lucide-react";
 
 type MaybePromise = void | Promise<void>;
 
@@ -19,12 +19,15 @@ interface OrderDetailPrimaryActionsProps {
   isUpdatingOrder: boolean;
   isTransitioningStatus: boolean;
   isCancelingOrder: boolean;
+  canDuplicateOrder: boolean;
+  isDuplicatingOrder: boolean;
   hasDirtyLineItem: boolean;
   cancelOrderUnavailableReason?: string | null;
   onSaveOrder: () => MaybePromise;
   onSaveAndRoute: () => MaybePromise;
   onDiscardChanges: () => MaybePromise;
   onCancelOrder: () => void;
+  onDuplicateOrder: () => void;
   onMarkCompleted: () => void;
 }
 
@@ -41,12 +44,15 @@ export function OrderDetailPrimaryActions({
   isUpdatingOrder,
   isTransitioningStatus,
   isCancelingOrder,
+  canDuplicateOrder,
+  isDuplicatingOrder,
   hasDirtyLineItem,
   cancelOrderUnavailableReason,
   onSaveOrder,
   onSaveAndRoute,
   onDiscardChanges,
   onCancelOrder,
+  onDuplicateOrder,
   onMarkCompleted,
 }: OrderDetailPrimaryActionsProps) {
   return (
@@ -102,6 +108,20 @@ export function OrderDetailPrimaryActions({
             <span className="text-xs leading-snug text-muted-foreground">{cancelOrderUnavailableReason}</span>
           ) : null}
         </div>
+      )}
+
+      {canDuplicateOrder && (
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={onDuplicateOrder}
+          disabled={isDuplicatingOrder}
+          className="rounded-titan-md"
+          title="Creates a new order with the same commercial configuration. Historical operations are not copied."
+        >
+          <Copy className="mr-2 h-4 w-4" />
+          {isDuplicatingOrder ? "Duplicating..." : "Duplicate Order"}
+        </Button>
       )}
 
       {canMarkCompleted && (
