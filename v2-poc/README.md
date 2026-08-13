@@ -29,20 +29,32 @@ npx jest v2-poc/tests/v2VerticalSlice.test.ts --runInBand
 
 The suite covers valid PBV2 pricing, taxable/exempt/multi-line totals, invoice integrity, role and organization denial, guessed foreign customer/product IDs, idempotent restart replay/key conflict, rollback, and readback.
 
-## PostgreSQL experiment gate
+## PostgreSQL compatibility experiment
 
 The PostgreSQL runner is intentionally separate from the repository Jest setup
-and does not alter its safety rules. It runs only with all of the following:
+and does not alter its safety rules. It uses V2-owned raw `pg` repositories for
+membership, customers, Catalog/PBV2, orders/lines, billing/invoice lines, and
+a V2-only durable request table. The application operation does not call V1
+routes, storage, order, or billing services. It continues to use only the pure
+PBV2 option evaluator.
+
+The runner uses an explicitly operator-approved disposable clone only when:
 
 ```powershell
 $env:V2_POSTGRES_INTEGRATION = "1"
 $env:TEST_DATABASE_URL = "<approved disposable clone URL>"
-$env:V2_REFERENCE_DATABASE_URLS = '["<known DEV or PROD application URL>"]'
 npx jest --config v2-poc/jest.postgres.config.js --runInBand
 ```
 
-`V2_REFERENCE_DATABASE_URLS` is deliberately required. The V2-only guard parses
-endpoint/database identities, rejects known application targets (including
-Neon direct/pooler aliases), and has no fallback connection string. Do not put
-credentials in source control or logs. The direct/reference URL must be supplied
-before any V2 PostgreSQL write test can run.
+The V2-only guard permits exactly one database connection variable:
+`TEST_DATABASE_URL`. It rejects `DATABASE_URL`, migration/direct/application
+URLs, and other PostgreSQL/Neon URL variables when they are present, has no
+fallback connection string, and is evaluated before any database-test import.
+The supplied URL is the operator-approved disposable clone. Do not put
+credentials in source control or logs.
+
+`db/001_v2_poc_order_idempotency.sql` is experimental clone-only DDL. It is
+not part of V1 migrations. The integration suite creates named POC data in two
+temporary organizations, proves the transaction/failure/retry/concurrency
+paths, reads existing clone records without modifying them, and removes its
+own fixtures at completion.

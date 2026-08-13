@@ -10,7 +10,7 @@ The experiment was stopped before any database write because no safe isolated Po
 
 A later continuation made a **read-only** connection to the user-designated `TEST_DATABASE_URL` clone. It confirmed the expected real schema tables and existing data shape (including organizations, memberships, customers, products, PBV2 trees, orders, invoice records, and 13 valid active product/tree pointers). No database data or schema was changed.
 
-The continuation could not compare that target endpoint to a DEV/PROD application endpoint because no application database URL was present in the process, user, machine, or workspace configuration. The brief requires that comparison before a write, so the PostgreSQL implementation/tests remain blocked. `v2-poc/src/infrastructure/postgresSafety.ts` now supplies a V2-only fail-closed guard: it requires `V2_POSTGRES_INTEGRATION=1`, `TEST_DATABASE_URL`, and `V2_REFERENCE_DATABASE_URLS` (a JSON array of known application references); it rejects exact and Neon pooler/direct endpoint aliases, has no fallback URL, and does not modify the V1 guard. `v2-poc/jest.postgres.config.js` invokes that guard before any integration-test import, isolating this clone from the V1 Jest setup, which correctly rejects its retained `neondb` name. Read-only normal SQL and `BEGIN`/`ROLLBACK` worked through the pooled endpoint; DDL, write rollback, and concurrency remain untested until endpoint isolation is proven.
+The continuation established that DEV and PROD URLs exist only in Railway and are unavailable to this machine. The operator explicitly approved `TEST_DATABASE_URL` as the disposable Neon clone and required the V2 harness to use no other target. `v2-poc/src/infrastructure/postgresSafety.ts` now fails closed unless `V2_POSTGRES_INTEGRATION=1` and `TEST_DATABASE_URL` are present **and no other PostgreSQL/Neon/application database URL variable is visible**. It has no fallback URL and does not modify the V1 guard. `v2-poc/jest.postgres.config.js` invokes that guard before any integration-test import, isolating this clone from the V1 Jest setup, which correctly rejects its retained `neondb` name. Read-only normal SQL and `BEGIN`/`ROLLBACK` worked through the pooled endpoint; the approved-clone write experiment can now proceed.
 
 ## Starting state and safety confirmation
 
@@ -135,3 +135,49 @@ None of the following may be inferred from static inspection. They require the i
 ## Recommended next experiment
 
 Provision `printershero_v2_poc_test` (or equivalent) as a direct disposable PostgreSQL target and supply a verified schema-only bootstrap matching the active application schema. Apply that bootstrap and the V2-only request-table DDL exclusively there, seed two organizations and current-shaped PBV2/order fixtures, then run the required transaction, concurrency, parity, isolation, and existing-record readback suite. Only after that run should PostgreSQL compatibility repositories be committed as validated implementation.
+
+## Runtime PostgreSQL results (approved disposable clone)
+
+### Executive verdict
+
+**YES, WITH CONTAINED COMPATIBILITY.** The current PrintersHero schema supported the V2 order-create slice through V2-owned PostgreSQL repositories without importing V1 routes, `storage`, order services, or billing services. The only V1 behavior reused at runtime is the pure PBV2 option-tree evaluator, behind the V2 pricing adapter.
+
+The clone was operator-approved through `TEST_DATABASE_URL`. The V2 runner requires `V2_POSTGRES_INTEGRATION=1`, accepts no fallback URL, and fails before imports if any other PostgreSQL/Neon/application URL variable is exposed. V1 test/database guard code was not changed. The pooled Neon endpoint completed normal SQL, DDL, transactions, rollback, and concurrent request tests.
+
+### Implemented architecture
+
+`PostgresCreateOrderApplication` owns one transaction: membership authorization, durable request claim, scoped customer and active PBV2 configuration reads, canonical cents pricing/tax, order/header + lines, draft invoice + lines, request completion, commit. Database representations are contained in `v2-poc/src/postgres/postgresOrderCreate.ts`; the domain operation receives cents and pricing snapshots rather than SQL columns.
+
+The V2-only `v2_poc_order_create_requests` table has a unique `(organization_id, actor_user_id, operation, request_id)` constraint and SHA-256 canonical request fingerprint. A failed transaction rolls back its request claim as well as every commercial record.
+
+### Runtime scorecard
+
+| Repository | Tables Used | Translation | Runtime Result | Rating | Concern |
+| --- | --- | --- | --- | --- | --- |
+| Authorization | `user_organizations`, `organizations` | active membership + role to capability | Owner succeeds; member is denied before a request claim | GREEN | Current persisted membership has no `employee` role; adapter deliberately grants owner/admin/manager only. |
+| Customer | `customers` | exemption, override/default tax, terms | Taxable/exempt and foreign customer tests pass | GREEN | Scope is `(organization_id,id)`, not FK inference. |
+| Catalog/PBV2 | `products`, `pbv2_tree_versions` | active pointer/tree/product/org validation | Foreign product rejected; real active PBV2 product parity passed | YELLOW | Multiple legacy product representations remain hidden in this adapter. |
+| Orders | `global_variables`, `orders`, `order_line_items` | V2 cents to decimal snapshots; scoped line read; V2 document number allocation | Create/readback, number concurrency, all rollback stages passed | YELLOW | Header/line decimal dual representation remains compatibility cost; line total is authoritative when quantity cannot divide cents. |
+| Billing | `invoices`, `invoice_line_items` | header cents+decimal copies and invoice-line snapshot read | Required draft invoice/lines match order financials; scoped readback passed | YELLOW | Existing schema lacks generic one-active-draft DB constraint; idempotent create operation supplies the invariant for this slice and detects multiple legacy drafts. |
+| Idempotency | `v2_poc_order_create_requests` | V2-only additive request record | fresh-instance replay, conflict, concurrency, rollback passed | GREEN for experiment | Production cutover needs an additive migration/table with a lifecycle/retention policy. |
+
+### Proofs performed
+
+- **Atomic creation/readback:** an order with PBV2 line snapshot, tax, draft invoice, and invoice line committed; independently reconstructed repositories reloaded exact header totals and line snapshots.
+- **Failure injection:** after request claim, order insert, line insert, invoice insert, invoice-line insert, and immediately before commit, direct PostgreSQL counts showed no order, lines, invoice, invoice lines, or request record for that failed request. Each request then retried successfully.
+- **Durable retry:** a fresh application instance returned the original order/invoice for the same key; changed content with that key produced `IDEMPOTENCY_CONFLICT`.
+- **Concurrency:** two simultaneous same-key creates produced one order, one invoice, and one line; concurrent distinct requests received distinct document numbers.
+- **Tenant isolation:** foreign customer/product IDs and foreign order reads return scoped not-found; an organization member lacking the capability is denied before mutation.
+- **Tax:** tested 7% taxable line (2,200¢ + 154¢ tax), exempt line (0¢ tax), and multi-line taxable order (3,200¢ + 224¢ tax); invoice totals equal persisted authoritative order totals. Integer-cent rounding is an intentional correction over V1’s less explicit rounding boundary.
+- **PBV2 parity:** an existing active clone product was loaded through the scoped V2 catalog adapter; its V2 calculation matched the V1 pure evaluator for its current base/option evaluation and persisted snapshot. The POC fixture separately exercises selected option impacts.
+- **Existing records:** a non-POC V1-created order with draft invoice loaded through V2 scoped repositories. Header cents totals and order/invoice line counts matched direct database source records. This test does not claim that every historical lifecycle/product representation is covered.
+
+### Complexity and conclusion
+
+The real persistence model increased code in repository adapters, not in the V2 application/domain layer. Six repository responsibilities touch ten existing tables plus one V2-only experimental table. There are zero V1 business repository/service calls and zero direct SQL/ORM mutations outside V2 PostgreSQL repositories/test fixture setup. One canonical mutation operation is used.
+
+The final experiment footprint is 424 V2 source lines and 252 V2 test lines; the PostgreSQL adapter itself is 51 source lines and its integration suite is 157 test lines. The V2 suite contains 32 tests in total (16 PostgreSQL-harness/integration and 16 V2 in-memory/safety tests); the unaffected V1 safety suite has 21 passing tests. These counts are a bounded compatibility cost, not a claim that every legacy workflow is covered.
+
+The schema should be retained for a staged V2 cutover with **minimal additive migration first**: durable request records, then a deliberate decision on active-draft invoice uniqueness. A later full V2 should normalize/govern redundant decimal/cents financial projections, product representations, and overlapping status columns; that is moderate normalization, not evidence that a clean replacement schema is required for this slice.
+
+The full-rebuild thesis is **STRONGER**: runtime evidence confirms that a clean modular application boundary can survive the current schema for a meaningful commercial slice, while the scorecard makes remaining data-model debt explicit rather than spreading it through routes. The next highest-information experiment is **Quote → Order conversion**, because it tests existing snapshots, transactional conversion/idempotency, and compatibility reads without expanding into production/fulfillment complexity.
