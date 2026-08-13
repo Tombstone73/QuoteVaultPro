@@ -67,9 +67,8 @@ describe("quantity-only PBV2 tier pricing validation", () => {
     expect(validateTreeHasBasePrice(tree).errors).toEqual([]);
   });
 
-  test("accepts a formula-priced matrix when positive matrix rows supply base_price", () => {
+  test("accepts multiple direct base-price matrix rows without quantity tiers, including qty_only profile metadata", () => {
     const tree = tierOnlyTree([]) as any;
-    tree.meta.pricingProfileKey = "default";
     tree.meta.pricingV2.base = { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 };
     tree.pricingMatrix = {
       dimensions: ["thickness", "sides"],
@@ -80,6 +79,34 @@ describe("quantity-only PBV2 tier pricing validation", () => {
     };
 
     expect(validateTreeHasBasePrice(tree).errors).toEqual([]);
+  });
+
+  test("accepts a matrix row configured with quantity tiers", () => {
+    const tree = tierOnlyTree([]) as any;
+    tree.meta.pricingV2.base = { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 };
+    tree.pricingMatrix = {
+      dimensions: ["finish"],
+      rows: [{ when: { finish: "economy" }, qtyTiers: [{ minQty: 1, perPieceCents: 750 }] }],
+    };
+
+    expect(validateTreeHasBasePrice(tree).errors).toEqual([]);
+  });
+
+  test("rejects a matrix row without a pricing source when another row has a direct base price", () => {
+    const tree = tierOnlyTree([]) as any;
+    tree.meta.pricingProfileKey = "default";
+    tree.meta.pricingV2.base = { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 };
+    tree.pricingMatrix = {
+      dimensions: ["finish"],
+      rows: [
+        { when: { finish: "economy" }, variables: { base_price: 75 } },
+        { when: { finish: "deluxe" }, variables: { setup_fee: 10 } },
+      ],
+    };
+
+    expect(validateTreeHasBasePrice(tree).errors).toEqual(
+      expect.arrayContaining([expect.objectContaining({ code: "PBV2_E_PRICING_MATRIX_ROW_PRICE_MISSING" })])
+    );
   });
 
   test("does not accept a matrix whose base_price rows are zero or absent", () => {

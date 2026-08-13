@@ -41,14 +41,31 @@ function hasFlatFeeFormula(meta: AnyRecord): boolean {
  * the selected matrix row supplies `base_price` at runtime.  A positive row
  * is therefore a real production price source, not a missing fallback.
  */
-function matrixBasePriceRowCount(tree: AnyRecord, meta: AnyRecord): number {
+function matrixRows(tree: AnyRecord, meta: AnyRecord): AnyRecord[] {
   const matrix = asRecord(tree.pricingMatrix) ?? asRecord(meta.pricingMatrix);
-  const rows = Array.isArray(matrix?.rows) ? matrix.rows : [];
-  return rows.filter((row) => {
-    const variables = asRecord(asRecord(row)?.variables);
-    const basePrice = variables?.base_price;
-    return typeof basePrice === "number" && Number.isFinite(basePrice) && basePrice > 0;
+  return Array.isArray(matrix?.rows)
+    ? matrix.rows.map(asRecord).filter((row): row is AnyRecord => row !== null)
+    : [];
+}
+
+function matrixRowHasDirectBasePrice(row: AnyRecord): boolean {
+  const variables = asRecord(row.variables) ?? asRecord(row.values);
+  const basePrice = Number(variables?.base_price);
+  return Number.isFinite(basePrice) && basePrice > 0;
+}
+
+function matrixRowHasQuantityTiers(row: AnyRecord): boolean {
+  return Array.isArray(row.qtyTiers) && row.qtyTiers.length > 0;
+}
+
+function matrixBasePriceRowCount(tree: AnyRecord, meta: AnyRecord): number {
+  return matrixRows(tree, meta).filter((row) => {
+    return matrixRowHasDirectBasePrice(row);
   }).length;
+}
+
+function matrixQuantityTierRowCount(tree: AnyRecord, meta: AnyRecord): number {
+  return matrixRows(tree, meta).filter(matrixRowHasQuantityTiers).length;
 }
 
 /**
@@ -179,7 +196,15 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
   const perPieceCents = typeof base?.perPieceCents === "number" ? base.perPieceCents : 0;
   const minimumChargeCents = typeof base?.minimumChargeCents === "number" ? base.minimumChargeCents : 0;
   const hasScalarBasePrice = perSqftCents > 0 || perPieceCents > 0 || minimumChargeCents > 0;
-  const quantityOnlyTierPricing = meta.pricingProfileKey === "qty_only" && !hasScalarBasePrice;
+  const matrixBasePriceRows = matrixBasePriceRowCount(t, meta);
+  const matrixQuantityTierRows = matrixQuantityTierRowCount(t, meta);
+  // `qty_only` is a profile default, not a mandate to invent tiers. A selected
+  // matrix row with a direct base_price (or its own tiers) is already a complete
+  // pricing source. This also safely reads imported legacy profile metadata.
+  const quantityOnlyTierPricing = meta.pricingProfileKey === "qty_only"
+    && !hasScalarBasePrice
+    && matrixBasePriceRows === 0
+    && matrixQuantityTierRows === 0;
   if (quantityOnlyTierPricing) return validateQuantityOnlyPerPieceTierFamily(pricingV2);
 
   if (!base) {
@@ -199,9 +224,9 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
       return typeof value === "number" && Number.isFinite(value) && value > 0;
     })
     : [];
-  const matrixBasePriceRows = matrixBasePriceRowCount(t, meta);
+  const hasProductQuantityTierRates = quantityTierRates.length > 0;
 
-  if (perSqftCents === 0 && perPieceCents === 0 && minimumChargeCents === 0 && quantityTierRates.length === 0 && matrixBasePriceRows === 0) {
+  if (!hasScalarBasePrice && !hasProductQuantityTierRates && matrixBasePriceRows === 0 && matrixQuantityTierRows === 0) {
     findings.push(
       errorFinding({
         code: "PBV2_E_BASE_PRICE_MISSING",
@@ -216,6 +241,23 @@ export function validateTreeHasBasePrice(tree: unknown): ValidationResult {
         },
       })
     );
+  }
+
+  // If neither a product-level scalar nor product-level tiers can price every
+  // selection, every matrix row must carry its own direct price or tier family.
+  // This prevents a mixed matrix from being publishable just because some other
+  // row happens to have a base_price.
+  if (!hasScalarBasePrice && !hasProductQuantityTierRates && matrixRows(t, meta).length > 0) {
+    const missingRowIndex = matrixRows(t, meta).findIndex((row) => !matrixRowHasDirectBasePrice(row) && !matrixRowHasQuantityTiers(row));
+    if (missingRowIndex >= 0) {
+      findings.push(
+        errorFinding({
+          code: "PBV2_E_PRICING_MATRIX_ROW_PRICE_MISSING",
+          message: "Each pricing matrix row requires a direct base_price or quantity tiers when no product-level price source is configured.",
+          path: `tree.pricingMatrix.rows[${missingRowIndex}]`,
+        })
+      );
+    }
   }
 
   return toResult(findings);

@@ -1,9 +1,26 @@
+import { jest } from "@jest/globals";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { CanonicalProductPublishOperations } from "../services/products/canonicalProductPublishOperations";
 
 describe("CanonicalProductPublishOperations", () => {
   const target = () => ({ product: { id: "product_1", organizationId: "org_1", name: "Styrene", isActive: false, primaryMaterialId: null, pbv2ActiveTreeVersionId: null, updatedAt: new Date("2026-08-13T00:00:00.000Z") }, tree: { id: "tree_1", organizationId: "org_1", productId: "product_1", status: "DRAFT", schemaVersion: 2, treeJson: { schemaVersion: 2 }, publishedAt: null, updatedAt: new Date("2026-08-13T00:00:00.000Z") }, materials: [] });
+  const directMatrixTree = (basePrice = 7500) => ({
+    schemaVersion: 2,
+    status: "DRAFT",
+    rootNodeIds: ["finish"],
+    nodes: [{
+      id: "finish", type: "INPUT", status: "ENABLED", key: "finish",
+      input: { selectionKey: "finish", valueType: "ENUM" },
+      choices: [{ value: "economy", label: "Economy" }],
+    }],
+    edges: [],
+    meta: {
+      pricingProfileKey: "qty_only",
+      pricingV2: { tierBasis: "line_item_quantity", base: { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 }, qtyTiers: [] },
+    },
+    pricingMatrix: { dimensions: ["finish"], rows: [{ id: "economy", match: { finish: "economy" }, variables: { base_price: basePrice } }] },
+  });
   it("binds exact versions and atomically requests publish plus activation", async () => {
     let current: any = target(); const calls: any[] = [];
     const service = new CanonicalProductPublishOperations({ get: async ({ organizationId }: any) => organizationId === "org_1" ? current : null, publish: async (input: any) => { calls.push(input); return { product: { ...current.product, isActive: true, pbv2ActiveTreeVersionId: "tree_1" }, tree: { ...current.tree, status: "ACTIVE" } }; } } as any, () => ({ treeJson: { schemaVersion: 2 }, findings: [], warnings: [], errors: [] }));
@@ -26,6 +43,22 @@ describe("CanonicalProductPublishOperations", () => {
   it("reports the real canonical validation blocker for an invalid DRAFT", async () => {
     const service = new CanonicalProductPublishOperations({ get: async () => target(), publish: async () => null } as any);
     await expect(service.propose({ organizationId: "org_1", productId: "product_1" })).rejects.toMatchObject({ code: "PBV2_PUBLISH_INVALID", findings: expect.arrayContaining([expect.objectContaining({ severity: "ERROR" })]) });
+  });
+
+  it("allows activation for direct matrix pricing without fake tiers and blocks a genuinely unpriced row", async () => {
+    const valid = target();
+    valid.tree.treeJson = directMatrixTree();
+    const publish = jest.fn(async ({ product, tree }: any) => ({ product: { ...product, isActive: true, pbv2ActiveTreeVersionId: tree.id }, tree: { ...tree, status: "ACTIVE" } }));
+    const service = new CanonicalProductPublishOperations({ get: async () => valid, publish } as any);
+
+    const proposal = await service.propose({ organizationId: "org_1", productId: "product_1" });
+    await service.execute({ organizationId: "org_1", actorUserId: "admin_1", productId: "product_1", treeVersionId: "tree_1", expectedProductUpdatedAt: proposal.expectedProductUpdatedAt, expectedTreeUpdatedAt: proposal.expectedTreeUpdatedAt, confirmWarnings: true, activateProduct: true });
+    expect(publish).toHaveBeenCalledWith(expect.objectContaining({ activateProduct: true }));
+
+    const invalid = target();
+    invalid.tree.treeJson = directMatrixTree(0);
+    const invalidService = new CanonicalProductPublishOperations({ get: async () => invalid, publish: async () => null } as any);
+    await expect(invalidService.propose({ organizationId: "org_1", productId: "product_1" })).rejects.toMatchObject({ code: "PBV2_PUBLISH_INVALID" });
   });
 
   it("requires an actor, rejects another tenant, and is shared by the UI route", async () => {

@@ -1,6 +1,7 @@
 import { describe, expect, test } from "@jest/globals";
 import { buildDuplicatedProductInsert } from "../lib/duplicateProductTransform";
 import type { Product } from "@shared/schema";
+import { validateTreeHasBasePrice } from "@shared/pbv2/validator/validateBasePrice";
 
 describe("buildDuplicatedProductInsert", () => {
   test("deep-copies nested JSON fields (no shared references)", () => {
@@ -251,5 +252,23 @@ describe("buildDuplicatedProductInsert", () => {
       allowRotation: true,
       formulaVariables: { sheet_width: 48 },
     });
+  });
+
+  test("preserves direct matrix pricing semantics for a qty_only PBV2 duplicate", () => {
+    const tree = {
+      schemaVersion: 2,
+      status: "ACTIVE",
+      meta: {
+        pricingProfileKey: "qty_only",
+        pricingV2: { tierBasis: "line_item_quantity", base: { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 }, qtyTiers: [] },
+      },
+      pricingMatrix: { dimensions: ["finish"], rows: [{ when: { finish: "economy" }, variables: { base_price: 7500 } }] },
+    };
+    const original = { id: "matrix_product", organizationId: "org_1", name: "Banner Stand", description: "", productTypeId: null, pricingFormula: null, variantLabel: null, category: null, storeUrl: null, showStoreLink: false, thumbnailUrls: [], priceBreaks: { enabled: false, type: "quantity", tiers: [] }, pricingMode: "quantity", isService: false, primaryMaterialId: null, optionsJson: null, optionTreeJson: tree, pbv2ActiveTreeVersionId: null, artworkPolicy: "not_required" as any, pricingProfileKey: "qty_only", pricingProfileConfig: null, pricingEngine: "pricingProfile" as any, pricingFormulaId: null, useNestingCalculator: false, sheetWidth: null, sheetHeight: null, materialType: "sheet" as any, minPricePerItem: null, nestingVolumePricing: { enabled: false, tiers: [] }, requiresProductionJob: true, requiresProofApproval: false, isTaxable: true, isActive: true, createdAt: new Date() as any, updatedAt: new Date() as any } satisfies Product;
+
+    const duplicate = buildDuplicatedProductInsert(original);
+    expect(validateTreeHasBasePrice(duplicate.optionTreeJson).errors).toEqual([]);
+    expect((duplicate.optionTreeJson as any).pricingMatrix.rows[0].variables.base_price).toBe(7500);
+    expect((duplicate.optionTreeJson as any).meta.pricingV2.qtyTiers).toEqual([]);
   });
 });

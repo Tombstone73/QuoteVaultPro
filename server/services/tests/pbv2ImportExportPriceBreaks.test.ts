@@ -3,6 +3,7 @@ import { exportProducts } from "../pbv2ExportMapper";
 import { applyImport, buildImportPlan, buildPbv2ImportProductValues, remapPbv2TreeMaterialIds, resolvePortableMaterialReferences } from "../pbv2ImportMapper";
 import { createPbv2BannerProductTreeJson } from "../../../shared/pbv2/starterTree";
 import { normalizePbv2ExportOptions } from "../../../shared/pbv2ExportOptionNormalizer";
+import { validateTreeHasBasePrice } from "../../../shared/pbv2/validator/validateBasePrice";
 
 const activePriceBreaks = {
   enabled: true,
@@ -592,6 +593,36 @@ describe("PBV2 import/export legacy priceBreaks cleanup", () => {
     );
 
     expect(values.optionTreeJson).toEqual(activePbv2Tree);
+  });
+
+  test("imported qty_only metadata does not make direct matrix base prices require tiers", () => {
+    const importedTree = {
+      schemaVersion: 2,
+      meta: {
+        pricingProfileKey: "qty_only",
+        pricingV2: {
+          tierBasis: "line_item_quantity",
+          base: { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 },
+          qtyTiers: [],
+        },
+      },
+      pricingMatrix: {
+        dimensions: ["finish"],
+        rows: [
+          { when: { finish: "economy" }, variables: { base_price: 7500 } },
+          { when: { finish: "deluxe" }, variables: { base_price: 15000 } },
+        ],
+      },
+    };
+    const values = buildPbv2ImportProductValues({
+      name: "Imported Banner Stand",
+      description: "",
+      pricingProfileKey: "qty_only",
+      pbv2: { hasActiveTree: true, activeTree: { schemaVersion: 2, treeJson: importedTree, publishedAt: null }, hasDraft: false },
+    } as any, {});
+
+    expect(values.pricingProfileKey).toBe("qty_only");
+    expect(validateTreeHasBasePrice(values.optionTreeJson).errors).toEqual([]);
   });
 
   test("PBV2 import remaps nested source material UUIDs to destination materials", () => {

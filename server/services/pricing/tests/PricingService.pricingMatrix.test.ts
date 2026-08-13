@@ -393,6 +393,37 @@ describe("PricingService pricing matrix variable resolution", () => {
     );
   });
 
+  test.each([
+    ["economy", 7500, 75],
+    ["deluxe", 15000, 150],
+  ])("qty_only preview uses direct matrix base_price for %s without quantity tiers", (finish, basePrice, expectedTotal) => {
+    const tree = makeAcmTree({
+      dimensions: ["thickness"],
+      rows: [
+        { id: "economy", when: { thickness: "3mm" }, variables: { base_price: 7500 } },
+        { id: "deluxe", when: { thickness: "6mm" }, variables: { base_price: 15000 } },
+      ],
+    }) as any;
+    tree.meta.pricingProfileKey = "qty_only";
+    tree.meta.pricingV2.base = { perSqftCents: 0, perPieceCents: 0, minimumChargeCents: 0 };
+    tree.meta.pricingV2.qtyTiers = [];
+
+    const result = evaluatePricingPreviewFromTree({
+      treeJson: tree,
+      widthIn: 1,
+      heightIn: 1,
+      quantity: 1,
+      pbv2ExplicitSelections: { thickness: { value: finish === "economy" ? "3mm" : "6mm" } },
+      pricingProfileKey: "qty_only",
+      pricingFormulaOverride: "q * base_price",
+      debug: true,
+    });
+
+    expect(result.totalPrice).toBe(expectedTotal);
+    expect(result.debug?.variables.base_price).toBe(basePrice / 100);
+    expect(result.debug?.tierResolution?.basePriceSource).toBe("pricing_matrix.base_price");
+  });
+
   test("row-level qty tier applies for the matched matrix row", () => {
     const tree = makeAcmTree({
       dimensions: ["thickness", "sides"],
