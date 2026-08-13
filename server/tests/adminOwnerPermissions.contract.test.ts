@@ -11,9 +11,17 @@ describe("admin and owner permission contract", () => {
     expect(routes).toContain('app.post("/api/order-line-items", isAuthenticated, tenantContext, isAdminOrOwner');
     expect(routes).toContain('app.post("/api/order-line-items/:id/production-bypass", isAuthenticated, tenantContext, isAdminOrOwner');
     expect(routes).toContain('app.patch("/api/order-line-items/:id/parent", isAuthenticated, tenantContext, isAdminOrOwner');
-    expect(routes).toContain('app.patch("/api/order-line-items/:id", isAuthenticated, tenantContext, isAdminOrOwner');
+    expect(routes).toContain('app.patch("/api/order-line-items/:id", isAuthenticated, tenantContext, requireOrderLineItemAdminOrOwner');
     expect(routes).toContain("LINE_ITEM_EDIT_LOCKED_STATES");
     expect(routes).toContain("Cannot edit line items on a cancelled order.");
+  });
+
+  test("saved order line-item mutations use the tenantContext organization role", () => {
+    const routes = read("server/routes/orders.routes.ts");
+
+    expect(routes).toContain("const requireOrderLineItemAdminOrOwner");
+    expect(routes).toContain("req.actorOrgRole ?? req.orgRole");
+    expect(routes).toContain("Organization Admin or Owner role required.");
   });
 
   test("Admin Tools danger-zone endpoints are owner-only after tenant role resolution", () => {

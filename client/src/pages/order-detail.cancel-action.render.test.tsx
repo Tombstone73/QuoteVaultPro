@@ -12,6 +12,8 @@ const OrderDetail = require("./order-detail").default as typeof import("./order-
 
 let mockUser: any = { role: "admin", isAdmin: true };
 let mockOrder: any;
+let mockOrgMemberships: any = null;
+let latestLineItemsProps: any = null;
 let mockEligibility: any = { canCancel: true, code: null, message: null, details: null };
 const mockCancelOrder = jest.fn(async () => ({ success: true }));
 const mockInvalidateQueries = jest.fn();
@@ -28,8 +30,8 @@ jest.mock("@tanstack/react-query", () => ({
     mutateAsync: jest.fn(async () => ({})),
     isPending: false,
   }),
-  useQuery: () => ({
-    data: [],
+  useQuery: (options: any) => ({
+    data: String(options?.queryKey?.[0] ?? "").includes("/api/me/orgs") ? mockOrgMemberships : [],
     isLoading: false,
     isError: false,
     error: null,
@@ -39,6 +41,14 @@ jest.mock("@tanstack/react-query", () => ({
 
 jest.mock("@/hooks/useAuth", () => ({
   useAuth: () => ({ user: mockUser, isAuthenticated: true, isLoading: false }),
+}));
+
+jest.mock("@/lib/apiConfig", () => ({
+  getApiUrl: (path: string) => path,
+}));
+
+jest.mock("@/lib/api/me", () => ({
+  fetchMyOrgs: jest.fn(),
 }));
 
 jest.mock("@/hooks/useOrgPreferences", () => ({
@@ -134,6 +144,7 @@ jest.mock("@/components/StateTransitionButtons", () => ({
 
 jest.mock("@/components/orders/OrderLineItemsSection", () => ({
   OrderLineItemsSection: React.forwardRef((_props: any, ref: any) => {
+    latestLineItemsProps = _props;
     React.useImperativeHandle(ref, () => ({
       saveExpandedLineItemIfDirty: jest.fn(async () => ({ saved: false })),
       getDirtyDiagnostics: jest.fn(() => ({})),
@@ -253,10 +264,46 @@ afterEach(() => {
   document.body.innerHTML = "";
   jest.clearAllMocks();
   mockUser = { role: "admin", isAdmin: true };
+  mockOrgMemberships = null;
+  latestLineItemsProps = null;
   mockEligibility = { canCancel: true, code: null, message: null, details: null };
 });
 
 describe("OrderDetail cancellation action rendering", () => {
+  test("uses the active organization Admin role for saved-line editing", () => {
+    mockOrder = baseOrder();
+    mockUser = { role: "employee", isAdmin: false };
+    mockOrgMemberships = {
+      success: true,
+      data: {
+        orgs: [{ id: "org-1", name: "Acme", slug: "acme", role: "admin" }],
+        lastActiveOrgId: "org-1",
+      },
+    };
+
+    const { root } = renderOrderDetail();
+
+    expect(latestLineItemsProps?.readOnly).toBe(false);
+    act(() => root.unmount());
+  });
+
+  test("does not treat a member as an Order pricing Admin from a global user role", () => {
+    mockOrder = baseOrder();
+    mockUser = { role: "admin", isAdmin: true };
+    mockOrgMemberships = {
+      success: true,
+      data: {
+        orgs: [{ id: "org-1", name: "Acme", slug: "acme", role: "member" }],
+        lastActiveOrgId: "org-1",
+      },
+    };
+
+    const { root } = renderOrderDetail();
+
+    expect(latestLineItemsProps?.readOnly).toBe(true);
+    act(() => root.unmount());
+  });
+
   test("renders Cancel Order for a cancellable saved order on the actual detail page", () => {
     mockOrder = baseOrder();
 

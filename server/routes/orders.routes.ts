@@ -143,6 +143,7 @@ import { assessOrderCloseEligibility } from "../services/orderCloseEligibility";
 import { assessOrderOperationalCompletion } from "../services/orderCompletionPolicy";
 import { cancelOrderRequestSchema } from "@shared/orderCancellation";
 import { isCanceledOrder } from "@shared/operationalState";
+import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 import { assertValidParentLink } from "../services/lineItemParentLinking";
 import { parentBundlePricingUpdate } from "../services/lineItemBundles";
 import { storageApplicationService } from "../services/storage/StorageApplicationService";
@@ -965,6 +966,16 @@ export async function registerOrderRoutes(
     }
 ) {
     const { isAuthenticated, tenantContext, isAdmin, isAdminOrOwner } = deps;
+
+    // This route family always runs after tenantContext. Keep saved-order line
+    // mutations bound to the authoritative membership role rather than the
+    // global users.role/users.isAdmin identity fields.
+    const requireOrderLineItemAdminOrOwner = (req: any, res: any, next: any) => {
+        if (hasAdminOrOwnerOperationalRole(String(req.actorOrgRole ?? req.orgRole ?? ""))) {
+            return next();
+        }
+        return res.status(403).json({ message: "Access denied. Organization Admin or Owner role required." });
+    };
 
     const persistOrderAttachment = async (args: {
         orderId: string;
@@ -7471,7 +7482,7 @@ export async function registerOrderRoutes(
         }
     });
 
-    app.patch("/api/order-line-items/:id", isAuthenticated, tenantContext, isAdminOrOwner, async (req: any, res) => {
+    app.patch("/api/order-line-items/:id", isAuthenticated, tenantContext, requireOrderLineItemAdminOrOwner, async (req: any, res) => {
         try {
             const organizationId = getRequestOrganizationId(req);
             if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
