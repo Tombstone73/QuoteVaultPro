@@ -1,6 +1,7 @@
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import type { Invoice, Payment, InvoiceLineItem } from '@shared/schema';
 import type { InvoiceAccountingDisplay, QuickBooksLineItemDisplay } from '@shared/invoiceAccountingDisplay';
+import type { InvoiceEmailRecipient } from '@shared/invoiceEmailRecipients';
 
 export type InvoiceEmailStatus = 'not_sent' | 'sent_current' | 'sent_outdated';
 
@@ -409,6 +410,24 @@ export function useSendInvoice() {
       queryClient.invalidateQueries({ queryKey: ['invoices'] });
       queryClient.invalidateQueries({ queryKey: ['invoices', variables.id] });
       queryClient.invalidateQueries({ queryKey: ['/api/operational-summary'] });
+    },
+  });
+}
+
+export type InvoiceEmailRecipientsResponse = {
+  recipients: InvoiceEmailRecipient[];
+  defaultRecipient: InvoiceEmailRecipient | null;
+};
+
+export function useInvoiceEmailRecipients(invoiceId?: string, enabled = true) {
+  return useQuery<InvoiceEmailRecipientsResponse>({
+    queryKey: ['invoices', invoiceId, 'email-recipients'],
+    enabled: Boolean(invoiceId) && enabled,
+    queryFn: async () => {
+      const response = await fetch(`/api/invoices/${invoiceId}/email-recipients`, { credentials: 'include' });
+      const payload = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(payload.error || 'Failed to load invoice email recipients');
+      return payload.data;
     },
   });
 }

@@ -1,7 +1,7 @@
 import type { Express } from "express";
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { db } from "../db";
-import { auditLogs, companySettings, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema } from "../../shared/schema";
+import { auditLogs, companySettings, customerContactLinks, customerContacts, customerPortalAccess, customers, invoiceLineItems, invoiceReminderLogs, invoices, orderLineItems, orders, organizations, payments, paymentWebhookEvents, products, users, manualPaymentMethodSchema } from "../../shared/schema";
 import { createInvoiceEmailLog, createInvoiceFromOrder, getInvoiceEmailStatus, getInvoiceEmailStatuses, getInvoiceWithRelations, listInvoicesForOrganization, refreshInvoiceStatus } from "../invoicesService";
 import { getInvoiceListReminderInfo, getInvoiceReminderPreviewForOrg, getInvoiceReminderSettingsForOrg, upsertInvoiceReminderSettingsForOrg } from "../invoiceReminderService";
 import { runInvoiceReminderJob, sendManualInvoiceReminder } from "../invoiceReminderJob";
@@ -28,6 +28,7 @@ import { getInvoiceOrderContext } from "../services/invoiceOrderContext";
 import { prepareSingleContactPortalAccessForInvoice } from "../services/customerPortalAccessService";
 import { canonicalInvoiceOperations } from "../services/billing/canonicalInvoiceOperations";
 import { canonicalManualPaymentMethodValues, canonicalPaymentOperations } from "../services/billing/canonicalPaymentOperations";
+import { buildInvoiceEmailRecipients, isValidInvoiceRecipientEmail, type InvoiceEmailRecipient } from "../../shared/invoiceEmailRecipients";
 
 // Minimal helper (matches server/routes.ts behavior)
 function getUserId(user: any): string | undefined {
@@ -178,6 +179,88 @@ export async function registerMvpInvoicingRoutes(
     });
   }
 
+  async function resolveInvoiceEmailRecipientsForOperations(input: {
+    organizationId: string;
+    invoiceId: string;
+  }): Promise<{
+    invoice: any;
+    customer: any;
+    recipients: InvoiceEmailRecipient[];
+    defaultRecipient: InvoiceEmailRecipient | null;
+  }> {
+    const rel = await getInvoiceWithRelations(input.invoiceId);
+    if (!rel || rel.invoice.organizationId !== input.organizationId) {
+      throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+    }
+
+    const invoice: any = rel.invoice;
+    const [customer] = await db
+      .select()
+      .from(customers)
+      .where(and(eq(customers.id, invoice.customerId), eq(customers.organizationId, input.organizationId)))
+      .limit(1);
+    if (!customer) throw Object.assign(new Error("Customer not found"), { statusCode: 404 });
+
+    let orderContact: { firstName: string; lastName: string; email: string | null } | null = null;
+    if (invoice.orderId) {
+      const [order] = await db
+        .select({ contactId: orders.contactId })
+        .from(orders)
+        .where(and(eq(orders.id, invoice.orderId), eq(orders.organizationId, input.organizationId)))
+        .limit(1);
+
+      if (order?.contactId) {
+        const [contact] = await db
+          .select({ firstName: customerContacts.firstName, lastName: customerContacts.lastName, email: customerContacts.email })
+          .from(customerContacts)
+          .where(and(eq(customerContacts.id, order.contactId), eq(customerContacts.organizationId, input.organizationId)))
+          .limit(1);
+        orderContact = contact ?? null;
+      }
+    }
+
+    const linkedContacts = await db
+      .select({
+        firstName: customerContacts.firstName,
+        lastName: customerContacts.lastName,
+        email: customerContacts.email,
+        isPrimary: customerContactLinks.isPrimary,
+      })
+      .from(customerContactLinks)
+      .innerJoin(customerContacts, and(
+        eq(customerContactLinks.contactId, customerContacts.id),
+        eq(customerContacts.organizationId, input.organizationId),
+      ))
+      .where(and(
+        eq(customerContactLinks.organizationId, input.organizationId),
+        eq(customerContactLinks.customerId, customer.id),
+        eq(customerContactLinks.status, "active"),
+        eq(customerContacts.status, "active"),
+      ))
+      .orderBy(desc(customerContactLinks.isPrimary), customerContacts.firstName, customerContacts.lastName);
+
+    const contactName = (contact: { firstName: string; lastName: string }) =>
+      `${contact.firstName || ""} ${contact.lastName || ""}`.trim() || "Contact";
+    const primaryContacts = linkedContacts.filter((contact) => contact.isPrimary);
+    const otherContacts = linkedContacts.filter((contact) => !contact.isPrimary);
+    const recipients = buildInvoiceEmailRecipients([
+      ...(orderContact ? [{ email: orderContact.email, name: contactName(orderContact), source: "order_contact" as const }] : []),
+      ...primaryContacts.map((contact) => ({
+        email: contact.email,
+        name: contactName(contact),
+        source: "customer_primary_contact" as const,
+      })),
+      { email: customer.email, name: customer.companyName || "Customer account", source: "customer_account" as const },
+      ...otherContacts.map((contact) => ({
+        email: contact.email,
+        name: contactName(contact),
+        source: "customer_contact" as const,
+      })),
+    ]);
+
+    return { invoice, customer, recipients, defaultRecipient: recipients[0] ?? null };
+  }
+
   async function sendInvoiceEmailForOperations(input: {
     organizationId: string;
     invoiceId: string;
@@ -193,11 +276,23 @@ export async function registerMvpInvoicingRoutes(
       );
     }
 
-    let rel = await getInvoiceWithRelations(input.invoiceId);
-    if (!rel) throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
-    let inv: any = rel.invoice;
-    if (inv.organizationId !== input.organizationId) {
-      throw Object.assign(new Error("Invoice not found"), { statusCode: 404 });
+    const requestedRecipient = input.toEmail == null ? null : String(input.toEmail).trim();
+    if (requestedRecipient && !isValidInvoiceRecipientEmail(requestedRecipient)) {
+      throw Object.assign(new Error("Enter a valid recipient email address"), { statusCode: 400 });
+    }
+    if (input.toEmail != null && !requestedRecipient) {
+      throw Object.assign(new Error("Enter a valid recipient email address"), { statusCode: 400 });
+    }
+
+    const recipientResolution = await resolveInvoiceEmailRecipientsForOperations({
+      organizationId: input.organizationId,
+      invoiceId: input.invoiceId,
+    });
+    let inv: any = recipientResolution.invoice;
+    const cust: any = recipientResolution.customer;
+    const recipientEmail = requestedRecipient || recipientResolution.defaultRecipient?.email || null;
+    if (!recipientEmail) {
+      throw Object.assign(new Error("No recipient email is available. Enter another email address before sending."), { statusCode: 400 });
     }
 
     const startingStatus = String(inv.status || "").toLowerCase();
@@ -205,20 +300,11 @@ export async function registerMvpInvoicingRoutes(
     if (startingStatus === "paid") throw Object.assign(new Error("Paid invoices do not need to be sent"), { statusCode: 400 });
     if (startingStatus === "draft") {
       await finalizeInvoiceForOperations(input);
-      rel = await getInvoiceWithRelations(input.invoiceId);
-      if (!rel) throw Object.assign(new Error("Invoice not found after finalize"), { statusCode: 404 });
-      inv = rel.invoice as any;
-    }
-
-    const [cust] = await db
-      .select()
-      .from(customers)
-      .where(and(eq(customers.id, inv.customerId), eq(customers.organizationId, input.organizationId)));
-    if (!cust) throw Object.assign(new Error("Customer not found"), { statusCode: 404 });
-
-    const recipientEmail = input.toEmail || cust.email;
-    if (!recipientEmail) {
-      throw Object.assign(new Error("No recipient email specified and customer has no email on file"), { statusCode: 400 });
+      const finalized = await getInvoiceWithRelations(input.invoiceId);
+      if (!finalized || finalized.invoice.organizationId !== input.organizationId) {
+        throw Object.assign(new Error("Invoice not found after finalize"), { statusCode: 404 });
+      }
+      inv = finalized.invoice as any;
     }
 
     const [orgCompany] = await db.select().from(companySettings).where(eq(companySettings.organizationId, input.organizationId));
@@ -2291,6 +2377,33 @@ export async function registerMvpInvoicingRoutes(
     } catch (error: any) {
       console.error("Error updating invoice:", error);
       res.status(500).json({ error: error.message || "Failed to update invoice" });
+    }
+  });
+
+  // ------------------------------------------------------------
+  // Resolve the exact default and saved customer recipients before send.
+  // ------------------------------------------------------------
+  app.get("/api/invoices/:id/email-recipients", isAuthenticated, tenantContext, async (req: any, res) => {
+    try {
+      const organizationId = getRequestOrganizationId(req);
+      if (!organizationId) return res.status(500).json({ success: false, error: "Missing organization context" });
+
+      const result = await resolveInvoiceEmailRecipientsForOperations({
+        organizationId,
+        invoiceId: req.params.id,
+      });
+      return res.json({
+        success: true,
+        data: {
+          recipients: result.recipients,
+          defaultRecipient: result.defaultRecipient,
+        },
+      });
+    } catch (error: any) {
+      return res.status(Number(error.statusCode || error.status || 500)).json({
+        success: false,
+        error: error.message || "Failed to resolve invoice email recipients",
+      });
     }
   });
 
