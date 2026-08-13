@@ -19,6 +19,7 @@ import { and, eq } from "drizzle-orm";
 import { lineItemFiles, localFileCopyJobs, orderAuditLog, orderLineItems, orders, productionJobs } from "@shared/schema";
 import { db } from "../db";
 import { getRequestOrganizationId } from "../tenantContext";
+import { hasAdminOrOwnerOperationalRole, normalizeRole } from "@shared/roleAccess";
 import { getStorageAuthMode } from "../objectStorage";
 import * as prepressFileService from "../prepressFileService";
 import { resolveDerivativeFileAccess } from "../lib/supabaseObjectHelpers";
@@ -175,8 +176,10 @@ export function registerPrepressFileRoutes(
     if (!assertInternalUser(req, res)) return;
     const organizationId = getRequestOrganizationId(req);
     if (!organizationId) return res.status(500).json({ error: "Missing organization context" });
-    const actorRole = String(req.orgRole || req.user?.role || "").toLowerCase();
-    const isAdmin = actorRole === "owner" || actorRole === "admin" || req.user?.isAdmin === true;
+    // Completion recovery is tenant-scoped; global identity fields are not
+    // authority inside the active organization.
+    const actorRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
+    const isAdmin = hasAdminOrOwnerOperationalRole(actorRole);
     const canRemoveBeforeCompletion = isAdmin || actorRole === "manager";
     const reason = typeof req.body?.reason === "string" ? req.body.reason.trim().slice(0, 1000) : "";
     try {

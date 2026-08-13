@@ -159,11 +159,10 @@ export async function registerMvpInvoicingRoutes(
   deps: {
     isAuthenticated: any;
     tenantContext: any;
-    isAdmin?: any;
     requireOrgOwnerAdmin?: any;
   }
 ) {
-  const { isAuthenticated, tenantContext, isAdmin, requireOrgOwnerAdmin } = deps;
+  const { isAuthenticated, tenantContext, requireOrgOwnerAdmin } = deps;
 
   async function finalizeInvoiceForOperations(input: {
     organizationId: string;
@@ -2698,10 +2697,10 @@ export async function registerMvpInvoicingRoutes(
 
   // POST /api/invoices/reminders/run
   // Runs the reminder job once for the current organization.
-  // Requires admin role. Returns the job summary.
+  // Requires active-org Owner/Admin authority. Returns the job summary.
   // Do not expose a frontend button for this unless a safe admin tools area exists.
-  const adminMiddlewares = isAdmin
-    ? [isAuthenticated, tenantContext, isAdmin]
+  const adminMiddlewares = requireOrgOwnerAdmin
+    ? [isAuthenticated, tenantContext, requireOrgOwnerAdmin]
     : [isAuthenticated, tenantContext];
 
   app.post("/api/invoices/reminders/run", ...adminMiddlewares, async (req: any, res) => {
@@ -2711,7 +2710,7 @@ export async function registerMvpInvoicingRoutes(
 
       console.log(`[InvoiceReminders] Manual run triggered by user ${getUserId(req.user)} for org ${organizationId}`);
 
-      const summary = await runInvoiceReminderJob();
+      const summary = await runInvoiceReminderJob(new Date(), undefined, organizationId);
       return res.json({ success: true, data: summary });
     } catch (error: any) {
       console.error("Error running reminder job:", error);

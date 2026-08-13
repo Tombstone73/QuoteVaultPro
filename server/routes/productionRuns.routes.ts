@@ -2,6 +2,7 @@ import busboy from "busboy";
 import type { Express } from "express";
 import { z } from "zod";
 import { getRequestOrganizationId } from "../tenantContext";
+import { hasAdminOrOwnerOperationalRole, normalizeRole } from "@shared/roleAccess";
 import {
   createPrepressProductionRun,
   createProductionRun,
@@ -112,11 +113,11 @@ const sheetProgressSchema = z.object({
 const retireFileSchema = z.object({ reason: z.string().max(2000).nullable().optional() });
 const reopenCompletedRunSchema = z.object({ reason: z.string().trim().min(1).max(2000) });
 const userId = (user: any) => user?.claims?.sub ?? user?.id;
-const actorRole = (req: any) => String(req.orgRole || req.user?.role || "").toLowerCase();
-const actorIsAdmin = (req: any) => {
-  const role = actorRole(req);
-  return role === "owner" || role === "admin" || req.user?.isAdmin === true;
-};
+// Production-run recovery actions are tenant operations. Pass only the
+// authoritative active membership string so global identity fields cannot
+// cross an organization boundary.
+const actorRole = (req: any) => normalizeRole(req.actorOrgRole ?? req.orgRole);
+const actorIsAdmin = (req: any) => hasAdminOrOwnerOperationalRole(actorRole(req));
 
 function handleProductionRunError(res: any, error: unknown, fallbackCode: string, fallbackMessage: string) {
   if (error instanceof ProductionRunError) return res.status(error.statusCode).json({ success: false, code: error.code, message: error.message, details: error.details ?? null });

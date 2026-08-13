@@ -27,6 +27,7 @@ import { eq } from "drizzle-orm";
 import { db } from "../db";
 import { storage } from "../storage";
 import { getRequestOrganizationId } from "../tenantContext";
+import { normalizeRole } from "@shared/roleAccess";
 import { emailService } from "../emailService";
 import {
   QuoteEmailRecipientError,
@@ -139,7 +140,7 @@ export function registerEmailRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
 
       const result = await sendQuoteEmailWithRecipientFallback(
@@ -197,7 +198,7 @@ export function registerEmailRoutes(
       const organizationId = getRequestOrganizationId(req);
       if (!organizationId) return res.status(500).json({ message: "Missing organization context" });
       const userId = getUserId(req.user);
-      const userRole = req.user.role || 'customer';
+      const userRole = normalizeRole(req.actorOrgRole ?? req.orgRole);
       const isInternalUser = ['owner', 'admin', 'manager', 'employee'].includes(userRole);
 
       const result = await sendOrderEmailWithRecipientFallback(

@@ -58,6 +58,7 @@ import { storageProviderConfigRepository } from "../storage/storageProviderConfi
 import { storageRegistry } from "../services/storage/StorageRegistry";
 import { inboundPdfSizeAnalysisService } from "../services/inboundOrders/InboundPdfSizeAnalysisService";
 import { getRequestOrganizationId } from "../tenantContext";
+import { hasAdminOrOwnerOperationalRole } from "@shared/roleAccess";
 
 function getUserId(user: any): string | undefined {
   return user?.claims?.sub ?? user?.id;
@@ -319,8 +320,7 @@ function getEmailSettingsRedirectUrl(req: any, query?: string): string {
 }
 
 function assertOwnerOrAdmin(req: any, res: any): boolean {
-  const role = req.user?.role || "customer";
-  if (!["owner", "admin"].includes(role)) {
+  if (!hasAdminOrOwnerOperationalRole(String(req.actorOrgRole ?? req.orgRole ?? ""))) {
     res.status(403).json({ success: false, message: "Only owners and admins can manage inbound mailboxes" });
     return false;
   }

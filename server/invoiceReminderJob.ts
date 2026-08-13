@@ -509,6 +509,7 @@ function makeDefaultDeps(): ReminderJobDeps {
 export async function runInvoiceReminderJob(
   now: Date = new Date(),
   deps: ReminderJobDeps = makeDefaultDeps(),
+  organizationId?: string,
 ): Promise<ReminderJobSummary> {
   if (isJobRunning()) {
     console.log('[ReminderJob] Skipping — job is already running');
@@ -535,7 +536,12 @@ export async function runInvoiceReminderJob(
   console.log(`[ReminderJob] Starting at ${now.toISOString()}`);
 
   try {
-    const allSettings = await getAllEnabledReminderSettings();
+    // Scheduled execution intentionally processes every enabled tenant. A
+    // human-triggered run supplies an active organization and must never send
+    // reminders for any other tenant.
+    const allSettings = organizationId
+      ? [await getInvoiceReminderSettingsForOrg(organizationId)].filter((settings): settings is InvoiceReminderSettings => Boolean(settings?.enabled))
+      : await getAllEnabledReminderSettings();
     summary.organizationsChecked = allSettings.length;
 
     if (allSettings.length === 0) {
